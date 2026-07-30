@@ -22,6 +22,7 @@ from .contracts import (
     GainMode,
     PrecisionMode,
     QualityFlag,
+    SampleFormat,
     SpectrumUnit,
     SweepConfig,
     WindowType,
@@ -30,7 +31,12 @@ from .fixed_band import FixedBandEngineService, FixedBandOptions
 from .pluto import discover_pluto
 from .sweep import SweepExecutionStatus, SweepExecutor, SweepPlannerOptions, plan_sweep
 from .stitching import SweepStitchError, SweepStitchOptions, stitch_sweep
-
+from .recording import (
+    SpectrumReplay,
+    estimate_storage,
+    recover_iq_recording,
+    recover_spectrum_recording,
+)
 
 _SERIAL_FIELD = re.compile(
     r"(?:\s*[,;]\s*|\s+)?(?:serial(?:\s+number)?|s/n|sn)\s*[:=]\s*[^,;)\]]*",
@@ -78,6 +84,13 @@ def _compute_backend(value: str) -> ComputeBackendKind:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _sample_format(value: str) -> SampleFormat:
+    try:
+        return SampleFormat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _positive_float(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0.0:
@@ -101,11 +114,7 @@ def _fixed(args: argparse.Namespace) -> int:
             return 2
         uri = devices[0].uri
 
-    bandwidth = (
-        args.bandwidth
-        if args.bandwidth is not None
-        else min(args.sample_rate, args.sample_rate * 0.8)
-    )
+    bandwidth = args.bandwidth if args.bandwidth is not None else min(args.sample_rate, args.sample_rate * 0.8)
     device = DeviceConfig(
         source_id="p07-cli",
         context_uri=uri,
@@ -314,6 +323,8 @@ def _stitched_payload(frame: object) -> dict[str, object]:
             for item in frame.seam_metrics
         ],
     }
+
+
 def _sweep_plan(args: argparse.Namespace) -> int:
     plan = plan_sweep(_sweep_config(args), _sweep_options(args))
     print(json.dumps({"event": "sweep_plan", **_plan_payload(plan)}, ensure_ascii=False))
@@ -361,16 +372,22 @@ def _sweep(args: argparse.Namespace) -> int:
     previous_handler = signal.signal(signal.SIGINT, lambda _signum, _frame: cancel.set())
     try:
         with FixedBandEngineService(uri, timeout_ms=args.timeout_ms) as engine:
+
             def report(progress: object) -> None:
                 if getattr(progress, "stage", "") in {"segment_start", "segment_complete", "finished"}:
-                    print(json.dumps({
-                        "event": "sweep_progress",
-                        "fraction": progress.fraction,
-                        "stage": progress.stage,
-                        "segment_index": progress.segment_index,
-                        "completed_segments": progress.completed_segments,
-                        "total_segments": progress.total_segments,
-                    }, ensure_ascii=False))
+                    print(
+                        json.dumps(
+                            {
+                                "event": "sweep_progress",
+                                "fraction": progress.fraction,
+                                "stage": progress.stage,
+                                "segment_index": progress.segment_index,
+                                "completed_segments": progress.completed_segments,
+                                "total_segments": progress.total_segments,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
 
             result = SweepExecutor(engine, base_options).execute(
                 plan,
@@ -383,40 +400,132 @@ def _sweep(args: argparse.Namespace) -> int:
                     SweepStitchOptions(target_spacing_hz=args.stitch_spacing),
                 )
             except SweepStitchError as exc:
-                print(json.dumps({
-                    "event": "sweep_stitch_error",
-                    "error": str(exc),
-                }, ensure_ascii=False))
-                return 1
-            print(json.dumps({
-                "event": "sweep_finished",
-                "status": result.status.value,
-                "restored": result.restored,
-                "restore_error": result.restore_error,
-                "errors": list(result.errors),
-                "stitched": _stitched_payload(stitched_frame),
-                "segments": [
-                    {
-                        "segment_index": item.plan.segment_index,
-                        "status": item.status.value,
-                        "frame_count": len(item.frames),
-                        "error": item.error,
-                        "timing": {
-                            "retune_s": item.timing.retune_s,
-                            "readback_s": item.timing.readback_s,
-                            "settling_s": item.timing.settling_s,
-                            "capture_s": item.timing.capture_s,
-                            "process_s": item.timing.process_s,
-                            "total_s": item.timing.total_s,
+                print(
+                    json.dumps(
+                        {
+                            "event": "sweep_stitch_error",
+                            "error": str(exc),
                         },
-                        "applied_config_generation": getattr(item.applied_config, "config_generation", None),
-                    }
-                    for item in result.segments
-                ],
-            }, ensure_ascii=False))
-            return 0 if result.status is SweepExecutionStatus.COMPLETED else 130 if result.status is SweepExecutionStatus.CANCELLED else 1
+                        ensure_ascii=False,
+                    )
+                )
+                return 1
+            print(
+                json.dumps(
+                    {
+                        "event": "sweep_finished",
+                        "status": result.status.value,
+                        "restored": result.restored,
+                        "restore_error": result.restore_error,
+                        "errors": list(result.errors),
+                        "stitched": _stitched_payload(stitched_frame),
+                        "segments": [
+                            {
+                                "segment_index": item.plan.segment_index,
+                                "status": item.status.value,
+                                "frame_count": len(item.frames),
+                                "error": item.error,
+                                "timing": {
+                                    "retune_s": item.timing.retune_s,
+                                    "readback_s": item.timing.readback_s,
+                                    "settling_s": item.timing.settling_s,
+                                    "capture_s": item.timing.capture_s,
+                                    "process_s": item.timing.process_s,
+                                    "total_s": item.timing.total_s,
+                                },
+                                "applied_config_generation": getattr(item.applied_config, "config_generation", None),
+                            }
+                            for item in result.segments
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return (
+                0
+                if result.status is SweepExecutionStatus.COMPLETED
+                else 130
+                if result.status is SweepExecutionStatus.CANCELLED
+                else 1
+            )
     finally:
         signal.signal(signal.SIGINT, previous_handler)
+
+
+def _recording_forecast(args: argparse.Namespace) -> int:
+    forecast = estimate_storage(
+        sample_rate_hz=args.sample_rate,
+        duration_seconds=args.duration,
+        sample_format=args.sample_format,
+        spectrum_frames_per_second=args.spectrum_fps,
+        spectrum_bins=args.spectrum_bins,
+        record_iq=args.record_iq,
+        record_spectrum=args.record_spectrum,
+        output_uri=args.output,
+        reserve_bytes=args.reserve_bytes,
+    )
+    print(
+        json.dumps(
+            {
+                "event": "recording_forecast",
+                "sample_format": args.sample_format.value,
+                "record_iq": args.record_iq,
+                "record_spectrum": args.record_spectrum,
+                "iq_bytes_per_second": forecast.iq_bytes_per_second,
+                "spectrum_bytes_per_frame": forecast.spectrum_bytes_per_frame,
+                "estimated_bytes": forecast.estimated_bytes,
+                "free_bytes": forecast.free_bytes,
+                "reserve_bytes": forecast.reserve_bytes,
+                "sufficient": forecast.sufficient,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _replay_spectrum(args: argparse.Namespace) -> int:
+    replay = SpectrumReplay(args.path, allow_partial=args.allow_partial)
+    count = 0
+    for frame in replay.iter_frames():
+        print(
+            json.dumps(
+                {
+                    "event": "spectrum_frame",
+                    "frame_sequence": frame.frame_sequence,
+                    "timestamp_ns": frame.timestamp_ns,
+                    "frequency_start_hz": float(frame.frequencies_hz[0]),
+                    "frequency_stop_hz": float(frame.frequencies_hz[-1]),
+                    "bin_count": int(frame.frequencies_hz.size),
+                    "unit": frame.unit.value,
+                    "calibration_status": frame.calibration_status.value,
+                    "calibration_profile_id": frame.calibration_profile_id,
+                    "quality_flags": int(frame.quality_flags),
+                    "source_type": frame.source.source_type.value,
+                },
+                ensure_ascii=False,
+            )
+        )
+        count += 1
+        if args.limit and count >= args.limit:
+            break
+    return 0
+
+
+def _recording_recover(args: argparse.Namespace) -> int:
+    if args.kind == "iq":
+        result = recover_iq_recording(args.path, finalize=args.finalize)
+        payload = {
+            "base_path": str(result.base_path),
+            "truncated_bytes": result.truncated_bytes,
+            "retained_iq_blocks": result.retained_iq_blocks,
+            "finalized": result.finalized,
+        }
+    else:
+        truncated = recover_spectrum_recording(args.path, finalize=args.finalize)
+        payload = {"base_path": str(args.path), "truncated_lines": truncated, "finalized": args.finalize}
+    print(json.dumps({"event": "recording_recovered", "kind": args.kind, **payload}, ensure_ascii=False))
+    return 0
 
 
 def _add_sweep_arguments(parser: argparse.ArgumentParser) -> None:
@@ -438,7 +547,8 @@ def _add_sweep_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--buffer-samples", type=_positive_int, default=16_384)
     parser.add_argument("--window", type=_window, default=WindowType.HANN)
     parser.add_argument(
-        "--backend", type=_compute_backend,
+        "--backend",
+        type=_compute_backend,
         choices=(ComputeBackendKind.AUTO, ComputeBackendKind.CPU, ComputeBackendKind.CUDA),
         default=ComputeBackendKind.AUTO,
     )
@@ -487,6 +597,29 @@ def build_parser() -> argparse.ArgumentParser:
     fixed.add_argument("--report-interval", type=_positive_float, default=1.0)
     fixed.set_defaults(func=_fixed)
 
+    forecast = subparsers.add_parser("recording-forecast", help="estimate P14 recording storage")
+    forecast.add_argument("--sample-rate", type=_positive_float, required=True)
+    forecast.add_argument("--duration", type=_positive_float, required=True)
+    forecast.add_argument("--sample-format", type=_sample_format, default=SampleFormat.COMPLEX_FLOAT32_LE)
+    forecast.add_argument("--spectrum-fps", type=_positive_float, default=0.0)
+    forecast.add_argument("--spectrum-bins", type=int, default=0)
+    forecast.add_argument("--record-iq", action=argparse.BooleanOptionalAction, default=True)
+    forecast.add_argument("--record-spectrum", action=argparse.BooleanOptionalAction, default=False)
+    forecast.add_argument("--output", default="")
+    forecast.add_argument("--reserve-bytes", type=int, default=0)
+    forecast.set_defaults(func=_recording_forecast)
+
+    replay_spectrum = subparsers.add_parser("replay-spectrum", help="replay a P14 spectrum JSONL recording")
+    replay_spectrum.add_argument("path")
+    replay_spectrum.add_argument("--limit", type=_positive_int, default=0)
+    replay_spectrum.add_argument("--allow-partial", action="store_true")
+    replay_spectrum.set_defaults(func=_replay_spectrum)
+
+    recover = subparsers.add_parser("recording-recover", help="recover a P14 interrupted recording")
+    recover.add_argument("kind", choices=("iq", "spectrum"))
+    recover.add_argument("path")
+    recover.add_argument("--finalize", action="store_true")
+    recover.set_defaults(func=_recording_recover)
     sweep_plan = subparsers.add_parser("sweep-plan", help="plan a P12 wide-span sweep without hardware")
     _add_sweep_arguments(sweep_plan)
     sweep_plan.set_defaults(func=_sweep_plan)
