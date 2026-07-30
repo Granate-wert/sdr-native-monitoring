@@ -1,0 +1,7 @@
+numpy>=1.26
+matplotlib>=3.8
+olefile>=0.47
+Pillow>=10.0
+imageio-ffmpeg>=0.5
+PySide6-Essentials>=6.8
+pyqtgraph>=0.13.7

@@ -1,0 +1,28 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.10",
+    "pybind11>=2.13",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "esw-dfl-sdr-native"
+version = "0.5.0"
+description = "Portable SDR native contracts, bounded transport, engine lifecycle and CPU DSP"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+[tool.scikit-build]
+cmake.version = ">=3.25"
+cmake.build-type = "Release"
+build-dir = "out/scikit-build/{wheel_tag}"
+wheel.packages = []
+
+[tool.scikit-build.cmake.define]
+SDR_CORE_BUILD_PYTHON = "ON"
+SDR_CORE_BUILD_TESTS = "OFF"
+SDR_CORE_ENABLE_PLUTO = "OFF"
+SDR_CORE_ENABLE_CUDA = "OFF"
+SDR_CORE_ENABLE_SIMD = "ON"
+SDR_CORE_ENABLE_SANITIZERS = "OFF"
+SDR_CORE_ENABLE_PROFILING = "OFF"

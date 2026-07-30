@@ -1,0 +1,132 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base-cpu",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "SDR_CORE_BUILD_TESTS": "ON",
+        "SDR_CORE_ENABLE_PLUTO": "OFF",
+        "SDR_CORE_ENABLE_CUDA": "OFF",
+        "SDR_CORE_ENABLE_SIMD": "ON",
+        "SDR_CORE_ENABLE_SANITIZERS": "OFF",
+        "SDR_CORE_ENABLE_PROFILING": "OFF"
+      }
+    },
+    {
+      "name": "windows-msvc-cpu",
+      "displayName": "Windows MSVC CPU + Pluto Release",
+      "inherits": "base-cpu",
+      "binaryDir": "${sourceDir}/out/build/windows-msvc-cpu",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "Python_EXECUTABLE": "$env{SDR_PYTHON_EXECUTABLE}",
+        "pybind11_DIR": "$env{SDR_PYBIND11_CMAKE_DIR}",
+        "SDR_CORE_BUILD_PYTHON": "ON",
+        "SDR_CORE_ENABLE_PLUTO": "ON",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/../../esw_dfl"
+      }
+    },
+    {
+      "name": "windows-msvc-cpu-debug",
+      "displayName": "Windows MSVC CPU + Pluto Debug",
+      "inherits": "windows-msvc-cpu",
+      "binaryDir": "${sourceDir}/out/build/windows-msvc-cpu-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/python/debug"
+      }
+    },
+    {
+      "name": "linux-x64-cpu",
+      "displayName": "Linux x86-64 CPU-only scaffold",
+      "inherits": "base-cpu",
+      "binaryDir": "${sourceDir}/out/build/linux-x64-cpu",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SDR_CORE_BUILD_PYTHON": "OFF"
+      }
+    },
+    {
+      "name": "linux-aarch64-cpu",
+      "displayName": "Linux AArch64 CPU-only cross-compile scaffold",
+      "inherits": "base-cpu",
+      "binaryDir": "${sourceDir}/out/build/linux-aarch64-cpu",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-aarch64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SDR_CORE_BUILD_PYTHON": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msvc-cpu-release",
+      "configurePreset": "windows-msvc-cpu"
+    },
+    {
+      "name": "windows-msvc-cpu-debug",
+      "configurePreset": "windows-msvc-cpu-debug"
+    },
+    {
+      "name": "linux-x64-cpu-release",
+      "configurePreset": "linux-x64-cpu"
+    },
+    {
+      "name": "linux-aarch64-cpu-release",
+      "configurePreset": "linux-aarch64-cpu"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc-cpu",
+      "configurePreset": "windows-msvc-cpu",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-msvc-cpu-debug",
+      "configurePreset": "windows-msvc-cpu-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x64-cpu",
+      "configurePreset": "linux-x64-cpu",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-aarch64-cpu",
+      "configurePreset": "linux-aarch64-cpu",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

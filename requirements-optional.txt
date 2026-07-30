@@ -1,0 +1,4 @@
+-r requirements.txt
+vispy>=0.14.3
+zarr>=3.0
+numba>=0.61

@@ -1,0 +1,23 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "esw_dfl.gui",
+    "esw_dfl.renderers",
+    "esw_dfl.display",
+    "esw_dfl.plotting",
+    "esw_dfl.animation",
+]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

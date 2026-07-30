@@ -1,0 +1,13 @@
+[package]
+name = "esw-dfl-sgram-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_sgram_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+pyo3 = { version = "0.23", features = ["extension-module"] }

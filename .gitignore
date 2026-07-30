@@ -1,0 +1,54 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and package output
+build/
+dist/
+*.spec
+*.part
+export/
+native/**/target/
+native/**/build/
+native/**/out/
+native/**/cmake-build-*/
+esw_dfl/_sgram_native*.pyd
+esw_dfl/_sgram_native.pdb
+esw_dfl/_sdr_native*.pyd
+esw_dfl/_sdr_native*.pdb
+
+# External measurement and capture data
+*.dfl
+*.rsdfl.json
+*.iq
+*.cfile
+*.sigmf-data
+*.sigmf-meta
+*.wav
+*.raw
+captures/
+recordings/
+
+# Local-only engineering material
+/AGENTS.md
+/AGENT.md
+/docs/
+/TZ_SDR_native_monitoring/
+
+# Local logs, screenshots and acceptance output
+*.log
+*.jsonl
+gui_acceptance_artifacts/
+manual_acceptance_output/
+
+# Virtual environments and editor state
+.venv/
+venv/
+.idea/
+.vscode/
+*.user
+*.suo
