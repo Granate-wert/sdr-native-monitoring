@@ -78,6 +78,11 @@ from .controller import (
 )
 from .session_adapter import LiveRenderState, LiveSessionAdapter
 from .measurements import LiveMeasurementAdapter, LiveMeasurementResult, LivePeak, LiveSnr
+from .sweep import (
+    SweepCropRange, SweepExecutionResult, SweepExecutionStatus, SweepExecutor,
+    SweepPlan, SweepPlannerOptions, SweepPlanningError, SweepProgress,
+    SweepSegmentPlan, SweepSegmentResult, SweepSegmentStatus, SweepTiming, plan_sweep,
+)
 from .pluto import (
     PlutoAppliedConfig,
     PlutoContextSummary,
@@ -141,6 +146,19 @@ __all__ = [
     "LiveMeasurementResult",
     "LivePeak",
     "LiveSnr",
+    "SweepCropRange",
+    "SweepExecutionResult",
+    "SweepExecutionStatus",
+    "SweepExecutor",
+    "SweepPlan",
+    "SweepPlannerOptions",
+    "SweepPlanningError",
+    "SweepProgress",
+    "SweepSegmentPlan",
+    "SweepSegmentResult",
+    "SweepSegmentStatus",
+    "SweepTiming",
+    "plan_sweep",
     "LiveSessionConfig",
     "NATIVE_MODULE_NAME",
     "NativeAvailability",
