@@ -32,6 +32,7 @@ from .contracts import (
     SpectrumUnit,
     SweepConfig,
     SweepSegmentMetadata,
+    SweepSeamMetric,
     SweepSpectrumFrame,
     WindowType,
     calibrated_unit,
@@ -76,8 +77,9 @@ from .controller import (
     LiveSdrController,
     LiveSessionConfig,
 )
-from .session_adapter import LiveRenderState, LiveSessionAdapter
+from .session_adapter import LiveRenderState, LiveSessionAdapter, sweep_trace_from_frame
 from .measurements import LiveMeasurementAdapter, LiveMeasurementResult, LivePeak, LiveSnr
+from .stitching import SweepStitchError, SweepStitchOptions, SweepStitcher, stitch_sweep
 from .sweep import (
     SweepCropRange, SweepExecutionResult, SweepExecutionStatus, SweepExecutor,
     SweepPlan, SweepPlannerOptions, SweepPlanningError, SweepProgress,
@@ -142,6 +144,7 @@ __all__ = [
     "LiveRenderState",
     "LiveSdrController",
     "LiveSessionAdapter",
+    "sweep_trace_from_frame",
     "LiveMeasurementAdapter",
     "LiveMeasurementResult",
     "LivePeak",
@@ -154,11 +157,16 @@ __all__ = [
     "SweepPlannerOptions",
     "SweepPlanningError",
     "SweepProgress",
+    "SweepSeamMetric",
+    "SweepStitchError",
+    "SweepStitchOptions",
+    "SweepStitcher",
     "SweepSegmentPlan",
     "SweepSegmentResult",
     "SweepSegmentStatus",
     "SweepTiming",
     "plan_sweep",
+    "stitch_sweep",
     "LiveSessionConfig",
     "NATIVE_MODULE_NAME",
     "NativeAvailability",

@@ -259,6 +259,7 @@ class SweepExecutionResult:
     restored: bool
     restore_error: str | None = None
     errors: tuple[str, ...] = ()
+    sweep_id: int = 0
 
 
 class SweepService(Protocol):
@@ -290,6 +291,7 @@ class SweepExecutor:
         *,
         poll_batch_size: int = 8,
         idle_timeout_s: float = 2.0,
+        sweep_id: int | None = None,
     ) -> None:
         if not isinstance(base_options, FixedBandOptions):
             raise TypeError("base_options must be FixedBandOptions")
@@ -301,6 +303,15 @@ class SweepExecutor:
         self.base_options = base_options
         self.poll_batch_size = int(poll_batch_size)
         self.idle_timeout_s = float(idle_timeout_s)
+        candidate_sweep_id = time.time_ns() if sweep_id is None else sweep_id
+        if (
+            isinstance(candidate_sweep_id, bool)
+            or not isinstance(candidate_sweep_id, int)
+            or candidate_sweep_id < 0
+            or candidate_sweep_id >= 1 << 64
+        ):
+            raise ValueError("sweep_id must be an unsigned 64-bit integer")
+        self.sweep_id = int(candidate_sweep_id)
 
     def _segment_options(self, segment: SweepSegmentPlan) -> FixedBandOptions:
         device = replace(
@@ -523,6 +534,7 @@ class SweepExecutor:
             restored=restored,
             restore_error=restore_error,
             errors=tuple(errors),
+            sweep_id=self.sweep_id,
         )
 
     @staticmethod

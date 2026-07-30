@@ -21,6 +21,7 @@ from .contracts import (
     DspConfig,
     GainMode,
     PrecisionMode,
+    QualityFlag,
     SpectrumUnit,
     SweepConfig,
     WindowType,
@@ -28,6 +29,7 @@ from .contracts import (
 from .fixed_band import FixedBandEngineService, FixedBandOptions
 from .pluto import discover_pluto
 from .sweep import SweepExecutionStatus, SweepExecutor, SweepPlannerOptions, plan_sweep
+from .stitching import SweepStitchError, SweepStitchOptions, stitch_sweep
 
 
 _SERIAL_FIELD = re.compile(
@@ -291,6 +293,27 @@ def _plan_payload(plan: object) -> dict[str, object]:
     }
 
 
+def _stitched_payload(frame: object) -> dict[str, object]:
+    flags = np.asarray(frame.quality_flags_per_bin, dtype=np.uint16)
+    return {
+        "sweep_id": frame.sweep_id,
+        "config_generation": frame.config_generation,
+        "unit": frame.unit.value,
+        "calibration_status": frame.calibration_status.value,
+        "bin_count": int(frame.frequencies_hz.size),
+        "missing_bins": int(np.count_nonzero(flags & np.uint16(QualityFlag.MISSING_SEGMENT))),
+        "overlap_bins": int(np.count_nonzero(flags & np.uint16(QualityFlag.STITCH_OVERLAP))),
+        "seams": [
+            {
+                "left_segment_index": item.left_segment_index,
+                "right_segment_index": item.right_segment_index,
+                "correction_db": item.correction_db,
+                "before_p95_db": item.before_p95_db,
+                "after_p95_db": item.after_p95_db,
+            }
+            for item in frame.seam_metrics
+        ],
+    }
 def _sweep_plan(args: argparse.Namespace) -> int:
     plan = plan_sweep(_sweep_config(args), _sweep_options(args))
     print(json.dumps({"event": "sweep_plan", **_plan_payload(plan)}, ensure_ascii=False))
@@ -354,12 +377,24 @@ def _sweep(args: argparse.Namespace) -> int:
                 cancel=cancel,
                 progress=report,
             )
+            try:
+                stitched_frame = stitch_sweep(
+                    result,
+                    SweepStitchOptions(target_spacing_hz=args.stitch_spacing),
+                )
+            except SweepStitchError as exc:
+                print(json.dumps({
+                    "event": "sweep_stitch_error",
+                    "error": str(exc),
+                }, ensure_ascii=False))
+                return 1
             print(json.dumps({
                 "event": "sweep_finished",
                 "status": result.status.value,
                 "restored": result.restored,
                 "restore_error": result.restore_error,
                 "errors": list(result.errors),
+                "stitched": _stitched_payload(stitched_frame),
                 "segments": [
                     {
                         "segment_index": item.plan.segment_index,
@@ -409,6 +444,7 @@ def _add_sweep_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--no-runtime-fallback", action="store_true")
     parser.add_argument("--snapshot-rate", type=_positive_float, default=60.0)
+    parser.add_argument("--stitch-spacing", type=_positive_float, help="explicit P13 target spacing in Hz")
     parser.add_argument("--timeout-ms", type=_positive_int, default=3000)
 
 

@@ -11,7 +11,7 @@ from uuid import uuid4
 import numpy as np
 
 from ..domain import MeasurementMetadata, MeasurementSession, SpectrumTrace, SourceDescriptor, WaterfallData
-from .contracts import SpectrumFrame, SourceType
+from .contracts import QualityFlag, SpectrumFrame, SourceType, SweepSpectrumFrame
 from .controller import LiveControllerState, LiveControllerUpdate
 
 
@@ -20,6 +20,76 @@ def _readonly_copy(value: object, dtype: np.dtype[Any]) -> np.ndarray:
     result.setflags(write=False)
     return result
 
+
+def sweep_trace_from_frame(
+    frame: SweepSpectrumFrame,
+    *,
+    source_stream: str = "sdr:sweep",
+) -> SpectrumTrace:
+    """Convert one immutable P13 full-span frame into the common trace model.
+
+    The renderer receives the stitched frequency/value arrays directly.  Quality
+    and seam evidence remain attached as metadata so the GUI can expose gaps,
+    overlap coverage, calibration, and correction diagnostics without re-reading
+    segment data.
+    """
+
+    if not isinstance(frame, SweepSpectrumFrame):
+        raise TypeError("frame must be SweepSpectrumFrame")
+    frequencies = _readonly_copy(frame.frequencies_hz, np.dtype(np.float64))
+    values = _readonly_copy(frame.values, np.dtype(np.float32))
+    flags = _readonly_copy(frame.quality_flags_per_bin, np.dtype(np.uint16))
+    missing_bins = int(np.count_nonzero(flags & np.uint16(QualityFlag.MISSING_SEGMENT)))
+    overlap_bins = int(np.count_nonzero(flags & np.uint16(QualityFlag.STITCH_OVERLAP)))
+    edge_bins = int(np.count_nonzero(flags & np.uint16(QualityFlag.EDGE_BIN)))
+    return SpectrumTrace(
+        trace_id=f"sweep:{frame.sweep_id}",
+        name="Stitched Full-span Sweep",
+        start_frequency_hz=float(frequencies[0]) if frequencies.size else 0.0,
+        stop_frequency_hz=float(frequencies[-1]) if frequencies.size else 0.0,
+        frequency_step_hz=(
+            float(np.median(np.diff(frequencies))) if frequencies.size > 1 else 0.0
+        ),
+        power_values=values,
+        frequency_values=frequencies,
+        axis_unit="Hz",
+        unit=frame.unit.value,
+        timestamp=float(frame.completed_ns) / 1.0e9,
+        rbw_hz=float(frame.nominal_rbw_hz),
+        detector="Sweep",
+        trace_mode="P13 Stitched",
+        source_stream=source_stream,
+        color="#ffd24a",
+        metadata={
+            "sweep_id": int(frame.sweep_id),
+            "config_generation": int(frame.config_generation),
+            "requested_start_hz": float(frame.requested_start_hz),
+            "requested_stop_hz": float(frame.requested_stop_hz),
+            "actual_start_hz": float(frame.actual_start_hz),
+            "actual_stop_hz": float(frame.actual_stop_hz),
+            "calibration_status": frame.calibration_status.value,
+            "calibration_profile_id": frame.calibration_profile_id,
+            "missing_bins": missing_bins,
+            "overlap_bins": overlap_bins,
+            "edge_bins": edge_bins,
+            "segment_count": len(frame.segments),
+            "seam_count": len(frame.seam_metrics),
+            "seams": tuple(
+                {
+                    "left_segment_index": int(item.left_segment_index),
+                    "right_segment_index": int(item.right_segment_index),
+                    "correction_db": float(item.correction_db),
+                    "before_p95_db": float(item.before_p95_db),
+                    "after_p95_db": float(item.after_p95_db),
+                }
+                for item in frame.seam_metrics
+            ),
+            "quality_flags_per_bin": flags,
+            "uncertainty_db_per_bin": _readonly_copy(
+                frame.uncertainty_db_per_bin, np.dtype(np.float32)
+            ),
+        },
+    )
 
 @dataclass(frozen=True, slots=True)
 class LiveRenderState:
@@ -277,4 +347,4 @@ def _applied_dict(value: Any) -> dict[str, object]:
     return {name: getattr(value, name) for name in names if hasattr(value, name)}
 
 
-__all__ = ["LiveRenderState", "LiveSessionAdapter"]
+__all__ = ["LiveRenderState", "LiveSessionAdapter", "sweep_trace_from_frame"]

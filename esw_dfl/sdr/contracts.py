@@ -706,6 +706,45 @@ class SweepSegmentMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class SweepSeamMetric:
+    left_segment_index: int
+    right_segment_index: int
+    overlap_start_hz: float
+    overlap_stop_hz: float
+    sample_count: int
+    correction_db: float
+    before_p50_db: float
+    before_p95_db: float
+    before_max_db: float
+    after_p50_db: float
+    after_p95_db: float
+    after_max_db: float
+
+    def __post_init__(self) -> None:
+        _uint(self.left_segment_index, "left_segment_index", UINT32_MAX)
+        _uint(self.right_segment_index, "right_segment_index", UINT32_MAX)
+        if self.right_segment_index <= self.left_segment_index:
+            raise ContractValidationError("seam segment indexes must be ordered")
+        if _positive(self.overlap_stop_hz, "overlap_stop_hz") <= _positive(
+            self.overlap_start_hz, "overlap_start_hz"
+        ):
+            raise ContractValidationError("seam overlap must have positive width")
+        _uint(self.sample_count, "sample_count", UINT32_MAX, zero=False)
+        for name in (
+            "correction_db",
+            "before_p50_db",
+            "before_p95_db",
+            "before_max_db",
+            "after_p50_db",
+            "after_p95_db",
+            "after_max_db",
+        ):
+            value = _finite(getattr(self, name), name)
+            if name != "correction_db" and value < 0.0:
+                raise ContractValidationError(f"{name} must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
 class SweepSpectrumFrame:
     sweep_id: int
     started_ns: int
@@ -719,9 +758,20 @@ class SweepSpectrumFrame:
     values: np.ndarray
     quality_flags_per_bin: np.ndarray
     segments: tuple[SweepSegmentMetadata, ...] = ()
+    config_generation: int = 0
+    unit: SpectrumUnit = SpectrumUnit.DBFS_BIN
+    calibration_status: CalibrationStatus = CalibrationStatus.UNCALIBRATED
+    calibration_profile_id: str | None = None
+    source_segment_indices_per_bin: np.ndarray | None = None
+    source_segment_count_per_bin: np.ndarray | None = None
+    uncertainty_db_per_bin: np.ndarray | None = None
+    calibration_status_per_bin: np.ndarray | None = None
+    seam_metrics: tuple[SweepSeamMetric, ...] = ()
+    correction_db_by_segment: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         _uint(self.sweep_id, "sweep_id", UINT64_MAX)
+        _uint(self.config_generation, "config_generation", UINT64_MAX)
         if self.completed_ns < self.started_ns:
             raise ContractValidationError("completed_ns precedes started_ns")
         pairs = (
@@ -731,6 +781,9 @@ class SweepSpectrumFrame:
         if any(_positive(stop, "stop_hz") <= _positive(start, "start_hz") for start, stop in pairs):
             raise ContractValidationError("sweep stop must exceed start")
         _positive(self.nominal_rbw_hz, "nominal_rbw_hz")
+        _enum(self.unit, SpectrumUnit, "unit")
+        _enum(self.calibration_status, CalibrationStatus, "calibration_status")
+        validate_unit_calibration(self.unit, self.calibration_status, self.calibration_profile_id)
         frequencies = _array(self.frequencies_hz, np.float64, "frequencies_hz")
         values = _array(self.values, np.float32, "values")
         flags = _array(self.quality_flags_per_bin, np.uint16, "quality_flags_per_bin")
@@ -738,10 +791,61 @@ class SweepSpectrumFrame:
             raise ContractValidationError("sweep arrays must have equal length")
         if not np.all(np.isfinite(frequencies)):
             raise ContractValidationError("sweep frequencies must be finite")
+        if frequencies.size > 1 and not np.all(np.diff(frequencies) > 0.0):
+            raise ContractValidationError("sweep frequencies must be strictly increasing")
+        size = frequencies.size
+        source_indices = _array(
+            np.full(size, -1, dtype=np.int32)
+            if self.source_segment_indices_per_bin is None
+            else self.source_segment_indices_per_bin,
+            np.int32,
+            "source_segment_indices_per_bin",
+        )
+        source_counts = _array(
+            np.zeros(size, dtype=np.uint16)
+            if self.source_segment_count_per_bin is None
+            else self.source_segment_count_per_bin,
+            np.uint16,
+            "source_segment_count_per_bin",
+        )
+        uncertainty = _array(
+            np.full(size, np.nan, dtype=np.float32)
+            if self.uncertainty_db_per_bin is None
+            else self.uncertainty_db_per_bin,
+            np.float32,
+            "uncertainty_db_per_bin",
+        )
+        calibration_codes = _array(
+            np.full(
+                size,
+                list(CalibrationStatus).index(self.calibration_status),
+                dtype=np.uint8,
+            )
+            if self.calibration_status_per_bin is None
+            else self.calibration_status_per_bin,
+            np.uint8,
+            "calibration_status_per_bin",
+        )
+        if not source_indices.size == source_counts.size == uncertainty.size == calibration_codes.size == size:
+            raise ContractValidationError("sweep quality arrays must have equal length")
+        if np.any(calibration_codes >= len(CalibrationStatus)):
+            raise ContractValidationError("sweep quality arrays contain invalid codes")
+        finite_uncertainty = np.isfinite(uncertainty)
+        if np.any(uncertainty[finite_uncertainty] < 0.0):
+            raise ContractValidationError("sweep uncertainty must be NaN or non-negative")
+        if any(not isinstance(item, SweepSegmentMetadata) for item in self.segments):
+            raise ContractValidationError("segments must contain SweepSegmentMetadata")
+        if any(not isinstance(item, SweepSeamMetric) for item in self.seam_metrics):
+            raise ContractValidationError("seam_metrics must contain SweepSeamMetric")
+        for value in self.correction_db_by_segment:
+            _finite(value, "correction_db_by_segment")
         object.__setattr__(self, "frequencies_hz", frequencies)
         object.__setattr__(self, "values", values)
         object.__setattr__(self, "quality_flags_per_bin", flags)
-
+        object.__setattr__(self, "source_segment_indices_per_bin", source_indices)
+        object.__setattr__(self, "source_segment_count_per_bin", source_counts)
+        object.__setattr__(self, "uncertainty_db_per_bin", uncertainty)
+        object.__setattr__(self, "calibration_status_per_bin", calibration_codes)
 
 @dataclass(frozen=True, slots=True)
 class EngineMetrics:
@@ -1033,6 +1137,7 @@ __all__ = [
     "SpectrumFrame",
     "SpectrumUnit",
     "SweepConfig",
+    "SweepSeamMetric",
     "SweepSegmentMetadata",
     "SweepSpectrumFrame",
     "WindowType",
