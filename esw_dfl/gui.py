@@ -179,13 +179,14 @@ from .time_gated_power import (
 from .workers import TaskWorker
 from .workspace import apply_workspace_session, read_workspace, write_workspace
 from .sdr.contracts import (
-    ComputeBackendKind, DeviceConfig, DspConfig, SpectrumUnit,
+    DeviceConfig, DspConfig, SpectrumUnit,
     PersistenceConfig as SdrPersistenceConfig,
     PersistenceMode as SdrPersistenceMode,
 )
 from .sdr.controller import LiveSdrController, LiveSessionConfig
 from .sdr.fixed_band import FixedBandOptions
 from .sdr.session_adapter import LiveSessionAdapter
+from .sdr.measurements import LiveMeasurementAdapter, LiveMeasurementResult
 
 
 LOGGER = logging.getLogger("esw_dfl")
@@ -3552,6 +3553,16 @@ class MainWindow(QMainWindow):
         marker.marker_type = MarkerType.PEAK
         marker.locked = True
         self._distribute_peak_markers(session, frequencies, values)
+        live = self._active_live_measurement_adapter(session)
+        if live is not None:
+            live_result = live.peak(limit=1)
+            self.power_quality_label.setText(
+                f"Quality: {live_result.quality.value}; frame {live_result.frame_sequence}; "
+                f"config {live_result.config_generation}; calibration {live_result.calibration_status.value}"
+            )
+            self.power_warnings_label.setText(
+                "Warnings: " + (" | ".join(item.message for item in live_result.warnings) or "—")
+            )
         self.spectrum_renderer.set_marker(marker)
         self._update_marker_table(session)
         self._audit(
@@ -3903,6 +3914,91 @@ class MainWindow(QMainWindow):
             )
         self._run_trace_analysis("ACPR / ACLR", calculate)
 
+    def _active_live_measurement_adapter(
+        self, session: MeasurementSession | None
+    ) -> LiveMeasurementAdapter | None:
+        if session is None or session.source_descriptor is None:
+            return None
+        adapter = self._live_adapters.get(session.source_descriptor.source_id)
+        frame = adapter.latest_frame if adapter is not None else None
+        return LiveMeasurementAdapter(frame) if frame is not None else None
+
+    def _run_live_trace_analysis(
+        self,
+        session: MeasurementSession,
+        name: str,
+        adapter: LiveMeasurementAdapter,
+        needs_region: bool,
+    ) -> None:
+        frame = adapter.frame
+        if needs_region:
+            region = self._update_region()
+        else:
+            region = session.frequency_regions[0] if session.frequency_regions else FrequencyRegion(
+                start_frequency_hz=float(frame.frequencies_hz[0]),
+                stop_frequency_hz=float(frame.frequencies_hz[-1]),
+            )
+        if region is None:
+            return
+
+        def calculate() -> LiveMeasurementResult[Any]:
+            if name == "Channel Power":
+                return adapter.channel_power(region.start_frequency_hz, region.stop_frequency_hz)
+            if name == "Occupied Bandwidth 99%":
+                return adapter.occupied_bandwidth(0.99)
+            if name == "Noise Floor":
+                return adapter.noise_floor(region.start_frequency_hz, region.stop_frequency_hz)
+            if name == "SNR":
+                return adapter.snr((region.start_frequency_hz, region.stop_frequency_hz))
+            if name == "ACPR / ACLR":
+                return adapter.acpr(
+                    region.center_frequency_hz,
+                    region.bandwidth_hz,
+                    self.acpr_offset.value() * 1e6,
+                    adjacent_bandwidth_hz=self.acpr_width.value() * 1e6,
+                )
+            raise ValueError(f"Unsupported live measurement: {name}")
+
+        self._power_measurement_serial += 1
+        serial = self._power_measurement_serial
+        worker = TaskWorker(calculate)
+        worker.signals.result.connect(
+            lambda value: self._live_measurement_ready(
+                serial, session.session_id, name,
+                int(frame.frame_sequence), int(frame.config_generation), value,
+            )
+        )
+        self.cp_recalc_status.setText(f"Расчёт {name} выполняется…")
+        self._set_busy(True, f"Расчёт: {name}")
+        self._start_worker(worker)
+
+    def _live_measurement_ready(
+        self,
+        serial: int,
+        session_id: str,
+        name: str,
+        frame_sequence: int,
+        config_generation: int,
+        value: LiveMeasurementResult[Any],
+    ) -> None:
+        if serial != self._power_measurement_serial or session_id != self.active_session_id:
+            return
+        if value.frame_sequence != frame_sequence or value.config_generation != config_generation:
+            self._show_error("Измерение", "Результат относится к неожиданной версии live-кадра")
+            return
+        self._power_measurement_ready(serial, session_id, name, value)
+        quality = getattr(value.quality, "value", value.quality)
+        self.power_quality_label.setText(
+            f"Quality: {quality}; frame {value.frame_sequence}; config {value.config_generation}; "
+            f"calibration {value.calibration_status.value}"
+        )
+        self._audit(
+            "program", "live_measurement_completed", analysis=name,
+            source_id=value.source_id, frame_sequence=value.frame_sequence,
+            config_generation=value.config_generation, quality=quality,
+            warning_codes=[item.code for item in value.warnings],
+        )
+
     def _run_trace_analysis(
         self,
         name: str,
@@ -3910,6 +4006,10 @@ class MainWindow(QMainWindow):
         needs_region: bool = True,
     ) -> None:
         session = self.active_session()
+        live_adapter = self._active_live_measurement_adapter(session)
+        if live_adapter is not None:
+            self._run_live_trace_analysis(session, name, live_adapter, needs_region)
+            return
         trace = self._active_trace(session) if session else None
         if session is None or trace is None or not trace.is_frequency_trace:
             self._show_error("Измерение", "Выберите частотную трассу")

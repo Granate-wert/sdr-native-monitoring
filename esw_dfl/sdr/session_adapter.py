@@ -70,6 +70,7 @@ class LiveSessionAdapter:
         self._last_trace: SpectrumTrace | None = None
         self._last_waterfall: WaterfallData | None = None
         self._last_persistence: Any | None = None
+        self._last_frame: SpectrumFrame | None = None
 
     def create_session(self) -> MeasurementSession:
         descriptor = SourceDescriptor(
@@ -102,6 +103,11 @@ class LiveSessionAdapter:
         return self._accepted_generation
 
     @property
+    def latest_frame(self) -> SpectrumFrame | None:
+        """The most recently accepted native frame, never a mixed snapshot."""
+        return self._last_frame
+
+    @property
     def row_count(self) -> int:
         return len(self._rows)
 
@@ -130,6 +136,7 @@ class LiveSessionAdapter:
         waterfall = self._last_waterfall
         if update.spectrum_frames:
             for current_frame in update.spectrum_frames:
+                self._last_frame = current_frame
                 self._append_row(current_frame)
             frame = update.spectrum_frames[-1]
             trace = self._trace_from_frame(frame)

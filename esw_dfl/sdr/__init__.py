@@ -77,6 +77,7 @@ from .controller import (
     LiveSessionConfig,
 )
 from .session_adapter import LiveRenderState, LiveSessionAdapter
+from .measurements import LiveMeasurementAdapter, LiveMeasurementResult, LivePeak, LiveSnr
 from .pluto import (
     PlutoAppliedConfig,
     PlutoContextSummary,
@@ -136,6 +137,10 @@ __all__ = [
     "LiveRenderState",
     "LiveSdrController",
     "LiveSessionAdapter",
+    "LiveMeasurementAdapter",
+    "LiveMeasurementResult",
+    "LivePeak",
+    "LiveSnr",
     "LiveSessionConfig",
     "NATIVE_MODULE_NAME",
     "NativeAvailability",

@@ -1,7 +1,6 @@
 """P10 live controller/session adapter integration tests."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from types import SimpleNamespace
 import time
 import unittest
@@ -157,6 +156,8 @@ class LiveP10Tests(unittest.TestCase):
         self.assertEqual(rendered.trace.unit, "dBFS/bin")
         np.testing.assert_array_equal(rendered.trace.frequencies_hz, make_frame(7).frequencies_hz)
         self.assertEqual(rendered.trace.metadata["frame_sequence"], 7)
+        self.assertIs(adapter.latest_frame, update.spectrum_frames[-1])
+        self.assertEqual(adapter.latest_frame.config_generation, 1)
         self.assertEqual(rendered.waterfall.point_count, 8)
 
     def test_waterfall_batch_is_bounded_and_not_iq(self) -> None:
