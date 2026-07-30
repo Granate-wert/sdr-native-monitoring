@@ -29,7 +29,7 @@ bool rejects(Callback&& callback) {
 int main() {
     using namespace sdr_core;
 
-    if (contract_schema_version != 3U || contract_schema_name != "sdr-native-contracts") {
+    if (contract_schema_version != 5U || contract_schema_name != "sdr-native-contracts") {
         std::cerr << "contract schema identity mismatch" << std::endl;
         return 1;
     }

@@ -263,6 +263,24 @@ public:
     [[nodiscard]] DspBackendMetrics metrics() const override {
         DspBackendMetrics result = metrics_;
         result.output_pending = output_.size();
+        result.requested_preference = ComputeBackendKind::Cpu;
+        result.active_backend = ComputeBackendKind::Cpu;
+        return result;
+    }
+
+    [[nodiscard]] BackendInfo info() const override {
+        BackendInfo result;
+        result.kind = ComputeBackendKind::Cpu;
+        result.backend_id = "cpu-pocketfft";
+        result.vendor = "portable-cpu";
+        result.device_name = "host-cpu";
+        result.architecture = "portable-c++20";
+        result.fft_library = "pocketfft";
+        result.fft_library_version = "header-only";
+        result.supports_fp64 = true;
+        result.supports_pinned_host = false;
+        result.supports_async_copy = false;
+        result.validated = true;
         return result;
     }
 

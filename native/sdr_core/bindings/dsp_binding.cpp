@@ -79,7 +79,66 @@ void bind_dsp(py::module_& module) {
         .def_readonly("fft_frames_computed", &DspBackendMetrics::fft_frames_computed)
         .def_readonly("fft_frames_dropped", &DspBackendMetrics::fft_frames_dropped)
         .def_readonly("samples_processed", &DspBackendMetrics::samples_processed)
-        .def_readonly("output_pending", &DspBackendMetrics::output_pending);
+        .def_readonly("output_pending", &DspBackendMetrics::output_pending)
+        .def_readonly("requested_preference", &DspBackendMetrics::requested_preference)
+        .def_readonly("active_backend", &DspBackendMetrics::active_backend)
+        .def_readonly("backend_self_test_passed", &DspBackendMetrics::backend_self_test_passed)
+        .def_readonly("backend_fallback_count", &DspBackendMetrics::backend_fallback_count)
+        .def_readonly("backend_switch_count", &DspBackendMetrics::backend_switch_count)
+        .def_readonly("last_backend_error", &DspBackendMetrics::last_backend_error)
+        .def_readonly("gpu_processing_ns", &DspBackendMetrics::gpu_processing_ns)
+        .def_readonly("h2d_ns", &DspBackendMetrics::h2d_ns)
+        .def_readonly("d2h_ns", &DspBackendMetrics::d2h_ns);
+
+    py::class_<BackendInfo>(module, "BackendInfo")
+        .def_readonly("kind", &BackendInfo::kind)
+        .def_readonly("backend_id", &BackendInfo::backend_id)
+        .def_readonly("vendor", &BackendInfo::vendor)
+        .def_readonly("device_name", &BackendInfo::device_name)
+        .def_readonly("architecture", &BackendInfo::architecture)
+        .def_readonly("driver_version", &BackendInfo::driver_version)
+        .def_readonly("runtime_version", &BackendInfo::runtime_version)
+        .def_readonly("fft_library", &BackendInfo::fft_library)
+        .def_readonly("fft_library_version", &BackendInfo::fft_library_version)
+        .def_readonly("total_memory_bytes", &BackendInfo::total_memory_bytes)
+        .def_readonly("supports_fp64", &BackendInfo::supports_fp64)
+        .def_readonly("supports_pinned_host", &BackendInfo::supports_pinned_host)
+        .def_readonly("supports_async_copy", &BackendInfo::supports_async_copy)
+        .def_readonly("validated", &BackendInfo::validated);
+
+    py::class_<BackendAvailability>(module, "BackendAvailability")
+        .def_readonly("compiled", &BackendAvailability::compiled)
+        .def_readonly("runtime_present", &BackendAvailability::runtime_present)
+        .def_readonly("device_count", &BackendAvailability::device_count)
+        .def_readonly("device_supported", &BackendAvailability::device_supported)
+        .def_readonly("self_test_passed", &BackendAvailability::self_test_passed)
+        .def_readonly("reason_code", &BackendAvailability::reason_code)
+        .def_readonly("details", &BackendAvailability::details);
+
+    py::class_<DspBackendSelectionOptions>(module, "DspBackendSelectionOptions")
+        .def(py::init([](
+                 const ComputeBackendKind preference,
+                 const bool allow_runtime_fallback,
+                 const int device_id,
+                 const std::uint32_t plan_cache_capacity
+             ) {
+            DspBackendSelectionOptions result;
+            result.preference = preference;
+            result.allow_runtime_fallback = allow_runtime_fallback;
+            result.device_id = device_id;
+            result.plan_cache_capacity = plan_cache_capacity;
+            validate(result);
+            return result;
+        }),
+            py::arg("preference") = ComputeBackendKind::Auto,
+            py::arg("allow_runtime_fallback") = true,
+            py::arg("device_id") = -1,
+            py::arg("plan_cache_capacity") = 8U
+        )
+        .def_readonly("preference", &DspBackendSelectionOptions::preference)
+        .def_readonly("allow_runtime_fallback", &DspBackendSelectionOptions::allow_runtime_fallback)
+        .def_readonly("device_id", &DspBackendSelectionOptions::device_id)
+        .def_readonly("plan_cache_capacity", &DspBackendSelectionOptions::plan_cache_capacity);
 
     // Bound under the CPU implementation name through the replaceable
     // DspBackend interface (P05 §7).
@@ -124,7 +183,28 @@ void bind_dsp(py::module_& module) {
             py::arg("flush_partial_batch") = true
         )
         .def("reset", &DspBackend::reset)
-        .def("metrics", &DspBackend::metrics);
+        .def("metrics", &DspBackend::metrics)
+        .def("info", &DspBackend::info);
+
+    module.def(
+        "make_dsp_backend",
+        [](const DspBackendSelectionOptions& selection) {
+            return std::shared_ptr<DspBackend>(make_dsp_backend(selection, {}));
+        },
+        py::arg("selection")
+    );
+    module.def(
+        "backend_availability",
+        &backend_availability,
+        py::arg("kind"),
+        py::call_guard<py::gil_scoped_release>()
+    );
+    module.def(
+        "run_backend_self_test",
+        &run_backend_self_test,
+        py::arg("kind"),
+        py::call_guard<py::gil_scoped_release>()
+    );
 }
 
 }  // namespace sdr_core::python

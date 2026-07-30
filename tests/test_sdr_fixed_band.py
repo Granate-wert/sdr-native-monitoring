@@ -299,6 +299,8 @@ engine.disconnect()'''
                 "1024",
                 "--hop",
                 "512",
+                "--backend",
+                "cpu",
             ],
             cwd=ROOT,
             env=environment,
@@ -310,7 +312,11 @@ engine.disconnect()'''
         self.assertEqual(fixed.returncode, 0, fixed.stdout + fixed.stderr)
         records = [json.loads(line) for line in fixed.stdout.splitlines()]
         self.assertEqual(records[0]["event"], "configured")
-        self.assertEqual(records[0]["backend"], "pluto-libiio/cpu-pocketfft")
+        self.assertEqual(records[0]["backend"], "pluto-libiio/cpu")
+        self.assertEqual(records[0]["requested_backend"], "cpu")
+        self.assertEqual(records[0]["active_backend"], "cpu")
+        self.assertIn("backend_self_test_passed", records[0])
+        self.assertIn("backend_fallback_count", records[0])
         self.assertTrue(any(record["event"] == "status" for record in records))
         self.assertEqual(records[-1]["event"], "stopped")
         self.assertEqual(records[-1]["health"], "OK")

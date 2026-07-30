@@ -7,8 +7,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "esw-dfl-sdr-native"
-version = "0.5.0"
-description = "Portable SDR native contracts, bounded transport, engine lifecycle and CPU DSP"
+version = "0.6.0"
+description = "Portable SDR native contracts, bounded transport, engine lifecycle and CPU/GPU DSP"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 

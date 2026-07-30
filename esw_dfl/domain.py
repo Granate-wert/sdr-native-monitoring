@@ -39,7 +39,7 @@ class SourceDescriptor:
     backend_id: str | None = None
     # Keep in sync with sdr.contracts.CONTRACT_SCHEMA_VERSION (imported lazily
     # in __post_init__ to avoid a circular import).
-    schema_version: int = 3
+    schema_version: int = 5
 
     def __post_init__(self) -> None:
         from .sdr.contracts import (

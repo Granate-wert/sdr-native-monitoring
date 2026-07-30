@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet("Release", "Debug")][string]$Configuration = "Release",
+    [ValidateSet("CPU", "CUDA")][string]$Lane = "CPU",
     [string]$PythonExecutable = "",
     [switch]$Clean,
     [switch]$SkipTests
@@ -101,7 +102,13 @@ if (Test-Path -LiteralPath $localPybind) {
 $env:SDR_PYTHON_EXECUTABLE = [System.IO.Path]::GetFullPath($PythonExecutable)
 $env:SDR_PYBIND11_CMAKE_DIR = [System.IO.Path]::GetFullPath($pybindCmakeDir)
 
-if ($Configuration -eq "Debug") {
+if ($Lane -eq "CUDA") {
+    if ($Configuration -eq "Debug") { throw "CUDA lane supports Release only" }
+    $configurePreset = "windows-msvc-cuda"
+    $buildPreset = "windows-msvc-cuda-release"
+    $testPreset = "windows-msvc-cuda"
+    $artifactDir = Join-Path $sourceDir "out\build\windows-msvc-cuda\python"
+} elseif ($Configuration -eq "Debug") {
     $configurePreset = "windows-msvc-cpu-debug"
     $buildPreset = "windows-msvc-cpu-debug"
     $testPreset = "windows-msvc-cpu-debug"
@@ -110,12 +117,13 @@ if ($Configuration -eq "Debug") {
     $configurePreset = "windows-msvc-cpu"
     $buildPreset = "windows-msvc-cpu-release"
     $testPreset = "windows-msvc-cpu"
-    $artifactDir = Join-Path $repoRoot "esw_dfl"
+    $artifactDir = Join-Path $sourceDir "out\build\windows-msvc-cpu\python"
 }
+
 
 Push-Location $sourceDir
 try {
-    Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset)
+    Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset, "-DSDR_CORE_PYTHON_OUTPUT_DIR=$artifactDir")
     Invoke-Checked -FilePath $cmake -Arguments @("--build", "--preset", $buildPreset)
     if (-not $SkipTests) {
         Invoke-Checked -FilePath $ctest -Arguments @("--preset", $testPreset)
@@ -128,4 +136,27 @@ $artifacts = @(Get-ChildItem -LiteralPath $artifactDir -Filter "_sdr_native*.pyd
 if ($artifacts.Count -ne 1) {
     throw "Expected one _sdr_native extension in $artifactDir, found $($artifacts.Count)"
 }
-Write-Host "P01 native module ($Configuration): $($artifacts[0].FullName)"
+$sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+$pythonAbi = ($artifacts[0].BaseName -replace "^_sdr_native\.", "")
+$manifest = [ordered]@{
+    preset = $configurePreset
+    cuda_compiled = ($Lane -eq "CUDA")
+    python_abi = $pythonAbi
+    native_version = "0.6.0"
+    source_commit = $sourceCommit
+}
+$manifestPath = Join-Path $artifactDir "native_build_manifest.json"
+$manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+$preflight = Join-Path $repoRoot "scripts\preflight_native_build.py"
+$preflightArgs = @($preflight, "--module", $artifacts[0].FullName, "--manifest", $manifestPath)
+if ($Lane -eq "CUDA") { $preflightArgs += "--expect-cuda" } else { $preflightArgs += "--expect-cpu" }
+Invoke-Checked -FilePath $PythonExecutable -Arguments $preflightArgs
+if ($Configuration -eq "Release") {
+    $activeDir = Join-Path $repoRoot "esw_dfl"
+    $active = Join-Path $activeDir $artifacts[0].Name
+    $part = "$active.part"
+    Copy-Item -LiteralPath $artifacts[0].FullName -Destination $part -Force
+    Move-Item -LiteralPath $part -Destination $active -Force
+    Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $activeDir "native_build_manifest.json") -Force
+}
+Write-Host "P08 native module ($Lane/$Configuration): $($artifacts[0].FullName)"

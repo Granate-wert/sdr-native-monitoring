@@ -159,6 +159,10 @@ int main() {
         overflow.dsp.fft_size = 32768U;
         overflow.dsp.hop_size = 32768U;
         overflow.dsp.batch_size = 1U;
+        // Backpressure is a transport contract, not a race against the
+        // accelerator: pin the DSP stage to CPU so the scenario stays
+        // deterministic when a faster CUDA backend is available.
+        overflow.backend = sdr_core::ComputeBackendKind::Cpu;
         static_cast<void>(engine.configure(overflow));
         engine.start();
         const auto overflow_deadline =

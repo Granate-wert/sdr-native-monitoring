@@ -1,5 +1,7 @@
+#include "sdr_core/backend_info.hpp"
 #include "sdr_core/capabilities.hpp"
 #include "sdr_core/configuration.hpp"
+#include "sdr_core/dsp_backend.hpp"
 #include "sdr_core/errors.hpp"
 #include "sdr_core/metrics.hpp"
 #include "sdr_core/types.hpp"
@@ -77,7 +79,7 @@ void dsp_fft_geometry(const std::uint32_t fft_size, const std::uint32_t hop_size
     invalid("unknown SampleFormat");
 }
 
-constexpr std::uint32_t quality_mask = (1U << 15U) - 1U;
+constexpr std::uint32_t quality_mask = (1U << 16U) - 1U;
 
 void quality(const QualityFlag flags) {
     if ((static_cast<std::uint32_t>(flags) & ~quality_mask) != 0U) {
@@ -237,6 +239,54 @@ std::string_view to_wire(const BackendKind value) {
         return "cuda";
     }
     invalid("unknown BackendKind");
+}
+
+std::string_view to_wire(const ComputeBackendKind value) {
+    switch (value) {
+    case ComputeBackendKind::Auto:
+        return "auto";
+    case ComputeBackendKind::Cpu:
+        return "cpu";
+    case ComputeBackendKind::Cuda:
+        return "cuda";
+    case ComputeBackendKind::Hip:
+        return "hip";
+    }
+    invalid("unknown ComputeBackendKind");
+}
+
+std::string_view to_wire(const BackendErrorCode value) {
+    switch (value) {
+    case BackendErrorCode::None:
+        return "none";
+    case BackendErrorCode::RuntimeNotFound:
+        return "runtime_not_found";
+    case BackendErrorCode::RuntimeIncompatible:
+        return "runtime_incompatible";
+    case BackendErrorCode::NoDevice:
+        return "no_device";
+    case BackendErrorCode::UnsupportedDevice:
+        return "unsupported_device";
+    case BackendErrorCode::AllocationFailed:
+        return "allocation_failed";
+    case BackendErrorCode::CopyFailed:
+        return "copy_failed";
+    case BackendErrorCode::KernelLaunchFailed:
+        return "kernel_launch_failed";
+    case BackendErrorCode::FftPlanFailed:
+        return "fft_plan_failed";
+    case BackendErrorCode::FftExecutionFailed:
+        return "fft_execution_failed";
+    case BackendErrorCode::DeviceLost:
+        return "device_lost";
+    case BackendErrorCode::TimeoutOrTdr:
+        return "timeout_or_tdr";
+    case BackendErrorCode::NumericalSelfTestFailed:
+        return "numerical_self_test_failed";
+    case BackendErrorCode::Unknown:
+        return "unknown";
+    }
+    invalid("unknown BackendErrorCode");
 }
 
 std::string_view to_wire(const PrecisionMode value) {
@@ -559,6 +609,57 @@ void validate(const EngineMetrics& value) {
         if (!std::isfinite(item) || item < 0.0) {
             invalid("engine metrics must be finite and non-negative");
         }
+    }
+}
+
+void validate(const BackendInfo& value) {
+    static_cast<void>(to_wire(value.kind));
+    if (value.kind == ComputeBackendKind::Auto) {
+        invalid("active backend info must be Cpu or Cuda");
+    }
+    if (value.backend_id.empty() || value.vendor.empty()) {
+        invalid("backend info requires backend_id and vendor");
+    }
+}
+
+void validate(const BackendAvailability& value) {
+    if (!value.compiled &&
+        (value.runtime_present || value.device_supported || value.self_test_passed)) {
+        invalid("availability levels must not skip the compiled level");
+    }
+    if (!value.runtime_present && (value.device_supported || value.self_test_passed)) {
+        invalid("availability levels must not skip the runtime level");
+    }
+    if (!value.reason_code.empty()) {
+        // Reason codes use the BackendErrorCode wire vocabulary.
+        bool known = false;
+        for (const auto code : {
+                 BackendErrorCode::RuntimeNotFound,
+                 BackendErrorCode::RuntimeIncompatible,
+                 BackendErrorCode::NoDevice,
+                 BackendErrorCode::UnsupportedDevice,
+                 BackendErrorCode::AllocationFailed,
+                 BackendErrorCode::CopyFailed,
+                 BackendErrorCode::KernelLaunchFailed,
+                 BackendErrorCode::FftPlanFailed,
+                 BackendErrorCode::FftExecutionFailed,
+                 BackendErrorCode::DeviceLost,
+                 BackendErrorCode::TimeoutOrTdr,
+                 BackendErrorCode::NumericalSelfTestFailed,
+                 BackendErrorCode::Unknown,
+             }) {
+            known = known || to_wire(code) == value.reason_code;
+        }
+        if (!known) {
+            invalid("availability reason_code must be a BackendErrorCode wire value");
+        }
+    }
+}
+
+void validate(const DspBackendSelectionOptions& value) {
+    static_cast<void>(to_wire(value.preference));
+    if (value.plan_cache_capacity == 0U) {
+        invalid("plan_cache_capacity must be positive");
     }
 }
 

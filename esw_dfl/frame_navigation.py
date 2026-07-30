@@ -123,6 +123,7 @@ class FrameLoadCoordinator(QObject):
         self._active: _LoadRequest | None = None
         self._pending: _LoadRequest | None = None
         self._worker: TaskWorker | None = None
+        self._closed = False
         self._diagnostics = {
             "cache_hits": 0,
             "cache_misses": 0,
@@ -141,6 +142,8 @@ class FrameLoadCoordinator(QObject):
         generation: int,
         reason: NavigationReason,
     ) -> None:
+        if self._closed:
+            return
         key = (session_id, waterfall_id, frame_index)
         if key in self._cache:
             self._diagnostics["cache_hits"] += 1
@@ -180,12 +183,45 @@ class FrameLoadCoordinator(QObject):
             self._worker.cancel()
         self._pending = None
         self._diagnostics["pending_loads"] = 0
-        self.diagnostics.emit(self._diagnostics.copy())
+        self._emit(self.diagnostics, self._diagnostics.copy())
+
+    def close(self) -> None:
+        """Stop delivery before the parent QObject is destroyed.
+
+        ``TaskWorker`` is a QRunnable with an auto-deleted signal source. A
+        queued result can therefore race with destruction of this coordinator
+        during GUI teardown. Marking the coordinator closed and disconnecting
+        the worker signals makes those late callbacks harmless.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        worker = self._worker
+        if worker is not None:
+            worker.cancel()
+            for signal_name in ("result", "error", "finished"):
+                try:
+                    getattr(worker.signals, signal_name).disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        self._worker = None
+        self._active = None
+        self._pending = None
+
+    @staticmethod
+    def _emit(signal: Any, *args: Any) -> None:
+        try:
+            signal.emit(*args)
+        except RuntimeError as exc:
+            if "Signal source has been deleted" not in str(exc):
+                raise
 
     def clear_cache(self) -> None:
         self._cache.clear()
 
     def _launch(self, req: _LoadRequest) -> None:
+        if self._closed:
+            return
         self._active = req
         self._diagnostics["active_loads"] = 1
         self._diagnostics["pending_loads"] = 1 if self._pending else 0
@@ -240,11 +276,13 @@ class FrameLoadCoordinator(QObject):
         return 0 <= payload_size <= self._interactive_read_limit_bytes
 
     def _on_result(self, row: SpectrogramRow, req: _LoadRequest) -> None:
+        if self._closed:
+            return
         key = (req.session_id, req.waterfall_id, req.frame_index)
         self._cache[key] = row
         if len(self._cache) > self._max_cache:
             self._cache.popitem(last=False)
-        self.snapshot_ready.emit(
+        self._emit(self.snapshot_ready,
             FrameSnapshot(
                 session_id=req.session_id,
                 waterfall_id=req.waterfall_id,
@@ -256,13 +294,18 @@ class FrameLoadCoordinator(QObject):
         )
 
     def _on_error(self, message: str, req: _LoadRequest) -> None:
-        self.error.emit(f"Ошибка чтения кадра {req.frame_index}: {message}")
+        if not self._closed:
+            self._emit(self.error, f"Ошибка чтения кадра {req.frame_index}: {message}")
 
     def _on_finished(self) -> None:
+        if self._closed:
+            return
         self._worker = None
         self._finish_active()
 
     def _finish_active(self) -> None:
+        if self._closed:
+            return
         self._active = None
         self._diagnostics["active_loads"] = 0
         if self._pending is not None:

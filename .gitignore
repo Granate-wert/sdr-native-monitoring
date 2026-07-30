@@ -52,3 +52,4 @@ venv/
 .vscode/
 *.user
 *.suo
+esw_dfl/native_build_manifest.json

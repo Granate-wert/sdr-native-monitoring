@@ -17,7 +17,8 @@ from ..domain import SourceDescriptor
 CONTRACT_SCHEMA_NAME = "sdr-native-contracts"
 # Version 2: P04 adds EngineState, OverflowPolicy and EventSeverity wire enums.
 # Version 3: P05 restricts DspConfig.fft_size to power-of-two in [256, 262144].
-CONTRACT_SCHEMA_VERSION = 3
+# Version 4: P08 adds ComputeBackendKind and BackendErrorCode (P08H-00).
+CONTRACT_SCHEMA_VERSION = 5
 UINT32_MAX = (1 << 32) - 1
 UINT64_MAX = (1 << 64) - 1
 
@@ -113,12 +114,36 @@ class QualityFlag(IntFlag):
     STITCH_OVERLAP = 1 << 11
     MISSING_SEGMENT = 1 << 12
     TIMESTAMP_ESTIMATED = 1 << 13
-    CUDA_FALLBACK = 1 << 14
+    BACKEND_FALLBACK = 1 << 14
 
 
 class BackendKind(StrEnum):
     CPU = "cpu"
     CUDA = "cuda"
+
+
+class ComputeBackendKind(StrEnum):
+    AUTO = "auto"
+    CPU = "cpu"
+    CUDA = "cuda"
+    HIP = "hip"
+
+
+class BackendErrorCode(StrEnum):
+    NONE = "none"
+    RUNTIME_NOT_FOUND = "runtime_not_found"
+    RUNTIME_INCOMPATIBLE = "runtime_incompatible"
+    NO_DEVICE = "no_device"
+    UNSUPPORTED_DEVICE = "unsupported_device"
+    ALLOCATION_FAILED = "allocation_failed"
+    COPY_FAILED = "copy_failed"
+    KERNEL_LAUNCH_FAILED = "kernel_launch_failed"
+    FFT_PLAN_FAILED = "fft_plan_failed"
+    FFT_EXECUTION_FAILED = "fft_execution_failed"
+    DEVICE_LOST = "device_lost"
+    TIMEOUT_OR_TDR = "timeout_or_tdr"
+    NUMERICAL_SELF_TEST_FAILED = "numerical_self_test_failed"
+    UNKNOWN = "unknown"
 
 
 class PrecisionMode(StrEnum):
@@ -166,6 +191,8 @@ STRING_ENUM_TYPES = (
     DeviceState,
     CalibrationStatus,
     BackendKind,
+    ComputeBackendKind,
+    BackendErrorCode,
     PrecisionMode,
     PersistenceMode,
     EngineState,
@@ -980,6 +1007,8 @@ __all__ = [
     "CONTRACT_SCHEMA_NAME",
     "CONTRACT_SCHEMA_VERSION",
     "CalibrationStatus",
+    "ComputeBackendKind",
+    "BackendErrorCode",
     "ContractValidationError",
     "DetectorType",
     "DeviceCapabilities",

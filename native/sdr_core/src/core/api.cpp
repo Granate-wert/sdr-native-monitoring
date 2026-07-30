@@ -53,17 +53,22 @@ std::vector<std::string> available_backends() {
 #if SDR_CORE_PLUTO_COMPILED
     result.emplace_back("pluto-libiio");
 #endif
+#if SDR_CORE_CUDA_COMPILED
+    result.emplace_back("cuda");
+#endif
     return result;
 }
 
 SelfTestResult run_self_test() {
     const auto info = build_info();
     const auto backends = available_backends();
-    const std::size_t expected_backends = info.pluto_compiled ? 2U : 1U;
+    const std::size_t expected_backends =
+        1U + (info.pluto_compiled ? 1U : 0U) + (info.cuda_compiled ? 1U : 0U);
     const bool valid = !info.version.empty() && backends.size() == expected_backends &&
-                       backends.front() == "cpu" && !info.cuda_compiled &&
+                       backends.front() == "cpu" &&
+                       info.cuda_compiled == (SDR_CORE_CUDA_COMPILED != 0) &&
                        info.pluto_compiled == (SDR_CORE_PLUTO_COMPILED != 0) &&
-                       contract_schema_version == 3U;
+                       contract_schema_version == 5U;
     return SelfTestResult{
         .ok = valid,
         .message = valid ? "portable CPU contracts are operational" : "build metadata is inconsistent",

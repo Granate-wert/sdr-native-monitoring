@@ -36,7 +36,7 @@
         "pybind11_DIR": "$env{SDR_PYBIND11_CMAKE_DIR}",
         "SDR_CORE_BUILD_PYTHON": "ON",
         "SDR_CORE_ENABLE_PLUTO": "ON",
-        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/../../esw_dfl"
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/windows-msvc-cpu/python"
       }
     },
     {
@@ -47,6 +47,17 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/python/debug"
+      }
+    },
+    {
+      "name": "windows-msvc-cuda",
+      "displayName": "Windows MSVC CPU + Pluto + CUDA Release",
+      "inherits": "windows-msvc-cpu",
+      "binaryDir": "${sourceDir}/out/build/windows-msvc-cuda",
+      "cacheVariables": {
+        "SDR_CORE_ENABLE_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "native",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/windows-msvc-cuda/python"
       }
     },
     {
@@ -87,6 +98,10 @@
       "configurePreset": "windows-msvc-cpu"
     },
     {
+      "name": "windows-msvc-cuda-release",
+      "configurePreset": "windows-msvc-cuda"
+    },
+    {
       "name": "windows-msvc-cpu-debug",
       "configurePreset": "windows-msvc-cpu-debug"
     },
@@ -110,6 +125,13 @@
     {
       "name": "windows-msvc-cpu-debug",
       "configurePreset": "windows-msvc-cpu-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-msvc-cuda",
+      "configurePreset": "windows-msvc-cuda",
       "output": {
         "outputOnFailure": true
       }

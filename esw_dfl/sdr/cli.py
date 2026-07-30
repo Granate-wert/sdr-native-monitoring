@@ -13,6 +13,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from .contracts import (
+    ComputeBackendKind,
     DetectorType,
     DeviceConfig,
     DspConfig,
@@ -60,6 +61,13 @@ def _gain_mode(value: str) -> GainMode:
 def _window(value: str) -> WindowType:
     try:
         return WindowType(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _compute_backend(value: str) -> ComputeBackendKind:
+    try:
+        return ComputeBackendKind(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
@@ -115,6 +123,8 @@ def _fixed(args: argparse.Namespace) -> int:
     options = FixedBandOptions(
         device=device,
         dsp=dsp,
+        backend=args.backend,
+        allow_runtime_fallback=not args.no_runtime_fallback,
         snapshot_rate_hz=args.snapshot_rate,
         discard_blocks_after_start=args.discard_blocks,
         dc_removal_block_mean=args.dc_remove,
@@ -122,11 +132,16 @@ def _fixed(args: argparse.Namespace) -> int:
 
     with FixedBandEngineService(uri, timeout_ms=args.timeout_ms) as engine:
         applied = engine.configure(options)
+        configured = engine.metrics()
         print(
             json.dumps(
                 {
                     "event": "configured",
-                    "backend": "pluto-libiio/cpu-pocketfft",
+                    "backend": f"pluto-libiio/{configured.active_backend.value}",
+                    "requested_backend": configured.requested_backend.value,
+                    "active_backend": configured.active_backend.value,
+                    "backend_self_test_passed": configured.backend_self_test_passed,
+                    "backend_fallback_count": configured.backend_fallback_count,
                     "requested": {
                         "center_frequency_hz": args.center,
                         "sample_rate_hz": args.sample_rate,
@@ -235,6 +250,18 @@ def build_parser() -> argparse.ArgumentParser:
     fixed.add_argument("--batch", type=_positive_int, default=4)
     fixed.add_argument("--average", type=_positive_int, default=1)
     fixed.add_argument("--window", type=_window, default=WindowType.HANN)
+    fixed.add_argument(
+        "--backend",
+        type=_compute_backend,
+        choices=(ComputeBackendKind.AUTO, ComputeBackendKind.CPU, ComputeBackendKind.CUDA),
+        default=ComputeBackendKind.AUTO,
+        help="DSP compute backend preference",
+    )
+    fixed.add_argument(
+        "--no-runtime-fallback",
+        action="store_true",
+        help="fail instead of falling back when the requested backend is unavailable",
+    )
     fixed.add_argument("--snapshot-rate", type=_positive_float, default=60.0)
     fixed.add_argument("--discard-blocks", type=int, default=2)
     fixed.add_argument("--dc-remove", action="store_true")

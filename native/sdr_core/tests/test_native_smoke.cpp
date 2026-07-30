@@ -11,15 +11,11 @@ int main() {
         std::cerr << "invalid build_info" << std::endl;
         return 1;
     }
-    if (info.cuda_compiled) {
-        std::cerr << "CPU/Pluto build unexpectedly reports CUDA" << std::endl;
-        return 2;
-    }
-
     const auto backends = sdr_core::available_backends();
     const auto has_cpu = std::find(backends.begin(), backends.end(), "cpu") != backends.end();
     const auto has_pluto = std::find(backends.begin(), backends.end(), "pluto-libiio") != backends.end();
-    if (!has_cpu || has_pluto != info.pluto_compiled) {
+    const auto has_cuda = std::find(backends.begin(), backends.end(), "cuda") != backends.end();
+    if (!has_cpu || has_pluto != info.pluto_compiled || has_cuda != info.cuda_compiled) {
         std::cerr << "backend list does not match build features" << std::endl;
         return 3;
     }

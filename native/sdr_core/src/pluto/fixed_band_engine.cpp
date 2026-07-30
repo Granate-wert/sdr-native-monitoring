@@ -49,6 +49,7 @@ void validate(const FixedBandConfig& value) {
     }
     sdr_core::validate(value.device);
     sdr_core::validate(value.dsp);
+    sdr_core::validate(value.persistence);
     if (value.acquisition_queue_capacity >
         std::numeric_limits<std::uint32_t>::max() - 3U) {
         invalid("acquisition_queue_capacity exceeds Pluto pool bound" );
@@ -66,6 +67,7 @@ void validate(const FixedBandConfig& value) {
         invalid("snapshot_rate_hz must be finite and positive");
     }
     static_cast<void>(sdr_core::to_wire(value.acquisition_overflow));
+    static_cast<void>(sdr_core::to_wire(value.backend));
     if (value.dsp.unit == sdr_core::SpectrumUnit::Dbm ||
         value.dsp.unit == sdr_core::SpectrumUnit::DbmBin ||
         value.dsp.unit == sdr_core::SpectrumUnit::DbmHz) {
@@ -114,6 +116,13 @@ public:
                 config.event_queue_capacity,
                 sdr_core::OverflowPolicy::DropNewest
             );
+        auto persistence = std::make_unique<sdr_core::PersistenceAccumulator>(
+            config.persistence
+        );
+        auto persistence_queue =
+            std::make_unique<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>>(
+                2U, sdr_core::OverflowPolicy::LatestWins
+            );
 
         const auto probe = device_.probe();
         sdr_core::CpuDspOptions options;
@@ -132,7 +141,12 @@ public:
             .metadata_json = {},
         };
         sdr_core::validate(options.source);
-        auto backend = sdr_core::make_cpu_dsp_backend(std::move(options));
+        // P08: the DSP stage is selected through the vendor-neutral factory
+        // (CPU / CUDA with runtime failover per configuration).
+        sdr_core::DspBackendSelectionOptions selection;
+        selection.preference = config.backend;
+        selection.allow_runtime_fallback = config.allow_runtime_fallback;
+        auto backend = sdr_core::make_dsp_backend(selection, std::move(options));
         backend->configure(config.dsp);
 
         // PlutoDevice guarantees transactional hardware configure/readback.
@@ -147,11 +161,14 @@ public:
         acquisition_queue_ = std::move(acquisition);
         spectrum_queue_ = std::move(spectrum);
         event_queue_ = std::move(events);
+        persistence_ = std::move(persistence);
+        persistence_queue_ = std::move(persistence_queue);
         stop_ = sdr_core::make_stop_token();
         counters_.reset();
         transient_blocks_discarded_.store(0U, std::memory_order_relaxed);
         transient_samples_discarded_.store(0U, std::memory_order_relaxed);
         snapshots_superseded_.store(0U, std::memory_order_relaxed);
+        persistence_snapshots_superseded_.store(0U, std::memory_order_relaxed);
         shutdown_blocks_discarded_.store(0U, std::memory_order_relaxed);
         shutdown_samples_discarded_.store(0U, std::memory_order_relaxed);
         expected_cancellations_.store(0U, std::memory_order_relaxed);
@@ -303,6 +320,8 @@ public:
         backend_.reset();
         acquisition_queue_.reset();
         spectrum_queue_.reset();
+        persistence_queue_.reset();
+        persistence_.reset();
         state_.store(sdr_core::EngineState::Stopped, std::memory_order_release);
     }
 
@@ -352,12 +371,17 @@ public:
         if (spectrum_queue_) {
             result.spectrum_queue = spectrum_queue_->stats();
         }
+        if (persistence_queue_) {
+            result.persistence_queue = persistence_queue_->stats();
+        }
         result.transient_blocks_discarded =
             transient_blocks_discarded_.load(std::memory_order_relaxed);
         result.transient_samples_discarded =
             transient_samples_discarded_.load(std::memory_order_relaxed);
         result.spectrum_snapshots_superseded =
             snapshots_superseded_.load(std::memory_order_relaxed);
+        result.persistence_snapshots_superseded =
+            persistence_snapshots_superseded_.load(std::memory_order_relaxed);
         result.shutdown_blocks_discarded =
             shutdown_blocks_discarded_.load(std::memory_order_relaxed);
         result.shutdown_samples_discarded =
@@ -366,6 +390,18 @@ public:
             expected_cancellations_.load(std::memory_order_relaxed);
         result.diagnostic_events_lost =
             events_lost_.load(std::memory_order_relaxed);
+        if (backend_) {
+            const auto dsp_metrics = backend_->metrics();
+            result.requested_backend = dsp_metrics.requested_preference;
+            result.active_backend = dsp_metrics.active_backend;
+            result.backend_self_test_passed = dsp_metrics.backend_self_test_passed;
+            result.backend_fallback_count = dsp_metrics.backend_fallback_count;
+            result.backend_switch_count = dsp_metrics.backend_switch_count;
+            result.last_backend_error = dsp_metrics.last_backend_error;
+        } else {
+            result.requested_backend = config_.backend;
+            result.active_backend = config_.backend;
+        }
         return result;
     }
 
@@ -383,6 +419,24 @@ public:
                 break;
             }
             result.push_back(std::move(frame));
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
+        const std::size_t max_items
+    ) {
+        std::lock_guard lock(lifecycle_mutex_);
+        std::vector<sdr_core::PersistenceSnapshot> result;
+        if (!persistence_queue_) {
+            return result;
+        }
+        sdr_core::PersistenceSnapshot snapshot;
+        while (max_items == 0U || result.size() < max_items) {
+            if (!persistence_queue_->try_pop(snapshot)) {
+                break;
+            }
+            result.push_back(std::move(snapshot));
         }
         return result;
     }
@@ -660,6 +714,7 @@ private:
                 const auto backend_metrics = backend_->metrics();
                 for (auto& frame : ready) {
                     annotate_frame(frame, backend_metrics);
+                    publish_persistence(frame);
                     latest = std::move(frame);
                 }
                 update_dsp_metrics(backend_metrics, started_at, processing_started);
@@ -676,6 +731,7 @@ private:
             const auto final_metrics = backend_->metrics();
             for (auto& frame : final_frames) {
                 annotate_frame(frame, final_metrics);
+                publish_persistence(frame);
                 latest = std::move(frame);
             }
             update_dsp_metrics(
@@ -741,12 +797,29 @@ private:
         const auto now = std::chrono::steady_clock::now();
         const double elapsed_ms =
             std::chrono::duration<double, std::milli>(now - processing_started).count();
-        double current = counters_.cpu_processing_ms.load(std::memory_order_relaxed);
-        while (!counters_.cpu_processing_ms.compare_exchange_weak(
-            current,
-            current + elapsed_ms,
-            std::memory_order_relaxed
-        )) {
+        if (backend_metrics.active_backend == sdr_core::ComputeBackendKind::Cpu) {
+            double current = counters_.cpu_processing_ms.load(std::memory_order_relaxed);
+            while (!counters_.cpu_processing_ms.compare_exchange_weak(
+                current,
+                current + elapsed_ms,
+                std::memory_order_relaxed
+            )) {
+            }
+        } else {
+            // Backend stage counters are cumulative; expose them without
+            // charging CUDA work to the CPU wall-time metric.
+            counters_.gpu_processing_ms.store(
+                static_cast<double>(backend_metrics.gpu_processing_ns) / 1.0e6,
+                std::memory_order_relaxed
+            );
+            counters_.h2d_ms.store(
+                static_cast<double>(backend_metrics.h2d_ns) / 1.0e6,
+                std::memory_order_relaxed
+            );
+            counters_.d2h_ms.store(
+                static_cast<double>(backend_metrics.d2h_ns) / 1.0e6,
+                std::memory_order_relaxed
+            );
         }
         const double run_seconds =
             std::chrono::duration<double>(now - started_at).count();
@@ -755,6 +828,33 @@ private:
                 static_cast<double>(backend_metrics.fft_frames_computed) /
                     run_seconds,
                 std::memory_order_relaxed
+            );
+        }
+    }
+
+    void publish_persistence(const sdr_core::SpectrumFrame& frame) noexcept {
+        if (!persistence_ || !persistence_queue_) {
+            return;
+        }
+        try {
+            auto snapshot = persistence_->update(frame);
+            counters_.persistence_updates.store(
+                persistence_->processed_frames(), std::memory_order_relaxed
+            );
+            if (!snapshot.has_value()) {
+                return;
+            }
+            const auto result = persistence_queue_->try_push(std::move(*snapshot));
+            if (result == sdr_core::PushResult::Evicted) {
+                persistence_snapshots_superseded_.fetch_add(
+                    1U, std::memory_order_relaxed
+                );
+            }
+        } catch (...) {
+            emit_event(
+                sdr_core::EventSeverity::Error,
+                "persistence_failure",
+                "failed to update native persistence"
             );
         }
     }
@@ -839,11 +939,14 @@ private:
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::IqBlock>> acquisition_queue_;
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>> spectrum_queue_;
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::DiagnosticEvent>> event_queue_;
+    std::unique_ptr<sdr_core::PersistenceAccumulator> persistence_;
+    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>> persistence_queue_;
     sdr_core::EngineMetricsCounters counters_{};
     std::atomic<std::uint32_t> transient_remaining_{};
     std::atomic<std::uint64_t> transient_blocks_discarded_{};
     std::atomic<std::uint64_t> transient_samples_discarded_{};
     std::atomic<std::uint64_t> snapshots_superseded_{};
+    std::atomic<std::uint64_t> persistence_snapshots_superseded_{};
     std::atomic<std::uint64_t> shutdown_blocks_discarded_{};
     std::atomic<std::uint64_t> shutdown_samples_discarded_{};
     std::atomic<std::uint64_t> expected_cancellations_{};
@@ -886,6 +989,11 @@ std::vector<sdr_core::SpectrumFrame> FixedBandEngine::poll_spectrum_frames(
     const std::size_t max_items
 ) {
     return impl_->poll_spectrum_frames(max_items);
+}
+std::vector<sdr_core::PersistenceSnapshot> FixedBandEngine::poll_persistence_snapshots(
+    const std::size_t max_items
+) {
+    return impl_->poll_persistence_snapshots(max_items);
 }
 std::vector<sdr_core::DiagnosticEvent> FixedBandEngine::poll_events(
     const std::size_t max_items

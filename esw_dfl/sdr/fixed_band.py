@@ -1,18 +1,22 @@
 """Headless P07 fixed-band control plane.
 
-The native engine owns the Pluto stream, bounded queues, and CPU DSP threads.
+The native engine owns the Pluto stream, bounded queues, and native DSP threads.
 Python only performs coarse lifecycle calls and polls immutable, rate-limited
 spectrum snapshots. It is never called once per I/Q block or analytical FFT.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 import math
 from typing import Any
 
+import numpy as np
+
 from .contracts import (
     CONTRACT_SCHEMA_VERSION,
+    BackendErrorCode,
+    ComputeBackendKind,
     DeviceConfig,
     DspConfig,
     EngineMetrics,
@@ -20,6 +24,7 @@ from .contracts import (
     EventSeverity,
     GainMode,
     OverflowPolicy,
+    PersistenceConfig,
     SampleFormat,
     SpectrumFrame,
     config_to_native,
@@ -47,6 +52,9 @@ class FixedBandOptions:
 
     device: DeviceConfig
     dsp: DspConfig
+    persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
+    backend: ComputeBackendKind = ComputeBackendKind.AUTO
+    allow_runtime_fallback: bool = True
     acquisition_queue_capacity: int = 16
     acquisition_overflow: OverflowPolicy = OverflowPolicy.DROP_NEWEST
     spectrum_queue_capacity: int = 4
@@ -59,6 +67,12 @@ class FixedBandOptions:
     def __post_init__(self) -> None:
         if self.schema_version != CONTRACT_SCHEMA_VERSION:
             raise ValueError("unsupported fixed-band schema_version")
+        if not isinstance(self.persistence, PersistenceConfig):
+            raise ValueError("persistence must be PersistenceConfig")
+        if not isinstance(self.backend, ComputeBackendKind):
+            raise ValueError("backend must be ComputeBackendKind")
+        if not isinstance(self.allow_runtime_fallback, bool):
+            raise ValueError("allow_runtime_fallback must be bool")
         for name in (
             "acquisition_queue_capacity",
             "spectrum_queue_capacity",
@@ -76,6 +90,45 @@ class FixedBandOptions:
             self.discard_blocks_after_start,
             "discard_blocks_after_start",
             positive=False,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NativePersistenceSnapshot:
+    update_sequence: int
+    timestamp_ns: int
+    source_frame_sequence: int
+    power_min_db: float
+    power_max_db: float
+    power_bins: int
+    frequency_bins: int
+    processed_frames: int
+    exponential_decay: bool
+    frequencies_hz: np.ndarray
+    density: np.ndarray
+
+    def __post_init__(self) -> None:
+        frequencies = np.array(self.frequencies_hz, dtype=np.float64, copy=True)
+        density = np.array(self.density, dtype=np.float32, copy=True)
+        frequencies.setflags(write=False)
+        density.setflags(write=False)
+        object.__setattr__(self, "frequencies_hz", frequencies)
+        object.__setattr__(self, "density", density)
+
+    @classmethod
+    def from_native(cls, value: Any) -> "NativePersistenceSnapshot":
+        return cls(
+            update_sequence=int(value.update_sequence),
+            timestamp_ns=int(value.timestamp_ns),
+            source_frame_sequence=int(value.source_frame_sequence),
+            power_min_db=float(value.power_min_db),
+            power_max_db=float(value.power_max_db),
+            power_bins=int(value.power_bins),
+            frequency_bins=int(value.frequency_bins),
+            processed_frames=int(value.processed_frames),
+            exponential_decay=bool(value.exponential_decay),
+            frequencies_hz=value.frequencies_hz,
+            density=value.density,
         )
 
 
@@ -99,13 +152,21 @@ class FixedBandMetricsSnapshot:
     device: PlutoStreamMetrics
     acquisition_queue: QueueSnapshot
     spectrum_queue: QueueSnapshot
+    persistence_queue: QueueSnapshot
     transient_blocks_discarded: int
     transient_samples_discarded: int
     spectrum_snapshots_superseded: int
+    persistence_snapshots_superseded: int
     shutdown_blocks_discarded: int
     shutdown_samples_discarded: int
     expected_cancellations: int
     diagnostic_events_lost: int
+    requested_backend: ComputeBackendKind
+    active_backend: ComputeBackendKind
+    backend_self_test_passed: bool
+    backend_fallback_count: int
+    backend_switch_count: int
+    last_backend_error: BackendErrorCode
 
     @property
     def healthy(self) -> bool:
@@ -225,6 +286,8 @@ class FixedBandEngineService:
         return self._native.FixedBandConfig(
             config_to_native(options.device),
             config_to_native(options.dsp),
+            getattr(self._native.ComputeBackendKind, options.backend.name),
+            bool(options.allow_runtime_fallback),
             options.acquisition_queue_capacity,
             getattr(self._native.OverflowPolicy, options.acquisition_overflow.name),
             options.spectrum_queue_capacity,
@@ -232,6 +295,7 @@ class FixedBandEngineService:
             float(options.snapshot_rate_hz),
             options.discard_blocks_after_start,
             bool(options.dc_removal_block_mean),
+            config_to_native(options.persistence),
         )
 
     def configure(self, options: FixedBandOptions) -> PlutoAppliedConfig:
@@ -266,6 +330,14 @@ class FixedBandEngineService:
             for value in self._engine.poll_spectrum_frames(max_items)
         )
 
+    def poll_persistence(self, max_items: int = 0) -> tuple[NativePersistenceSnapshot, ...]:
+        if max_items < 0:
+            raise ValueError("max_items must not be negative")
+        return tuple(
+            NativePersistenceSnapshot.from_native(value)
+            for value in self._engine.poll_persistence_snapshots(max_items)
+        )
+
     def poll_events(self, max_items: int = 0) -> tuple[FixedBandEvent, ...]:
         if max_items < 0:
             raise ValueError("max_items must not be negative")
@@ -289,13 +361,21 @@ class FixedBandEngineService:
             device=_stream_metrics(value.device),
             acquisition_queue=_queue(value.acquisition_queue),
             spectrum_queue=_queue(value.spectrum_queue),
+            persistence_queue=_queue(value.persistence_queue),
             transient_blocks_discarded=int(value.transient_blocks_discarded),
             transient_samples_discarded=int(value.transient_samples_discarded),
             spectrum_snapshots_superseded=int(value.spectrum_snapshots_superseded),
+            persistence_snapshots_superseded=int(value.persistence_snapshots_superseded),
             shutdown_blocks_discarded=int(value.shutdown_blocks_discarded),
             shutdown_samples_discarded=int(value.shutdown_samples_discarded),
             expected_cancellations=int(value.expected_cancellations),
             diagnostic_events_lost=int(value.diagnostic_events_lost),
+            requested_backend=_enum(ComputeBackendKind, value.requested_backend),
+            active_backend=_enum(ComputeBackendKind, value.active_backend),
+            backend_self_test_passed=bool(value.backend_self_test_passed),
+            backend_fallback_count=int(value.backend_fallback_count),
+            backend_switch_count=int(value.backend_switch_count),
+            last_backend_error=_enum(BackendErrorCode, value.last_backend_error),
         )
 
     def __enter__(self) -> "FixedBandEngineService":
@@ -315,5 +395,6 @@ __all__ = [
     "FixedBandEvent",
     "FixedBandMetricsSnapshot",
     "FixedBandOptions",
+    "NativePersistenceSnapshot",
     "QueueSnapshot",
 ]

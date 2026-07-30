@@ -49,8 +49,12 @@ struct EngineMetricsCounters {
     alignas(64) std::atomic<std::uint64_t> fft_frames_computed{};
     alignas(64) std::atomic<std::uint64_t> fft_frames_dropped{};
     alignas(64) std::atomic<std::uint64_t> spectrum_snapshots_emitted{};
+    alignas(64) std::atomic<std::uint64_t> persistence_updates{};
     alignas(64) std::atomic<double> analytical_fft_rate{};
     alignas(64) std::atomic<double> cpu_processing_ms{};
+    alignas(64) std::atomic<double> gpu_processing_ms{};
+    alignas(64) std::atomic<double> h2d_ms{};
+    alignas(64) std::atomic<double> d2h_ms{};
 
     EngineMetricsCounters() = default;
     EngineMetricsCounters(const EngineMetricsCounters&) = delete;
@@ -64,8 +68,12 @@ struct EngineMetricsCounters {
         fft_frames_computed.store(0U, std::memory_order_relaxed);
         fft_frames_dropped.store(0U, std::memory_order_relaxed);
         spectrum_snapshots_emitted.store(0U, std::memory_order_relaxed);
+        persistence_updates.store(0U, std::memory_order_relaxed);
         analytical_fft_rate.store(0.0, std::memory_order_relaxed);
         cpu_processing_ms.store(0.0, std::memory_order_relaxed);
+        gpu_processing_ms.store(0.0, std::memory_order_relaxed);
+        h2d_ms.store(0.0, std::memory_order_relaxed);
+        d2h_ms.store(0.0, std::memory_order_relaxed);
     }
 
     // Cumulative fields only; queue depths remain zero here.
@@ -79,8 +87,13 @@ struct EngineMetricsCounters {
         result.fft_frames_dropped = fft_frames_dropped.load(std::memory_order_relaxed);
         result.spectrum_snapshots_emitted =
             spectrum_snapshots_emitted.load(std::memory_order_relaxed);
+        result.persistence_updates =
+            persistence_updates.load(std::memory_order_relaxed);
         result.analytical_fft_rate = analytical_fft_rate.load(std::memory_order_relaxed);
         result.cpu_processing_ms = cpu_processing_ms.load(std::memory_order_relaxed);
+        result.gpu_processing_ms = gpu_processing_ms.load(std::memory_order_relaxed);
+        result.h2d_ms = h2d_ms.load(std::memory_order_relaxed);
+        result.d2h_ms = d2h_ms.load(std::memory_order_relaxed);
         return result;
     }
 };

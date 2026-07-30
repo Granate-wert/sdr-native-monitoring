@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QGridLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -177,6 +178,14 @@ from .time_gated_power import (
 )
 from .workers import TaskWorker
 from .workspace import apply_workspace_session, read_workspace, write_workspace
+from .sdr.contracts import (
+    ComputeBackendKind, DeviceConfig, DspConfig, SpectrumUnit,
+    PersistenceConfig as SdrPersistenceConfig,
+    PersistenceMode as SdrPersistenceMode,
+)
+from .sdr.controller import LiveSdrController, LiveSessionConfig
+from .sdr.fixed_band import FixedBandOptions
+from .sdr.session_adapter import LiveSessionAdapter
 
 
 LOGGER = logging.getLogger("esw_dfl")
@@ -452,7 +461,7 @@ HEATMAP_LIVE_MODES = frozenset(
 # Bump whenever the dock layout changes: saved windowState blobs from other
 # layout versions are ignored, otherwise Qt misplaces docks it does not know
 # (overlapping/off-screen panels after an upgrade).
-WINDOW_STATE_VERSION = 2
+WINDOW_STATE_VERSION = 3
 
 
 class MainWindow(QMainWindow):
@@ -476,6 +485,9 @@ class MainWindow(QMainWindow):
         self._current_workspace: Path | None = None
         self._spectrogram_indexes: dict[tuple[str, str], SpectrogramIndex] = {}
         self._frame_readers: dict[tuple[str, str], SpectrogramFrameReader] = {}
+        self._live_controllers: dict[str, LiveSdrController] = {}
+        self._live_adapters: dict[str, LiveSessionAdapter] = {}
+        self._live_refresh_counter = 0
         self._view_settings_dialog: ViewSettingsDialog | None = None
         self._frame_navigation_settings_dialog: FrameNavigationSettingsDialog | None = None
         self._navigation_connected = False
@@ -544,6 +556,11 @@ class MainWindow(QMainWindow):
         self._frame_scheduler.apply_snapshot.connect(self._apply_frame_snapshot)
         self._frame_scheduler.settled.connect(self._on_frame_settled)
         self._frame_loader.error.connect(self._show_frame_load_error)
+        self._live_timer = QTimer(self)
+        self._live_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._live_timer.setInterval(33)
+        self._live_timer.timeout.connect(self._poll_live_updates)
+        self._live_timer.start()
 
         self._create_central_area()
         self._create_docks()
@@ -883,7 +900,242 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.properties_dock, self.metadata_dock)
         self._create_channel_power_docks()
         self._create_heatmap_dock()
+        self._create_live_dock()
+        self.live_dock.hide()
         self.files_dock.raise_()
+
+    def _create_live_dock(self) -> None:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+
+        device = QGroupBox("Device / Receive")
+        device_form = QFormLayout(device)
+        self.live_uri_edit = QLineEdit("usb:")
+        self.live_source_id_edit = QLineEdit("pluto-live")
+        self.live_center_spin = QDoubleSpinBox()
+        self.live_center_spin.setRange(1.0, 6000.0)
+        self.live_center_spin.setDecimals(6)
+        self.live_center_spin.setValue(2400.0)
+        self.live_sample_rate_spin = QDoubleSpinBox()
+        self.live_sample_rate_spin.setRange(0.001, 1000.0)
+        self.live_sample_rate_spin.setDecimals(6)
+        self.live_sample_rate_spin.setValue(3.0)
+        self.live_bandwidth_spin = QDoubleSpinBox()
+        self.live_bandwidth_spin.setRange(0.001, 1000.0)
+        self.live_bandwidth_spin.setDecimals(6)
+        self.live_bandwidth_spin.setValue(1.5)
+        self.live_gain_spin = QDoubleSpinBox()
+        self.live_gain_spin.setRange(-100.0, 100.0)
+        self.live_gain_spin.setDecimals(2)
+        self.live_gain_spin.setValue(20.0)
+        device_form.addRow("URI", self.live_uri_edit)
+        device_form.addRow("Source ID", self.live_source_id_edit)
+        device_form.addRow("Center, MHz", self.live_center_spin)
+        device_form.addRow("Sample rate, MHz", self.live_sample_rate_spin)
+        device_form.addRow("Analog BW, MHz", self.live_bandwidth_spin)
+        device_form.addRow("Manual gain, dB", self.live_gain_spin)
+        layout.addWidget(device)
+
+        dsp = QGroupBox("DSP / Persistence")
+        dsp_form = QFormLayout(dsp)
+        self.live_fft_spin = QSpinBox()
+        self.live_fft_spin.setRange(256, 262144)
+        self.live_fft_spin.setSingleStep(256)
+        self.live_fft_spin.setValue(4096)
+        self.live_persistence_check = QCheckBox("Native persistence requested")
+        self.live_persistence_check.setChecked(True)
+        self.live_persistence_window = QSpinBox()
+        self.live_persistence_window.setRange(2, 100000)
+        self.live_persistence_window.setValue(500)
+        self.live_persistence_bins = QSpinBox()
+        self.live_persistence_bins.setRange(2, 2048)
+        self.live_persistence_bins.setValue(256)
+        dsp_form.addRow("FFT", self.live_fft_spin)
+        dsp_form.addRow("Hop", QLabel("50% (fixed-band baseline)"))
+        dsp_form.addRow(self.live_persistence_check)
+        dsp_form.addRow("Persistence frames", self.live_persistence_window)
+        dsp_form.addRow("Persistence bins", self.live_persistence_bins)
+        layout.addWidget(dsp)
+
+        calibration = QGroupBox("Calibration")
+        calibration_form = QFormLayout(calibration)
+        self.live_calibration_label = QLabel("Uncalibrated (dBFS)")
+        self.live_calibration_label.setWordWrap(True)
+        calibration_form.addRow("Status", self.live_calibration_label)
+        layout.addWidget(calibration)
+
+        diagnostics = QGroupBox("Diagnostics")
+        diagnostics_form = QFormLayout(diagnostics)
+        self.live_requested_label = QLabel("—")
+        self.live_applied_label = QLabel("—")
+        self.live_diagnostics_label = QLabel("Not connected")
+        self.live_diagnostics_label.setWordWrap(True)
+        diagnostics_form.addRow("Requested", self.live_requested_label)
+        diagnostics_form.addRow("Applied", self.live_applied_label)
+        diagnostics_form.addRow("Metrics", self.live_diagnostics_label)
+        layout.addWidget(diagnostics)
+
+        buttons = QHBoxLayout()
+        self.live_start_button = QPushButton("Start live")
+        self.live_start_button.clicked.connect(self.open_live_sdr)
+        self.live_stop_button = QPushButton("Stop live")
+        self.live_stop_button.clicked.connect(self.stop_active_live_session)
+        buttons.addWidget(self.live_start_button)
+        buttons.addWidget(self.live_stop_button)
+        layout.addLayout(buttons)
+        self.live_status_label = QLabel("Live source is stopped")
+        self.live_status_label.setWordWrap(True)
+        layout.addWidget(self.live_status_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        self.live_dock = self._dock(
+            "Live SDR", "liveSdrDock", scroll, Qt.DockWidgetArea.LeftDockWidgetArea
+        )
+
+    def _live_options_from_panel(self) -> LiveSessionConfig:
+        source_id = self.live_source_id_edit.text().strip() or "pluto-live"
+        uri = self.live_uri_edit.text().strip()
+        fft_size = int(self.live_fft_spin.value())
+        if fft_size & (fft_size - 1):
+            raise ValueError("FFT must be a power of two")
+        device = DeviceConfig(
+            source_id=source_id,
+            context_uri=uri,
+            center_frequency_hz=self.live_center_spin.value() * 1e6,
+            sample_rate_hz=self.live_sample_rate_spin.value() * 1e6,
+            analog_bandwidth_hz=self.live_bandwidth_spin.value() * 1e6,
+            manual_gain_db=self.live_gain_spin.value(),
+            buffer_samples=262144,
+        )
+        dsp = DspConfig(fft_size=fft_size, hop_size=fft_size // 2, unit=SpectrumUnit.DBFS_BIN)
+        persistence_enabled = self.live_persistence_check.isChecked()
+        persistence = SdrPersistenceConfig(
+            enabled=persistence_enabled,
+            mode=(SdrPersistenceMode.ROLLING_EXACT if persistence_enabled
+                  else SdrPersistenceMode.DISABLED),
+            window_frames=int(self.live_persistence_window.value()),
+            power_min_db=-140.0,
+            power_max_db=20.0,
+            power_bins=int(self.live_persistence_bins.value()),
+            snapshot_rate_hz=30.0,
+        )
+        options = FixedBandOptions(device=device, dsp=dsp, persistence=persistence)
+        self.live_requested_label.setText(
+            f"{device.center_frequency_hz / 1e6:.6f} MHz; "
+            f"SR {device.sample_rate_hz / 1e6:.6f} MHz; FFT {dsp.fft_size}"
+        )
+        return LiveSessionConfig(source_id, f"Live SDR — {source_id}", uri, options)
+
+    def open_live_sdr(self) -> None:
+        try:
+            config = self._live_options_from_panel()
+        except (TypeError, ValueError) as exc:
+            self._show_error("Live SDR", str(exc))
+            return
+        if config.source_id in self._live_controllers:
+            self.set_active_session(self._live_adapters[config.source_id].session_id)
+            self.live_status_label.setText("Эта live-сессия уже запущена")
+            return
+        adapter = LiveSessionAdapter(
+            source_id=config.source_id, display_name=config.display_name,
+            uri=config.uri, max_waterfall_rows=512,
+        )
+        session = adapter.create_session()
+        controller = LiveSdrController(config)
+        self.repository.add(session)
+        self._live_adapters[config.source_id] = adapter
+        self._live_controllers[config.source_id] = controller
+        self._refresh_tree()
+        self.set_active_session(session.session_id)
+        controller.start()
+        self.live_dock.show()
+        self.live_status_label.setText(f"Запуск {config.display_name}…")
+
+    def stop_active_live_session(self) -> None:
+        session = self.active_session()
+        descriptor = session.source_descriptor if session is not None else None
+        controller = self._live_controllers.get(descriptor.source_id) if descriptor else None
+        if controller is not None:
+            controller.request_stop()
+            self.live_status_label.setText("Остановка live-сессии…")
+
+    def _poll_live_updates(self) -> None:
+        for source_id, controller in tuple(self._live_controllers.items()):
+            update = controller.poll_latest()
+            if update is None:
+                continue
+            adapter = self._live_adapters.get(source_id)
+            if adapter is None:
+                continue
+            session = self.repository.get(adapter.session_id)
+            if session is None:
+                continue
+            state = adapter.apply(session, update)
+            if state.ignored_as_stale:
+                continue
+            if state.trace is not None:
+                self.spectrum_renderer.set_trace(state.trace)
+            if state.waterfall is not None and self.active_session_id == session.session_id:
+                self.waterfall_renderer.set_data(state.waterfall)
+            if (
+                state.persistence_snapshot is not None
+                and self.active_session_id == session.session_id
+            ):
+                self._apply_live_persistence_snapshot(state.persistence_snapshot)
+            self._update_live_diagnostics(source_id, state)
+            self._live_refresh_counter += 1
+            if self._live_refresh_counter % 8 == 0:
+                self._refresh_tree()
+
+    def _apply_live_persistence_snapshot(self, snapshot: Any) -> None:
+        frequencies = np.asarray(snapshot.frequencies_hz, dtype=np.float64)
+        if frequencies.size < 2 or snapshot.frequency_bins != frequencies.size:
+            self.spectrum_renderer.clear_heatmap()
+            return
+        density = np.asarray(snapshot.density, dtype=np.float32)
+        expected = int(snapshot.power_bins) * int(snapshot.frequency_bins)
+        if density.size != expected:
+            self.spectrum_renderer.clear_heatmap()
+            return
+        image = np.log1p(np.maximum(density, 0.0)).reshape(
+            int(snapshot.power_bins), int(snapshot.frequency_bins)
+        )
+        finite = image[np.isfinite(image)]
+        vmax = float(np.max(finite)) if finite.size else 1.0
+        self.spectrum_renderer.set_heatmap(
+            image,
+            float(frequencies[0]),
+            float(frequencies[-1]),
+            float(snapshot.power_min_db),
+            float(snapshot.power_max_db),
+            levels=(0.0, max(1.0, vmax)),
+        )
+        self.live_status_label.setText(
+            f"Native persistence: {snapshot.processed_frames:,} frames"
+        )
+
+    def _update_live_diagnostics(self, source_id: str, state: Any) -> None:
+        self.live_status_label.setText(f"{source_id}: {state.state.value}")
+        if state.error:
+            self.live_diagnostics_label.setText(state.error)
+            return
+        applied = state.applied_config
+        if applied is not None:
+            self.live_applied_label.setText(
+                f"{getattr(applied, 'center_frequency_hz', 0.0) / 1e6:.6f} MHz; "
+                f"SR {getattr(applied, 'sample_rate_hz', 0.0) / 1e6:.6f} MHz; "
+                f"generation {getattr(applied, 'config_generation', 0)}"
+            )
+        metrics = getattr(state.metrics, "engine", None)
+        if metrics is not None:
+            self.live_diagnostics_label.setText(
+                f"FFT {metrics.fft_frames_computed:,}; "
+                f"snapshots {metrics.spectrum_snapshots_emitted:,}; "
+                f"persistence {metrics.persistence_updates:,}; "
+                f"drops I/Q {metrics.iq_blocks_dropped:,}, FFT {metrics.fft_frames_dropped:,}"
+            )
 
     @staticmethod
     def _frequency_spin(value: float = 0.0) -> QDoubleSpinBox:
@@ -2561,6 +2813,7 @@ class MainWindow(QMainWindow):
 
     def _create_actions(self) -> None:
         self.open_action = QAction("Открыть DFL…", self, shortcut="Ctrl+O", triggered=self.open_files)
+        self.open_live_action = QAction("Открыть Live SDR…", self, shortcut="Ctrl+L", triggered=self.open_live_sdr)
         self.close_action = QAction("Закрыть сессию", self, triggered=self.close_active_session)
         self.open_workspace_action = QAction("Открыть workspace…", self, shortcut="Ctrl+Shift+O", triggered=self.open_workspace)
         self.save_workspace_action = QAction("Сохранить workspace", self, shortcut="Ctrl+S", triggered=self.save_workspace)
@@ -2617,7 +2870,7 @@ class MainWindow(QMainWindow):
 
     def _create_menus_and_toolbar(self) -> None:
         file_menu = self.menuBar().addMenu("Файл")
-        file_menu.addActions([self.open_action, self.close_action])
+        file_menu.addActions([self.open_action, self.open_live_action, self.close_action])
         file_menu.addSeparator()
         file_menu.addActions([self.open_workspace_action, self.save_workspace_action, self.save_workspace_as_action])
         file_menu.addSeparator()
@@ -2658,7 +2911,7 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Основная панель", self)
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(True)
-        toolbar.addActions([self.open_action, self.save_workspace_action])
+        toolbar.addActions([self.open_action, self.open_live_action, self.save_workspace_action])
         toolbar.addSeparator()
         toolbar.addActions([
             self.auto_scale_action,
@@ -2908,6 +3161,15 @@ class MainWindow(QMainWindow):
         # Invalidate the heatmap context before the frame seek below can fire
         # the rolling trigger, so no request is started for a stale context.
         self._heatmap_context_changed()
+        source_type = (
+            session.source_descriptor.source_type.value
+            if session.source_descriptor is not None else ""
+        )
+        if source_type != "live_iq":
+            self.spectrum_renderer.clear_heatmap()
+        elif getattr(self, "_live_heatmap_source_id", None) != session.source_descriptor.source_id:
+            self.spectrum_renderer.clear_heatmap()
+            self._live_heatmap_source_id = session.source_descriptor.source_id
         self._render_sessions()
         self._update_metadata(session)
         self._update_marker_table(session)
@@ -2967,8 +3229,16 @@ class MainWindow(QMainWindow):
             closed_session_id=self.active_session_id,
             closed_source_path=str(closing.source_path) if closing is not None else None,
         )
-        self.repository.remove(self.active_session_id)
-        for key in [key for key in self._frame_readers if key[0] == self.active_session_id]:
+        closing_id = self.active_session_id
+        closing_session = self.repository.get(closing_id)
+        if closing_session is not None and closing_session.source_descriptor is not None:
+            source_id = closing_session.source_descriptor.source_id
+            controller = self._live_controllers.pop(source_id, None)
+            self._live_adapters.pop(source_id, None)
+            if controller is not None:
+                controller.close(wait=False)
+        self.repository.remove(closing_id)
+        for key in [key for key in self._frame_readers if key[0] == closing_id]:
             self._frame_readers.pop(key).close()
             self._spectrogram_indexes.pop(key, None)
         self._heatmap_on_session_removed(self.active_session_id)
@@ -2985,7 +3255,8 @@ class MainWindow(QMainWindow):
         self.trace_tree.clear()
         for session in self.repository.all():
             label = session.name if session.visible else f"{session.name} [скрыт]"
-            root = QTreeWidgetItem([label, "DFL"])
+            source_type = session.source_descriptor.source_type.value if session.source_descriptor else "dfl_file"
+            root = QTreeWidgetItem([label, "Live" if source_type == "live_iq" else "DFL"])
             root.setData(0, ROLE_KIND, "session")
             root.setData(0, ROLE_SESSION, session.session_id)
             root.setToolTip(0, str(session.source_path))
@@ -3159,6 +3430,12 @@ class MainWindow(QMainWindow):
         # Cancel heatmap work scoped to this session, drop its pending request
         # and cached densities, and invalidate late callbacks.
         self._heatmap_on_session_removed(session_id)
+        if session.source_descriptor is not None:
+            source_id = session.source_descriptor.source_id
+            controller = self._live_controllers.pop(source_id, None)
+            self._live_adapters.pop(source_id, None)
+            if controller is not None:
+                controller.close(wait=False)
 
         self.repository.remove(session_id)
         self._audit(
@@ -6067,6 +6344,12 @@ class MainWindow(QMainWindow):
             active_workers=len(self._workers),
         )
         self.playback_timer.stop()
+        self._live_timer.stop()
+        for controller in self._live_controllers.values():
+            controller.close(wait=False)
+        self._live_controllers.clear()
+        self._live_adapters.clear()
+        self._frame_loader.close()
         # §5.10: controller shutdown first (phase, pending, cancel, late-callback
         # guard); the common worker cancel below stays as a safety net.
         self._heatmap_controller.shutdown()

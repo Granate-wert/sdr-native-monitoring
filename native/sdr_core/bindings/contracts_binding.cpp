@@ -159,6 +159,36 @@ py::dict contract_schema() {
         "BackendKind",
         {{"CPU", BackendKind::Cpu}, {"CUDA", BackendKind::Cuda}}
     );
+    add_wire<ComputeBackendKind>(
+        enums,
+        "ComputeBackendKind",
+        {
+            {"AUTO", ComputeBackendKind::Auto},
+            {"CPU", ComputeBackendKind::Cpu},
+            {"CUDA", ComputeBackendKind::Cuda},
+            {"HIP", ComputeBackendKind::Hip},
+        }
+    );
+    add_wire<BackendErrorCode>(
+        enums,
+        "BackendErrorCode",
+        {
+            {"NONE", BackendErrorCode::None},
+            {"RUNTIME_NOT_FOUND", BackendErrorCode::RuntimeNotFound},
+            {"RUNTIME_INCOMPATIBLE", BackendErrorCode::RuntimeIncompatible},
+            {"NO_DEVICE", BackendErrorCode::NoDevice},
+            {"UNSUPPORTED_DEVICE", BackendErrorCode::UnsupportedDevice},
+            {"ALLOCATION_FAILED", BackendErrorCode::AllocationFailed},
+            {"COPY_FAILED", BackendErrorCode::CopyFailed},
+            {"KERNEL_LAUNCH_FAILED", BackendErrorCode::KernelLaunchFailed},
+            {"FFT_PLAN_FAILED", BackendErrorCode::FftPlanFailed},
+            {"FFT_EXECUTION_FAILED", BackendErrorCode::FftExecutionFailed},
+            {"DEVICE_LOST", BackendErrorCode::DeviceLost},
+            {"TIMEOUT_OR_TDR", BackendErrorCode::TimeoutOrTdr},
+            {"NUMERICAL_SELF_TEST_FAILED", BackendErrorCode::NumericalSelfTestFailed},
+            {"UNKNOWN", BackendErrorCode::Unknown},
+        }
+    );
     add_wire<PrecisionMode>(
         enums,
         "PrecisionMode",
@@ -230,7 +260,7 @@ py::dict contract_schema() {
     quality["MISSING_SEGMENT"] = static_cast<std::uint32_t>(QualityFlag::MissingSegment);
     quality["TIMESTAMP_ESTIMATED"] =
         static_cast<std::uint32_t>(QualityFlag::TimestampEstimated);
-    quality["CUDA_FALLBACK"] = static_cast<std::uint32_t>(QualityFlag::CudaFallback);
+    quality["BACKEND_FALLBACK"] = static_cast<std::uint32_t>(QualityFlag::BackendFallback);
     enums["QualityFlag"] = quality;
 
     py::dict result;
@@ -407,10 +437,30 @@ void bind_contracts(py::module_& module) {
         .value("STITCH_OVERLAP", QualityFlag::StitchOverlap)
         .value("MISSING_SEGMENT", QualityFlag::MissingSegment)
         .value("TIMESTAMP_ESTIMATED", QualityFlag::TimestampEstimated)
-        .value("CUDA_FALLBACK", QualityFlag::CudaFallback);
+        .value("BACKEND_FALLBACK", QualityFlag::BackendFallback);
     py::enum_<BackendKind>(module, "BackendKind")
         .value("CPU", BackendKind::Cpu)
         .value("CUDA", BackendKind::Cuda);
+    py::enum_<ComputeBackendKind>(module, "ComputeBackendKind")
+        .value("AUTO", ComputeBackendKind::Auto)
+        .value("CPU", ComputeBackendKind::Cpu)
+        .value("CUDA", ComputeBackendKind::Cuda)
+        .value("HIP", ComputeBackendKind::Hip);
+    py::enum_<BackendErrorCode>(module, "BackendErrorCode")
+        .value("NONE", BackendErrorCode::None)
+        .value("RUNTIME_NOT_FOUND", BackendErrorCode::RuntimeNotFound)
+        .value("RUNTIME_INCOMPATIBLE", BackendErrorCode::RuntimeIncompatible)
+        .value("NO_DEVICE", BackendErrorCode::NoDevice)
+        .value("UNSUPPORTED_DEVICE", BackendErrorCode::UnsupportedDevice)
+        .value("ALLOCATION_FAILED", BackendErrorCode::AllocationFailed)
+        .value("COPY_FAILED", BackendErrorCode::CopyFailed)
+        .value("KERNEL_LAUNCH_FAILED", BackendErrorCode::KernelLaunchFailed)
+        .value("FFT_PLAN_FAILED", BackendErrorCode::FftPlanFailed)
+        .value("FFT_EXECUTION_FAILED", BackendErrorCode::FftExecutionFailed)
+        .value("DEVICE_LOST", BackendErrorCode::DeviceLost)
+        .value("TIMEOUT_OR_TDR", BackendErrorCode::TimeoutOrTdr)
+        .value("NUMERICAL_SELF_TEST_FAILED", BackendErrorCode::NumericalSelfTestFailed)
+        .value("UNKNOWN", BackendErrorCode::Unknown);
     py::enum_<PrecisionMode>(module, "PrecisionMode")
         .value("REFERENCE_F64", PrecisionMode::ReferenceF64)
         .value("ACCURATE_F32_F64_ACCUM", PrecisionMode::AccurateF32F64Accum)

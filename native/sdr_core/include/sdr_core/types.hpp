@@ -13,7 +13,11 @@ namespace sdr_core {
 inline constexpr std::string_view contract_schema_name = "sdr-native-contracts";
 // Version 2: P04 adds EngineState, OverflowPolicy and EventSeverity wire enums.
 // Version 3: P05 restricts DspConfig.fft_size to power-of-two in [256, 262144].
-inline constexpr std::uint32_t contract_schema_version = 3;
+// Version 4: P08 adds ComputeBackendKind, BackendErrorCode and the
+// vendor-neutral GPU backend model (P08H-00). The Hip enumerator declares the
+// future AMD backend contract only; it does not imply an implementation.
+// Version 5: P08H-00 freezes generic fallback/discontinuity quality bits.
+inline constexpr std::uint32_t contract_schema_version = 5;
 
 enum class SourceType : std::uint8_t {
     DflFile,
@@ -102,12 +106,46 @@ enum class QualityFlag : std::uint32_t {
     StitchOverlap = 1U << 11U,
     MissingSegment = 1U << 12U,
     TimestampEstimated = 1U << 13U,
-    CudaFallback = 1U << 14U,
+    BackendFallback = 1U << 14U,
+    // Compatibility wire alias for clients built against the pre-freeze name.
+    CudaFallback = BackendFallback,
+    BackendDiscontinuity = 1U << 15U,
 };
 
 enum class BackendKind : std::uint8_t {
     Cpu,
     Cuda,
+};
+
+// P08/P08H-00 vendor-neutral compute backend identifier. Used both as a
+// selection preference (Auto allowed) and as the identifier of the actually
+// active backend (Auto/Hip are never reported as active). Hip declares the
+// future AMD HIP backend contract (P08H branch); it is NOT implemented.
+enum class ComputeBackendKind : std::uint8_t {
+    Auto,
+    Cpu,
+    Cuda,
+    Hip,
+};
+
+// P08/P08H-00 vendor-neutral backend error taxonomy. Vendor-specific errors
+// (CUDA today, HIP later) are translated into these stable categories before
+// crossing any public boundary.
+enum class BackendErrorCode : std::uint8_t {
+    None,
+    RuntimeNotFound,
+    RuntimeIncompatible,
+    NoDevice,
+    UnsupportedDevice,
+    AllocationFailed,
+    CopyFailed,
+    KernelLaunchFailed,
+    FftPlanFailed,
+    FftExecutionFailed,
+    DeviceLost,
+    TimeoutOrTdr,
+    NumericalSelfTestFailed,
+    Unknown,
 };
 
 enum class PrecisionMode : std::uint8_t {
@@ -168,6 +206,8 @@ enum class EventSeverity : std::uint8_t {
 [[nodiscard]] std::string_view to_wire(DeviceState value);
 [[nodiscard]] std::string_view to_wire(CalibrationStatus value);
 [[nodiscard]] std::string_view to_wire(BackendKind value);
+[[nodiscard]] std::string_view to_wire(ComputeBackendKind value);
+[[nodiscard]] std::string_view to_wire(BackendErrorCode value);
 [[nodiscard]] std::string_view to_wire(PrecisionMode value);
 [[nodiscard]] std::string_view to_wire(PersistenceMode value);
 [[nodiscard]] std::string_view to_wire(EngineState value);

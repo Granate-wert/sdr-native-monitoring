@@ -8,7 +8,7 @@ Status: development. Real-device validation remains hardware-dependent.
 
 ## Quick start
 
-```powershell
+~~~powershell
 python -m unittest discover -s tests -v
 python main.py
-```
+~~~

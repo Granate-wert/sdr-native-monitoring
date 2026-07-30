@@ -76,7 +76,7 @@ def valid_dsp(**changes: object) -> DspConfig:
 class PythonContractTests(unittest.TestCase):
     def test_schema_identity_and_all_required_enums(self) -> None:
         self.assertEqual(CONTRACT_SCHEMA_NAME, "sdr-native-contracts")
-        self.assertEqual(CONTRACT_SCHEMA_VERSION, 3)
+        self.assertEqual(CONTRACT_SCHEMA_VERSION, 5)
         schema = enum_wire_schema()
         for name in (
             "SourceType",
@@ -100,7 +100,7 @@ class PythonContractTests(unittest.TestCase):
                 self.assertTrue(schema[name])
         self.assertEqual(schema["SourceType"]["DFL_FILE"], "dfl_file")
         self.assertEqual(schema["SpectrumUnit"]["DBM_HZ"], "dBm/Hz")
-        self.assertEqual(schema["QualityFlag"]["CUDA_FALLBACK"], 1 << 14)
+        self.assertEqual(schema["QualityFlag"]["BACKEND_FALLBACK"], 1 << 14)
         self.assertEqual(DeviceState.SHUTTING_DOWN.value, "shutting_down")
 
     def test_configs_are_frozen_and_validate_before_native_call(self) -> None:

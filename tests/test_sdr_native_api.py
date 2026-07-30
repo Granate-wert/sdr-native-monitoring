@@ -65,6 +65,29 @@ class NativeApiFallbackTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertNotIn(token, combined)
 
+    def test_common_core_has_no_vendor_gpu_types(self) -> None:
+        """P08H-00 portability gate: common headers stay vendor-neutral."""
+        common_files = list((NATIVE_SOURCE / "include" / "sdr_core").rglob("*.hpp")) + list(
+            (NATIVE_SOURCE / "src" / "core").rglob("*.cpp")
+        ) + list((NATIVE_SOURCE / "src" / "dsp").rglob("*.cpp"))
+        self.assertGreaterEqual(len(common_files), 4)
+        forbidden = (
+            "cuda_runtime",
+            "cuda.h",
+            "cufft",
+            "cudaStream_t",
+            "cufftHandle",
+            "CUdevice",
+            "hip/hip",
+            "hipfft",
+            "amdhip",
+        )
+        for path in common_files:
+            text = path.read_text(encoding="utf-8")
+            for token in forbidden:
+                with self.subTest(path=path.name, token=token):
+                    self.assertNotIn(token, text)
+
     def test_public_common_api_exports_no_raw_pointers(self) -> None:
         api = (NATIVE_SOURCE / "include" / "sdr_core" / "api.hpp").read_text(encoding="utf-8")
         self.assertNotIn("*", api)
@@ -110,11 +133,12 @@ class CompiledNativeApiTests(unittest.TestCase):
         for field in ("version", "compiler", "platform", "architecture", "build_type"):
             self.assertIsInstance(info[field], str)
             self.assertTrue(info[field])
-        self.assertFalse(info["cuda_compiled"])
+        self.assertIsInstance(info["cuda_compiled"], bool)
         self.assertTrue(info["pluto_compiled"])
 
     def test_cpu_backend_and_self_test(self) -> None:
-        self.assertEqual(list(self.native.available_backends()), ["cpu", "pluto-libiio"])
+        expected = ["cpu", "pluto-libiio"] + (["cuda"] if self.native.build_info()["cuda_compiled"] else [])
+        self.assertEqual(list(self.native.available_backends()), expected)
         outcome = dict(self.native.run_self_test())
         self.assertIs(outcome.get("ok"), True)
         self.assertIn("operational", str(outcome.get("message")))
@@ -184,7 +208,8 @@ for _ in range(20):
         for _ in range(5):
             reloaded = importlib.reload(native_api)
             self.assertTrue(reloaded.native_availability().available)
-            self.assertEqual(reloaded.available_backends(), ("cpu", "pluto-libiio"))
+            expected = ("cpu", "pluto-libiio") + (("cuda",) if reloaded.build_info()["cuda_compiled"] else ())
+            self.assertEqual(reloaded.available_backends(), expected)
         gc.collect()
 
 

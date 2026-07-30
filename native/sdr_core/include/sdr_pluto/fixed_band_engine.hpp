@@ -4,6 +4,7 @@
 #include "sdr_core/configuration.hpp"
 #include "sdr_core/events.hpp"
 #include "sdr_core/metrics.hpp"
+#include "sdr_core/persistence.hpp"
 #include "sdr_core/types.hpp"
 #include "sdr_pluto/pluto_backend.hpp"
 
@@ -24,6 +25,11 @@ struct FixedBandConfig {
         .fft_size = 4096U,
         .hop_size = 2048U,
     };
+    sdr_core::PersistenceConfig persistence{};
+    // P08 compute backend selection. AUTO uses CUDA only after self-test and
+    // above the measured workload crossover; see ADR-022.
+    sdr_core::ComputeBackendKind backend{sdr_core::ComputeBackendKind::Auto};
+    bool allow_runtime_fallback{true};
     std::uint32_t acquisition_queue_capacity{16U};
     sdr_core::OverflowPolicy acquisition_overflow{sdr_core::OverflowPolicy::DropNewest};
     std::uint32_t spectrum_queue_capacity{4U};
@@ -46,13 +52,23 @@ struct FixedBandMetrics {
     StreamMetrics device;
     sdr_core::QueueStats acquisition_queue;
     sdr_core::QueueStats spectrum_queue;
+    sdr_core::QueueStats persistence_queue;
     std::uint64_t transient_blocks_discarded{};
     std::uint64_t transient_samples_discarded{};
     std::uint64_t spectrum_snapshots_superseded{};
+    std::uint64_t persistence_snapshots_superseded{};
     std::uint64_t shutdown_blocks_discarded{};
     std::uint64_t shutdown_samples_discarded{};
     std::uint64_t expected_cancellations{};
     std::uint64_t diagnostic_events_lost{};
+    // P08 backend visibility (§8.2): requested vs actual backend and the
+    // fallback counters of the DSP stage.
+    sdr_core::ComputeBackendKind requested_backend{sdr_core::ComputeBackendKind::Auto};
+    sdr_core::ComputeBackendKind active_backend{sdr_core::ComputeBackendKind::Cpu};
+    bool backend_self_test_passed{};
+    std::uint64_t backend_fallback_count{};
+    std::uint64_t backend_switch_count{};
+    sdr_core::BackendErrorCode last_backend_error{sdr_core::BackendErrorCode::None};
 };
 
 // Windows Pluto/libiio acquisition -> bounded native queue -> CPU DSP ->
@@ -86,6 +102,9 @@ public:
     [[nodiscard]] FixedBandMetrics metrics() const;
 
     [[nodiscard]] std::vector<sdr_core::SpectrumFrame> poll_spectrum_frames(
+        std::size_t max_items
+    );
+    [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
         std::size_t max_items
     );
     [[nodiscard]] std::vector<sdr_core::DiagnosticEvent> poll_events(

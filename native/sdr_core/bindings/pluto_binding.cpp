@@ -3,7 +3,9 @@
 #include "sdr_pluto/fixed_band_engine.hpp"
 #include "sdr_pluto/pluto_backend.hpp"
 
+#include <algorithm>
 #include <memory>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
 namespace py = pybind11;
@@ -67,21 +69,53 @@ void bind_pluto(py::module_& module) {
         .def_readonly("output_blocks_dropped", &sdr_pluto::StreamMetrics::output_blocks_dropped)
         .def_readonly("estimated_dropped_samples", &sdr_pluto::StreamMetrics::estimated_dropped_samples);
 
+    py::class_<sdr_core::PersistenceSnapshot>(module, "PersistenceSnapshot")
+        .def_readonly("update_sequence", &sdr_core::PersistenceSnapshot::update_sequence)
+        .def_readonly("timestamp_ns", &sdr_core::PersistenceSnapshot::timestamp_ns)
+        .def_readonly("source_frame_sequence", &sdr_core::PersistenceSnapshot::source_frame_sequence)
+        .def_readonly("power_min_db", &sdr_core::PersistenceSnapshot::power_min_db)
+        .def_readonly("power_max_db", &sdr_core::PersistenceSnapshot::power_max_db)
+        .def_readonly("power_bins", &sdr_core::PersistenceSnapshot::power_bins)
+        .def_readonly("frequency_bins", &sdr_core::PersistenceSnapshot::frequency_bins)
+        .def_readonly("processed_frames", &sdr_core::PersistenceSnapshot::processed_frames)
+        .def_readonly("exponential_decay", &sdr_core::PersistenceSnapshot::exponential_decay)
+        .def_property_readonly("frequencies_hz", [](const sdr_core::PersistenceSnapshot& value) {
+            if (!value.frequencies_hz) {
+                return py::array_t<double>();
+            }
+            py::array_t<double> result(static_cast<py::ssize_t>(value.frequencies_hz->size()));
+            std::copy(value.frequencies_hz->begin(), value.frequencies_hz->end(), result.mutable_data());
+            return result;
+        })
+        .def_property_readonly("density", [](const sdr_core::PersistenceSnapshot& value) {
+            if (!value.density) {
+                return py::array_t<float>();
+            }
+            py::array_t<float> result(static_cast<py::ssize_t>(value.density->size()));
+            std::copy(value.density->begin(), value.density->end(), result.mutable_data());
+            return result;
+        });
+
     py::class_<sdr_pluto::FixedBandConfig>(module, "FixedBandConfig")
         .def(py::init([](
             const DeviceConfig& device,
             const DspConfig& dsp,
+            const ComputeBackendKind backend,
+            const bool allow_runtime_fallback,
             const std::uint32_t acquisition_queue_capacity,
             const OverflowPolicy acquisition_overflow,
             const std::uint32_t spectrum_queue_capacity,
             const std::uint32_t event_queue_capacity,
             const double snapshot_rate_hz,
             const std::uint32_t discard_blocks_after_start,
-            const bool dc_removal_block_mean
+            const bool dc_removal_block_mean,
+            const PersistenceConfig& persistence
         ) {
             sdr_pluto::FixedBandConfig result;
             result.device = device;
             result.dsp = dsp;
+            result.backend = backend;
+            result.allow_runtime_fallback = allow_runtime_fallback;
             result.acquisition_queue_capacity = acquisition_queue_capacity;
             result.acquisition_overflow = acquisition_overflow;
             result.spectrum_queue_capacity = spectrum_queue_capacity;
@@ -89,21 +123,28 @@ void bind_pluto(py::module_& module) {
             result.snapshot_rate_hz = snapshot_rate_hz;
             result.discard_blocks_after_start = discard_blocks_after_start;
             result.dc_removal_block_mean = dc_removal_block_mean;
+            result.persistence = persistence;
             sdr_pluto::validate(result);
             return result;
         }),
             py::arg("device"),
             py::arg("dsp"),
+            py::arg("backend") = ComputeBackendKind::Auto,
+            py::arg("allow_runtime_fallback") = true,
             py::arg("acquisition_queue_capacity") = 16U,
             py::arg("acquisition_overflow") = OverflowPolicy::DropNewest,
             py::arg("spectrum_queue_capacity") = 4U,
             py::arg("event_queue_capacity") = 64U,
             py::arg("snapshot_rate_hz") = 60.0,
             py::arg("discard_blocks_after_start") = 2U,
-            py::arg("dc_removal_block_mean") = false
+            py::arg("dc_removal_block_mean") = false,
+            py::arg("persistence") = PersistenceConfig{}
         )
         .def_readonly("device", &sdr_pluto::FixedBandConfig::device)
         .def_readonly("dsp", &sdr_pluto::FixedBandConfig::dsp)
+        .def_readonly("persistence", &sdr_pluto::FixedBandConfig::persistence)
+        .def_readonly("backend", &sdr_pluto::FixedBandConfig::backend)
+        .def_readonly("allow_runtime_fallback", &sdr_pluto::FixedBandConfig::allow_runtime_fallback)
         .def_readonly("acquisition_queue_capacity", &sdr_pluto::FixedBandConfig::acquisition_queue_capacity)
         .def_readonly("acquisition_overflow", &sdr_pluto::FixedBandConfig::acquisition_overflow)
         .def_readonly("spectrum_queue_capacity", &sdr_pluto::FixedBandConfig::spectrum_queue_capacity)
@@ -120,13 +161,21 @@ void bind_pluto(py::module_& module) {
         .def_readonly("device", &sdr_pluto::FixedBandMetrics::device)
         .def_readonly("acquisition_queue", &sdr_pluto::FixedBandMetrics::acquisition_queue)
         .def_readonly("spectrum_queue", &sdr_pluto::FixedBandMetrics::spectrum_queue)
+        .def_readonly("persistence_queue", &sdr_pluto::FixedBandMetrics::persistence_queue)
         .def_readonly("transient_blocks_discarded", &sdr_pluto::FixedBandMetrics::transient_blocks_discarded)
         .def_readonly("transient_samples_discarded", &sdr_pluto::FixedBandMetrics::transient_samples_discarded)
         .def_readonly("spectrum_snapshots_superseded", &sdr_pluto::FixedBandMetrics::spectrum_snapshots_superseded)
+        .def_readonly("persistence_snapshots_superseded", &sdr_pluto::FixedBandMetrics::persistence_snapshots_superseded)
         .def_readonly("shutdown_blocks_discarded", &sdr_pluto::FixedBandMetrics::shutdown_blocks_discarded)
         .def_readonly("shutdown_samples_discarded", &sdr_pluto::FixedBandMetrics::shutdown_samples_discarded)
         .def_readonly("expected_cancellations", &sdr_pluto::FixedBandMetrics::expected_cancellations)
-        .def_readonly("diagnostic_events_lost", &sdr_pluto::FixedBandMetrics::diagnostic_events_lost);
+        .def_readonly("diagnostic_events_lost", &sdr_pluto::FixedBandMetrics::diagnostic_events_lost)
+        .def_readonly("requested_backend", &sdr_pluto::FixedBandMetrics::requested_backend)
+        .def_readonly("active_backend", &sdr_pluto::FixedBandMetrics::active_backend)
+        .def_readonly("backend_self_test_passed", &sdr_pluto::FixedBandMetrics::backend_self_test_passed)
+        .def_readonly("backend_fallback_count", &sdr_pluto::FixedBandMetrics::backend_fallback_count)
+        .def_readonly("backend_switch_count", &sdr_pluto::FixedBandMetrics::backend_switch_count)
+        .def_readonly("last_backend_error", &sdr_pluto::FixedBandMetrics::last_backend_error);
 
     py::class_<sdr_pluto::FixedBandEngine>(module, "PlutoFixedBandEngine")
         .def(py::init<std::string, std::uint32_t>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::call_guard<py::gil_scoped_release>())
@@ -145,6 +194,7 @@ void bind_pluto(py::module_& module) {
         .def("applied_config", &sdr_pluto::FixedBandEngine::applied_config, py::call_guard<py::gil_scoped_release>())
         .def("metrics", &sdr_pluto::FixedBandEngine::metrics, py::call_guard<py::gil_scoped_release>())
         .def("poll_spectrum_frames", &sdr_pluto::FixedBandEngine::poll_spectrum_frames, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
+        .def("poll_persistence_snapshots", &sdr_pluto::FixedBandEngine::poll_persistence_snapshots, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_events", &sdr_pluto::FixedBandEngine::poll_events, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>());
 
     py::class_<sdr_pluto::PlutoDevice>(module, "PlutoDevice")
