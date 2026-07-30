@@ -8,7 +8,7 @@ The project provides spectrum and waterfall inspection, engineering measurements
 ## Engineering invariants
 
 Input DFL and measurement recordings are always read-only. Every queue and cache has a finite bound. Python is not called for each sample or each FFT. GUI refresh rate is independent from analytical processing rate. dBm is not emitted for live SDR data without applicable calibration. CPU remains a supported reference backend.
-P14 adds streaming SigMF-compatible IQ recording, versioned spectrum JSONL recording, explicit gap/drop sidecars, bounded backpressure, atomic recovery, disk forecasts, and replay into the native DSP boundary. Status: development. Real-device validation remains hardware-dependent.
+P14 adds streaming SigMF-compatible IQ recording, versioned spectrum JSONL recording, explicit gap/drop sidecars, bounded backpressure, atomic recovery, disk forecasts, and replay into the native DSP boundary. Status: development. Real-device validation remains hardware-dependent. P15 adds a deterministic offline validation/benchmark CLI with CSV/JSON/log/plot evidence; CUDA, Pluto hardware, reference-equipment accuracy, and long soaks are reported as NOT_VERIFIED until run explicitly.
 
 ## Quick start
 

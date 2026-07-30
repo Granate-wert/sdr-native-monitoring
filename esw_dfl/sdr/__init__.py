@@ -141,7 +141,38 @@ from .recording import (
     replay_iq_through_native,
 )
 
+from .validation import (
+    ValidationReport,
+    ValidationResult,
+    ValidationStatus,
+    benchmark_cpu,
+    collect_platform_fingerprint,
+    run_hardware_fixed_band,
+    run_offline_validation,
+    validate_calibration_residuals,
+    validate_cpu_precision,
+    validate_cuda,
+    validate_recording,
+    validate_sweep_quality,
+    validate_synthetic_fixed_band,
+    validate_synthetic_generators,
+)
+
 __all__ = [
+    "ValidationReport",
+    "ValidationResult",
+    "ValidationStatus",
+    "benchmark_cpu",
+    "collect_platform_fingerprint",
+    "run_hardware_fixed_band",
+    "run_offline_validation",
+    "validate_calibration_residuals",
+    "validate_cpu_precision",
+    "validate_cuda",
+    "validate_recording",
+    "validate_sweep_quality",
+    "validate_synthetic_fixed_band",
+    "validate_synthetic_generators",
     "RECORDING_SCHEMA_NAME",
     "RECORDING_SCHEMA_VERSION",
     "SPECTRUM_SCHEMA_NAME",
