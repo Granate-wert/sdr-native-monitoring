@@ -71,6 +71,19 @@ from .fixed_band import (
     NativePersistenceSnapshot,
     QueueSnapshot,
 )
+from .fake_live_service import (
+    FakeAppliedConfig,
+    FakeLiveConfig,
+    FakeLiveService,
+    fake_capabilities,
+    validate_against_capabilities,
+)
+from .live_profile import (
+    DeviceProfile,
+    ProfileCollection,
+    ProfileStoreError,
+    DeviceProfileStore,
+)
 from .controller import (
     LiveControllerState,
     LiveControllerUpdate,
@@ -217,11 +230,16 @@ __all__ = [
     "DetectorType",
     "DeviceCapabilities",
     "DeviceConfig",
+    "DeviceProfile",
+    "DeviceProfileStore",
     "DeviceState",
     "DspConfig",
     "EngineMetrics",
     "EngineState",
     "EventSeverity",
+    "FakeAppliedConfig",
+    "FakeLiveConfig",
+    "FakeLiveService",
     "FixedBandEngineService",
     "FixedBandEvent",
     "FixedBandMetricsSnapshot",
@@ -271,6 +289,8 @@ __all__ = [
     "PlutoSampleLayout",
     "PlutoStreamMetrics",
     "PrecisionMode",
+    "ProfileCollection",
+    "ProfileStoreError",
     "QualityFlag",
     "QueueSnapshot",
     "RecordingConfig",
@@ -295,6 +315,7 @@ __all__ = [
     "contract_to_json",
     "discover_pluto",
     "enum_wire_schema",
+    "fake_capabilities",
     "native_availability",
     "profile_from_csv",
     "probe_native",
@@ -302,6 +323,7 @@ __all__ = [
     "run_self_test",
     "source_descriptor_from_native",
     "source_descriptor_to_native",
+    "validate_against_capabilities",
     "validate_profile_file",
     "validate_unit_calibration",
 ]

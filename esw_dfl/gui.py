@@ -6660,7 +6660,29 @@ def run_gui() -> None:
         path=str(file_handler.path),
         max_records=file_handler.max_records,
     )
-    window = MainWindow()
+    from .ui.app_shell import AppShell
+    from .ui.bootstrap import (
+        configure_application_identity,
+        resolve_bootstrap_config,
+    )
+
+    bootstrap_config = resolve_bootstrap_config()
+    log_event(
+        LOGGER,
+        "program",
+        "shell_selected",
+        use_app_shell=bootstrap_config.use_app_shell,
+        environment=bootstrap_config.environment_value,
+    )
+
+    if bootstrap_config.use_app_shell:
+        # AppShell mode is opt-in: the legacy MainWindow is *not*
+        # constructed. Later packages wire services through a dedicated
+        # facade once the renderer migration is ready.
+        configure_application_identity(app)
+        window = AppShell()
+    else:
+        window = MainWindow()
     window.show()
     try:
         app.exec()
