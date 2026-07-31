@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from typing import ClassVar
 import unittest
 from unittest.mock import patch
 
@@ -35,6 +36,8 @@ from heatmap_test_isolation import shutdown_window
 
 
 class P16UiBaselineTests(unittest.TestCase):
+    app: ClassVar[QApplication]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])

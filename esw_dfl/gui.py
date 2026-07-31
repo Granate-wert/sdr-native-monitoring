@@ -54,6 +54,8 @@ from PySide6.QtWidgets import (
 )
 
 from .adapter import DflMeasurementAdapter
+from .ui.compatibility import LegacyMainWindowBridge
+from .ui.services import ApplicationServices
 from .activity_log import (
     DEFAULT_MAX_RECORDS,
     default_activity_log_path,
@@ -572,6 +574,19 @@ class MainWindow(QMainWindow):
         self._heatmap_controller.snapshot_ready.connect(self._apply_persistence_snapshot)
         self._heatmap_controller.phase_changed.connect(self._apply_heatmap_phase)
         self._heatmap_controller.failed.connect(self._heatmap_controller_failed)
+
+        # P16UI-01 exposes existing instances to presentation code without
+        # replacing their ownership or moving device/DSP work into widgets.
+        self.application_services = ApplicationServices(
+            repository=self.repository,
+            dfl_adapter=self.adapter,
+            thread_pool=self.thread_pool,
+            time_gated_service=self.time_gated_service,
+            heatmap_controller=self._heatmap_controller,
+            live_controllers=self._live_controllers,
+            live_adapters=self._live_adapters,
+        )
+        self._legacy_ui_bridge = LegacyMainWindowBridge(self)
 
         self.spectrum_renderer = PyQtGraphSpectrumRenderer()
         self.waterfall_renderer = PyQtGraphWaterfallRenderer()
@@ -3006,61 +3021,12 @@ class MainWindow(QMainWindow):
             )
 
     def _create_actions(self) -> None:
-        self.open_action = QAction("Открыть DFL…", self, shortcut="Ctrl+O", triggered=self.open_files)
-        self.open_live_action = QAction("Открыть Live SDR…", self, shortcut="Ctrl+L", triggered=self.open_live_sdr)
-        self.close_action = QAction("Закрыть сессию", self, triggered=self.close_active_session)
-        self.open_workspace_action = QAction("Открыть workspace…", self, shortcut="Ctrl+Shift+O", triggered=self.open_workspace)
-        self.save_workspace_action = QAction("Сохранить workspace", self, shortcut="Ctrl+S", triggered=self.save_workspace)
-        self.save_workspace_as_action = QAction("Сохранить workspace как…", self, triggered=lambda: self.save_workspace(True))
-        self.exit_action = QAction("Выход", self, shortcut="Alt+F4", triggered=self.close)
-        self.add_marker_action = QAction("Добавить маркер", self, shortcut="M", triggered=self.add_marker)
-        self.peak_action = QAction("Peak Search", self, shortcut="P", triggered=self.add_peak_marker)
-        self.delta_action = QAction("Delta Marker", self, triggered=self.add_delta_marker)
-        self.region_action = QAction("Выделить полосу", self, triggered=self._update_region)
-        self.clear_tools_action = QAction(
-            "Очистить инструменты анализа", self, triggered=self.clear_all_analysis_tools
-        )
-        self.cancel_operations_action = QAction(
-            "Отменить активные операции", self, triggered=self.cancel_active_operations
-        )
-        self.auto_scale_action = QAction("Auto Scale", self, shortcut="A", triggered=self._auto_scale)
-        self.reset_zoom_action = QAction(
-            "Reset Zoom", self, shortcut="R", triggered=self._reset_zoom
-        )
-        self.view_settings_action = QAction(
-            "Zoom / диапазон…", self, shortcut="Z", triggered=self._show_view_settings
-        )
-        self.frame_navigation_settings_action = QAction(
-            "Настройки навигации…", self, triggered=self._show_frame_navigation_settings
-        )
-        self.play_action = QAction("Воспроизведение", self, shortcut="Space", triggered=self._toggle_play)
-        for action in (
-            self.open_action,
-            self.close_action,
-            self.open_workspace_action,
-            self.save_workspace_action,
-            self.save_workspace_as_action,
-            self.exit_action,
-            self.add_marker_action,
-            self.peak_action,
-            self.delta_action,
-            self.region_action,
-            self.clear_tools_action,
-            self.cancel_operations_action,
-            self.auto_scale_action,
-            self.reset_zoom_action,
-            self.view_settings_action,
-            self.frame_navigation_settings_action,
-            self.play_action,
-        ):
-            action.triggered.connect(
-                lambda checked=False, action=action: self._audit(
-                    "user",
-                    "action_triggered",
-                    action=action.text(),
-                    checked=bool(checked),
-                )
-            )
+        # The bridge preserves legacy QAction attributes, text, shortcuts and
+        # handlers while making their descriptors a single typed registry.
+        self.command_registry = self._legacy_ui_bridge.command_registry()
+        for attribute_name, action in self._legacy_ui_bridge.create_actions(self, self.command_registry).items():
+            setattr(self, attribute_name, action)
+        self.command_registry.refresh(self._legacy_ui_bridge.snapshot())
 
     def _create_menus_and_toolbar(self) -> None:
         file_menu = self.menuBar().addMenu("Файл")
@@ -5995,6 +5961,11 @@ class MainWindow(QMainWindow):
             path=path or None,
         )
         return path
+
+    def _save_workspace_as(self) -> None:
+        """Compatibility command handler for the legacy Save As QAction."""
+
+        self.save_workspace(True)
 
     def save_workspace(self, choose_path: bool = False) -> None:
         session = self.active_session()
