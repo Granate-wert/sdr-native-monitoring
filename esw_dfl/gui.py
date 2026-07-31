@@ -56,6 +56,9 @@ from PySide6.QtWidgets import (
 from .adapter import DflMeasurementAdapter
 from .ui.compatibility import LegacyMainWindowBridge
 from .ui.services import ApplicationServices
+from .ui.icons import IconId, IconRegistry
+from .ui.i18n import DEFAULT_TRANSLATOR
+from .ui.themes import ThemeProvider
 from .activity_log import (
     DEFAULT_MAX_RECORDS,
     default_activity_log_path,
@@ -774,7 +777,8 @@ class MainWindow(QMainWindow):
         display = QWidget()
         display_form = QFormLayout(display)
         self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["Тёмная", "Светлая"])
+        for option in ThemeProvider.options(DEFAULT_TRANSLATOR):
+            self.theme_combo.addItem(option.label, option.theme_id.value)
         self.theme_combo.currentTextChanged.connect(self._apply_theme)
         self.grid_check = QCheckBox("Показывать сетку")
         self.grid_check.setChecked(True)
@@ -6477,13 +6481,8 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self, theme: str) -> None:
         app = QApplication.instance()
-        stylesheet = "" if theme == "Светлая" else DARK_STYLE
-        # Re-polishing every widget in the application is expensive; apply
-        # the stylesheet only when it actually changes (every MainWindow
-        # restore used to pay this cost unconditionally).
-        if app.styleSheet() != stylesheet:
-            app.setStyleSheet(stylesheet)
-        self._audit("user", "theme_changed", theme=theme)
+        applied = ThemeProvider.apply(app, theme)
+        self._audit("user", "theme_changed", theme=applied.value)
 
     def _install_logging(self) -> None:
         self.log_emitter = _LogEmitter(self)
@@ -6644,22 +6643,6 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-DARK_STYLE = """
-QWidget { background: #171c24; color: #e6edf3; font-size: 10pt; }
-QMainWindow::separator { background: #30363d; width: 5px; height: 5px; }
-QMenuBar, QMenu, QToolBar, QStatusBar { background: #111820; }
-QDockWidget::title { background: #202832; padding: 6px; font-weight: 600; }
-QTreeWidget, QTableWidget, QTextEdit, QPlainTextEdit, QComboBox, QDoubleSpinBox, QSpinBox {
-    background: #0d1117; border: 1px solid #30363d; selection-background-color: #1f6feb;
-}
-QHeaderView::section { background: #202832; color: #e6edf3; padding: 5px; border: 0; }
-QPushButton { background: #263444; border: 1px solid #425466; border-radius: 3px; padding: 5px 9px; }
-QPushButton:hover { background: #31506f; }
-QPushButton:pressed { background: #1f6feb; }
-QProgressBar { border: 1px solid #425466; text-align: center; }
-QProgressBar::chunk { background: #1f6feb; }
-"""
-
 
 def run_gui() -> None:
     file_handler = install_activity_file_logging(LOGGER)
@@ -6667,6 +6650,7 @@ def run_gui() -> None:
     app.setApplicationName("R&S DFL parcer")
     app.setOrganizationName("RohdeSchwarzTools")
     app.setStyle("Fusion")
+    app.setWindowIcon(IconRegistry.icon(IconId.APP))
     font = QFont("Segoe UI", 10)
     app.setFont(font)
     log_event(
