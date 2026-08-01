@@ -78,11 +78,22 @@ from .fake_live_service import (
     fake_capabilities,
     validate_against_capabilities,
 )
+from .fake_sweep_service import (
+    FakeSweepAppliedConfig,
+    FakeSweepConfig,
+    FakeSweepService,
+)
 from .live_profile import (
     DeviceProfile,
     ProfileCollection,
     ProfileStoreError,
     DeviceProfileStore,
+)
+from .sweep_profile import (
+    SweepProfile,
+    SweepProfileCollection,
+    SweepProfileError,
+    SweepProfileStore,
 )
 from .controller import (
     LiveControllerState,
@@ -240,6 +251,9 @@ __all__ = [
     "FakeAppliedConfig",
     "FakeLiveConfig",
     "FakeLiveService",
+    "FakeSweepAppliedConfig",
+    "FakeSweepConfig",
+    "FakeSweepService",
     "FixedBandEngineService",
     "FixedBandEvent",
     "FixedBandMetricsSnapshot",
@@ -265,6 +279,10 @@ __all__ = [
     "SweepPlannerOptions",
     "SweepPlanningError",
     "SweepProgress",
+    "SweepProfile",
+    "SweepProfileCollection",
+    "SweepProfileError",
+    "SweepProfileStore",
     "SweepSeamMetric",
     "SweepStitchError",
     "SweepStitchOptions",

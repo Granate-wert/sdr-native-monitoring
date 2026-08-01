@@ -184,16 +184,14 @@ from .time_gated_power import (
 from .workers import TaskWorker
 from .workspace import apply_workspace_session, read_workspace, write_workspace
 from .sdr.contracts import (
-    DeviceConfig, DspConfig, SpectrumUnit, SweepConfig, SweepSpectrumFrame,
+    DeviceConfig, DspConfig, SpectrumUnit,
     PersistenceConfig as SdrPersistenceConfig,
     PersistenceMode as SdrPersistenceMode,
 )
 from .sdr.controller import LiveSdrController, LiveSessionConfig
-from .sdr.fixed_band import FixedBandEngineService, FixedBandOptions
+from .sdr.fixed_band import FixedBandOptions
 from .sdr.session_adapter import LiveSessionAdapter, sweep_trace_from_frame
 from .sdr.measurements import LiveMeasurementAdapter, LiveMeasurementResult
-from .sdr.sweep import SweepExecutor, SweepPlannerOptions, plan_sweep
-from .sdr.stitching import SweepStitchOptions, stitch_sweep
 
 
 LOGGER = logging.getLogger("esw_dfl")
@@ -268,37 +266,6 @@ def _analyze_time_gated_waterfall(
         )
     return service.analyze(request, frequencies_hz, rows, manual_override, cancel)
 
-
-def _execute_p13_sweep(
-    uri: str,
-    base_options: FixedBandOptions,
-    sweep_config: SweepConfig,
-    planner_options: SweepPlannerOptions,
-    stitch_options: SweepStitchOptions,
-    progress: Callable[[float, str], None] | None = None,
-    cancel: Event | None = None,
-) -> SweepSpectrumFrame:
-    """Run P12 acquisition and P13 stitching off the Qt main thread."""
-
-    if progress is not None:
-        progress(0.0, "P13: планирование полного диапазона…")
-    plan = plan_sweep(sweep_config, planner_options)
-
-    def report(event: Any) -> None:
-        if progress is not None:
-            progress(
-                float(event.fraction),
-                f"P13: {event.stage}; "
-                f"segments {event.completed_segments}/{event.total_segments}",
-            )
-
-    with FixedBandEngineService(uri, timeout_ms=3000) as service:
-        execution = SweepExecutor(service, base_options).execute(
-            plan,
-            cancel=cancel,
-            progress=report,
-        )
-    return stitch_sweep(execution, stitch_options)
 
 class _LogEmitter(QObject):
     message = Signal(str)
@@ -528,7 +495,6 @@ class MainWindow(QMainWindow):
         self._live_adapters: dict[str, LiveSessionAdapter] = {}
         self._live_refresh_counter = 0
         self._last_sweep_trace: SpectrumTrace | None = None
-        self._p13_sweep_worker: TaskWorker | None = None
         self._view_settings_dialog: ViewSettingsDialog | None = None
         self._frame_navigation_settings_dialog: FrameNavigationSettingsDialog | None = None
         self._navigation_connected = False
@@ -1019,43 +985,6 @@ class MainWindow(QMainWindow):
         calibration_form.addRow("Status", self.live_calibration_label)
         layout.addWidget(calibration)
 
-        sweep_quality = QGroupBox("P13 Full-span sweep")
-        sweep_quality_form = QFormLayout(sweep_quality)
-        self.live_sweep_start_spin = QDoubleSpinBox()
-        self.live_sweep_start_spin.setRange(1.0, 6000.0)
-        self.live_sweep_start_spin.setDecimals(6)
-        self.live_sweep_start_spin.setValue(2300.0)
-        self.live_sweep_stop_spin = QDoubleSpinBox()
-        self.live_sweep_stop_spin.setRange(1.0, 6000.0)
-        self.live_sweep_stop_spin.setDecimals(6)
-        self.live_sweep_stop_spin.setValue(2500.0)
-        self.live_sweep_overlap_spin = QDoubleSpinBox()
-        self.live_sweep_overlap_spin.setRange(0.001, 1000.0)
-        self.live_sweep_overlap_spin.setDecimals(6)
-        self.live_sweep_overlap_spin.setValue(0.2)
-        sweep_quality_form.addRow("Start, MHz", self.live_sweep_start_spin)
-        sweep_quality_form.addRow("Stop, MHz", self.live_sweep_stop_spin)
-        sweep_quality_form.addRow("Overlap, MHz", self.live_sweep_overlap_spin)
-        self.live_sweep_quality_label = QLabel("No stitched sweep frame")
-        self.live_sweep_quality_label.setWordWrap(True)
-        self.live_sweep_seams_label = QLabel("Seams: —")
-        self.live_sweep_seams_label.setWordWrap(True)
-        sweep_quality_form.addRow("Quality", self.live_sweep_quality_label)
-        sweep_quality_form.addRow("Seams", self.live_sweep_seams_label)
-        self.live_sweep_progress_label = QLabel("Sweep is stopped")
-        self.live_sweep_progress_label.setWordWrap(True)
-        sweep_quality_form.addRow("Progress", self.live_sweep_progress_label)
-        sweep_buttons = QHBoxLayout()
-        self.live_sweep_start_button = QPushButton("Start P13 sweep")
-        self.live_sweep_start_button.clicked.connect(self.start_p13_sweep)
-        self.live_sweep_cancel_button = QPushButton("Cancel P13 sweep")
-        self.live_sweep_cancel_button.clicked.connect(self.cancel_p13_sweep)
-        self.live_sweep_cancel_button.setEnabled(False)
-        sweep_buttons.addWidget(self.live_sweep_start_button)
-        sweep_buttons.addWidget(self.live_sweep_cancel_button)
-        sweep_quality_form.addRow(sweep_buttons)
-        layout.addWidget(sweep_quality)
-
         diagnostics = QGroupBox("Diagnostics")
         diagnostics_form = QFormLayout(diagnostics)
         self.live_requested_label = QLabel("—")
@@ -1145,95 +1074,6 @@ class MainWindow(QMainWindow):
         self.live_dock.show()
         self.live_status_label.setText(f"Запуск {config.display_name}…")
 
-    def _p13_sweep_request(self) -> tuple[str, FixedBandOptions, SweepConfig, SweepPlannerOptions]:
-        source_id = self.live_source_id_edit.text().strip() or "pluto-live"
-        uri = self.live_uri_edit.text().strip()
-        if not uri:
-            raise ValueError("URI is required for P13 sweep")
-        start_hz = self.live_sweep_start_spin.value() * 1.0e6
-        stop_hz = self.live_sweep_stop_spin.value() * 1.0e6
-        if stop_hz <= start_hz:
-            raise ValueError("P13 stop frequency must exceed start frequency")
-        sample_rate_hz = self.live_sample_rate_spin.value() * 1.0e6
-        bandwidth_hz = self.live_bandwidth_spin.value() * 1.0e6
-        overlap_hz = self.live_sweep_overlap_spin.value() * 1.0e6
-        fft_size = int(self.live_fft_spin.value())
-        config = SweepConfig(
-            start_frequency_hz=start_hz,
-            stop_frequency_hz=stop_hz,
-            sample_rate_hz=sample_rate_hz,
-            analog_bandwidth_hz=bandwidth_hz,
-            overlap_hz=overlap_hz,
-            fft_size=fft_size,
-            hop_size=fft_size // 2,
-            dwell_frames=1,
-            settling_time_seconds=0.0,
-            discard_blocks=2,
-        )
-        device = DeviceConfig(
-            source_id=source_id,
-            context_uri=uri,
-            center_frequency_hz=(start_hz + stop_hz) / 2.0,
-            sample_rate_hz=sample_rate_hz,
-            analog_bandwidth_hz=bandwidth_hz,
-            manual_gain_db=self.live_gain_spin.value(),
-            buffer_samples=262144,
-        )
-        dsp = DspConfig(
-            fft_size=fft_size,
-            hop_size=fft_size // 2,
-            unit=SpectrumUnit.DBFS_BIN,
-        )
-        return (
-            uri,
-            FixedBandOptions(device=device, dsp=dsp),
-            config,
-            SweepPlannerOptions(),
-        )
-
-    def start_p13_sweep(self) -> None:
-        if self._p13_sweep_worker is not None:
-            return
-        try:
-            uri, base_options, config, planner_options = self._p13_sweep_request()
-        except (TypeError, ValueError) as exc:
-            self._show_error("P13 sweep", str(exc))
-            return
-        worker = TaskWorker(
-            _execute_p13_sweep,
-            uri,
-            base_options,
-            config,
-            planner_options,
-            SweepStitchOptions(),
-            pass_progress=True,
-            pass_cancel=True,
-        )
-        worker.signals.progress.connect(
-            lambda _fraction, message: self.live_sweep_progress_label.setText(message)
-        )
-        worker.signals.result.connect(self.show_sweep_frame)
-        worker.signals.finished.connect(
-            lambda worker=worker: self._p13_sweep_finished(worker)
-        )
-        self._p13_sweep_worker = worker
-        self.live_sweep_start_button.setEnabled(False)
-        self.live_sweep_cancel_button.setEnabled(True)
-        self.live_sweep_progress_label.setText("P13: starting…")
-        self._start_worker(worker)
-
-    def cancel_p13_sweep(self) -> None:
-        if self._p13_sweep_worker is not None:
-            self._p13_sweep_worker.cancel()
-            self.live_sweep_progress_label.setText("P13: cancellation requested…")
-
-    def _p13_sweep_finished(self, worker: TaskWorker) -> None:
-        if self._p13_sweep_worker is worker:
-            self._p13_sweep_worker = None
-            self.live_sweep_start_button.setEnabled(True)
-            self.live_sweep_cancel_button.setEnabled(False)
-            if self.live_sweep_progress_label.text() == "P13: starting…":
-                self.live_sweep_progress_label.setText("P13: finished")
     def stop_active_live_session(self) -> None:
         session = self.active_session()
         descriptor = session.source_descriptor if session is not None else None
@@ -1274,33 +1114,11 @@ class MainWindow(QMainWindow):
                 self._refresh_tree()
 
     def show_sweep_frame(self, frame: Any) -> None:
-        """Display one P13 stitched frame and expose its quality evidence."""
+        """Display one stitched sweep frame in the legacy spectrum renderer."""
 
         trace = sweep_trace_from_frame(frame)
         self._last_sweep_trace = trace
         self.spectrum_renderer.set_trace(trace)
-        metadata = trace.metadata
-        sweep_id = int(metadata["sweep_id"])
-        missing_bins = int(metadata["missing_bins"])
-        overlap_bins = int(metadata["overlap_bins"])
-        calibration_status = metadata["calibration_status"]
-        self.live_sweep_quality_label.setText(
-            f"Sweep {sweep_id}; {trace.point_count:,} bins; "
-            f"missing {missing_bins:,}; overlap {overlap_bins:,}; "
-            f"{calibration_status}"
-        )
-        seams = metadata["seams"]
-        if seams:
-            worst = max(seams, key=lambda item: item["after_p95_db"])
-            after_p95 = float(worst["after_p95_db"])
-            correction = float(worst["correction_db"])
-            self.live_sweep_seams_label.setText(
-                f"{len(seams)}; worst after P95 {after_p95:.3f} dB; "
-                f"correction {correction:+.3f} dB"
-            )
-        else:
-            self.live_sweep_seams_label.setText("No measurable overlap seam")
-        self.live_status_label.setText("P13 stitched full-span frame displayed")
 
     def _apply_live_persistence_snapshot(self, snapshot: Any) -> None:
         frequencies = np.asarray(snapshot.frequencies_hz, dtype=np.float64)
@@ -6680,7 +6498,15 @@ def run_gui() -> None:
         # constructed. Later packages wire services through a dedicated
         # facade once the renderer migration is ready.
         configure_application_identity(app)
-        window = AppShell()
+        from .ui.live_workspace import LiveMonitorWorkspace
+        from .ui.offline_workspace import OfflineDflWorkspace
+        from .ui.sweep_workspace import SweepWorkspace
+
+        window = AppShell(
+            live_monitor_factory=LiveMonitorWorkspace,
+            sweep_workspace_factory=SweepWorkspace,
+            offline_dfl_factory=OfflineDflWorkspace,
+        )
     else:
         window = MainWindow()
     window.show()

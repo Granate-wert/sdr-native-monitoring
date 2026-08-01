@@ -48,6 +48,19 @@ from .live_state import (
 )
 from .live_workspace import LiveMonitorWorkspace
 from .notifications import NotificationItem, NotificationSeverity
+from .offline_presenter import OfflineDflPresenter
+from .offline_state import (
+    OfflineHeatmapSnapshot,
+    OfflineMarkerSnapshot,
+    OfflinePlaybackSnapshot,
+    OfflineResultSnapshot,
+    OfflineSessionSnapshot,
+    OfflineStatusSnapshot,
+    OfflineTraceSnapshot,
+    OfflineWaterfallSnapshot,
+    OfflineWorkspaceSnapshot,
+)
+from .offline_workspace import OfflineDflWorkspace
 from .presenters import Presenter, PresenterCoordinator
 from .services import ApplicationServices
 from .settings_migration import (
@@ -61,6 +74,18 @@ from .settings_migration import (
     read_legacy_settings,
 )
 from .state import AppUiState, UiUpdateBatch, WorkspaceId
+from .sweep_presenter import SweepPresenter, SweepServiceFactory
+from .sweep_state import (
+    SweepPlanSegmentSnapshot,
+    SweepPlanSnapshot,
+    SweepQualitySnapshot,
+    SweepResultSnapshot,
+    SweepRunSnapshot,
+    SweepRunStatus,
+    SweepSeamSnapshot,
+    SweepWorkspaceSnapshot,
+)
+from .sweep_workspace import SweepWorkspace
 from .themes import ThemeOption, ThemeProvider
 from .units import format_frequency_hz, format_level, parse_frequency_hz, parse_localized_number
 from .workspace_registry import (
@@ -104,6 +129,17 @@ __all__ = [
     "MigrationResult",
     "NotificationItem",
     "NotificationSeverity",
+    "OfflineDflPresenter",
+    "OfflineDflWorkspace",
+    "OfflineHeatmapSnapshot",
+    "OfflineMarkerSnapshot",
+    "OfflinePlaybackSnapshot",
+    "OfflineResultSnapshot",
+    "OfflineSessionSnapshot",
+    "OfflineStatusSnapshot",
+    "OfflineTraceSnapshot",
+    "OfflineWaterfallSnapshot",
+    "OfflineWorkspaceSnapshot",
     "PlaceholderFactory",
     "PresetArea",
     "Presenter",
@@ -123,6 +159,17 @@ __all__ = [
     "ShellPresetSnapshot",
     "StatusBadge",
     "StatusTone",
+    "SweepPlanSegmentSnapshot",
+    "SweepPlanSnapshot",
+    "SweepPresenter",
+    "SweepQualitySnapshot",
+    "SweepResultSnapshot",
+    "SweepRunSnapshot",
+    "SweepRunStatus",
+    "SweepSeamSnapshot",
+    "SweepServiceFactory",
+    "SweepWorkspace",
+    "SweepWorkspaceSnapshot",
     "THEME_KEY",
     "TRUTHY_FALSE_VALUES",
     "ThemeId",

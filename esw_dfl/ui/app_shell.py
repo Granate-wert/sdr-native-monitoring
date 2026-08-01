@@ -157,6 +157,8 @@ class AppShell(QMainWindow):
         *,
         identity: ProductIdentity = CURRENT_IDENTITY,
         live_monitor_factory: Callable[[], QWidget] | None = None,
+        sweep_workspace_factory: Callable[[], QWidget] | None = None,
+        offline_dfl_factory: Callable[[], QWidget] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -177,6 +179,8 @@ class AppShell(QMainWindow):
         self._shell_actions: dict[str, QAction] = {}
         self._migration_result: MigrationResult | None = None
         self._live_monitor_factory = live_monitor_factory
+        self._sweep_workspace_factory = sweep_workspace_factory
+        self._offline_dfl_factory = offline_dfl_factory
         self._attached_workspaces: dict[WorkspaceId, QWidget] = {}
 
         self._navigation_rail = QListWidget(self)
@@ -367,6 +371,16 @@ class AppShell(QMainWindow):
         return self._migration_result
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        # Close attached workspaces before accepting the shell close.
+        for widget in tuple(self._attached_workspaces.values()):
+            try:
+                shutdown = getattr(widget, "request_shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                else:
+                    widget.close()
+            except RuntimeError:
+                continue
         super().closeEvent(event)
 
     def save_geometry(self) -> QByteArray:
@@ -414,7 +428,7 @@ class AppShell(QMainWindow):
         self.set_active_workspace(WorkspaceId.START)
 
     def _ensure_workspace_attached(self, workspace_id: WorkspaceId) -> None:
-        """Lazily attach the live monitor workspace on first activation.
+        """Lazily attach factory-provided workspaces on first activation.
 
         Only runs when a factory was supplied at construction time; the
         default shell keeps placeholders so tests and consumers that do
@@ -423,11 +437,17 @@ class AppShell(QMainWindow):
 
         if workspace_id in self._attached_workspaces:
             return
-        if workspace_id is not WorkspaceId.LIVE_MONITOR:
+        if workspace_id is WorkspaceId.LIVE_MONITOR:
+            factory = self._live_monitor_factory
+        elif workspace_id is WorkspaceId.WIDEBAND_SWEEP:
+            factory = self._sweep_workspace_factory
+        elif workspace_id is WorkspaceId.OFFLINE_DFL:
+            factory = self._offline_dfl_factory
+        else:
             return
-        if self._live_monitor_factory is None:
+        if factory is None:
             return
-        widget = self._live_monitor_factory()
+        widget = factory()
         self.attach_workspace(workspace_id, widget)
 
     def _make_placeholder(self, workspace_id: WorkspaceId) -> QWidget:
