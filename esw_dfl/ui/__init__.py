@@ -38,6 +38,12 @@ from .live_discovery import (
     parse_manual_uri,
 )
 from .live_presenter import LiveMonitorPresenter, default_backend_availability
+from .calibration_presenter import CalibrationPresenter
+from .calibration_state import CalibrationComparisonRow, CalibrationImportPreview, CalibrationPlotSnapshot, CalibrationProfileSnapshot, CalibrationWorkspaceSnapshot
+from .calibration_workspace import CalibrationPlot, CalibrationWorkspace
+from .measurement_presenter import MeasurementPresenter
+from .measurement_state import MeasurementCardSnapshot, MeasurementWorkspaceSnapshot
+from .measurements_panel import MeasurementPanel
 from .live_state import (
     BackendBadge,
     CalibrationBadge,
@@ -103,6 +109,18 @@ __all__ = [
     "COLOR_BLIND_SCIENTIFIC_PALETTES",
     "BootstrapConfig",
     "CalibrationBadge",
+    "CalibrationComparisonRow",
+    "CalibrationImportPreview",
+    "CalibrationPlot",
+    "CalibrationPlotSnapshot",
+    "CalibrationPresenter",
+    "CalibrationProfileSnapshot",
+    "CalibrationWorkspace",
+    "CalibrationWorkspaceSnapshot",
+    "MeasurementCardSnapshot",
+    "MeasurementPanel",
+    "MeasurementPresenter",
+    "MeasurementWorkspaceSnapshot",
     "CommandRegistry",
     "CommandSpec",
     "CURRENT_IDENTITY",

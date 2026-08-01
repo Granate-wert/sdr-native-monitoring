@@ -159,6 +159,8 @@ class AppShell(QMainWindow):
         live_monitor_factory: Callable[[], QWidget] | None = None,
         sweep_workspace_factory: Callable[[], QWidget] | None = None,
         offline_dfl_factory: Callable[[], QWidget] | None = None,
+        calibration_factory: Callable[[], QWidget] | None = None,
+        measurement_panel_factory: Callable[[], QWidget] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -181,6 +183,8 @@ class AppShell(QMainWindow):
         self._live_monitor_factory = live_monitor_factory
         self._sweep_workspace_factory = sweep_workspace_factory
         self._offline_dfl_factory = offline_dfl_factory
+        self._calibration_factory = calibration_factory
+        self._measurement_panel_factory = measurement_panel_factory
         self._attached_workspaces: dict[WorkspaceId, QWidget] = {}
 
         self._navigation_rail = QListWidget(self)
@@ -414,7 +418,10 @@ class AppShell(QMainWindow):
         setattr(self, "_central_dock_widget", self._workspace_host)
 
     def _install_default_tabs(self) -> None:
-        self._bottom_tools.addTab(QWidget(self._bottom_tools), "shell.bottom_tools.measurements")
+        measurement_widget = (
+            self._measurement_panel_factory() if self._measurement_panel_factory is not None else QWidget(self._bottom_tools)
+        )
+        self._bottom_tools.addTab(measurement_widget, "shell.bottom_tools.measurements")
         self._bottom_tools.addTab(QWidget(self._bottom_tools), "shell.bottom_tools.events")
         self._bottom_tools.addTab(QWidget(self._bottom_tools), "shell.bottom_tools.logs")
         self._context_inspector.addTab(QWidget(self._context_inspector), "shell.context_inspector.properties")
@@ -443,6 +450,8 @@ class AppShell(QMainWindow):
             factory = self._sweep_workspace_factory
         elif workspace_id is WorkspaceId.OFFLINE_DFL:
             factory = self._offline_dfl_factory
+        elif workspace_id is WorkspaceId.CALIBRATION:
+            factory = self._calibration_factory
         else:
             return
         if factory is None:
