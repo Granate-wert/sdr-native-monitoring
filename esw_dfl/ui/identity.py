@@ -28,6 +28,7 @@ class ProductIdentity:
     display_name: str
     legacy_organization_names: tuple[str, ...]
     legacy_application_names: tuple[str, ...]
+    version: str = "0.16.10"
 
 
 CURRENT_IDENTITY: Final[ProductIdentity] = ProductIdentity(
