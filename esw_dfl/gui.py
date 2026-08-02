@@ -6503,6 +6503,8 @@ def run_gui() -> None:
         from .ui.sweep_workspace import SweepWorkspace
         from .ui.calibration_workspace import CalibrationWorkspace
         from .ui.measurements_panel import MeasurementPanel
+        from .ui.recording_workspace import RecordingWorkspace
+        from .ui.diagnostics_workspace import DiagnosticsWorkspace
 
         window = AppShell(
             live_monitor_factory=LiveMonitorWorkspace,
@@ -6510,6 +6512,8 @@ def run_gui() -> None:
             offline_dfl_factory=OfflineDflWorkspace,
             calibration_factory=CalibrationWorkspace,
             measurement_panel_factory=MeasurementPanel,
+            recording_workspace_factory=RecordingWorkspace,
+            diagnostics_workspace_factory=DiagnosticsWorkspace,
         )
     else:
         window = MainWindow()

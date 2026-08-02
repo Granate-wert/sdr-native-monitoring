@@ -7,6 +7,12 @@ The project provides spectrum and waterfall inspection, engineering measurements
 
 P16UI-07 adds an offline-testable calibration workspace with profile browsing, applicability comparison, validated CSV preview, immutable finalization, correction/uncertainty plots, and an active-profile safety gate. Measurement cards and the bottom panel retain value, unit, quality, uncertainty, frame/config, timestamp, source, calibration status, and warnings; mixed-frame results are rejected and raw dBFS is never relabeled as dBm.
 
+P16UI-08 adds recording, replay and diagnostics workspaces: bounded I/Q and spectrum capture with disk-forecast gating, a live health view, atomic `.part` recovery, replay of recorded streams with explicit pause/seek and CPU/CUDA reprocess, plus a diagnostics workspace that runs the safe native self-test, offline P15 validation in a cancellable worker, and exports an anonymized support bundle without exposing I/Q, calibration or private paths.
+
+P16UI-09 adds keyboard navigation (Ctrl+1..7) for all workspaces, a bounded notification store with a tracked dropped count, settings schema versioning with deterministic recovery/reset, visible focus and the existing high-contrast theme, offscreen DPI-matrix tests, a 60 Hz workspace-switch budget assertion, and repeat lifecycle checks.
+
+P16UI-10 adds package metadata (`[project]`, license file, pinned version), the Jetson `linux-aarch64-cuda` CMake preset scaffold, and release acceptance smoke tests. Packaging remains a bounded build out of the repository; field Jetson runtime is explicitly NOT_VERIFIED until executed on hardware.
+
 ## Engineering invariants
 
 Input DFL and measurement recordings are always read-only. Every queue and cache has a finite bound. Python is not called for each sample or each FFT. GUI refresh rate is independent from analytical processing rate. dBm is not emitted for live SDR data without applicable calibration. CPU remains a supported reference backend.

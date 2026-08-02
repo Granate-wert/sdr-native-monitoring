@@ -53,3 +53,9 @@ venv/
 *.user
 *.suo
 esw_dfl/native_build_manifest.json
+.omo/
+/.codegraph/
+kimi-free/
+kimi-debug-session_*.zip
+minimax-m3.txt
+/minimax-m3.txt

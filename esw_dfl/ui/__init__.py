@@ -44,6 +44,12 @@ from .calibration_workspace import CalibrationPlot, CalibrationWorkspace
 from .measurement_presenter import MeasurementPresenter
 from .measurement_state import MeasurementCardSnapshot, MeasurementWorkspaceSnapshot
 from .measurements_panel import MeasurementPanel
+from .recording_presenter import RecordingPresenter
+from .recording_state import RecordingWorkspaceSnapshot, ReplaySourceKind
+from .recording_workspace import RecordingWorkspace
+from .diagnostics_presenter import DiagnosticsPresenter
+from .diagnostics_state import DiagnosticsSnapshot, ValidationRunState
+from .diagnostics_workspace import DiagnosticsWorkspace
 from .live_state import (
     BackendBadge,
     CalibrationBadge,
@@ -120,6 +126,14 @@ __all__ = [
     "MeasurementCardSnapshot",
     "MeasurementPanel",
     "MeasurementPresenter",
+    "RecordingPresenter",
+    "RecordingWorkspace",
+    "RecordingWorkspaceSnapshot",
+    "ReplaySourceKind",
+    "DiagnosticsPresenter",
+    "DiagnosticsWorkspace",
+    "DiagnosticsSnapshot",
+    "ValidationRunState",
     "MeasurementWorkspaceSnapshot",
     "CommandRegistry",
     "CommandSpec",
