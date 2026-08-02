@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from PySide6.QtCore import QByteArray, QObject, Qt, Signal
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
@@ -161,6 +161,8 @@ class AppShell(QMainWindow):
         offline_dfl_factory: Callable[[], QWidget] | None = None,
         calibration_factory: Callable[[], QWidget] | None = None,
         measurement_panel_factory: Callable[[], QWidget] | None = None,
+        recording_workspace_factory: Callable[[], QWidget] | None = None,
+        diagnostics_workspace_factory: Callable[[], QWidget] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -185,6 +187,8 @@ class AppShell(QMainWindow):
         self._offline_dfl_factory = offline_dfl_factory
         self._calibration_factory = calibration_factory
         self._measurement_panel_factory = measurement_panel_factory
+        self._recording_workspace_factory = recording_workspace_factory
+        self._diagnostics_workspace_factory = diagnostics_workspace_factory
         self._attached_workspaces: dict[WorkspaceId, QWidget] = {}
 
         self._navigation_rail = QListWidget(self)
@@ -228,6 +232,32 @@ class AppShell(QMainWindow):
         self._populate_workspace_host()
         self._apply_preset_snapshot(_snapshot(self._active_preset))
         self._build_shell_commands()
+        self._install_workspace_shortcuts()
+
+    def _install_workspace_shortcuts(self) -> None:
+        """Bind Ctrl+1..7 navigation shortcuts with collision detection.
+
+        The shortcut strings are declared in :class:`WorkspaceRegistry`; this
+        method turns them into real :class:`QShortcut` objects and refuses to
+        register a duplicate so a mis-typed catalog cannot silently break
+        keyboard navigation.
+        """
+
+        self._workspace_shortcuts: list[QShortcut] = []
+        seen: set[str] = set()
+        for descriptor in self._workspaces.descriptors():
+            shortcut = descriptor.shortcut
+            if not shortcut:
+                continue
+            if shortcut in seen:
+                raise ValueError(f"duplicate workspace shortcut: {shortcut}")
+            seen.add(shortcut)
+            action = QShortcut(QKeySequence(shortcut), self)
+            workspace_id = descriptor.workspace_id
+            action.activated.connect(
+                lambda wid=workspace_id: self.set_active_workspace(wid)
+            )
+            self._workspace_shortcuts.append(action)
 
     # ------------------------------------------------------------------
     # Properties
@@ -452,6 +482,10 @@ class AppShell(QMainWindow):
             factory = self._offline_dfl_factory
         elif workspace_id is WorkspaceId.CALIBRATION:
             factory = self._calibration_factory
+        elif workspace_id is WorkspaceId.RECORDING_REPLAY:
+            factory = self._recording_workspace_factory
+        elif workspace_id is WorkspaceId.DIAGNOSTICS:
+            factory = self._diagnostics_workspace_factory
         else:
             return
         if factory is None:

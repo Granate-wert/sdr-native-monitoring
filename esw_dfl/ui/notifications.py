@@ -23,3 +23,58 @@ class NotificationItem:
     technical_details: str | None = None
     recommended_action: str | None = None
     dismissible: bool = True
+
+
+class NotificationStore:
+    """Bounded, observable notification queue (project invariant: bounded).
+
+    New items land at the end.  When capacity is reached the oldest item is
+    evicted and the drop counter is incremented so overflow is never silent.
+    """
+
+    def __init__(self, *, capacity: int = 64) -> None:
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self._capacity = capacity
+        self._items: list[NotificationItem] = []
+        self._dropped = 0
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def items(self) -> tuple[NotificationItem, ...]:
+        return tuple(self._items)
+
+    @property
+    def dropped_count(self) -> int:
+        return self._dropped
+
+    def push(self, item: NotificationItem) -> bool:
+        """Enqueue; returns False when the oldest had to be evicted."""
+
+        if not isinstance(item, NotificationItem):
+            raise TypeError("item must be NotificationItem")
+        while len(self._items) >= self._capacity:
+            self._items.pop(0)
+            self._dropped += 1
+        self._items.append(item)
+        return True
+
+    def dismiss(self, notification_id: str) -> bool:
+        """Remove by id; returns True when an item was removed."""
+
+        before = len(self._items)
+        self._items = [i for i in self._items if i.notification_id != notification_id]
+        return len(self._items) != before
+
+    def clear(self) -> None:
+        self._items.clear()
+
+
+__all__ = [
+    "NotificationItem",
+    "NotificationSeverity",
+    "NotificationStore",
+]

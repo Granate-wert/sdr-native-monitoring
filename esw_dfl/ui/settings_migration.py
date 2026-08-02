@@ -173,13 +173,62 @@ def legacy_settings_are_readable(scope: LegacySettingsScope | None = None) -> bo
         settings.sync()
 
 
+SCHEMA_VERSION_KEY: str = "schema_version"
+CURRENT_SCHEMA_VERSION: int = 2
+
+
+def schema_version(settings: QSettings) -> int:
+    """Current persisted schema version; missing key means legacy v1."""
+
+    value = _read_typed_value(settings, SCHEMA_VERSION_KEY)
+    return int(value) if isinstance(value, (int, float)) else 1
+
+
+def ensure_schema_version(
+    settings: QSettings,
+    *,
+    supported: int = CURRENT_SCHEMA_VERSION,
+) -> int:
+    """Recover/reset helper: return the version, and bump legacy entries.
+
+    If the stored version is newer than the code understands the whole scope
+    is reset (recovery) so a future migration never reads stale keys; the
+    caller can then re-run `apply_migration` from the untouched legacy scope.
+    """
+
+    version = schema_version(settings)
+    if version > supported:
+        settings.clear()
+        settings.setValue(SCHEMA_VERSION_KEY, supported)
+        settings.sync()
+        return supported
+    if version < supported:
+        settings.setValue(SCHEMA_VERSION_KEY, supported)
+        settings.sync()
+        return supported
+    return version
+
+
+def reset_settings(settings: QSettings) -> None:
+    """Bounded recovery: drop every key and pin the current schema version."""
+
+    settings.clear()
+    settings.setValue(SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION)
+    settings.sync()
+
+
 __all__ = [
+    "CURRENT_SCHEMA_VERSION",
     "FRAME_NAV_KEYS",
     "LegacySettings",
     "MigrationResult",
+    "SCHEMA_VERSION_KEY",
     "THEME_KEY",
     "apply_migration",
+    "ensure_schema_version",
     "legacy_settings_are_readable",
     "open_legacy_settings",
     "read_legacy_settings",
+    "reset_settings",
+    "schema_version",
 ]
