@@ -1,90 +1,58 @@
-"""S00 product boundary — import graph and manifest tests."""
+"""S00 architecture boundary tests for the standalone SDR product."""
 
 from __future__ import annotations
 
-import os
-import re
+import builtins
+import importlib
+import pathlib
+import sys
 import unittest
 
-
-_SDR_FORBIDDEN_PREFIXES = (
-    "esw_dfl.parser",
-    "esw_dfl.spectrogram",
-    "esw_dfl.domain",
-    "esw_dfl.models",
-    "esw_dfl.power_measurements",
-    "esw_dfl.time_gated_power",
-    "esw_dfl.heatmap",
-    "esw_dfl.cli",
-    "esw_dfl.gui",
-    "esw_dfl._sgram_native",
-)
-
-_UI_PACKAGE = re.compile(r"^esw_dfl[\\/]ui[\\/]")
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+FORBIDDEN = ("esw_dfl", "_sgram_native")
 
 
-def _python_files(root: str) -> list[str]:
-    result = []
-    for dirpath, _, filenames in os.walk(root):
-        for entry in filenames:
-            if entry.endswith(".py"):
-                result.append(os.path.join(dirpath, entry))
-    return sorted(result)
-
-
-def _imports(filename: str) -> set[str]:
-    content = open(filename, encoding="utf-8", errors="replace").read()
-    imports: set[str] = set()
-    for match in re.finditer(r"^\s*(?:from|import)\s+([A-Za-z_][\w\.]+)", content, re.M):
-        value = match.group(1)
-        if value.startswith("esw_dfl"):
-            imports.add(value)
-    return imports
+def _standalone_sources() -> tuple[pathlib.Path, ...]:
+    return tuple(sorted((ROOT / "sdr_monitor").rglob("*.py"))) + (ROOT / "main_sdr.py",)
 
 
 class S00BoundaryTests(unittest.TestCase):
-    def test_sdr_tree_does_not_import_dfl_internals(self) -> None:
-        targets = [
-            path for path in _python_files("esw_dfl")
-            if re.search(r"esw_dfl[\\/]sdr[\\/]", path)
-            and not path.endswith("__init__.py")
-        ]
-        self.assertTrue(targets, "no SDR modules found")
-        violations = []
-        for path in targets:
-            for imported in _imports(path):
-                if imported.startswith(_SDR_FORBIDDEN_PREFIXES):
-                    violations.append(f"{path} imports {imported}")
+    def test_standalone_sources_do_not_reference_legacy_product(self) -> None:
+        violations = [str(path.relative_to(ROOT)) for path in _standalone_sources() if any(item in path.read_text(encoding="utf-8") for item in FORBIDDEN)]
         self.assertEqual(violations, [])
 
-    def test_ui_does_not_import_dfl_parser(self) -> None:
-        targets = [p for p in _python_files("esw_dfl/ui") if not p.endswith("__init__.py")]
-        violations = []
-        for path in targets:
-            for imported in _imports(path):
-                if imported.startswith(("esw_dfl.parser", "esw_dfl.spectrogram", "esw_dfl.domain", "esw_dfl.models")):
-                    violations.append(f"{path} imports {imported}")
-        self.assertEqual(violations, [])
+    def test_sdr_build_script_excludes_dfl_product_and_spectrogram_decoder(self) -> None:
+        build_script = (ROOT / "build_sdr_exe.bat").read_text(encoding="utf-8")
+        self.assertIn("--exclude-module esw_dfl", build_script)
+        self.assertIn("--exclude-module olefile", build_script)
+        self.assertNotIn("_sgram_native", build_script)
 
-    def test_sdr_mvi_manifest_excludes_sgram_native(self) -> None:
-        candidates = [
-            "native/sdr_core/CMakePresets.json",
-            "pyproject.toml",
-            "README.md",
-        ]
-        for manifest in candidates:
-            self.assertTrue(os.path.isfile(manifest), f"missing {manifest}")
-            content = open(manifest, encoding="utf-8", errors="replace").read()
-            self.assertNotIn("_sgram_native", content, f"{manifest} mentions _sgram_native")
+    def test_standalone_imports_with_legacy_package_blocked(self) -> None:
+        original_import = builtins.__import__
 
-    def test_new_sdr_entry_point_exists(self) -> None:
-        self.assertTrue(os.path.isfile("main_sdr.py"), "main_sdr.py missing")
-        content = open("main_sdr.py", encoding="utf-8").read()
-        self.assertIn("sdr_native_monitoring", content)
-        self.assertNotIn("_sgram_native", content)
+        def guarded(name, *args, **kwargs):
+            if name == "esw_dfl" or name.startswith("esw_dfl."):
+                raise ImportError("legacy DFL package is unavailable")
+            return original_import(name, *args, **kwargs)
 
-    def test_legacy_entry_point_still_exists(self) -> None:
-        self.assertTrue(os.path.isfile("main.py"), "legacy main.py missing")
+        prior = {name: module for name, module in tuple(sys.modules.items()) if name == "sdr_monitor" or name.startswith("sdr_monitor.")}
+        for name in prior:
+            sys.modules.pop(name, None)
+        try:
+            builtins.__import__ = guarded
+            importlib.import_module("sdr_monitor")
+            importlib.import_module("sdr_monitor.services")
+            importlib.import_module("sdr_monitor.ui.app_shell")
+        finally:
+            builtins.__import__ = original_import
+            for name in tuple(sys.modules):
+                if name == "sdr_monitor" or name.startswith("sdr_monitor."):
+                    sys.modules.pop(name, None)
+            sys.modules.update(prior)
+
+    def test_legacy_entry_point_remains_separate(self) -> None:
+        self.assertTrue((ROOT / "main.py").is_file())
+        self.assertIn("esw_dfl", (ROOT / "main.py").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

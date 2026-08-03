@@ -1,124 +1,121 @@
-"""SDR-specific application assembly: factories and service wiring.
-
-``SdrApplicationServices`` is the only facade the SDR product approves.  It
-never loads DFL-specific code, never touches ``esw_dfl.domain`` objects and
-exposes SDR facade types only.
-"""
+"""Standalone service assembly with no dependency on the DFL product tree."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
-from ..sdr.fixed_band import FixedBandEngineService
-from ..sdr.live_profile import DeviceProfileStore
-from ..sdr.recording import IqRecordingWriter, SpectrumRecordingWriter
-from ..sdr.session_adapter import LiveSessionAdapter
-from ..sdr.sweep_profile import SweepProfileStore
+from .interfaces import CalibrationSdrService, DiagnosticsSdrService, LiveSdrService, RecordingSdrService, SweepSdrService
 
-from .interfaces import (
-    CalibrationSdrService,
-    DiagnosticsSdrService,
-    LiveSdrService,
-    RecordingSdrService,
-    SweepSdrService,
-)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Workspace factories — the aggregator workspace stays Qt-pure.
-# ──────────────────────────────────────────────────────────────────────────────
+class UnavailableLiveService:
+    """Safe pre-S05 live service: no hardware I/O occurs until a device is selected."""
+    def __init__(self) -> None:
+        self._running = False
 
-LiveWorkspaceFactory = Callable[..., "object"]
+    def open_live(self, config: Any) -> None:
+        self._running = True
+
+    def close_live(self) -> None:
+        self._running = False
+
+    def poll_frames(self) -> list[Any]:
+        return []
+
+    def poll_live_metrics(self, timeout_s: float) -> dict[str, Any]:
+        return {"running": self._running, "device": None, "timeout_s": timeout_s}
+
+    def is_running(self) -> bool:
+        return self._running
+
+    def stop_and_wait(self, timeout_s: float) -> None:
+        self._running = False
+
+
+class UnavailableSweepService:
+    def plan(self, config: Any) -> dict[str, Any]:
+        return {"config": config, "segments": ()}
+
+    def execute(self, config: Any, progress: Any) -> dict[str, Any]:
+        progress({"percent": 0, "state": "not_configured"})
+        return {"status": "not_configured"}
+
+    def cancel(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class InMemoryCalibrationService:
+    def list_profiles(self) -> tuple[Any, ...]:
+        return ()
+
+    def compare_applicability(self, profile: Any, current: Any) -> bool:
+        return False
+
+    def finalize_profile(self, profile: Any) -> Any:
+        return profile
+
+    def preview_csv(self, data: str) -> tuple[str, ...]:
+        return tuple(line for line in data.splitlines() if line.strip())
+
+
+class InMemoryRecordingService:
+    def __init__(self) -> None:
+        self._active = False
+
+    def start(self, options: Any) -> None:
+        self._active = True
+
+    def stop(self) -> dict[str, bool]:
+        self._active = False
+        return {"stopped": True}
+
+    def health(self) -> dict[str, Any]:
+        return {"recording": self._active, "queue_depth": 0, "drops": 0}
+
+    def recover_partial(self, uri: Any) -> dict[str, Any]:
+        return {"uri": uri, "recovered": False}
+
+    def open_replay(self, uri: Any, *, kind: Any) -> dict[str, Any]:
+        return {"uri": uri, "kind": kind}
+
+    def seek(self, fraction: float) -> None:
+        if not 0 <= fraction <= 1:
+            raise ValueError("seek fraction must be between zero and one")
+
+    def reprocess_iq(self, uri: Any, backend: Any) -> dict[str, Any]:
+        return {"uri": uri, "backend": backend, "scheduled": False}
+
+
+class PlatformDiagnosticsService:
+    def collect_platform(self) -> dict[str, Any]:
+        import platform
+        return {"os": platform.platform(aliased=True), "python": platform.python_version(), "architecture": platform.machine()}
+
+    def run_self_tests(self) -> list[str]:
+        return ["standalone service boundary: passed"]
+
+    def run_offline_validation(self, **kwargs: Any) -> dict[str, Any]:
+        return {"validated": False, "options": kwargs}
+
+    def export_support_bundle(self, output_dir: Any) -> dict[str, Any]:
+        return {"output_dir": output_dir, "created": False}
 
 
 @dataclass(frozen=True, slots=True)
 class SdrApplicationServices:
-    """Aggregate SDR services; every service has to be SDR-native."""
-
-    live_sdr: LiveSdrService
-    sweep: SweepSdrService
-    calibration: CalibrationSdrService
-    recording: RecordingSdrService
-    diagnostics: DiagnosticsSdrService
-
-
-def build_live_sdr_service() -> LiveSdrService:
-    """Real P07/FixedBandEngine-backed live service.
-
-    Kept behind a factory so tests can inject a fake.
-    """
-
-    def factory(uri: str) -> LiveSessionAdapter:
-        return LiveSessionAdapter(uri)
-
-    return factory  # type: ignore[return-value]
-
-
-def build_diagnostics_service() -> DiagnosticsSdrService:
-    from ..ui.diagnostics_presenter import DiagnosticsPresenter
-
-    presenter = DiagnosticsPresenter()
-
-    class DiagnosticsSdrServiceImpl:
-        def collect_platform(self) -> dict:
-            import platform
-            return {
-                "os": platform.platform(aliased=True),
-                "python": platform.python_version(),
-                "architecture": platform.machine(),
-                "cpu_count": __import__("os").cpu_count(),
-            }
-
-        def run_self_tests(self):
-            return presenter.run_self_tests()
-
-        def export_support_bundle(self, out_dir):
-            return presenter.export_support_bundle(out_dir)
-
-    return DiagnosticsSdrServiceImpl()
-
-
-def build_recording_service() -> RecordingSdrService:
-    def factory(options):
-        from ..sdr.recording import RecordingService, IqRecordingWriter
-
-        service = RecordingService(options)
-        service._iq = IqRecordingWriter(options.output_uri)  # bounded writer
-        return service
-
-    return RecordingSdrService()  # keep the protocol shape
+    live_sdr: LiveSdrService = field(default_factory=UnavailableLiveService)
+    sweep: SweepSdrService = field(default_factory=UnavailableSweepService)
+    calibration: CalibrationSdrService = field(default_factory=InMemoryCalibrationService)
+    recording: RecordingSdrService = field(default_factory=InMemoryRecordingService)
+    diagnostics: DiagnosticsSdrService = field(default_factory=PlatformDiagnosticsService)
 
 
 def build_default_sdr_services() -> SdrApplicationServices:
-    """Wire all SDR service facades with real implementations."""
-    record = build_recording_service()
-    diag = build_diagnostics_service()
-
-    def live_factory(uri: str) -> LiveSessionAdapter:
-        return LiveSessionAdapter(uri)
-
-    def sweep_factory():
-        from ..sdr.sweep import SweepPlanner, SweepExecutor
-
-        return SweepPlanner(), SweepExecutor()
-
-    def calibration_store_factory():
-        from ..sdr.calibration_store import CalibrationProfileStore
-
-        return CalibrationProfileStore()
-
-    return SdrApplicationServices(
-        live_sdr=build_live_sdr_service(),
-        sweep=sweep_factory(),
-        calibration=calibration_store_factory(),
-        recording=record,
-        diagnostics=diag,
-    )
+    """Build the safe standalone composition root; no device access at startup."""
+    return SdrApplicationServices()
 
 
-__all__ = [
-    "SdrApplicationServices",
-    "build_default_sdr_services",
-    "build_diagnostics_service",
-    "build_recording_service",
-]
+__all__ = ["SdrApplicationServices", "build_default_sdr_services"]

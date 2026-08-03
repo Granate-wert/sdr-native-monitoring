@@ -1,10 +1,7 @@
-"""SDR-specific application service facade.
-
-Currently an empty package container; S02+ will add live, sweep, calibration,
-recording and diagnostics service implementations separated from the legacy
-``esw_dfl`` DFL Analyzer services.
-"""
+"""Qt-free service contracts and the standalone SDR composition root."""
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from .sdr_application_services import SdrApplicationServices, build_default_sdr_services
+
+__all__ = ["SdrApplicationServices", "build_default_sdr_services"]

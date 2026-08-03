@@ -1,4 +1,4 @@
-"""S02 service-separation tests for the standalone SDR AppShell."""
+"""S02 service and AppShell separation tests."""
 
 from __future__ import annotations
 
@@ -8,9 +8,8 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
-
-from esw_dfl.ui.state import WorkspaceId
-from sdr_monitor.app_shell import create_sdr_app_shell
+from sdr_monitor.services import build_default_sdr_services
+from sdr_monitor.ui.app_shell import SDRAppShell, WorkspaceId
 
 
 def _app() -> QApplication:
@@ -18,55 +17,38 @@ def _app() -> QApplication:
 
 
 class S02AppShellTests(unittest.TestCase):
-    def test_sdr_shell_excludes_offline_dfl(self) -> None:
+    def test_default_services_are_constructible_without_legacy_sdr_tree(self) -> None:
+        services = build_default_sdr_services()
+        self.assertFalse(services.live_sdr.is_running())
+        self.assertEqual(services.live_sdr.poll_frames(), [])
+        self.assertEqual(services.calibration.list_profiles(), ())
+
+    def test_shell_has_exactly_six_sdr_workspaces(self) -> None:
         _app()
-        shell = create_sdr_app_shell()()
+        shell = SDRAppShell()
         try:
-            shell.show()
-            workspaces = [d.workspace_id for d in shell._workspaces.descriptors()]
-            self.assertIn(WorkspaceId.LIVE_MONITOR, workspaces)
-            self.assertIn(WorkspaceId.WIDEBAND_SWEEP, workspaces)
-            self.assertIn(WorkspaceId.CALIBRATION, workspaces)
-            self.assertIn(WorkspaceId.RECORDING_REPLAY, workspaces)
-            self.assertIn(WorkspaceId.DIAGNOSTICS, workspaces)
-            self.assertNotIn(WorkspaceId.OFFLINE_DFL, workspaces)
+            expected = {WorkspaceId.HOME, WorkspaceId.LIVE, WorkspaceId.SWEEP, WorkspaceId.CALIBRATION, WorkspaceId.RECORDING, WorkspaceId.DIAGNOSTICS}
+            self.assertEqual(set(shell._nav_buttons), expected)
+            self.assertEqual(len(shell._shortcuts), 6)
         finally:
             shell.close()
+            shell.deleteLater()
 
-    def test_sdr_shell_no_legacy_fallback_in_nav(self) -> None:
+    def test_workspace_factory_receives_standalone_service_root(self) -> None:
         _app()
-        shell = create_sdr_app_shell()()
+        shell = SDRAppShell()
+        received = []
+        def factory():
+            received.append(shell.services)
+            from PySide6.QtWidgets import QWidget
+            return QWidget()
         try:
-            shell.show()
-            # QTabWidget inside the shell contains only SDR tabs.
-            tab_texts = [
-                shell._workspace_host.tabText(i)
-                for i in range(shell._workspace_host.count())
-            ]
-            self.assertNotIn("offline_dfl", " ".join(tab_texts))
+            shell.register_workspace(WorkspaceId.LIVE, factory)
+            shell.set_active_workspace(WorkspaceId.LIVE)
+            self.assertEqual(received, [shell.services])
         finally:
             shell.close()
-
-    def test_sdr_shell_keyboard_shortcuts_present(self) -> None:
-        _app()
-        shell = create_sdr_app_shell()()
-        try:
-            sequences = sorted({sc.key().toString() for sc in shell._workspace_shortcuts})
-            # There are 6 shortcuts total for SDR workspaces; the numbers
-            # Ctrl+1..7 are wired from the base registry.  OFFLINE_DFL's
-            # Ctrl+\, connects to a no-op inside SDRAppShell.
-            self.assertEqual(len(sequences), 6)
-            self.assertIn("Ctrl+1", sequences)
-            self.assertIn("Ctrl+7", sequences)
-        finally:
-            shell.close()
-
-    def test_sdr_shell_close_clean(self) -> None:
-        _app()
-        shell = create_sdr_app_shell()()
-        shell.show()
-        shell.close()
-        shell.deleteLater()
+            shell.deleteLater()
 
 
 if __name__ == "__main__":

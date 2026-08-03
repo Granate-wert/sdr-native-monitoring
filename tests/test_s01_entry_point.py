@@ -1,62 +1,39 @@
-"""S01 entry-point boundary tests."""
+"""S01 entry-point tests for the standalone SDR product."""
 
 from __future__ import annotations
 
-import importlib
+import os
+import pathlib
+import subprocess
 import sys
-import tempfile
 import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class S01EntryPointTests(unittest.TestCase):
-    def test_sdr_monitor_package_imports_without_dfl(self) -> None:
-        try:
-            del sys.modules["esw_dfl"]
-        except KeyError:
-            pass
-        try:
-            del sys.modules["esw_dfl.gui"]
-        except KeyError:
-            pass
-        # Block the DFL package in this interpreter just for the test.
-        original = importlib.import_module
-        blocked: set[str] = set()
+    def test_console_script_and_module_entry_exist(self) -> None:
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('sdr-native-monitoring = "sdr_monitor.main:main"', pyproject)
+        self.assertTrue((ROOT / "sdr_monitor" / "__main__.py").is_file())
 
-        def importer(name, package=None):
-            blocked.add(name)
-            if name.startswith("esw_dfl"):
-                raise ImportError(f"DFL package blocked: {name}")
-            return original(name, package)
+    def test_module_version_smoke(self) -> None:
+        result = subprocess.run([sys.executable, "-m", "sdr_monitor", "--version"], cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sdr-native-monitoring", result.stdout)
 
-        import importlib as _mod
-        try:
-            import types as _types
-            _mod.import_module = importer  # type: ignore[attr-defined]
-            import sdr_monitor  # noqa: F401
-        finally:
-            _mod.import_module = original  # type: ignore[attr-defined]
-        self.assertNotIn("esw_dfl", sys.modules, "sdr_monitor must not force-load the DFL root")
+    def test_offscreen_shell_start_and_close_without_dfl(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from sdr_monitor.ui.app_shell import SDRAppShell
 
-    def test_sdr_monitor_entry_point(self) -> None:
-        import main_sdr
-
-        self.assertTrue(hasattr(main_sdr, "main"))
-        self.assertTrue(callable(main_sdr.main))
-        with open("main_sdr.py", encoding="utf-8") as handle:
-            content = handle.read()
-        self.assertIn("sdr_native_monitoring", content)
-
-    def test_sdr_monitor_package_attributes(self) -> None:
-        import sdr_monitor
-
-        self.assertIsInstance(sdr_monitor.__version__, str)
-        self.assertRegex(sdr_monitor.__version__, r"^\d+\.\d+\.\d+$")
-
-    def test_main_py_unchanged(self) -> None:
-        """The legacy DFL entry point must remain untouched for now."""
-
-        content = open("main.py", encoding="utf-8").read()
-        self.assertIn("esw_dfl.gui", content)
+        app = QApplication.instance() or QApplication([])
+        shell = SDRAppShell()
+        shell.show()
+        app.processEvents()
+        self.assertEqual(shell.windowTitle(), "SDR Native Monitoring")
+        shell.close()
+        shell.deleteLater()
 
 
 if __name__ == "__main__":
