@@ -307,16 +307,6 @@ class SweepWorkspace(QWidget):
     def _build_profile_group(self) -> QGroupBox:
         group = QGroupBox(self._tr.text("sweep.profile"), self)
         layout = QHBoxLayout(group)
-
-        self._mode_combo = QComboBox(group)
-        self._mode_combo.setObjectName("sweepModeCombo")
-        self._mode_combo.setAccessibleName("sweep_mode_combo")
-        self._mode_combo.addItem(self._tr.text("sweep.mode.fast"), "fast")
-        self._mode_combo.addItem(self._tr.text("sweep.mode.balanced"), "balanced")
-        self._mode_combo.addItem(self._tr.text("sweep.mode.precise"), "precise")
-        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        layout.addWidget(QLabel(self._tr.text("sweep.mode.label"), group))
-
         self._profile_combo = QComboBox(group)
         self._profile_combo.setObjectName("sweepProfileCombo")
         self._profile_combo.setAccessibleName("sweep_profile_combo")
@@ -326,14 +316,10 @@ class SweepWorkspace(QWidget):
         self._profile_load_button.setObjectName("sweepProfileLoadButton")
         self._profile_delete_button = QPushButton(self._tr.text("sweep.profile.delete"), group)
         self._profile_delete_button.setObjectName("sweepProfileDeleteButton")
-        self._profile_export_button = QPushButton(self._tr.text("sweep.profile.export"), group)
-        self._profile_export_button.setObjectName("sweepProfileExportButton")
-        layout.addWidget(self._mode_combo, 1)
         layout.addWidget(self._profile_combo, 1)
         layout.addWidget(self._profile_save_button)
         layout.addWidget(self._profile_load_button)
         layout.addWidget(self._profile_delete_button)
-        layout.addWidget(self._profile_export_button)
         return group
 
     def _build_plan_group(self) -> QGroupBox:
@@ -351,18 +337,6 @@ class SweepWorkspace(QWidget):
         self._segment_diagram = SweepSegmentDiagram(group)
         layout.addWidget(self._segment_diagram)
         return group
-
-    def _auto_plan(self) -> None:
-        """Populate the plan diagram on workspace open using the current fields."""
-        config = self._build_config()
-        options = self._build_planner_options()
-        if config is None or options is None:
-            return
-        errors = self._presenter.plan(config, options)
-        if errors:
-            self._show_error(self._tr.text("sweep.plan.error", error="; ".join(errors)))
-        else:
-            self._refresh_from_snapshot(self._presenter.snapshot)
 
     def _build_run_group(self) -> QGroupBox:
         group = QGroupBox(self._tr.text("sweep.run"), self)
@@ -422,26 +396,6 @@ class SweepWorkspace(QWidget):
         self._profile_save_button.clicked.connect(self._on_profile_save)
         self._profile_load_button.clicked.connect(self._on_profile_load)
         self._profile_delete_button.clicked.connect(self._on_profile_delete)
-        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        self._profile_export_button.clicked.connect(self._on_profile_export)
-
-    def _on_mode_changed(self, index: int) -> None:
-        data = self._mode_combo.itemData(index)
-        if data is None:
-            return
-        if data == "fast":
-            self.fft_combo.setCurrentText("512")
-            self.hop_combo.setCurrentText("256")
-            self.dwell_spin.setValue(1)
-        elif data == "balanced":
-            self.fft_combo.setCurrentText("1024")
-            self.hop_combo.setCurrentText("512")
-            self.dwell_spin.setValue(2)
-        elif data == "precise":
-            self.fft_combo.setCurrentText("2048")
-            self.hop_combo.setCurrentText("1024")
-            self.dwell_spin.setValue(4)
-        self._plan_summary_label.setText(self._tr.text("sweep.plan.empty"))
 
     def _on_plan_clicked(self) -> None:
         if self._presenter.running:
@@ -723,57 +677,6 @@ class SweepWorkspace(QWidget):
         item = QTableWidgetItem(text)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(row, column, item)
-
-    def _on_profile_export(self) -> None:
-        """Export the current sweep configuration as JSON via an atomic .part path."""
-        from PySide6.QtWidgets import QFileDialog
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            self._tr.text("sweep.profile.export_title"),
-            "",
-            "Sweep Profile (*.json)",
-        )
-        if not path:
-            return
-        partial = path + ".part"
-        config = self._build_config()
-        options = self._build_planner_options()
-        if config is None or options is None:
-            return
-        payload = {
-            "schema": "sdr-native-sweep-profile",
-            "schema_version": 1,
-            "sweep": {
-                "start_frequency_hz": config.start_frequency_hz,
-                "stop_frequency_hz": config.stop_frequency_hz,
-                "sample_rate_hz": config.sample_rate_hz,
-                "analog_bandwidth_hz": config.analog_bandwidth_hz,
-                "overlap_hz": config.overlap_hz,
-                "fft_size": config.fft_size,
-                "hop_size": config.hop_size,
-                "dwell_frames": config.dwell_frames,
-                "settling_time_seconds": config.settling_time_seconds,
-                "discard_blocks": config.discard_blocks,
-            },
-            "planner": {
-                "edge_margin_hz": options.edge_margin_hz,
-                "dc_exclusion_hz": options.dc_exclusion_hz,
-            },
-        }
-        try:
-            import json
-            with open(partial, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            import os as _os
-            _os.replace(partial, path) if hasattr(_os, "replace") else None
-        except OSError as exc:
-            self._show_error(str(exc))
-            return
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         self._timer.stop()
