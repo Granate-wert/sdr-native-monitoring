@@ -52,15 +52,16 @@ class NotificationStore:
         return self._dropped
 
     def push(self, item: NotificationItem) -> bool:
-        """Enqueue; returns False when the oldest had to be evicted."""
+        """Enqueue; returns True when accepted without dropping an existing item."""
 
         if not isinstance(item, NotificationItem):
             raise TypeError("item must be NotificationItem")
+        dropped = self._dropped
         while len(self._items) >= self._capacity:
             self._items.pop(0)
             self._dropped += 1
         self._items.append(item)
-        return True
+        return self._dropped == dropped
 
     def dismiss(self, notification_id: str) -> bool:
         """Remove by id; returns True when an item was removed."""
