@@ -14,6 +14,7 @@ The module has three responsibilities:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 from ._version import __version__  # re-exported for --version handlers
@@ -40,7 +41,25 @@ def main() -> int:
 
         return sdr_cli_main(sys.argv[1:])
 
-    logger.info("SDR Native Monitoring GUI bootstrap")
+    # SDR UI mode: default to the new AppShell unless explicitly overridden.
+    # Allowed values (env SDR_UI_MODE): "standalone" for AppShell (default),
+    # "legacy" for the legacy DFL fallback shell (developer-only escape hatch).
+    ui_mode = os.environ.get("SDR_UI_MODE", "standalone").strip().casefold()
+
+    logger.info("SDR Native Monitoring GUI bootstrap (ui_mode=%s)", ui_mode)
+    if ui_mode == "standalone":
+        from PySide6.QtWidgets import QApplication
+        from esw_dfl.ui.bootstrap import configure_application_identity
+
+        from sdr_monitor.app_shell import SDRAppShell
+
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        configure_application_identity(app)
+        shell = SDRAppShell()
+        shell.show()
+        return app.exec()
+
+    # Legacy fallback for developers only.
     from esw_dfl.gui import run_gui
 
     run_gui()
