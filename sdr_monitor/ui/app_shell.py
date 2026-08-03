@@ -14,6 +14,9 @@ from .components import EmptyState, StatusChip
 from .design_tokens import StatusTone
 from .i18n import DEFAULT_TRANSLATOR, Translator
 from .icons import IconId, IconRegistry
+from .workspaces import HomeWorkspace, LiveMonitorWorkspace
+from .dialogs import DeviceDiscoveryDialog
+from .presenters import LivePresenter
 
 
 class WorkspaceId(StrEnum):
@@ -64,6 +67,8 @@ class SDRAppShell(QMainWindow):
         super().__init__(parent)
         self.services = services or build_default_sdr_services()
         self._translator = translator or DEFAULT_TRANSLATOR
+        self._live_presenter = LivePresenter(self.services.live_sdr, self)
+        self._discovery_dialog: DeviceDiscoveryDialog | None = None
         self._workspace_factories: dict[WorkspaceId, Callable[[], QWidget]] = {}
         self._workspace_pages: dict[WorkspaceId, QWidget] = {}
         self._nav_buttons: dict[WorkspaceId, QToolButton] = {}
@@ -71,7 +76,9 @@ class SDRAppShell(QMainWindow):
         self._active_workspace = WorkspaceId.HOME
         self._rail_expanded = False
         self._inspector_visible = True
+        self._auto_collapsed_inspector = False
         self._build_shell()
+        self._register_s05_workspaces()
         self._install_shortcuts()
         self.set_active_workspace(WorkspaceId.HOME)
 
@@ -114,12 +121,53 @@ class SDRAppShell(QMainWindow):
         self._inspector_visible = not self._inspector_visible
         self._inspector.setVisible(self._inspector_visible)
 
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        narrow = event.size().width() <= 1280
+        if narrow and self._inspector_visible:
+            self._inspector_visible = False
+            self._auto_collapsed_inspector = True
+            self._inspector.setVisible(False)
+        elif not narrow and self._auto_collapsed_inspector:
+            self._inspector_visible = True
+            self._auto_collapsed_inspector = False
+            self._inspector.setVisible(True)
+        super().resizeEvent(event)
     def closeEvent(self, event) -> None:  # type: ignore[override]
         for page in tuple(self._workspace_pages.values()):
             self._dispose_workspace(page)
         self._workspace_pages.clear()
         super().closeEvent(event)
 
+    def _register_s05_workspaces(self) -> None:
+        self.register_workspace(WorkspaceId.HOME, self._make_home_workspace)
+        self.register_workspace(WorkspaceId.LIVE, self._make_live_workspace)
+
+    def _make_live_workspace(self) -> LiveMonitorWorkspace:
+        live = LiveMonitorWorkspace(self._live_presenter, self.services.profiles.load())
+        live.discovery_requested.connect(self._show_discovery)
+        self._inspector.setWidget(live.inspector)
+        return live
+
+    def _show_discovery(self) -> None:
+        dialog = DeviceDiscoveryDialog(self._live_presenter, self)
+        dialog.device_selected.connect(self._select_live_device)
+        dialog.device_selected.connect(lambda _device_id: self.set_active_workspace(WorkspaceId.LIVE))
+        dialog.finished.connect(dialog.deleteLater)
+        self._discovery_dialog = dialog
+        dialog.show()
+        dialog.discover()
+    def _select_live_device(self, device_id: str) -> None:
+        if device_id.startswith("manual:"):
+            self._live_presenter.select_manual_uri(device_id.removeprefix("manual:"))
+        else:
+            self._live_presenter.select_device(device_id)
+        self.set_active_workspace(WorkspaceId.LIVE)
+    def _make_home_workspace(self) -> HomeWorkspace:
+        home = HomeWorkspace()
+        home.live_requested.connect(lambda: self.set_active_workspace(WorkspaceId.LIVE))
+        home.sweep_requested.connect(lambda: self.set_active_workspace(WorkspaceId.SWEEP))
+        home.discover_requested.connect(self._show_discovery)
+        return home
     def _build_shell(self) -> None:
         self.setWindowTitle(self._translator.text("app.name"))
         self.setMinimumSize(1024, 640)

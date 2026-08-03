@@ -119,16 +119,20 @@ class EmptyState(QFrame):
         super().__init__(parent)
         _card(self, "sdrEmptyState")
         layout = QVBoxLayout(self)
-        heading, body = QLabel(title), QLabel(detail)
-        body.setWordWrap(True)
-        body.setProperty("role", "secondary")
-        layout.addWidget(heading)
-        layout.addWidget(body)
+        self._heading, self._body = QLabel(title), QLabel(detail)
+        self._body.setWordWrap(True)
+        self._body.setProperty("role", "secondary")
+        layout.addWidget(self._heading)
+        layout.addWidget(self._body)
         self.setAccessibleName(title)
         self.setAccessibleDescription(detail)
 
 
 class ErrorState(EmptyState):
+    def set_message(self, message: str) -> None:
+        self._body.setText(message)
+        self.setAccessibleDescription(message)
+
     def __init__(self, message: str, *, retry: callable | None = None, parent: QWidget | None = None) -> None:
         super().__init__(DEFAULT_TRANSLATOR.text("error.title"), message, parent)
         self.setObjectName("sdrErrorState")

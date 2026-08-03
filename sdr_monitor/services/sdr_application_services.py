@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
+from pathlib import Path
 from typing import Any
 
 from .interfaces import CalibrationSdrService, DiagnosticsSdrService, LiveSdrService, RecordingSdrService, SweepSdrService
+from .live_session import InMemoryLiveSessionService
+from .profile_store import LiveProfileStore
 
 
 class UnavailableLiveService:
@@ -104,13 +108,17 @@ class PlatformDiagnosticsService:
         return {"output_dir": output_dir, "created": False}
 
 
+def _default_profile_store() -> LiveProfileStore:
+    root = Path(os.environ.get("LOCALAPPDATA", Path.cwd())) / "SDR Native Monitoring"
+    return LiveProfileStore(root / "live_profiles.json")
 @dataclass(frozen=True, slots=True)
 class SdrApplicationServices:
-    live_sdr: LiveSdrService = field(default_factory=UnavailableLiveService)
+    live_sdr: LiveSdrService = field(default_factory=InMemoryLiveSessionService)
     sweep: SweepSdrService = field(default_factory=UnavailableSweepService)
     calibration: CalibrationSdrService = field(default_factory=InMemoryCalibrationService)
     recording: RecordingSdrService = field(default_factory=InMemoryRecordingService)
     diagnostics: DiagnosticsSdrService = field(default_factory=PlatformDiagnosticsService)
+    profiles: LiveProfileStore = field(default_factory=_default_profile_store)
 
 
 def build_default_sdr_services() -> SdrApplicationServices:
