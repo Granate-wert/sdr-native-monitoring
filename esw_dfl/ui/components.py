@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QProgressBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .design_tokens import StatusTone
 from .icons import IconId, IconRegistry
@@ -92,3 +100,135 @@ class StatusBadge(QFrame):
     @property
     def text(self) -> str:
         return self._text.text()
+
+
+class StatusChip(QFrame):
+    """Compact status chip with icon and text (never color alone)."""
+
+    def __init__(self, text: str = "", tone: StatusTone = StatusTone.NEUTRAL, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        self._icon = QLabel()
+        self._text = QLabel()
+        layout.addWidget(self._icon)
+        layout.addWidget(self._text)
+        self.set_status(text, tone)
+        self.setObjectName("p16StatusChip")
+
+    def set_status(self, text: str, tone: StatusTone) -> None:
+        icon_id = StatusBadge._ICONS[tone]
+        self._icon.setPixmap(IconRegistry.icon(icon_id, size=14).pixmap(14, 14))
+        self._text.setText(text)
+        self.setProperty("statusTone", tone.value)
+        self.setAccessibleName(text)
+        self.setAccessibleDescription(f"{tone.value}: {text}")
+
+
+class MeasurementCard(QFrame):
+    """Single metric display (name, value with unit, quality, source, warnings)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        self._name = QLabel()
+        self._value = QLabel()
+        self._value.setStyleSheet("font-size: 14px; font-weight: 600")
+        self._meta = QLabel()
+        self._warn = QLabel()
+        layout.addWidget(self._name)
+        layout.addWidget(self._value)
+        layout.addWidget(self._meta)
+        layout.addWidget(self._warn)
+        self.setObjectName("p16MeasurementCard")
+
+    def set_values(self, name: str, value: str, unit: str, meta: str = "", warn: str = "") -> None:
+        self._name.setText(name)
+        self._value.setText(f"{value} {unit}")
+        self._meta.setText(meta)
+        self._warn.setText(warn)
+        self.setAccessibleName(name)
+        self.setAccessibleDescription(f"{value} {unit}")
+
+
+class SectionCard(QFrame):
+    """Titled box containing arbitrary child content."""
+
+    def __init__(self, title: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        self._title = QLabel(title)
+        self._title.setStyleSheet("font-weight: 600")
+        layout.addWidget(self._title)
+        self._content_layout = QVBoxLayout()
+        layout.addLayout(self._content_layout)
+        self.setObjectName("p16SectionCard")
+
+    def add_widget(self, widget: QWidget) -> None:
+        self._content_layout.addWidget(widget)
+
+
+class EmptyState(QFrame):
+    """Placeholder shown when a list/sidebar is empty."""
+
+    def __init__(self, message: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        self._text = QLabel(message)
+        layout.addWidget(self._text)
+        self.setObjectName("p16EmptyState")
+        self.setAccessibleName("empty_state")
+
+
+class ErrorState(QFrame):
+    """User-visible error panel with retry hint."""
+
+    def __init__(self, message: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        self._title = QLabel("Error")
+        self._text = QLabel(message)
+        layout.addWidget(self._title)
+        layout.addWidget(self._text)
+        self.setObjectName("p16ErrorState")
+        self.setAccessibleName("error_state")
+
+
+class TaskProgress(QFrame):
+    """Bounded progress display with status label."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        self._label = QLabel()
+        self._progress = QProgressBar()
+        layout.addWidget(self._label)
+        layout.addWidget(self._progress)
+        self._progress.setMinimum(0)
+        self._progress.setMaximum(100)
+        self.setObjectName("p16TaskProgress")
+
+    def set_progress(self, percent: float, message: str = "") -> None:
+        self._progress.setValue(int(percent))
+        if message:
+            self._label.setText(message)
+
+
+class NumericReadout(QFrame):
+    """Right-aligned numeric value with a fixed-width unit."""
+
+    def __init__(self, label: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        self._label = QLabel(label)
+        self._value = QLabel("—")
+        self._value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._label)
+        layout.addStretch(1)
+        layout.addWidget(self._value)
+        self.setObjectName("p16NumericReadout")
+
+    def set_value(self, value: float | None, unit: str, *, decimals: int = 2) -> None:
+        if value is None:
+            self._value.setText("—")
+        else:
+            self._value.setText(f"{value:.{decimals}f} {unit}")
