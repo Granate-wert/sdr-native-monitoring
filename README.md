@@ -1,5 +1,19 @@
 # SDR Native Monitoring
 
+Two products built from the same sources:
+
+- **`dfl-analyzer`** (legacy, read-only, DFL).  Parses and displays Rohde &
+  Schwarz DFL captures, runs the offline DFL workspace, and ships with its own
+  entry point and native spectrogram decoder module.  Run it as
+  `python main.py` or the console script `dfl-analyzer`.
+- **`sdr-native-monitoring`**.  Control-plane + GUI for the SDR engine
+  (Pluto/CUDA, CPU reference DSP, recording replay, calibration, sweeps and
+  diagnostics).  Run it as `python -m sdr_monitor.main` or the console script
+  `sdr-native-monitoring`.
+
+Neither product imports the other's production core: see
+`docs/architecture/s00_boundary_map.md` for the frozen import boundary.
+
 Windows-first tools for read-only Rohde & Schwarz DFL analysis and a bounded C++20/Python SDR processing core.
 
 The project provides spectrum and waterfall inspection, engineering measurements, native CPU/CUDA DSP boundaries, fixed-band SDR plumbing, calibration contracts, and cancellable background work. Live SpectrumFrame measurements are unit-aware and retain frame/config provenance plus quality warnings. Source DFL and RF recordings are never modified or committed. P12 adds bounded wide-span sweep planning and sequential execution with explicit segment timing, cancellation, and missing-segment results. P13 adds linear-power full-span stitching with explicit target grids, overlap correction, per-bin quality/uncertainty/source maps, seam evidence, and a GUI adapter that displays stitched sweeps without fabricating missing segments. The Wideband Sweep workspace turns this into a plan-before-run workflow: a range editor and expert controls, a segment diagram with coverage check, ETA and throttled progress, a seam/quality view, profile presets, and a result spectrum rendered directly from the stitched frame — with missing segments always explicit, and a deterministic fake service for offline runs. The Offline DFL workspace migrates the read-only DFL workflow into the new AppShell: session loading, frame navigation and playback, markers, heatmap/persistence controls, channel-power results and exports, with the presenter owning renderers, frame loading and measurement math while the widget stays a thin snapshot renderer.

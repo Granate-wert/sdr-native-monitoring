@@ -41,8 +41,9 @@ dev = [
 ]
 
 [project.scripts]
-sdr-native-monitoring = "main:main"
+sdr-native-monitoring = "sdr_monitor.main:main"
 sdr-native-validate = "benchmark_p15_validation:main"
+dfl-analyzer = "main:main"
 
 [tool.ruff]
 target-version = "py311"
