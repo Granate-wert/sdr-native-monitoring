@@ -38,6 +38,16 @@ from .recording import (
     RecordingState,
     SpectrumFrame,
 )
+from .replay import (
+    FrameBus,
+    RecordingIndex,
+    ReplayClock,
+    ReplayIndexEntry,
+    ReplayKind,
+    ReplayPosition,
+    ReplayState,
+    ReprocessResult,
+)
 from .profiles import LiveProfile
 from .sweep import (
     SweepConfiguration,
@@ -70,6 +80,14 @@ __all__ = [
     "SweepResult",
     "SweepSegment",
     "SweepState",
+    "FrameBus",
+    "RecordingIndex",
+    "ReplayClock",
+    "ReplayIndexEntry",
+    "ReplayKind",
+    "ReplayPosition",
+    "ReplayState",
+    "ReprocessResult",
     "IQBlock",
     "RecordingHealth",
     "RecordingKind",

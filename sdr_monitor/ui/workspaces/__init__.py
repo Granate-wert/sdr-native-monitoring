@@ -4,8 +4,10 @@ from .calibration import CalibrationWorkspace
 from .home import HomeWorkspace
 from .live import LiveMonitorWorkspace
 from .recording import RecordingWorkspace
+from .replay import ReplayWorkspace
 from .sweep import SweepWorkspace
 
 __all__ = [
     "CalibrationWorkspace",
-    "RecordingWorkspace","HomeWorkspace", "LiveMonitorWorkspace", "SweepWorkspace"]
+    "RecordingWorkspace",
+    "ReplayWorkspace","HomeWorkspace", "LiveMonitorWorkspace", "SweepWorkspace"]

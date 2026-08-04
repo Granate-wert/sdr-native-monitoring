@@ -38,3 +38,10 @@ a bounded non-blocking tee. IQ-only, spectrum-only, or combined recordings
 persist source/config metadata, queue drops and gaps, finalize through a `.part`
 file, and retain failed partials for recovery. No synthetic producer is started
 by the production composition root.
+
+## S09 Replay and Reprocess
+
+Recordings have an indexed reader with physical byte-offset seek, play/pause,
+0.25x–8x ReplayClock, shared frame publication, and asynchronous IQ reprocess.
+A requested CUDA reprocess reports a visible CPU fallback when CUDA is
+unavailable; cancellation and replay position remain explicit.
