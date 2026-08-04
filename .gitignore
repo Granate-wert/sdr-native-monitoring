@@ -20,6 +20,9 @@ esw_dfl/_sgram_native*.pyd
 esw_dfl/_sgram_native.pdb
 esw_dfl/_sdr_native*.pyd
 esw_dfl/_sdr_native*.pdb
+sdr_monitor/_sdr_native*.pyd
+sdr_monitor/_sdr_native*.pdb
+sdr_monitor/native_build_manifest.json
 
 # External measurement and capture data
 *.dfl

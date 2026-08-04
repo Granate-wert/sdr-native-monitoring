@@ -59,3 +59,11 @@ The standalone UI includes separate-process DPI probes for 100%, 200% and
 300%, accessible-name/focus auditing, keyboard shortcut collision detection,
 and bounded 60 Hz p50/p95 plus memory-plateau instrumentation. Validation is
 measurement-only and does not reduce analytical publication rate.
+
+## S12 Windows Release Packaging
+
+`build_sdr_release.ps1` freezes a standalone `SDRNativeMonitoring.exe` with
+Python 3.13 ABI policy, CPU/CUDA lanes, native artifact preflight, forbidden
+DFL/spectrogram-module checks, and SHA-256 release manifest generation. The
+verified local artifact is the CPU lane; CUDA/native hardware remains explicit
+NOT_VERIFIED until built on a CUDA-enabled toolchain.

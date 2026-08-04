@@ -54,17 +54,19 @@ if (-not $PythonExecutable) {
     } else {
         $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
         if ($launcher) {
-            $PythonExecutable = (& $launcher.Source -3 -c "import sys; print(sys.executable)").Trim()
+            $PythonExecutable = (& $launcher.Source -3.13 -c "import sys; print(sys.executable)").Trim()
         }
     }
 }
 if (-not $PythonExecutable -or -not (Test-Path -LiteralPath $PythonExecutable)) {
     throw "Python was not resolved. Pass -PythonExecutable or create .venv."
 }
+$pythonVersion = (& $PythonExecutable -c 'import sys; print(str(sys.version_info.major) + "." + str(sys.version_info.minor))').Trim()
+if ($pythonVersion -ne "3.13") { throw "S12 requires frozen Python 3.13 ABI, got $pythonVersion" }
 if ($Clean) {
-    Get-ChildItem -LiteralPath (Join-Path $repoRoot "esw_dfl") -Filter "_sdr_native*.pyd" -File -ErrorAction SilentlyContinue |
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot "sdr_monitor") -Filter "_sdr_native*.pyd" -File -ErrorAction SilentlyContinue |
         Remove-Item -Force
-    Get-ChildItem -LiteralPath (Join-Path $repoRoot "esw_dfl") -Filter "_sdr_native*.pdb" -File -ErrorAction SilentlyContinue |
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot "sdr_monitor") -Filter "_sdr_native*.pdb" -File -ErrorAction SilentlyContinue |
         Remove-Item -Force
     foreach ($generatedDir in @("build", "python", "scikit-build")) {
         $target = Join-Path $outDir $generatedDir
@@ -147,16 +149,16 @@ $manifest = [ordered]@{
 }
 $manifestPath = Join-Path $artifactDir "native_build_manifest.json"
 $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
-$preflight = Join-Path $repoRoot "scripts\preflight_native_build.py"
+$preflight = Join-Path $repoRoot "scripts\preflight_sdr_native_build.py"
 $preflightArgs = @($preflight, "--module", $artifacts[0].FullName, "--manifest", $manifestPath)
 if ($Lane -eq "CUDA") { $preflightArgs += "--expect-cuda" } else { $preflightArgs += "--expect-cpu" }
 Invoke-Checked -FilePath $PythonExecutable -Arguments $preflightArgs
 if ($Configuration -eq "Release") {
-    $activeDir = Join-Path $repoRoot "esw_dfl"
+    $activeDir = Join-Path $repoRoot "sdr_monitor"
     $active = Join-Path $activeDir $artifacts[0].Name
     $part = "$active.part"
     Copy-Item -LiteralPath $artifacts[0].FullName -Destination $part -Force
     Move-Item -LiteralPath $part -Destination $active -Force
     Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $activeDir "native_build_manifest.json") -Force
 }
-Write-Host "P08 native module ($Lane/$Configuration): $($artifacts[0].FullName)"
+Write-Host "S12 native module ($Lane/$Configuration): $($artifacts[0].FullName)"
