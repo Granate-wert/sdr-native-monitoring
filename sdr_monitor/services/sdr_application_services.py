@@ -14,6 +14,7 @@ from .calibration_service import CalibrationService
 from .calibration_store import CalibrationProfileStore
 from .sweep_session import InMemorySweepService
 from .recording_session import RecordingService
+from .diagnostics_session import DiagnosticsService
 
 
 class UnavailableLiveService:
@@ -115,7 +116,7 @@ class SdrApplicationServices:
     sweep: SweepSdrService = field(default_factory=InMemorySweepService)
     calibration: CalibrationSdrService = field(default_factory=_default_calibration_service)
     recording: RecordingSdrService = field(default_factory=RecordingService)
-    diagnostics: DiagnosticsSdrService = field(default_factory=PlatformDiagnosticsService)
+    diagnostics: DiagnosticsSdrService = field(default_factory=DiagnosticsService)
     profiles: LiveProfileStore = field(default_factory=_default_profile_store)
 
 

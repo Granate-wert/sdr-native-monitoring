@@ -48,6 +48,17 @@ from .replay import (
     ReplayState,
     ReprocessResult,
 )
+from .diagnostics import (
+    BoundedLog,
+    DiagnosticCard,
+    DiagnosticError,
+    DiagnosticStatus,
+    DiagnosticsSnapshot,
+    SelfTestResult,
+    SupportBundleOptions,
+    SupportBundleResult,
+    redact_path,
+)
 from .profiles import LiveProfile
 from .sweep import (
     SweepConfiguration,
@@ -80,6 +91,15 @@ __all__ = [
     "SweepResult",
     "SweepSegment",
     "SweepState",
+    "BoundedLog",
+    "DiagnosticCard",
+    "DiagnosticError",
+    "DiagnosticStatus",
+    "DiagnosticsSnapshot",
+    "SelfTestResult",
+    "SupportBundleOptions",
+    "SupportBundleResult",
+    "redact_path",
     "FrameBus",
     "RecordingIndex",
     "ReplayClock",

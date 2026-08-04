@@ -45,3 +45,10 @@ Recordings have an indexed reader with physical byte-offset seek, play/pause,
 0.25x–8x ReplayClock, shared frame publication, and asynchronous IQ reprocess.
 A requested CUDA reprocess reports a visible CPU fallback when CUDA is
 unavailable; cancellation and replay position remain explicit.
+
+## S10 Diagnostics and Support
+
+Diagnostics runs in bounded worker tasks, exposes CPU/CUDA/Pluto environment
+cards, explicit RX-only confirmation, a bounded error center, cancellation,
+and a support bundle redacted by default. Raw IQ/calibration data and private
+paths are not included.
