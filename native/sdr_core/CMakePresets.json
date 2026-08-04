@@ -88,7 +88,8 @@
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-aarch64.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "SDR_CORE_BUILD_PYTHON": "OFF"
+        "SDR_CORE_BUILD_PYTHON": "OFF",
+        "SDR_CORE_ENABLE_PLUTO": "ON"
       }
     },
     {
@@ -106,7 +107,34 @@
         "CMAKE_BUILD_TYPE": "Release",
         "SDR_CORE_BUILD_PYTHON": "OFF",
         "SDR_CORE_ENABLE_CUDA": "ON",
-        "CMAKE_CUDA_ARCHITECTURES": "87"
+        "CMAKE_CUDA_ARCHITECTURES": "87",
+        "SDR_CORE_ENABLE_PLUTO": "ON"
+      }
+    },
+    {
+      "name": "linux-aarch64-native-cpu",
+      "displayName": "Linux AArch64 native CPU + Pluto (on-device)",
+      "inherits": "base-cpu",
+      "binaryDir": "${sourceDir}/out/build/linux-aarch64-native-cpu",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SDR_CORE_BUILD_PYTHON": "ON",
+        "SDR_CORE_ENABLE_PLUTO": "ON",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/linux-aarch64-native-cpu/python"
+      }
+    },
+    {
+      "name": "linux-aarch64-native-cuda",
+      "displayName": "Linux AArch64 CUDA + Pluto (on-device)",
+      "inherits": "base-cpu",
+      "binaryDir": "${sourceDir}/out/build/linux-aarch64-native-cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SDR_CORE_BUILD_PYTHON": "ON",
+        "SDR_CORE_ENABLE_PLUTO": "ON",
+        "SDR_CORE_ENABLE_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "87",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/linux-aarch64-native-cuda/python"
       }
     }
   ],
@@ -134,6 +162,14 @@
     {
       "name": "linux-aarch64-cuda-release",
       "configurePreset": "linux-aarch64-cuda"
+    },
+    {
+      "name": "linux-aarch64-native-cpu-release",
+      "configurePreset": "linux-aarch64-native-cpu"
+    },
+    {
+      "name": "linux-aarch64-native-cuda-release",
+      "configurePreset": "linux-aarch64-native-cuda"
     }
   ],
   "testPresets": [

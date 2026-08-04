@@ -67,3 +67,12 @@ Python 3.13 ABI policy, CPU/CUDA lanes, native artifact preflight, forbidden
 DFL/spectrogram-module checks, and SHA-256 release manifest generation. The
 verified local artifact is the CPU lane; CUDA/native hardware remains explicit
 NOT_VERIFIED until built on a CUDA-enabled toolchain.
+
+## S13 Jetson Orin NX build path
+
+The native CMake layer now selects POSIX Pluto/libiio and cuFFT loaders on Linux,
+keeps CUDA architecture `87` explicit for Jetson Orin NX, and provides native
+AArch64 CPU/CUDA presets that can build the `_sdr_native` extension with Python
+3.13. The Windows CPU release path remains unchanged. The current Windows
+workspace has no CMake/Ninja/CUDA/Jetson toolchain, so on-device build and Pluto
+RX hardware acceptance remain `NOT_VERIFIED` until executed on target hardware.

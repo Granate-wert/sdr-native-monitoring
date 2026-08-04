@@ -9,6 +9,7 @@ import queue
 import shutil
 import struct
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -139,23 +140,50 @@ class RecordingService:
             return True
 
     def stop(self, timeout_s: float = 5.0) -> RecordingResult:
+        """Stop without holding the service lock while the writer drains."""
+        timeout = max(timeout_s, 0.1)
+        deadline = time.monotonic() + timeout
+        queue_ref: queue.Queue[Any] | None = None
         with self._lock:
             if self._state is RecordingState.IDLE:
                 return self._result()
             if self._state is RecordingState.RECORDING and self._queue is not None:
                 self._state = RecordingState.FINALIZING
-                try:
-                    self._queue.put(_SENTINEL, timeout=max(timeout_s, 0.1))
-                except queue.Full:
-                    self._state = RecordingState.STOP_TIMEOUT
+                queue_ref = self._queue
+                self.source_bus.remove_recording_sink(self)
+
+        # The writer needs the same lock for counters.  Do not block while
+        # holding it, otherwise a full queue deadlocks before the sentinel is
+        # admitted (especially visible with Python 3.13 on Windows).
+        if queue_ref is not None:
+            remaining = max(deadline - time.monotonic(), 0.0)
+            try:
+                queue_ref.put(_SENTINEL, timeout=remaining)
+            except queue.Full:
+                # Preserve bounded shutdown: evict queued records explicitly
+                # as gaps, then always enqueue the terminal marker.
+                while True:
+                    try:
+                        queue_ref.get_nowait()
+                    except queue.Empty:
+                        break
+                    else:
+                        with self._lock:
+                            self._drops += 1
+                            self._gaps += 1
+                    try:
+                        queue_ref.put_nowait(_SENTINEL)
+                        break
+                    except queue.Full:
+                        continue
+
         worker = self._worker
         if worker is not None:
-            worker.join(timeout=max(timeout_s, 0.1))
+            worker.join(timeout=max(deadline - time.monotonic(), 0.1))
         with self._lock:
             if worker is not None and worker.is_alive():
                 self._state = RecordingState.STOP_TIMEOUT
                 return self._result()
-            self.source_bus.remove_recording_sink(self)
             if self._state is RecordingState.FINALIZING:
                 self._state = RecordingState.COMPLETED
                 if self._part is not None and self._path is not None:

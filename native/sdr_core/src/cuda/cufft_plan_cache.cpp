@@ -1,15 +1,17 @@
 #include "sdr_cuda/cufft_plan_cache.hpp"
 
-#include <algorithm>
 #include <cstdlib>
+#include <string>
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
-#error "P08 CUDA backend is currently verified on Windows only"
-#endif
-
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 namespace sdr_cuda {
 
@@ -22,101 +24,76 @@ namespace {
 }
 
 [[nodiscard]] void* load_cufft_library() {
-    if (const char* override_path = std::getenv("CUFFT_DLL_PATH")) {
-        if (override_path[0] != '\0') {
-            const std::wstring wide(override_path, override_path + std::strlen(override_path));
-            HMODULE module = LoadLibraryExW(
-                wide.c_str(),
-                nullptr,
-                LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
-            );
-            if (module != nullptr) {
-                return module;
-            }
-            throw_unavailable(std::string("CUFFT_DLL_PATH load failed: ") + override_path);
-        }
+    if (const char* override_path = std::getenv("CUFFT_LIBRARY");
+        override_path != nullptr && override_path[0] != '\0') {
+#ifdef _WIN32
+        if (HMODULE module = LoadLibraryA(override_path); module != nullptr) return module;
+#else
+        if (void* module = dlopen(override_path, RTLD_NOW | RTLD_LOCAL); module != nullptr) return module;
+#endif
+        throw_unavailable(std::string("CUFFT_LIBRARY load failed: ") + override_path);
     }
-    // cuFFT keeps the ABI-12 soname in CUDA 13.x; prefer exact, then generic.
-    static const wchar_t* candidates[] = {
-        L"cufft64_12.dll",
-        L"cufft64_13.dll",
-        L"cufft64_11.dll",
-        L"cufft64_10.dll",
-        L"cufft.dll",
-    };
-    // Plain LoadLibraryW searches PATH (safe-search ExW variants do not).
-    for (const auto* candidate : candidates) {
-        HMODULE module = LoadLibraryW(candidate);
-        if (module != nullptr) {
-            return module;
-        }
+    if (const char* override_path = std::getenv("CUFFT_DLL_PATH");
+        override_path != nullptr && override_path[0] != '\0') {
+#ifdef _WIN32
+        if (HMODULE module = LoadLibraryA(override_path); module != nullptr) return module;
+#else
+        if (void* module = dlopen(override_path, RTLD_NOW | RTLD_LOCAL); module != nullptr) return module;
+#endif
+        throw_unavailable(std::string("CUFFT_DLL_PATH load failed: ") + override_path);
     }
-    // The standard CUDA installer exports CUDA_PATH; probe its bin\x64 dir.
-    for (const char* variable : {"CUDA_PATH", "CUDAToolkit_ROOT"}) {
-        const char* root = std::getenv(variable);
-        if (root == nullptr || root[0] == '\0') {
-            continue;
-        }
-        const std::string base(root);
-        for (const auto* candidate : candidates) {
-            const std::string full = base + "\\bin\\x64\\" +
-                                     std::string(candidate, candidate + std::wcslen(candidate));
-            const std::wstring wide(full.begin(), full.end());
-            HMODULE module = LoadLibraryExW(
-                wide.c_str(),
-                nullptr,
-                LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
-            );
-            if (module != nullptr) {
-                return module;
-            }
-        }
+#ifdef _WIN32
+    const std::vector<std::string> candidates{
+        "cufft64_12.dll", "cufft64_13.dll", "cufft64_11.dll", "cufft64_10.dll", "cufft.dll"};
+#else
+    const std::vector<std::string> candidates{
+        "libcufft.so.12", "libcufft.so.11", "libcufft.so.10", "libcufft.so"};
+#endif
+    for (const auto& candidate : candidates) {
+#ifdef _WIN32
+        if (HMODULE module = LoadLibraryA(candidate.c_str()); module != nullptr) return module;
+#else
+        if (void* module = dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL); module != nullptr) return module;
+#endif
     }
-    // Final fallback: probe the official default toolkit layout
-    // (C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*\\bin\x64).
-    {
-        const std::wstring root = L"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\";
-        WIN32_FIND_DATAW data{};
-        HANDLE search = FindFirstFileW((root + L"v*").c_str(), &data);
-        if (search != INVALID_HANDLE_VALUE) {
-            std::vector<std::wstring> versions;
-            do {
-                if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U &&
-                    data.cFileName[0] != L'.') {
-                    versions.emplace_back(data.cFileName);
-                }
-            } while (FindNextFileW(search, &data) != 0);
-            FindClose(search);
-            std::sort(versions.rbegin(), versions.rend());
-            for (const auto& version : versions) {
-                for (const auto* candidate : candidates) {
-                    const std::wstring full =
-                        root + version + L"\\bin\\x64\\" + candidate;
-                    HMODULE module = LoadLibraryExW(
-                        full.c_str(),
-                        nullptr,
-                        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
-                    );
-                    if (module != nullptr) {
-                        return module;
-                    }
-                }
+    for (const char* root_variable : {"CUDA_PATH", "CUDAToolkit_ROOT", "CUDA_HOME"}) {
+        const char* root = std::getenv(root_variable);
+        if (root == nullptr || root[0] == '\0') continue;
+#ifdef _WIN32
+        const std::vector<std::string> directories{std::string(root) + "\\bin\\x64\\"};
+#else
+        const std::vector<std::string> directories{
+            std::string(root) + "/lib64/", std::string(root) + "/targets/aarch64-linux/lib/"};
+#endif
+        for (const auto& directory : directories) {
+            for (const auto& candidate : candidates) {
+#ifdef _WIN32
+                if (HMODULE module = LoadLibraryA((directory + candidate).c_str()); module != nullptr) return module;
+#else
+                if (void* module = dlopen((directory + candidate).c_str(), RTLD_NOW | RTLD_LOCAL); module != nullptr) return module;
+#endif
             }
         }
     }
-    throw_unavailable("cufft64_12.dll/cufft.dll not found in the search path");
+#ifdef _WIN32
+    throw_unavailable("cufft64_12.dll/cufft.dll not found in PATH or CUDA_PATH");
+#else
+    throw_unavailable("libcufft.so.12/libcufft.so not found in the loader path or CUDA_HOME");
+#endif
 }
 
 [[nodiscard]] void* resolve(void* library, const char* name) {
+#ifdef _WIN32
     void* symbol = reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(library), name));
-    if (symbol == nullptr) {
-        throw_unavailable(std::string("missing cuFFT export: ") + name);
-    }
+#else
+    dlerror();
+    void* symbol = dlsym(library, name);
+#endif
+    if (symbol == nullptr) throw_unavailable(std::string("missing cuFFT export: ") + name);
     return symbol;
 }
 
 }  // namespace
-
 const CufftApi& CufftApi::instance() {
     static const CufftApi api;
     return api;

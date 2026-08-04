@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(sdr_core VERSION 0.6.0 LANGUAGES CXX)
 
-option(SDR_CORE_BUILD_PYTHON "Build the esw_dfl._sdr_native Python extension" ON)
+option(SDR_CORE_BUILD_PYTHON "Build the sdr_monitor._sdr_native Python extension" ON)
 option(SDR_CORE_BUILD_TESTS "Build native tests" ON)
 option(SDR_CORE_ENABLE_PLUTO "Enable the Pluto/libiio backend" OFF)
 option(SDR_CORE_ENABLE_CUDA "Enable the CUDA backend" OFF)
@@ -11,13 +11,7 @@ option(SDR_CORE_ENABLE_SANITIZERS "Enable supported native sanitizers" OFF)
 option(SDR_CORE_ENABLE_PROFILING "Enable native profiling instrumentation" OFF)
 set(SDR_CORE_PYTHON_OUTPUT_DIR "" CACHE PATH "Optional in-place output directory for _sdr_native")
 
-if(SDR_CORE_ENABLE_PLUTO AND NOT WIN32)
-    message(FATAL_ERROR "P06 dynamic libiio backend is currently verified on Windows only")
-endif()
 if(SDR_CORE_ENABLE_CUDA)
-    if(NOT WIN32)
-        message(FATAL_ERROR "P08 CUDA backend is currently verified on Windows only")
-    endif()
     enable_language(CUDA)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
         # The local GPU defines the target arch on the dev preset; never
@@ -105,17 +99,33 @@ if(SDR_CORE_ENABLE_CUDA)
         )
     endif()
     target_link_libraries(sdr_cuda PUBLIC sdr_core::sdr_core CUDA::cudart_static)
+    if(NOT WIN32)
+        target_link_libraries(sdr_cuda PUBLIC ${CMAKE_DL_LIBS})
+    endif()
 endif()
 
 if(SDR_CORE_ENABLE_PLUTO)
+    if(WIN32)
+        set(SDR_PLUTO_SOURCES
+            src/pluto/pluto_backend_windows.cpp
+            src/pluto/pluto_device_windows.cpp
+        )
+    else()
+        set(SDR_PLUTO_SOURCES
+            src/pluto/pluto_backend_linux.cpp
+            src/pluto/pluto_device_linux.cpp
+        )
+    endif()
     add_library(sdr_pluto STATIC
-        src/pluto/pluto_backend_windows.cpp
-        src/pluto/pluto_device_windows.cpp
+        ${SDR_PLUTO_SOURCES}
         src/pluto/fixed_band_engine.cpp
     )
     target_include_directories(sdr_pluto PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
     target_compile_features(sdr_pluto PUBLIC cxx_std_20)
     target_link_libraries(sdr_pluto PUBLIC sdr_core::sdr_core)
+    if(NOT WIN32)
+        target_link_libraries(sdr_pluto PUBLIC ${CMAKE_DL_LIBS})
+    endif()
     if(SDR_CORE_BUILD_TESTS)
         target_compile_definitions(sdr_pluto PUBLIC SDR_CORE_ENABLE_TEST_HOOKS=1)
     endif()
@@ -161,8 +171,8 @@ if(SDR_CORE_BUILD_PYTHON)
     endif()
 
     install(TARGETS _sdr_native
-        LIBRARY DESTINATION esw_dfl
-        RUNTIME DESTINATION esw_dfl
+        LIBRARY DESTINATION sdr_monitor
+        RUNTIME DESTINATION sdr_monitor
     )
 endif()
 
@@ -260,7 +270,7 @@ if(SDR_CORE_BUILD_TESTS)
         set_tests_properties(sdr_core.cuda_bench PROPERTIES TIMEOUT 900)
     endif()
 
-    if(SDR_CORE_ENABLE_PLUTO)
+    if(SDR_CORE_ENABLE_PLUTO AND WIN32)
         add_library(sdr_core_mock_libiio SHARED tests/mock_libiio.cpp)
         set_target_properties(sdr_core_mock_libiio PROPERTIES OUTPUT_NAME "libiio")
         sdr_core_apply_platform_defaults(sdr_core_mock_libiio)
