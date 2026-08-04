@@ -64,23 +64,25 @@ measurement-only and does not reduce analytical publication rate.
 
 `build_sdr_release.ps1` freezes a standalone `SDRNativeMonitoring.exe` with
 Python 3.13 ABI policy, CPU/CUDA lanes, native artifact preflight, forbidden
-DFL/spectrogram-module checks, and SHA-256 release manifest generation. The
-verified local artifact is the CPU lane; CUDA/native hardware remains explicit
-NOT_VERIFIED until built on a CUDA-enabled toolchain.
+DFL/spectrogram-module checks, and SHA-256 release manifest generation.
+The local CPU and CUDA lanes both build with Python 3.13, include the ABI-matched
+`_sdr_native` extension in the PyInstaller package, and pass release preflight.
+Real Pluto hardware, Jetson/aarch64 runtime, clean-machine startup, and long soak
+remain explicit NOT_VERIFIED acceptance gates.
 
 ## S13 Jetson Orin NX build path
 
 The native CMake layer now selects POSIX Pluto/libiio and cuFFT loaders on Linux,
 keeps CUDA architecture `87` explicit for Jetson Orin NX, and provides native
 AArch64 CPU/CUDA presets that can build the `_sdr_native` extension with Python
-3.13. The Windows CPU release path remains unchanged. The current Windows
-workspace has no CMake/Ninja/CUDA/Jetson toolchain, so on-device build and Pluto
-RX hardware acceptance remain `NOT_VERIFIED` until executed on target hardware.
+3.13. Windows CPU/CUDA native builds and CTest pass locally; Jetson/aarch64 build/import
+and Pluto RX hardware acceptance remain `NOT_VERIFIED` until executed on target
+hardware.
 
 ## S14 P17 final acceptance
 
 The standalone S00–S14 acceptance matrix is reproducible and currently reports
-71/71 targeted tests passing. The release verdict is `ACCEPT WITH GAPS`: the
-Windows CPU onedir artifact is verified, while clean native rebuilds, CUDA/Jetson
-runtime, real Pluto hardware, clean-machine startup, screenshots and long soak
-remain environment-dependent acceptance gates.
+71/71 targeted tests passing. Windows CPU and CUDA native/release lanes are verified
+locally; the release verdict remains `ACCEPT WITH GAPS` because Jetson/aarch64,
+real Pluto hardware, clean-machine startup, screenshots and long soak are
+environment-dependent acceptance gates.

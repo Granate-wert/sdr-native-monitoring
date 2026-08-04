@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -39,8 +40,23 @@ def _release_contract() -> dict[str, object]:
     return {"status": "PASS" if all(checks.values()) else "FAIL", "checks": checks}
 
 
+def _resolve_tool(name: str) -> str | None:
+    resolved = shutil.which(name)
+    if resolved or sys.platform != "win32":
+        return resolved
+    program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    patterns = {
+        "cmake": "Microsoft Visual Studio/*/*/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+        "ninja": "Microsoft Visual Studio/*/*/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
+        "cl": "Microsoft Visual Studio/*/*/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe",
+        "nvcc": "NVIDIA GPU Computing Toolkit/CUDA/*/bin/nvcc.exe",
+    }
+    matches = sorted(program_files.glob(patterns[name]))
+    return str(matches[-1]) if matches else None
+
+
 def _command_probe() -> dict[str, object]:
-    tools = {name: shutil.which(name) for name in ("cmake", "ninja", "cl", "nvcc")}
+    tools = {name: _resolve_tool(name) for name in ("cmake", "ninja", "cl", "nvcc")}
     available = [name for name, path in tools.items() if path]
     return {"status": "PASS" if len(available) == len(tools) else "NOT_VERIFIED", "tools": tools}
 
@@ -57,10 +73,11 @@ def build_matrix() -> dict[str, object]:
     release = _release_contract()
     toolchain = _command_probe()
     gaps = [
-        "native CMake/CPU/CUDA clean builds require the corresponding toolchain",
         "Jetson Orin NX, CUDA parity, PySide6 target install and Pluto hardware are not available locally",
         "8-hour soak, clean-machine startup and acceptance screenshots require release/target environments",
     ]
+    if toolchain["status"] != "PASS":
+        gaps.insert(0, "native CMake/CPU/CUDA clean builds require the corresponding toolchain")
     return {
         "package": "S14/P17",
         "verdict": "ACCEPT WITH GAPS",

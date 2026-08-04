@@ -22,8 +22,10 @@ if (-not $SkipNative) {
     & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane $Lane -PythonExecutable $python -SkipTests:$SkipTests
     if ($LASTEXITCODE -ne 0) { throw "native $Lane build failed" }
 }
+$nativeModules = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "sdr_monitor") -Filter "_sdr_native*.pyd" -File)
+if ($nativeModules.Count -ne 1) { throw "Expected one ABI-specific _sdr_native extension before freeze, found $($nativeModules.Count)" }
 if (-not $SkipFreeze) {
-    & $python -m PyInstaller --noconfirm --clean --onedir --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main (Join-Path $repoRoot "main_sdr.py")
+    & $python -m PyInstaller --noconfirm --clean --onedir --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main --add-binary ("$($nativeModules[0].FullName);sdr_monitor") (Join-Path $repoRoot "main_sdr.py")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller standalone freeze failed" }
 }
 if (-not (Test-Path -LiteralPath (Join-Path $packageDir "SDRNativeMonitoring.exe"))) { throw "standalone executable was not produced" }

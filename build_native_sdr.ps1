@@ -134,9 +134,14 @@ try {
     Pop-Location
 }
 
-$artifacts = @(Get-ChildItem -LiteralPath $artifactDir -Filter "_sdr_native*.pyd" -File)
+$extensionSuffix = (& $PythonExecutable -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))').Trim()
+if (-not $extensionSuffix) {
+    throw "Python extension suffix could not be resolved for $PythonExecutable"
+}
+$expectedArtifactName = "_sdr_native$extensionSuffix"
+$artifacts = @(Get-ChildItem -LiteralPath $artifactDir -Filter $expectedArtifactName -File)
 if ($artifacts.Count -ne 1) {
-    throw "Expected one _sdr_native extension in $artifactDir, found $($artifacts.Count)"
+    throw "Expected one $expectedArtifactName in $artifactDir, found $($artifacts.Count)"
 }
 $sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $pythonAbi = ($artifacts[0].BaseName -replace "^_sdr_native\.", "")
@@ -155,6 +160,11 @@ if ($Lane -eq "CUDA") { $preflightArgs += "--expect-cuda" } else { $preflightArg
 Invoke-Checked -FilePath $PythonExecutable -Arguments $preflightArgs
 if ($Configuration -eq "Release") {
     $activeDir = Join-Path $repoRoot "sdr_monitor"
+    # Keep only the extension matching the selected Python ABI in the active
+    # standalone package. Older ABI artifacts must not shadow a rerun.
+    Get-ChildItem -LiteralPath $activeDir -Filter "_sdr_native*.pyd" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $artifacts[0].Name } |
+        Remove-Item -Force
     $active = Join-Path $activeDir $artifacts[0].Name
     $part = "$active.part"
     Copy-Item -LiteralPath $artifacts[0].FullName -Destination $part -Force
