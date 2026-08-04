@@ -9,6 +9,7 @@ from typing import Any
 
 from .interfaces import CalibrationSdrService, DiagnosticsSdrService, LiveSdrService, RecordingSdrService, SweepSdrService
 from .live_session import InMemoryLiveSessionService
+from .native_live import build_optional_native_live_service
 from .profile_store import LiveProfileStore
 from .calibration_service import CalibrationService
 from .calibration_store import CalibrationProfileStore
@@ -110,9 +111,13 @@ def _default_calibration_service() -> CalibrationService:
 def _default_profile_store() -> LiveProfileStore:
     root = Path(os.environ.get("LOCALAPPDATA", Path.cwd())) / "SDR Native Monitoring"
     return LiveProfileStore(root / "live_profiles.json")
+
+def _default_live_service() -> LiveSdrService:
+    native = build_optional_native_live_service()
+    return native if native is not None else InMemoryLiveSessionService()
 @dataclass(frozen=True, slots=True)
 class SdrApplicationServices:
-    live_sdr: LiveSdrService = field(default_factory=InMemoryLiveSessionService)
+    live_sdr: LiveSdrService = field(default_factory=_default_live_service)
     sweep: SweepSdrService = field(default_factory=InMemorySweepService)
     calibration: CalibrationSdrService = field(default_factory=_default_calibration_service)
     recording: RecordingSdrService = field(default_factory=RecordingService)

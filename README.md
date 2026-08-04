@@ -12,8 +12,9 @@ The SDR launch path contains no DFL parser, spectrogram decoder, or DFL GUI depe
 The standalone UI provides a short Home-to-Live workflow with device discovery
 (USB, IP, or a manual URI), capability-aware controls, requested/applied values,
 profile storage, bounded 60 Hz presentation, and explicit dBFS quality status.
-Hardware adapters and numeric spectrum-frame rendering remain separate follow-up
-work; the default session is an in-memory safe service for local UI validation.
+Native/libiio Pluto discovery and connection probing are enabled in the standalone
+service; native RX frame streaming and numeric spectrum rendering remain follow-up
+work, while the safe in-memory path remains available for UI validation.
 
 ## S06 Wideband Sweep UI
 

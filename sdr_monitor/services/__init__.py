@@ -8,6 +8,7 @@ from .recording_session import InMemoryRecordingService, RecordingService, Recor
 from .replay_session import RecordingReader, ReplayService
 from .diagnostics_session import DiagnosticsService, TaskSupervisor
 from .sdr_application_services import SdrApplicationServices, build_default_sdr_services
+from .native_live import NativeLiveSessionService
 from .sweep_session import InMemorySweepService
 
 __all__ = [
@@ -19,4 +20,4 @@ __all__ = [
     "DiagnosticsService",
     "TaskSupervisor",
     "CalibrationProfileStore",
-    "CalibrationService","InMemorySweepService", "SdrApplicationServices", "build_default_sdr_services"]
+    "CalibrationService", "InMemorySweepService", "NativeLiveSessionService", "SdrApplicationServices", "build_default_sdr_services"]
