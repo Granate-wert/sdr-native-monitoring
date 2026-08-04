@@ -263,6 +263,7 @@ class SDRAppShell(QMainWindow):
     def _build_inspector(self) -> QScrollArea:
         area = QScrollArea()
         area.setObjectName("inspector")
+        area.setAccessibleName("Inspector")
         area.setWidgetResizable(True)
         area.setFixedWidth(320)
         content = QWidget()

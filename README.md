@@ -52,3 +52,10 @@ Diagnostics runs in bounded worker tasks, exposes CPU/CUDA/Pluto environment
 cards, explicit RX-only confirmation, a bounded error center, cancellation,
 and a support bundle redacted by default. Raw IQ/calibration data and private
 paths are not included.
+
+## S11 Accessibility, DPI and Performance Validation
+
+The standalone UI includes separate-process DPI probes for 100%, 200% and
+300%, accessible-name/focus auditing, keyboard shortcut collision detection,
+and bounded 60 Hz p50/p95 plus memory-plateau instrumentation. Validation is
+measurement-only and does not reduce analytical publication rate.
