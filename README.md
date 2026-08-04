@@ -22,3 +22,11 @@ plan preview, stale-plan protection, cancellable background execution, explicit
 unknown seam/calibration quality, and atomic JSON summary export. The bundled
 in-memory service is safe for UI validation; hardware sweep acquisition and
 numeric full-span rendering remain follow-up work.
+
+## S07 Calibration and Measurements
+
+The standalone Calibration workspace provides immutable profile versions, CSV
+preview/finalize, applicability rows, correction/uncertainty visualization,
+explicit expert override for incompatible settings, and measurement cards that
+always show unit, quality, and uncertainty. Uncalibrated or incompatible data
+remains in `dBFS/bin`; absolute `dBm` is blocked until a valid profile applies.

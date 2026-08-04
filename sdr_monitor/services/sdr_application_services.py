@@ -10,6 +10,8 @@ from typing import Any
 from .interfaces import CalibrationSdrService, DiagnosticsSdrService, LiveSdrService, RecordingSdrService, SweepSdrService
 from .live_session import InMemoryLiveSessionService
 from .profile_store import LiveProfileStore
+from .calibration_service import CalibrationService
+from .calibration_store import CalibrationProfileStore
 from .sweep_session import InMemorySweepService
 
 
@@ -52,18 +54,8 @@ class UnavailableSweepService:
         return None
 
 
-class InMemoryCalibrationService:
-    def list_profiles(self) -> tuple[Any, ...]:
-        return ()
-
-    def compare_applicability(self, profile: Any, current: Any) -> bool:
-        return False
-
-    def finalize_profile(self, profile: Any) -> Any:
-        return profile
-
-    def preview_csv(self, data: str) -> tuple[str, ...]:
-        return tuple(line for line in data.splitlines() if line.strip())
+class InMemoryCalibrationService(CalibrationService):
+    """Backward-compatible name for the safe standalone calibration service."""
 
 
 class InMemoryRecordingService:
@@ -109,6 +101,10 @@ class PlatformDiagnosticsService:
         return {"output_dir": output_dir, "created": False}
 
 
+def _default_calibration_service() -> CalibrationService:
+    root = Path(os.environ.get("LOCALAPPDATA", Path.cwd())) / "SDR Native Monitoring" / "calibration_profiles"
+    return CalibrationService(CalibrationProfileStore(root))
+
 def _default_profile_store() -> LiveProfileStore:
     root = Path(os.environ.get("LOCALAPPDATA", Path.cwd())) / "SDR Native Monitoring"
     return LiveProfileStore(root / "live_profiles.json")
@@ -116,7 +112,7 @@ def _default_profile_store() -> LiveProfileStore:
 class SdrApplicationServices:
     live_sdr: LiveSdrService = field(default_factory=InMemoryLiveSessionService)
     sweep: SweepSdrService = field(default_factory=InMemorySweepService)
-    calibration: CalibrationSdrService = field(default_factory=InMemoryCalibrationService)
+    calibration: CalibrationSdrService = field(default_factory=_default_calibration_service)
     recording: RecordingSdrService = field(default_factory=InMemoryRecordingService)
     diagnostics: DiagnosticsSdrService = field(default_factory=PlatformDiagnosticsService)
     profiles: LiveProfileStore = field(default_factory=_default_profile_store)
