@@ -76,3 +76,11 @@ AArch64 CPU/CUDA presets that can build the `_sdr_native` extension with Python
 3.13. The Windows CPU release path remains unchanged. The current Windows
 workspace has no CMake/Ninja/CUDA/Jetson toolchain, so on-device build and Pluto
 RX hardware acceptance remain `NOT_VERIFIED` until executed on target hardware.
+
+## S14 P17 final acceptance
+
+The standalone S00–S14 acceptance matrix is reproducible and currently reports
+71/71 targeted tests passing. The release verdict is `ACCEPT WITH GAPS`: the
+Windows CPU onedir artifact is verified, while clean native rebuilds, CUDA/Jetson
+runtime, real Pluto hardware, clean-machine startup, screenshots and long soak
+remain environment-dependent acceptance gates.
