@@ -3,5 +3,6 @@
 from __future__ import annotations
 
 from .sdr_application_services import SdrApplicationServices, build_default_sdr_services
+from .sweep_session import InMemorySweepService
 
-__all__ = ["SdrApplicationServices", "build_default_sdr_services"]
+__all__ = ["InMemorySweepService", "SdrApplicationServices", "build_default_sdr_services"]

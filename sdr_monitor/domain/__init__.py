@@ -13,6 +13,16 @@ from .live import (
     LiveSnapshot,
 )
 from .profiles import LiveProfile
+from .sweep import (
+    SweepConfiguration,
+    SweepMode,
+    SweepPlan,
+    SweepProgress,
+    SweepQuality,
+    SweepResult,
+    SweepSegment,
+    SweepState,
+)
 
 __all__ = [
     "AppliedLiveConfiguration",
@@ -26,4 +36,12 @@ __all__ = [
     "LiveSessionState",
     "LiveSnapshot",
     "LiveProfile",
+    "SweepConfiguration",
+    "SweepMode",
+    "SweepPlan",
+    "SweepProgress",
+    "SweepQuality",
+    "SweepResult",
+    "SweepSegment",
+    "SweepState",
 ]

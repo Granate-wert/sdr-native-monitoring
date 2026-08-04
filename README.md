@@ -14,3 +14,11 @@ The standalone UI provides a short Home-to-Live workflow with device discovery
 profile storage, bounded 60 Hz presentation, and explicit dBFS quality status.
 Hardware adapters and numeric spectrum-frame rendering remain separate follow-up
 work; the default session is an in-memory safe service for local UI validation.
+
+## S06 Wideband Sweep UI
+
+The standalone Sweep workspace now provides Fast/Balanced/Precise planning,
+plan preview, stale-plan protection, cancellable background execution, explicit
+unknown seam/calibration quality, and atomic JSON summary export. The bundled
+in-memory service is safe for UI validation; hardware sweep acquisition and
+numeric full-span rendering remain follow-up work.

@@ -49,9 +49,11 @@ class S03LifecycleTests(unittest.TestCase):
         try:
             shell.register_workspace(WorkspaceId.LIVE, ProbeWorkspace)
             shell.set_active_workspace(WorkspaceId.LIVE)
+            replaced = shell._workspace_pages[WorkspaceId.LIVE]
             shell.register_workspace(WorkspaceId.LIVE, ProbeWorkspace)
             app.processEvents()
             self.assertEqual(ProbeWorkspace.shutdown_calls, 1)
+            self.assertEqual(shell._stack.indexOf(replaced), -1)
         finally:
             shell.close()
             shell.deleteLater()

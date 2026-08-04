@@ -10,6 +10,7 @@ from typing import Any
 from .interfaces import CalibrationSdrService, DiagnosticsSdrService, LiveSdrService, RecordingSdrService, SweepSdrService
 from .live_session import InMemoryLiveSessionService
 from .profile_store import LiveProfileStore
+from .sweep_session import InMemorySweepService
 
 
 class UnavailableLiveService:
@@ -114,7 +115,7 @@ def _default_profile_store() -> LiveProfileStore:
 @dataclass(frozen=True, slots=True)
 class SdrApplicationServices:
     live_sdr: LiveSdrService = field(default_factory=InMemoryLiveSessionService)
-    sweep: SweepSdrService = field(default_factory=UnavailableSweepService)
+    sweep: SweepSdrService = field(default_factory=InMemorySweepService)
     calibration: CalibrationSdrService = field(default_factory=InMemoryCalibrationService)
     recording: RecordingSdrService = field(default_factory=InMemoryRecordingService)
     diagnostics: DiagnosticsSdrService = field(default_factory=PlatformDiagnosticsService)

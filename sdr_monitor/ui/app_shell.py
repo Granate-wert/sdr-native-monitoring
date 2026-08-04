@@ -14,9 +14,9 @@ from .components import EmptyState, StatusChip
 from .design_tokens import StatusTone
 from .i18n import DEFAULT_TRANSLATOR, Translator
 from .icons import IconId, IconRegistry
-from .workspaces import HomeWorkspace, LiveMonitorWorkspace
+from .workspaces import HomeWorkspace, LiveMonitorWorkspace, SweepWorkspace
 from .dialogs import DeviceDiscoveryDialog
-from .presenters import LivePresenter
+from .presenters import LivePresenter, SweepPresenter
 
 
 class WorkspaceId(StrEnum):
@@ -68,6 +68,7 @@ class SDRAppShell(QMainWindow):
         self.services = services or build_default_sdr_services()
         self._translator = translator or DEFAULT_TRANSLATOR
         self._live_presenter = LivePresenter(self.services.live_sdr, self)
+        self._sweep_presenter = SweepPresenter(self.services.sweep, self)
         self._discovery_dialog: DeviceDiscoveryDialog | None = None
         self._workspace_factories: dict[WorkspaceId, Callable[[], QWidget]] = {}
         self._workspace_pages: dict[WorkspaceId, QWidget] = {}
@@ -78,7 +79,7 @@ class SDRAppShell(QMainWindow):
         self._inspector_visible = True
         self._auto_collapsed_inspector = False
         self._build_shell()
-        self._register_s05_workspaces()
+        self._register_s05_s06_workspaces()
         self._install_shortcuts()
         self.set_active_workspace(WorkspaceId.HOME)
 
@@ -136,11 +137,14 @@ class SDRAppShell(QMainWindow):
         for page in tuple(self._workspace_pages.values()):
             self._dispose_workspace(page)
         self._workspace_pages.clear()
+        self._live_presenter.shutdown()
+        self._sweep_presenter.shutdown()
         super().closeEvent(event)
 
-    def _register_s05_workspaces(self) -> None:
+    def _register_s05_s06_workspaces(self) -> None:
         self.register_workspace(WorkspaceId.HOME, self._make_home_workspace)
         self.register_workspace(WorkspaceId.LIVE, self._make_live_workspace)
+        self.register_workspace(WorkspaceId.SWEEP, self._make_sweep_workspace)
 
     def _make_live_workspace(self) -> LiveMonitorWorkspace:
         live = LiveMonitorWorkspace(self._live_presenter, self.services.profiles.load())
@@ -148,6 +152,8 @@ class SDRAppShell(QMainWindow):
         self._inspector.setWidget(live.inspector)
         return live
 
+    def _make_sweep_workspace(self) -> SweepWorkspace:
+        return SweepWorkspace(self._sweep_presenter)
     def _show_discovery(self) -> None:
         dialog = DeviceDiscoveryDialog(self._live_presenter, self)
         dialog.device_selected.connect(self._select_live_device)
@@ -261,8 +267,8 @@ class SDRAppShell(QMainWindow):
             action.activated.connect(lambda identifier=workspace_id: self.set_active_workspace(identifier))
             self._shortcuts.append(action)
 
-    @staticmethod
-    def _dispose_workspace(widget: QWidget) -> None:
+    def _dispose_workspace(self, widget: QWidget) -> None:
+        self._stack.removeWidget(widget)
         shutdown = getattr(widget, "shutdown", None)
         if callable(shutdown):
             shutdown()

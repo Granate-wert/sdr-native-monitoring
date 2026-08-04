@@ -2,5 +2,6 @@
 
 from .home import HomeWorkspace
 from .live import LiveMonitorWorkspace
+from .sweep import SweepWorkspace
 
-__all__ = ["HomeWorkspace", "LiveMonitorWorkspace"]
+__all__ = ["HomeWorkspace", "LiveMonitorWorkspace", "SweepWorkspace"]
