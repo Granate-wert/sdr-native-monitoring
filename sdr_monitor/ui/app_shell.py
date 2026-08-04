@@ -14,9 +14,9 @@ from .components import EmptyState, StatusChip
 from .design_tokens import StatusTone
 from .i18n import DEFAULT_TRANSLATOR, Translator
 from .icons import IconId, IconRegistry
-from .workspaces import CalibrationWorkspace, HomeWorkspace, LiveMonitorWorkspace, SweepWorkspace
+from .workspaces import CalibrationWorkspace, HomeWorkspace, LiveMonitorWorkspace, RecordingWorkspace, SweepWorkspace
 from .dialogs import DeviceDiscoveryDialog
-from .presenters import CalibrationPresenter, LivePresenter, SweepPresenter
+from .presenters import CalibrationPresenter, LivePresenter, RecordingPresenter, SweepPresenter
 
 
 class WorkspaceId(StrEnum):
@@ -70,6 +70,7 @@ class SDRAppShell(QMainWindow):
         self._live_presenter = LivePresenter(self.services.live_sdr, self)
         self._sweep_presenter = SweepPresenter(self.services.sweep, self)
         self._calibration_presenter = CalibrationPresenter(self.services.calibration, self)
+        self._recording_presenter = RecordingPresenter(self.services.recording, self)
         self._discovery_dialog: DeviceDiscoveryDialog | None = None
         self._workspace_factories: dict[WorkspaceId, Callable[[], QWidget]] = {}
         self._workspace_pages: dict[WorkspaceId, QWidget] = {}
@@ -141,6 +142,7 @@ class SDRAppShell(QMainWindow):
         self._live_presenter.shutdown()
         self._sweep_presenter.shutdown()
         self._calibration_presenter.shutdown()
+        self._recording_presenter.shutdown()
         super().closeEvent(event)
 
     def _register_s05_s07_workspaces(self) -> None:
@@ -148,9 +150,13 @@ class SDRAppShell(QMainWindow):
         self.register_workspace(WorkspaceId.LIVE, self._make_live_workspace)
         self.register_workspace(WorkspaceId.SWEEP, self._make_sweep_workspace)
         self.register_workspace(WorkspaceId.CALIBRATION, self._make_calibration_workspace)
+        self.register_workspace(WorkspaceId.RECORDING, self._make_recording_workspace)
 
     def _make_calibration_workspace(self) -> CalibrationWorkspace:
         return CalibrationWorkspace(self._calibration_presenter)
+
+    def _make_recording_workspace(self) -> RecordingWorkspace:
+        return RecordingWorkspace(self._recording_presenter)
 
     def _make_live_workspace(self) -> LiveMonitorWorkspace:
         live = LiveMonitorWorkspace(self._live_presenter, self.services.profiles.load())

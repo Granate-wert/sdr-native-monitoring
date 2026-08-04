@@ -30,3 +30,11 @@ preview/finalize, applicability rows, correction/uncertainty visualization,
 explicit expert override for incompatible settings, and measurement cards that
 always show unit, quality, and uncertainty. Uncalibrated or incompatible data
 remains in `dBFS/bin`; absolute `dBm` is blocked until a valid profile applies.
+
+## S08 Live Recording
+
+The standalone recording path accepts live IQ and Spectrum publications through
+a bounded non-blocking tee. IQ-only, spectrum-only, or combined recordings
+persist source/config metadata, queue drops and gaps, finalize through a `.part`
+file, and retain failed partials for recovery. No synthetic producer is started
+by the production composition root.

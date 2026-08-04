@@ -28,6 +28,16 @@ from .calibration import (
     check_applicability,
     preview_calibration_csv,
 )
+from .recording import (
+    IQBlock,
+    RecordingHealth,
+    RecordingKind,
+    RecordingOptions,
+    RecordingResult,
+    RecordingSourcePort,
+    RecordingState,
+    SpectrumFrame,
+)
 from .profiles import LiveProfile
 from .sweep import (
     SweepConfiguration,
@@ -60,6 +70,14 @@ __all__ = [
     "SweepResult",
     "SweepSegment",
     "SweepState",
+    "IQBlock",
+    "RecordingHealth",
+    "RecordingKind",
+    "RecordingOptions",
+    "RecordingResult",
+    "RecordingSourcePort",
+    "RecordingState",
+    "SpectrumFrame",
     "ApplicabilityRow",
     "CalibratedArray",
     "CalibrationApplicability",
