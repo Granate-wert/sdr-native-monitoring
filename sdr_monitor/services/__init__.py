@@ -40,6 +40,16 @@ from .hackrf_activation_preflight import (
     HackrfRuntimeIdentityProbe,
 )
 from .libhackrf_runtime_identity import LibhackrfRuntimeIdentityPort
+from .hackrf_product_live import (
+    HackrfNativeFactoryPort,
+    HackrfProductLiveCoordinator,
+    HackrfProductLiveFailure,
+    HackrfProductLiveSnapshot,
+    HackrfProductLiveStartResult,
+    HackrfProductLiveState,
+    HackrfProductLiveStopResult,
+    HackrfRuntimeControlPort,
+)
 
 __all__ = [
     "InMemoryRecordingService",
@@ -77,4 +87,12 @@ __all__ = [
     "HackrfRuntimeIdentityPort",
     "HackrfRuntimeIdentityProbe",
     "LibhackrfRuntimeIdentityPort",
+    "HackrfNativeFactoryPort",
+    "HackrfProductLiveCoordinator",
+    "HackrfProductLiveFailure",
+    "HackrfProductLiveSnapshot",
+    "HackrfProductLiveStartResult",
+    "HackrfProductLiveState",
+    "HackrfProductLiveStopResult",
+    "HackrfRuntimeControlPort",
 ]
