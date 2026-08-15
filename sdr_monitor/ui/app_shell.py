@@ -27,6 +27,7 @@ from .components import EmptyState, StatusChip
 from .design_tokens import StatusTone
 from .dialogs import DeviceDiscoveryDialog
 from .dialogs.tinysa_source_activation import TinySaSourceActivationDialog
+from .hackrf_activation_registration import HackrfActivationWorkspaceRegistration
 from .i18n import DEFAULT_TRANSLATOR, Translator
 from .icons import IconId, IconRegistry
 from .presenters import CalibrationPresenter, DiagnosticsPresenter, LivePresenter, RecordingPresenter, SweepPresenter
@@ -54,6 +55,7 @@ class WorkspaceId(StrEnum):
 class OptionalWorkspaceId(StrEnum):
     """A workspace that appears only after its explicit product hand-off."""
 
+    HACKRF_ACTIVATION = "hackrf_activation"
     TINYSA_ANALYZER = "tinysa_analyzer"
 
 
@@ -169,6 +171,36 @@ class SDRAppShell(QMainWindow):
         self.workspace_changed.emit(workspace_id)
 
     @property
+    def hackrf_activation_registered(self) -> bool:
+        """Whether the optional HackRF UI has been explicitly made available."""
+
+        return OptionalWorkspaceId.HACKRF_ACTIVATION in self._nav_buttons
+
+    def register_hackrf_activation_workspace(
+        self,
+        registration: HackrfActivationWorkspaceRegistration,
+    ) -> None:
+        """Expose one inert HackRF entry after an external plan hand-off.
+
+        This does not select the workspace, preflight an identity or invoke a
+        native factory.  A second registration is refused so an active owner
+        cannot be silently replaced.
+        """
+
+        if not isinstance(registration, HackrfActivationWorkspaceRegistration):
+            raise TypeError("HackRF activation registration is invalid")
+        workspace_id = OptionalWorkspaceId.HACKRF_ACTIVATION
+        if workspace_id in self._nav_buttons:
+            raise RuntimeError("HackRF activation workspace is already registered")
+        self._register_workspace_factory(workspace_id, registration.create_workspace)
+        self._add_navigation_button(
+            workspace_id,
+            "HackRF activation",
+            "Open the already admitted HackRF activation workflow",
+            IconId.LIVE,
+        )
+
+    @property
     def tinysa_analyzer_registered(self) -> bool:
         """Whether a source-bound tinySA workspace was explicitly registered."""
 
@@ -281,6 +313,12 @@ class SDRAppShell(QMainWindow):
             self._inspector.setVisible(True)
         super().resizeEvent(event)
     def closeEvent(self, event) -> None:
+        hackrf_page = self._workspace_pages.get(OptionalWorkspaceId.HACKRF_ACTIVATION)
+        if hackrf_page is not None and callable(getattr(hackrf_page, "blocks_shell_close", None)):
+            if hackrf_page.blocks_shell_close():
+                self.statusBar().showMessage("Stop HackRF Live before closing the application.")
+                event.ignore()
+                return
         dialog = self._tinysa_activation_dialog
         if dialog is not None and dialog.blocks_shell_close:
             self.statusBar().showMessage("Wait for the tinySA source operation before closing.")
