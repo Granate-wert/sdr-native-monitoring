@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from sdr_monitor.r11ae_tinysa_visible_ui_evidence import (
+# This standalone runner must establish its repository-root import path first.
+from sdr_monitor.r11ae_tinysa_visible_ui_evidence import (  # noqa: E402
     R11AE_CONFIRMATION,
     R11AEVisibleUiProfile,
     build_r11ae_preflight,
