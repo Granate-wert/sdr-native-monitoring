@@ -73,6 +73,7 @@ add_library(sdr_hackrf STATIC
     src/hackrf/hackrf_fixed_band_dsp.cpp
     src/hackrf/hackrf_rx_ingress.cpp
     src/hackrf/hackrf_rx_session.cpp
+    src/hackrf/hackrf_runtime_dsp_session.cpp
 )
 add_library(sdr_core::sdr_hackrf ALIAS sdr_hackrf)
 target_include_directories(
@@ -287,6 +288,23 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_hackrf_rx_session_test)
     add_test(NAME sdr_core.hackrf_rx_session COMMAND sdr_core_hackrf_rx_session_test)
     set_tests_properties(sdr_core.hackrf_rx_session PROPERTIES TIMEOUT 120)
+    add_executable(
+        sdr_core_hackrf_runtime_dsp_session_test
+        tests/test_hackrf_runtime_dsp_session.cpp
+    )
+    target_link_libraries(
+        sdr_core_hackrf_runtime_dsp_session_test PRIVATE sdr_core::sdr_hackrf
+    )
+    target_compile_definitions(
+        sdr_core_hackrf_runtime_dsp_session_test PRIVATE SDR_CORE_ENABLE_TEST_HOOKS=1
+    )
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_runtime_dsp_session_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_runtime_dsp_session_test)
+    add_test(
+        NAME sdr_core.hackrf_runtime_dsp_session
+        COMMAND sdr_core_hackrf_runtime_dsp_session_test
+    )
+    set_tests_properties(sdr_core.hackrf_runtime_dsp_session PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_engine_lifecycle_test tests/test_engine_lifecycle.cpp)
     target_link_libraries(sdr_core_engine_lifecycle_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_engine_lifecycle_test)
