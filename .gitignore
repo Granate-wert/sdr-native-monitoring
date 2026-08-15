@@ -57,6 +57,7 @@ venv/
 *.suo
 esw_dfl/native_build_manifest.json
 .omo/
+.tools/
 /.codegraph/
 kimi-free/
 kimi-debug-session_*.zip
