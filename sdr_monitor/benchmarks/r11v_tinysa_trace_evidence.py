@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,6 @@ from ..services.tinysa_serial_trace_collector import (
 from ..services.tinysa_serial_version_probe import observe_tinysa_pnp
 from ..services.tinysa_sweep_policy import TINYSA_FIRMWARE_SOURCE_COMMIT
 from .evidence_output import EvidenceOutputClaim, verify_json_evidence_output_claim
-
 
 R11V_TINYSA_PREFLIGHT_SCHEMA = "sdr-native-r11v-tinysa-trace-preflight-v2"
 R11V_TINYSA_EVIDENCE_SCHEMA = "sdr-native-r11v-tinysa-trace-evidence-v2"
@@ -224,15 +223,12 @@ def publish_r11v_tinysa_evidence(
     if part.exists():
         raise FileExistsError("R11-V evidence partial output already exists")
     descriptor = os.open(part, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        verify_json_evidence_output_claim(claim)
-        os.replace(part, claim.destination)
-    except BaseException:
-        raise
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    verify_json_evidence_output_claim(claim)
+    os.replace(part, claim.destination)
 
 
 def _r11t_binding(path: Path) -> dict[str, str]:
@@ -242,7 +238,7 @@ def _r11t_binding(path: Path) -> dict[str, str]:
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("R11-T tinySA evidence cannot be read") from error
     if not isinstance(payload, dict):
-        raise ValueError("R11-T tinySA evidence must be an object")
+        raise TypeError("R11-T tinySA evidence must be an object")
     if payload.get("schema") != "sdr-native-tinysa-version-evidence-v1":
         raise ValueError("R11-T tinySA evidence schema is invalid")
     if payload.get("status") != "OBSERVED":
@@ -295,8 +291,8 @@ __all__ = [
     "R11V_SOURCE_REFERENCE",
     "R11V_TINYSA_CONFIRMATION",
     "R11V_TINYSA_EVIDENCE_SCHEMA",
-    "R11V_TINYSA_PREFLIGHT_SCHEMA",
     "R11V_TINYSA_PHYSICAL_EXECUTION_ENABLED",
+    "R11V_TINYSA_PREFLIGHT_SCHEMA",
     "R11V_TINYSA_PROFILE_ID",
     "R11VTinySaProfile",
     "build_r11v_tinysa_evidence",
