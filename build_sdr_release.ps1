@@ -32,4 +32,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $packageDir "SDRNativeMonitoring.exe
 $preflight = Join-Path $repoRoot "scripts\preflight_sdr_release.py"
 $version = (& $python -c "from sdr_monitor._version import __version__; print(__version__)").Trim()
 & $python $preflight --dist-dir $packageDir --manifest (Join-Path $packageDir "release_manifest.json") --lane $Lane --version $version
+$tinysaRuntimeVerifier = Join-Path $repoRoot "scripts\verify_sdr_frozen_tinysa_runtime.py"
+& $python $tinysaRuntimeVerifier --package-dir $packageDir
+if ($LASTEXITCODE -ne 0) { throw "standalone frozen tinySA UI/serial runtime verification failed" }
 Write-Host "SDR Native Monitoring $Lane release ready: $packageDir"

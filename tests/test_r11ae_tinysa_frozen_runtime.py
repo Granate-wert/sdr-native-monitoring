@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from scripts.verify_sdr_frozen_tinysa_runtime import verify_frozen_tinysa_runtime
 from sdr_monitor import main as product_main
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,9 +31,11 @@ class _Backend:
 
 class R11AETinySaFrozenRuntimeTests(unittest.TestCase):
     def test_source_verdict_refuses_non_frozen_before_optional_imports(self) -> None:
-        with patch.object(product_main.importlib, "import_module") as importer:
-            with self.assertRaisesRegex(RuntimeError, "requires a frozen executable"):
-                product_main._packaged_tinysa_runtime_verdict()  # noqa: SLF001
+        with (
+            patch.object(product_main.importlib, "import_module") as importer,
+            self.assertRaisesRegex(RuntimeError, "requires a frozen executable"),
+        ):
+            product_main._packaged_tinysa_runtime_verdict()
         importer.assert_not_called()
 
     def test_frozen_verdict_imports_dependencies_and_constructs_without_discovery(self) -> None:
@@ -63,7 +64,7 @@ class R11AETinySaFrozenRuntimeTests(unittest.TestCase):
             patch.dict(sys.modules, modules),
             patch.object(product_main.importlib, "import_module", side_effect=optional_import),
         ):
-            observed = product_main._packaged_tinysa_runtime_verdict()  # noqa: SLF001
+            observed = product_main._packaged_tinysa_runtime_verdict()
 
         self.assertEqual(
             observed,
@@ -120,7 +121,7 @@ class R11AETinySaFrozenRuntimeTests(unittest.TestCase):
             ):
                 verify_frozen_tinysa_runtime(package)
 
-    def test_release_order_and_early_command_branch_are_explicit(self) -> None:
+    def test_tinysa_release_admission_and_early_command_branch_are_explicit(self) -> None:
         main_source = (ROOT / "sdr_monitor/main.py").read_text(encoding="utf-8")
         release = (ROOT / "build_sdr_release.ps1").read_text(encoding="utf-8")
         self.assertLess(
@@ -130,7 +131,7 @@ class R11AETinySaFrozenRuntimeTests(unittest.TestCase):
         self.assertIn("verify_sdr_frozen_tinysa_runtime.py", release)
         self.assertGreater(
             release.index("verify_sdr_frozen_tinysa_runtime.py"),
-            release.index("verify_sdr_frozen_libiio_runtime.py"),
+            release.index("$preflight = Join-Path"),
         )
 
 

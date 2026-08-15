@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import json
 import logging
 import os
 import sys
@@ -25,12 +27,45 @@ def _configure_logging() -> logging.Logger:
 def _arguments(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="sdr-native-monitoring", description="Standalone SDR Native Monitoring")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--verify-packaged-tinysa-runtime", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
+
+
+def _packaged_tinysa_runtime_verdict() -> dict[str, object]:
+    """Check frozen PySide6/pyserial closure without discovery or serial I/O."""
+
+    if not bool(getattr(sys, "frozen", False)):
+        raise RuntimeError("packaged tinySA runtime verification requires a frozen executable")
+    serial_module = importlib.import_module("serial")
+    pyside_module = importlib.import_module("PySide6")
+    from .services.tinysa_serial_source_backend import TinySaSerialSourceBackend
+
+    backend = TinySaSerialSourceBackend()
+    if not callable(getattr(backend, "discover_endpoints", None)):
+        raise RuntimeError("packaged tinySA backend is incomplete")  # noqa: TRY004 - integrity, not input type.
+    serial_version = str(
+        getattr(serial_module, "__version__", getattr(serial_module, "VERSION", ""))
+    )
+    pyside_version = str(getattr(pyside_module, "__version__", ""))
+    if not serial_version or not pyside_version:
+        raise RuntimeError("packaged tinySA runtime versions are unavailable")
+    return {
+        "backend_constructed": True,
+        "device_discovery_invoked": False,
+        "pyside6_available": True,
+        "pyside6_version": pyside_version,
+        "pyserial_available": True,
+        "pyserial_version": serial_version,
+        "serial_port_opened": False,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     """Start only the standalone AppShell; legacy DFL GUI remains a separate app."""
-    _arguments(list(sys.argv[1:] if argv is None else argv))
+    arguments = _arguments(list(sys.argv[1:] if argv is None else argv))
+    if arguments.verify_packaged_tinysa_runtime:
+        print(json.dumps(_packaged_tinysa_runtime_verdict(), sort_keys=True))
+        return 0
     logger = _configure_logging()
     requested_mode = os.environ.get("SDR_UI_MODE", "standalone").strip().casefold()
     if requested_mode not in {"", "standalone", "legacy"}:
@@ -44,7 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     from .ui.design_tokens import ThemeId
     from .ui.themes import ThemeProvider
 
-    app = QApplication.instance() or QApplication(sys.argv[:1])
+    existing_app = QApplication.instance()
+    app = existing_app if isinstance(existing_app, QApplication) else QApplication(sys.argv[:1])
     app.setOrganizationName("SDR Native Monitoring")
     app.setOrganizationDomain("local.sdr-native-monitoring")
     app.setApplicationName("SDR Native Monitoring")
