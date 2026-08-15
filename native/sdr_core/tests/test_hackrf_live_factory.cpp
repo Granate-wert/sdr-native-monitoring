@@ -1,4 +1,5 @@
 #include "sdr_hackrf/hackrf_live_factory.hpp"
+#include "sdr_hackrf/hackrf_fixed_band_dsp.hpp"
 
 #include "sdr_core/errors.hpp"
 
@@ -92,7 +93,10 @@ void test_invalid_values_fail_before_any_official_owner_exists() {
         {"filter", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.baseband_filter_hz = 1'000'000U; }},
         {"gain", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.lna_gain_db = 13U; }},
         {"fft", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.fft_size = 3000U; }},
-        {"capacity", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.presentation_capacity = 257U; }},
+        {"capacity", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) {
+             value.presentation_capacity =
+                 sdr_hackrf::hackrf_fixed_band_max_presentation_capacity + 1U;
+         }},
     }};
     for (const auto& [label, mutate] : cases) {
         auto invalid = valid_config();
