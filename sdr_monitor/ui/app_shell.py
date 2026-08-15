@@ -4,19 +4,42 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import StrEnum
+from typing import cast
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..services import SdrApplicationServices, build_default_sdr_services
+from ..services.diagnostics_session import DiagnosticsService
 from .components import EmptyState, StatusChip
 from .design_tokens import StatusTone
+from .dialogs import DeviceDiscoveryDialog
+from .dialogs.tinysa_source_activation import TinySaSourceActivationDialog
 from .i18n import DEFAULT_TRANSLATOR, Translator
 from .icons import IconId, IconRegistry
-from .workspaces import CalibrationWorkspace, DiagnosticsWorkspace, HomeWorkspace, LiveMonitorWorkspace, RecordingWorkspace, SweepWorkspace
-from .dialogs import DeviceDiscoveryDialog
 from .presenters import CalibrationPresenter, DiagnosticsPresenter, LivePresenter, RecordingPresenter, SweepPresenter
+from .presenters.tinysa_source_activation_presenter import TinySaSourceActivationPresenter
+from .tinysa_analyzer_registration import TinySaAnalyzerWorkspaceRegistration
+from .workspaces import (
+    CalibrationWorkspace,
+    DiagnosticsWorkspace,
+    HomeWorkspace,
+    LiveMonitorWorkspace,
+    RecordingWorkspace,
+    SweepWorkspace,
+)
 
 
 class WorkspaceId(StrEnum):
@@ -26,6 +49,15 @@ class WorkspaceId(StrEnum):
     CALIBRATION = "calibration"
     RECORDING = "recording"
     DIAGNOSTICS = "diagnostics"
+
+
+class OptionalWorkspaceId(StrEnum):
+    """A workspace that appears only after its explicit product hand-off."""
+
+    TINYSA_ANALYZER = "tinysa_analyzer"
+
+
+WorkspaceKey = WorkspaceId | OptionalWorkspaceId
 
 
 _WORKSPACES = (
@@ -61,9 +93,18 @@ class SDRAppShell(QMainWindow):
     The shell owns navigation, workspace lifetime and presentation state only;
     device work remains behind ``SdrApplicationServices``.
     """
-    workspace_changed = Signal(WorkspaceId)
+    workspace_changed = Signal(object)
+    tinysa_activation_completed = Signal(object)
+    tinysa_analyzer_workspace_ready = Signal(object)
 
-    def __init__(self, *, services: SdrApplicationServices | None = None, translator: Translator | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        services: SdrApplicationServices | None = None,
+        translator: Translator | None = None,
+        tinysa_activation_presenter_factory: Callable[[], TinySaSourceActivationPresenter] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.services = services or build_default_sdr_services()
         self._translator = translator or DEFAULT_TRANSLATOR
@@ -71,13 +112,23 @@ class SDRAppShell(QMainWindow):
         self._sweep_presenter = SweepPresenter(self.services.sweep, self)
         self._calibration_presenter = CalibrationPresenter(self.services.calibration, self)
         self._recording_presenter = RecordingPresenter(self.services.recording, self)
-        self._diagnostics_presenter = DiagnosticsPresenter(self.services.diagnostics, self)
+        self._diagnostics_presenter = DiagnosticsPresenter(
+            cast(DiagnosticsService, self.services.diagnostics),
+            self,
+        )
         self._discovery_dialog: DeviceDiscoveryDialog | None = None
-        self._workspace_factories: dict[WorkspaceId, Callable[[], QWidget]] = {}
-        self._workspace_pages: dict[WorkspaceId, QWidget] = {}
-        self._nav_buttons: dict[WorkspaceId, QToolButton] = {}
+        self._tinysa_activation_dialog: TinySaSourceActivationDialog | None = None
+        self._tinysa_activation_presenter_factory = (
+            tinysa_activation_presenter_factory
+            or self._make_default_tinysa_activation_presenter
+        )
+        if not callable(self._tinysa_activation_presenter_factory):
+            raise TypeError("tinySA activation presenter factory must be callable")
+        self._workspace_factories: dict[WorkspaceKey, Callable[[], QWidget]] = {}
+        self._workspace_pages: dict[WorkspaceKey, QWidget] = {}
+        self._nav_buttons: dict[WorkspaceKey, QToolButton] = {}
         self._shortcuts: list[QShortcut] = []
-        self._active_workspace = WorkspaceId.HOME
+        self._active_workspace: WorkspaceKey = WorkspaceId.HOME
         self._rail_expanded = False
         self._inspector_visible = True
         self._auto_collapsed_inspector = False
@@ -87,10 +138,13 @@ class SDRAppShell(QMainWindow):
         self.set_active_workspace(WorkspaceId.HOME)
 
     @property
-    def active_workspace(self) -> WorkspaceId:
+    def active_workspace(self) -> WorkspaceKey:
         return self._active_workspace
 
     def register_workspace(self, workspace_id: WorkspaceId, factory: Callable[[], QWidget]) -> None:
+        self._register_workspace_factory(workspace_id, factory)
+
+    def _register_workspace_factory(self, workspace_id: WorkspaceKey, factory: Callable[[], QWidget]) -> None:
         self._workspace_factories[workspace_id] = factory
         old = self._workspace_pages.pop(workspace_id, None)
         if old is not None:
@@ -98,7 +152,7 @@ class SDRAppShell(QMainWindow):
         if workspace_id is self._active_workspace:
             self.set_active_workspace(workspace_id, force=True)
 
-    def set_active_workspace(self, workspace_id: WorkspaceId, *, force: bool = False) -> None:
+    def set_active_workspace(self, workspace_id: WorkspaceKey, *, force: bool = False) -> None:
         if workspace_id not in self._nav_buttons:
             raise ValueError(f"unknown standalone workspace: {workspace_id}")
         if workspace_id is self._active_workspace and not force and self._stack.currentWidget() is not None:
@@ -114,6 +168,96 @@ class SDRAppShell(QMainWindow):
             button.setChecked(current_id is workspace_id)
         self.workspace_changed.emit(workspace_id)
 
+    @property
+    def tinysa_analyzer_registered(self) -> bool:
+        """Whether a source-bound tinySA workspace was explicitly registered."""
+
+        return OptionalWorkspaceId.TINYSA_ANALYZER in self._nav_buttons
+
+    def register_tinysa_analyzer_workspace(
+        self,
+        registration: TinySaAnalyzerWorkspaceRegistration,
+    ) -> None:
+        """Make an already composed tinySA analyzer available without I/O."""
+
+        if not isinstance(registration, TinySaAnalyzerWorkspaceRegistration):
+            raise TypeError("tinySA analyzer registration is invalid")
+        workspace_id = OptionalWorkspaceId.TINYSA_ANALYZER
+        if workspace_id in self._nav_buttons:
+            raise RuntimeError("tinySA analyzer workspace is already registered")
+        self._register_workspace_factory(workspace_id, registration.create_workspace)
+        self._add_navigation_button(
+            workspace_id,
+            "tinySA analyzer",
+            "Open the already verified tinySA analyzer workspace",
+            IconId.SWEEP,
+        )
+
+    def open_tinysa_source_activation_dialog(
+        self,
+        presenter: TinySaSourceActivationPresenter,
+    ) -> None:
+        """Show an inert dialog; discovery remains a separate human action."""
+
+        if not isinstance(presenter, TinySaSourceActivationPresenter):
+            raise TypeError("tinySA activation presenter is invalid")
+        if self.tinysa_analyzer_registered:
+            raise RuntimeError("tinySA analyzer workspace is already registered")
+        existing = self._tinysa_activation_dialog
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dialog = TinySaSourceActivationDialog(presenter, self)
+        dialog.activation_completed.connect(self.tinysa_activation_completed.emit)
+        dialog.registration_ready.connect(self._complete_tinysa_source_activation)
+        dialog.finished.connect(self._clear_tinysa_source_activation_dialog)
+        self._tinysa_activation_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _activate_tinysa_product_entry(self) -> None:
+        """Open the lazy tinySA activation entry without automatic discovery."""
+
+        if self.tinysa_analyzer_registered:
+            self.set_active_workspace(OptionalWorkspaceId.TINYSA_ANALYZER)
+            return
+        existing = self._tinysa_activation_dialog
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        presenter: TinySaSourceActivationPresenter | None = None
+        try:
+            presenter = self._tinysa_activation_presenter_factory()
+            if not isinstance(presenter, TinySaSourceActivationPresenter):
+                raise TypeError("tinySA activation presenter is invalid")
+            self.open_tinysa_source_activation_dialog(presenter)
+        except Exception:  # noqa: BLE001 - factory failure must release a partial presenter.
+            if isinstance(presenter, TinySaSourceActivationPresenter):
+                presenter.shutdown()
+                presenter.deleteLater()
+            self.statusBar().showMessage("tinySA activation is unavailable.")
+
+    @staticmethod
+    def _make_default_tinysa_activation_presenter() -> TinySaSourceActivationPresenter:
+        """Construct the concrete stack lazily; constructors perform no I/O."""
+
+        from ..application.tinysa_source_activation import (
+            TinySaSourceActivationApplicationService,
+        )
+        from ..services.tinysa_serial_source_backend import TinySaSerialSourceBackend
+        from ..services.tinysa_source_composition import TinySaSourceCompositionService
+
+        return TinySaSourceActivationPresenter(
+            TinySaSourceActivationApplicationService(
+                TinySaSourceCompositionService(TinySaSerialSourceBackend())
+            )
+        )
+
     def toggle_navigation(self) -> None:
         self._rail_expanded = not self._rail_expanded
         self._rail.setFixedWidth(216 if self._rail_expanded else 64)
@@ -125,7 +269,7 @@ class SDRAppShell(QMainWindow):
         self._inspector_visible = not self._inspector_visible
         self._inspector.setVisible(self._inspector_visible)
 
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
+    def resizeEvent(self, event) -> None:
         narrow = event.size().width() <= 1280
         if narrow and self._inspector_visible:
             self._inspector_visible = False
@@ -136,7 +280,14 @@ class SDRAppShell(QMainWindow):
             self._auto_collapsed_inspector = False
             self._inspector.setVisible(True)
         super().resizeEvent(event)
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
+        dialog = self._tinysa_activation_dialog
+        if dialog is not None and dialog.blocks_shell_close:
+            self.statusBar().showMessage("Wait for the tinySA source operation before closing.")
+            event.ignore()
+            return
+        if dialog is not None:
+            dialog.close()
         for page in tuple(self._workspace_pages.values()):
             self._dispose_workspace(page)
         self._workspace_pages.clear()
@@ -146,6 +297,24 @@ class SDRAppShell(QMainWindow):
         self._recording_presenter.shutdown()
         self._diagnostics_presenter.shutdown()
         super().closeEvent(event)
+
+    def _complete_tinysa_source_activation(self, registration: object) -> None:
+        if not isinstance(registration, TinySaAnalyzerWorkspaceRegistration):
+            self.statusBar().showMessage("tinySA source registration failed.")
+            return
+        self.register_tinysa_analyzer_workspace(registration)
+        self._tinysa_entry.setText("Open tinySA analyzer")
+        self.set_active_workspace(OptionalWorkspaceId.TINYSA_ANALYZER)
+        workspace = self._workspace_pages.get(OptionalWorkspaceId.TINYSA_ANALYZER)
+        if workspace is not None:
+            self.tinysa_analyzer_workspace_ready.emit(workspace)
+
+    def _clear_tinysa_source_activation_dialog(self, _result: int) -> None:
+        dialog = self._tinysa_activation_dialog
+        self._tinysa_activation_dialog = None
+        if dialog is not None:
+            dialog.shutdown()
+            dialog.deleteLater()
 
     def _register_s05_s07_workspaces(self) -> None:
         self.register_workspace(WorkspaceId.HOME, self._make_home_workspace)
@@ -229,6 +398,12 @@ class SDRAppShell(QMainWindow):
         row.addWidget(icon)
         row.addWidget(title)
         row.addStretch(1)
+        self._tinysa_entry = QPushButton("Connect tinySA…")
+        self._tinysa_entry.setAccessibleDescription(
+            "Open tinySA activation; no device enumeration occurs until Discover devices"
+        )
+        self._tinysa_entry.clicked.connect(self._activate_tinysa_product_entry)
+        row.addWidget(self._tinysa_entry)
         inspector_button = QPushButton(self._translator.text("action.collapse_inspector"))
         inspector_button.clicked.connect(self.toggle_inspector)
         row.addWidget(inspector_button)
@@ -246,19 +421,45 @@ class SDRAppShell(QMainWindow):
         expand.setAccessibleName(self._translator.text("action.expand_navigation"))
         expand.clicked.connect(self.toggle_navigation)
         column.addWidget(expand)
+        self._navigation_layout = column
+        self._navigation_has_bottom_stretch = False
         for workspace_id, label_key, description_key, icon_id, _ in _WORKSPACES:
-            button = QToolButton()
-            button.setCheckable(True)
-            button.setIcon(IconRegistry.icon(icon_id, size=20))
-            button.setText(self._translator.text(label_key))
-            button.setToolTip(self._translator.text(description_key))
-            button.setAccessibleName(self._translator.text(label_key))
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            button.clicked.connect(lambda checked=False, identifier=workspace_id: self.set_active_workspace(identifier))
-            column.addWidget(button)
-            self._nav_buttons[workspace_id] = button
+            self._add_navigation_button(
+                workspace_id,
+                self._translator.text(label_key),
+                self._translator.text(description_key),
+                icon_id,
+            )
         column.addStretch(1)
+        self._navigation_has_bottom_stretch = True
         return rail
+
+    def _add_navigation_button(
+        self,
+        workspace_id: WorkspaceKey,
+        label: str,
+        description: str,
+        icon_id: IconId,
+    ) -> None:
+        button = QToolButton()
+        button.setCheckable(True)
+        button.setIcon(IconRegistry.icon(icon_id, size=20))
+        button.setText(label)
+        button.setToolTip(description)
+        button.setAccessibleName(label)
+        button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            if self._rail_expanded
+            else Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        button.clicked.connect(
+            lambda checked=False, identifier=workspace_id: self.set_active_workspace(identifier)
+        )
+        if self._navigation_has_bottom_stretch:
+            self._navigation_layout.insertWidget(self._navigation_layout.count() - 1, button)
+        else:
+            self._navigation_layout.addWidget(button)
+        self._nav_buttons[workspace_id] = button
 
     def _build_inspector(self) -> QScrollArea:
         area = QScrollArea()
@@ -273,10 +474,12 @@ class SDRAppShell(QMainWindow):
         area.setWidget(content)
         return area
 
-    def _create_workspace(self, workspace_id: WorkspaceId) -> QWidget:
+    def _create_workspace(self, workspace_id: WorkspaceKey) -> QWidget:
         factory = self._workspace_factories.get(workspace_id)
         if factory is not None:
             return factory()
+        if not isinstance(workspace_id, WorkspaceId):
+            raise TypeError(f"optional workspace has no registered factory: {workspace_id}")
         _, label_key, description_key, _, _ = next(item for item in _WORKSPACES if item[0] is workspace_id)
         return WorkspacePlaceholder(self._translator.text(label_key), self._translator.text(description_key))
 
