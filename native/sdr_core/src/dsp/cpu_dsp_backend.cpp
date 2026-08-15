@@ -4,6 +4,7 @@
 #include "sdr_core/fft_provider.hpp"
 #include "sdr_core/window.hpp"
 
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstring>
@@ -17,9 +18,12 @@ namespace {
 
 constexpr double full_scale_i16 = 32768.0;
 constexpr double full_scale_i12 = 2048.0;
+constexpr double full_scale_i8 = 128.0;
 
 [[nodiscard]] std::uint32_t bytes_per_sample(const SampleFormat format) {
     switch (format) {
+    case SampleFormat::ComplexInt8Interleaved:
+        return 2U;
     case SampleFormat::ComplexInt12InInt16Le:
     case SampleFormat::ComplexInt16Le:
         return 4U;
@@ -27,7 +31,8 @@ constexpr double full_scale_i12 = 2048.0;
         return 8U;
     default:
         throw ConfigurationError(
-            "CPU DSP supports ComplexInt12InInt16Le, ComplexInt16Le and ComplexFloat32Le"
+            "CPU DSP supports ComplexInt8Interleaved, ComplexInt12InInt16Le, "
+            "ComplexInt16Le and ComplexFloat32Le"
         );
     }
 }
@@ -46,6 +51,12 @@ constexpr double full_scale_i12 = 2048.0;
     );
     std::int16_t value = 0;
     std::memcpy(&value, &raw, sizeof(value));
+    return value;
+}
+
+[[nodiscard]] std::int8_t read_i8(const std::uint8_t* bytes) noexcept {
+    std::int8_t value{};
+    std::memcpy(&value, bytes, sizeof(value));
     return value;
 }
 
@@ -193,7 +204,16 @@ public:
             axis_valid_ = false;
         }
 
+        const auto block_flags = static_cast<std::uint32_t>(block.flags);
+        const auto block_end_pos = stream_pos_ + block.sample_count;
+        for (std::uint32_t bit = 0U; bit < input_flag_until_pos_.size(); ++bit) {
+            if ((block_flags & (1U << bit)) != 0U) {
+                input_flag_until_pos_[bit] = block_end_pos;
+            }
+        }
+
         const bool integer_format =
+            block.sample_format == SampleFormat::ComplexInt8Interleaved ||
             block.sample_format == SampleFormat::ComplexInt12InInt16Le ||
             block.sample_format == SampleFormat::ComplexInt16Le;
         const bool clipped = integer_format &&
@@ -253,6 +273,7 @@ public:
         current_generation_ = 0U;
         generation_valid_ = false;
         axis_valid_ = false;
+        input_flag_until_pos_.fill(0U);
         output_.clear();
         std::fill(ring_d_.begin(), ring_d_.end(), std::complex<double>{});
         std::fill(ring_f_.begin(), ring_f_.end(), std::complex<float>{});
@@ -304,6 +325,14 @@ private:
             const float im = read_le_float(bytes + index * 8U + 4U);
             return {static_cast<T>(re), static_cast<T>(im)};
         }
+        if (format == SampleFormat::ComplexInt8Interleaved) {
+            const auto re = read_i8(bytes + index * 2U);
+            const auto im = read_i8(bytes + index * 2U + 1U);
+            return {
+                static_cast<T>(static_cast<double>(re) / full_scale_i8),
+                static_cast<T>(static_cast<double>(im) / full_scale_i8),
+            };
+        }
         const auto re = static_cast<double>(read_le_i16(bytes + index * 4U));
         const auto im = static_cast<double>(read_le_i16(bytes + index * 4U + 2U));
         const double full_scale = format == SampleFormat::ComplexInt12InInt16Le
@@ -317,6 +346,16 @@ private:
         const std::uint32_t sample_count,
         const SampleFormat format
     ) {
+        if (format == SampleFormat::ComplexInt8Interleaved) {
+            for (std::uint32_t index = 0U; index < sample_count; ++index) {
+                const auto re = read_i8(samples.data() + index * 2U);
+                const auto im = read_i8(samples.data() + index * 2U + 1U);
+                if (re == 127 || re == -128 || im == 127 || im == -128) {
+                    return true;
+                }
+            }
+            return false;
+        }
         for (std::uint32_t index = 0U; index < sample_count; ++index) {
             const auto re = read_le_i16(samples.data() + index * 4U);
             const auto im = read_le_i16(samples.data() + index * 4U + 2U);
@@ -340,6 +379,7 @@ private:
         accum_count_ = 0U;
         accum_quality_flags_ = QualityFlag::None;
         clipped_until_pos_ = 0U;
+        input_flag_until_pos_.fill(0U);
         next_frame_end_ = config_.fft_size;
         reset_accumulators();
     }
@@ -374,7 +414,14 @@ private:
         meta.config_generation = block.config_generation;
         // Stream-relative comparison: frame covers [stream_pos_-n, stream_pos_).
         meta.clipped = (stream_pos_ - n) < clipped_until_pos_;
-        meta.input_flags = block.flags;
+        const auto frame_start = stream_pos_ - n;
+        std::uint32_t frame_flags = 0U;
+        for (std::uint32_t bit = 0U; bit < input_flag_until_pos_.size(); ++bit) {
+            if (frame_start < input_flag_until_pos_[bit]) {
+                frame_flags |= 1U << bit;
+            }
+        }
+        meta.input_flags = static_cast<QualityFlag>(frame_flags);
 
         if (use_f64_) {
             auto* out = stage_d_.data() + static_cast<std::size_t>(staged_) * n;
@@ -623,6 +670,7 @@ private:
     std::int64_t base_sample_index_{-1};
     std::uint64_t stream_pos_{};
     std::uint64_t clipped_until_pos_{};
+    std::array<std::uint64_t, 16U> input_flag_until_pos_{};
     double current_fs_{};
     double current_fc_{};
     std::uint64_t current_generation_{};

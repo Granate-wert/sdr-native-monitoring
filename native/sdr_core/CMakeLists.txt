@@ -68,7 +68,10 @@ sdr_core_apply_sanitizers(sdr_core)
 
 # R11-G is a vendor-runtime-free HackRF RX-ingress contract.  It owns no
 # libhackrf handle and exposes neither configuration nor TX operations.
-add_library(sdr_hackrf STATIC src/hackrf/hackrf_rx_ingress.cpp)
+add_library(sdr_hackrf STATIC
+    src/hackrf/hackrf_fixed_band_dsp.cpp
+    src/hackrf/hackrf_rx_ingress.cpp
+)
 add_library(sdr_core::sdr_hackrf ALIAS sdr_hackrf)
 target_include_directories(
     sdr_hackrf PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -241,6 +244,19 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_hackrf_rx_ingress_test)
     add_test(NAME sdr_core.hackrf_rx_ingress COMMAND sdr_core_hackrf_rx_ingress_test)
     set_tests_properties(sdr_core.hackrf_rx_ingress PROPERTIES TIMEOUT 120)
+    add_executable(
+        sdr_core_hackrf_fixed_band_dsp_test tests/test_hackrf_fixed_band_dsp.cpp
+    )
+    target_link_libraries(
+        sdr_core_hackrf_fixed_band_dsp_test PRIVATE sdr_core::sdr_hackrf
+    )
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_fixed_band_dsp_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_fixed_band_dsp_test)
+    add_test(
+        NAME sdr_core.hackrf_fixed_band_dsp
+        COMMAND sdr_core_hackrf_fixed_band_dsp_test
+    )
+    set_tests_properties(sdr_core.hackrf_fixed_band_dsp PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_engine_lifecycle_test tests/test_engine_lifecycle.cpp)
     target_link_libraries(sdr_core_engine_lifecycle_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_engine_lifecycle_test)
