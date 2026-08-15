@@ -66,6 +66,21 @@ target_compile_definitions(sdr_core
 sdr_core_apply_platform_defaults(sdr_core)
 sdr_core_apply_sanitizers(sdr_core)
 
+# R11-G is a vendor-runtime-free HackRF RX-ingress contract.  It owns no
+# libhackrf handle and exposes neither configuration nor TX operations.
+add_library(sdr_hackrf STATIC src/hackrf/hackrf_rx_ingress.cpp)
+add_library(sdr_core::sdr_hackrf ALIAS sdr_hackrf)
+target_include_directories(
+    sdr_hackrf PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_compile_features(sdr_hackrf PUBLIC cxx_std_20)
+target_link_libraries(sdr_hackrf PUBLIC sdr_core::sdr_core)
+sdr_core_apply_platform_defaults(sdr_hackrf)
+sdr_core_apply_sanitizers(sdr_hackrf)
+if(SDR_CORE_BUILD_TESTS)
+    target_compile_definitions(sdr_hackrf PRIVATE SDR_CORE_ENABLE_TEST_HOOKS=1)
+endif()
+
 if(SDR_CORE_ENABLE_CUDA)
     add_library(sdr_cuda STATIC
         src/cuda/cuda_backend_link.cpp
@@ -215,6 +230,17 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_buffer_pool_test)
     add_test(NAME sdr_core.buffer_pool COMMAND sdr_core_buffer_pool_test)
     set_tests_properties(sdr_core.buffer_pool PROPERTIES TIMEOUT 120)
+    add_executable(sdr_core_hackrf_rx_ingress_test tests/test_hackrf_rx_ingress.cpp)
+    target_link_libraries(
+        sdr_core_hackrf_rx_ingress_test PRIVATE sdr_core::sdr_hackrf
+    )
+    target_compile_definitions(
+        sdr_core_hackrf_rx_ingress_test PRIVATE SDR_CORE_ENABLE_TEST_HOOKS=1
+    )
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_rx_ingress_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_rx_ingress_test)
+    add_test(NAME sdr_core.hackrf_rx_ingress COMMAND sdr_core_hackrf_rx_ingress_test)
+    set_tests_properties(sdr_core.hackrf_rx_ingress PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_engine_lifecycle_test tests/test_engine_lifecycle.cpp)
     target_link_libraries(sdr_core_engine_lifecycle_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_engine_lifecycle_test)
