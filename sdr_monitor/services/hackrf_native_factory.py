@@ -1,8 +1,9 @@
 """Explicit, capability-plan-only construction of the native HackRF owner.
 
-This layer is intentionally not product Live integration. Its only effecting
-method is an explicit future user action over an R11-M-issued plan; it never
-discovers, retries, substitutes a backend or passes raw I/Q to Python.
+This layer is intentionally not product Live integration.  Its only effecting
+method is called by a future explicit user action and accepts an R11-O-issued
+identity permit; it never discovers, retries, substitutes a backend or passes
+raw I/Q to Python.
 """
 
 from __future__ import annotations
@@ -13,16 +14,18 @@ from importlib import import_module
 from typing import cast
 
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID
-from .hackrf_live_admission import (
-    HackrfLiveActivationPlan,
-    _is_issued_hackrf_live_activation_plan,
+from .hackrf_activation_preflight import (
+    HackrfActivationPermit,
+    _claim_hackrf_activation_permit,
+    _is_issued_hackrf_activation_permit,
 )
 
 
 class HackrfNativeFactoryFailure(StrEnum):
     """Redacted fail-closed outcomes for native owner construction."""
 
-    PLAN_NOT_ADMITTED = "plan_not_admitted"
+    PREFLIGHT_NOT_ADMITTED = "preflight_not_admitted"
+    PERMIT_ALREADY_CONSUMED = "permit_already_consumed"
     NATIVE_FACTORY_UNAVAILABLE = "native_factory_unavailable"
     ACTIVATION_FAILED = "activation_failed"
 
@@ -71,21 +74,22 @@ def _native_detector(native_module: object, value: str) -> object:
 
 
 class HackrfNativeRuntimeFactory:
-    """One explicit bridge from an admitted plan to coarse native control."""
+    """One explicit bridge from a preflight permit to coarse native control."""
 
     def __init__(self, native_loader: Callable[[], object] = _load_canonical_native_module) -> None:
         if not callable(native_loader):
             raise ValueError("native_loader must be callable")
         self._native_loader = native_loader
 
-    def create(self, plan: HackrfLiveActivationPlan) -> object:
+    def create(self, permit: HackrfActivationPermit) -> object:
         """Construct a native owner once; no fallback or automatic retry exists."""
 
         if (
-            not _is_issued_hackrf_live_activation_plan(plan)
-            or plan.adapter_id != HACKRF_LIBHACKRF_ADAPTER_ID
+            not _is_issued_hackrf_activation_permit(permit)
+            or permit.plan.adapter_id != HACKRF_LIBHACKRF_ADAPTER_ID
         ):
-            raise HackrfNativeFactoryError(HackrfNativeFactoryFailure.PLAN_NOT_ADMITTED)
+            raise HackrfNativeFactoryError(HackrfNativeFactoryFailure.PREFLIGHT_NOT_ADMITTED)
+        plan = permit.plan
         try:
             native_module = self._native_loader()
         except Exception:
@@ -97,6 +101,10 @@ class HackrfNativeRuntimeFactory:
             if not callable(native_factory):
                 raise HackrfNativeFactoryError(
                     HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE
+                )
+            if not _claim_hackrf_activation_permit(permit):
+                raise HackrfNativeFactoryError(
+                    HackrfNativeFactoryFailure.PERMIT_ALREADY_CONSUMED
                 )
             request = plan.request
             control = cast(Callable[..., object], native_factory)(

@@ -31,6 +31,15 @@ from .hackrf_native_factory import (
     HackrfNativeFactoryFailure,
     HackrfNativeRuntimeFactory,
 )
+from .hackrf_activation_preflight import (
+    HackrfActivationPreflight,
+    HackrfActivationPreflightReason,
+    HackrfActivationPreflightService,
+    HackrfActivationPermit,
+    HackrfRuntimeIdentityPort,
+    HackrfRuntimeIdentityProbe,
+)
+from .libhackrf_runtime_identity import LibhackrfRuntimeIdentityPort
 
 __all__ = [
     "InMemoryRecordingService",
@@ -61,4 +70,11 @@ __all__ = [
     "HackrfNativeFactoryError",
     "HackrfNativeFactoryFailure",
     "HackrfNativeRuntimeFactory",
+    "HackrfActivationPreflight",
+    "HackrfActivationPreflightReason",
+    "HackrfActivationPreflightService",
+    "HackrfActivationPermit",
+    "HackrfRuntimeIdentityPort",
+    "HackrfRuntimeIdentityProbe",
+    "LibhackrfRuntimeIdentityPort",
 ]

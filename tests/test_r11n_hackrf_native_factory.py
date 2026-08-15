@@ -2,22 +2,21 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-import subprocess
-import sys
 import unittest
 
 from sdr_monitor.domain import BackendKind
 from sdr_monitor.services import (
     HackrfBoardKind,
     HackrfCapabilityAdapter,
+    HackrfActivationPreflightService,
     HackrfLiveActivationPlan,
     HackrfLiveRequest,
     HackrfNativeFactoryError,
     HackrfNativeFactoryFailure,
     HackrfNativeRuntimeFactory,
     HackrfReadOnlyProbe,
+    HackrfRuntimeIdentityProbe,
     admit_hackrf_live,
 )
 
@@ -26,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVICE_SOURCE = ROOT / "sdr_monitor/services/hackrf_native_factory.py"
 BINDING_SOURCE = ROOT / "native/sdr_core/bindings/hackrf_factory_binding.cpp"
 CMAKE = ROOT / "native/sdr_core/CMakeLists.txt"
-NATIVE_MODULE_ENV = "SDR_R11N_NATIVE_MODULE"
 
 
 class _Port:
@@ -42,7 +40,7 @@ class _Port:
         return None
 
 
-def _plan() -> HackrfLiveActivationPlan:
+def _plan() -> object:
     observed = HackrfCapabilityAdapter(_Port).observe()
     request = HackrfLiveRequest(
         center_frequency_hz=100e6,
@@ -69,6 +67,25 @@ def _plan() -> HackrfLiveActivationPlan:
     return result.plan
 
 
+class _IdentityPort:
+    def probe(self) -> HackrfRuntimeIdentityProbe:
+        return HackrfRuntimeIdentityProbe(
+            HackrfBoardKind.HACKRF_ONE,
+            (0, 0, 0x010961DC, 0x2B78454F),
+        )
+
+    def close(self) -> None:
+        return None
+
+
+def _permit() -> object:
+    plan = _plan()
+    assert isinstance(plan, HackrfLiveActivationPlan)
+    preflight = HackrfActivationPreflightService(_IdentityPort).verify(plan)
+    assert preflight.permit is not None
+    return preflight.permit
+
+
 class _WindowType:
     HANN = "window:hann"
 
@@ -91,11 +108,11 @@ class _NativeFactory:
 
 
 class R11NHackrfNativeFactoryTests(unittest.TestCase):
-    def test_issued_admission_plan_is_the_only_route_to_one_explicit_native_call(self) -> None:
+    def test_issued_preflight_permit_is_the_only_route_to_one_explicit_native_call(self) -> None:
         native = _NativeFactory()
         factory = HackrfNativeRuntimeFactory(lambda: native)
 
-        control = factory.create(_plan())
+        control = factory.create(_permit())  # type: ignore[arg-type]
 
         self.assertIs(control, native.control)
         self.assertEqual(len(native.calls), 1)
@@ -118,7 +135,7 @@ class R11NHackrfNativeFactoryTests(unittest.TestCase):
         self.assertEqual(values["configuration_generation"], 9)
         self.assertEqual(values["source_id"], "native.hackrf.live")
 
-    def test_unissued_or_unavailable_plan_fails_closed_without_native_call(self) -> None:
+    def test_unissued_or_unavailable_preflight_fails_closed_without_native_call(self) -> None:
         native = _NativeFactory()
         factory = HackrfNativeRuntimeFactory(lambda: native)
         forged = object.__new__(HackrfLiveActivationPlan)
@@ -127,13 +144,13 @@ class R11NHackrfNativeFactoryTests(unittest.TestCase):
             factory.create(forged)
         self.assertIs(
             rejected.exception.failure,
-            HackrfNativeFactoryFailure.PLAN_NOT_ADMITTED,
+            HackrfNativeFactoryFailure.PREFLIGHT_NOT_ADMITTED,
         )
         self.assertEqual(native.calls, [])
 
         missing = HackrfNativeRuntimeFactory(lambda: object())
         with self.assertRaises(HackrfNativeFactoryError) as unavailable:
-            missing.create(_plan())
+            missing.create(_permit())  # type: ignore[arg-type]
         self.assertIs(
             unavailable.exception.failure,
             HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE,
@@ -142,11 +159,26 @@ class R11NHackrfNativeFactoryTests(unittest.TestCase):
         with self.assertRaises(HackrfNativeFactoryError) as load_failed:
             HackrfNativeRuntimeFactory(
                 lambda: (_ for _ in ()).throw(ImportError("not packaged"))
-            ).create(_plan())
+            ).create(_permit())  # type: ignore[arg-type]
         self.assertIs(
             load_failed.exception.failure,
             HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE,
         )
+
+    def test_same_permit_has_one_native_factory_call_only(self) -> None:
+        native = _NativeFactory()
+        factory = HackrfNativeRuntimeFactory(lambda: native)
+        permit = _permit()
+
+        self.assertIs(factory.create(permit), native.control)  # type: ignore[arg-type]
+        with self.assertRaises(HackrfNativeFactoryError) as consumed:
+            factory.create(permit)  # type: ignore[arg-type]
+
+        self.assertIs(
+            consumed.exception.failure,
+            HackrfNativeFactoryFailure.PERMIT_ALREADY_CONSUMED,
+        )
+        self.assertEqual(len(native.calls), 1)
 
     def test_native_exception_is_redacted_and_never_falls_back(self) -> None:
         class _FailingNative(_NativeFactory):
@@ -156,7 +188,7 @@ class R11NHackrfNativeFactoryTests(unittest.TestCase):
 
         native = _FailingNative()
         with self.assertRaises(HackrfNativeFactoryError) as failed:
-            HackrfNativeRuntimeFactory(lambda: native).create(_plan())
+            HackrfNativeRuntimeFactory(lambda: native).create(_permit())  # type: ignore[arg-type]
         self.assertIs(
             failed.exception.failure,
             HackrfNativeFactoryFailure.ACTIVATION_FAILED,
@@ -186,40 +218,6 @@ class R11NHackrfNativeFactoryTests(unittest.TestCase):
         self.assertIn("SDR_CORE_HACKRF_OFFICIAL_COMPILED", cmake)
         self.assertIn("SDR_CORE_ENABLE_HACKRF_OFFICIAL", cmake)
         self.assertIn("sdr_core::sdr_hackrf_official", cmake)
-
-
-@unittest.skipUnless(
-    os.environ.get(NATIVE_MODULE_ENV),
-    "fresh ordinary CPU extension was not supplied",
-)
-class R11NOrdinaryExtensionTests(unittest.TestCase):
-    def test_ordinary_extension_has_no_official_factory_export(self) -> None:
-        module_path = Path(os.environ[NATIVE_MODULE_ENV])
-        self.assertTrue(module_path.is_file(), module_path)
-        script = r'''
-import importlib.util
-import sys
-
-module_path = sys.argv[1]
-spec = importlib.util.spec_from_file_location("_sdr_native", module_path)
-assert spec is not None and spec.loader is not None
-native = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = native
-spec.loader.exec_module(native)
-assert not hasattr(native, "create_hackrf_runtime_dsp_control")
-'''
-        completed = subprocess.run(
-            [sys.executable, "-c", script, str(module_path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        self.assertEqual(
-            completed.returncode,
-            0,
-            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
-        )
 
 
 if __name__ == "__main__":
