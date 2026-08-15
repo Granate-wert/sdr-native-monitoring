@@ -14,7 +14,9 @@
 namespace sdr_hackrf {
 
 inline constexpr std::uint32_t hackrf_fixed_band_max_dsp_output_capacity = 4096U;
-inline constexpr std::uint32_t hackrf_fixed_band_max_presentation_capacity = 64U;
+// A larger opt-in relay bounds a deliberately slow presentation consumer
+// without moving the default (four frames) or making the queue unbounded.
+inline constexpr std::uint32_t hackrf_fixed_band_max_presentation_capacity = 256U;
 
 struct HackrfFixedBandDspConfig {
     sdr_core::DspConfig dsp;

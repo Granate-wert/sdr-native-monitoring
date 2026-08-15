@@ -158,7 +158,18 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
 
     const auto missing_blocks = impl_->source_blocks_missing;
     const auto missing_samples = impl_->source_samples_missing;
+    // CPU DSP batches restart their local frame sequence at each poll.  Its
+    // global computed-frame counter is canonical across all admitted input,
+    // including an intentional analytical drop, so derive publication order
+    // from that monotonic source rather than a batch-local frame field.
+    const auto computed_fft_frames = impl_->dsp->metrics().fft_frames_computed;
+    if (frames.size() > computed_fft_frames) {
+        invalid("HackRF publication frame count exceeds computed FFT count");
+    }
+    auto presentation_frame_sequence =
+        computed_fft_frames - static_cast<std::uint64_t>(frames.size());
     for (auto& frame : frames) {
+        frame.frame_sequence = presentation_frame_sequence++;
         frame.dropped_iq_blocks_before = missing_blocks;
         frame.dropped_samples_before = missing_samples;
         // `dropped_fft_frames_before` and FftDropped are canonical analytical
