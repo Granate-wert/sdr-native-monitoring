@@ -6,9 +6,12 @@ from .replay_presenter import ReplayPresenter
 from .diagnostics_presenter import DiagnosticsPresenter
 from .live_presenter import LivePresenter
 from .sweep_presenter import SweepPresenter
+from .hackrf_activation_presenter import HackrfActivationPresenter, HackrfActivationPresenterMetrics
 
 __all__ = [
     "CalibrationPresenter",
     "RecordingPresenter",
     "ReplayPresenter",
-    "DiagnosticsPresenter","LivePresenter", "SweepPresenter"]
+    "DiagnosticsPresenter", "LivePresenter", "SweepPresenter",
+    "HackrfActivationPresenter", "HackrfActivationPresenterMetrics",
+]

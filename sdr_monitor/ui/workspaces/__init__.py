@@ -7,9 +7,12 @@ from .recording import RecordingWorkspace
 from .replay import ReplayWorkspace
 from .diagnostics import DiagnosticsWorkspace
 from .sweep import SweepWorkspace
+from .hackrf_activation import HackrfActivationWorkspace
 
 __all__ = [
     "CalibrationWorkspace",
     "RecordingWorkspace",
     "ReplayWorkspace",
-    "DiagnosticsWorkspace","HomeWorkspace", "LiveMonitorWorkspace", "SweepWorkspace"]
+    "DiagnosticsWorkspace", "HomeWorkspace", "LiveMonitorWorkspace", "SweepWorkspace",
+    "HackrfActivationWorkspace",
+]
