@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 from ._version import __version__
 
@@ -27,7 +28,9 @@ def _configure_logging() -> logging.Logger:
 def _arguments(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="sdr-native-monitoring", description="Standalone SDR Native Monitoring")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--verify-packaged-tinysa-runtime", action="store_true", help=argparse.SUPPRESS)
+    verification = parser.add_mutually_exclusive_group()
+    verification.add_argument("--verify-packaged-libiio-runtime", action="store_true", help=argparse.SUPPRESS)
+    verification.add_argument("--verify-packaged-tinysa-runtime", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -60,9 +63,44 @@ def _packaged_tinysa_runtime_verdict() -> dict[str, object]:
     }
 
 
+def _packaged_libiio_runtime_verdict() -> dict[str, object]:
+    """Load package-local libiio metadata only; never scan or open a device."""
+
+    native = importlib.import_module("sdr_monitor._sdr_native")
+    build_info_reader = getattr(native, "build_info", None)
+    runtime_info_reader = getattr(native, "pluto_runtime_info", None)
+    if not callable(build_info_reader) or not callable(runtime_info_reader):
+        raise RuntimeError("canonical native module lacks Pluto runtime metadata readers")
+    if not bool(dict(build_info_reader()).get("pluto_compiled")):
+        raise RuntimeError("canonical native module lacks Pluto support")
+
+    from .libiio_runtime import configure_frozen_libiio_runtime
+
+    components = configure_frozen_libiio_runtime(native)
+    if not components:
+        raise RuntimeError("packaged libiio runtime verification requires a frozen executable")
+    runtime_info = runtime_info_reader()
+    if not bool(getattr(runtime_info, "available", False)):
+        raise RuntimeError("package-local libiio metadata load failed: " + str(getattr(runtime_info, "error", "")))
+    loaded_path = Path(str(getattr(runtime_info, "library_path", ""))).resolve()
+    if loaded_path != components[0].resolve():
+        raise RuntimeError("libiio metadata loader escaped the package-local runtime")
+    return {
+        "libiio_available": True,
+        "libiio_major": int(getattr(runtime_info, "major", -1)),
+        "libiio_minor": int(getattr(runtime_info, "minor", -1)),
+        "library_package_local": True,
+        "pluto_compiled": True,
+        "runtime_component_count": len(components),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     """Start only the standalone AppShell; legacy DFL GUI remains a separate app."""
     arguments = _arguments(list(sys.argv[1:] if argv is None else argv))
+    if arguments.verify_packaged_libiio_runtime:
+        print(json.dumps(_packaged_libiio_runtime_verdict(), sort_keys=True))
+        return 0
     if arguments.verify_packaged_tinysa_runtime:
         print(json.dumps(_packaged_tinysa_runtime_verdict(), sort_keys=True))
         return 0
