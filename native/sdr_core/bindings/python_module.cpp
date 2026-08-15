@@ -1,6 +1,7 @@
 #include "aux_contracts_binding.hpp"
 #include "contracts_binding.hpp"
 #include "dsp_binding.hpp"
+#include "hackrf_binding.hpp"
 #include "lifecycle_binding.hpp"
 #include "calibration_binding.hpp"
 #if SDR_CORE_PLUTO_COMPILED
@@ -38,6 +39,7 @@ PYBIND11_MODULE(_sdr_native, module) {
     // After bind_synthetic: EngineConfig defaults reference SyntheticScenario.
     sdr_core::python::bind_lifecycle(module);
     sdr_core::python::bind_dsp(module);
+    sdr_core::python::bind_hackrf(module);
 #if SDR_CORE_PLUTO_COMPILED
     sdr_core::python::bind_pluto(module);
 #endif

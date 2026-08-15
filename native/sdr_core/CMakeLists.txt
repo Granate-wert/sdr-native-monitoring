@@ -160,10 +160,16 @@ if(SDR_CORE_BUILD_PYTHON)
         bindings/calibration_binding.cpp
         bindings/aux_contracts_binding.cpp
         bindings/dsp_binding.cpp
+        bindings/hackrf_binding.cpp
         bindings/lifecycle_binding.cpp
         bindings/synthetic_binding.cpp
     )
-    target_link_libraries(_sdr_native PRIVATE sdr_core::sdr_core)
+    target_link_libraries(
+        _sdr_native PRIVATE sdr_core::sdr_core sdr_core::sdr_hackrf
+    )
+    if(SDR_CORE_BUILD_TESTS)
+        target_compile_definitions(_sdr_native PRIVATE SDR_CORE_ENABLE_TEST_HOOKS=1)
+    endif()
     if(SDR_CORE_ENABLE_PLUTO)
         target_sources(_sdr_native PRIVATE bindings/pluto_binding.cpp)
         target_link_libraries(_sdr_native PRIVATE sdr_pluto)
