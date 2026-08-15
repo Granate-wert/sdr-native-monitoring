@@ -26,6 +26,11 @@ from .hackrf_live_admission import (
     HackrfLiveRequest,
     admit_hackrf_live,
 )
+from .hackrf_native_factory import (
+    HackrfNativeFactoryError,
+    HackrfNativeFactoryFailure,
+    HackrfNativeRuntimeFactory,
+)
 
 __all__ = [
     "InMemoryRecordingService",
@@ -53,4 +58,7 @@ __all__ = [
     "HackrfLiveAdmissionReason",
     "HackrfLiveRequest",
     "admit_hackrf_live",
+    "HackrfNativeFactoryError",
+    "HackrfNativeFactoryFailure",
+    "HackrfNativeRuntimeFactory",
 ]

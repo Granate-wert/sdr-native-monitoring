@@ -9,7 +9,10 @@ option(SDR_CORE_ENABLE_CUDA "Enable the CUDA backend" OFF)
 option(SDR_CORE_ENABLE_SIMD "Enable portable compiler SIMD paths when implemented" ON)
 option(SDR_CORE_ENABLE_SANITIZERS "Enable supported native sanitizers" OFF)
 option(SDR_CORE_ENABLE_PROFILING "Enable native profiling instrumentation" OFF)
+option(SDR_CORE_ENABLE_HACKRF_OFFICIAL "Build the optional official-libhackrf RX owner" OFF)
 set(SDR_CORE_PYTHON_OUTPUT_DIR "" CACHE PATH "Optional in-place output directory for _sdr_native")
+set(SDR_CORE_HACKRF_INCLUDE_DIR "" CACHE PATH "Private directory containing official hackrf.h")
+set(SDR_CORE_HACKRF_LIBRARY "" CACHE FILEPATH "Official libhackrf import/static library")
 
 if(SDR_CORE_ENABLE_CUDA)
     enable_language(CUDA)
@@ -71,6 +74,7 @@ sdr_core_apply_sanitizers(sdr_core)
 add_library(sdr_hackrf STATIC
     src/hackrf/hackrf_acquisition_dsp_session.cpp
     src/hackrf/hackrf_fixed_band_dsp.cpp
+    src/hackrf/hackrf_live_factory.cpp
     src/hackrf/hackrf_rx_ingress.cpp
     src/hackrf/hackrf_rx_session.cpp
     src/hackrf/hackrf_runtime_dsp_session.cpp
@@ -85,6 +89,47 @@ sdr_core_apply_platform_defaults(sdr_hackrf)
 sdr_core_apply_sanitizers(sdr_hackrf)
 if(SDR_CORE_BUILD_TESTS)
     target_compile_definitions(sdr_hackrf PRIVATE SDR_CORE_ENABLE_TEST_HOOKS=1)
+endif()
+
+if(SDR_CORE_ENABLE_HACKRF_OFFICIAL)
+    if(NOT EXISTS "${SDR_CORE_HACKRF_INCLUDE_DIR}/hackrf.h")
+        message(FATAL_ERROR "SDR_CORE_HACKRF_INCLUDE_DIR must contain official hackrf.h")
+    endif()
+    if(NOT EXISTS "${SDR_CORE_HACKRF_LIBRARY}")
+        message(FATAL_ERROR "SDR_CORE_HACKRF_LIBRARY must name the official libhackrf library")
+    endif()
+    add_library(sdr_hackrf_official STATIC
+        src/hackrf/hackrf_official_live_factory.cpp
+        src/hackrf/hackrf_official_rx_port.cpp
+    )
+    add_library(sdr_core::sdr_hackrf_official ALIAS sdr_hackrf_official)
+    target_include_directories(
+        sdr_hackrf_official
+        PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        PRIVATE "${SDR_CORE_HACKRF_INCLUDE_DIR}"
+    )
+    target_compile_features(sdr_hackrf_official PUBLIC cxx_std_20)
+    target_link_libraries(
+        sdr_hackrf_official
+        PUBLIC sdr_core::sdr_hackrf
+        PRIVATE "${SDR_CORE_HACKRF_LIBRARY}"
+    )
+    sdr_core_apply_platform_defaults(sdr_hackrf_official)
+    sdr_core_apply_sanitizers(sdr_hackrf_official)
+
+    if(WIN32)
+        get_filename_component(
+            SDR_CORE_HACKRF_RUNTIME_DIR "${SDR_CORE_HACKRF_LIBRARY}" DIRECTORY
+        )
+        foreach(runtime_dll IN ITEMS hackrf.dll libusb-1.0.dll pthreadVC3.dll)
+            if(NOT EXISTS "${SDR_CORE_HACKRF_RUNTIME_DIR}/${runtime_dll}")
+                message(
+                    FATAL_ERROR
+                    "Official HackRF runtime bundle is missing ${runtime_dll}"
+                )
+            endif()
+        endforeach()
+    endif()
 endif()
 
 if(SDR_CORE_ENABLE_CUDA)
@@ -178,6 +223,22 @@ if(SDR_CORE_BUILD_PYTHON)
     if(SDR_CORE_ENABLE_CUDA)
         target_link_libraries(_sdr_native PRIVATE sdr_core::sdr_cuda)
         target_compile_definitions(_sdr_native PRIVATE SDR_CORE_CUDA_COMPILED=1)
+    endif()
+    if(SDR_CORE_ENABLE_HACKRF_OFFICIAL)
+        target_sources(_sdr_native PRIVATE bindings/hackrf_factory_binding.cpp)
+        target_link_libraries(_sdr_native PRIVATE sdr_core::sdr_hackrf_official)
+        target_compile_definitions(_sdr_native PRIVATE SDR_CORE_HACKRF_OFFICIAL_COMPILED=1)
+        if(WIN32)
+            foreach(runtime_dll IN ITEMS hackrf.dll libusb-1.0.dll pthreadVC3.dll)
+                add_custom_command(
+                    TARGET _sdr_native POST_BUILD
+                    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                        "${SDR_CORE_HACKRF_RUNTIME_DIR}/${runtime_dll}"
+                        "$<TARGET_FILE_DIR:_sdr_native>"
+                    VERBATIM
+                )
+            endforeach()
+        endif()
     endif()
     target_compile_features(_sdr_native PRIVATE cxx_std_20)
     sdr_core_apply_platform_defaults(_sdr_native)
@@ -311,6 +372,19 @@ if(SDR_CORE_BUILD_TESTS)
         COMMAND sdr_core_hackrf_runtime_dsp_session_test
     )
     set_tests_properties(sdr_core.hackrf_runtime_dsp_session PROPERTIES TIMEOUT 120)
+    add_executable(
+        sdr_core_hackrf_live_factory_test tests/test_hackrf_live_factory.cpp
+    )
+    target_link_libraries(
+        sdr_core_hackrf_live_factory_test PRIVATE sdr_core::sdr_hackrf
+    )
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_live_factory_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_live_factory_test)
+    add_test(
+        NAME sdr_core.hackrf_live_factory
+        COMMAND sdr_core_hackrf_live_factory_test
+    )
+    set_tests_properties(sdr_core.hackrf_live_factory PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_engine_lifecycle_test tests/test_engine_lifecycle.cpp)
     target_link_libraries(sdr_core_engine_lifecycle_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_engine_lifecycle_test)

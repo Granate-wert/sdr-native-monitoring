@@ -40,6 +40,9 @@ PYBIND11_MODULE(_sdr_native, module) {
     sdr_core::python::bind_lifecycle(module);
     sdr_core::python::bind_dsp(module);
     sdr_core::python::bind_hackrf(module);
+#if defined(SDR_CORE_HACKRF_OFFICIAL_COMPILED)
+    sdr_core::python::bind_hackrf_factory(module);
+#endif
 #if SDR_CORE_PLUTO_COMPILED
     sdr_core::python::bind_pluto(module);
 #endif
