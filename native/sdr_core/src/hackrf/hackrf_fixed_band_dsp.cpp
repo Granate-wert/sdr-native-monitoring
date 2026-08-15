@@ -60,7 +60,7 @@ void validate_hackrf_fixed_band_dsp_config(const HackrfFixedBandDspConfig& confi
 struct HackrfFixedBandDsp::Impl final {
     explicit Impl(HackrfFixedBandDspConfig value)
         : config(std::move(value)),
-          presentation(config.presentation_capacity, sdr_core::OverflowPolicy::LatestWins) {
+          presentation(config.presentation_capacity, hackrf_fixed_band_presentation_overflow_policy) {
         sdr_core::DspOptions options;
         options.dc_removal = config.dc_removal;
         options.source = config.source;
@@ -173,7 +173,7 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
         frame.dropped_iq_blocks_before = missing_blocks;
         frame.dropped_samples_before = missing_samples;
         // `dropped_fft_frames_before` and FftDropped are canonical analytical
-        // DSP provenance.  A LatestWins eviction here happens *after* the
+        // DSP provenance. A fresh-window eviction here happens *after* the
         // frame was computed; preserving it in QueueStats rather than writing
         // it into the frame prevents presentation coalescing from masquerading
         // as input/FFT loss.

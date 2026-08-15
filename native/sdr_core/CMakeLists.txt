@@ -328,19 +328,19 @@ if(SDR_CORE_BUILD_TESTS)
     )
     set_tests_properties(sdr_core.hackrf_fixed_band_dsp PROPERTIES TIMEOUT 120)
     add_executable(
-        sdr_core_r13f_hackrf_presentation_relay_test
-        tests/test_r13f_hackrf_presentation_relay.cpp
+        sdr_core_r13g_hackrf_fresh_presentation_relay_test
+        tests/test_r13g_hackrf_fresh_presentation_relay.cpp
     )
     target_link_libraries(
-        sdr_core_r13f_hackrf_presentation_relay_test PRIVATE sdr_core::sdr_hackrf
+        sdr_core_r13g_hackrf_fresh_presentation_relay_test PRIVATE sdr_core::sdr_hackrf
     )
-    sdr_core_apply_platform_defaults(sdr_core_r13f_hackrf_presentation_relay_test)
-    sdr_core_apply_sanitizers(sdr_core_r13f_hackrf_presentation_relay_test)
+    sdr_core_apply_platform_defaults(sdr_core_r13g_hackrf_fresh_presentation_relay_test)
+    sdr_core_apply_sanitizers(sdr_core_r13g_hackrf_fresh_presentation_relay_test)
     add_test(
-        NAME sdr_core.r13f_hackrf_presentation_relay
-        COMMAND sdr_core_r13f_hackrf_presentation_relay_test
+        NAME sdr_core.r13g_hackrf_fresh_presentation_relay
+        COMMAND sdr_core_r13g_hackrf_fresh_presentation_relay_test
     )
-    set_tests_properties(sdr_core.r13f_hackrf_presentation_relay PROPERTIES TIMEOUT 120)
+    set_tests_properties(sdr_core.r13g_hackrf_fresh_presentation_relay PROPERTIES TIMEOUT 120)
     add_executable(
         sdr_core_hackrf_acquisition_dsp_session_test
         tests/test_hackrf_acquisition_dsp_session.cpp

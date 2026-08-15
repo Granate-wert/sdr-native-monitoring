@@ -27,8 +27,8 @@ void expect(const bool condition, const std::string& message) {
 sdr_core::SourceDescriptor source() {
     sdr_core::SourceDescriptor value;
     value.source_type = sdr_core::SourceType::LiveIq;
-    value.source_id = "hackrf-r13f-synthetic";
-    value.display_name = "HackRF R13-F synthetic CI8";
+    value.source_id = "hackrf-r13g-synthetic";
+    value.display_name = "HackRF R13-G synthetic CI8";
     value.backend_id = "native.libhackrf.rx.v1";
     return value;
 }
@@ -131,7 +131,7 @@ RelayRun run_slow_consumer(
     return result;
 }
 
-void assert_slow_consumer_contract(
+void assert_fresh_window_contract(
     const std::uint32_t fft_size,
     const std::uint32_t presentation_capacity
 ) {
@@ -163,7 +163,7 @@ void assert_slow_consumer_contract(
     expect(run.assessment.presentation_frames_abandoned == 0U,
            "processed presentation frames were incorrectly abandoned");
     expect(run.frames.size() == expected_retained,
-           "latest-wins relay retained an unexpected number of frames");
+           "fresh-window relay retained an unexpected number of frames");
     expect(run.analytical_fft_per_second > 0.0,
            "synthetic analytical FFT rate was not measurable");
 
@@ -183,15 +183,15 @@ void assert_slow_consumer_contract(
         expect(!sdr_core::has_flag(frame.quality_flags, sdr_core::QualityFlag::FftDropped),
                "presentation supersession set the analytical FFT-loss flag");
     }
-    std::cout << "R13-F synthetic FFT " << fft_size
+    std::cout << "R13-G synthetic FFT " << fft_size
               << " capacity " << presentation_capacity
               << ": " << run.analytical_fft_per_second << " analytical FFT/s\n";
 }
 
-void test_slow_presentation_relay_preserves_analytical_fft() {
+void test_fresh_presentation_relay_preserves_analytical_fft() {
     for (const auto fft_size : {1024U, 4096U}) {
         for (const auto presentation_capacity : {1U, 64U, 256U}) {
-            assert_slow_consumer_contract(fft_size, presentation_capacity);
+            assert_fresh_window_contract(fft_size, presentation_capacity);
         }
     }
 }
@@ -200,8 +200,8 @@ void test_slow_presentation_relay_preserves_analytical_fft() {
 
 int main() {
     try {
-        test_slow_presentation_relay_preserves_analytical_fft();
-        std::cout << "R13-F presentation relay contract OK\n";
+        test_fresh_presentation_relay_preserves_analytical_fft();
+        std::cout << "R13-G fresh presentation relay contract OK\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

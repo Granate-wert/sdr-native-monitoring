@@ -17,6 +17,11 @@ inline constexpr std::uint32_t hackrf_fixed_band_max_dsp_output_capacity = 4096U
 // A larger opt-in relay bounds a deliberately slow presentation consumer
 // without moving the default (four frames) or making the queue unbounded.
 inline constexpr std::uint32_t hackrf_fixed_band_max_presentation_capacity = 256U;
+// This final, reduced-frame-only HackRF boundary deliberately preserves the
+// freshest bounded window. The legacy LatestWins policy remains unchanged for
+// existing producer/consumer pipelines elsewhere in the core.
+inline constexpr auto hackrf_fixed_band_presentation_overflow_policy =
+    sdr_core::OverflowPolicy::DropOldest;
 
 struct HackrfFixedBandDspConfig {
     sdr_core::DspConfig dsp;
@@ -36,7 +41,7 @@ struct HackrfFixedBandDspMetrics {
     std::uint64_t source_timestamp_regressions{};
     std::uint64_t source_estimated_timestamp_blocks{};
     sdr_core::DspBackendMetrics dsp;
-    // These are delivery-only counters for the final bounded latest-wins
+    // These are delivery-only counters for the final bounded fresh-window
     // presentation queue.  They never describe an input or analytical FFT
     // loss and must not be folded into SpectrumFrame::dropped_fft_frames_before.
     std::uint64_t presentation_frames_superseded{};
@@ -48,7 +53,7 @@ struct HackrfFixedBandDspMetrics {
 // below HackRF CI8 acquisition.  `analytical_pipeline_clean` says that every
 // admitted cursor reached the CPU FFT without a source-cursor or CPU-DSP drop;
 // it says nothing about device/USB continuity before admission.  Presentation
-// delivery is latest-wins by design and is reported separately so a UI
+// delivery retains a fresh bounded window by design and is reported separately so a UI
 // coalescing event can never be relabelled as an analytical FFT loss.
 struct HackrfFixedBandDspDeliveryAssessment {
     bool source_cursor_continuity_clean{};
