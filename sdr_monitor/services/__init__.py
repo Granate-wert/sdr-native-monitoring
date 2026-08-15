@@ -10,6 +10,22 @@ from .diagnostics_session import DiagnosticsService, TaskSupervisor
 from .sdr_application_services import SdrApplicationServices, build_default_sdr_services
 from .native_live import NativeLiveSessionService
 from .sweep_session import InMemorySweepService
+from .hackrf_capability_adapter import (
+    HACKRF_LIBHACKRF_ADAPTER_ID,
+    HackrfBoardKind,
+    HackrfCapabilityAdapter,
+    HackrfCapabilityObservation,
+    HackrfCapabilityObservationError,
+    HackrfReadOnlyProbe,
+    HackrfReadOnlyProbePort,
+)
+from .hackrf_live_admission import (
+    HackrfLiveActivationPlan,
+    HackrfLiveAdmission,
+    HackrfLiveAdmissionReason,
+    HackrfLiveRequest,
+    admit_hackrf_live,
+)
 
 __all__ = [
     "InMemoryRecordingService",
@@ -20,4 +36,21 @@ __all__ = [
     "DiagnosticsService",
     "TaskSupervisor",
     "CalibrationProfileStore",
-    "CalibrationService", "InMemorySweepService", "NativeLiveSessionService", "SdrApplicationServices", "build_default_sdr_services"]
+    "CalibrationService",
+    "InMemorySweepService",
+    "NativeLiveSessionService",
+    "SdrApplicationServices",
+    "build_default_sdr_services",
+    "HACKRF_LIBHACKRF_ADAPTER_ID",
+    "HackrfBoardKind",
+    "HackrfCapabilityAdapter",
+    "HackrfCapabilityObservation",
+    "HackrfCapabilityObservationError",
+    "HackrfReadOnlyProbe",
+    "HackrfReadOnlyProbePort",
+    "HackrfLiveActivationPlan",
+    "HackrfLiveAdmission",
+    "HackrfLiveAdmissionReason",
+    "HackrfLiveRequest",
+    "admit_hackrf_live",
+]
