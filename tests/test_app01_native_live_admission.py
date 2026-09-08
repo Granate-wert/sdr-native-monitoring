@@ -60,4 +60,3 @@ class NativeLiveAdmissionTests(unittest.TestCase):
                         service.start_admitted()
                     start.assert_not_called()
                 self.assertIs(service.latest_snapshot(), before)
-
