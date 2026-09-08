@@ -1,0 +1,15 @@
+"""Axis primitives owned exclusively by the V2 measurement scene."""
+
+from __future__ import annotations
+
+import pyqtgraph as pg
+
+from .contracts import format_frequency_hz
+
+
+class FrequencyAxis(pg.AxisItem):
+    """Frequency axis that never guesses a display unit from signal amplitude."""
+
+    def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:  # noqa: N802 - Qt API.
+        del scale, spacing
+        return [format_frequency_hz(value) for value in values]

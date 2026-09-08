@@ -1,0 +1,331 @@
+"""Pure Live snapshot-to-presentation mapping for UI V2.
+
+The functions here deliberately accept only immutable snapshot-shaped objects.
+They do not import services, presenters, Qt, or renderer helpers and retain
+renderer-ready spectrum/persistence frames by identity rather than copying
+their arrays.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+from sdr_monitor.domain import CalibrationQuality, LiveSessionState
+
+from ..i18n import text
+
+
+class LiveAction(StrEnum):
+    NONE = "none"
+    DISCOVER = "discover"
+    START = "start"
+    STOP = "stop"
+    RETRY = "retry"
+    REVIEW_CONFIGURATION = "review_configuration"
+
+
+class CalibrationPresentation(StrEnum):
+    UNCALIBRATED = "uncalibrated"
+    CALIBRATED = "calibrated"
+    MISMATCH = "mismatch"
+    PROFILE_SELECTED = "profile_selected"
+
+
+class PersistencePresentation(StrEnum):
+    NOT_CONFIGURED = "not_configured"
+    DISABLED = "disabled"
+    WAITING_FOR_FRAME = "waiting_for_frame"
+    ACTIVE = "active"
+
+
+@dataclass(frozen=True, slots=True)
+class LiveLossSummary:
+    """Named loss categories; presentation supersession is never FFT loss."""
+
+    source_blocks: int = 0
+    acquisition_blocks: int = 0
+    fft_frames: int = 0
+    publication_frames: int = 0
+    bridge_frames: int = 0
+
+    @property
+    def analytical_loss(self) -> bool:
+        return any((self.source_blocks, self.acquisition_blocks, self.fft_frames))
+
+    @property
+    def presentation_supersession(self) -> bool:
+        return any((self.publication_frames, self.bridge_frames))
+
+
+@dataclass(frozen=True, slots=True)
+class LiveViewState:
+    """Immutable, renderer-ready state derived without changing the snapshot."""
+
+    snapshot: object | None
+    connection_label: str
+    acquisition_label: str
+    primary_action: LiveAction
+    primary_action_label: str
+    primary_action_enabled: bool
+    busy: bool
+    device_label: str
+    unit_label: str
+    calibration: CalibrationPresentation
+    calibration_label: str
+    configuration_dirty: bool
+    has_applied_configuration: bool
+    has_spectrum: bool
+    frozen_last_frame: bool
+    data_age_ms: float | None
+    data_age_label: str
+    persistence: PersistencePresentation
+    persistence_label: str
+    loss: LiveLossSummary
+    backend_label: str
+    error_label: str | None
+    error_kind: str | None
+    spectrum: object | None
+    persistence_frame: object | None
+    waterfall_line: object | None
+
+
+def build_live_view_state(
+    snapshot: object | None,
+    *,
+    busy: bool = False,
+    now_ns: int | None = None,
+) -> LiveViewState:
+    """Map a public immutable snapshot to labels and enabled controls.
+
+    Optional fields are read through ``getattr``. This keeps the adapter
+    compatible with the shipped minimal snapshot while using richer public
+    fields when they are present. Missing data is unavailable, never inferred.
+    """
+
+    if snapshot is None:
+        return _empty_state(busy=busy)
+
+    state = _coerce_state(getattr(snapshot, "state", LiveSessionState.DISCONNECTED))
+    spectrum = getattr(snapshot, "spectrum", None)
+    persistence_frame = getattr(snapshot, "persistence", None)
+    waterfall_line = getattr(snapshot, "waterfall_line", None)
+    has_spectrum = spectrum is not None
+    frozen_last_frame = state is LiveSessionState.CONNECTED and has_spectrum
+    connection_label, acquisition_label, action = _state_labels(state, frozen_last_frame)
+    error_kind = _value_name(getattr(snapshot, "error_kind", None))
+    if state is LiveSessionState.ERROR:
+        action = _error_action(error_kind)
+    primary_action_label = _action_label(action)
+    device = getattr(snapshot, "device", None)
+    device_label = str(getattr(device, "label", text("live_state.device.unselected")))
+    unit_label = str(getattr(snapshot, "unit", "dBFS/bin") or "dBFS/bin")
+    calibration, calibration_label = _calibration_presentation(snapshot)
+    applied = getattr(snapshot, "applied", None)
+    configuration_dirty = bool(
+        applied is not None
+        and getattr(applied, "requested", None) != getattr(applied, "applied", None)
+    )
+    has_applied_configuration = getattr(applied, "applied", None) is not None
+    data_age_ms = _data_age_ms(spectrum, now_ns)
+    persistence, persistence_label = _persistence_presentation(applied, persistence_frame)
+    quality = getattr(snapshot, "quality", None)
+    performance = getattr(snapshot, "performance", None)
+    return LiveViewState(
+        snapshot=snapshot,
+        connection_label=connection_label,
+        acquisition_label=acquisition_label,
+        primary_action=action,
+        primary_action_label=primary_action_label,
+        primary_action_enabled=_action_is_available(action) and not busy,
+        busy=busy,
+        device_label=device_label,
+        unit_label=unit_label,
+        calibration=calibration,
+        calibration_label=calibration_label,
+        configuration_dirty=configuration_dirty,
+        has_applied_configuration=has_applied_configuration,
+        has_spectrum=has_spectrum,
+        frozen_last_frame=frozen_last_frame,
+        data_age_ms=data_age_ms,
+        data_age_label=_format_data_age(data_age_ms),
+        persistence=persistence,
+        persistence_label=persistence_label,
+        loss=_loss_summary(quality, performance, spectrum),
+        backend_label=_backend_label(quality),
+        error_label=_optional_text(getattr(snapshot, "error", None)),
+        error_kind=error_kind,
+        spectrum=spectrum,
+        persistence_frame=persistence_frame,
+        waterfall_line=waterfall_line,
+    )
+
+
+def _empty_state(*, busy: bool) -> LiveViewState:
+    return LiveViewState(
+        snapshot=None,
+        connection_label=text("live_state.connection.none"),
+        acquisition_label=text("live_state.acquisition.unstarted"),
+        primary_action=LiveAction.DISCOVER,
+        primary_action_label=_action_label(LiveAction.DISCOVER),
+        primary_action_enabled=not busy,
+        busy=busy,
+        device_label=text("live_state.device.unselected"),
+        unit_label="dBFS/bin",
+        calibration=CalibrationPresentation.UNCALIBRATED,
+        calibration_label=text("live_state.calibration.uncalibrated"),
+        configuration_dirty=False,
+        has_applied_configuration=False,
+        has_spectrum=False,
+        frozen_last_frame=False,
+        data_age_ms=None,
+        data_age_label=_format_data_age(None),
+        persistence=PersistencePresentation.NOT_CONFIGURED,
+        persistence_label=text("live_state.persistence.not_configured"),
+        loss=LiveLossSummary(),
+        backend_label=text("live_state.backend.empty"),
+        error_label=None,
+        error_kind=None,
+        spectrum=None,
+        persistence_frame=None,
+        waterfall_line=None,
+    )
+
+
+def _state_labels(state: LiveSessionState, frozen_last_frame: bool) -> tuple[str, str, LiveAction]:
+    if state is LiveSessionState.CONNECTING:
+        return text("live_state.connection.connecting"), text("live_state.acquisition.unstarted"), LiveAction.NONE
+    if state is LiveSessionState.CONNECTED:
+        if frozen_last_frame:
+            return text("live_state.connection.ready"), text("live_state.acquisition.stopped_last_frame"), LiveAction.START
+        return text("live_state.connection.ready"), text("live_state.acquisition.unstarted"), LiveAction.START
+    if state is LiveSessionState.STARTING:
+        return text("live_state.connection.ready"), text("live_state.acquisition.starting"), LiveAction.NONE
+    if state is LiveSessionState.RUNNING:
+        return text("live_state.connection.ready"), text("live_state.acquisition.running"), LiveAction.STOP
+    if state is LiveSessionState.STOPPING:
+        return text("live_state.connection.ready"), text("live_state.acquisition.stopping"), LiveAction.NONE
+    if state is LiveSessionState.ERROR:
+        return text("live_state.connection.error"), text("live_state.acquisition.unavailable"), LiveAction.RETRY
+    return text("live_state.connection.none"), text("live_state.acquisition.unstarted"), LiveAction.DISCOVER
+
+
+def _error_action(error_kind: str | None) -> LiveAction:
+    if error_kind == "configuration_rejected":
+        return LiveAction.REVIEW_CONFIGURATION
+    if error_kind == "device_not_found":
+        return LiveAction.DISCOVER
+    return LiveAction.RETRY
+
+
+def _action_label(action: LiveAction) -> str:
+    return {
+        LiveAction.NONE: text("live_state.action.none"),
+        LiveAction.DISCOVER: text("live_state.action.discover"),
+        LiveAction.START: text("live_state.action.start"),
+        LiveAction.STOP: text("live_state.action.stop"),
+        LiveAction.RETRY: text("live_state.action.retry"),
+        LiveAction.REVIEW_CONFIGURATION: text("live_state.action.review_configuration"),
+    }[action]
+
+
+def _action_is_available(action: LiveAction) -> bool:
+    """Keep controls disabled until UI2 has a documented presenter command."""
+
+    return action in {LiveAction.DISCOVER, LiveAction.START, LiveAction.STOP}
+
+
+def _calibration_presentation(snapshot: object) -> tuple[CalibrationPresentation, str]:
+    quality = getattr(snapshot, "quality", None)
+    calibration = getattr(quality, "calibration", CalibrationQuality.UNCALIBRATED)
+    reports_dbm = bool(getattr(snapshot, "reports_dbm", False))
+    if reports_dbm and calibration is CalibrationQuality.CALIBRATED:
+        return CalibrationPresentation.CALIBRATED, text("live_state.calibration.calibrated")
+    if calibration is CalibrationQuality.MISMATCH:
+        return CalibrationPresentation.MISMATCH, text("live_state.calibration.mismatch")
+    applied = getattr(snapshot, "applied", None)
+    applied_config = getattr(applied, "applied", None)
+    if getattr(applied_config, "profile_id", None):
+        return CalibrationPresentation.PROFILE_SELECTED, text("live_state.calibration.profile_selected")
+    return CalibrationPresentation.UNCALIBRATED, text("live_state.calibration.uncalibrated")
+
+
+def _persistence_presentation(
+    applied: object | None,
+    persistence_frame: object | None,
+) -> tuple[PersistencePresentation, str]:
+    configuration = getattr(applied, "applied", None)
+    if configuration is None or not hasattr(configuration, "persistence_enabled"):
+        return PersistencePresentation.NOT_CONFIGURED, text("live_state.persistence.not_configured")
+    if not bool(getattr(configuration, "persistence_enabled")):
+        return PersistencePresentation.DISABLED, text("live_state.persistence.disabled")
+    if persistence_frame is None:
+        return PersistencePresentation.WAITING_FOR_FRAME, text("live_state.persistence.waiting")
+    return PersistencePresentation.ACTIVE, text("live_state.persistence.active")
+
+
+def _loss_summary(quality: object | None, performance: object | None, spectrum: object | None) -> LiveLossSummary:
+    return LiveLossSummary(
+        source_blocks=max(
+            _counter(performance, "source_blocks_dropped"),
+            _counter(quality, "dropped_blocks"),
+        ),
+        acquisition_blocks=_counter(performance, "acquisition_queue_blocks_dropped"),
+        fft_frames=max(
+            _counter(performance, "fft_frames_dropped"),
+            _counter(spectrum, "dropped_fft_frames_before"),
+        ),
+        publication_frames=_counter(performance, "snapshots_superseded"),
+        bridge_frames=_counter(performance, "bridge_frames_coalesced"),
+    )
+
+
+def _backend_label(quality: object | None) -> str:
+    backend = _value_name(getattr(quality, "backend", None))
+    fallback = _optional_text(getattr(quality, "fallback_reason", None))
+    if fallback:
+        return f"{(backend or 'CPU').upper()} fallback: {fallback}"
+    return (backend or text("live_state.backend.unselected")).upper()
+
+
+def _data_age_ms(spectrum: object | None, now_ns: int | None) -> float | None:
+    timestamp = getattr(spectrum, "timestamp_ns", None)
+    if timestamp is None or now_ns is None:
+        return None
+    return max(0.0, (int(now_ns) - int(timestamp)) / 1_000_000.0)
+
+
+def _format_data_age(value: float | None) -> str:
+    if value is None:
+        return text("live_state.age.empty")
+    if value < 1_000.0:
+        return text("live_state.age.milliseconds", value=value)
+    return text("live_state.age.seconds", value=value / 1_000.0)
+
+
+def _counter(source: object | None, name: str, fallback: int = 0) -> int:
+    value = getattr(source, name, fallback)
+    return max(0, int(value or 0))
+
+
+def _coerce_state(value: object) -> LiveSessionState:
+    if isinstance(value, LiveSessionState):
+        return value
+    try:
+        return LiveSessionState(str(value))
+    except ValueError:
+        return LiveSessionState.DISCONNECTED
+
+
+def _value_name(value: object | None) -> str | None:
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    return str(raw).strip().casefold() or None
+
+
+def _optional_text(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

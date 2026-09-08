@@ -1,0 +1,219 @@
+"""Immutable persistence-density shapes and numerical presentation mapping."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from functools import lru_cache
+
+import numpy as np
+
+
+class DensityValueMode(StrEnum):
+    """What each native density value means; UI never guesses this semantic."""
+
+    PROBABILITY = "probability"
+    COUNT = "count"
+
+
+class PersistenceRenderMode(StrEnum):
+    """Direct is measurement-faithful; Visual is explicitly presentation-only."""
+
+    DIRECT = "direct"
+    VISUAL = "visual"
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceDensityFrame:
+    """External immutable density with physical bin edges for one shared ViewBox."""
+
+    density: np.ndarray
+    frequency_edges_hz: np.ndarray
+    level_edges: np.ndarray
+    value_mode: DensityValueMode
+    level_unit: str
+
+    def __post_init__(self) -> None:
+        density = np.asarray(self.density)
+        frequencies = np.asarray(self.frequency_edges_hz)
+        levels = np.asarray(self.level_edges)
+        if density.ndim != 2 or density.size == 0 or not np.issubdtype(density.dtype, np.number):
+            raise ValueError("persistence density must be a non-empty numeric two-dimensional array")
+        if frequencies.ndim != 1 or levels.ndim != 1:
+            raise ValueError("persistence bin edges must be one-dimensional")
+        if frequencies.size != density.shape[1] + 1 or levels.size != density.shape[0] + 1:
+            raise ValueError("persistence bin edge counts do not match density shape")
+        if not self.level_unit.strip():
+            raise ValueError("persistence level unit must be explicit")
+        _validate_regular_edges(frequencies, "frequency")
+        _validate_regular_edges(levels, "level")
+        if np.any(np.isfinite(density) & (density < 0.0)):
+            raise ValueError("persistence density must not contain negative values")
+        if self.value_mode is DensityValueMode.PROBABILITY and np.any(
+            np.isfinite(density) & (density > 1.0)
+        ):
+            raise ValueError("probability density must not exceed one")
+        object.__setattr__(self, "density", density)
+        object.__setattr__(self, "frequency_edges_hz", frequencies)
+        object.__setattr__(self, "level_edges", levels)
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceDensityView:
+    """Identity-preserving frame view used by upload suppression."""
+
+    source_frame: object
+    density: np.ndarray
+    frequency_edges_hz: np.ndarray
+    level_edges: np.ndarray
+    value_mode: DensityValueMode
+    level_unit: str
+
+    @property
+    def physical_rect(self) -> tuple[float, float, float, float]:
+        """Physical x/y rectangle derived only from declared bin edges."""
+
+        left = float(self.frequency_edges_hz[0])
+        bottom = float(self.level_edges[0])
+        return (
+            left,
+            bottom,
+            float(self.frequency_edges_hz[-1]) - left,
+            float(self.level_edges[-1]) - bottom,
+        )
+
+    @property
+    def quantitative_labels(self) -> tuple[str, str]:
+        if self.value_mode is DensityValueMode.PROBABILITY:
+            return ("0.000 probability", "1.000 probability")
+        finite = self.density[np.isfinite(self.density)]
+        maximum = 0.0 if finite.size == 0 else float(np.max(finite))
+        return ("0 count", f"{maximum:.0f} count")
+
+
+def adapt_persistence_density(frame: object) -> PersistenceDensityView:
+    """Accept a declared V2 density shape without importing backend owners."""
+
+    if isinstance(frame, PersistenceDensityFrame):
+        source = frame
+    else:
+        source = PersistenceDensityFrame(
+            density=np.asarray(getattr(frame, "density", None)),
+            frequency_edges_hz=np.asarray(getattr(frame, "frequency_edges_hz", None)),
+            level_edges=np.asarray(getattr(frame, "level_edges", None)),
+            value_mode=DensityValueMode(str(getattr(frame, "value_mode", ""))),
+            level_unit=str(getattr(frame, "level_unit", "")),
+        )
+    return PersistenceDensityView(
+        source_frame=frame,
+        density=source.density,
+        frequency_edges_hz=source.frequency_edges_hz,
+        level_edges=source.level_edges,
+        value_mode=source.value_mode,
+        level_unit=source.level_unit,
+    )
+
+
+def map_density_for_display(
+    view: PersistenceDensityView,
+    *,
+    logarithmic: bool,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Map native probability/count to a bounded image with transparent zero value.
+
+    The source density remains immutable.  The returned image is the sole
+    presentation buffer retained by a Direct overlay update.
+    """
+
+    mapped: np.ndarray = np.zeros(view.density.shape, dtype=np.float32) if out is None else out
+    if mapped.shape != view.density.shape or mapped.dtype != np.float32:
+        raise ValueError("persistence display output must be float32 with the density shape")
+    _map_density_values_into(
+        view.density,
+        value_mode=view.value_mode,
+        logarithmic=logarithmic,
+        count_maximum=_count_maximum(view),
+        out=mapped,
+    )
+    return mapped
+
+
+def map_density_row_for_display(
+    values: np.ndarray,
+    *,
+    value_mode: DensityValueMode,
+    logarithmic: bool,
+    count_maximum: float,
+    out: np.ndarray,
+) -> None:
+    """Map one row into caller-owned scratch memory for Visual mode."""
+
+    _map_density_values_into(
+        values,
+        value_mode=value_mode,
+        logarithmic=logarithmic,
+        count_maximum=count_maximum,
+        out=out,
+    )
+
+
+@lru_cache(maxsize=1)
+def inferno_lookup_table() -> np.ndarray:
+    """Return deterministic Inferno-like RGBA LUT; zero density has zero alpha."""
+
+    stops = np.array(
+        (
+            (0, 0, 4, 0),
+            (87, 15, 109, 150),
+            (187, 55, 84, 205),
+            (249, 142, 8, 235),
+            (252, 255, 164, 255),
+        ),
+        dtype=np.float32,
+    )
+    positions = np.linspace(0.0, 1.0, stops.shape[0])
+    output: np.ndarray = np.empty((256, 4), dtype=np.ubyte)
+    target = np.linspace(0.0, 1.0, output.shape[0])
+    for channel in range(4):
+        output[:, channel] = np.interp(target, positions, stops[:, channel]).astype(np.ubyte)
+    output.setflags(write=False)
+    return output
+
+
+def _validate_regular_edges(edges: np.ndarray, name: str) -> None:
+    if edges.size < 2 or not np.issubdtype(edges.dtype, np.number) or not np.all(np.isfinite(edges)):
+        raise ValueError(f"persistence {name} edges must be finite numeric values")
+    spacing = np.diff(edges)
+    if np.any(spacing <= 0.0):
+        raise ValueError(f"persistence {name} edges must be strictly increasing")
+    if not np.allclose(spacing, spacing[0], rtol=1e-9, atol=1e-9):
+        raise ValueError(f"one ImageItem requires regular physical {name} bin edges")
+
+
+def _count_maximum(view: PersistenceDensityView) -> float:
+    if view.value_mode is not DensityValueMode.COUNT:
+        return 1.0
+    finite = view.density[np.isfinite(view.density)]
+    return 0.0 if finite.size == 0 else float(np.max(finite))
+
+
+def _map_density_values_into(
+    values: np.ndarray,
+    *,
+    value_mode: DensityValueMode,
+    logarithmic: bool,
+    count_maximum: float,
+    out: np.ndarray,
+) -> None:
+    if out.shape != values.shape or out.dtype != np.float32:
+        raise ValueError("persistence mapping output shape or dtype is invalid")
+    out.fill(0.0)
+    np.copyto(out, values, where=np.isfinite(values))
+    if value_mode is DensityValueMode.COUNT and count_maximum > 0.0:
+        out /= count_maximum
+    if logarithmic:
+        np.multiply(out, 9.0, out=out)
+        np.log1p(out, out=out)
+        out /= np.log(10.0)
+    np.clip(out, 0.0, 1.0, out=out)
