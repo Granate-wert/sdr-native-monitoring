@@ -51,6 +51,16 @@ _PERSISTENCE_Z_VALUE = -20
 _BAND_MASK_Z_VALUE = -10
 
 
+def _measurement_signature(frame: object, view: SpectrumFrameView) -> tuple[object, ...]:
+    """Accumulation identity excluding arrival sequence and partial revision."""
+    identity = getattr(frame, "identity", None)
+    return (
+        getattr(identity, "source_id", None), getattr(identity, "receiver_id", None),
+        getattr(identity, "acquisition_epoch", None), getattr(identity, "config_generation", None),
+        view.unit_label, int(view.frequencies_hz.size), view.frequencies_hz.tobytes(),
+    )
+
+
 class SpectrumScene(QWidget):
     """Render public frames without receiver, acquisition or DSP ownership."""
 
@@ -60,6 +70,7 @@ class SpectrumScene(QWidget):
         super().__init__(parent)
         self._theme = theme
         self._latest_view: SpectrumFrameView | None = None
+        self._measurement_signature: tuple[object, ...] | None = None
         self._envelopes: dict[TraceKind, EnvelopeTrace] = {}
         self._band_masks: tuple[BandMask, ...] = ()
         self._band_mask_items: list[pg.LinearRegionItem] = []
@@ -126,6 +137,12 @@ class SpectrumScene(QWidget):
         """Set the latest immutable current frame and redraw one bounded envelope."""
 
         view = adapt_spectrum_frame(frame)
+        signature = _measurement_signature(frame, view)
+        if self._measurement_signature is not None and signature != self._measurement_signature:
+            for kind in TraceKind:
+                self.clear_trace(kind)
+            self.clear_persistence_display()
+        self._measurement_signature = signature
         self._latest_view = view
         self._set_trace_view(TraceKind.CURRENT, view)
         self._plot_item.setLabel("left", view.unit_label)

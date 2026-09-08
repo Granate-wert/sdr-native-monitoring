@@ -54,6 +54,11 @@ class CalibrationPresenterLifecyclePort(CalibrationProfilePresenterPort, Protoco
     def shutdown(self) -> None: ...
 
 
+class AnalyzerPresenterLifecyclePort(Protocol):
+    def can_close(self) -> bool: ...
+    def shutdown(self) -> None: ...
+
+
 class _TinySaProductController:
     """Own V2 subscriptions and shutdown around deferred tinySA presenters only."""
 
@@ -104,6 +109,7 @@ class V2LiveProductComposition:
         presenter: LivePresenterLifecyclePort,
         *,
         sweep_presenter: SweepPresenterLifecyclePort | None = None,
+        analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
         diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
         replay_presenter_factory: ReplayPresenterFactory | None = None,
@@ -113,6 +119,7 @@ class V2LiveProductComposition:
     ) -> None:
         self._presenter = presenter
         self._sweep_presenter = sweep_presenter
+        self.analyzer_presenter = analyzer_presenter
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
@@ -137,6 +144,7 @@ class V2LiveProductComposition:
         else:
             raise ValueError("tinySA V2 requires both deferred activation and analyzer factories")
         self._is_shutdown = False
+        self._presentation_disposed = False
         live_definition = live_workspace_definition(self.view_model)
         sweep_definition = None if self.sweep_view_model is None else sweep_workspace_definition(self.sweep_view_model)
         calibration_definition = (
@@ -200,36 +208,62 @@ class V2LiveProductComposition:
         diagnostics_can_close = self.diagnostics_view_model is None or self.diagnostics_view_model.state.can_close
         replay_can_close = self.replay_view_model is None or self.replay_view_model.state.can_close
         tinysa_can_close = self._tinysa is None or self._tinysa.can_close()
-        return live_can_close and sweep_can_close and calibration_can_close and diagnostics_can_close and replay_can_close and tinysa_can_close
+        analyzer_can_close = self.analyzer_presenter is None or self.analyzer_presenter.can_close()
+        return live_can_close and sweep_can_close and calibration_can_close and diagnostics_can_close and replay_can_close and tinysa_can_close and analyzer_can_close
 
     def shutdown(self) -> None:
         """Release presentation subscriptions, then invoke the presenter's existing shutdown."""
 
         if self._is_shutdown:
             return
-        self._is_shutdown = True
-        self.view_model.dispose()
-        if self.sweep_view_model is not None:
-            self.sweep_view_model.dispose()
-        if self.calibration_view_model is not None:
-            self.calibration_view_model.dispose()
-        if self.diagnostics_view_model is not None:
-            self.diagnostics_view_model.dispose()
-        if self.replay_view_model is not None:
-            self.replay_view_model.dispose()
-        if self._tinysa is not None:
-            self._tinysa.shutdown()
-        self._presenter.shutdown()
+        errors: list[Exception] = []
+
+        def attempt(operation) -> None:
+            try:
+                operation()
+            except Exception as error:  # Every independent owner still gets cleanup.
+                errors.append(error)
+
+        # Disconnect presentation callbacks once; these methods own no work
+        # and repeating a successful disconnect is not a lifecycle retry.
+        if not self._presentation_disposed:
+            attempt(self.view_model.dispose)
+            if self.sweep_view_model is not None:
+                attempt(self.sweep_view_model.dispose)
+            if self.calibration_view_model is not None:
+                attempt(self.calibration_view_model.dispose)
+            if self.diagnostics_view_model is not None:
+                attempt(self.diagnostics_view_model.dispose)
+            if self.replay_view_model is not None:
+                attempt(self.replay_view_model.dispose)
+            self._presentation_disposed = True
+
+        # The retained plan/result Sweep holds a bounded shared reservation.
+        # It must cancel/join/release that reservation before Analyzer/Live try
+        # to stop the common receiver lifecycle. One failure must never skip a
+        # different owner, so all shutdown ports are attempted exactly once.
         if self._sweep_presenter is not None:
-            self._sweep_presenter.shutdown()
+            attempt(self._sweep_presenter.shutdown)
+        if self.analyzer_presenter is not None:
+            attempt(self.analyzer_presenter.shutdown)
+        attempt(self._presenter.shutdown)
         if self._calibration_presenter is not None:
-            self._calibration_presenter.shutdown()
+            attempt(self._calibration_presenter.shutdown)
+        if self._tinysa is not None:
+            attempt(self._tinysa.shutdown)
+
+        if errors:
+            # Do not make a partial cleanup look terminal; idempotent owners may
+            # be retried by an explicit application shutdown path.
+            raise errors[0]
+        self._is_shutdown = True
 
 
 def compose_v2_live_product(
     presenter: LivePresenterLifecyclePort,
     *,
     sweep_presenter: SweepPresenterLifecyclePort | None = None,
+    analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
     diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
     replay_presenter_factory: ReplayPresenterFactory | None = None,
@@ -242,6 +276,7 @@ def compose_v2_live_product(
     return V2LiveProductComposition(
         presenter,
         sweep_presenter=sweep_presenter,
+        analyzer_presenter=analyzer_presenter,
         calibration_presenter=calibration_presenter,
         diagnostics_presenter_factory=diagnostics_presenter_factory,
         replay_presenter_factory=replay_presenter_factory,

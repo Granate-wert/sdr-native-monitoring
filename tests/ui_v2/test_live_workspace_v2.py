@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import SimpleNamespace
 import os
 import unittest
 
@@ -16,6 +17,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from sdr_monitor.domain import AppliedLiveConfiguration, BackendKind, LiveConfiguration, LiveSessionState
+from sdr_monitor.domain.live_configuration_patch import LiveConfigurationPatch
 from sdr_monitor.ui.v2.composition import compose_live_view_model
 from sdr_monitor.ui.v2.i18n import text
 from sdr_monitor.ui.v2.spectrum import DensityValueMode, PersistenceDensityFrame
@@ -82,6 +84,8 @@ class FakeQuality:
 @dataclass(frozen=True, slots=True)
 class FakeSnapshot:
     state: LiveSessionState
+    session_id: str = "test-session"
+    generation: int = 7
     device: object | None = None
     applied: object | None = None
     quality: object | None = None
@@ -201,6 +205,7 @@ class LiveWorkspaceV2Tests(unittest.TestCase):
         self.presenter.snapshot_changed.emit(
             FakeSnapshot(
                 state=LiveSessionState.CONNECTED,
+                device=SimpleNamespace(device_id="rx-test"),
                 applied=AppliedLiveConfiguration(requested=applied, applied=applied),
                 quality=FakeQuality(),
             )
@@ -212,8 +217,12 @@ class LiveWorkspaceV2Tests(unittest.TestCase):
         self.workspace._apply_button.click()
         self.assertEqual(len(self.presenter.configurations), 1)
         configuration = self.presenter.configurations[0]
-        self.assertIsInstance(configuration, LiveConfiguration)
-        assert isinstance(configuration, LiveConfiguration)
+        self.assertIsInstance(configuration, LiveConfigurationPatch)
+        assert isinstance(configuration, LiveConfigurationPatch)
+        self.assertEqual(configuration.expected_generation, 7)
+        self.assertEqual(configuration.expected_source_id, "rx-test")
+        self.assertNotIn("profile_id", dict(configuration.changes))
+        configuration = configuration.resolve(self.model.state.snapshot)
         self.assertEqual(configuration.center_hz, 433_920_000.0)
         self.assertEqual(configuration.sample_rate_hz, 10_000_000.0)
         self.assertEqual(configuration.gain_db, 22.0)
@@ -221,12 +230,92 @@ class LiveWorkspaceV2Tests(unittest.TestCase):
         self.assertEqual(configuration.profile_id, "existing-profile")
         self.assertFalse(self.workspace._recording.isEnabled())
 
+    def test_patch_apply_without_source_identity_is_blocked(self) -> None:
+        applied = LiveConfiguration()
+        self.presenter.snapshot_changed.emit(FakeSnapshot(
+            state=LiveSessionState.CONNECTED,
+            applied=AppliedLiveConfiguration(requested=applied, applied=applied),
+            quality=FakeQuality(),
+        ))
+        self.workspace._gain_db.setValue(27.0)
+        self.workspace._apply_button.click()
+        self.assertEqual(self.presenter.configurations, [])
+        self.assertEqual(self.presenter.start_calls, 0)
+        self.assertEqual(self.presenter.stop_calls, 0)
+        self.assertEqual(self.workspace._configuration_status.text(),
+                         text("live.configuration.identity_missing"))
+
+    def test_changed_generation_preserves_draft_blocks_apply_and_cancel_refreshes(self) -> None:
+        original = LiveConfiguration()
+        def publish(configuration, generation):
+            self.presenter.snapshot_changed.emit(FakeSnapshot(
+                state=LiveSessionState.CONNECTED, generation=generation,
+                device=SimpleNamespace(device_id="rx-test"),
+                applied=AppliedLiveConfiguration(requested=configuration, applied=configuration),
+                quality=FakeQuality(),
+            ))
+        publish(original, 7)
+        self.workspace._gain_db.setValue(27.0)
+        updated = LiveConfiguration(gain_db=22.0, fft_size=8192)
+        publish(updated, 8)
+        self.assertEqual(self.workspace._gain_db.value(), 27.0)
+        self.workspace._apply_button.click()
+        self.assertEqual(self.presenter.configurations, [])
+        self.assertEqual(self.workspace._configuration_status.text(), text("live.configuration.conflict"))
+        self.workspace._cancel_button.click()
+        self.assertEqual(self.workspace._gain_db.value(), 22.0)
+        self.workspace._gain_db.setValue(25.0)
+        self.workspace._apply_button.click()
+        patch = self.presenter.configurations[-1]
+        self.assertEqual(patch.expected_generation, 8)
+        self.assertEqual(patch.resolve(self.model.state.snapshot).fft_size, 8192)
+
+    def test_other_source_cannot_confirm_pending_configuration(self) -> None:
+        applied = LiveConfiguration()
+        def publish(configuration, source, generation):
+            self.presenter.snapshot_changed.emit(FakeSnapshot(
+                state=LiveSessionState.CONNECTED, generation=generation,
+                device=SimpleNamespace(device_id=source),
+                applied=AppliedLiveConfiguration(requested=configuration, applied=configuration),
+                quality=FakeQuality(),
+            ))
+        publish(applied, "rx-a", 7)
+        self.workspace._gain_db.setValue(27.0)
+        self.workspace._apply_button.click()
+        publish(LiveConfiguration(gain_db=27.0), "rx-b", 8)
+        self.assertTrue(self.workspace._form_dirty)
+        self.assertIsNotNone(self.workspace._draft_snapshot)
+        self.assertEqual(self.workspace._configuration_status.text(), text("live.configuration.conflict"))
+        self.workspace._apply_button.click()
+        self.assertEqual(len(self.presenter.configurations), 1)
+
+    def test_pending_confirmation_requires_new_generation_without_error(self) -> None:
+        def publish(configuration, generation, error=None):
+            self.presenter.snapshot_changed.emit(FakeSnapshot(
+                state=LiveSessionState.CONNECTED, generation=generation,
+                device=SimpleNamespace(device_id="rx-a"),
+                applied=AppliedLiveConfiguration(requested=configuration, applied=configuration),
+                quality=FakeQuality(), error=error,
+            ))
+        publish(LiveConfiguration(), 7)
+        self.workspace._gain_db.setValue(27.0)
+        self.workspace._apply_button.click()
+        requested = LiveConfiguration(gain_db=27.0)
+        publish(requested, 7)
+        self.assertTrue(self.workspace._form_dirty)
+        publish(requested, 8, "Apply failed")
+        self.assertTrue(self.workspace._form_dirty)
+        publish(requested, 8)
+        self.assertFalse(self.workspace._form_dirty)
+        self.assertIsNone(self.workspace._draft_snapshot)
+
     def test_primary_action_applies_dirty_configuration_before_start(self) -> None:
         requested = LiveConfiguration(center_hz=433_920_000.0)
         applied = LiveConfiguration(center_hz=434_000_000.0)
         self.presenter.snapshot_changed.emit(
             FakeSnapshot(
                 state=LiveSessionState.CONNECTED,
+                device=SimpleNamespace(device_id="rx-test"),
                 applied=AppliedLiveConfiguration(requested=requested, applied=applied),
                 quality=FakeQuality(),
             )
@@ -241,6 +330,7 @@ class LiveWorkspaceV2Tests(unittest.TestCase):
         self.presenter.snapshot_changed.emit(
             FakeSnapshot(
                 state=LiveSessionState.CONNECTED,
+                device=SimpleNamespace(device_id="rx-test"),
                 applied=AppliedLiveConfiguration(requested=applied, applied=applied),
                 quality=FakeQuality(),
             )

@@ -65,9 +65,34 @@ def build_v2_shell(services=None):
     # Their documented construction opens no device; all discovery,
     # configuration and RX remain explicit presenter commands from Live V2.
     services = build_default_sdr_services() if services is None else services
+    from ..services.native_continuous_sweep_factory import (
+        NativeContinuousSweepPlanFactory, NativeLiveContinuousSweepDisplayService,
+    )
+    from ..services.native_live import NativeLiveSessionService
+    from ..application.analyzer_session import AnalyzerSessionApplicationService
+    from ..application.analyzer_continuous_sweep import AnalyzerContinuousSweepApplicationService
+    from ..ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
+    display = getattr(services, "analyzer_display", None)
+    if display is None:
+        display = NativeLiveContinuousSweepDisplayService(services.live_sdr)
+    # Never silently fall back to non-atomic Start for a physical native port.
+    # Injected non-native in-memory ports are a non-hardware test composition.
+    start_live = (services.live_sdr.start_admitted
+                  if isinstance(services.live_sdr, NativeLiveSessionService)
+                  else services.live_sdr.start)
+    analyzer = AnalyzerSessionApplicationService(services.live_sdr, display, start_live=start_live)
+    live_application = LiveSessionApplicationService(
+        services.live_sdr,
+        sweep_preflight=NativeContinuousSweepPlanFactory.preflight_profile,
+        analyzer=analyzer,
+    )
+    analyzer_presenter = ContinuousSweepPresenter(
+        AnalyzerContinuousSweepApplicationService(live_application, display),
+    )
     composition = compose_v2_live_product(
-        LivePresenter(LiveSessionApplicationService(services.live_sdr)),
-        sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep)),
+        LivePresenter(live_application),
+        analyzer_presenter=analyzer_presenter,
+        sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep, analyzer=analyzer)),
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),
         diagnostics_presenter_factory=lambda: DiagnosticsPresenter(DiagnosticsControlApplicationService(services.diagnostics)),
         replay_presenter_factory=make_replay_presenter,
@@ -75,4 +100,3 @@ def build_v2_shell(services=None):
         tinysa_analyzer_binding_factory=make_tinysa_analyzer_binding,
     )
     return AppShellV2(context=composition.context)
-

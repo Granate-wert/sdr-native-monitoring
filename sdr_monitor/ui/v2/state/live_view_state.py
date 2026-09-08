@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from sdr_monitor.domain import CalibrationQuality, LiveSessionState
+from sdr_monitor.domain.live import LiveSnapshot, LiveSpectrumFrame
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, bundle_from_live
 
 from ..i18n import text
+from .analyzer_layers import persistence_density_from_native, waterfall_line_from_spectrum
 
 
 class LiveAction(StrEnum):
@@ -88,6 +91,8 @@ class LiveViewState:
     spectrum: object | None
     persistence_frame: object | None
     waterfall_line: object | None
+    analyzer_bundle: AnalyzerFrameBundle | None = None
+    measurement_unavailable_reason: str | None = None
 
 
 def build_live_view_state(
@@ -108,18 +113,57 @@ def build_live_view_state(
 
     state = _coerce_state(getattr(snapshot, "state", LiveSessionState.DISCONNECTED))
     spectrum = getattr(snapshot, "spectrum", None)
-    persistence_frame = getattr(snapshot, "persistence", None)
-    waterfall_line = getattr(snapshot, "waterfall_line", None)
+    invalid_measurement = False
+    if isinstance(snapshot, LiveSnapshot):
+        try:
+            analyzer_bundle = bundle_from_live(snapshot)
+        except (TypeError, ValueError, OverflowError):
+            analyzer_bundle = None
+            invalid_measurement = True
+    else:
+        analyzer_bundle = None
+    if isinstance(snapshot, LiveSnapshot):
+        spectrum = analyzer_bundle.spectrum if analyzer_bundle is not None else None
+    # Product LiveSnapshot layers pass only through the domain coherence gate.
+    # Snapshot-shaped test/public adapters retain their established behavior.
+    persistence_frame = (
+        analyzer_bundle.persistence if analyzer_bundle is not None
+        else None if isinstance(snapshot, LiveSnapshot)
+        else getattr(snapshot, "persistence", None)
+    )
+    waterfall_line = (
+        analyzer_bundle.waterfall_line if analyzer_bundle is not None
+        else None if isinstance(snapshot, LiveSnapshot)
+        else getattr(snapshot, "waterfall_line", None)
+    )
+    coherence_issues = list(analyzer_bundle.coherence_issues) if analyzer_bundle is not None else []
+    if analyzer_bundle is not None and isinstance(analyzer_bundle.spectrum, LiveSpectrumFrame):
+        try:
+            persistence_frame = persistence_density_from_native(analyzer_bundle.persistence)
+        except (TypeError, ValueError, OverflowError):
+            persistence_frame = None
+            coherence_issues.append("persistence_geometry_invalid")
+        if analyzer_bundle.persistence is not None and persistence_frame is None:
+            coherence_issues.append("persistence_values_invalid")
+        try:
+            waterfall_line = waterfall_line_from_spectrum(analyzer_bundle.spectrum)
+        except (TypeError, ValueError, OverflowError):
+            waterfall_line = None
+            coherence_issues.append("waterfall_geometry_invalid")
     has_spectrum = spectrum is not None
     frozen_last_frame = state is LiveSessionState.CONNECTED and has_spectrum
     connection_label, acquisition_label, action = _state_labels(state, frozen_last_frame)
     error_kind = _value_name(getattr(snapshot, "error_kind", None))
     if state is LiveSessionState.ERROR:
         action = _error_action(error_kind)
+    if getattr(snapshot, "stop_required", False):
+        action = LiveAction.STOP
     primary_action_label = _action_label(action)
     device = getattr(snapshot, "device", None)
     device_label = str(getattr(device, "label", text("live_state.device.unselected")))
     unit_label = str(getattr(snapshot, "unit", "dBFS/bin") or "dBFS/bin")
+    if analyzer_bundle is not None:
+        unit_label = analyzer_bundle.unit
     calibration, calibration_label = _calibration_presentation(snapshot)
     applied = getattr(snapshot, "applied", None)
     configuration_dirty = bool(
@@ -158,6 +202,13 @@ def build_live_view_state(
         spectrum=spectrum,
         persistence_frame=persistence_frame,
         waterfall_line=waterfall_line,
+        analyzer_bundle=analyzer_bundle,
+        measurement_unavailable_reason=(
+            coherence_issues[0] if coherence_issues else
+            "invalid_measurement" if invalid_measurement else
+            "stale_measurement_identity" if isinstance(snapshot, LiveSnapshot)
+            and getattr(snapshot, "spectrum", None) is not None and analyzer_bundle is None else None
+        ),
     )
 
 
@@ -189,6 +240,7 @@ def _empty_state(*, busy: bool) -> LiveViewState:
         spectrum=None,
         persistence_frame=None,
         waterfall_line=None,
+        measurement_unavailable_reason=None,
     )
 
 
@@ -289,6 +341,11 @@ def _backend_label(quality: object | None) -> str:
 
 
 def _data_age_ms(spectrum: object | None, now_ns: int | None) -> float | None:
+    if isinstance(spectrum, LiveSpectrumFrame):
+        if str(getattr(spectrum, "clock_domain", "")).casefold() != "unix_ns":
+            return None
+        if _value_name(getattr(spectrum, "timestamp_quality", None)) in (None, "unknown"):
+            return None
     timestamp = getattr(spectrum, "timestamp_ns", None)
     if timestamp is None or now_ns is None:
         return None

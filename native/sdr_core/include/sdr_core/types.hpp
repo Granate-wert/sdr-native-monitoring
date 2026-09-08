@@ -17,6 +17,8 @@ inline constexpr std::string_view contract_schema_name = "sdr-native-contracts";
 // vendor-neutral GPU backend model (P08H-00). The Hip enumerator declares the
 // future AMD backend contract only; it does not imply an implementation.
 // Version 5: P08H-00 freezes generic fallback/discontinuity quality bits.
+// R12-C corrects the omitted pybind/Python name for the already-reserved
+// BackendDiscontinuity bit; it does not change the wire schema.
 inline constexpr std::uint32_t contract_schema_version = 5;
 
 enum class SourceType : std::uint8_t {
@@ -187,6 +189,22 @@ enum class EventSeverity : std::uint8_t {
     Critical,
 };
 
+// R10-D native continuous-sweep publication state.  This is deliberately
+// separate from analytical FFT frames: a line is either complete over the
+// declared span or carries explicit loss/control-gap evidence.
+enum class SweepLineState : std::uint8_t {
+    Complete,
+    Gap,
+};
+
+enum class SweepLineGapReason : std::uint8_t {
+    MissingSegment,
+    Capacity,
+    Cancellation,
+    Disconnect,
+    Reconfigure,
+};
+
 [[nodiscard]] constexpr QualityFlag operator|(const QualityFlag left, const QualityFlag right) noexcept {
     return static_cast<QualityFlag>(
         static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right)
@@ -213,6 +231,8 @@ enum class EventSeverity : std::uint8_t {
 [[nodiscard]] std::string_view to_wire(EngineState value);
 [[nodiscard]] std::string_view to_wire(OverflowPolicy value);
 [[nodiscard]] std::string_view to_wire(EventSeverity value);
+[[nodiscard]] std::string_view to_wire(SweepLineState value);
+[[nodiscard]] std::string_view to_wire(SweepLineGapReason value);
 
 struct SourceDescriptor {
     SourceType source_type{SourceType::Synthetic};
@@ -295,10 +315,110 @@ struct SweepSpectrumFrame {
     std::vector<SweepSegmentMetadata> segments;
 };
 
+// Definition of one explicitly planned RF segment in an R10-D sweep line.
+// The usable bounds exclude receiver edge/DC regions before line assembly;
+// they are not inferred or adjusted by the assembler.
+struct SweepLineSegmentDefinition {
+    std::uint32_t segment_index{};
+    std::uint64_t config_generation{};
+    double usable_start_hz{};
+    double usable_stop_hz{};
+};
+
+// One fixed immutable line profile.  `source` and `unit` are part of the
+// admission key so a line can never silently mix data from two epochs.
+struct SweepLineDefinition {
+    SourceDescriptor source;
+    std::uint64_t epoch{};
+    double start_frequency_hz{};
+    double stop_frequency_hz{};
+    // Spacing of the emitted reduced SweepLineFrame grid.  This remains the
+    // physical FFT spacing for legacy definitions and becomes the analysis
+    // spacing only when analysis_bins_per_usable_window is nonzero.
+    double target_spacing_hz{};
+    // Nonzero only with analysis_bins_per_usable_window. It is the declared
+    // post-FFT usable RF width, not the ADC/transport sample rate.
+    double analysis_window_hz{};
+    // Zero retains the generic legacy spacing contract. A nonzero value is
+    // the number of reduced analysis bins in one declared usable RF window;
+    // it makes a wideband Sweep's user-selected N independent from the
+    // larger power-of-two transform required by the transport sample rate.
+    std::uint32_t analysis_bins_per_usable_window{};
+    // Zero preserves legacy semantics.  Otherwise this records the source
+    // SpectrumFrame spacing and prevents the reduced grid from inventing
+    // resolution finer than the physical transform.
+    double physical_fft_bin_width_hz{};
+    // The full-rate power-of-two transform.  User-selected analysis N is not
+    // allowed to be silently substituted for this physical size.
+    std::uint32_t physical_fft_size{};
+    SpectrumUnit unit{SpectrumUnit::DbfsBin};
+    std::uint32_t max_inflight_lines{4U};
+    std::vector<SweepLineSegmentDefinition> segments;
+};
+
+// Native input to a line assembler: already reduced spectrum data only.
+// Raw I/Q is intentionally absent from this contract.
+struct SweepLineSegmentFrame {
+    std::uint32_t segment_index{};
+    SpectrumFrame spectrum;
+};
+
+// Immutable reduced result published after the native line is terminal.  A
+// gapped result is still a final line: GUI code must not attempt to repair it.
+struct SweepSegmentAcquisition {
+    std::uint32_t segment_index{};
+    std::uint64_t config_generation{};
+    std::uint64_t frame_sequence{};
+    std::uint64_t first_sample_index{};
+    // Retained producer timestamp, NOT a hardware-clock/synchronization claim.
+    std::int64_t timestamp_ns{};
+    double sample_rate_hz{};
+    std::uint32_t fft_size{};
+    QualityFlag quality_flags{QualityFlag::None};
+};
+
+struct SweepLineFrame {
+    SourceDescriptor source;
+    std::uint64_t line_sequence{};
+    std::uint64_t epoch{};
+    std::int64_t completed_ns{};
+    SweepLineState state{SweepLineState::Gap};
+    double start_frequency_hz{};
+    double stop_frequency_hz{};
+    double target_spacing_hz{};
+    // Exact geometry of a reduced 36 MHz-style analysis grid.  All three are
+    // zero for legacy physical-FFT grids; otherwise they let every published
+    // line prove that its user-visible N was not confused with the larger
+    // physical transform used at the configured ADC sample rate.
+    double analysis_window_hz{};
+    std::uint32_t analysis_bins_per_usable_window{};
+    double physical_fft_bin_width_hz{};
+    std::uint32_t physical_fft_size{};
+    SpectrumUnit unit{SpectrumUnit::DbfsBin};
+    SharedArray<double> frequencies_hz;
+    SharedArray<float> values;
+    SharedArray<std::uint32_t> quality_flags_per_bin;
+    SharedArray<std::int32_t> source_segment_indices;
+    std::vector<std::uint32_t> missing_segment_indices;
+    std::vector<SweepLineSegmentDefinition> segment_generations;
+    std::vector<SweepLineGapReason> gap_reasons;
+    std::vector<SweepSegmentAcquisition> acquired_segments;
+};
+
+struct SweepLineAssemblyMetrics {
+    std::uint64_t completed_lines{};
+    std::uint64_t gapped_lines{};
+    std::uint64_t capacity_evicted_lines{};
+    std::uint32_t pending_lines{};
+};
+
 void validate(const SourceDescriptor& value);
 void validate(const IqBlock& value);
 void validate(const SpectrumFrame& value);
 void validate(const SweepSpectrumFrame& value);
+void validate(const SweepLineDefinition& value);
+void validate(const SweepLineSegmentFrame& value);
+void validate(const SweepLineFrame& value);
 void validate_unit_calibration(
     SpectrumUnit unit,
     CalibrationStatus status,

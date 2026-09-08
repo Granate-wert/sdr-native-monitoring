@@ -359,6 +359,32 @@ std::string_view to_wire(const EventSeverity value) {
     invalid("unknown EventSeverity");
 }
 
+std::string_view to_wire(const SweepLineState value) {
+    switch (value) {
+    case SweepLineState::Complete:
+        return "complete";
+    case SweepLineState::Gap:
+        return "gap";
+    }
+    invalid("unknown SweepLineState");
+}
+
+std::string_view to_wire(const SweepLineGapReason value) {
+    switch (value) {
+    case SweepLineGapReason::MissingSegment:
+        return "missing_segment";
+    case SweepLineGapReason::Capacity:
+        return "capacity";
+    case SweepLineGapReason::Cancellation:
+        return "cancellation";
+    case SweepLineGapReason::Disconnect:
+        return "disconnect";
+    case SweepLineGapReason::Reconfigure:
+        return "reconfigure";
+    }
+    invalid("unknown SweepLineGapReason");
+}
+
 void validate_unit_calibration(
     const SpectrumUnit unit,
     const CalibrationStatus status,
@@ -434,6 +460,13 @@ void validate(const SpectrumFrame& value) {
         })) {
         invalid("SpectrumFrame frequencies must be finite");
     }
+    const auto non_increasing = std::adjacent_find(
+        value.frequencies_hz->begin(), value.frequencies_hz->end(),
+        [](const double left, const double right) { return right <= left; }
+    );
+    if (non_increasing != value.frequencies_hz->end()) {
+        invalid("SpectrumFrame frequencies must be strictly increasing");
+    }
     if (std::any_of(value.values->begin(), value.values->end(), [](float item) {
             return std::isnan(item);
         })) {
@@ -463,6 +496,152 @@ void validate(const SweepSpectrumFrame& value) {
         value.frequencies_hz->size() != value.values->size() ||
         value.values->size() != value.quality_flags_per_bin->size()) {
         invalid("sweep arrays must have equal length");
+    }
+}
+
+void validate(const SweepLineDefinition& value) {
+    validate(value.source);
+    positive(value.start_frequency_hz, "sweep-line start_frequency_hz");
+    positive(value.stop_frequency_hz, "sweep-line stop_frequency_hz");
+    positive(value.target_spacing_hz, "sweep-line target_spacing_hz");
+    if (value.analysis_bins_per_usable_window != 0U) {
+        positive(value.analysis_window_hz, "sweep-line analysis_window_hz");
+        positive(value.physical_fft_bin_width_hz, "sweep-line physical_fft_bin_width_hz");
+        if (value.physical_fft_size < 256U || value.physical_fft_size > 262'144U ||
+            (value.physical_fft_size & (value.physical_fft_size - 1U)) != 0U) {
+            invalid("sweep-line physical FFT size must be a power of two in [256, 262144]");
+        }
+        if (value.analysis_bins_per_usable_window < 256U ||
+            value.analysis_bins_per_usable_window > 262'144U ||
+            (value.analysis_bins_per_usable_window &
+             (value.analysis_bins_per_usable_window - 1U)) != 0U) {
+            invalid("sweep-line analysis bins per usable window must be a power of two in [256, 262144]");
+        }
+        const auto expected_analysis_spacing = value.analysis_window_hz /
+            static_cast<double>(value.analysis_bins_per_usable_window);
+        if (std::abs(value.target_spacing_hz - expected_analysis_spacing) >
+            std::max(1e-9, expected_analysis_spacing * 1e-12)) {
+            invalid("sweep-line analysis grid spacing differs from analysis window divided by N");
+        }
+        if (value.target_spacing_hz + 1e-9 < value.physical_fft_bin_width_hz) {
+            invalid("sweep-line analysis spacing cannot be finer than physical FFT resolution");
+        }
+    } else if (value.analysis_window_hz != 0.0) {
+        invalid("sweep-line analysis window requires an analysis bin count");
+    } else if (value.physical_fft_bin_width_hz != 0.0) {
+        invalid("sweep-line physical FFT spacing requires an analysis bin count");
+    } else if (value.physical_fft_size != 0U) {
+        invalid("sweep-line physical FFT size requires an analysis bin count");
+    }
+    static_cast<void>(to_wire(value.unit));
+    if (value.stop_frequency_hz <= value.start_frequency_hz) {
+        invalid("sweep-line stop frequency must exceed start frequency");
+    }
+    if (value.max_inflight_lines == 0U || value.max_inflight_lines > 64U) {
+        invalid("sweep-line in-flight capacity must be in [1, 64]");
+    }
+    if (value.analysis_bins_per_usable_window > 262'144U) {
+        invalid("sweep-line analysis bins per usable window exceeds its bound");
+    }
+    if (value.segments.empty() || value.segments.size() > 64U) {
+        invalid("sweep-line segment count must be in [1, 64]");
+    }
+    std::uint32_t previous_index{};
+    for (std::size_t index = 0U; index < value.segments.size(); ++index) {
+        const auto& segment = value.segments[index];
+        positive(segment.usable_start_hz, "sweep-line segment usable_start_hz");
+        positive(segment.usable_stop_hz, "sweep-line segment usable_stop_hz");
+        if (segment.usable_stop_hz <= segment.usable_start_hz ||
+            segment.usable_start_hz < value.start_frequency_hz ||
+            segment.usable_stop_hz > value.stop_frequency_hz ||
+            (index != 0U && segment.segment_index <= previous_index)) {
+            invalid("sweep-line segments must be ordered and within the declared span");
+        }
+        previous_index = segment.segment_index;
+    }
+    const auto target_span_hz = value.stop_frequency_hz - value.start_frequency_hz;
+    const auto target_count = value.analysis_bins_per_usable_window == 0U
+        ? std::floor(target_span_hz / value.target_spacing_hz) + 1.0
+        : std::ceil(target_span_hz / value.target_spacing_hz - 1e-12);
+    if (!std::isfinite(target_count) || target_count < 2.0 || target_count > 2'000'000.0) {
+        invalid("sweep-line target grid exceeds its bounded bin limit");
+    }
+}
+
+void validate(const SweepLineSegmentFrame& value) {
+    validate(value.spectrum);
+}
+
+void validate(const SweepLineFrame& value) {
+    validate(value.source);
+    positive(value.start_frequency_hz, "sweep-line frame start_frequency_hz");
+    positive(value.stop_frequency_hz, "sweep-line frame stop_frequency_hz");
+    positive(value.target_spacing_hz, "sweep-line frame target_spacing_hz");
+    if (value.analysis_bins_per_usable_window != 0U) {
+        positive(value.analysis_window_hz, "sweep-line frame analysis_window_hz");
+        positive(value.physical_fft_bin_width_hz, "sweep-line frame physical_fft_bin_width_hz");
+        if (value.physical_fft_size < 256U || value.physical_fft_size > 262'144U ||
+            (value.physical_fft_size & (value.physical_fft_size - 1U)) != 0U) {
+            invalid("sweep-line frame physical FFT size must be a power of two in [256, 262144]");
+        }
+        if (value.analysis_bins_per_usable_window < 256U ||
+            value.analysis_bins_per_usable_window > 262'144U ||
+            (value.analysis_bins_per_usable_window &
+             (value.analysis_bins_per_usable_window - 1U)) != 0U) {
+            invalid("sweep-line frame analysis bins per usable window must be a power of two in [256, 262144]");
+        }
+        const auto expected_analysis_spacing = value.analysis_window_hz /
+            static_cast<double>(value.analysis_bins_per_usable_window);
+        if (std::abs(value.target_spacing_hz - expected_analysis_spacing) >
+            std::max(1e-9, expected_analysis_spacing * 1e-12) ||
+            value.target_spacing_hz + 1e-9 < value.physical_fft_bin_width_hz) {
+            invalid("sweep-line frame analysis/physical FFT geometry is invalid");
+        }
+    } else if (value.analysis_window_hz != 0.0 ||
+               value.physical_fft_bin_width_hz != 0.0 || value.physical_fft_size != 0U) {
+        invalid("legacy sweep-line frame must not carry partial analysis geometry");
+    }
+    static_cast<void>(to_wire(value.state));
+    static_cast<void>(to_wire(value.unit));
+    if (value.completed_ns < 0 || value.stop_frequency_hz <= value.start_frequency_hz ||
+        !value.frequencies_hz || !value.values || !value.quality_flags_per_bin ||
+        !value.source_segment_indices || value.frequencies_hz->size() < 2U ||
+        value.frequencies_hz->size() > 2'000'000U ||
+        value.frequencies_hz->size() != value.values->size() ||
+        value.values->size() != value.quality_flags_per_bin->size() ||
+        value.values->size() != value.source_segment_indices->size()) {
+        invalid("sweep-line frame arrays or geometry are invalid");
+    }
+    const auto span_hz = value.stop_frequency_hz - value.start_frequency_hz;
+    const auto expected_count = value.analysis_bins_per_usable_window == 0U
+        ? std::floor(span_hz / value.target_spacing_hz) + 1.0
+        : std::ceil(span_hz / value.target_spacing_hz - 1e-12);
+    if (!std::isfinite(expected_count) || expected_count < 2.0 ||
+        expected_count > 2'000'000.0 ||
+        value.frequencies_hz->size() != static_cast<std::size_t>(expected_count)) {
+        invalid("sweep-line frame bin count differs from its declared grid geometry");
+    }
+    const auto non_increasing = std::adjacent_find(
+        value.frequencies_hz->begin(), value.frequencies_hz->end(),
+        [](const double left, const double right) { return right <= left; }
+    );
+    if (!std::all_of(value.frequencies_hz->begin(), value.frequencies_hz->end(), [](const double item) {
+            return std::isfinite(item);
+        }) || non_increasing != value.frequencies_hz->end()) {
+        invalid("sweep-line frame frequencies must be finite and strictly increasing");
+    }
+    for (const auto reason : value.gap_reasons) {
+        static_cast<void>(to_wire(reason));
+    }
+    if (value.state == SweepLineState::Complete &&
+        (!value.missing_segment_indices.empty() || !value.gap_reasons.empty() ||
+         std::any_of(value.values->begin(), value.values->end(), [](const float item) {
+             return !std::isfinite(item);
+         }))) {
+        invalid("complete sweep-line frame cannot hide a gap");
+    }
+    if (value.state == SweepLineState::Gap && value.gap_reasons.empty()) {
+        invalid("gapped sweep-line frame requires a reason");
     }
 }
 
@@ -511,7 +690,10 @@ void validate(const PersistenceConfig& value) {
         invalid("persistence window_frames/power_bins are invalid");
     }
     positive(value.half_life_seconds, "half_life_seconds");
-    positive(value.snapshot_rate_hz, "snapshot_rate_hz");
+    if (!std::isfinite(value.snapshot_rate_hz) ||
+        value.snapshot_rate_hz < 10.0 || value.snapshot_rate_hz > 30.0) {
+        invalid("persistence snapshot_rate_hz must be in [10, 30]");
+    }
     finite(value.power_min_db, "power_min_db");
     finite(value.power_max_db, "power_max_db");
     if (value.power_max_db <= value.power_min_db) {
@@ -604,6 +786,12 @@ void validate(const EngineMetrics& value) {
         value.h2d_ms,
         value.d2h_ms,
         value.end_to_end_latency_ms,
+        value.input_unpack_ms,
+        value.window_ms,
+        value.fft_ms,
+        value.detector_ms,
+        value.persistence_processing_ms,
+        value.publication_processing_ms,
     };
     for (const auto item : values) {
         if (!std::isfinite(item) || item < 0.0) {

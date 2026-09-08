@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 
 import numpy as np
 from PySide6.QtCore import QSignalBlocker, Qt
@@ -20,13 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 from sdr_monitor.domain import BackendKind, LiveConfiguration
+from sdr_monitor.domain.live_configuration_patch import LiveConfigurationPatch
 
 from ..components import CommandField, ErrorBanner, PrimaryActionButton, StatusChipV2
 from ..design import StatusTone, ThemeId, stylesheet_for_theme
 from ..design.icons import V2IconId
 from ..i18n import text
 from ..shell.contracts import WorkspaceDefinition
-from ..spectrum import PersistenceDensityFrame
+from ..spectrum import PersistenceDensityFrame, TraceKind
 from ..state.live_view_state import CalibrationPresentation, LiveAction, LiveViewState
 from ..view_models.live_view_model import LiveViewModel
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
@@ -57,9 +58,12 @@ class LiveWorkspaceV2(QWidget):
         self._theme = theme
         self._last_applied_configuration: LiveConfiguration | None = None
         self._form_dirty = False
+        self._draft_snapshot = None
+        self._pending_configuration = None
         self._last_spectrum_source: object | None = None
         self._last_persistence_source: object | None = None
         self._last_waterfall_source: object | None = None
+        self._last_measurement_signature: tuple[object, ...] | None = None
         self._build_ui()
         self.set_theme(theme)
         self._unsubscribe_state = view_model.subscribe(self._render_state)
@@ -291,6 +295,24 @@ class LiveWorkspaceV2(QWidget):
         snapshot = state.snapshot
         applied = getattr(snapshot, "applied", None)
         configuration = getattr(applied, "applied", None)
+        if self._form_dirty and self._draft_snapshot is not None:
+            old_session, old_generation, old_source = _configuration_identity(self._draft_snapshot)
+            new_session, new_generation, new_source = _configuration_identity(snapshot)
+            confirmed = (
+                configuration == self._pending_configuration and configuration is not None
+                and new_session == old_session and new_source == old_source
+                and isinstance(new_generation, int) and isinstance(old_generation, int)
+                and new_generation > old_generation and getattr(snapshot, "error", None) is None
+            )
+            if confirmed:
+                self._draft_snapshot = None
+                self._form_dirty = False
+                self._pending_configuration = None
+            else:
+                if (_configuration_identity(snapshot) != _configuration_identity(self._draft_snapshot)
+                        or configuration != self._last_applied_configuration):
+                    self._configuration_status.setText(text("live.configuration.conflict"))
+                return
         if configuration is None or configuration == self._last_applied_configuration:
             return
         with QSignalBlocker(self._center_mhz):
@@ -320,6 +342,10 @@ class LiveWorkspaceV2(QWidget):
         self._set_form_dirty(self._current_configuration() != applied)
 
     def _set_form_dirty(self, dirty: bool) -> None:
+        if dirty and not self._form_dirty:
+            self._draft_snapshot = self._view_model.state.snapshot
+        elif not dirty:
+            self._draft_snapshot = None
         self._form_dirty = bool(dirty)
         self._cancel_button.setEnabled(self._form_dirty and self._last_applied_configuration is not None)
         if self._last_applied_configuration is None:
@@ -344,9 +370,26 @@ class LiveWorkspaceV2(QWidget):
             self._primary_action.setEnabled(state.primary_action_enabled)
 
     def _render_published_frames(self, state: LiveViewState) -> None:
+        identity = getattr(state.analyzer_bundle, "identity", None)
+        signature = None if identity is None else (
+            identity.source_id, identity.receiver_id, identity.acquisition_epoch,
+            identity.config_generation, identity.unit,
+            identity.frequencies_hz.shape, identity.frequencies_hz.tobytes(),
+        )
+        if (signature is not None and self._last_measurement_signature is not None
+                and signature != self._last_measurement_signature):
+            self._visualization.waterfall_pane.clear_history()
+            self._last_waterfall_source = None
+        if signature is not None:
+            self._last_measurement_signature = signature
+        if state.spectrum is None and self._last_spectrum_source is not None:
+            self._visualization.spectrum_scene.clear_trace(TraceKind.CURRENT)
+            self._last_spectrum_source = None
         if state.spectrum is not None and state.spectrum is not self._last_spectrum_source:
-            unit = str(getattr(state.snapshot, "unit", "")).strip()
-            spectrum = _adapt_spectrum(state.spectrum, unit)
+            spectrum: object | None = state.analyzer_bundle
+            if spectrum is None:
+                unit = str(getattr(state.snapshot, "unit", "")).strip()
+                spectrum = _adapt_spectrum(state.spectrum, unit)
             if spectrum is not None:
                 self._visualization.spectrum_scene.set_frame(spectrum)
                 self._last_spectrum_source = state.spectrum
@@ -355,11 +398,17 @@ class LiveWorkspaceV2(QWidget):
         ):
             self._visualization.spectrum_scene.set_persistence_frame(state.persistence_frame)
             self._last_persistence_source = state.persistence_frame
+        elif state.persistence_frame is None and self._last_persistence_source is not None:
+            self._visualization.spectrum_scene.clear_persistence_display()
+            self._last_persistence_source = None
         if isinstance(state.waterfall_line, WaterfallLineFrame) and (
             state.waterfall_line is not self._last_waterfall_source
         ):
             self._visualization.waterfall_pane.set_line(state.waterfall_line)
             self._last_waterfall_source = state.waterfall_line
+        elif state.waterfall_line is None and self._last_waterfall_source is not None:
+            self._visualization.waterfall_pane.clear_history()
+            self._last_waterfall_source = None
 
     def _select_device(self, index: int) -> None:
         identifier = self._device_selector.itemData(index)
@@ -393,13 +442,43 @@ class LiveWorkspaceV2(QWidget):
         self._execute_primary()
 
     def _apply_configuration(self) -> None:
+        if (self._draft_snapshot is not None and
+                _configuration_identity(self._draft_snapshot) !=
+                _configuration_identity(self._view_model.state.snapshot)):
+            self._configuration_status.setText(text("live.configuration.conflict"))
+            return
         configuration = self._current_configuration()
-        self._view_model.apply_configuration(configuration)
-        self._configuration_status.setText(text("live.configuration.requested"))
+        base = self._last_applied_configuration
+        if base is not None:
+            snapshot = self._draft_snapshot or self._view_model.state.snapshot
+            if (not getattr(snapshot, "session_id", None)
+                    or not getattr(getattr(snapshot, "device", None), "device_id", None)
+                    or type(getattr(snapshot, "generation", None)) is not int):
+                self._configuration_status.setText(text("live.configuration.identity_missing"))
+                return
+            request = LiveConfigurationPatch(
+                expected_session_id=getattr(snapshot, "session_id", ""),
+                expected_generation=getattr(snapshot, "generation", -1),
+                expected_source_id=getattr(getattr(snapshot, "device", None), "device_id", ""),
+                changes=tuple(
+                    (field.name, getattr(configuration, field.name))
+                    for field in fields(configuration)
+                    if getattr(configuration, field.name) != getattr(base, field.name)
+                ),
+            )
+        else:
+            request = configuration
+        if self._view_model.apply_configuration(request):
+            self._pending_configuration = configuration
+            self._configuration_status.setText(text("live.configuration.requested"))
 
     def _cancel_local_configuration(self) -> None:
         """Restore fields from the last applied snapshot without calling a presenter."""
 
+        self._draft_snapshot = None
+        self._pending_configuration = None
+        self._form_dirty = False
+        self._sync_configuration_from_snapshot(self._view_model.state)
         applied = self._last_applied_configuration
         if applied is None:
             return
@@ -415,14 +494,19 @@ class LiveWorkspaceV2(QWidget):
 
     def _current_configuration(self) -> LiveConfiguration:
         backend = BackendKind(str(self._backend.currentData()))
-        profile_id = None if self._last_applied_configuration is None else self._last_applied_configuration.profile_id
-        return LiveConfiguration(
+        base = self._last_applied_configuration or LiveConfiguration()
+        return replace(
+            base,
             center_hz=self._center_mhz.value() * 1e6,
             sample_rate_hz=self._sample_rate_mhz.value() * 1e6,
             gain_db=self._gain_db.value(),
             backend=backend,
-            profile_id=profile_id,
         )
+
+
+def _configuration_identity(snapshot: object) -> tuple[object, object, object]:
+    return (getattr(snapshot, "session_id", None), getattr(snapshot, "generation", None),
+            getattr(getattr(snapshot, "device", None), "device_id", None))
 
 
 def live_workspace_definition(view_model: LiveViewModel, *, theme: ThemeId = ThemeId.DARK) -> WorkspaceDefinition:

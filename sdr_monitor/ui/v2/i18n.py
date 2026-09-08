@@ -439,6 +439,18 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
                 UiLocale.EN: "Apply requested; awaiting a confirmed snapshot.",
             }
         ),
+        "live.configuration.identity_missing": MappingProxyType(
+            {
+                UiLocale.RU: "Применение недоступно: снимок не содержит идентичность сессии, источника или поколения.",
+                UiLocale.EN: "Apply unavailable: snapshot lacks session, source or generation identity.",
+            }
+        ),
+        "live.configuration.conflict": MappingProxyType(
+            {
+                UiLocale.RU: "Конфигурация изменилась. Отмените черновик, чтобы загрузить актуальные настройки.",
+                UiLocale.EN: "Configuration changed. Cancel the draft to load current settings.",
+            }
+        ),
         "live.configuration.status.name": MappingProxyType(
             {UiLocale.RU: "Статус применённой конфигурации", UiLocale.EN: "Applied configuration status"}
         ),

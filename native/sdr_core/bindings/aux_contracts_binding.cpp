@@ -111,7 +111,20 @@ void bind_auxiliary_contracts(py::module_& module) {
         .def_readonly("gpu_processing_ms", &EngineMetrics::gpu_processing_ms)
         .def_readonly("h2d_ms", &EngineMetrics::h2d_ms)
         .def_readonly("d2h_ms", &EngineMetrics::d2h_ms)
-        .def_readonly("end_to_end_latency_ms", &EngineMetrics::end_to_end_latency_ms);
+        .def_readonly("end_to_end_latency_ms", &EngineMetrics::end_to_end_latency_ms)
+        .def_readonly("stage_timing_mask", &EngineMetrics::stage_timing_mask)
+        .def_readonly("input_unpack_ms", &EngineMetrics::input_unpack_ms)
+        .def_readonly("window_ms", &EngineMetrics::window_ms)
+        .def_readonly("fft_ms", &EngineMetrics::fft_ms)
+        .def_readonly("detector_ms", &EngineMetrics::detector_ms)
+        .def_readonly(
+            "persistence_processing_ms",
+            &EngineMetrics::persistence_processing_ms
+        )
+        .def_readonly(
+            "publication_processing_ms",
+            &EngineMetrics::publication_processing_ms
+        );
 }
 
 }  // namespace sdr_core::python
