@@ -108,6 +108,7 @@ class PersistenceOverlay:
             self._set_metrics(hidden_updates=self._metrics.hidden_updates + 1)
             return
         if view.density is self._uploaded_density:
+            self._discard_pending()
             self._set_metrics(identity_uploads_suppressed=self._metrics.identity_uploads_suppressed + 1)
             return
         if self._last_upload_ns is not None and now - self._last_upload_ns < self._interval_ns:
@@ -115,6 +116,7 @@ class PersistenceOverlay:
             self._set_metrics(cadence_uploads_deferred=self._metrics.cadence_uploads_deferred + 1)
             self._schedule_pending(now)
             return
+        self._discard_pending()
         self._upload(view, now_ns=now)
 
     def flush_pending(self, now_ns: int | None = None) -> None:
@@ -139,7 +141,7 @@ class PersistenceOverlay:
     def clear_local_image(self) -> None:
         """Clear only the presentation layer; no native accumulation/reset command exists."""
 
-        self._pending_view = None
+        self._discard_pending()
         self._uploaded_density = None
         self._visual_buffer = None
         self._image.clear()
@@ -199,6 +201,12 @@ class PersistenceOverlay:
         delay_ms = max(1, int((self._interval_ns - (now_ns - self._last_upload_ns)) / 1_000_000))
         if not self._timer.isActive():
             self._timer.start(delay_ms)
+
+    def _discard_pending(self) -> None:
+        """Prevent a stale cadence timer from uploading an older density."""
+
+        self._pending_view = None
+        self._timer.stop()
 
     def _set_metrics(self, **updates: int) -> None:
         self._metrics = PersistenceOverlayMetrics(

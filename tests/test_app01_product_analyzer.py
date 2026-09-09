@@ -192,7 +192,10 @@ class ProductAnalyzerCompositionTests(unittest.TestCase):
         closed = False
         try:
             # Construction and navigation are presentation-only.
-            for route in ("live", "sweep", "home"):
+            self.assertEqual(shell.active_workspace_id, "analyzer")
+            self.assertNotIn("live", {item.workspace_id for item in composition.context.workspaces})
+            self.assertNotIn("sweep", {item.workspace_id for item in composition.context.workspaces})
+            for route in ("analyzer", "calibration", "analyzer"):
                 shell.select_workspace(route)
                 self.app.processEvents()
             self.assertEqual(events, [])
@@ -231,12 +234,13 @@ class ProductAnalyzerCompositionTests(unittest.TestCase):
                 100e6, 102e6, usable_window_hz=2e6, overlap_hz=0,
             )
             analyzer_presenter.start(request)
-            self.app.processEvents()
+            self._wait(lambda: not analyzer_presenter.is_starting)
             self.assertEqual(events, ["rtbw-start"])
 
             live_presenter.stop()
             self._wait(lambda: events == ["rtbw-start", "rtbw-stop"])
             analyzer_presenter.start(request)
+            self._wait(lambda: not analyzer_presenter.is_starting)
             self.assertEqual(events[-1], "sweep-start")
             analyzer_presenter._poll()
             self.app.processEvents()

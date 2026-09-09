@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -86,9 +87,21 @@ class WaterfallPaneTests(unittest.TestCase):
         self.assertEqual(len(tiles), 2)
         ordered = np.concatenate(tiles, axis=0)
         np.testing.assert_array_equal(ordered[:, 0], np.arange(2, 32, dtype=np.float32))
-        labels = pane._time_axis.tickStrings([0.0, 15.0, 30.0], 1.0, 1.0)
+        labels = pane._time_axis.tickStrings([0.0, 15.0, 29.0, 30.0], 1.0, 1.0)
         self.assertEqual(labels[0], "−0 мс")
-        self.assertEqual(labels[-1], "−1.0 с")
+        # Producer timestamps, not display cadence, own the age axis.
+        self.assertEqual(labels[-2], "−1.2 с")
+        self.assertEqual(labels[-1], "")
+
+    def test_irregular_producer_time_is_preserved_and_pause_marked(self) -> None:
+        pane = self._pane()
+        pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000))
+        pane.set_line(_line(-80.0, timestamp_ns=1_040_000_000))
+        pane.set_line(_line(-70.0, timestamp_ns=5_000_000_000))
+        labels = pane._time_axis.tickStrings([0.0, 1.0, 2.0], 1.0, 1.0)
+        self.assertTrue(labels[0].startswith("−0 мс"))
+        self.assertIn("⏸", labels[0])
+        self.assertEqual(labels[-1], "−4.0 с")
 
     def test_empty_waterfall_axis_has_no_repeated_zero_age_labels(self) -> None:
         pane = self._pane()
@@ -135,8 +148,73 @@ class WaterfallPaneTests(unittest.TestCase):
         self.assertTrue(pane.follow_spectrum_levels(-100.0, -40.0, unit_label="dBm"))
         self.assertFalse(pane.follow_spectrum_levels(-100.0, -40.0, unit_label="dBFS/bin"))
         pane.set_direction(WaterfallDirection.NEWEST_AT_BOTTOM)
-        labels = pane._time_axis.tickStrings([0.0, float(pane.history_rows)], 1.0, 1.0)
-        self.assertGreaterEqual(float(labels[0][1:].split()[0]), float(labels[-1][1:].split()[0]))
+        capacity, _ = pane.config.dimensions(pane.grid_signature.columns)  # type: ignore[union-attr]
+        labels = pane._time_axis.tickStrings([0.0, float(capacity - 1), float(capacity)], 1.0, 1.0)
+        self.assertEqual(labels[0], "")
+        self.assertTrue(labels[1].startswith("−0 мс"))
+        self.assertEqual(labels[2], "")
+
+    def test_one_row_uses_one_history_cell_and_ticks_only_name_acquired_rows(self) -> None:
+        pane = self._pane()
+        pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000))
+        assert pane.grid_signature is not None
+        capacity, _ = pane.config.dimensions(pane.grid_signature.columns)
+        top_labels = pane._time_axis.tickStrings([0.0, 1.0, float(capacity - 1)], 1.0, 1.0)
+        self.assertTrue(top_labels[0].startswith("−0 мс"))
+        self.assertEqual(top_labels[1:], ["", ""])
+        top_range = pane.view_box.viewRange()[1]
+        self.assertAlmostEqual(top_range[0], 0.0)
+        self.assertAlmostEqual(top_range[1], float(capacity))
+
+        pane.set_direction(WaterfallDirection.NEWEST_AT_BOTTOM)
+        bottom_labels = pane._time_axis.tickStrings(
+            [0.0, float(capacity - 2), float(capacity - 1), float(capacity)], 1.0, 1.0,
+        )
+        self.assertEqual(bottom_labels[:2], ["", ""])
+        self.assertTrue(bottom_labels[2].startswith("−0 мс"))
+        self.assertEqual(bottom_labels[3], "")
+
+    def test_full_capacity_keeps_all_rows_addressable_in_both_directions(self) -> None:
+        for direction in (WaterfallDirection.NEWEST_AT_TOP, WaterfallDirection.NEWEST_AT_BOTTOM):
+            with self.subTest(direction=direction):
+                pane = self._pane()
+                pane.set_history_seconds(1)
+                pane.set_direction(direction)
+                for value in range(30):
+                    pane.set_line(_line(float(value), timestamp_ns=value * 40_000_000))
+                assert pane.grid_signature is not None
+                capacity, _ = pane.config.dimensions(pane.grid_signature.columns)
+                self.assertEqual(pane.history_rows, capacity)
+                labels = pane._time_axis.tickStrings([0.0, float(capacity - 1), float(capacity)], 1.0, 1.0)
+                self.assertNotEqual(labels[0], "")
+                self.assertNotEqual(labels[1], "")
+                self.assertEqual(labels[2], "")
+
+    def test_follow_checkbox_uses_connected_spectrum_range_signal(self) -> None:
+        view = self._view(self._settings())
+        pane = view.waterfall_pane
+        pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000))
+        frame = SimpleNamespace(
+            frequencies_hz=np.linspace(433_000_000.0, 434_000_000.0, 8),
+            values=np.linspace(-130.0, -10.0, 8),
+            unit="dBm",
+        )
+        view.spectrum_scene.set_frame(frame)
+        self.assertLessEqual(pane.config.level_min, -130.0)
+        self.assertGreaterEqual(pane.config.level_max, -10.0)
+        pane.set_follow_spectrum_levels(False)
+        before = (pane.config.level_min, pane.config.level_max)
+        view.spectrum_scene.set_reference_level(-30.0)
+        self.assertEqual((pane.config.level_min, pane.config.level_max), before)
+
+    def test_history_rate_transition_rejects_incompatible_budget_without_qt_exception(self) -> None:
+        pane = self._pane()
+        pane.set_history_seconds(100)
+        pane.set_rows_per_second(120)
+        self.assertEqual(pane.config.history_seconds, 100)
+        self.assertEqual(pane.config.rows_per_second, 30)
+        self.assertEqual(pane.metrics.configuration_rejections, 1)
+        self.assertEqual(pane._rows_per_second.currentData(), 30)
 
     def test_splitter_default_restore_and_linked_frequency_view(self) -> None:
         settings = self._settings()

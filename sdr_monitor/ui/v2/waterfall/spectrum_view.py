@@ -30,10 +30,16 @@ class SpectrumWaterfallView(QWidget):
         self._theme = theme
         self._restored_sizes: list[int] | None = self._read_splitter_sizes()
         self._initial_sizes_applied = False
+        self._waterfall_visible = True
+        self._standalone_controls_hosted = False
         self._settings_timer = QTimer(self)
         self._settings_timer.setSingleShot(True)
         self._settings_timer.timeout.connect(self._write_splitter_settings)
         self._build_ui()
+        # Pane owns the persisted paint preference; the composed view applies
+        # its matching layout state before any external Analyzer toolbar can
+        # detach the same controls.
+        self.set_waterfall_visible(self._waterfall.render_visible)
         self.set_theme(theme)
 
     @property
@@ -58,8 +64,24 @@ class SpectrumWaterfallView(QWidget):
     def set_waterfall_visible(self, visible: bool) -> None:
         """Change only layout/render visibility; retained rows stay local to the pane."""
 
-        self._waterfall.set_render_visible(visible)
-        self._waterfall.setVisible(visible)
+        requested = bool(visible)
+        if requested == self._waterfall_visible:
+            return
+        if not requested and self._waterfall.has_embedded_display_controls:
+            controls = self._waterfall.take_display_controls()
+            layout = self.layout()
+            if layout is not None:
+                layout.insertWidget(0, controls)
+                self._standalone_controls_hosted = True
+        elif requested and self._standalone_controls_hosted:
+            # Analyzer may have reparented the temporary standalone toolbar
+            # into its display overlay.  Never pull that external control back.
+            self._waterfall.restore_display_controls_from(self)
+            self._standalone_controls_hosted = False
+        self._waterfall_visible = requested
+        self._waterfall.set_render_visible(requested)
+        self._waterfall.setVisible(requested)
+        self._spectrum.set_frequency_axis_visible(not requested)
         self._schedule_splitter_write()
 
     def flush_settings(self) -> None:
@@ -97,7 +119,14 @@ class SpectrumWaterfallView(QWidget):
         self._splitter.setStretchFactor(1, 2)
         self._splitter.splitterMoved.connect(lambda _position, _index: self._schedule_splitter_write())
         self._waterfall.link_frequency_view_box(self._spectrum.view_box)
+        self._waterfall.visibility_requested.connect(self.set_waterfall_visible)
+        self._spectrum.vertical_range_changed.connect(self._on_spectrum_vertical_range)
         layout.addWidget(self._splitter)
+
+    def _on_spectrum_vertical_range(self, lower: float, upper: float, unit_label: str) -> None:
+        """Follow the actual spectrum range only through its public signal."""
+
+        self._waterfall.follow_spectrum_levels(lower, upper, unit_label=unit_label)
 
     def _read_splitter_sizes(self) -> list[int] | None:
         if str(self._settings.value(f"{_SETTINGS_PREFIX}/version", "")) != "1":

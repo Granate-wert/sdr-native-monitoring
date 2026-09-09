@@ -58,7 +58,7 @@ class LiveWorkspaceV2(QWidget):
         self._theme = theme
         self._last_applied_configuration: LiveConfiguration | None = None
         self._form_dirty = False
-        self._draft_snapshot = None
+        self._draft_snapshot: object | None = None
         self._pending_configuration = None
         self._last_spectrum_source: object | None = None
         self._last_persistence_source: object | None = None

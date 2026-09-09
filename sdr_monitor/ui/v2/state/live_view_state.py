@@ -192,7 +192,7 @@ def build_live_view_state(
         has_spectrum=has_spectrum,
         frozen_last_frame=frozen_last_frame,
         data_age_ms=data_age_ms,
-        data_age_label=_format_data_age(data_age_ms),
+        data_age_label=_format_data_age(data_age_ms, has_frame=has_spectrum),
         persistence=persistence,
         persistence_label=persistence_label,
         loss=_loss_summary(quality, performance, spectrum),
@@ -230,7 +230,7 @@ def _empty_state(*, busy: bool) -> LiveViewState:
         has_spectrum=False,
         frozen_last_frame=False,
         data_age_ms=None,
-        data_age_label=_format_data_age(None),
+        data_age_label=_format_data_age(None, has_frame=False),
         persistence=PersistencePresentation.NOT_CONFIGURED,
         persistence_label=text("live_state.persistence.not_configured"),
         loss=LiveLossSummary(),
@@ -352,9 +352,9 @@ def _data_age_ms(spectrum: object | None, now_ns: int | None) -> float | None:
     return max(0.0, (int(now_ns) - int(timestamp)) / 1_000_000.0)
 
 
-def _format_data_age(value: float | None) -> str:
+def _format_data_age(value: float | None, *, has_frame: bool) -> str:
     if value is None:
-        return text("live_state.age.empty")
+        return text("live_state.age.unknown" if has_frame else "live_state.age.empty")
     if value < 1_000.0:
         return text("live_state.age.milliseconds", value=value)
     return text("live_state.age.seconds", value=value / 1_000.0)

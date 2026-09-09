@@ -8,7 +8,7 @@ from typing import cast
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, QSettings, QSignalBlocker, QTimer
+from PySide6.QtCore import QRectF, QSettings, QSignalBlocker, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
-from ..i18n import enum_text, text
+from ..i18n import UiLocale, enum_text, text
 from ..spectrum.axis import FrequencyAxis
 from .axis import WaterfallTimeAxis
 from .bounded_ring import BoundedWaterfallRenderer, DEFAULT_WATERFALL_PRESENTATION_BUDGET
@@ -50,6 +50,7 @@ class WaterfallPaneMetrics:
     rows_out_of_order_rejected: int = 0
     image_uploads: int = 0
     hidden_uploads_suppressed: int = 0
+    configuration_rejections: int = 0
     grid_epoch_resets: int = 0
     local_history_clears: int = 0
     level_only_updates: int = 0
@@ -59,22 +60,27 @@ class WaterfallPaneMetrics:
 class WaterfallPane(QWidget):
     """Own a fixed ring/display only; it never discovers or controls a receiver."""
 
+    visibility_requested = Signal(bool)
+
     def __init__(
         self,
         *,
         settings: QSettings | None = None,
         theme: ThemeId = ThemeId.DARK,
+        locale: UiLocale = UiLocale.RU,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings = settings or QSettings()
         self._theme = theme
+        self._locale = locale
         self._config = WaterfallDisplayConfig()
         self._renderer = BoundedWaterfallRenderer()
         self._grid_signature: WaterfallGridSignature | None = None
         self._epoch = 0
         self._last_admitted_timestamp_ns: int | None = None
         self._last_seen_timestamp_ns: int | None = None
+        self._last_seen_sequence: int | None = None
         self._render_visible = True
         self._frozen = False
         self._metrics = WaterfallPaneMetrics()
@@ -109,6 +115,11 @@ class WaterfallPane(QWidget):
         return 0 if buffer is None else buffer.count
 
     @property
+    def render_visible(self) -> bool:
+        """The persisted local paint preference, before a parent applies layout."""
+        return self._render_visible
+
+    @property
     def plot_item(self) -> pg.PlotItem:
         return self._plot_item
 
@@ -134,6 +145,56 @@ class WaterfallPane(QWidget):
             axis.setTextPen(axis_pen)
         self._plot_item.showGrid(x=True, y=False, alpha=0.12)
 
+    def take_display_controls(self) -> QWidget:
+        """Detach the same controls; ring, axes and signal connections remain intact."""
+        layout = self.layout()
+        if layout is not None and self._toolbar.parent() is self:
+            layout.removeWidget(self._toolbar)
+            self._toolbar.setParent(None)
+        return self._toolbar
+
+    @property
+    def has_embedded_display_controls(self) -> bool:
+        """Whether the standalone pane still owns its Show/Hide control."""
+        return self._toolbar.parent() is self
+
+    def restore_display_controls_from(self, host: QWidget) -> bool:
+        """Restore controls only from the view that temporarily hosted them."""
+        if self._toolbar.parentWidget() is not host:
+            return False
+        if host.layout() is not None:
+            host.layout().removeWidget(self._toolbar)
+        layout = self.layout()
+        if layout is not None:
+            layout.insertWidget(0, self._toolbar)
+            return True
+        return False
+
+    def set_locale(self, locale: UiLocale) -> None:
+        """Retranslate controls and axes without rebuilding presentation history."""
+        self._locale = UiLocale(locale)
+        self.setAccessibleName(text("waterfall.accessible.name", self._locale))
+        self._visible_toggle.setText(text("waterfall.visible", self._locale))
+        self._freeze_button.setText(text("waterfall.freeze", self._locale))
+        self._clear_button.setText(text("waterfall.clear", self._locale))
+        self._history_seconds.setPrefix(text("waterfall.history.prefix", self._locale))
+        self._history_seconds.setSuffix(text("waterfall.history.suffix", self._locale))
+        for index, value in enumerate((30, 60, 120)):
+            self._rows_per_second.setItemText(
+                index, text("waterfall.rows_per_second.item", self._locale, value=value),
+            )
+        self._direction.setItemText(0, text("waterfall.direction.top", self._locale))
+        self._direction.setItemText(1, text("waterfall.direction.bottom", self._locale))
+        for index, palette in enumerate(WaterfallPalette):
+            self._palette.setItemText(index, enum_text("waterfall.palette", palette, self._locale))
+        self._follow_spectrum.setText(text("waterfall.follow", self._locale))
+        self._time_axis.set_locale(self._locale)
+        self._frequency_axis.set_locale(self._locale)
+        self._plot_item.setLabel("left", text("waterfall.axis.time", self._locale))
+        self._plot_item.setLabel("bottom", text("waterfall.axis.frequency", self._locale))
+        self._update_time_axis()
+        self._update_status()
+
     def link_frequency_view_box(self, source: pg.ViewBox) -> None:
         """Synchronize exact x ranges without letting an empty pane add padding."""
 
@@ -156,19 +217,25 @@ class WaterfallPane(QWidget):
         signature = line.grid_signature
         if signature != self._grid_signature:
             self._begin_epoch(signature)
-        if self._last_seen_timestamp_ns is not None and line.timestamp_ns < self._last_seen_timestamp_ns:
+        if line.timestamp_known and self._last_seen_timestamp_ns is not None and line.timestamp_ns < self._last_seen_timestamp_ns:
             self._set_metrics(rows_out_of_order_rejected=self._metrics.rows_out_of_order_rejected + 1)
             return
-        self._last_seen_timestamp_ns = line.timestamp_ns
+        if not line.timestamp_known and line.sequence is not None and self._last_seen_sequence is not None and line.sequence < self._last_seen_sequence:
+            self._set_metrics(rows_out_of_order_rejected=self._metrics.rows_out_of_order_rejected + 1)
+            return
+        if line.timestamp_known:
+            self._last_seen_timestamp_ns = line.timestamp_ns
+        elif line.sequence is not None:
+            self._last_seen_sequence = line.sequence
         if (
-            self._last_admitted_timestamp_ns is not None
+            line.timestamp_known and self._last_admitted_timestamp_ns is not None
             and line.timestamp_ns - self._last_admitted_timestamp_ns < self._config.interval_ns
         ):
             self._set_metrics(rows_cadence_suppressed=self._metrics.rows_cadence_suppressed + 1)
             return
         rows, _ = self._config.dimensions(int(line.values.size))
-        self._renderer.append(line.values, rows=rows)
-        self._last_admitted_timestamp_ns = line.timestamp_ns
+        self._renderer.append(line.values, rows=rows, timestamp_ns=line.timestamp_ns)
+        self._last_admitted_timestamp_ns = line.timestamp_ns if line.timestamp_known else None
         self._set_metrics(rows_admitted=self._metrics.rows_admitted + 1)
         self._show_initial_physical_grid_if_needed(line.grid_signature)
         self._update_time_axis()
@@ -204,13 +271,18 @@ class WaterfallPane(QWidget):
         self._renderer.clear()
         self._last_admitted_timestamp_ns = None
         self._last_seen_timestamp_ns = None
+        self._last_seen_sequence = None
         self._hide_tiles()
         self._update_time_axis()
         self._set_metrics(local_history_clears=self._metrics.local_history_clears + 1)
-        self._status.setText(text("waterfall.status.cleared"))
+        self._status.setText(text("waterfall.status.cleared", self._locale))
 
     def set_history_seconds(self, seconds: int) -> None:
-        proposal = replace(self._config, history_seconds=int(seconds))
+        try:
+            proposal = replace(self._config, history_seconds=int(seconds))
+        except (TypeError, ValueError):
+            self._reject_configuration_change()
+            return
         if proposal == self._config:
             return
         self._config = proposal
@@ -219,7 +291,14 @@ class WaterfallPane(QWidget):
         self._schedule_settings_write()
 
     def set_rows_per_second(self, rows_per_second: int) -> None:
-        proposal = replace(self._config, rows_per_second=int(rows_per_second))
+        try:
+            proposal = replace(self._config, rows_per_second=int(rows_per_second))
+        except (TypeError, ValueError):
+            # A control transition such as 100 s at 30 Hz -> 120 Hz can
+            # exceed the fixed ring budget.  Keep the admitted configuration
+            # and restore the selector instead of throwing from Qt callback.
+            self._reject_configuration_change()
+            return
         if proposal == self._config:
             return
         self._config = proposal
@@ -299,15 +378,18 @@ class WaterfallPane(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        layout.addWidget(self._build_toolbar())
+        self._toolbar = self._build_toolbar()
+        layout.addWidget(self._toolbar)
         self._chart_host = QFrame(self)
         self._chart_host.setProperty("ui2Role", "panel")
         host_layout = QVBoxLayout(self._chart_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         self._graphics = pg.GraphicsLayoutWidget(self._chart_host)
-        self._time_axis = WaterfallTimeAxis()
+        self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
+        self._time_axis = WaterfallTimeAxis(locale=self._locale)
+        self._frequency_axis = FrequencyAxis(orientation="bottom", locale=self._locale)
         self._plot_item = self._graphics.addPlot(
-            axisItems={"left": self._time_axis, "bottom": FrequencyAxis(orientation="bottom")}
+            axisItems={"left": self._time_axis, "bottom": self._frequency_axis}
         )
         self._plot_item.setMenuEnabled(False)
         self._plot_item.hideButtons()
@@ -342,7 +424,7 @@ class WaterfallPane(QWidget):
         self._visible_toggle.setProperty("ui2Role", "utility-toggle")
         self._visible_toggle.setAccessibleName(text("waterfall.visible.name"))
         self._visible_toggle.setChecked(True)
-        self._visible_toggle.toggled.connect(self.set_render_visible)
+        self._visible_toggle.toggled.connect(self.visibility_requested.emit)
         first.addWidget(self._visible_toggle)
         self._freeze_button = QPushButton(text("waterfall.freeze"), toolbar)
         self._freeze_button.setProperty("ui2Role", "utility-action")
@@ -350,11 +432,11 @@ class WaterfallPane(QWidget):
         self._freeze_button.setAccessibleName(text("waterfall.freeze.name"))
         self._freeze_button.toggled.connect(self.set_frozen)
         first.addWidget(self._freeze_button)
-        clear_button = QPushButton(text("waterfall.clear"), toolbar)
-        clear_button.setProperty("ui2Role", "utility-action")
-        clear_button.setAccessibleName(text("waterfall.clear.name"))
-        clear_button.clicked.connect(self.clear_history)
-        first.addWidget(clear_button)
+        self._clear_button = QPushButton(text("waterfall.clear"), toolbar)
+        self._clear_button.setProperty("ui2Role", "utility-action")
+        self._clear_button.setAccessibleName(text("waterfall.clear.name"))
+        self._clear_button.clicked.connect(self.clear_history)
+        first.addWidget(self._clear_button)
         first.addStretch(1)
         root.addLayout(first)
         second = QHBoxLayout()
@@ -410,6 +492,7 @@ class WaterfallPane(QWidget):
         self._grid_signature = signature
         self._last_admitted_timestamp_ns = None
         self._last_seen_timestamp_ns = None
+        self._last_seen_sequence = None
         self._hide_tiles()
         self._status.setText(text("waterfall.new_grid", epoch=self._epoch))
 
@@ -450,6 +533,7 @@ class WaterfallPane(QWidget):
             return
         width = signature.last_edge_hz - signature.first_edge_hz
         row_offset = 0
+        capacity_rows, _ = self._config.dimensions(signature.columns)
         uploads = 0
         for index, tile in enumerate(tiles):
             height = int(tile.shape[0])
@@ -473,7 +557,7 @@ class WaterfallPane(QWidget):
                 image.setRect(
                     QRectF(
                         signature.first_edge_hz,
-                        float(row_offset),
+                        float(capacity_rows - row_count + row_offset),
                         width,
                         float(height),
                     )
@@ -484,7 +568,7 @@ class WaterfallPane(QWidget):
         for image in self._image_items[uploads:]:
             image.clear()
             image.setVisible(False)
-        self._plot_item.setYRange(0.0, float(max(1, row_count)), padding=0.0)
+        self._plot_item.setYRange(0.0, float(capacity_rows), padding=0.0)
         self._update_time_axis()
         self._set_metrics(image_uploads=self._metrics.image_uploads + uploads)
 
@@ -494,21 +578,40 @@ class WaterfallPane(QWidget):
             image.setVisible(False)
 
     def _update_time_axis(self) -> None:
+        signature = self._grid_signature
+        capacity_rows = (
+            self._config.dimensions(signature.columns)[0] if signature is not None else 0
+        )
         self._time_axis.set_presentation_timebase(
             direction=self._config.direction,
             rows_per_second=self._config.rows_per_second,
             display_rows=self.history_rows,
+            capacity_rows=capacity_rows,
+            timestamps_ns=self._renderer.timestamps_ns(),
+            timestamps_known=signature is not None and signature.timestamp_known,
         )
+        self._plot_item.setLabel(
+            "left",
+            text("waterfall.axis.time", self._locale)
+            if signature is None or signature.timestamp_known
+            else text("waterfall.time_axis.unknown", self._locale),
+        )
+
+    def _reject_configuration_change(self) -> None:
+        self._sync_controls()
+        self._set_metrics(configuration_rejections=self._metrics.configuration_rejections + 1)
+        self._update_status()
 
     def _update_status(self) -> None:
         if self._frozen:
-            self._status.setText(text("waterfall.status.frozen", rows=self.history_rows))
+            self._status.setText(text("waterfall.status.frozen", self._locale, rows=self.history_rows))
         elif self._grid_signature is None:
-            self._status.setText(text("waterfall.status.waiting"))
+            self._status.setText(text("waterfall.status.waiting", self._locale))
         else:
             self._status.setText(
                 text(
                     "waterfall.status.ready",
+                    self._locale,
                     epoch=self._epoch,
                     rows=self.history_rows,
                     unit=self._grid_signature.unit_label,

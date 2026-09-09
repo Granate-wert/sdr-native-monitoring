@@ -59,8 +59,12 @@ class ReplayWorkspaceV2(QWidget):
         self.setAccessibleName(text("replay.accessible.name"))
         self.setAccessibleDescription(text("replay.accessible.description"))
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        # Replay has five explicit vertical regions.  Keep every control and
+        # the 240 px scene minimum, but use the V2 compact spacing tier so the
+        # workspace still fits the 1280×720 shell after normal system-font
+        # metrics are applied.
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
         layout.addWidget(
             SectionHeader(
                 text("replay.header.title"),

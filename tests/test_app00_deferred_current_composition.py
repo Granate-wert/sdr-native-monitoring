@@ -48,7 +48,7 @@ class DeferredCurrentCompositionTests(unittest.TestCase):
             replay_vm = composition.replay_view_model
             tiny_vm = composition._tinysa.activation_view_model
             try:
-                for route in ("diagnostics", "replay", "tinysa", "home"):
+                for route in ("diagnostics", "replay", "tinysa", "analyzer"):
                     self.assertIn(route, shell._definitions)
                     shell.select_workspace(route)
                 self.assertIsNone(diag_vm._presenter)

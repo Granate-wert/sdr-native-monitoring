@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import Protocol
 
 from ..state.live_view_state import LiveAction, LiveViewState, build_live_view_state
@@ -48,6 +49,7 @@ class LiveViewModel:
         self._presenter = presenter
         self._now_ns = now_ns
         self._busy = False
+        self._command_error: str | None = None
         self._last_snapshot: object | None = None
         self._listeners: list[Callable[[LiveViewState], None]] = []
         self._devices: tuple[object, ...] = ()
@@ -103,12 +105,15 @@ class LiveViewModel:
         if not self._state.primary_action_enabled:
             return False
         if action is LiveAction.DISCOVER:
+            self._begin_explicit_command()
             self._presenter.discover_devices()
             return True
         if action is LiveAction.START:
+            self._begin_explicit_command()
             self._presenter.start()
             return True
         if action is LiveAction.STOP:
+            self._begin_explicit_command()
             self._presenter.stop()
             return True
         # Retry and configuration review require package-specific controls;
@@ -121,6 +126,7 @@ class LiveViewModel:
 
         if self._busy:
             return False
+        self._begin_explicit_command()
         self._presenter.discover_devices()
         return True
 
@@ -130,6 +136,7 @@ class LiveViewModel:
         identifier = device_id.strip()
         if not identifier or self._busy:
             return False
+        self._begin_explicit_command()
         self._presenter.select_device(identifier)
         return True
 
@@ -139,6 +146,7 @@ class LiveViewModel:
         value = uri.strip()
         if not value or self._busy:
             return False
+        self._begin_explicit_command()
         self._presenter.select_manual_uri(value)
         return True
 
@@ -147,6 +155,7 @@ class LiveViewModel:
 
         if self._busy:
             return False
+        self._begin_explicit_command()
         self._presenter.apply_configuration(configuration)
         return True
 
@@ -188,17 +197,26 @@ class LiveViewModel:
         self._busy = bool(busy)
         self._publish()
 
-    def _on_task_failed(self, _error: str) -> None:
-        # A presenter's transient failure must not replace immutable snapshot
-        # truth. The existing UI notification layer remains responsible for a
-        # transient toast until the V2 notification package is introduced.
+    def _on_task_failed(self, error: str) -> None:
+        # Command failure is presentation control-plane state. It must remain
+        # visible without rewriting immutable measurement/session truth.
+        self._command_error = str(error)
         self._publish()
 
+    def _begin_explicit_command(self) -> None:
+        if self._command_error is not None:
+            self._command_error = None
+            self._publish()
+
     def _publish(self) -> None:
-        self._state = build_live_view_state(
+        state = build_live_view_state(
             self._last_snapshot,
             busy=self._busy,
             now_ns=self._now_ns() if self._last_snapshot is not None else None,
+        )
+        self._state = (
+            state if self._command_error is None else
+            replace(state, error_label=self._command_error, error_kind="command-not-measurement")
         )
         for listener in tuple(self._listeners):
             listener(self._state)

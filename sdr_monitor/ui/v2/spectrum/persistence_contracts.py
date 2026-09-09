@@ -8,6 +8,8 @@ from functools import lru_cache
 
 import numpy as np
 
+from ..design.tokens import density_lookup_table
+
 
 class DensityValueMode(StrEnum):
     """What each native density value means; UI never guesses this semantic."""
@@ -162,23 +164,7 @@ def map_density_row_for_display(
 def inferno_lookup_table() -> np.ndarray:
     """Return deterministic Inferno-like RGBA LUT; zero density has zero alpha."""
 
-    stops = np.array(
-        (
-            (0, 0, 4, 0),
-            (87, 15, 109, 150),
-            (187, 55, 84, 205),
-            (249, 142, 8, 235),
-            (252, 255, 164, 255),
-        ),
-        dtype=np.float32,
-    )
-    positions = np.linspace(0.0, 1.0, stops.shape[0])
-    output: np.ndarray = np.empty((256, 4), dtype=np.ubyte)
-    target = np.linspace(0.0, 1.0, output.shape[0])
-    for channel in range(4):
-        output[:, channel] = np.interp(target, positions, stops[:, channel]).astype(np.ubyte)
-    output.setflags(write=False)
-    return output
+    return density_lookup_table()
 
 
 def _validate_regular_edges(edges: np.ndarray, name: str) -> None:

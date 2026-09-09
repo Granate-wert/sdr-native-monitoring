@@ -6,6 +6,9 @@ from collections.abc import Callable
 from time import time_ns
 from typing import Protocol
 
+from .view_models.analyzer_view_model import AnalyzerViewModel, SweepPresentationPort
+from .workspaces.analyzer import analyzer_workspace_definition
+
 from .shell.contracts import ClosePort, V2ShellContext
 from .shell.placeholders import default_workspace_definitions
 from .state.live_view_state import LiveAction
@@ -54,7 +57,7 @@ class CalibrationPresenterLifecyclePort(CalibrationProfilePresenterPort, Protoco
     def shutdown(self) -> None: ...
 
 
-class AnalyzerPresenterLifecyclePort(Protocol):
+class AnalyzerPresenterLifecyclePort(SweepPresentationPort, Protocol):
     def can_close(self) -> bool: ...
     def shutdown(self) -> None: ...
 
@@ -122,6 +125,10 @@ class V2LiveProductComposition:
         self.analyzer_presenter = analyzer_presenter
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
+        self.analyzer_view_model = (
+            AnalyzerViewModel(self.view_model, analyzer_presenter)
+            if analyzer_presenter is not None else None
+        )
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
         self.calibration_view_model = (
             None if calibration_presenter is None else CalibrationProfileViewModel(calibration_presenter)
@@ -186,8 +193,15 @@ class V2LiveProductComposition:
         )
         if tinysa_definition is not None:
             workspaces += (tinysa_definition,)
+        if self.analyzer_view_model is not None:
+            # Product Analyzer replaces both old routes, not two pages hidden
+            # inside a tab. Their application ownership remains unchanged.
+            workspaces = (analyzer_workspace_definition(self.analyzer_view_model),) + tuple(
+                item for item in workspaces if item.workspace_id not in {"home", "live", "sweep"}
+            )
         self.context = V2ShellContext(
             workspaces=workspaces,
+            initial_workspace_id="analyzer" if self.analyzer_view_model is not None else "home",
             close_ports=(
                 ClosePort(
                     name="live-presenter",
@@ -227,6 +241,8 @@ class V2LiveProductComposition:
         # Disconnect presentation callbacks once; these methods own no work
         # and repeating a successful disconnect is not a lifecycle retry.
         if not self._presentation_disposed:
+            if self.analyzer_view_model is not None:
+                attempt(self.analyzer_view_model.dispose)
             attempt(self.view_model.dispose)
             if self.sweep_view_model is not None:
                 attempt(self.sweep_view_model.dispose)

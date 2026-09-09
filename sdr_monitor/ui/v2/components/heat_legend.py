@@ -5,8 +5,8 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QWidget
 
-from ..design.tokens import ThemeId, tokens_for_theme
-from ..i18n import text
+from ..design.tokens import ThemeId, density_lookup_table, tokens_for_theme
+from ..i18n import UiLocale, text
 
 
 class HeatLegend(QWidget):
@@ -18,14 +18,16 @@ class HeatLegend(QWidget):
         maximum_label: str = "0 dB",
         *,
         theme: ThemeId = ThemeId.DARK,
+        locale: UiLocale = UiLocale.RU,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._theme = theme
+        self._locale = locale
         self._minimum_label = minimum_label
         self._maximum_label = maximum_label
         self.setMinimumHeight(28)
-        self.setAccessibleName(text("component.heat_legend.name"))
+        self.setAccessibleName(text("component.heat_legend.name", locale))
         self._update_description()
 
     def set_theme(self, theme: ThemeId) -> None:
@@ -38,6 +40,11 @@ class HeatLegend(QWidget):
         self._update_description()
         self.update()
 
+    def set_locale(self, locale: UiLocale) -> None:
+        self._locale = UiLocale(locale)
+        self.setAccessibleName(text("component.heat_legend.name", self._locale))
+        self._update_description()
+
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
@@ -47,9 +54,10 @@ class HeatLegend(QWidget):
         bar_width = max(24, self.width() - 116)
         bar_rect = self.rect().adjusted(margin, margin, -self.width() + bar_width, -margin)
         gradient = QLinearGradient(bar_rect.topLeft(), bar_rect.topRight())
-        gradient.setColorAt(0.0, QColor("#440154"))
-        gradient.setColorAt(0.5, QColor("#21918C"))
-        gradient.setColorAt(1.0, QColor("#FDE725"))
+        lookup = density_lookup_table()
+        for index in range(0, 256, 16):
+            gradient.setColorAt(index / 255.0, QColor(*lookup[index].tolist()))
+        gradient.setColorAt(1.0, QColor(*lookup[-1].tolist()))
         painter.fillRect(bar_rect, gradient)
         painter.setPen(QColor(tokens.colors.border))
         painter.drawRect(bar_rect)
@@ -62,7 +70,7 @@ class HeatLegend(QWidget):
         self.setAccessibleDescription(
             text(
                 "component.heat_legend.description",
-                minimum=self._minimum_label,
+                self._locale, minimum=self._minimum_label,
                 maximum=self._maximum_label,
             )
         )

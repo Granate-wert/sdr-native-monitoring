@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from ..components import ContextPopover, EmptyChartOverlay, HeatLegend
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
-from ..i18n import text
+from ..i18n import UiLocale, text
 from .axis import FrequencyAxis
 from .contracts import (
     BandMask,
@@ -65,11 +65,15 @@ class SpectrumScene(QWidget):
     """Render public frames without receiver, acquisition or DSP ownership."""
 
     marker_changed = Signal(object)
+    vertical_range_changed = Signal(float, float, str)
 
-    def __init__(self, *, theme: ThemeId = ThemeId.DARK, parent: QWidget | None = None) -> None:
+    def __init__(self, *, theme: ThemeId = ThemeId.DARK, locale: UiLocale = UiLocale.RU,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._theme = theme
+        self._locale = locale
         self._latest_view: SpectrumFrameView | None = None
+        self._trace_views: dict[TraceKind, SpectrumFrameView] = {}
         self._measurement_signature: tuple[object, ...] | None = None
         self._envelopes: dict[TraceKind, EnvelopeTrace] = {}
         self._band_masks: tuple[BandMask, ...] = ()
@@ -133,20 +137,31 @@ class SpectrumScene(QWidget):
 
         return self._envelopes.get(kind)
 
+    def take_display_controls(self) -> QWidget:
+        """Detach and return the existing controls without rebuilding canvas state."""
+        layout = self.layout()
+        if layout is not None and self._toolbar.parent() is self:
+            layout.removeWidget(self._toolbar)
+            self._toolbar.setParent(None)
+        return self._toolbar
+
     def set_frame(self, frame: object) -> None:
         """Set the latest immutable current frame and redraw one bounded envelope."""
 
         view = adapt_spectrum_frame(frame)
         signature = _measurement_signature(frame, view)
-        if self._measurement_signature is not None and signature != self._measurement_signature:
+        same_measurement = self._measurement_signature == signature
+        if self._measurement_signature is not None and not same_measurement:
             for kind in TraceKind:
                 self.clear_trace(kind)
             self.clear_persistence_display()
         self._measurement_signature = signature
         self._latest_view = view
+        self._trace_views[TraceKind.CURRENT] = view
         self._set_trace_view(TraceKind.CURRENT, view)
         self._plot_item.setLabel("left", view.unit_label)
-        self._plot_item.setXRange(float(view.frequencies_hz[0]), float(view.frequencies_hz[-1]), padding=0.0)
+        if not same_measurement:
+            self._plot_item.setXRange(float(view.frequencies_hz[0]), float(view.frequencies_hz[-1]), padding=0.0)
         self._empty_overlay.setVisible(False)
         self._apply_vertical_range()
         self._update_markers_for_new_frame()
@@ -154,7 +169,9 @@ class SpectrumScene(QWidget):
     def set_trace(self, kind: TraceKind, frame: object) -> None:
         """Render a supplied analytical trace without retaining its full frame."""
 
-        self._set_trace_view(kind, adapt_spectrum_frame(frame))
+        view = adapt_spectrum_frame(frame)
+        self._trace_views[kind] = view
+        self._set_trace_view(kind, view)
 
     def set_frequency_axis_visible(self, visible: bool) -> None:
         """Show the local x-axis only when no linked lower pane owns it."""
@@ -163,6 +180,7 @@ class SpectrumScene(QWidget):
 
     def clear_trace(self, kind: TraceKind) -> None:
         self._envelopes.pop(kind, None)
+        self._trace_views.pop(kind, None)
         self._curves[kind].setData([], [])
 
     def set_band_masks(self, masks: tuple[BandMask, ...]) -> None:
@@ -231,12 +249,27 @@ class SpectrumScene(QWidget):
         self._warning_readout.setVisible(bool(message_text))
 
     def set_theme(self, theme: ThemeId) -> None:
-        """Apply V2 tokens while retaining stable scientific trace colours."""
+        """Apply actual trace pens as well as chrome, without replacing data."""
 
         self._theme = theme
         tokens = tokens_for_theme(theme)
         self.setStyleSheet(stylesheet_for_theme(theme))
         self._graphics.setBackground(tokens.colors.panel)
+        trace_colors = {
+            TraceKind.CURRENT: tokens.scientific.current_spectrum,
+            TraceKind.AVERAGE: tokens.scientific.average,
+            TraceKind.MAXIMUM: tokens.scientific.max_hold,
+            TraceKind.MINIMUM: tokens.scientific.min_hold,
+        }
+        high_contrast_styles = {
+            TraceKind.CURRENT: Qt.PenStyle.SolidLine,
+            TraceKind.AVERAGE: Qt.PenStyle.DashLine,
+            TraceKind.MAXIMUM: Qt.PenStyle.DotLine,
+            TraceKind.MINIMUM: Qt.PenStyle.DashDotLine,
+        }
+        for kind, curve in self._curves.items():
+            style = high_contrast_styles[kind] if theme is ThemeId.HIGH_CONTRAST else Qt.PenStyle.SolidLine
+            curve.setPen(pg.mkPen(trace_colors[kind], width=1.4, style=style))
         axis_pen = pg.mkPen(tokens.colors.secondary_text, width=1)
         for axis_name in ("left", "bottom"):
             axis = self._plot_item.getAxis(axis_name)
@@ -250,6 +283,25 @@ class SpectrumScene(QWidget):
         self._persistence_legend.set_theme(theme)
         if self._shortcut_popover is not None:
             self._shortcut_popover.setStyleSheet(stylesheet_for_theme(theme))
+
+    def set_locale(self, locale: UiLocale) -> None:
+        """Retranslate scene chrome without replacing measurement-local state."""
+        self._locale = UiLocale(locale)
+        self._frequency_axis.set_locale(self._locale)
+        self.setAccessibleName(text("spectrum.accessible.name", self._locale))
+        self._persistence_visible.setText(text("spectrum.persistence.visible", self._locale))
+        self._persistence_log.setText(text("spectrum.persistence.log", self._locale))
+        self._persistence_mode.setItemText(0, text("spectrum.persistence.mode.direct", self._locale))
+        self._persistence_mode.setItemText(1, text("spectrum.persistence.mode.visual", self._locale))
+        self._persistence_clear.setText(text("spectrum.persistence.clear", self._locale))
+        self._auto_button.setText(text("spectrum.range.auto", self._locale))
+        self._lock_button.setText(text("spectrum.range.lock", self._locale))
+        self._shortcut_button.setText(text("spectrum.shortcuts.button", self._locale))
+        self._persistence_legend.set_locale(self._locale)
+        for kind, curve in self._curves.items():
+            curve.opts["name"] = text(_TRACE_LABEL_KEYS[kind], self._locale)
+        self._update_range_summary()
+        self._refresh_persistence_status()
 
     def set_reference_level(self, value: float) -> None:
         """Set explicit manual reference level unless the range is locked."""
@@ -418,14 +470,18 @@ class SpectrumScene(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        layout.addWidget(self._build_toolbar())
+        self._toolbar = self._build_toolbar()
+        layout.addWidget(self._toolbar)
         self._chart_host = QFrame(self)
         self._chart_host.setProperty("ui2Role", "panel")
         host_layout = QVBoxLayout(self._chart_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         self._graphics = pg.GraphicsLayoutWidget(self._chart_host)
-        axis = FrequencyAxis(orientation="bottom")
-        self._plot_item = self._graphics.addPlot(axisItems={"bottom": axis})
+        # V2 already separates the panels; use its 4 px spacing grid instead
+        # of stacking pyqtgraph's default outer padding inside another frame.
+        self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
+        self._frequency_axis = FrequencyAxis(orientation="bottom", locale=self._locale)
+        self._plot_item = self._graphics.addPlot(axisItems={"bottom": self._frequency_axis})
         self._plot_item.setMenuEnabled(False)
         self._plot_item.hideButtons()
         self._view_box = self._plot_item.getViewBox()
@@ -592,13 +648,14 @@ class SpectrumScene(QWidget):
         return lines, labels
 
     def _set_trace_view(self, kind: TraceKind, view: SpectrumFrameView) -> None:
-        envelope = peak_preserving_envelope(view, max(1, self._graphics.width()))
+        visible = self._visible_trace_view(view)
+        envelope = peak_preserving_envelope(visible, max(1, self._view_box.width()))
         self._envelopes[kind] = envelope
         self._curves[kind].setData(envelope.frequencies_hz, envelope.values, connect="finite")
         if kind is TraceKind.CURRENT:
-            self._unit_readout.setText(text("spectrum.unit.readout", unit=view.unit_label))
+            self._unit_readout.setText(text("spectrum.unit.readout", self._locale, unit=view.unit_label))
             self._unit_readout.setAccessibleDescription(
-                text("spectrum.unit.exact_description", unit=view.unit_label)
+                text("spectrum.unit.exact_description", self._locale, unit=view.unit_label)
             )
 
     def _apply_vertical_range(self) -> None:
@@ -611,9 +668,11 @@ class SpectrumScene(QWidget):
             if finite.size:
                 maximum = float(np.max(finite))
                 minimum = float(np.min(finite))
-                span = max(20.0, maximum - minimum)
-                self._reference_level = maximum + max(3.0, span * 0.08)
-                self._db_per_division = span / 8.0
+                data_span = maximum - minimum
+                margin = max(3.0, data_span * 0.08)
+                total_span = max(20.0, data_span + 2.0 * margin)
+                self._reference_level = maximum + (total_span - data_span) / 2.0
+                self._db_per_division = total_span / 8.0
                 self._reference_spin.blockSignals(True)
                 self._reference_spin.setValue(self._reference_level)
                 self._reference_spin.blockSignals(False)
@@ -622,17 +681,20 @@ class SpectrumScene(QWidget):
                 self._division_spin.blockSignals(False)
         lower = self._reference_level - self._db_per_division * 8.0
         self._plot_item.setYRange(lower, self._reference_level, padding=0.0)
+        unit = "" if view is None else view.unit_label
+        self.vertical_range_changed.emit(lower, self._reference_level, unit)
         self._update_range_summary()
 
     def _update_range_summary(self) -> None:
         mode_label = {
-            VerticalRangeMode.AUTO: text("spectrum.range.auto"),
-            VerticalRangeMode.MANUAL: text("spectrum.range.manual"),
-            VerticalRangeMode.LOCKED: text("spectrum.range.locked"),
+            VerticalRangeMode.AUTO: text("spectrum.range.auto", self._locale),
+            VerticalRangeMode.MANUAL: text("spectrum.range.manual", self._locale),
+            VerticalRangeMode.LOCKED: text("spectrum.range.locked", self._locale),
         }[self._range_mode]
         self._range_readout.setText(
             text(
                 "spectrum.range.summary",
+                self._locale,
                 mode=mode_label,
                 reference=self._reference_level,
                 division=self._db_per_division,
@@ -640,8 +702,10 @@ class SpectrumScene(QWidget):
         )
 
     def _update_markers_for_new_frame(self) -> None:
+        selected = self._selected_marker_id
         for marker_id, marker in tuple(self._markers.items()):
             self.place_marker(marker_id, marker.frequency_hz)
+        self._selected_marker_id = selected
 
     def _update_marker_item(self, marker: SpectrumMarker) -> None:
         line = self._marker_lines[marker.marker_id]
@@ -679,9 +743,8 @@ class SpectrumScene(QWidget):
         )
 
     def _on_x_range_changed(self, _view_box: pg.ViewBox, _range: object) -> None:
-        view = self._latest_view
-        if view is not None:
-            self._set_trace_view(TraceKind.CURRENT, view)
+        for kind, view in tuple(self._trace_views.items()):
+            self._set_trace_view(kind, view)
 
     def _on_persistence_mode_changed(self, index: int) -> None:
         value = self._persistence_mode.itemData(index)
@@ -692,27 +755,41 @@ class SpectrumScene(QWidget):
         if view is None:
             return
         scale = (
-            text("spectrum.persistence.scale.log")
+            text("spectrum.persistence.scale.log", self._locale)
             if self._persistence.logarithmic
-            else text("spectrum.persistence.scale.linear")
+            else text("spectrum.persistence.scale.linear", self._locale)
         )
         mode = self._persistence.render_mode
         suffix = (
-            text("spectrum.persistence.suffix.visual")
+            text("spectrum.persistence.suffix.visual", self._locale)
             if mode is PersistenceRenderMode.VISUAL
-            else text("spectrum.persistence.suffix.direct")
+            else text("spectrum.persistence.suffix.direct", self._locale)
         )
         self._persistence_status.setText(
-            text("spectrum.persistence.status", mode=view.value_mode.value, scale=scale, suffix=suffix)
+            text("spectrum.persistence.status", self._locale,
+                 mode=view.value_mode.value, scale=scale, suffix=suffix)
         )
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         host_width = max(260, self._chart_host.width() - 48)
         self._empty_overlay.setGeometry(24, 24, min(420, host_width), 132)
-        view = self._latest_view
-        if view is not None:
-            self._set_trace_view(TraceKind.CURRENT, view)
+        for kind, view in tuple(self._trace_views.items()):
+            self._set_trace_view(kind, view)
+
+    def _visible_trace_view(self, view: SpectrumFrameView) -> SpectrumFrameView:
+        """Return a zero-copy analytical slice covering the current viewport."""
+        left, right = self._view_box.viewRange()[0]
+        start = max(0, int(np.searchsorted(view.frequencies_hz, left, side="left")) - 1)
+        stop = min(view.point_count, int(np.searchsorted(view.frequencies_hz, right, side="right")) + 1)
+        if stop <= start:
+            start, stop = 0, view.point_count
+        return SpectrumFrameView(
+            source_frame=view.source_frame,
+            frequencies_hz=view.frequencies_hz[start:stop],
+            values=view.values[start:stop],
+            unit_label=view.unit_label,
+        )
 
 
 def _secondary_label(text: str, accessible_name: str, parent: QWidget) -> QLabel:

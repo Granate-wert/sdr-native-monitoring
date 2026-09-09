@@ -38,6 +38,7 @@ class WaterfallGridSignature:
     first_edge_hz: float
     last_edge_hz: float
     spacing_hz: float
+    timestamp_known: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,8 @@ class WaterfallLineFrame:
     timestamp_ns: int
     configuration_generation: int | str
     unit_label: str
+    timestamp_known: bool = True
+    sequence: int | None = None
 
     def __post_init__(self) -> None:
         values = np.asarray(self.values)
@@ -73,6 +76,10 @@ class WaterfallLineFrame:
         _validate_generation(self.configuration_generation)
         if isinstance(self.timestamp_ns, bool) or not isinstance(self.timestamp_ns, int) or self.timestamp_ns < 0:
             raise ValueError("waterfall timestamp_ns must be a non-negative integer")
+        if not isinstance(self.timestamp_known, bool):
+            raise ValueError("waterfall timestamp provenance must be explicit")
+        if self.sequence is not None and (isinstance(self.sequence, bool) or not isinstance(self.sequence, int) or self.sequence < 0):
+            raise ValueError("waterfall sequence must be a non-negative integer or absent")
         # Validate against the existing authoritative display budget before any
         # renderer allocation. The row itself remains source-owned and is not copied.
         DEFAULT_WATERFALL_PRESENTATION_BUDGET.estimate(1, int(values.size))
@@ -89,6 +96,7 @@ class WaterfallLineFrame:
             first_edge_hz=float(self.frequency_edges_hz[0]),
             last_edge_hz=float(self.frequency_edges_hz[-1]),
             spacing_hz=spacing,
+            timestamp_known=self.timestamp_known,
         )
 
 

@@ -7,13 +7,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import fields
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAccessible, QFontDatabase, QFontMetrics
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QAccessible, QFontDatabase, QFontInfo, QFontMetrics
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from sdr_monitor.ui.v2.components import ContextPopover, NavigationItem, SectionHeader, SplitterHandle
 from sdr_monitor.ui.v2.design import (
@@ -46,8 +47,7 @@ class DesignSystemTests(unittest.TestCase):
         if font_path.is_file():
             QFontDatabase.addApplicationFont(str(font_path))
 
-    def test_semantic_text_contrast_and_stable_scientific_colours(self) -> None:
-        scientific = None
+    def test_semantic_text_contrast_and_theme_aware_scientific_colours(self) -> None:
         for theme in ThemeId:
             tokens = tokens_for_theme(theme)
             self.assertGreaterEqual(
@@ -56,10 +56,21 @@ class DesignSystemTests(unittest.TestCase):
             self.assertGreaterEqual(
                 contrast_ratio(tokens.colors.secondary_text, tokens.colors.background), 4.5
             )
-            if scientific is None:
-                scientific = tokens.scientific
-            else:
-                self.assertEqual(tokens.scientific, scientific)
+        dark = tokens_for_theme(ThemeId.DARK).scientific
+        light_tokens = tokens_for_theme(ThemeId.LIGHT)
+        high_contrast = tokens_for_theme(ThemeId.HIGH_CONTRAST).scientific
+        roles = tuple(item.name for item in fields(dark))
+        self.assertEqual(
+            roles,
+            ("current_spectrum", "average", "max_hold", "min_hold", "marker"),
+        )
+        for role in roles:
+            self.assertGreaterEqual(
+                contrast_ratio(getattr(light_tokens.scientific, role), light_tokens.colors.panel),
+                4.5,
+            )
+        self.assertNotEqual(light_tokens.scientific, dark)
+        self.assertEqual(len({getattr(high_contrast, role) for role in roles}), len(roles))
 
     def test_qss_has_real_semantic_selectors_and_focus_ring(self) -> None:
         stylesheet = stylesheet_for_theme(ThemeId.DARK)
@@ -98,6 +109,32 @@ class DesignSystemTests(unittest.TestCase):
             self.skipTest("Windows product typography contract")
         font = QFontDatabase.font("Segoe UI", "", 13)
         self.assertTrue(QFontMetrics(font).inFontUcs4(ord("П")))
+
+    def test_v2_qss_resolves_sans_body_and_mono_only_for_numeric_roles(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows product typography contract")
+        for theme in ThemeId:
+            with self.subTest(theme=theme):
+                root = QWidget()
+                root.setProperty("ui2Root", True)
+                root.setStyleSheet(stylesheet_for_theme(theme))
+                body = QLabel("Analyzer Приём", root)
+                numeric = QLabel("2400.000 MHz", root)
+                numeric.setProperty("ui2Role", "numeric")
+                heading = QLabel("Analyzer", root)
+                heading.setProperty("ui2Role", "workspace-heading")
+                detail = QLabel("Applied values", root)
+                detail.setProperty("ui2Role", "secondary")
+                root.show()
+                self.app.processEvents()
+                self.assertEqual(QFontInfo(body.font()).family(), "Segoe UI")
+                self.assertEqual(QFontInfo(numeric.font()).family(), "Consolas")
+                typography = tokens_for_theme(theme).typography
+                self.assertEqual(body.font().pixelSize(), typography.body_px)
+                self.assertEqual(numeric.font().pixelSize(), typography.measurement_px)
+                self.assertEqual(heading.font().pixelSize(), typography.workspace_title_px)
+                self.assertEqual(detail.font().pixelSize(), typography.secondary_px)
+                root.deleteLater()
 
     def test_explicit_icons_have_visible_pixels(self) -> None:
         for icon_id in V2IconId:

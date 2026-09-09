@@ -1,5 +1,6 @@
 """One V2 renderer consumes both actual domain publication variants."""
 import os
+import time
 import unittest
 
 import numpy as np
@@ -95,6 +96,11 @@ class AnalyzerBundleSceneTests(unittest.TestCase):
         presenter.analyzer_ready.connect(scene.set_frame)
         try:
             presenter.start(object())
+            deadline = time.monotonic() + 1
+            while presenter.is_starting and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.001)
+            self.assertFalse(presenter.is_starting)
             presenter._poll()
             self.assertEqual(lines, [])
             envelope = scene.trace_envelope(TraceKind.CURRENT)

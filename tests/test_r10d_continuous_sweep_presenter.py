@@ -29,6 +29,15 @@ from sdr_monitor.ui.presenters.continuous_sweep_presenter import ContinuousSweep
 _APP = QApplication.instance() or QApplication([])
 
 
+def _finish_start(presenter: ContinuousSweepPresenter) -> None:
+    deadline = time.monotonic() + 2
+    while presenter.is_starting and time.monotonic() < deadline:
+        _APP.processEvents()
+        time.sleep(0.001)
+    if presenter.is_starting:
+        raise AssertionError("continuous Sweep Start did not complete")
+
+
 def _line() -> SweepLineFrame:
     return SweepLineFrame(
         sequence=1,
@@ -159,6 +168,7 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
         presenter.analyzer_ready.connect(lambda frame: events.append(("frame", frame)))
         presenter.running_changed.connect(lambda running: events.append(("running", running)))
         presenter.start(object())
+        _finish_start(presenter)
         presenter.stop()
         deadline = time.monotonic() + 2
         while presenter._stop_future is not None and time.monotonic() < deadline:
@@ -191,6 +201,7 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
         delivered_threads = []
         presenter.analyzer_ready.connect(lambda _: delivered_threads.append(threading.get_ident()))
         presenter.start(object())
+        _finish_start(presenter)
         try:
             presenter.stop()
             self.assertTrue(entered.wait(1))
@@ -207,6 +218,7 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
             self.assertIsNone(presenter._stop_future)
             self.assertEqual(delivered_threads, [threading.get_ident()])
             presenter.start(object())
+            _finish_start(presenter)
             self.assertEqual(service.starts, 2)
         finally:
             release.set()
@@ -228,6 +240,7 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
         errors = []
         presenter.task_failed.connect(errors.append)
         presenter.start(object())
+        _finish_start(presenter)
         presenter.stop()
         deadline = time.monotonic() + 2
         while presenter.is_stopping and time.monotonic() < deadline:
@@ -235,7 +248,8 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
             time.sleep(0.001)
         self.assertFalse(presenter.is_stopping)
         self.assertEqual(errors, ["stop ownership unresolved"])
-        presenter.start(object())
+        with self.assertRaisesRegex(RuntimeError, "cleanup is unresolved"):
+            presenter.start(object())
         self.assertEqual(service.starts, 1)
         presenter.shutdown()
         _APP.processEvents()
@@ -271,6 +285,7 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
         presenter.running_changed.connect(running.append)
         presenter.task_failed.connect(errors.append)
         presenter.start(object())
+        _finish_start(presenter)
         try:
             presenter._poll()
             self.assertTrue(entered.wait(1))
@@ -289,7 +304,8 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
             self.assertEqual(running, [True, False])
             self.assertFalse(service.started)
             presenter.start(object())
-            self.assertEqual(service.starts, 1)
+            _finish_start(presenter)
+            self.assertEqual(service.starts, 2)
         finally:
             release.set()
             presenter.shutdown()

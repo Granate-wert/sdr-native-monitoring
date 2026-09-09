@@ -170,9 +170,13 @@ class AppShellV2(QMainWindow):
             self._connect_workspace_navigation(page)
         self._stack.setCurrentWidget(page)
         self._active_workspace_id = workspace_id
+        # Analyzer has its own measurement status strip; do not reserve a
+        # second permanent row for the historical navigation-only disclaimer.
+        self._status_bar.setVisible(workspace_id != "analyzer")
         for identifier, button in self._nav_buttons.items():
             button.set_active(identifier == workspace_id)
         self._replace_inspector(workspace_id, definition)
+        self._apply_responsive_layout()
         self.workspace_changed.emit(workspace_id)
 
     def _connect_workspace_navigation(self, page: QWidget) -> None:
@@ -311,9 +315,10 @@ class AppShellV2(QMainWindow):
     def _build_top_bar(self) -> QWidget:
         bar = QFrame(self._root)
         bar.setProperty("ui2Role", "card")
-        bar.setFixedHeight(52)
+        analyzer_product = self._context.initial_workspace_id == "analyzer"
+        bar.setFixedHeight(40 if analyzer_product else 52)
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setContentsMargins(12, 4 if analyzer_product else 6, 12, 4 if analyzer_product else 6)
         layout.setSpacing(8)
         title = QLabel(text("shell.title").removesuffix(" — UI V2"), bar)
         title.setProperty("ui2Role", "workspace-heading")
@@ -493,7 +498,15 @@ class AppShellV2(QMainWindow):
         active_workspace_id = self._active_workspace_id
         navigation_expanded = self._navigation_expanded
         inspector_requested = self._inspector_requested
-        for page in self._workspace_pages.values():
+        retained_pages = {}
+        for identifier, page in self._workspace_pages.items():
+            if identifier == "analyzer" and callable(getattr(page, "set_locale", None)):
+                # Stateful Analyzer translates in place: do not destroy its
+                # draft, viewport, markers or bounded history with shell text.
+                self._stack.removeWidget(page)
+                page.setParent(None)
+                retained_pages[identifier] = page
+                continue
             page.close()
             page.setParent(None)
             page.deleteLater()
@@ -514,6 +527,10 @@ class AppShellV2(QMainWindow):
         self._inspector_workspace_id = None
         self._navigation_has_bottom_stretch = False
         self._build_shell()
+        for identifier, page in retained_pages.items():
+            page.set_locale()
+            self._workspace_pages[identifier] = page
+            self._stack.addWidget(page)
         self._set_navigation_expanded(navigation_expanded)
         self._inspector_requested = inspector_requested
         self.set_theme(self._theme)
@@ -547,7 +564,10 @@ class AppShellV2(QMainWindow):
             set_theme(self._theme)
 
     def _apply_responsive_layout(self) -> None:
-        narrow = self.width() < _NARROW_WIDTH
+        # Analyzer reserves its width for measurement, at every display scale.
+        # The inspector stays explicitly accessible as an overlay; this must
+        # not rewrite the user's pinned-inspector preference for other pages.
+        narrow = self.width() < _NARROW_WIDTH or self._active_workspace_id == "analyzer"
         self._inspector_hidden_for_narrow_width = narrow
         if narrow:
             self._inspector.setVisible(False)
@@ -555,9 +575,13 @@ class AppShellV2(QMainWindow):
             self._inspector_toggle.setText(
                 text("shell.inspector.hide") if self._narrow_inspector_drawer_open else text("shell.inspector.show")
             )
+            self._inspector_toggle.setAccessibleName(
+                text("shell.inspector.hide_name") if self._narrow_inspector_drawer_open else text("shell.inspector.show_name")
+            )
             self._inspector_toggle.setEnabled(True)
             self._inspector_toggle.setToolTip(
-                text("shell.inspector.narrow_tooltip")
+                text("shell.inspector.drawer_tooltip") if self._active_workspace_id == "analyzer"
+                else text("shell.inspector.narrow_tooltip")
             )
             return
         if self._narrow_inspector_drawer_open:
@@ -588,13 +612,20 @@ class AppShellV2(QMainWindow):
         self._narrow_inspector_drawer.clear_content()
         self._narrow_inspector_drawer.hide()
         self._narrow_inspector_drawer_open = False
+        self._inspector_toggle.setFocus(Qt.FocusReason.OtherFocusReason)
         self._apply_responsive_layout()
 
     def _position_narrow_inspector_drawer(self) -> None:
         if not self._inspector_hidden_for_narrow_width:
             return
         top = self._top_bar.height()
-        height = max(0, self._root.height() - top - self._status_bar.height())
+        if self._active_workspace_id == "analyzer":
+            page = self._workspace_pages.get("analyzer")
+            primary = getattr(page, "primary", None)
+            if isinstance(primary, QWidget):
+                top = max(top, primary.mapTo(self._root, primary.rect().bottomRight()).y() + 8)
+        status_height = self._status_bar.height() if self._status_bar.isVisible() else 0
+        height = max(0, self._root.height() - top - status_height)
         self._narrow_inspector_drawer.setGeometry(
             max(0, self._root.width() - _INSPECTOR_DRAWER_WIDTH),
             top,

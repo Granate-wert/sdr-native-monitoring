@@ -7,6 +7,7 @@ import unittest
 import numpy as np
 
 from sdr_monitor.domain import BackendKind, CalibrationQuality, LiveSessionState
+from sdr_monitor.ui.v2.i18n import text
 from sdr_monitor.ui.v2.state.app_state import AppViewState, UiPresentationPreferences, UiWorkspace
 from sdr_monitor.ui.v2.state.live_view_state import (
     CalibrationPresentation,
@@ -241,6 +242,14 @@ class LiveViewStateTests(unittest.TestCase):
         self.assertEqual(view_state.loss.fft_frames, 7)
         self.assertEqual(view_state.loss.publication_frames, 11)
         self.assertEqual(view_state.loss.bridge_frames, 13)
+
+    def test_published_frame_with_unknown_clock_is_not_labelled_as_no_frame(self) -> None:
+        state = build_live_view_state(
+            make_snapshot(LiveSessionState.RUNNING, spectrum=self._spectrum()),
+        )
+        self.assertTrue(state.has_spectrum)
+        self.assertIsNone(state.data_age_ms)
+        self.assertEqual(state.data_age_label, text("live_state.age.unknown"))
 
     def test_legacy_quality_and_frame_loss_remain_visible_with_zero_performance_fields(self) -> None:
         snapshot = FakeSnapshot(

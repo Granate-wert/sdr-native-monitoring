@@ -59,8 +59,8 @@ class CurrentV2CompositionTests(unittest.TestCase):
             self.assertIs(args[0]._use_cases._port, live)
             self.assertIsInstance(kwargs["sweep_presenter"]._use_cases, SweepControlApplicationService)
             self.assertIsInstance(kwargs["calibration_presenter"]._use_cases, CalibrationControlApplicationService)
-            self.assertEqual(shell.active_workspace_id, "home")
-            for route in ("live", "sweep", "calibration", "diagnostics", "replay", "home"):
+            self.assertEqual(shell.active_workspace_id, "analyzer")
+            for route in ("analyzer", "calibration", "diagnostics", "replay", "analyzer"):
                 shell.select_workspace(route)
                 self.app.processEvents()
             for name in ("discover_devices", "discover_startup_devices", "select_device", "start", "apply_configuration"):

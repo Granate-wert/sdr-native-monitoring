@@ -61,6 +61,10 @@ class BoundedWaterfallRing:
     def __init__(self, rows: int, columns: int) -> None:
         DEFAULT_WATERFALL_PRESENTATION_BUDGET.estimate(rows, columns)
         self._data: np.ndarray = np.zeros((int(rows), int(columns)), dtype=np.float32)
+        # Keep one scalar timestamp per retained presentation row.  It is
+        # deliberately separate from the image tiles, so irregular producer
+        # time is neither resampled nor silently turned into render cadence.
+        self._timestamps_ns: np.ndarray = np.zeros(int(rows), dtype=np.int64)
         self._write_index = 0
         self._count = 0
 
@@ -81,11 +85,12 @@ class BoundedWaterfallRing:
         self._write_index = 0
         self._count = 0
 
-    def append(self, values: np.ndarray) -> None:
+    def append(self, values: np.ndarray, *, timestamp_ns: int) -> None:
         row = np.asarray(values, dtype=np.float32)
         if row.ndim != 1 or row.size != self.columns:
             raise ValueError("waterfall row width changed")
         self._data[self._write_index, :] = row
+        self._timestamps_ns[self._write_index] = timestamp_ns
         self._write_index = (self._write_index + 1) % self.rows
         self._count = min(self._count + 1, self.rows)
 
@@ -97,6 +102,17 @@ class BoundedWaterfallRing:
         if self._count < self.rows or self._write_index == 0:
             return (self._data[: self._count],)
         return (self._data[self._write_index :], self._data[: self._write_index])
+
+    def chronological_timestamps_ns(self) -> np.ndarray:
+        """Return an oldest-to-newest scalar view/copy-free slice pair collapsed only for axis use."""
+
+        if self._count == 0:
+            return self._timestamps_ns[:0]
+        if self._count < self.rows or self._write_index == 0:
+            return self._timestamps_ns[: self._count]
+        # The axis needs a tiny, ordered scalar sequence.  Unlike image data,
+        # this is at most 4096 int64 values and never a second full image.
+        return np.concatenate((self._timestamps_ns[self._write_index :], self._timestamps_ns[: self._write_index]))
 
 
 class BoundedWaterfallRenderer:
@@ -116,11 +132,14 @@ class BoundedWaterfallRenderer:
         if self._buffer is not None:
             self._buffer.clear()
 
-    def append(self, values: np.ndarray, *, rows: int) -> None:
+    def append(self, values: np.ndarray, *, rows: int, timestamp_ns: int) -> None:
         columns = int(np.asarray(values).size)
         if self._buffer is None or self._buffer.rows != rows or self._buffer.columns != columns:
             self._buffer = BoundedWaterfallRing(rows, columns)
-        self._buffer.append(values)
+        self._buffer.append(values, timestamp_ns=timestamp_ns)
 
     def tiles(self) -> tuple[np.ndarray, ...]:
         return () if self._buffer is None else self._buffer.chronological_tiles()
+
+    def timestamps_ns(self) -> np.ndarray:
+        return np.empty(0, dtype=np.int64) if self._buffer is None else self._buffer.chronological_timestamps_ns()

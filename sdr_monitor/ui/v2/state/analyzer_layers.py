@@ -10,6 +10,9 @@ from ..spectrum.persistence_contracts import DensityValueMode, PersistenceDensit
 from ..waterfall.contracts import WaterfallLineFrame
 
 
+_MAX_WATERFALL_COLUMNS = 2048
+
+
 def _regular_edges(centers: np.ndarray) -> np.ndarray:
     values = np.asarray(centers, dtype=np.float64).reshape(-1)
     if values.size < 2 or not np.all(np.isfinite(values)):
@@ -52,9 +55,53 @@ def persistence_density_from_native(
 
 
 def waterfall_line_from_spectrum(frame: LiveSpectrumFrame) -> WaterfallLineFrame:
-    """Use the same immutable measurement values and producer timestamp once."""
+    """Make a bounded, peak-preserving *presentation* row from a spectrum.
+
+    The analytical FFT remains untouched.  Above the existing Waterfall
+    ceiling, output cells cover equal physical frequency intervals across the
+    complete native span.  Power-of-two FFT sizes therefore use exact integer
+    groups (4096 -> 2048, 16384 -> 2048); other widths use the same regular
+    physical output grid and assign every source-bin centre to exactly one
+    cell.  A cell containing any unknown sample remains NaN, so display LOD
+    cannot bridge an acquisition/analysis gap with a neighbouring peak.
+    """
+    native_edges = _regular_edges(frame.frequencies_hz)
+    values = frame.values
+    if values.size <= _MAX_WATERFALL_COLUMNS:
+        reduced_values, reduced_edges = values, native_edges
+    else:
+        reduced_values, reduced_edges = _reduce_waterfall_columns(values, native_edges)
     return WaterfallLineFrame(
-        values=frame.values, frequency_edges_hz=_regular_edges(frame.frequencies_hz),
+        values=reduced_values, frequency_edges_hz=reduced_edges,
         timestamp_ns=int(frame.timestamp_ns),
         configuration_generation=int(frame.config_generation), unit_label=frame.unit,
+        timestamp_known=_known_waterfall_timestamp(frame), sequence=int(frame.sequence),
     )
+
+
+def _known_waterfall_timestamp(frame: LiveSpectrumFrame) -> bool:
+    """Only the published Unix clock with non-unknown quality supports age labels."""
+    quality = getattr(frame.timestamp_quality, "value", frame.timestamp_quality)
+    return str(getattr(frame, "clock_domain", "")).casefold() == "unix_ns" and str(quality).casefold() != "unknown"
+
+
+def _reduce_waterfall_columns(values: np.ndarray, native_edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Reduce onto at most 2048 equal-width physical presentation cells."""
+    columns = _MAX_WATERFALL_COLUMNS
+    source = np.asarray(values, dtype=np.float32).reshape(-1)
+    # Mapping source-bin *centres* to equal physical cells retains the full
+    # physical span for non-divisible sizes without a narrower final bucket.
+    bucket = (((2 * np.arange(source.size, dtype=np.int64) + 1) * columns) // (2 * source.size))
+    starts = np.asarray(np.searchsorted(bucket, np.arange(columns), side="left"), dtype=np.int64).reshape(-1)
+    stops = np.asarray(np.searchsorted(bucket, np.arange(columns), side="right"), dtype=np.int64).reshape(-1)
+    reduced: np.ndarray = np.full(columns, np.nan, dtype=np.float32)
+    for index in range(columns):
+        samples = source[int(starts[index]):int(stops[index])]
+        if samples.size and np.all(np.isfinite(samples)):
+            reduced[index] = np.max(samples)
+    span = float(native_edges[-1] - native_edges[0])
+    edges = float(native_edges[0]) + np.arange(columns + 1, dtype=np.float64) * (span / columns)
+    edges[-1] = native_edges[-1]
+    reduced.setflags(write=False)
+    edges.setflags(write=False)
+    return reduced, edges

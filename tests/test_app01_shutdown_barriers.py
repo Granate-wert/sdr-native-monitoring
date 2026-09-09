@@ -22,6 +22,7 @@ from tests.ui_v2.test_live_product_composition import (
     FakePresenter,
     FakeSweepPresenter,
 )
+from tests.ui_v2.test_live_view_model import FakeSignal
 
 
 class NativeShutdownBarrierTests(unittest.TestCase):
@@ -68,6 +69,11 @@ class _AnalyzerPresenter:
     def __init__(self, events: list[str], *, failure: Exception | None = None) -> None:
         self.events = events
         self.failure = failure
+        self.analyzer_ready = FakeSignal()
+        self.task_failed = FakeSignal()
+        self.starting_changed = FakeSignal()
+        self.stopping_changed = FakeSignal()
+        self.running_changed = FakeSignal()
 
     def can_close(self) -> bool:
         return True

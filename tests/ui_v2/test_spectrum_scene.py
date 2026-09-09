@@ -319,6 +319,18 @@ class SpectrumSceneTests(unittest.TestCase):
         self.assertEqual(scene._persistence.render_mode, PersistenceRenderMode.DIRECT)
         self.assertIn("ПРЯМОЙ", scene._persistence_status.text())
 
+    def test_pending_density_cannot_overwrite_a_newer_direct_upload(self) -> None:
+        scene = self._scene()
+        first = _persistence_frame(np.zeros((2, 2)))
+        pending = _persistence_frame(np.full((2, 2), 0.25))
+        newest = _persistence_frame(np.ones((2, 2)))
+        scene.set_persistence_frame(first, now_ns=1_000_000_000)
+        scene.set_persistence_frame(pending, now_ns=1_000_000_001)
+        scene.set_persistence_frame(newest, now_ns=1_100_000_000)
+        scene._persistence.flush_pending(now_ns=1_200_000_000)
+        np.testing.assert_array_equal(scene._persistence.image_item.image, np.ones((2, 2), dtype=np.float32))
+        self.assertEqual(scene.persistence_metrics.image_uploads, 2)
+
     def test_direct_and_visual_response_are_different_and_mode_switch_resets_visual_buffer(self) -> None:
         scene = self._scene()
         base = 10_000_000_000_000_000
