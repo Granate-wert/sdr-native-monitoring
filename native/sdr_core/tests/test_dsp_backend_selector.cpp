@@ -44,7 +44,8 @@ std::vector<std::complex<double>> tone(
 
 sdr_core::IqBlock make_block(
     const std::vector<std::complex<double>>& samples,
-    const std::uint64_t first_sample_index
+    const std::uint64_t first_sample_index,
+    const std::int64_t timestamp_ns = 1
 ) {
     auto bytes = std::make_shared<std::vector<std::uint8_t>>(samples.size() * 8U);
     for (std::size_t index = 0; index < samples.size(); ++index) {
@@ -55,7 +56,7 @@ sdr_core::IqBlock make_block(
     }
     sdr_core::IqBlock block;
     block.first_sample_index = first_sample_index;
-    block.timestamp_ns = 1;
+    block.timestamp_ns = timestamp_ns;
     block.center_frequency_hz = 100'000'000.0;
     block.sample_rate_hz = 1'024'000.0;
     block.sample_format = sdr_core::SampleFormat::ComplexFloat32Le;
@@ -189,6 +190,112 @@ void test_fallback_once_and_flagged() {
     );
 }
 
+void test_fallback_replay_is_exactly_once_at_public_boundary() {
+    // Three overlapping FFT windows are committed on CUDA.  The next three
+    // windows fail before their CUDA batch can be published.  CPU replays the
+    // bounded input suffix, but the wrapper must suppress already-published
+    // windows and keep the public sequence/index/timestamp stream exact.
+    constexpr std::uint32_t n = 256U;
+    auto config = make_config(n, 3U);
+    config.hop_size = n / 2U;
+
+    const auto first = make_block(
+        tone(2U * n, 1'024'000.0, 32'000.0, 1.0),
+        0U,
+        1'000'000
+    );
+    const auto second = make_block(
+        tone(n + n / 2U, 1'024'000.0, 32'000.0, 1.0),
+        2U * n,
+        1'500'000
+    );
+
+    auto reference = sdr_core::make_cpu_dsp_backend({});
+    reference->configure(config);
+    reference->push_iq(first);
+    auto expected = reference->poll_spectrum(0U);
+    reference->push_iq(second);
+    const auto expected_tail = reference->poll_spectrum(0U);
+    expected.insert(expected.end(), expected_tail.begin(), expected_tail.end());
+    expect(expected.size() == 6U, "reference must produce six overlapping windows");
+
+    auto backend = sdr_core::make_dsp_backend(selection(sdr_core::ComputeBackendKind::Cuda, true), {});
+    arm_fail_on_batch(2U);
+    backend->configure(config);
+    backend->push_iq(first);
+    auto actual = backend->poll_spectrum(0U);
+    expect(actual.size() == 3U, "first CUDA batch must commit before injected failure");
+    backend->push_iq(second);
+    const auto recovered = backend->poll_spectrum(0U);
+    actual.insert(actual.end(), recovered.begin(), recovered.end());
+    arm_fail_on_batch(0U);
+
+    expect(actual.size() == expected.size(), "replay must publish neither duplicate nor missing frames");
+    for (std::size_t index = 0U; index < expected.size(); ++index) {
+        const auto& observed = actual[index];
+        const auto& reference_frame = expected[index];
+        expect(
+            observed.frame_sequence == index,
+            "public frame sequence must remain contiguous across fallback"
+        );
+        expect(
+            observed.first_sample_index == reference_frame.first_sample_index &&
+                observed.timestamp_ns == reference_frame.timestamp_ns &&
+                observed.config_generation == reference_frame.config_generation,
+            "replayed frame metadata must match the CPU reference exactly"
+        );
+        expect(
+            sdr_core::has_flag(observed.quality_flags, sdr_core::QualityFlag::BackendFallback) ==
+                (index == 3U),
+            "only the first newly published CPU frame must carry BACKEND_FALLBACK"
+        );
+        expect(
+            !sdr_core::has_flag(observed.quality_flags, sdr_core::QualityFlag::BackendDiscontinuity),
+            "bounded exact replay must not fabricate a discontinuity"
+        );
+    }
+    const auto metrics = backend->metrics();
+    expect(metrics.backend_fallback_count == 1U, "exact replay has one fallback");
+    expect(metrics.fft_frames_computed == expected.size(), "wrapper metrics count public frames once");
+}
+
+void test_fallback_without_complete_replay_marks_discontinuity() {
+    // A single input block larger than the fixed replay bound cannot be
+    // reconstructed exactly.  It must never be replayed as though it were
+    // complete: the following fresh CPU frame is explicit about the boundary.
+    constexpr std::uint32_t n = 256U;
+    constexpr std::uint32_t oversized_samples = 262'145U;
+    auto backend = sdr_core::make_dsp_backend(selection(sdr_core::ComputeBackendKind::Cuda, true), {});
+    arm_fail_on_batch(1U);
+    backend->configure(make_config(n, 1U));
+    backend->push_iq(make_block(tone(oversized_samples, 1'024'000.0, 32'000.0, 1.0), 0U));
+    expect(
+        backend->poll_spectrum(0U).empty(),
+        "incomplete replay history must not publish stale CPU reconstruction"
+    );
+    backend->push_iq(make_block(
+        tone(n, 1'024'000.0, 32'000.0, 1.0),
+        oversized_samples,
+        1'000'000
+    ));
+    const auto recovered = backend->poll_spectrum(0U);
+    arm_fail_on_batch(0U);
+    expect(recovered.size() == 1U, "fresh CPU input must recover after discontinuity");
+    expect(
+        recovered.front().first_sample_index == oversized_samples,
+        "recovery must start at the next real input index, never inside retained replay"
+    );
+    expect(
+        sdr_core::has_flag(recovered.front().quality_flags, sdr_core::QualityFlag::BackendFallback) &&
+            sdr_core::has_flag(recovered.front().quality_flags, sdr_core::QualityFlag::BackendDiscontinuity) &&
+            sdr_core::has_flag(recovered.front().quality_flags, sdr_core::QualityFlag::FftDropped),
+        "incomplete replay must expose fallback and discontinuity quality flags"
+    );
+    const auto metrics = backend->metrics();
+    expect(metrics.backend_fallback_count == 1U, "one bounded-replay fallback");
+    expect(metrics.fft_frames_dropped >= 1U, "unreconstructable history is visible as dropped work");
+}
+
 void test_fallback_disabled_enters_error() {
     auto backend = sdr_core::make_dsp_backend(selection(sdr_core::ComputeBackendKind::Cuda, false), {});
     arm_fail_on_batch(2U);
@@ -241,6 +348,8 @@ int main() {
         {"auto_without_table", test_auto_stays_cpu_without_committed_crossover},
         {"auto_below", test_auto_uses_cpu_below_crossover},
         {"fallback_once", test_fallback_once_and_flagged},
+        {"fallback_exactly_once", test_fallback_replay_is_exactly_once_at_public_boundary},
+        {"fallback_discontinuity", test_fallback_without_complete_replay_marks_discontinuity},
         {"fallback_disabled", test_fallback_disabled_enters_error},
         {"reconfigure_retry", test_reconfigure_retries_cuda},
     };

@@ -157,9 +157,15 @@ public:
         result.backend_fallback_count = metrics_.backend_fallback_count;
         result.backend_switch_count = metrics_.backend_switch_count;
         result.last_backend_error = metrics_.last_backend_error;
-        result.gpu_processing_ns = std::max(metrics_.gpu_processing_ns, active_->metrics().gpu_processing_ns);
-        result.h2d_ns = std::max(metrics_.h2d_ns, active_->metrics().h2d_ns);
-        result.d2h_ns = std::max(metrics_.d2h_ns, active_->metrics().d2h_ns);
+        const auto active_metrics = active_->metrics();
+        result.stage_timing_mask = metrics_.stage_timing_mask | active_metrics.stage_timing_mask;
+        result.input_unpack_ns = std::max(metrics_.input_unpack_ns, active_metrics.input_unpack_ns);
+        result.window_ns = std::max(metrics_.window_ns, active_metrics.window_ns);
+        result.fft_ns = std::max(metrics_.fft_ns, active_metrics.fft_ns);
+        result.detector_ns = std::max(metrics_.detector_ns, active_metrics.detector_ns);
+        result.gpu_processing_ns = std::max(metrics_.gpu_processing_ns, active_metrics.gpu_processing_ns);
+        result.h2d_ns = std::max(metrics_.h2d_ns, active_metrics.h2d_ns);
+        result.d2h_ns = std::max(metrics_.d2h_ns, active_metrics.d2h_ns);
         return result;
     }
 
@@ -250,6 +256,11 @@ private:
     void commit_child_output(const bool flush_partial) {
         const auto frames = active_->poll_spectrum(0U, flush_partial);
         const auto child_metrics = active_->metrics();
+        metrics_.stage_timing_mask |= child_metrics.stage_timing_mask;
+        metrics_.input_unpack_ns = std::max(metrics_.input_unpack_ns, child_metrics.input_unpack_ns);
+        metrics_.window_ns = std::max(metrics_.window_ns, child_metrics.window_ns);
+        metrics_.fft_ns = std::max(metrics_.fft_ns, child_metrics.fft_ns);
+        metrics_.detector_ns = std::max(metrics_.detector_ns, child_metrics.detector_ns);
         metrics_.gpu_processing_ns = std::max(metrics_.gpu_processing_ns, child_metrics.gpu_processing_ns);
         metrics_.h2d_ns = std::max(metrics_.h2d_ns, child_metrics.h2d_ns);
         metrics_.d2h_ns = std::max(metrics_.d2h_ns, child_metrics.d2h_ns);

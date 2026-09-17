@@ -18,8 +18,8 @@ inline constexpr std::uint32_t hackrf_fixed_band_max_dsp_output_capacity = 4096U
 // without moving the default (four frames) or making the queue unbounded.
 inline constexpr std::uint32_t hackrf_fixed_band_max_presentation_capacity = 256U;
 // This final, reduced-frame-only HackRF boundary deliberately preserves the
-// freshest bounded window. The legacy LatestWins policy remains unchanged for
-// existing producer/consumer pipelines elsewhere in the core.
+// freshest bounded window.  The legacy LatestWins policy remains unchanged
+// for existing producer/consumer pipelines elsewhere in the core.
 inline constexpr auto hackrf_fixed_band_presentation_overflow_policy =
     sdr_core::OverflowPolicy::DropOldest;
 

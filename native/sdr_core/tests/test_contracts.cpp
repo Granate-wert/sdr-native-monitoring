@@ -35,7 +35,8 @@ int main() {
     }
     if (to_wire(SourceType::LiveIq) != "live_iq" ||
         to_wire(SpectrumUnit::DbfsHz) != "dBFS/Hz" ||
-        static_cast<std::uint32_t>(QualityFlag::CudaFallback) != (1U << 14U)) {
+        static_cast<std::uint32_t>(QualityFlag::CudaFallback) != (1U << 14U) ||
+        static_cast<std::uint32_t>(QualityFlag::BackendDiscontinuity) != (1U << 15U)) {
         std::cerr << "enum wire values mismatch" << std::endl;
         return 2;
     }
@@ -113,6 +114,16 @@ int main() {
             auto invalid = persistence;
             invalid.power_max_db = invalid.power_min_db;
             validate(invalid);
+        }) ||
+        !rejects([&persistence] {
+            auto invalid = persistence;
+            invalid.snapshot_rate_hz = 9.0;
+            validate(invalid);
+        }) ||
+        !rejects([&persistence] {
+            auto invalid = persistence;
+            invalid.snapshot_rate_hz = 31.0;
+            validate(invalid);
         })) {
         std::cerr << "invalid configuration was accepted" << std::endl;
         return 3;
@@ -164,6 +175,14 @@ int main() {
         .quality_flags = QualityFlag::Uncalibrated,
     };
     validate(frame);
+    auto unordered_frame = frame;
+    unordered_frame.frequencies_hz = std::make_shared<std::vector<double>>(
+        std::initializer_list<double>{99.0, 101.0, 100.0, 102.0}
+    );
+    if (!rejects([&unordered_frame] { validate(unordered_frame); })) {
+        std::cerr << "unordered SpectrumFrame frequencies were accepted" << std::endl;
+        return 5;
+    }
 
     DeviceCapabilities capabilities{
         .backend_id = "synthetic",

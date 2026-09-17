@@ -105,12 +105,7 @@ RelayRun run_slow_consumer(
     const auto bytes = tone_ci8(samples_per_block);
     const auto started = std::chrono::steady_clock::now();
     for (std::uint32_t block = 0U; block < kBlocks; ++block) {
-        push_block(
-            ingress,
-            dsp,
-            bytes,
-            static_cast<std::int64_t>(block + 1U) * 1'000'000
-        );
+        push_block(ingress, dsp, bytes, static_cast<std::int64_t>(block + 1U) * 1'000'000);
     }
     const auto elapsed = std::chrono::steady_clock::now() - started;
     ingress.request_stop();

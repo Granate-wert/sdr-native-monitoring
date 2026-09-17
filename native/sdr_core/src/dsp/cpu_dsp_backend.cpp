@@ -5,11 +5,13 @@
 #include "sdr_core/window.hpp"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstring>
 #include <deque>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 namespace sdr_core {
@@ -18,7 +20,20 @@ namespace {
 
 constexpr double full_scale_i16 = 32768.0;
 constexpr double full_scale_i12 = 2048.0;
-constexpr double full_scale_i8 = 128.0;
+
+#ifndef SDR_CORE_PROFILING_ENABLED
+#define SDR_CORE_PROFILING_ENABLED 0
+#endif
+
+#if SDR_CORE_PROFILING_ENABLED
+using ProfileClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t elapsed_ns(const ProfileClock::time_point started) noexcept {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(ProfileClock::now() - started).count()
+    );
+}
+#endif
 
 [[nodiscard]] std::uint32_t bytes_per_sample(const SampleFormat format) {
     switch (format) {
@@ -71,6 +86,18 @@ constexpr double full_scale_i8 = 128.0;
     return fallback;
 }
 
+void validate_shared_plan_compatibility(
+    const CpuDspSharedPlan& plan,
+    const DspConfig& config
+) {
+    if (plan.fft_size() != config.fft_size || plan.window() != config.window ||
+        plan.kaiser_beta() != config.kaiser_beta || plan.precision_mode() != config.precision_mode) {
+        throw ConfigurationError(
+            "CPU shared plan does not match DspConfig fft/window/kaiser/precision parameters"
+        );
+    }
+}
+
 }  // namespace
 
 class CpuDspBackend final : public DspBackend {
@@ -91,36 +118,53 @@ public:
         }
         config_ = config;
         const auto n = config_.fft_size;
-        const auto metrics = window_metrics(config_.window, n, 1.0, config_.kaiser_beta);
-        coeffs_d_ = metrics.coefficients;
-        coeffs_f_.assign(coeffs_d_.begin(), coeffs_d_.end());
-        coherent_gain_ = metrics.coherent_gain;
-        enbw_bins_ = metrics.enbw_bins;
-        sum_w2_ = 0.0;
-        for (const double coefficient : coeffs_d_) {
-            sum_w2_ += coefficient * coefficient;
+        if (options_.cpu_shared_plan) {
+            validate_shared_plan_compatibility(*options_.cpu_shared_plan, config_);
+            shared_plan_ = options_.cpu_shared_plan;
+        } else {
+            shared_plan_ = make_cpu_dsp_shared_plan(config_);
         }
+        coherent_gain_ = shared_plan_->coherent_gain();
+        enbw_bins_ = shared_plan_->enbw_bins();
+        sum_w2_ = shared_plan_->sum_w2();
         use_f64_ = config_.precision_mode == PrecisionMode::ReferenceF64;
         use_f32_accum_ = config_.precision_mode == PrecisionMode::FastF32;
 
         fft_ = make_pocketfft_provider();
         fft_->configure(n);
 
-        ring_d_.assign(n, std::complex<double>{});
-        ring_f_.assign(n, std::complex<float>{});
-        stage_d_.assign(static_cast<std::size_t>(config_.batch_size) * n, std::complex<double>{});
-        stage_f_.assign(static_cast<std::size_t>(config_.batch_size) * n, std::complex<float>{});
-        fft_out_d_.assign(static_cast<std::size_t>(config_.batch_size) * n, std::complex<double>{});
-        fft_out_f_.assign(static_cast<std::size_t>(config_.batch_size) * n, std::complex<float>{});
+        // One configured backend executes one precision path. Retaining both
+        // f32 and f64 rings/staging/FFT output sets doubled the fixed working
+        // set for every live session without providing a fallback path.
+        if (use_f64_) {
+            ring_d_.assign(n, std::complex<double>{});
+            stage_d_.assign(
+                static_cast<std::size_t>(config_.batch_size) * n,
+                std::complex<double>{}
+            );
+            fft_out_d_.assign(
+                static_cast<std::size_t>(config_.batch_size) * n,
+                std::complex<double>{}
+            );
+            release(ring_f_);
+            release(stage_f_);
+            release(fft_out_f_);
+        } else {
+            ring_f_.assign(n, std::complex<float>{});
+            stage_f_.assign(
+                static_cast<std::size_t>(config_.batch_size) * n,
+                std::complex<float>{}
+            );
+            fft_out_f_.assign(
+                static_cast<std::size_t>(config_.batch_size) * n,
+                std::complex<float>{}
+            );
+            release(ring_d_);
+            release(stage_d_);
+            release(fft_out_d_);
+        }
         meta_batch_.assign(config_.batch_size, FrameMeta{});
-        sum_d_.assign(n, 0.0);
-        max_d_.assign(n, 0.0);
-        min_d_.assign(n, std::numeric_limits<double>::infinity());
-        last_d_.assign(n, 0.0);
-        sum_f_.assign(n, 0.0F);
-        max_f_.assign(n, 0.0F);
-        min_f_.assign(n, std::numeric_limits<float>::infinity());
-        last_f_.assign(n, 0.0F);
+        configure_accumulators(n);
 
         metrics_ = DspBackendMetrics{};
         frame_sequence_ = 0U;
@@ -212,22 +256,30 @@ public:
             }
         }
 
-        const bool integer_format =
-            block.sample_format == SampleFormat::ComplexInt8Interleaved ||
-            block.sample_format == SampleFormat::ComplexInt12InInt16Le ||
-            block.sample_format == SampleFormat::ComplexInt16Le;
-        const bool clipped = integer_format &&
-                             detect_clipping(*block.samples, block.sample_count, block.sample_format);
+#if SDR_CORE_PROFILING_ENABLED
+        const auto input_unpack_started = ProfileClock::now();
+#endif
         const auto* bytes = block.samples->data();
         for (std::uint32_t index = 0U; index < block.sample_count; ++index) {
+            bool sample_clipped = false;
             if (use_f64_) {
-                ring_d_[ring_pos_] = unpack<double>(bytes, index, block.sample_format);
+                ring_d_[ring_pos_] = unpack<double>(
+                    bytes,
+                    index,
+                    block.sample_format,
+                    &sample_clipped
+                );
             } else {
-                ring_f_[ring_pos_] = unpack<float>(bytes, index, block.sample_format);
+                ring_f_[ring_pos_] = unpack<float>(
+                    bytes,
+                    index,
+                    block.sample_format,
+                    &sample_clipped
+                );
             }
             ring_pos_ = (ring_pos_ + 1U) % config_.fft_size;
             ++stream_pos_;
-            if (clipped) {
+            if (sample_clipped) {
                 clipped_until_pos_ = stream_pos_;
             }
             if (stream_pos_ == next_frame_end_) {
@@ -239,6 +291,10 @@ public:
             }
         }
         metrics_.samples_processed += block.sample_count;
+#if SDR_CORE_PROFILING_ENABLED
+        metrics_.input_unpack_ns += elapsed_ns(input_unpack_started);
+        metrics_.stage_timing_mask |= stage_timing_mask(DspStageTimingFlag::InputUnpack);
+#endif
     }
 
     [[nodiscard]] std::vector<SpectrumFrame> poll_spectrum(
@@ -318,7 +374,8 @@ private:
     [[nodiscard]] static std::complex<T> unpack(
         const std::uint8_t* bytes,
         const std::uint32_t index,
-        const SampleFormat format
+        const SampleFormat format,
+        bool* const clipped
     ) {
         if (format == SampleFormat::ComplexFloat32Le) {
             const float re = read_le_float(bytes + index * 8U);
@@ -326,47 +383,69 @@ private:
             return {static_cast<T>(re), static_cast<T>(im)};
         }
         if (format == SampleFormat::ComplexInt8Interleaved) {
-            const auto re = read_i8(bytes + index * 2U);
-            const auto im = read_i8(bytes + index * 2U + 1U);
+            const auto re_i8 = read_i8(bytes + index * 2U);
+            const auto im_i8 = read_i8(bytes + index * 2U + 1U);
+            if (clipped != nullptr) {
+                *clipped = re_i8 == 127 || re_i8 == -128 ||
+                           im_i8 == 127 || im_i8 == -128;
+            }
             return {
-                static_cast<T>(static_cast<double>(re) / full_scale_i8),
-                static_cast<T>(static_cast<double>(im) / full_scale_i8),
+                static_cast<T>(static_cast<double>(re_i8) / 128.0),
+                static_cast<T>(static_cast<double>(im_i8) / 128.0),
             };
         }
-        const auto re = static_cast<double>(read_le_i16(bytes + index * 4U));
-        const auto im = static_cast<double>(read_le_i16(bytes + index * 4U + 2U));
+        const auto re_i16 = read_le_i16(bytes + index * 4U);
+        const auto im_i16 = read_le_i16(bytes + index * 4U + 2U);
+        if (clipped != nullptr) {
+            *clipped = format == SampleFormat::ComplexInt12InInt16Le
+                           ? (re_i16 == 2047 || re_i16 == -2048 ||
+                              im_i16 == 2047 || im_i16 == -2048)
+                           : (re_i16 == 32767 || re_i16 == -32768 ||
+                              im_i16 == 32767 || im_i16 == -32768);
+        }
+        const auto re = static_cast<double>(re_i16);
+        const auto im = static_cast<double>(im_i16);
         const double full_scale = format == SampleFormat::ComplexInt12InInt16Le
                                       ? full_scale_i12
                                       : full_scale_i16;
         return {static_cast<T>(re / full_scale), static_cast<T>(im / full_scale)};
     }
 
-    [[nodiscard]] static bool detect_clipping(
-        const std::vector<std::uint8_t>& samples,
-        const std::uint32_t sample_count,
-        const SampleFormat format
-    ) {
-        if (format == SampleFormat::ComplexInt8Interleaved) {
-            for (std::uint32_t index = 0U; index < sample_count; ++index) {
-                const auto re = read_i8(samples.data() + index * 2U);
-                const auto im = read_i8(samples.data() + index * 2U + 1U);
-                if (re == 127 || re == -128 || im == 127 || im == -128) {
-                    return true;
-                }
+    template <typename T>
+    static void release(std::vector<T>& buffer) {
+        std::vector<T>{}.swap(buffer);
+    }
+
+    void configure_accumulators(const std::uint32_t n) {
+        release(sum_d_);
+        release(max_d_);
+        release(min_d_);
+        release(last_d_);
+        release(sum_f_);
+        release(max_f_);
+        release(min_f_);
+        release(last_f_);
+        if (use_f32_accum_) {
+            switch (config_.detector) {
+            case DetectorType::Sample: last_f_.assign(n, 0.0F); break;
+            case DetectorType::Peak: max_f_.assign(n, 0.0F); break;
+            case DetectorType::NegativePeak:
+                min_f_.assign(n, std::numeric_limits<float>::infinity());
+                break;
+            case DetectorType::Rms:
+            case DetectorType::AveragePower: sum_f_.assign(n, 0.0F); break;
             }
-            return false;
+            return;
         }
-        for (std::uint32_t index = 0U; index < sample_count; ++index) {
-            const auto re = read_le_i16(samples.data() + index * 4U);
-            const auto im = read_le_i16(samples.data() + index * 4U + 2U);
-            const bool clipped = format == SampleFormat::ComplexInt12InInt16Le
-                                     ? (re == 2047 || re == -2048 || im == 2047 || im == -2048)
-                                     : (re == 32767 || re == -32768 || im == 32767 || im == -32768);
-            if (clipped) {
-                return true;
-            }
+        switch (config_.detector) {
+        case DetectorType::Sample: last_d_.assign(n, 0.0); break;
+        case DetectorType::Peak: max_d_.assign(n, 0.0); break;
+        case DetectorType::NegativePeak:
+            min_d_.assign(n, std::numeric_limits<double>::infinity());
+            break;
+        case DetectorType::Rms:
+        case DetectorType::AveragePower: sum_d_.assign(n, 0.0); break;
         }
-        return false;
     }
 
     void flush_pipeline() {
@@ -385,14 +464,31 @@ private:
     }
 
     void reset_accumulators() {
-        std::fill(sum_d_.begin(), sum_d_.end(), 0.0);
-        std::fill(max_d_.begin(), max_d_.end(), 0.0);
-        std::fill(min_d_.begin(), min_d_.end(), std::numeric_limits<double>::infinity());
-        std::fill(last_d_.begin(), last_d_.end(), 0.0);
-        std::fill(sum_f_.begin(), sum_f_.end(), 0.0F);
-        std::fill(max_f_.begin(), max_f_.end(), 0.0F);
-        std::fill(min_f_.begin(), min_f_.end(), std::numeric_limits<float>::infinity());
-        std::fill(last_f_.begin(), last_f_.end(), 0.0F);
+        if (use_f32_accum_) {
+            switch (config_.detector) {
+            case DetectorType::Sample: std::fill(last_f_.begin(), last_f_.end(), 0.0F); break;
+            case DetectorType::Peak: std::fill(max_f_.begin(), max_f_.end(), 0.0F); break;
+            case DetectorType::NegativePeak:
+                std::fill(
+                    min_f_.begin(), min_f_.end(), std::numeric_limits<float>::infinity()
+                );
+                break;
+            case DetectorType::Rms:
+            case DetectorType::AveragePower: std::fill(sum_f_.begin(), sum_f_.end(), 0.0F); break;
+            }
+            return;
+        }
+        switch (config_.detector) {
+        case DetectorType::Sample: std::fill(last_d_.begin(), last_d_.end(), 0.0); break;
+        case DetectorType::Peak: std::fill(max_d_.begin(), max_d_.end(), 0.0); break;
+        case DetectorType::NegativePeak:
+            std::fill(
+                min_d_.begin(), min_d_.end(), std::numeric_limits<double>::infinity()
+            );
+            break;
+        case DetectorType::Rms:
+        case DetectorType::AveragePower: std::fill(sum_d_.begin(), sum_d_.end(), 0.0); break;
+        }
     }
 
     // Copies the oldest fft_size samples from the ring into the staging
@@ -442,11 +538,29 @@ private:
         if (staged_ == 0U) {
             return;
         }
+#if SDR_CORE_PROFILING_ENABLED
+        const auto window_started = ProfileClock::now();
+#endif
         if (use_f64_) {
-            apply_window_and_fft(stage_d_.data(), fft_out_d_.data());
+            apply_window(stage_d_.data());
         } else {
-            apply_window_and_fft(stage_f_.data(), fft_out_f_.data());
+            apply_window(stage_f_.data());
         }
+#if SDR_CORE_PROFILING_ENABLED
+        metrics_.window_ns += elapsed_ns(window_started);
+        metrics_.stage_timing_mask |= stage_timing_mask(DspStageTimingFlag::Window);
+        const auto fft_started = ProfileClock::now();
+#endif
+        if (use_f64_) {
+            fft_->execute_batch(stage_d_.data(), fft_out_d_.data(), staged_);
+        } else {
+            fft_->execute_batch(stage_f_.data(), fft_out_f_.data(), staged_);
+        }
+#if SDR_CORE_PROFILING_ENABLED
+        metrics_.fft_ns += elapsed_ns(fft_started);
+        metrics_.stage_timing_mask |= stage_timing_mask(DspStageTimingFlag::Fft);
+        const auto detector_started = ProfileClock::now();
+#endif
         for (std::uint32_t frame = 0U; frame < staged_; ++frame) {
             const auto* spectrum_d = use_f64_ ? fft_out_d_.data() + frame * n : nullptr;
             const auto* spectrum_f = use_f64_ ? nullptr : fft_out_f_.data() + frame * n;
@@ -465,10 +579,14 @@ private:
             }
         }
         staged_ = 0U;
+#if SDR_CORE_PROFILING_ENABLED
+        metrics_.detector_ns += elapsed_ns(detector_started);
+        metrics_.stage_timing_mask |= stage_timing_mask(DspStageTimingFlag::Detector);
+#endif
     }
 
     template <typename T>
-    void apply_window_and_fft(std::complex<T>* staged, std::complex<T>* output) {
+    void apply_window(std::complex<T>* staged) {
         const auto n = config_.fft_size;
         const bool dc_block_mean = options_.dc_removal == DcRemovalMode::BlockMean;
         for (std::uint32_t frame = 0U; frame < staged_; ++frame) {
@@ -481,13 +599,16 @@ private:
                 mean /= static_cast<T>(n);
             }
             for (std::uint32_t k = 0U; k < n; ++k) {
-                const auto coefficient = static_cast<T>(
-                    use_f64_ ? coeffs_d_[k] : static_cast<double>(coeffs_f_[k])
-                );
+                const auto coefficient = [&]() {
+                    if constexpr (std::is_same_v<T, double>) {
+                        return static_cast<T>(shared_plan_->coefficients_f64()[k]);
+                    } else {
+                        return static_cast<T>(shared_plan_->coefficients_f32()[k]);
+                    }
+                }();
                 frame_in[k] = (frame_in[k] - mean) * coefficient;
             }
         }
-        fft_->execute_batch(staged, output, staged_);
     }
 
     void accumulate_frame(
@@ -517,23 +638,45 @@ private:
             const std::size_t target = fftshift_index(k, n);
             if (use_f32_accum_) {
                 const auto power_f = static_cast<float>(power);
-                sum_f_[target] += power_f;
-                if (power_f > max_f_[target]) {
-                    max_f_[target] = power_f;
+                switch (config_.detector) {
+                case DetectorType::Sample:
+                    last_f_[target] = power_f;
+                    break;
+                case DetectorType::Peak:
+                    if (power_f > max_f_[target]) {
+                        max_f_[target] = power_f;
+                    }
+                    break;
+                case DetectorType::NegativePeak:
+                    if (power_f < min_f_[target]) {
+                        min_f_[target] = power_f;
+                    }
+                    break;
+                case DetectorType::Rms:
+                case DetectorType::AveragePower:
+                    sum_f_[target] += power_f;
+                    break;
                 }
-                if (power_f < min_f_[target]) {
-                    min_f_[target] = power_f;
-                }
-                last_f_[target] = power_f;
             } else {
-                sum_d_[target] += power;
-                if (power > max_d_[target]) {
-                    max_d_[target] = power;
+                switch (config_.detector) {
+                case DetectorType::Sample:
+                    last_d_[target] = power;
+                    break;
+                case DetectorType::Peak:
+                    if (power > max_d_[target]) {
+                        max_d_[target] = power;
+                    }
+                    break;
+                case DetectorType::NegativePeak:
+                    if (power < min_d_[target]) {
+                        min_d_[target] = power;
+                    }
+                    break;
+                case DetectorType::Rms:
+                case DetectorType::AveragePower:
+                    sum_d_[target] += power;
+                    break;
                 }
-                if (power < min_d_[target]) {
-                    min_d_[target] = power;
-                }
-                last_d_[target] = power;
             }
         }
     }
@@ -609,6 +752,7 @@ private:
         frame.fft_size = n;
         frame.hop_size = config_.hop_size;
         frame.window = config_.window;
+        frame.averaging_frames = config_.averaging_frames;
         frame.detector = config_.detector;
         frame.precision_mode = config_.precision_mode;
         frame.unit = config_.unit;
@@ -633,9 +777,8 @@ private:
     CpuDspOptions options_;
     DspConfig config_{};
     bool configured_{false};
+    std::shared_ptr<const CpuDspSharedPlan> shared_plan_;
     std::unique_ptr<FftProvider> fft_;
-    std::vector<double> coeffs_d_;
-    std::vector<float> coeffs_f_;
     double coherent_gain_{};
     double enbw_bins_{};
     double sum_w2_{};
@@ -681,6 +824,44 @@ private:
 
 std::unique_ptr<DspBackend> make_cpu_dsp_backend(CpuDspOptions options) {
     return std::make_unique<CpuDspBackend>(std::move(options));
+}
+
+std::shared_ptr<const CpuDspSharedPlan> make_cpu_dsp_shared_plan(const DspConfig& config) {
+    validate(config);
+    const auto metrics = window_metrics(config.window, config.fft_size, 1.0, config.kaiser_beta);
+    auto result = std::make_shared<CpuDspSharedPlan>();
+    result->fft_size_ = config.fft_size;
+    result->window_ = config.window;
+    result->kaiser_beta_ = config.kaiser_beta;
+    result->precision_mode_ = config.precision_mode;
+    result->coherent_gain_ = metrics.coherent_gain;
+    result->enbw_bins_ = metrics.enbw_bins;
+    for (std::size_t index = 0U; index < metrics.coefficients.size(); ++index) {
+        result->sum_w2_ += metrics.coefficients[index] * metrics.coefficients[index];
+    }
+    if (config.precision_mode == PrecisionMode::ReferenceF64) {
+        result->coefficients_f64_ = metrics.coefficients;
+    } else {
+        result->coefficients_f32_.resize(metrics.coefficients.size());
+        for (std::size_t index = 0U; index < metrics.coefficients.size(); ++index) {
+            result->coefficients_f32_[index] = static_cast<float>(metrics.coefficients[index]);
+        }
+    }
+    return result;
+}
+
+std::uint32_t CpuDspSharedPlan::fft_size() const noexcept { return fft_size_; }
+WindowType CpuDspSharedPlan::window() const noexcept { return window_; }
+double CpuDspSharedPlan::kaiser_beta() const noexcept { return kaiser_beta_; }
+PrecisionMode CpuDspSharedPlan::precision_mode() const noexcept { return precision_mode_; }
+double CpuDspSharedPlan::coherent_gain() const noexcept { return coherent_gain_; }
+double CpuDspSharedPlan::enbw_bins() const noexcept { return enbw_bins_; }
+double CpuDspSharedPlan::sum_w2() const noexcept { return sum_w2_; }
+const std::vector<double>& CpuDspSharedPlan::coefficients_f64() const noexcept {
+    return coefficients_f64_;
+}
+const std::vector<float>& CpuDspSharedPlan::coefficients_f32() const noexcept {
+    return coefficients_f32_;
 }
 
 }  // namespace sdr_core

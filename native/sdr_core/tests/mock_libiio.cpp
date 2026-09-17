@@ -38,12 +38,17 @@ struct iio_buffer { std::size_t samples; bool canceled; std::vector<std::uint8_t
 
 namespace {
 iio_device phy{0};
-iio_device rx{1};
+iio_device dds{1};
+iio_device rx{2};
 iio_channel phy_rx{0, false, false};
 iio_channel lo{1, true, false};
 iio_channel rx_i{2, false, false};
 iio_channel rx_q{3, false, false};
 iio_channel wrong_phy_rx{4, false, false};
+iio_channel rx2_i{5, false, false};
+iio_channel rx2_q{6, false, false};
+iio_channel dds_i{7, true, false};
+iio_channel dds_q{8, true, false};
 iio_data_format format{16U, 12U, 0U, true, true, false, false, 1.0, 1U};
 long long frequency = 2'450'000'000LL;
 long long sample_rate = 3'000'000LL;
@@ -53,6 +58,10 @@ std::string gain_mode = "manual";
 std::atomic<bool> cancel_in_progress{};
 std::atomic<bool> cancel_release{true};
 std::atomic<bool> destroyed_during_cancel{};
+
+bool extended_ad9363_profile() {
+    return std::getenv("SDR_MOCK_LIBIIO_AD9363_EXTENDED") != nullptr;
+}
 
 void delay_from_env(const char* name) {
     if (const char* raw = std::getenv(name); raw != nullptr) {
@@ -67,6 +76,8 @@ const char* channel_id(const iio_channel* channel) {
     case 1: return "altvoltage0";
     case 2: return "voltage0";
     case 3: return "voltage1";
+    case 5: return "voltage2";
+    case 6: return "voltage3";
     default: return "voltage0";
     }
 }
@@ -116,6 +127,11 @@ __declspec(dllexport) void iio_library_get_version(unsigned int* major, unsigned
 __declspec(dllexport) void iio_strerror(int error, char* dst, std::size_t length) { std::snprintf(dst, length, "mock error %d", error); }
 __declspec(dllexport) unsigned int iio_get_backends_count() { return 2U; }
 __declspec(dllexport) const char* iio_get_backend(unsigned int index) { return index == 0U ? "usb" : "ip"; }
+// Runtime-feature discovery must be independent from applying a setting to a
+// device. These inert exports exercise only that observation boundary.
+__declspec(dllexport) int iio_device_set_kernel_buffers_count(const iio_device*, unsigned int) { return 0; }
+__declspec(dllexport) int iio_buffer_set_blocking_mode(iio_buffer*, bool) { return 0; }
+__declspec(dllexport) int iio_buffer_get_poll_fd(const iio_buffer*) { return -1; }
 __declspec(dllexport) iio_context* iio_create_context_from_uri(const char* uri) {
     delay_from_env("SDR_MOCK_LIBIIO_CONSTRUCTOR_DELAY_MS");
     return uri != nullptr && (std::strncmp(uri, "usb:", 4) == 0 || std::strncmp(uri, "ip:", 3) == 0) ? new iio_context : nullptr;
@@ -131,7 +147,11 @@ __declspec(dllexport) int iio_context_get_version(const iio_context*, unsigned i
 }
 __declspec(dllexport) int iio_context_set_timeout(iio_context*, unsigned int) { return 0; }
 __declspec(dllexport) const char* iio_context_get_attr_value(const iio_context*, const char* attr) {
-    if (std::strcmp(attr, "hw_model") == 0) return "PlutoSDR mock";
+    if (std::strcmp(attr, "hw_model") == 0) {
+        return extended_ad9363_profile()
+            ? "PlutoSDR mock (AD9363 custom firmware extended profile)"
+            : "PlutoSDR mock";
+    }
     if (std::strcmp(attr, "hw_serial") == 0) return "MOCK";
     if (std::strcmp(attr, "fw_version") == 0) return "mock-fw";
     return nullptr;
@@ -140,29 +160,48 @@ __declspec(dllexport) void mock_iio_reset_cancel_race() { cancel_in_progress = f
 __declspec(dllexport) int mock_iio_cancel_entered() { return cancel_in_progress.load() ? 1 : 0; }
 __declspec(dllexport) void mock_iio_release_cancel() { cancel_release = true; }
 __declspec(dllexport) int mock_iio_destroyed_during_cancel() { return destroyed_during_cancel.load() ? 1 : 0; }
-__declspec(dllexport) unsigned int iio_context_get_devices_count(const iio_context*) { return 2U; }
-__declspec(dllexport) iio_device* iio_context_get_device(const iio_context*, unsigned int index) { return index == 0U ? &phy : &rx; }
+__declspec(dllexport) unsigned int iio_context_get_devices_count(const iio_context*) { return 3U; }
+__declspec(dllexport) iio_device* iio_context_get_device(const iio_context*, unsigned int index) {
+    return index == 0U ? &phy : (index == 1U ? &dds : &rx);
+}
 __declspec(dllexport) iio_device* iio_context_find_device(const iio_context*, const char* name) {
+    if (extended_ad9363_profile()) return nullptr;
     if (std::strcmp(name, "ad9361-phy") == 0 || std::strcmp(name, "ad9364-phy") == 0) return &phy;
     if (std::strcmp(name, "cf-ad9361-lpc") == 0 || std::strcmp(name, "axi-ad9361-rx") == 0) return &rx;
     return nullptr;
 }
-__declspec(dllexport) const char* iio_device_get_id(const iio_device* value) { return value == &phy ? "iio:device0" : "iio:device1"; }
-__declspec(dllexport) const char* iio_device_get_name(const iio_device* value) { return value == &phy ? "ad9361-phy" : "cf-ad9361-lpc"; }
-__declspec(dllexport) unsigned int iio_device_get_channels_count(const iio_device* value) { return value == &phy && std::getenv("SDR_MOCK_LIBIIO_EXACT_WRONG") != nullptr ? 3U : 2U; }
+__declspec(dllexport) const char* iio_device_get_id(const iio_device* value) {
+    return value == &phy ? "iio:device0" : (value == &dds ? "iio:device1" : "iio:device2");
+}
+__declspec(dllexport) const char* iio_device_get_name(const iio_device* value) {
+    if (value == &dds) return "cf-ad9361-dds-core-lpc";
+    if (extended_ad9363_profile()) return value == &phy ? "ad9363-phy" : "cf-ad9363-lpc";
+    return value == &phy ? "ad9361-phy" : "cf-ad9361-lpc";
+}
+__declspec(dllexport) unsigned int iio_device_get_channels_count(const iio_device* value) {
+    if (value == &phy) return std::getenv("SDR_MOCK_LIBIIO_EXACT_WRONG") != nullptr ? 3U : 2U;
+    if (value == &dds) return 2U;
+    return std::getenv("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL") != nullptr ? 4U : 2U;
+}
 __declspec(dllexport) iio_channel* iio_device_get_channel(const iio_device* value, unsigned int index) {
     if (value == &phy && std::getenv("SDR_MOCK_LIBIIO_EXACT_WRONG") != nullptr) {
         if (index == 0U) return &wrong_phy_rx;
         return index == 1U ? &phy_rx : &lo;
     }
     if (value == &phy) return index == 0U ? &phy_rx : &lo;
-    return index == 0U ? &rx_i : &rx_q;
+    if (value == &dds) return index == 0U ? &dds_i : &dds_q;
+    if (index == 0U) return &rx_i;
+    if (index == 1U) return &rx_q;
+    if (std::getenv("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL") != nullptr) return index == 2U ? &rx2_i : &rx2_q;
+    return nullptr;
 }
 __declspec(dllexport) iio_channel* iio_device_find_channel(const iio_device* value, const char* name, bool output) {
     if (value == &phy && !output && std::strcmp(name, "voltage0") == 0) return std::getenv("SDR_MOCK_LIBIIO_EXACT_WRONG") != nullptr ? &wrong_phy_rx : &phy_rx;
     if (value == &phy && output && (std::strcmp(name, "altvoltage0") == 0 || std::strcmp(name, "RX_LO") == 0)) return &lo;
     if (value == &rx && !output && std::strcmp(name, "voltage0") == 0) return &rx_i;
     if (value == &rx && !output && std::strcmp(name, "voltage1") == 0) return &rx_q;
+    if (value == &rx && !output && std::strcmp(name, "voltage2") == 0 && std::getenv("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL") != nullptr) return &rx2_i;
+    if (value == &rx && !output && std::strcmp(name, "voltage3") == 0 && std::getenv("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL") != nullptr) return &rx2_q;
     return nullptr;
 }
 __declspec(dllexport) const char* iio_channel_get_id(const iio_channel* value) { return channel_id(value); }
@@ -198,6 +237,8 @@ __declspec(dllexport) int iio_channel_attr_write_longlong(const iio_channel* cha
         if (value < 200'000LL || value > 56'000'000LL) return -EINVAL; bandwidth = value; return 0;
     }
     if (channel == &lo && std::strcmp(attr, "frequency") == 0) {
+        const auto fail_at = std::getenv("SDR_MOCK_LIBIIO_LO_WRITE_FAIL_AT_HZ");
+        if (fail_at && value == std::strtoll(fail_at, nullptr, 10)) return -EIO;
         if (value < 70'000'000LL || value > 6'000'000'000LL) return -EINVAL; frequency = value; return 0;
     }
     return -EINVAL;
@@ -217,10 +258,20 @@ __declspec(dllexport) const iio_data_format* iio_channel_get_data_format(const i
         : (std::getenv("SDR_MOCK_LIBIIO_INVALID_SHIFT") != nullptr ? 8U : 0U);
     return &format;
 }
-__declspec(dllexport) std::ptrdiff_t iio_device_get_sample_size(const iio_device* value) { return value == &rx && rx_i.enabled && rx_q.enabled ? 4 : -EINVAL; }
+__declspec(dllexport) std::ptrdiff_t iio_device_get_sample_size(const iio_device* value) {
+    if (value != &rx) return -EINVAL;
+    const bool rx1_enabled = rx_i.enabled && rx_q.enabled;
+    const bool rx2_enabled = rx2_i.enabled && rx2_q.enabled;
+    if ((!rx1_enabled && !rx2_enabled) || (rx_i.enabled != rx_q.enabled) || (rx2_i.enabled != rx2_q.enabled)) return -EINVAL;
+    return rx1_enabled && rx2_enabled ? 8 : 4;
+}
 __declspec(dllexport) iio_buffer* iio_device_create_buffer(const iio_device* value, std::size_t count, bool cyclic) {
-    if (value != &rx || cyclic || !rx_i.enabled || !rx_q.enabled || count == 0U) return nullptr;
-    auto* buffer = new iio_buffer{count, false, std::vector<std::uint8_t>(count * 4U)};
+    if (value != &rx || cyclic || count == 0U) return nullptr;
+    const bool rx1_enabled = rx_i.enabled && rx_q.enabled;
+    const bool rx2_enabled = rx2_i.enabled && rx2_q.enabled;
+    if ((!rx1_enabled && !rx2_enabled) || (rx_i.enabled != rx_q.enabled) || (rx2_i.enabled != rx2_q.enabled)) return nullptr;
+    const bool dual = rx1_enabled && rx2_enabled;
+    auto* buffer = new iio_buffer{count, false, std::vector<std::uint8_t>(count * (dual ? 8U : 4U))};
     return buffer;
 }
 __declspec(dllexport) void iio_buffer_destroy(iio_buffer* value) { if (cancel_in_progress.load()) destroyed_during_cancel = true; delete value; }
@@ -228,15 +279,37 @@ __declspec(dllexport) std::ptrdiff_t iio_buffer_refill(iio_buffer* value) {
     delay_from_env("SDR_MOCK_LIBIIO_REFILL_DELAY_MS");
     if (value->canceled) return -ECANCELED;
     if (std::getenv("SDR_MOCK_LIBIIO_REFILL_FAIL") != nullptr) return -EIO;
+    const bool non_sign_extended_s12 =
+        std::getenv("SDR_MOCK_LIBIIO_NON_SIGN_EXTENDED_S12") != nullptr;
     for (std::size_t index = 0U; index < value->samples; ++index) {
         const auto i = static_cast<std::int16_t>((static_cast<int>(index) % 4096) - 2048);
         const auto q = static_cast<std::int16_t>(2047 - (static_cast<int>(index) % 4096));
-        std::memcpy(value->bytes.data() + index * 4U, &i, 2U);
-        std::memcpy(value->bytes.data() + index * 4U + 2U, &q, 2U);
+        const auto i2 = static_cast<std::int16_t>(1000 + (static_cast<int>(index) % 1024));
+        const auto q2 = static_cast<std::int16_t>(-1000 - (static_cast<int>(index) % 1024));
+        const auto stride = value->bytes.size() / value->samples;
+        const bool rx2_only = !rx_i.enabled && !rx_q.enabled && rx2_i.enabled && rx2_q.enabled;
+        auto* sample = value->bytes.data() + index * stride;
+        if (non_sign_extended_s12) {
+            const auto i_raw = static_cast<std::uint16_t>(i) & 0x0FFFU;
+            const auto q_raw = static_cast<std::uint16_t>(q) & 0x0FFFU;
+            const auto first_i = rx2_only ? static_cast<std::uint16_t>(i2) & 0x0FFFU : i_raw;
+            const auto first_q = rx2_only ? static_cast<std::uint16_t>(q2) & 0x0FFFU : q_raw;
+            std::memcpy(sample, &first_i, 2U);
+            std::memcpy(sample + 2U, &first_q, 2U);
+        } else {
+            const auto first_i = rx2_only ? i2 : i;
+            const auto first_q = rx2_only ? q2 : q;
+            std::memcpy(sample, &first_i, 2U);
+            std::memcpy(sample + 2U, &first_q, 2U);
+        }
+        if (stride == 8U) {
+            std::memcpy(sample + 4U, &i2, 2U);
+            std::memcpy(sample + 6U, &q2, 2U);
+        }
     }
     const bool short_read = std::getenv("SDR_MOCK_LIBIIO_SHORT_READ") != nullptr;
     const auto returned = short_read && value->samples > 1U
-        ? (value->samples - 1U) * 4U
+        ? (value->samples - 1U) * (value->bytes.size() / value->samples)
         : value->bytes.size();
     return static_cast<std::ptrdiff_t>(returned);
 }
@@ -250,9 +323,17 @@ __declspec(dllexport) void iio_buffer_cancel(iio_buffer* value) {
     }
 }
 __declspec(dllexport) void* iio_buffer_first(const iio_buffer* value, const iio_channel* channel) {
-    return const_cast<std::uint8_t*>(value->bytes.data()) + (channel == &rx_q ? 2U : 0U);
+    const auto stride = value->bytes.size() / value->samples;
+    std::size_t offset = 0U;
+    if (channel == &rx_q) offset = 2U;
+    else if (channel == &rx2_q && stride == 4U) offset = 2U;
+    else if (channel == &rx2_i && stride == 8U) offset = 4U;
+    else if (channel == &rx2_q && stride == 8U) offset = 6U;
+    return const_cast<std::uint8_t*>(value->bytes.data()) + offset;
 }
-__declspec(dllexport) std::ptrdiff_t iio_buffer_step(const iio_buffer*) { return 4; }
+__declspec(dllexport) std::ptrdiff_t iio_buffer_step(const iio_buffer* value) {
+    return static_cast<std::ptrdiff_t>(value->bytes.size() / value->samples);
+}
 __declspec(dllexport) void* iio_buffer_end(const iio_buffer* value) {
     const auto trim = std::getenv("SDR_MOCK_LIBIIO_TRUNCATED_END") != nullptr ? 1U : 0U;
     return const_cast<std::uint8_t*>(value->bytes.data()) + value->bytes.size() - trim;

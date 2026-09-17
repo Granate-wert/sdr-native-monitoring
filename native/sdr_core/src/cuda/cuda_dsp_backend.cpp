@@ -697,6 +697,7 @@ void CudaDspBackend::emit_frame(const FrameMeta& meta) {
     frame.fft_size = n;
     frame.hop_size = config_.hop_size;
     frame.window = config_.window;
+    frame.averaging_frames = config_.averaging_frames;
     frame.detector = config_.detector;
     frame.precision_mode = config_.precision_mode;
     frame.unit = config_.unit;
@@ -850,6 +851,16 @@ sdr_core::DspBackendMetrics CudaDspBackend::metrics() const {
     result.requested_preference = sdr_core::ComputeBackendKind::Cuda;
     result.active_backend = sdr_core::ComputeBackendKind::Cuda;
     result.backend_self_test_passed = true;
+    // CUDA events time the device preprocessing kernel (DC/window), FFT and
+    // detector kernel. Host-side input unpack is not timed here, therefore
+    // its availability bit deliberately remains clear.
+    result.stage_timing_mask =
+        sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Window) |
+        sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Fft) |
+        sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Detector);
+    result.window_ns = perf_.preprocess_ns;
+    result.fft_ns = perf_.fft_ns;
+    result.detector_ns = perf_.detector_ns;
     result.gpu_processing_ns = perf_.preprocess_ns + perf_.fft_ns + perf_.detector_ns;
     result.h2d_ns = perf_.h2d_ns;
     result.d2h_ns = perf_.d2h_ns;

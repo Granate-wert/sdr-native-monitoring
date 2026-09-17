@@ -145,12 +145,14 @@ if ($artifacts.Count -ne 1) {
 }
 $sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $pythonAbi = ($artifacts[0].BaseName -replace "^_sdr_native\.", "")
+$artifactSha256 = (Get-FileHash -LiteralPath $artifacts[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $manifest = [ordered]@{
     preset = $configurePreset
     cuda_compiled = ($Lane -eq "CUDA")
     python_abi = $pythonAbi
     native_version = "0.6.0"
     source_commit = $sourceCommit
+    artifact_sha256 = $artifactSha256
 }
 $manifestPath = Join-Path $artifactDir "native_build_manifest.json"
 $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
@@ -169,6 +171,29 @@ if ($Configuration -eq "Release") {
     $part = "$active.part"
     Copy-Item -LiteralPath $artifacts[0].FullName -Destination $part -Force
     Move-Item -LiteralPath $part -Destination $active -Force
-    Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $activeDir "native_build_manifest.json") -Force
+    $activeManifest = Join-Path $activeDir "native_build_manifest.json"
+    Copy-Item -LiteralPath $manifestPath -Destination $activeManifest -Force
+    # The staged module passed its own preflight above. Verify that the
+    # atomically installed application copy and its manifest are byte-for-byte
+    # identical before a release build reports success.
+    $activePreflightArgs = @(
+        $preflight,
+        "--module", $artifacts[0].FullName,
+        "--manifest", $manifestPath,
+        "--active-module", $active,
+        "--active-manifest", $activeManifest
+    )
+    if ($Lane -eq "CUDA") { $activePreflightArgs += "--expect-cuda" } else { $activePreflightArgs += "--expect-cpu" }
+    Invoke-Checked -FilePath $PythonExecutable -Arguments $activePreflightArgs
+    # A separate isolated interpreter proves that the next process imports this
+    # active extension through the one canonical pybind identity, rather than
+    # only comparing files in the build process that just activated it.
+    $activeImportVerifier = Join-Path $repoRoot "scripts\verify_sdr_native_active_import.py"
+    Invoke-Checked -FilePath $PythonExecutable -Arguments @(
+        "-I",
+        $activeImportVerifier,
+        "--module", $active,
+        "--manifest", $activeManifest
+    )
 }
 Write-Host "S12 native module ($Lane/$Configuration): $($artifacts[0].FullName)"

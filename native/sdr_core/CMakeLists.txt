@@ -34,10 +34,14 @@ add_library(sdr_core STATIC
     src/core/buffer_pool.cpp
     src/core/contracts.cpp
     src/core/persistence.cpp
+    src/core/recording_reprocess.cpp
+    src/core/recording_writer.cpp
+    src/core/sweep_line_assembler.cpp
     src/calibration/calibration.cpp
     src/core/engine.cpp
     src/core/synthetic_source.cpp
     src/dsp/cpu_dsp_backend.cpp
+    src/dsp/dual_rx_dsp.cpp
     src/dsp/dsp_backend_selector.cpp
     src/dsp/fft_provider.cpp
     src/dsp/window.cpp
@@ -65,12 +69,17 @@ target_compile_definitions(sdr_core
         SDR_CORE_PLUTO_COMPILED=$<BOOL:${SDR_CORE_ENABLE_PLUTO}>
         SDR_CORE_SIMD_ENABLED=$<BOOL:${SDR_CORE_ENABLE_SIMD}>
         SDR_CORE_PROFILING_ENABLED=$<BOOL:${SDR_CORE_ENABLE_PROFILING}>
+        # pocketfft plans are immutable after construction. A small LRU cache
+        # avoids rebuilding a plan for every analytical batch while preserving
+        # a process-wide fixed upper bound (eight entries per scalar type).
+        POCKETFFT_CACHE_SIZE=8
 )
 sdr_core_apply_platform_defaults(sdr_core)
 sdr_core_apply_sanitizers(sdr_core)
 
-# R11-G is a vendor-runtime-free HackRF RX-ingress contract.  It owns no
-# libhackrf handle and exposes neither configuration nor TX operations.
+# R11-G is a vendor-runtime-free HackRF RX ingress contract. It is kept in a
+# device-family library rather than the portable common core and contains no
+# libhackrf load/open/configure/stream/TX call.
 add_library(sdr_hackrf STATIC
     src/hackrf/hackrf_acquisition_dsp_session.cpp
     src/hackrf/hackrf_fixed_band_dsp.cpp
@@ -110,14 +119,29 @@ if(SDR_CORE_ENABLE_HACKRF_OFFICIAL)
     )
     target_compile_features(sdr_hackrf_official PUBLIC cxx_std_20)
     target_link_libraries(
-        sdr_hackrf_official
-        PUBLIC sdr_core::sdr_hackrf
-        PRIVATE "${SDR_CORE_HACKRF_LIBRARY}"
+        sdr_hackrf_official PUBLIC sdr_core::sdr_hackrf PRIVATE "${SDR_CORE_HACKRF_LIBRARY}"
     )
     sdr_core_apply_platform_defaults(sdr_hackrf_official)
     sdr_core_apply_sanitizers(sdr_hackrf_official)
 
+    add_executable(sdr_core_r11h_hackrf_rx tests/hardware_r11h_hackrf_rx.cpp)
+    target_link_libraries(
+        sdr_core_r11h_hackrf_rx PRIVATE sdr_core::sdr_hackrf_official
+    )
+    sdr_core_apply_platform_defaults(sdr_core_r11h_hackrf_rx)
+    sdr_core_apply_sanitizers(sdr_core_r11h_hackrf_rx)
+
+    add_executable(sdr_core_r13d_hackrf_fft tests/hardware_r13d_hackrf_fft.cpp)
+    target_link_libraries(
+        sdr_core_r13d_hackrf_fft PRIVATE sdr_core::sdr_hackrf_official
+    )
+    sdr_core_apply_platform_defaults(sdr_core_r13d_hackrf_fft)
+    sdr_core_apply_sanitizers(sdr_core_r13d_hackrf_fft)
+
     if(WIN32)
+        # Keep the accepted libhackrf bundle app-local. A system-wide libusb
+        # may otherwise win normal DLL search order and lack entry points used
+        # by this exact hackrf.dll, causing a pre-main 0xC0000139 failure.
         get_filename_component(
             SDR_CORE_HACKRF_RUNTIME_DIR "${SDR_CORE_HACKRF_LIBRARY}" DIRECTORY
         )
@@ -128,6 +152,18 @@ if(SDR_CORE_ENABLE_HACKRF_OFFICIAL)
                     "Official HackRF runtime bundle is missing ${runtime_dll}"
                 )
             endif()
+            foreach(runtime_target IN ITEMS
+                sdr_core_r11h_hackrf_rx
+                sdr_core_r13d_hackrf_fft
+            )
+                add_custom_command(
+                    TARGET ${runtime_target} POST_BUILD
+                    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                        "${SDR_CORE_HACKRF_RUNTIME_DIR}/${runtime_dll}"
+                        "$<TARGET_FILE_DIR:${runtime_target}>"
+                    VERBATIM
+                )
+            endforeach()
         endforeach()
     endif()
 endif()
@@ -184,11 +220,17 @@ if(SDR_CORE_ENABLE_PLUTO)
     endif()
     add_library(sdr_pluto STATIC
         ${SDR_PLUTO_SOURCES}
+        src/pluto/continuous_sweep_coordinator.cpp
         src/pluto/fixed_band_engine.cpp
+        src/pluto/multi_receiver_supervisor.cpp
     )
     target_include_directories(sdr_pluto PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
     target_compile_features(sdr_pluto PUBLIC cxx_std_20)
     target_link_libraries(sdr_pluto PUBLIC sdr_core::sdr_core)
+    target_compile_definitions(
+        sdr_pluto
+        PRIVATE SDR_CORE_PROFILING_ENABLED=$<BOOL:${SDR_CORE_ENABLE_PROFILING}>
+    )
     if(NOT WIN32)
         target_link_libraries(sdr_pluto PUBLIC ${CMAKE_DL_LIBS})
     endif()
@@ -209,9 +251,7 @@ if(SDR_CORE_BUILD_PYTHON)
         bindings/lifecycle_binding.cpp
         bindings/synthetic_binding.cpp
     )
-    target_link_libraries(
-        _sdr_native PRIVATE sdr_core::sdr_core sdr_core::sdr_hackrf
-    )
+    target_link_libraries(_sdr_native PRIVATE sdr_core::sdr_core sdr_core::sdr_hackrf)
     if(SDR_CORE_BUILD_TESTS)
         target_compile_definitions(_sdr_native PRIVATE SDR_CORE_ENABLE_TEST_HOOKS=1)
     endif()
@@ -229,6 +269,8 @@ if(SDR_CORE_BUILD_PYTHON)
         target_link_libraries(_sdr_native PRIVATE sdr_core::sdr_hackrf_official)
         target_compile_definitions(_sdr_native PRIVATE SDR_CORE_HACKRF_OFFICIAL_COMPILED=1)
         if(WIN32)
+            # The sole explicit native HackRF factory must resolve exactly the
+            # accepted app-local bundle; it may never silently use PATH.
             foreach(runtime_dll IN ITEMS hackrf.dll libusb-1.0.dll pthreadVC3.dll)
                 add_custom_command(
                     TARGET _sdr_native POST_BUILD
@@ -266,11 +308,23 @@ endif()
 
 if(SDR_CORE_BUILD_TESTS)
     include(CTest)
+    add_executable(sdr_core_recording_writer_test tests/test_recording_writer.cpp)
+    target_link_libraries(sdr_core_recording_writer_test PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_recording_writer_test)
+    sdr_core_apply_sanitizers(sdr_core_recording_writer_test)
+    add_test(NAME sdr_core.recording_writer COMMAND sdr_core_recording_writer_test)
+    set_tests_properties(sdr_core.recording_writer PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_persistence_test tests/test_persistence.cpp)
     target_link_libraries(sdr_core_persistence_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_persistence_test)
     sdr_core_apply_sanitizers(sdr_core_persistence_test)
     add_test(NAME sdr_core.persistence COMMAND sdr_core_persistence_test)
+    # Explicit R05 persistence microbenchmark. This is deliberately not a
+    # CTest because it emits capacity evidence rather than a pass/fail claim.
+    add_executable(sdr_core_persistence_bench tests/bench_persistence.cpp)
+    target_link_libraries(sdr_core_persistence_bench PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_persistence_bench)
+    sdr_core_apply_sanitizers(sdr_core_persistence_bench)
     add_executable(sdr_core_calibration_test tests/test_calibration.cpp)
     target_link_libraries(sdr_core_calibration_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_calibration_test)
@@ -286,6 +340,17 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_platform_defaults(sdr_core_contracts_test)
     sdr_core_apply_sanitizers(sdr_core_contracts_test)
     add_test(NAME sdr_core.contracts COMMAND sdr_core_contracts_test)
+    add_executable(sdr_core_sweep_line_assembler_test tests/test_sweep_line_assembler.cpp)
+    target_link_libraries(sdr_core_sweep_line_assembler_test PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_sweep_line_assembler_test)
+    sdr_core_apply_sanitizers(sdr_core_sweep_line_assembler_test)
+    add_test(NAME sdr_core.sweep_line_assembler COMMAND sdr_core_sweep_line_assembler_test)
+    # Explicit R10-D5 v2 CPU tool. It measures only synthetic post-FFT
+    # 36-MHz line assembly, so it is deliberately not a CTest or release path.
+    add_executable(sdr_core_sweep_line_assembly_bench tests/bench_sweep_line_assembly.cpp)
+    target_link_libraries(sdr_core_sweep_line_assembly_bench PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_sweep_line_assembly_bench)
+    sdr_core_apply_sanitizers(sdr_core_sweep_line_assembly_bench)
     add_executable(sdr_core_synthetic_source_test tests/test_synthetic_source.cpp)
     target_link_libraries(sdr_core_synthetic_source_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_synthetic_source_test)
@@ -315,6 +380,27 @@ if(SDR_CORE_BUILD_TESTS)
     add_test(NAME sdr_core.hackrf_rx_ingress COMMAND sdr_core_hackrf_rx_ingress_test)
     set_tests_properties(sdr_core.hackrf_rx_ingress PROPERTIES TIMEOUT 120)
     add_executable(
+        sdr_core_hackrf_live_factory_test tests/test_hackrf_live_factory.cpp
+    )
+    target_link_libraries(
+        sdr_core_hackrf_live_factory_test PRIVATE sdr_core::sdr_hackrf
+    )
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_live_factory_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_live_factory_test)
+    add_test(
+        NAME sdr_core.hackrf_live_factory
+        COMMAND sdr_core_hackrf_live_factory_test
+    )
+    set_tests_properties(sdr_core.hackrf_live_factory PROPERTIES TIMEOUT 120)
+    add_executable(sdr_core_hackrf_rx_session_test tests/test_hackrf_rx_session.cpp)
+    target_link_libraries(
+        sdr_core_hackrf_rx_session_test PRIVATE sdr_core::sdr_hackrf
+    )
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_rx_session_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_rx_session_test)
+    add_test(NAME sdr_core.hackrf_rx_session COMMAND sdr_core_hackrf_rx_session_test)
+    set_tests_properties(sdr_core.hackrf_rx_session PROPERTIES TIMEOUT 120)
+    add_executable(
         sdr_core_hackrf_fixed_band_dsp_test tests/test_hackrf_fixed_band_dsp.cpp
     )
     target_link_libraries(
@@ -340,7 +426,9 @@ if(SDR_CORE_BUILD_TESTS)
         NAME sdr_core.r13g_hackrf_fresh_presentation_relay
         COMMAND sdr_core_r13g_hackrf_fresh_presentation_relay_test
     )
-    set_tests_properties(sdr_core.r13g_hackrf_fresh_presentation_relay PROPERTIES TIMEOUT 120)
+    set_tests_properties(
+        sdr_core.r13g_hackrf_fresh_presentation_relay PROPERTIES TIMEOUT 120
+    )
     add_executable(
         sdr_core_hackrf_acquisition_dsp_session_test
         tests/test_hackrf_acquisition_dsp_session.cpp
@@ -361,14 +449,6 @@ if(SDR_CORE_BUILD_TESTS)
     set_tests_properties(
         sdr_core.hackrf_acquisition_dsp_session PROPERTIES TIMEOUT 120
     )
-    add_executable(sdr_core_hackrf_rx_session_test tests/test_hackrf_rx_session.cpp)
-    target_link_libraries(
-        sdr_core_hackrf_rx_session_test PRIVATE sdr_core::sdr_hackrf
-    )
-    sdr_core_apply_platform_defaults(sdr_core_hackrf_rx_session_test)
-    sdr_core_apply_sanitizers(sdr_core_hackrf_rx_session_test)
-    add_test(NAME sdr_core.hackrf_rx_session COMMAND sdr_core_hackrf_rx_session_test)
-    set_tests_properties(sdr_core.hackrf_rx_session PROPERTIES TIMEOUT 120)
     add_executable(
         sdr_core_hackrf_runtime_dsp_session_test
         tests/test_hackrf_runtime_dsp_session.cpp
@@ -386,19 +466,6 @@ if(SDR_CORE_BUILD_TESTS)
         COMMAND sdr_core_hackrf_runtime_dsp_session_test
     )
     set_tests_properties(sdr_core.hackrf_runtime_dsp_session PROPERTIES TIMEOUT 120)
-    add_executable(
-        sdr_core_hackrf_live_factory_test tests/test_hackrf_live_factory.cpp
-    )
-    target_link_libraries(
-        sdr_core_hackrf_live_factory_test PRIVATE sdr_core::sdr_hackrf
-    )
-    sdr_core_apply_platform_defaults(sdr_core_hackrf_live_factory_test)
-    sdr_core_apply_sanitizers(sdr_core_hackrf_live_factory_test)
-    add_test(
-        NAME sdr_core.hackrf_live_factory
-        COMMAND sdr_core_hackrf_live_factory_test
-    )
-    set_tests_properties(sdr_core.hackrf_live_factory PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_engine_lifecycle_test tests/test_engine_lifecycle.cpp)
     target_link_libraries(sdr_core_engine_lifecycle_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_engine_lifecycle_test)
@@ -426,12 +493,28 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_cpu_dsp_backend_test)
     add_test(NAME sdr_core.cpu_dsp_backend COMMAND sdr_core_cpu_dsp_backend_test)
     set_tests_properties(sdr_core.cpu_dsp_backend PROPERTIES TIMEOUT 300)
+    add_executable(sdr_core_dual_rx_dsp_test tests/test_dual_rx_dsp.cpp)
+    target_link_libraries(sdr_core_dual_rx_dsp_test PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_dual_rx_dsp_test)
+    sdr_core_apply_sanitizers(sdr_core_dual_rx_dsp_test)
+    add_test(NAME sdr_core.dual_rx_dsp COMMAND sdr_core_dual_rx_dsp_test)
+    set_tests_properties(sdr_core.dual_rx_dsp PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_dsp_bench tests/bench_cpu_dsp.cpp)
     target_link_libraries(sdr_core_dsp_bench PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_dsp_bench)
     sdr_core_apply_sanitizers(sdr_core_dsp_bench)
     add_test(NAME sdr_core.dsp_bench COMMAND sdr_core_dsp_bench)
     set_tests_properties(sdr_core.dsp_bench PROPERTIES TIMEOUT 600)
+    # R02 explicit-run tool. It is deliberately not a CTest: a complete
+    # evidence run is 10 s warm-up + 60 s measurement per repetition and
+    # must be requested by the operator, never hidden in a unit-test pass.
+    add_executable(sdr_core_performance_bench tests/bench_performance.cpp)
+    target_link_libraries(sdr_core_performance_bench PRIVATE sdr_core::sdr_core)
+    if(WIN32)
+        target_link_libraries(sdr_core_performance_bench PRIVATE psapi)
+    endif()
+    sdr_core_apply_platform_defaults(sdr_core_performance_bench)
+    sdr_core_apply_sanitizers(sdr_core_performance_bench)
 
     if(SDR_CORE_ENABLE_CUDA)
         add_executable(sdr_core_cuda_dsp_backend_test tests/test_cuda_dsp_backend.cpp)
@@ -450,8 +533,13 @@ if(SDR_CORE_BUILD_TESTS)
         target_link_libraries(sdr_core_cuda_bench PRIVATE sdr_core::sdr_cuda)
         sdr_core_apply_platform_defaults(sdr_core_cuda_bench)
         sdr_core_apply_sanitizers(sdr_core_cuda_bench)
-        add_test(NAME sdr_core.cuda_bench COMMAND sdr_core_cuda_bench)
-        set_tests_properties(sdr_core.cuda_bench PROPERTIES TIMEOUT 900)
+        # A bounded CI matrix proves the canonical CI12 CPU/CUDA path without
+        # turning the complete performance study into every CTest invocation.
+        # The executable defaults to --full for an explicit operator study.
+        add_test(NAME sdr_core.cuda_bench COMMAND sdr_core_cuda_bench --quick)
+        set_tests_properties(sdr_core.cuda_bench PROPERTIES TIMEOUT 120)
+        add_test(NAME sdr_core.cuda_bench_mode_guard COMMAND sdr_core_cuda_bench --quick --full)
+        set_tests_properties(sdr_core.cuda_bench_mode_guard PROPERTIES TIMEOUT 30 WILL_FAIL TRUE)
     endif()
 
     if(SDR_CORE_ENABLE_PLUTO AND WIN32)
@@ -470,10 +558,102 @@ if(SDR_CORE_BUILD_TESTS)
             TIMEOUT 120
             ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>"
         )
+        # Explicit microbenchmark only: it measures the native mock-libIIO
+        # refill/unpack/pool path and never opens a physical receiver. It is
+        # deliberately not a CTest or a release artifact.
+        add_executable(sdr_core_pluto_refill_bench tests/bench_pluto_refill.cpp)
+        target_link_libraries(sdr_core_pluto_refill_bench PRIVATE sdr_pluto sdr_core::sdr_core)
+        sdr_core_apply_platform_defaults(sdr_core_pluto_refill_bench)
+        sdr_core_apply_sanitizers(sdr_core_pluto_refill_bench)
+        add_dependencies(sdr_core_pluto_refill_bench sdr_core_mock_libiio)
+        # R10-E6 explicit physical runner. It has no default URI or CTest
+        # registration, needs an exact confirmation phrase, and emits scalar
+        # native-only topology/transport evidence. Raw I/Q never crosses its
+        # executable boundary or is persisted.
+        add_executable(sdr_core_r10e6_rx_evidence tests/hardware_r10e6_dual_rx.cpp)
+        target_link_libraries(sdr_core_r10e6_rx_evidence PRIVATE sdr_pluto sdr_core::sdr_core)
+        sdr_core_apply_platform_defaults(sdr_core_r10e6_rx_evidence)
+        sdr_core_apply_sanitizers(sdr_core_r10e6_rx_evidence)
+        add_dependencies(sdr_core_r10e6_rx_evidence sdr_core_mock_libiio)
+        # Parser guard deliberately has no valid confirmation and therefore
+        # must fail before a context can be opened.  The second test uses only
+        # the in-tree mock; physical E6 is never hidden in CTest.
+        add_test(
+            NAME sdr_core.r10e6_rx_evidence_guard
+            COMMAND sdr_core_r10e6_rx_evidence --uri usb:mock --confirm-rx denied
+        )
+        set_tests_properties(sdr_core.r10e6_rx_evidence_guard PROPERTIES WILL_FAIL TRUE TIMEOUT 30)
+        add_test(
+            NAME sdr_core.r10e6_rx_evidence_mock
+            COMMAND sdr_core_r10e6_rx_evidence
+                --uri usb:mock --selection both --warmup-seconds 0 --measurement-seconds 0.1
+                --buffer-samples 4096 --confirm-rx "I CONFIRM R10-E6 PHYSICAL RX"
+        )
+        set_tests_properties(sdr_core.r10e6_rx_evidence_mock PROPERTIES
+            TIMEOUT 30
+            ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_TOPOLOGY_DUAL=1"
+        )
+        # RF-path mode remains mock-only in CTest.  It asserts that the
+        # external-signal condition/selection guard remains fail-closed while
+        # the valid run reduces every SpectrumFrame to scalars in native code.
+        add_test(
+            NAME sdr_core.r10e6_rf_path_evidence_guard
+            COMMAND sdr_core_r10e6_rx_evidence
+                --uri usb:mock --selection both --evidence-mode rf-path
+                --physical-condition signal-on-a --signal-hz 2450000000
+                --confirm-rx "I CONFIRM R10-E6 PHYSICAL RX"
+        )
+        set_tests_properties(sdr_core.r10e6_rf_path_evidence_guard PROPERTIES WILL_FAIL TRUE TIMEOUT 30)
+        # The RF path frequency must be away from DC and use the one declared
+        # conservative 3 MS/s / 1.5 MHz profile. These parser guards must fail
+        # before a context can be created.
+        add_test(
+            NAME sdr_core.r10e6_rf_path_dc_guard
+            COMMAND sdr_core_r10e6_rx_evidence
+                --uri usb:must-not-open --selection rx1 --evidence-mode rf-path
+                --physical-condition signal-on-a --signal-hz 2450000000
+                --confirm-rx "I CONFIRM R10-E6 PHYSICAL RX"
+        )
+        set_tests_properties(sdr_core.r10e6_rf_path_dc_guard PROPERTIES WILL_FAIL TRUE TIMEOUT 30)
+        add_test(
+            NAME sdr_core.r10e6_rf_path_profile_guard
+            COMMAND sdr_core_r10e6_rx_evidence
+                --uri usb:must-not-open --selection rx1 --evidence-mode rf-path
+                --physical-condition signal-on-a --signal-hz 2450500000
+                --sample-rate-hz 5000000 --analog-bandwidth-hz 2500000
+                --confirm-rx "I CONFIRM R10-E6 PHYSICAL RX"
+        )
+        set_tests_properties(sdr_core.r10e6_rf_path_profile_guard PROPERTIES WILL_FAIL TRUE TIMEOUT 30)
+        add_test(
+            NAME sdr_core.r10e6_rf_path_evidence_mock
+            COMMAND sdr_core_r10e6_rx_evidence
+                --uri usb:mock --selection rx1 --evidence-mode rf-path
+                --physical-condition signal-on-a --signal-hz 2450500000
+                --warmup-seconds 0 --measurement-seconds 0.1 --buffer-samples 4096
+                --confirm-rx "I CONFIRM R10-E6 PHYSICAL RX"
+        )
+        set_tests_properties(sdr_core.r10e6_rf_path_evidence_mock PROPERTIES
+            TIMEOUT 30
+            ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_TOPOLOGY_DUAL=1"
+        )
+        add_test(
+            NAME sdr_core.r10e6_rf_path_rx2_mock
+            COMMAND sdr_core_r10e6_rx_evidence
+                --uri usb:mock --selection rx2 --evidence-mode rf-path
+                --physical-condition signal-on-b --signal-hz 2450500000
+                --warmup-seconds 0 --measurement-seconds 0.1 --buffer-samples 4096
+                --confirm-rx "I CONFIRM R10-E6 PHYSICAL RX"
+        )
+        set_tests_properties(sdr_core.r10e6_rf_path_rx2_mock PROPERTIES
+            TIMEOUT 30
+            ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_TOPOLOGY_DUAL=1"
+        )
         add_executable(sdr_core_fixed_band_engine_test tests/test_fixed_band_engine.cpp)
         target_link_libraries(sdr_core_fixed_band_engine_test PRIVATE sdr_pluto sdr_core::sdr_core)
+        target_link_libraries(sdr_core_fixed_band_engine_test PRIVATE psapi)
         if(SDR_CORE_ENABLE_CUDA)
             target_link_libraries(sdr_core_fixed_band_engine_test PRIVATE sdr_core::sdr_cuda)
+            target_compile_definitions(sdr_core_fixed_band_engine_test PRIVATE SDR_CORE_ENABLE_CUDA=1)
         endif()
         sdr_core_apply_platform_defaults(sdr_core_fixed_band_engine_test)
         add_dependencies(sdr_core_fixed_band_engine_test sdr_core_mock_libiio)
@@ -482,6 +662,63 @@ if(SDR_CORE_BUILD_TESTS)
             TIMEOUT 180
             ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_REFILL_DELAY_MS=1"
         )
+        add_executable(sdr_core_continuous_sweep_coordinator_test tests/test_continuous_sweep_coordinator.cpp)
+        target_link_libraries(sdr_core_continuous_sweep_coordinator_test PRIVATE sdr_pluto sdr_core::sdr_core)
+        sdr_core_apply_platform_defaults(sdr_core_continuous_sweep_coordinator_test)
+        add_dependencies(sdr_core_continuous_sweep_coordinator_test sdr_core_mock_libiio)
+        add_test(NAME sdr_core.continuous_sweep_coordinator COMMAND sdr_core_continuous_sweep_coordinator_test)
+        set_tests_properties(sdr_core.continuous_sweep_coordinator PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_REFILL_DELAY_MS=1"
+        )
+        add_executable(sdr_core_multi_receiver_supervisor_test tests/test_multi_receiver_supervisor.cpp)
+        target_link_libraries(sdr_core_multi_receiver_supervisor_test PRIVATE sdr_pluto sdr_core::sdr_core)
+        sdr_core_apply_platform_defaults(sdr_core_multi_receiver_supervisor_test)
+        sdr_core_apply_sanitizers(sdr_core_multi_receiver_supervisor_test)
+        add_test(NAME sdr_core.multi_receiver_supervisor COMMAND sdr_core_multi_receiver_supervisor_test)
+        set_tests_properties(sdr_core.multi_receiver_supervisor PROPERTIES TIMEOUT 120)
+    endif()
+
+    # `sdr_core` owns the vendor-neutral selector. In a CUDA build that static
+    # object can resolve CUDA symbols even when a particular test otherwise
+    # exercises only a CPU-facing contract. Link every common-core test/tool
+    # against the optional implementation explicitly, rather than relying on
+    # object-pull order or leaving a partial CUDA CTest tree unbuildable.
+    if(SDR_CORE_ENABLE_CUDA)
+        foreach(sdr_core_common_test_target IN ITEMS
+            sdr_core_recording_writer_test
+            sdr_core_persistence_test
+            sdr_core_persistence_bench
+            sdr_core_calibration_test
+            sdr_core_native_smoke
+            sdr_core_contracts_test
+            sdr_core_sweep_line_assembler_test
+            sdr_core_sweep_line_assembly_bench
+            sdr_core_synthetic_source_test
+            sdr_core_bounded_queue_test
+            sdr_core_buffer_pool_test
+            sdr_core_hackrf_rx_ingress_test
+            sdr_core_hackrf_live_factory_test
+            sdr_core_hackrf_rx_session_test
+            sdr_core_hackrf_fixed_band_dsp_test
+            sdr_core_hackrf_acquisition_dsp_session_test
+            sdr_core_hackrf_runtime_dsp_session_test
+            sdr_core_engine_lifecycle_test
+            sdr_core_transport_stress_test
+            sdr_core_window_test
+            sdr_core_cpu_dsp_backend_test
+            sdr_core_dual_rx_dsp_test
+            sdr_core_dsp_bench
+            sdr_core_performance_bench
+            sdr_core_pluto_refill_bench
+            sdr_core_r10e6_rx_evidence
+            sdr_core_continuous_sweep_coordinator_test
+            sdr_core_multi_receiver_supervisor_test
+        )
+            if(TARGET ${sdr_core_common_test_target})
+                target_link_libraries(${sdr_core_common_test_target} PRIVATE sdr_core::sdr_cuda)
+            endif()
+        endforeach()
     endif()
 endif()
 

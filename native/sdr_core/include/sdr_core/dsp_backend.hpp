@@ -2,6 +2,7 @@
 
 #include "sdr_core/backend_info.hpp"
 #include "sdr_core/configuration.hpp"
+#include "sdr_core/metrics.hpp"
 #include "sdr_core/types.hpp"
 
 #include <cstddef>
@@ -10,6 +11,41 @@
 #include <vector>
 
 namespace sdr_core {
+
+// Immutable CPU-side resources for one numerical FFT/window configuration.
+// A pair of synchronized receiver chains may retain one instance instead of
+// allocating two equivalent window tables.  The FFT provider remains owned by
+// each DspBackend: a backend must stay independently resettable and no shared
+// mutable transform state may cross receiver boundaries.
+class CpuDspSharedPlan final {
+public:
+    [[nodiscard]] std::uint32_t fft_size() const noexcept;
+    [[nodiscard]] WindowType window() const noexcept;
+    [[nodiscard]] double kaiser_beta() const noexcept;
+    [[nodiscard]] PrecisionMode precision_mode() const noexcept;
+    [[nodiscard]] double coherent_gain() const noexcept;
+    [[nodiscard]] double enbw_bins() const noexcept;
+    [[nodiscard]] double sum_w2() const noexcept;
+    [[nodiscard]] const std::vector<double>& coefficients_f64() const noexcept;
+    [[nodiscard]] const std::vector<float>& coefficients_f32() const noexcept;
+
+    CpuDspSharedPlan() = default;
+
+private:
+    friend std::shared_ptr<const CpuDspSharedPlan> make_cpu_dsp_shared_plan(
+        const DspConfig& config
+    );
+
+    std::uint32_t fft_size_{};
+    WindowType window_{WindowType::Hann};
+    double kaiser_beta_{8.6};
+    PrecisionMode precision_mode_{PrecisionMode::AccurateF32F64Accum};
+    double coherent_gain_{};
+    double enbw_bins_{};
+    double sum_w2_{};
+    std::vector<double> coefficients_f64_;
+    std::vector<float> coefficients_f32_;
+};
 
 // DC removal mode for the CPU DSP stage (master doc §9.2). P05 keeps it a
 // backend option outside the canonical DspConfig wire contract; promoting it
@@ -23,6 +59,10 @@ struct DspOptions {
     DcRemovalMode dc_removal{DcRemovalMode::Off};
     SourceDescriptor source{};
     std::uint32_t output_capacity{8U};
+    // Optional immutable resource sharing for same-configuration CPU
+    // backends.  It is deliberately CPU-specific and ignored by non-CPU
+    // implementations; the factory validates compatibility on configure.
+    std::shared_ptr<const CpuDspSharedPlan> cpu_shared_plan;
 };
 
 // Source compatibility for the accepted CPU P05 API. The generic type is the owner.
@@ -66,7 +106,15 @@ struct DspBackendMetrics {
     std::uint64_t backend_fallback_count{};
     std::uint64_t backend_switch_count{};
     BackendErrorCode last_backend_error{BackendErrorCode::None};
-    // Cumulative optional stage timing; CPU backends keep these zero.
+    // Cumulative optional stage timing. A duration is usable only when its
+    // bit is present in stage_timing_mask; ordinary CPU builds intentionally
+    // leave these timers disabled to avoid perturbing production throughput.
+    std::uint32_t stage_timing_mask{};
+    std::uint64_t input_unpack_ns{};
+    std::uint64_t window_ns{};
+    std::uint64_t fft_ns{};
+    std::uint64_t detector_ns{};
+    // Cumulative optional GPU transfer/work timings.
     std::uint64_t gpu_processing_ns{};
     std::uint64_t h2d_ns{};
     std::uint64_t d2h_ns{};
@@ -93,6 +141,9 @@ public:
 };
 
 [[nodiscard]] std::unique_ptr<DspBackend> make_cpu_dsp_backend(CpuDspOptions options);
+[[nodiscard]] std::shared_ptr<const CpuDspSharedPlan> make_cpu_dsp_shared_plan(
+    const DspConfig& config
+);
 
 // P08 vendor-neutral availability/self-test boundary. Answers are
 // compiled-vs-runtime aware: a CPU-only build reports compiled=false with a

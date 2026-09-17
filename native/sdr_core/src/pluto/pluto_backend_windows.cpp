@@ -21,8 +21,20 @@ namespace {
 
 struct iio_context;
 struct iio_device;
+struct iio_channel;
 struct iio_context_info;
 struct iio_scan_context;
+struct iio_data_format {
+    unsigned int length;
+    unsigned int bits;
+    unsigned int shift;
+    bool is_signed;
+    bool is_fully_defined;
+    bool is_be;
+    bool with_scale;
+    double scale;
+    unsigned int repeat;
+};
 
 using ssize_type = std::ptrdiff_t;
 
@@ -57,6 +69,10 @@ public:
         const auto address = GetProcAddress(module_, name);
         if (address == nullptr) throw std::runtime_error(std::string("libiio 0.x export missing: ") + name);
         return reinterpret_cast<T>(address);
+    }
+
+    [[nodiscard]] bool has_symbol(const char* name) const noexcept {
+        return GetProcAddress(module_, name) != nullptr;
     }
 
     [[nodiscard]] const std::string& path() const noexcept { return path_; }
@@ -108,6 +124,11 @@ struct Api final {
     using devices_count_fn = unsigned int (*)(const iio_context*);
     using get_device_fn = iio_device* (*)(const iio_context*, unsigned int);
     using device_string_fn = const char* (*)(const iio_device*);
+    using channels_count_fn = unsigned int (*)(const iio_device*);
+    using get_channel_fn = iio_channel* (*)(const iio_device*, unsigned int);
+    using channel_string_fn = const char* (*)(const iio_channel*);
+    using channel_output_fn = bool (*)(const iio_channel*);
+    using format_fn = const iio_data_format* (*)(const iio_channel*);
 
     Library library;
     create_scan_fn create_scan{library.symbol<create_scan_fn>("iio_create_scan_context")};
@@ -130,6 +151,11 @@ struct Api final {
     get_device_fn get_device{library.symbol<get_device_fn>("iio_context_get_device")};
     device_string_fn device_id{library.symbol<device_string_fn>("iio_device_get_id")};
     device_string_fn device_name{library.symbol<device_string_fn>("iio_device_get_name")};
+    channels_count_fn channels_count{library.symbol<channels_count_fn>("iio_device_get_channels_count")};
+    get_channel_fn get_channel{library.symbol<get_channel_fn>("iio_device_get_channel")};
+    channel_string_fn channel_id{library.symbol<channel_string_fn>("iio_channel_get_id")};
+    channel_output_fn channel_output{library.symbol<channel_output_fn>("iio_channel_is_output")};
+    format_fn format{library.symbol<format_fn>("iio_channel_get_data_format")};
 };
 
 template <typename T, typename Destroy>
@@ -141,6 +167,33 @@ bool contains_ci(const std::string& value, const std::string_view needle) {
     std::string lower = value;
     for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return lower.find(needle) != std::string::npos;
+}
+
+bool is_rx_stream_candidate(
+    const Api& api,
+    const iio_device* device,
+    const std::string& id,
+    const std::string& name
+) {
+    // A Pluto context normally exposes both cf-ad936*-dds (TX) and
+    // cf-ad936* (RX) cores.  Selecting the first textual match makes a
+    // read-only topology probe report an empty RX layout when DDS precedes
+    // the RX core.  The native receiver itself requires this same input I/Q
+    // pair, so use it as the structural, non-mutating discriminator.
+    if (!(contains_ci(id, "cf-ad936") || contains_ci(name, "cf-ad936") ||
+          contains_ci(id, "axi-ad936") || contains_ci(name, "axi-ad936"))) {
+        return false;
+    }
+    bool has_i = false;
+    bool has_q = false;
+    for (unsigned int index = 0U; index < api.channels_count(device); ++index) {
+        const auto* channel = api.get_channel(device, index);
+        if (channel == nullptr || api.channel_output(channel)) continue;
+        const auto channel_id = safe(api.channel_id(channel));
+        has_i = has_i || channel_id == "voltage0";
+        has_q = has_q || channel_id == "voltage1";
+    }
+    return has_i && has_q;
 }
 
 std::string first_attr(const Api& api, const iio_context* context, std::initializer_list<const char*> names) {
@@ -164,6 +217,9 @@ RuntimeInfo runtime_info() {
         const auto count = api.backends_count();
         result.backends.reserve(count);
         for (unsigned int index = 0U; index < count; ++index) result.backends.push_back(safe(api.backend(index)));
+        result.supports_kernel_buffer_count = api.library.has_symbol("iio_device_set_kernel_buffers_count");
+        result.supports_buffer_blocking_mode = api.library.has_symbol("iio_buffer_set_blocking_mode");
+        result.supports_buffer_poll_fd = api.library.has_symbol("iio_buffer_get_poll_fd");
     } catch (const std::exception& error) {
         result.error = error.what();
     }
@@ -217,13 +273,63 @@ ContextProbe probe_context(const std::string& uri, const std::uint32_t timeout_m
         const auto name = safe(api.device_name(device));
         result.device_ids.push_back(id + (name.empty() ? "" : ":" + name));
         if (result.phy_device_id.empty() && (contains_ci(id, "ad936") || contains_ci(name, "ad936"))) result.phy_device_id = id;
-        if (result.rx_stream_device_id.empty() &&
-            (contains_ci(id, "cf-ad9361-lpc") || contains_ci(name, "cf-ad9361-lpc") || contains_ci(id, "axi-ad9361-rx"))) {
+        if (result.rx_stream_device_id.empty() && is_rx_stream_candidate(api, device, id, name)) {
             result.rx_stream_device_id = id;
         }
     }
     if (result.phy_device_id.empty()) throw std::runtime_error("AD936x PHY device not found in context");
-    if (result.rx_stream_device_id.empty()) throw std::runtime_error("AD936x RX streaming device not found in context");
+    if (result.rx_stream_device_id.empty()) {
+        throw std::runtime_error("AD936x RX streaming device with input voltage0/voltage1 channels not found in context");
+    }
+    return result;
+}
+
+ReceiverTopologyProbe probe_receiver_topology(const std::string& uri, const std::uint32_t timeout_ms) {
+    ReceiverTopologyProbe result;
+    result.context = probe_context(uri, timeout_ms);
+
+    Api api;
+    auto* raw_context = api.create_context(uri.c_str());
+    if (raw_context == nullptr) throw std::runtime_error("iio_create_context_from_uri failed for " + uri);
+    unique_handle<iio_context, Api::destroy_context_fn> context(raw_context, api.destroy_context);
+    const int timeout_result = api.context_timeout(context.get(), timeout_ms);
+    if (timeout_result < 0) throw std::runtime_error("iio_context_set_timeout failed: " + std::to_string(timeout_result));
+
+    const iio_device* phy = nullptr;
+    const iio_device* stream = nullptr;
+    const auto device_count = api.devices_count(context.get());
+    for (unsigned int index = 0U; index < device_count; ++index) {
+        const auto* device = api.get_device(context.get(), index);
+        const auto id = safe(api.device_id(device));
+        if (id == result.context.phy_device_id) phy = device;
+        if (id == result.context.rx_stream_device_id) stream = device;
+    }
+    if (phy == nullptr || stream == nullptr) throw std::runtime_error("topology probe could not resolve AD936x PHY/RX devices");
+
+    for (unsigned int index = 0U; index < api.channels_count(phy); ++index) {
+        const auto* channel = api.get_channel(phy, index);
+        if (channel != nullptr && !api.channel_output(channel)) {
+            const auto id = safe(api.channel_id(channel));
+            if (!id.empty()) result.phy_rx_channel_ids.push_back(id);
+        }
+    }
+    for (unsigned int index = 0U; index < api.channels_count(stream); ++index) {
+        const auto* channel = api.get_channel(stream, index);
+        if (channel == nullptr || api.channel_output(channel)) continue;
+        const auto* format = api.format(channel);
+        const auto id = safe(api.channel_id(channel));
+        if (format == nullptr || id.empty()) continue;
+        result.input_scan_elements.push_back({
+            .id = id,
+            .device_channel_index = index,
+            .storage_bits = format->length,
+            .significant_bits = format->bits,
+            .shift = format->shift,
+            .is_signed = format->is_signed,
+            .is_big_endian = format->is_be,
+            .repeat = format->repeat,
+        });
+    }
     return result;
 }
 

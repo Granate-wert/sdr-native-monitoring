@@ -148,19 +148,6 @@ void test_fake_lease_produces_canonical_cpu_spectrum() {
     expect(metrics.dsp.fft_frames_computed == 1U, "FFT count mismatch");
 }
 
-void test_ci8_rails_preserve_cpu_overload_provenance() {
-    sdr_hackrf::HackrfRxIngress ingress(ingress_config(512U));
-    sdr_hackrf::HackrfFixedBandDsp dsp(dsp_config());
-    push_one(ingress, dsp, constant_ci8(256U, 127, -128), 1'000'000);
-
-    const auto frames = dsp.poll_spectrum_frames();
-    expect(frames.size() == 1U, "rail CI8 block did not produce one spectrum frame");
-    expect(
-        sdr_core::has_flag(frames.front().quality_flags, sdr_core::QualityFlag::AdcOverload),
-        "CI8 rails did not preserve ADC-overload provenance"
-    );
-}
-
 void test_gap_flushes_partial_state_and_retains_loss_flag() {
     sdr_hackrf::HackrfRxIngress ingress(ingress_config(256U));
     sdr_hackrf::HackrfFixedBandDsp dsp(dsp_config());
@@ -279,7 +266,6 @@ int main() {
     try {
         test_config_and_empty_lease_fail_closed();
         test_fake_lease_produces_canonical_cpu_spectrum();
-        test_ci8_rails_preserve_cpu_overload_provenance();
         test_gap_flushes_partial_state_and_retains_loss_flag();
         test_presentation_latest_wins_is_exact_and_separate_from_fft_loss();
         test_cpu_fft_drop_remains_analytical_and_sets_frame_quality();

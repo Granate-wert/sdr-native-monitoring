@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -285,11 +286,14 @@ struct SpectrumFrame {
     SharedArray<float> values;
     CalibrationStatus calibration_status{CalibrationStatus::Uncalibrated};
     std::string calibration_profile_id;
-    double estimated_uncertainty_db{};
+    double estimated_uncertainty_db{std::numeric_limits<double>::quiet_NaN()};
     std::uint64_t dropped_samples_before{};
     std::uint64_t dropped_iq_blocks_before{};
     std::uint64_t dropped_fft_frames_before{};
     QualityFlag quality_flags{QualityFlag::Uncalibrated};
+    // Producer-reported detector accumulation count; zero means unavailable
+    // for historical deserialized/test frames, never implicit average=1.
+    std::uint32_t averaging_frames{};
 };
 
 struct SweepSegmentMetadata {

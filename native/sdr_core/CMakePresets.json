@@ -50,6 +50,16 @@
       }
     },
     {
+      "name": "windows-msvc-cpu-profile",
+      "displayName": "Windows MSVC CPU + Pluto profiling",
+      "inherits": "windows-msvc-cpu",
+      "binaryDir": "${sourceDir}/out/build/windows-msvc-cpu-profile",
+      "cacheVariables": {
+        "SDR_CORE_ENABLE_PROFILING": "ON",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/windows-msvc-cpu-profile/python"
+      }
+    },
+    {
       "name": "windows-msvc-cuda",
       "displayName": "Windows MSVC CPU + Pluto + CUDA Release",
       "inherits": "windows-msvc-cpu",
@@ -152,6 +162,10 @@
       "configurePreset": "windows-msvc-cpu-debug"
     },
     {
+      "name": "windows-msvc-cpu-profile-release",
+      "configurePreset": "windows-msvc-cpu-profile"
+    },
+    {
       "name": "linux-x64-cpu-release",
       "configurePreset": "linux-x64-cpu"
     },
@@ -183,6 +197,13 @@
     {
       "name": "windows-msvc-cpu-debug",
       "configurePreset": "windows-msvc-cpu-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-msvc-cpu-profile",
+      "configurePreset": "windows-msvc-cpu-profile",
       "output": {
         "outputOnFailure": true
       }

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -17,8 +18,79 @@
 namespace {
 
 constexpr double two_pi = 6.28318530717958647692528676655900577;
-constexpr std::uint32_t benchmark_runs = 3U;
-constexpr std::uint32_t samples_per_run = 10U;
+
+enum class BenchmarkMode { Full, Quick };
+
+struct BenchmarkOptions {
+    BenchmarkMode mode{BenchmarkMode::Full};
+};
+
+struct MatrixProfile {
+    std::vector<std::uint32_t> fft_sizes;
+    std::vector<std::uint32_t> batches;
+    std::vector<sdr_core::PrecisionMode> precision_modes;
+    std::vector<sdr_core::SampleFormat> sample_formats;
+    std::vector<sdr_core::ComputeBackendKind> backends;
+    std::uint32_t runs{};
+    std::uint32_t samples_per_run{};
+    std::uint32_t memory_plateau_repetitions{};
+};
+
+BenchmarkOptions parse_options(const int argc, char** argv) {
+    BenchmarkOptions result;
+    bool mode_seen = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument(argv[index]);
+        if (argument == "--quick") {
+            if (mode_seen) throw std::runtime_error("benchmark mode was specified more than once");
+            result.mode = BenchmarkMode::Quick;
+            mode_seen = true;
+        } else if (argument == "--full") {
+            if (mode_seen) throw std::runtime_error("benchmark mode was specified more than once");
+            result.mode = BenchmarkMode::Full;
+            mode_seen = true;
+        } else if (argument == "--help") {
+            std::cout << "usage: sdr_core_cuda_bench [--quick|--full]\n";
+            std::exit(0);
+        } else {
+            throw std::runtime_error("unknown CUDA benchmark argument: " + argument);
+        }
+    }
+    return result;
+}
+
+MatrixProfile make_profile(const BenchmarkMode mode) {
+    if (mode == BenchmarkMode::Quick) {
+        // A short CI gate: canonical AD936x CI12, three representative FFT
+        // sizes and batch/no-batch behaviour. It is not a crossover study.
+        return {
+            .fft_sizes = {1024U, 4096U, 16384U},
+            .batches = {1U, 8U},
+            .precision_modes = {sdr_core::PrecisionMode::AccurateF32F64Accum},
+            .sample_formats = {sdr_core::SampleFormat::ComplexInt12InInt16Le},
+            .backends = {sdr_core::ComputeBackendKind::Cpu, sdr_core::ComputeBackendKind::Cuda},
+            .runs = 2U,
+            .samples_per_run = 3U,
+            .memory_plateau_repetitions = 5U,
+        };
+    }
+    return {
+        .fft_sizes = {1024U, 4096U, 16384U, 65536U},
+        .batches = {1U, 4U, 8U, 16U, 32U},
+        .precision_modes = {
+            sdr_core::PrecisionMode::AccurateF32F64Accum,
+            sdr_core::PrecisionMode::ReferenceF64,
+        },
+        .sample_formats = {
+            sdr_core::SampleFormat::ComplexFloat32Le,
+            sdr_core::SampleFormat::ComplexInt12InInt16Le,
+        },
+        .backends = {sdr_core::ComputeBackendKind::Cpu, sdr_core::ComputeBackendKind::Cuda},
+        .runs = 3U,
+        .samples_per_run = 10U,
+        .memory_plateau_repetitions = 20U,
+    };
+}
 
 void expect(const bool condition, const std::string& message) {
     if (!condition) {
@@ -94,29 +166,18 @@ std::unique_ptr<sdr_core::DspBackend> make_backend(const sdr_core::ComputeBacken
 // P08-010: every timed sample pushes one block containing the complete
 // configured batch. Three runs of ten samples provide median/p95 instead of
 // timing a single FFT or timing an under-filled batch.
-void bench_matrix() {
-    const std::uint32_t sizes[] = {1024U, 4096U, 16384U, 65536U};
-    const std::uint32_t batches[] = {1U, 4U, 8U, 16U, 32U};
-    const sdr_core::PrecisionMode modes[] = {
-        sdr_core::PrecisionMode::AccurateF32F64Accum,
-        sdr_core::PrecisionMode::ReferenceF64,
-    };
-    const sdr_core::SampleFormat formats[] = {
-        sdr_core::SampleFormat::ComplexFloat32Le,
-        sdr_core::SampleFormat::ComplexInt12InInt16Le,
-    };
-    const sdr_core::ComputeBackendKind backends[] = {
-        sdr_core::ComputeBackendKind::Cpu,
-        sdr_core::ComputeBackendKind::Cuda,
-    };
+void bench_matrix(const BenchmarkOptions& options) {
+    const auto profile = make_profile(options.mode);
     constexpr double rate = 8'192'000.0;
+    std::cout << "# mode=" << (options.mode == BenchmarkMode::Quick ? "quick" : "full")
+              << ",synthetic=true,hardware_access=false,auto_policy_derived=false\n";
     std::cout << "backend,format,fft_size,batch,precision,runs,samples,median_ms,p95_ms,frames,gpu_ms,h2d_ms,d2h_ms\n";
 
-    for (const auto backend_kind : backends) {
-        for (const auto format : formats) {
-            for (const auto mode : modes) {
-                for (const auto fft_size : sizes) {
-                    for (const auto batch : batches) {
+    for (const auto backend_kind : profile.backends) {
+        for (const auto format : profile.sample_formats) {
+            for (const auto mode : profile.precision_modes) {
+                for (const auto fft_size : profile.fft_sizes) {
+                    for (const auto batch : profile.batches) {
                         sdr_core::DspConfig config;
                         config.fft_size = fft_size;
                         config.hop_size = fft_size;
@@ -134,11 +195,11 @@ void bench_matrix() {
                         backend->reset();
 
                         std::vector<double> timings_ms;
-                        timings_ms.reserve(benchmark_runs * samples_per_run);
+                        timings_ms.reserve(profile.runs * profile.samples_per_run);
                         std::uint64_t frames = 0U;
-                        for (std::uint32_t run = 0U; run < benchmark_runs; ++run) {
+                        for (std::uint32_t run = 0U; run < profile.runs; ++run) {
                             backend->reset();
-                            for (std::uint32_t sample = 0U; sample < samples_per_run; ++sample) {
+                            for (std::uint32_t sample = 0U; sample < profile.samples_per_run; ++sample) {
                                 const auto started = std::chrono::steady_clock::now();
                                 backend->push_iq(make_block(
                                     signal,
@@ -157,8 +218,8 @@ void bench_matrix() {
                         }
 
                         const auto metrics = backend->metrics();
-                        const auto expected_frames = static_cast<std::uint64_t>(benchmark_runs) *
-                            samples_per_run * batch;
+                        const auto expected_frames = static_cast<std::uint64_t>(profile.runs) *
+                            profile.samples_per_run * batch;
                         expect(frames == expected_frames, "benchmark did not emit a full configured batch");
                         expect(metrics.fft_frames_dropped == 0U, "benchmark dropped FFT frames");
 
@@ -175,7 +236,7 @@ void bench_matrix() {
                                   << (format == sdr_core::SampleFormat::ComplexFloat32Le ? "f32" : "int12") << ','
                                   << fft_size << ',' << batch << ','
                                   << (mode == sdr_core::PrecisionMode::ReferenceF64 ? "f64" : "accurate") << ','
-                                  << benchmark_runs << ',' << timings_ms.size() << ','
+                                  << profile.runs << ',' << timings_ms.size() << ','
                                   << percentile(timings_ms, 0.50) << ','
                                   << percentile(timings_ms, 0.95) << ',' << frames << ','
                                   << gpu_ms << ',' << h2d_ms << ',' << d2h_ms << '\n';
@@ -187,7 +248,8 @@ void bench_matrix() {
 }
 
 // Memory plateau: repeated runs must not grow device/pinned bytes.
-void bench_memory_plateau() {
+void bench_memory_plateau(const BenchmarkOptions& options) {
+    const auto profile = make_profile(options.mode);
     sdr_core::DspConfig config;
     config.fft_size = 16384U;
     config.hop_size = 8192U;
@@ -198,7 +260,7 @@ void bench_memory_plateau() {
     backend.configure(config);
     const auto initial = backend.perf_snapshot();
     const auto bytes = make_signal(config.fft_size * config.batch_size, sdr_core::SampleFormat::ComplexFloat32Le, 8'192'000.0);
-    for (std::uint32_t rep = 0U; rep < 20U; ++rep) {
+    for (std::uint32_t rep = 0U; rep < profile.memory_plateau_repetitions; ++rep) {
         backend.push_iq(make_block(
             bytes,
             config.fft_size * config.batch_size,
@@ -219,10 +281,11 @@ void bench_memory_plateau() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
-        bench_matrix();
-        bench_memory_plateau();
+        const auto options = parse_options(argc, argv);
+        bench_matrix(options);
+        bench_memory_plateau(options);
         std::cout << "P08 CUDA benchmark OK\n";
         return 0;
     } catch (const std::exception& error) {

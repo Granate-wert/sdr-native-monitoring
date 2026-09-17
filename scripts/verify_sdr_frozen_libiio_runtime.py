@@ -1,4 +1,4 @@
-"""Fail-closed verifier for an app-local libiio frozen-runtime closure."""
+"""Fail-closed verifier for the R12-I frozen app-local libiio loader gate."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+
 
 LIBIIO_RUNTIME_COMPONENTS = (
     "libiio.dll",
@@ -27,16 +28,12 @@ def verify_frozen_libiio_runtime(package_dir: Path) -> dict[str, object]:
     if not executable.is_file():
         raise ValueError("frozen SDR executable is missing")
     runtime_dir = root / "_internal" / "sdr_monitor"
-    missing = [
-        name for name in LIBIIO_RUNTIME_COMPONENTS if not (runtime_dir / name).is_file()
-    ]
+    missing = [name for name in LIBIIO_RUNTIME_COMPONENTS if not (runtime_dir / name).is_file()]
     if missing:
-        raise ValueError(
-            "frozen libiio runtime components are missing: " + ", ".join(missing)
-        )
+        raise ValueError("frozen libiio runtime components are missing: " + ", ".join(missing))
 
     environment = os.environ.copy()
-    # A future EXE command must replace, never honour, an external path override.
+    # The EXE must replace, never honor, an external runtime-path override.
     environment["LIBIIO_DLL_PATH"] = str(root / "external-runtime-must-not-be-loaded.dll")
     completed = subprocess.run(
         [str(executable), "--verify-packaged-libiio-runtime"],
@@ -48,15 +45,13 @@ def verify_frozen_libiio_runtime(package_dir: Path) -> dict[str, object]:
         timeout=30,
     )
     if completed.returncode != 0:
-        raise ValueError(
-            "frozen libiio load-only command failed: " + completed.stdout + completed.stderr
-        )
+        raise ValueError("frozen libiio load-only command failed: " + completed.stdout + completed.stderr)
     try:
         observed = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         raise ValueError("frozen libiio load-only command did not emit JSON") from error
     if not isinstance(observed, dict):
-        raise TypeError("frozen libiio load-only result must be a JSON object")
+        raise ValueError("frozen libiio load-only result must be a JSON object")
     expected = {
         "libiio_available": True,
         "library_package_local": True,
@@ -65,9 +60,7 @@ def verify_frozen_libiio_runtime(package_dir: Path) -> dict[str, object]:
     }
     mismatches = [key for key, value in expected.items() if observed.get(key) != value]
     if mismatches:
-        raise ValueError(
-            "frozen libiio load-only result rejected: " + ", ".join(mismatches)
-        )
+        raise ValueError("frozen libiio load-only result rejected: " + ", ".join(mismatches))
     for key in ("libiio_major", "libiio_minor"):
         if not isinstance(observed.get(key), int) or observed[key] < 0:
             raise ValueError("frozen libiio load-only result lacks " + key)

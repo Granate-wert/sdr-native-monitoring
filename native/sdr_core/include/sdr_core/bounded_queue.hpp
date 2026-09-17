@@ -267,12 +267,10 @@ private:
                 result = PushResult::Evicted;
                 break;
             case OverflowPolicy::LatestWins:
-                // Preserve the newest bounded window.  Replacing the newest
-                // pending item leaves a stale prefix ahead of it and creates
-                // avoidable presentation latency; the incoming snapshot must
-                // therefore evict the oldest pending snapshot instead.
-                std::forward<OnEvicted>(on_evicted)(items_.front());
-                items_.pop_front();
+                // Replace the newest pending item: the consumer never sees
+                // superseded snapshots.
+                std::forward<OnEvicted>(on_evicted)(items_.back());
+                items_.pop_back();
                 ++dropped_;
                 result = PushResult::Evicted;
                 break;

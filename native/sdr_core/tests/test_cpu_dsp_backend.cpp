@@ -112,6 +112,29 @@ sdr_core::IqBlock make_ci16_block(
     return block;
 }
 
+sdr_core::IqBlock make_ci8_block(
+    const std::vector<std::pair<std::int8_t, std::int8_t>>& samples,
+    const std::uint64_t first_sample_index,
+    const double sample_rate,
+    const double center_frequency
+) {
+    auto bytes = std::make_shared<std::vector<std::uint8_t>>(samples.size() * 2U);
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        std::memcpy(bytes->data() + index * 2U, &samples[index].first, 1U);
+        std::memcpy(bytes->data() + index * 2U + 1U, &samples[index].second, 1U);
+    }
+    sdr_core::IqBlock block;
+    block.first_sample_index = first_sample_index;
+    block.timestamp_ns = 1;
+    block.center_frequency_hz = center_frequency;
+    block.sample_rate_hz = sample_rate;
+    block.sample_format = sdr_core::SampleFormat::ComplexInt8Interleaved;
+    block.sample_count = static_cast<std::uint32_t>(samples.size());
+    block.samples = std::move(bytes);
+    block.config_generation = 1U;
+    return block;
+}
+
 sdr_core::DspConfig make_config(
     const std::uint32_t fft_size,
     const std::uint32_t hop_size,
@@ -266,6 +289,69 @@ void test_detectors_linear_domain() {
     }
 }
 
+// R04 allocates only the accumulator selected by detector and precision mode.
+// Exercise every valid combination so an unallocated inactive accumulator can
+// neither be read nor accidentally become part of the numerical path.
+void test_detectors_all_precision_modes() {
+    constexpr std::uint32_t n = 256U;
+    constexpr double rate = 256'000.0;
+    constexpr double center = 50'000'000.0;
+    constexpr std::uint32_t bin = 10U;
+    const std::pair<sdr_core::DetectorType, double> cases[] = {
+        {sdr_core::DetectorType::Sample, 0.0625},
+        {sdr_core::DetectorType::Peak, 1.0},
+        {sdr_core::DetectorType::NegativePeak, 0.0625},
+        {sdr_core::DetectorType::AveragePower, (1.0 + 0.25 + 0.0625) / 3.0},
+        {sdr_core::DetectorType::Rms, (1.0 + 0.25 + 0.0625) / 3.0},
+    };
+    const sdr_core::PrecisionMode modes[] = {
+        sdr_core::PrecisionMode::ReferenceF64,
+        sdr_core::PrecisionMode::AccurateF32F64Accum,
+        sdr_core::PrecisionMode::FastF32,
+    };
+    const double amplitudes[] = {1.0, 0.5, 0.25};
+
+    for (const auto mode : modes) {
+        for (const auto& [detector, expected_power] : cases) {
+            auto backend = sdr_core::make_cpu_dsp_backend({});
+            backend->configure(make_config(
+                n,
+                n,
+                sdr_core::WindowType::Rectangular,
+                detector,
+                sdr_core::SpectrumUnit::DbfsBin,
+                mode,
+                3U
+            ));
+            for (std::uint32_t block_index = 0U; block_index < 3U; ++block_index) {
+                backend->push_iq(make_cf32_block(
+                    tone(n, rate, 1'000.0 * bin, amplitudes[block_index]),
+                    block_index * n,
+                    rate,
+                    center
+                ));
+            }
+            const auto frames = backend->poll_spectrum(0U);
+            expect(frames.size() == 1U, "detector/precision averaging must emit one frame");
+            const double measured = std::pow(
+                10.0,
+                static_cast<double>((*frames.front().values)[n / 2U + bin]) / 10.0
+            );
+            const double tolerance = mode == sdr_core::PrecisionMode::FastF32
+                                         ? expected_power * 5e-5 + 1e-9
+                                         : expected_power * 2e-6 + 1e-12;
+            expect_close(
+                measured,
+                expected_power,
+                tolerance,
+                std::string("detector/precision mismatch for ") +
+                    std::string(sdr_core::to_wire(detector)) + "/" +
+                    std::string(sdr_core::to_wire(mode))
+            );
+        }
+    }
+}
+
 void test_overlap_continuity() {
     constexpr std::uint32_t n = 256U;
     constexpr std::uint32_t hop = 128U;
@@ -378,6 +464,39 @@ void test_non_finite_block_dropped() {
     expect(backend->poll_spectrum(0U).empty(), "non-finite block must not produce frames");
     expect(backend->metrics().fft_frames_dropped == 1U, "drop must be counted");
     expect(backend->metrics().samples_processed == 0U, "bad samples must not be counted");
+}
+
+void test_stage_timing_contract() {
+    constexpr std::uint32_t n = 256U;
+    constexpr double rate = 256'000.0;
+    constexpr double center = 50'000'000.0;
+    auto backend = sdr_core::make_cpu_dsp_backend({});
+    backend->configure(make_config(n, n, sdr_core::WindowType::Hann));
+    backend->push_iq(make_cf32_block(tone(n, rate, 10'000.0, 0.5), 0U, rate, center));
+    static_cast<void>(backend->poll_spectrum(0U));
+    const auto metrics = backend->metrics();
+    const auto required =
+        sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::InputUnpack) |
+        sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Window) |
+        sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Fft) |
+        sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Detector);
+    if (metrics.stage_timing_mask == 0U) {
+        expect(
+            metrics.input_unpack_ns == 0U && metrics.window_ns == 0U &&
+                metrics.fft_ns == 0U && metrics.detector_ns == 0U,
+            "disabled CPU profiler must not report ambiguous stage durations"
+        );
+        return;
+    }
+    expect(
+        (metrics.stage_timing_mask & required) == required,
+        "enabled CPU profiler must mark every measured DSP stage"
+    );
+    expect(
+        metrics.input_unpack_ns > 0U && metrics.window_ns > 0U &&
+            metrics.fft_ns > 0U && metrics.detector_ns > 0U,
+        "enabled CPU profiler must report positive cumulative stage durations"
+    );
 }
 
 void test_ci16_unpack_and_clipping_flag() {
@@ -773,6 +892,57 @@ void test_pluto_int12_full_scale_and_clipping() {
     );
 }
 
+void test_hackrf_ci8_normalization_clipping_and_length() {
+    constexpr std::uint32_t n = 256U;
+    constexpr double rate = 256'000.0;
+    constexpr double center = 50'000'000.0;
+    auto backend = sdr_core::make_cpu_dsp_backend({});
+    backend->configure(make_config(n, n, sdr_core::WindowType::Rectangular));
+
+    const std::vector<std::pair<std::int8_t, std::int8_t>> half_scale(
+        n, {std::int8_t{64}, std::int8_t{0}}
+    );
+    backend->push_iq(make_ci8_block(half_scale, 0U, rate, center));
+    const auto frames = backend->poll_spectrum(0U);
+    expect(frames.size() == 1U, "CI8 input did not produce one FFT frame");
+    expect(peak_bin(frames.front()) == n / 2U, "CI8 DC bin placement is wrong");
+    const auto peak = *std::max_element(frames.front().values->begin(), frames.front().values->end());
+    expect_close(peak, -6.0206, 0.02, "CI8 signed/128 normalization is wrong");
+    expect(
+        !sdr_core::has_flag(frames.front().quality_flags, sdr_core::QualityFlag::AdcOverload),
+        "clean CI8 samples were marked overloaded"
+    );
+
+    backend->reset();
+    const std::vector<std::pair<std::int8_t, std::int8_t>> rails(
+        n, {std::int8_t{-128}, std::int8_t{127}}
+    );
+    backend->push_iq(make_ci8_block(rails, 0U, rate, center));
+    const auto rail_frames = backend->poll_spectrum(0U);
+    expect(
+        sdr_core::has_flag(rail_frames.front().quality_flags, sdr_core::QualityFlag::AdcOverload),
+        "CI8 signed rails were not marked overloaded"
+    );
+
+    backend->reset();
+    auto malformed = make_ci8_block(half_scale, 0U, rate, center);
+    auto short_bytes = std::make_shared<std::vector<std::uint8_t>>(*malformed.samples);
+    short_bytes->pop_back();
+    malformed.samples = std::move(short_bytes);
+    const auto samples_before_rejection = backend->metrics().samples_processed;
+    bool rejected = false;
+    try {
+        backend->push_iq(malformed);
+    } catch (const sdr_core::ConfigurationError&) {
+        rejected = true;
+    }
+    expect(rejected, "malformed CI8 byte length was accepted");
+    expect(
+        backend->metrics().samples_processed == samples_before_rejection,
+        "rejected CI8 changed sample metrics"
+    );
+}
+
 void test_clipping_flag_with_nonzero_base() {
     constexpr std::uint32_t n = 256U;
     constexpr double rate = 256'000.0;
@@ -800,11 +970,13 @@ int main() {
         test_exact_bin_tone_all_windows();
         test_parseval_psd_integration();
         test_detectors_linear_domain();
+        test_detectors_all_precision_modes();
         test_overlap_continuity();
         test_repeated_blocks_deterministic();
         test_fft_timestamps_follow_sample_offsets();
         test_reset();
         test_non_finite_block_dropped();
+        test_stage_timing_contract();
         test_ci16_unpack_and_clipping_flag();
         test_dc_removal_block_mean();
         test_precision_modes();
@@ -817,6 +989,7 @@ int main() {
         test_partial_batch_spans_polls_without_flush();
         test_engine_latest_wins_loss_annotation();
         test_pluto_int12_full_scale_and_clipping();
+        test_hackrf_ci8_normalization_clipping_and_length();
         test_clipping_flag_with_nonzero_base();
         std::cout << "P05 CPU DSP backend OK\n";
         return 0;

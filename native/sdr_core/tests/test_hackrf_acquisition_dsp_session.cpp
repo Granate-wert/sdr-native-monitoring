@@ -22,6 +22,7 @@ void expect(const bool condition, const std::string& message) {
         throw std::runtime_error(message);
     }
 }
+
 sdr_core::SourceDescriptor source() {
     sdr_core::SourceDescriptor value;
     value.source_type = sdr_core::SourceType::LiveIq;

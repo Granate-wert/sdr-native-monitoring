@@ -21,7 +21,7 @@ class FrozenV2IdentityTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             verdict = dict(
-                qt_platform="offscreen", workspace="home",
+                qt_platform="offscreen", workspace="analyzer",
                 window_title="SDR Native Monitoring — UI V2", startup_visible=True,
                 closed=True, automatic_discovery_pending=False, live_running=False,
                 live_service="NativeLiveSessionService" if native else "UnavailableLiveService",
@@ -29,7 +29,8 @@ class FrozenV2IdentityTests(unittest.TestCase):
             )
             if native:
                 verdict.update(native_device_constructed=False, native_engine_constructed=False, pluto_compiled=True)
-            for mutation in ({}, {"ui_mode": "standalone"}, {"shell_class": "SDRAppShell"}):
+            for mutation in ({}, {"ui_mode": "standalone"}, {"shell_class": "SDRAppShell"},
+                             {"workspace": "home"}):
                 with self.subTest(filename=filename, mutation=mutation), \
                      patch.object(Path, "is_file", return_value=True), \
                      patch.object(module.subprocess, "run", return_value=SimpleNamespace(

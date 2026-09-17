@@ -73,10 +73,10 @@ void test_latest_wins() {
     IntQueue queue(2U, sdr_core::OverflowPolicy::LatestWins);
     expect(queue.push(1U) == sdr_core::PushResult::Pushed, "initial push failed");
     expect(queue.push(2U) == sdr_core::PushResult::Pushed, "initial push failed");
-    expect(queue.push(3U) == sdr_core::PushResult::Evicted, "oldest pending item must be evicted");
+    expect(queue.push(3U) == sdr_core::PushResult::Evicted, "newest pending item must be replaced");
     expect(queue.stats().dropped == 1U, "exact drop counter mismatch");
     std::uint64_t out = 0U;
-    expect(queue.pop(out) == sdr_core::PopResult::Popped && out == 2U, "stale oldest item survived");
+    expect(queue.pop(out) == sdr_core::PopResult::Popped && out == 1U, "oldest item must survive");
     expect(queue.pop(out) == sdr_core::PopResult::Popped && out == 3U, "latest must win");
 }
 
@@ -104,7 +104,7 @@ void test_eviction_callback_reports_actual_item() {
         ) == sdr_core::PushResult::Evicted,
         "LatestWins must report eviction"
     );
-    expect(evicted == 31U, "LatestWins callback received wrong item");
+    expect(evicted == 32U, "LatestWins callback received wrong item");
 }
 
 void test_blocked_pop_wakeup() {

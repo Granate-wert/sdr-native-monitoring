@@ -261,6 +261,8 @@ py::dict contract_schema() {
     quality["TIMESTAMP_ESTIMATED"] =
         static_cast<std::uint32_t>(QualityFlag::TimestampEstimated);
     quality["BACKEND_FALLBACK"] = static_cast<std::uint32_t>(QualityFlag::BackendFallback);
+    quality["BACKEND_DISCONTINUITY"] =
+        static_cast<std::uint32_t>(QualityFlag::BackendDiscontinuity);
     enums["QualityFlag"] = quality;
 
     py::dict result;
@@ -437,7 +439,8 @@ void bind_contracts(py::module_& module) {
         .value("STITCH_OVERLAP", QualityFlag::StitchOverlap)
         .value("MISSING_SEGMENT", QualityFlag::MissingSegment)
         .value("TIMESTAMP_ESTIMATED", QualityFlag::TimestampEstimated)
-        .value("BACKEND_FALLBACK", QualityFlag::BackendFallback);
+        .value("BACKEND_FALLBACK", QualityFlag::BackendFallback)
+        .value("BACKEND_DISCONTINUITY", QualityFlag::BackendDiscontinuity);
     py::enum_<BackendKind>(module, "BackendKind")
         .value("CPU", BackendKind::Cpu)
         .value("CUDA", BackendKind::Cuda);
@@ -740,6 +743,7 @@ void bind_contracts(py::module_& module) {
         .def_readonly("fft_size", &SpectrumFrame::fft_size)
         .def_readonly("hop_size", &SpectrumFrame::hop_size)
         .def_readonly("window", &SpectrumFrame::window)
+        .def_readonly("averaging_frames", &SpectrumFrame::averaging_frames)
         .def_readonly("detector", &SpectrumFrame::detector)
         .def_readonly("precision_mode", &SpectrumFrame::precision_mode)
         .def_readonly("unit", &SpectrumFrame::unit)

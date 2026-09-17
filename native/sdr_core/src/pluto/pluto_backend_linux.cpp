@@ -20,6 +20,18 @@ struct iio_scan_context;
 struct iio_context_info;
 struct iio_context;
 struct iio_device;
+struct iio_channel;
+struct iio_data_format {
+    unsigned int length;
+    unsigned int bits;
+    unsigned int shift;
+    bool is_signed;
+    bool is_fully_defined;
+    bool is_be;
+    bool with_scale;
+    double scale;
+    unsigned int repeat;
+};
 using ssize_type = std::ptrdiff_t;
 
 struct Library final {
@@ -60,6 +72,11 @@ struct Library final {
         return reinterpret_cast<T>(address);
     }
 
+    [[nodiscard]] bool has_symbol(const char* name) const noexcept {
+        dlerror();
+        return dlsym(handle, name) != nullptr;
+    }
+
     void* handle{};
     std::string path;
 };
@@ -86,6 +103,9 @@ RuntimeInfo runtime_info() {
         for (unsigned int index = 0; index < count; ++index) {
             result.backends.push_back(safe(backend(index)));
         }
+        result.supports_kernel_buffer_count = library.has_symbol("iio_device_set_kernel_buffers_count");
+        result.supports_buffer_blocking_mode = library.has_symbol("iio_buffer_set_blocking_mode");
+        result.supports_buffer_poll_fd = library.has_symbol("iio_buffer_get_poll_fd");
     } catch (const std::exception& error) {
         result.error = error.what();
     }
@@ -141,6 +161,10 @@ ContextProbe probe_context(const std::string& uri, const std::uint32_t timeout_m
     using count_fn = unsigned int (*)(const iio_context*);
     using device_fn = iio_device* (*)(const iio_context*, unsigned int);
     using device_string_fn = const char* (*)(const iio_device*);
+    using channel_count_fn = unsigned int (*)(const iio_device*);
+    using channel_fn = iio_channel* (*)(const iio_device*, unsigned int);
+    using channel_string_fn = const char* (*)(const iio_channel*);
+    using channel_output_fn = bool (*)(const iio_channel*);
     Library library;
     const auto create = library.symbol<create_fn>("iio_create_context_from_uri");
     const auto destroy = library.symbol<destroy_fn>("iio_context_destroy");
@@ -153,6 +177,10 @@ ContextProbe probe_context(const std::string& uri, const std::uint32_t timeout_m
     const auto get_device = library.symbol<device_fn>("iio_context_get_device");
     const auto device_id = library.symbol<device_string_fn>("iio_device_get_id");
     const auto device_name = library.symbol<device_string_fn>("iio_device_get_name");
+    const auto channels_count = library.symbol<channel_count_fn>("iio_device_get_channels_count");
+    const auto get_channel = library.symbol<channel_fn>("iio_device_get_channel");
+    const auto channel_id = library.symbol<channel_string_fn>("iio_channel_get_id");
+    const auto channel_output = library.symbol<channel_output_fn>("iio_channel_is_output");
     auto* raw_context = create(uri.c_str());
     if (raw_context == nullptr) throw std::runtime_error("iio_create_context_from_uri failed for " + uri);
     std::unique_ptr<iio_context, destroy_fn> context(raw_context, destroy);
@@ -195,13 +223,95 @@ ContextProbe probe_context(const std::string& uri, const std::uint32_t timeout_m
         std::string identity = id + " " + name;
         for (auto& ch : identity) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         if (result.phy_device_id.empty() && identity.find("ad936") != std::string::npos) result.phy_device_id = id;
-        if (result.rx_stream_device_id.empty() &&
-            (identity.find("cf-ad9361-lpc") != std::string::npos || identity.find("axi-ad9361-rx") != std::string::npos)) {
+        bool has_i = false;
+        bool has_q = false;
+        for (unsigned int channel_index = 0U; channel_index < channels_count(device); ++channel_index) {
+            const auto* channel = get_channel(device, channel_index);
+            if (channel == nullptr || channel_output(channel)) continue;
+            const auto channel_identity = safe(channel_id(channel));
+            has_i = has_i || channel_identity == "voltage0";
+            has_q = has_q || channel_identity == "voltage1";
+        }
+        if (result.rx_stream_device_id.empty() && has_i && has_q &&
+            (identity.find("cf-ad936") != std::string::npos || identity.find("axi-ad936") != std::string::npos)) {
             result.rx_stream_device_id = id;
         }
     }
     if (result.phy_device_id.empty()) throw std::runtime_error("AD936x PHY device not found in context");
-    if (result.rx_stream_device_id.empty()) throw std::runtime_error("AD936x RX streaming device not found in context");
+    if (result.rx_stream_device_id.empty()) {
+        throw std::runtime_error("AD936x RX streaming device with input voltage0/voltage1 channels not found in context");
+    }
+    return result;
+}
+
+ReceiverTopologyProbe probe_receiver_topology(const std::string& uri, const std::uint32_t timeout_ms) {
+    ReceiverTopologyProbe result;
+    result.context = probe_context(uri, timeout_ms);
+
+    using create_fn = iio_context* (*)(const char*);
+    using destroy_fn = void (*)(iio_context*);
+    using timeout_fn = int (*)(iio_context*, unsigned int);
+    using count_fn = unsigned int (*)(const iio_context*);
+    using device_fn = iio_device* (*)(const iio_context*, unsigned int);
+    using device_string_fn = const char* (*)(const iio_device*);
+    using channel_count_fn = unsigned int (*)(const iio_device*);
+    using channel_fn = iio_channel* (*)(const iio_device*, unsigned int);
+    using channel_string_fn = const char* (*)(const iio_channel*);
+    using channel_output_fn = bool (*)(const iio_channel*);
+    using format_fn = const iio_data_format* (*)(const iio_channel*);
+    Library library;
+    const auto create = library.symbol<create_fn>("iio_create_context_from_uri");
+    const auto destroy = library.symbol<destroy_fn>("iio_context_destroy");
+    const auto set_timeout = library.symbol<timeout_fn>("iio_context_set_timeout");
+    const auto devices_count = library.symbol<count_fn>("iio_context_get_devices_count");
+    const auto get_device = library.symbol<device_fn>("iio_context_get_device");
+    const auto device_id = library.symbol<device_string_fn>("iio_device_get_id");
+    const auto channels_count = library.symbol<channel_count_fn>("iio_device_get_channels_count");
+    const auto get_channel = library.symbol<channel_fn>("iio_device_get_channel");
+    const auto channel_id = library.symbol<channel_string_fn>("iio_channel_get_id");
+    const auto channel_output = library.symbol<channel_output_fn>("iio_channel_is_output");
+    const auto format = library.symbol<format_fn>("iio_channel_get_data_format");
+    auto* raw_context = create(uri.c_str());
+    if (raw_context == nullptr) throw std::runtime_error("iio_create_context_from_uri failed for " + uri);
+    std::unique_ptr<iio_context, destroy_fn> context(raw_context, destroy);
+    const int timeout_result = set_timeout(context.get(), timeout_ms);
+    if (timeout_result < 0) throw std::runtime_error("iio_context_set_timeout failed: " + std::to_string(timeout_result));
+
+    const iio_device* phy = nullptr;
+    const iio_device* stream = nullptr;
+    const auto device_count = devices_count(context.get());
+    for (unsigned int index = 0U; index < device_count; ++index) {
+        const auto* device = get_device(context.get(), index);
+        const auto id = safe(device_id(device));
+        if (id == result.context.phy_device_id) phy = device;
+        if (id == result.context.rx_stream_device_id) stream = device;
+    }
+    if (phy == nullptr || stream == nullptr) throw std::runtime_error("topology probe could not resolve AD936x PHY/RX devices");
+
+    for (unsigned int index = 0U; index < channels_count(phy); ++index) {
+        const auto* channel = get_channel(phy, index);
+        if (channel != nullptr && !channel_output(channel)) {
+            const auto id = safe(channel_id(channel));
+            if (!id.empty()) result.phy_rx_channel_ids.push_back(id);
+        }
+    }
+    for (unsigned int index = 0U; index < channels_count(stream); ++index) {
+        const auto* channel = get_channel(stream, index);
+        if (channel == nullptr || channel_output(channel)) continue;
+        const auto* data_format = format(channel);
+        const auto id = safe(channel_id(channel));
+        if (data_format == nullptr || id.empty()) continue;
+        result.input_scan_elements.push_back({
+            .id = id,
+            .device_channel_index = index,
+            .storage_bits = data_format->length,
+            .significant_bits = data_format->bits,
+            .shift = data_format->shift,
+            .is_signed = data_format->is_signed,
+            .is_big_endian = data_format->is_be,
+            .repeat = data_format->repeat,
+        });
+    }
     return result;
 }
 

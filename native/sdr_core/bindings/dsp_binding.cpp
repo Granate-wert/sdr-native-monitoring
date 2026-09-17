@@ -3,11 +3,13 @@
 #include "sdr_core/dsp_backend.hpp"
 #include "sdr_core/errors.hpp"
 #include "sdr_core/events.hpp"
+#include "sdr_core/recording_reprocess.hpp"
 
 #include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -139,6 +141,63 @@ void bind_dsp(py::module_& module) {
         .def_readonly("allow_runtime_fallback", &DspBackendSelectionOptions::allow_runtime_fallback)
         .def_readonly("device_id", &DspBackendSelectionOptions::device_id)
         .def_readonly("plan_cache_capacity", &DspBackendSelectionOptions::plan_cache_capacity);
+
+    py::enum_<NativeIqReprocessState>(module, "NativeIqReprocessState")
+        .value("READY", NativeIqReprocessState::Ready)
+        .value("RUNNING", NativeIqReprocessState::Running)
+        .value("COMPLETED", NativeIqReprocessState::Completed)
+        .value("CANCELLED", NativeIqReprocessState::Cancelled)
+        .value("FAILED", NativeIqReprocessState::Failed);
+
+    py::class_<NativeIqReprocessProgress>(module, "NativeIqReprocessProgress")
+        .def_readonly("state", &NativeIqReprocessProgress::state)
+        .def_readonly("total_input_blocks", &NativeIqReprocessProgress::total_input_blocks)
+        .def_readonly("processed_input_blocks", &NativeIqReprocessProgress::processed_input_blocks)
+        .def_readonly("processed_input_samples", &NativeIqReprocessProgress::processed_input_samples)
+        .def_readonly("written_spectrum_frames", &NativeIqReprocessProgress::written_spectrum_frames)
+        .def_readonly("input_gap_boundaries", &NativeIqReprocessProgress::input_gap_boundaries)
+        .def_readonly("input_gap_samples", &NativeIqReprocessProgress::input_gap_samples)
+        .def_readonly("discarded_fft_frames", &NativeIqReprocessProgress::discarded_fft_frames)
+        .def_readonly("backend_requested", &NativeIqReprocessProgress::backend_requested)
+        .def_readonly("backend_active", &NativeIqReprocessProgress::backend_active)
+        .def_readonly("output_uri", &NativeIqReprocessProgress::output_uri)
+        .def_readonly("message", &NativeIqReprocessProgress::message);
+
+    py::class_<NativeIqRecordingReprocessor,
+               std::shared_ptr<NativeIqRecordingReprocessor>>(
+        module, "NativeIqRecordingReprocessor"
+    )
+        .def(py::init([](
+                 const std::string& input_uri,
+                 const std::string& output_uri,
+                 const DspConfig& dsp,
+                 const DspBackendSelectionOptions& selection,
+                 const std::uint32_t max_samples_per_push
+             ) {
+            return std::make_shared<NativeIqRecordingReprocessor>(
+                std::filesystem::path(input_uri),
+                std::filesystem::path(output_uri),
+                dsp,
+                selection,
+                max_samples_per_push
+            );
+        }),
+            py::arg("input_uri"),
+            py::arg("output_uri"),
+            py::arg("dsp"),
+            py::arg("selection"),
+            py::arg("max_samples_per_push") = 262144U
+        )
+        .def(
+            "process",
+            [](NativeIqRecordingReprocessor& value, const std::uint32_t max_blocks) {
+                py::gil_scoped_release release;
+                return value.process(max_blocks);
+            },
+            py::arg("max_blocks") = 8U
+        )
+        .def("request_cancel", &NativeIqRecordingReprocessor::request_cancel)
+        .def_property_readonly("progress", &NativeIqRecordingReprocessor::progress);
 
     // Bound under the CPU implementation name through the replaceable
     // DspBackend interface (P05 §7).

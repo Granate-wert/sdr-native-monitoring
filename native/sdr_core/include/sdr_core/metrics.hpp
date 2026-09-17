@@ -5,6 +5,22 @@
 
 namespace sdr_core {
 
+// Cumulative stage timers are optional: a zero duration is meaningful only
+// when the corresponding bit is present in stage_timing_mask. This avoids
+// presenting an unavailable timer as a measured zero-cost stage.
+enum class DspStageTimingFlag : std::uint32_t {
+    InputUnpack = 1U << 0U,
+    Window = 1U << 1U,
+    Fft = 1U << 2U,
+    Detector = 1U << 3U,
+    Persistence = 1U << 4U,
+    Publication = 1U << 5U,
+};
+
+[[nodiscard]] constexpr std::uint32_t stage_timing_mask(const DspStageTimingFlag flag) noexcept {
+    return static_cast<std::uint32_t>(flag);
+}
+
 struct EngineMetrics {
     std::uint64_t iq_samples_received{};
     std::uint64_t iq_samples_dropped{};
@@ -25,6 +41,13 @@ struct EngineMetrics {
     double h2d_ms{};
     double d2h_ms{};
     double end_to_end_latency_ms{};
+    std::uint32_t stage_timing_mask{};
+    double input_unpack_ms{};
+    double window_ms{};
+    double fft_ms{};
+    double detector_ms{};
+    double persistence_processing_ms{};
+    double publication_processing_ms{};
 };
 
 void validate(const EngineMetrics& value);
@@ -55,6 +78,13 @@ struct EngineMetricsCounters {
     alignas(64) std::atomic<double> gpu_processing_ms{};
     alignas(64) std::atomic<double> h2d_ms{};
     alignas(64) std::atomic<double> d2h_ms{};
+    alignas(64) std::atomic<std::uint32_t> stage_timing_mask{};
+    alignas(64) std::atomic<double> input_unpack_ms{};
+    alignas(64) std::atomic<double> window_ms{};
+    alignas(64) std::atomic<double> fft_ms{};
+    alignas(64) std::atomic<double> detector_ms{};
+    alignas(64) std::atomic<double> persistence_processing_ms{};
+    alignas(64) std::atomic<double> publication_processing_ms{};
 
     EngineMetricsCounters() = default;
     EngineMetricsCounters(const EngineMetricsCounters&) = delete;
@@ -74,6 +104,13 @@ struct EngineMetricsCounters {
         gpu_processing_ms.store(0.0, std::memory_order_relaxed);
         h2d_ms.store(0.0, std::memory_order_relaxed);
         d2h_ms.store(0.0, std::memory_order_relaxed);
+        stage_timing_mask.store(0U, std::memory_order_relaxed);
+        input_unpack_ms.store(0.0, std::memory_order_relaxed);
+        window_ms.store(0.0, std::memory_order_relaxed);
+        fft_ms.store(0.0, std::memory_order_relaxed);
+        detector_ms.store(0.0, std::memory_order_relaxed);
+        persistence_processing_ms.store(0.0, std::memory_order_relaxed);
+        publication_processing_ms.store(0.0, std::memory_order_relaxed);
     }
 
     // Cumulative fields only; queue depths remain zero here.
@@ -94,6 +131,15 @@ struct EngineMetricsCounters {
         result.gpu_processing_ms = gpu_processing_ms.load(std::memory_order_relaxed);
         result.h2d_ms = h2d_ms.load(std::memory_order_relaxed);
         result.d2h_ms = d2h_ms.load(std::memory_order_relaxed);
+        result.stage_timing_mask = stage_timing_mask.load(std::memory_order_relaxed);
+        result.input_unpack_ms = input_unpack_ms.load(std::memory_order_relaxed);
+        result.window_ms = window_ms.load(std::memory_order_relaxed);
+        result.fft_ms = fft_ms.load(std::memory_order_relaxed);
+        result.detector_ms = detector_ms.load(std::memory_order_relaxed);
+        result.persistence_processing_ms =
+            persistence_processing_ms.load(std::memory_order_relaxed);
+        result.publication_processing_ms =
+            publication_processing_ms.load(std::memory_order_relaxed);
         return result;
     }
 };

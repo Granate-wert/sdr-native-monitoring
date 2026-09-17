@@ -158,7 +158,7 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
 
     const auto missing_blocks = impl_->source_blocks_missing;
     const auto missing_samples = impl_->source_samples_missing;
-    // CPU DSP batches restart their local frame sequence at each poll.  Its
+    // CPU DSP batches restart their local frame sequence at each poll. Its
     // global computed-frame counter is canonical across all admitted input,
     // including an intentional analytical drop, so derive publication order
     // from that monotonic source rather than a batch-local frame field.
