@@ -576,16 +576,18 @@ private:
 
     void apply_segment(const FixedBandConfig& config) {
         const auto current = engine_.state();
-        if (current == sdr_core::EngineState::Created || current == sdr_core::EngineState::Stopped ||
-            current == sdr_core::EngineState::Configured) {
-            static_cast<void>(engine_.configure(config));
-            engine_.start();
-        } else if (current == sdr_core::EngineState::Running) {
-            static_cast<void>(engine_.reconfigure(config));
-        } else {
+        if (current == sdr_core::EngineState::Running) {
+            engine_.stop();
+        } else if (current != sdr_core::EngineState::Created && current != sdr_core::EngineState::Stopped &&
+                   current != sdr_core::EngineState::Configured) {
             invalid("fixed-band engine entered an unusable state during continuous sweep");
         }
+        if (stop_requested_.load(std::memory_order_acquire)) return;
+        // Do not use the convenience reconfigure() here: it automatically
+        // resumes RX even if the coordinator accepted Stop during readback.
+        static_cast<void>(engine_.configure(config));
         segment_reconfigurations_.fetch_add(1U, std::memory_order_relaxed);
+        if (!stop_requested_.load(std::memory_order_acquire)) engine_.start();
     }
 
     [[nodiscard]] FixedBandConfig single_window_fixed_config() const {
@@ -615,13 +617,13 @@ private:
 
     void run_single_window() {
         static_cast<void>(engine_.configure(single_window_fixed_config()));
-        engine_.start();
         segment_reconfigurations_.fetch_add(1U, std::memory_order_relaxed);
         const auto applied = engine_.applied_config();
         {
             std::lock_guard applied_lock(applied_segments_mutex_);
             current_applied_segments_ = {applied};
         }
+        if (!stop_requested_.load(std::memory_order_acquire)) engine_.start();
 
         std::uint64_t next_line_sequence = 1U;
         while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -826,6 +828,12 @@ private:
     void run() noexcept {
         std::uint64_t line_sequence = 1U;
         try {
+            if (stop_requested_.load(std::memory_order_acquire)) {
+                publish_terminal_gap(line_sequence, sdr_core::SweepLineGapReason::Cancellation);
+                expected_cancellations_.fetch_add(1U, std::memory_order_relaxed);
+                state_.store(sdr_core::EngineState::Stopped, std::memory_order_release);
+                return;
+            }
             if (config_.segments.size() == 1U) {
                 run_single_window();
                 return;
@@ -865,6 +873,11 @@ private:
                             gap_reason = engine_.connected()
                                 ? sdr_core::SweepLineGapReason::Reconfigure
                                 : sdr_core::SweepLineGapReason::Disconnect;
+                            terminal = true;
+                            break;
+                        }
+                        if (stop_requested_.load(std::memory_order_acquire)) {
+                            gap_reason = sdr_core::SweepLineGapReason::Cancellation;
                             terminal = true;
                             break;
                         }
@@ -977,6 +990,13 @@ private:
             }
             if (engine_.state() == sdr_core::EngineState::Running) {
                 engine_.stop();
+            }
+            // Stop may arrive after a complete pass, before the next outer
+            // iteration. It still owns exactly one explicit epoch boundary.
+            if (stop_requested_.load(std::memory_order_acquire) &&
+                expected_cancellations_.load(std::memory_order_relaxed) == 0U && !fatal_failure) {
+                publish_terminal_gap(line_sequence, sdr_core::SweepLineGapReason::Cancellation);
+                expected_cancellations_.fetch_add(1U, std::memory_order_relaxed);
             }
             state_.store(
                 fatal_failure ? sdr_core::EngineState::Error : sdr_core::EngineState::Stopped,
