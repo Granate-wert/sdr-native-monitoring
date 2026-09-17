@@ -16,7 +16,7 @@ from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from ..shell.contracts import WorkspaceDefinition
-from ..spectrum import PersistenceDensityFrame, TraceKind
+from ..spectrum import PersistenceDensityFrame
 from ..state.live_view_state import LiveAction
 from ..state.analyzer_readouts import analyzer_status
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
@@ -340,8 +340,7 @@ class AnalyzerWorkspaceV2(QWidget):
         ))
         if (state.mode is not self._last_mode or changed_identity
                 or state.bundle is None and self._last_bundle is not None):
-            self.visualization.spectrum_scene.clear_trace(TraceKind.CURRENT)
-            self.visualization.spectrum_scene.clear_persistence_display()
+            self.visualization.spectrum_scene.clear_measurement()
             self.visualization.waterfall_pane.clear_history()
             self._last_bundle = self._last_waterfall = self._last_persistence = None
             self._last_mode = state.mode

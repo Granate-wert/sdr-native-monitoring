@@ -74,7 +74,7 @@ class SpectrumVisualContractTests(unittest.TestCase):
         latest = scene.latest_frame
         marker = scene.markers[0]
         scene.set_locale(UiLocale.EN)
-        self.assertEqual(scene._frequency_axis.tickStrings([1_000_000.0], 1.0, 1.0), ["1.000 MHz"])
+        self.assertEqual(scene._frequency_axis.tickStrings([1_000_000.0], 1.0, 1.0), ["1.000000 MHz"])
         self.assertEqual(tuple(scene.plot_item.getViewBox().viewRange()[0]), viewport)
         self.assertIs(scene.latest_frame, latest)
         self.assertEqual(scene.markers[0], marker)

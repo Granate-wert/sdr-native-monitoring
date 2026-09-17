@@ -129,6 +129,9 @@ class AnalyzerWorkspaceProductTests(unittest.TestCase):
         self.wait(lambda: self.page._last_bundle is not None)
         self.assertEqual(self.page._last_bundle.mode, "rtbw")
         retained = self.page.visualization.spectrum_scene.latest_frame
+        scene = self.page.visualization.spectrum_scene
+        scene.place_marker("M1", configuration.center_hz)
+        scene.place_marker("M2", configuration.center_hz + 1e6)
         self.page.primary.click()
         self.wait(lambda: not self.live.is_running() and not self.composition.view_model.state.busy)
         from sdr_monitor.ui.v2.i18n import text
@@ -136,6 +139,14 @@ class AnalyzerWorkspaceProductTests(unittest.TestCase):
         self.assertIn(text("analyzer.stopped_last"), self.page.status.text())
         self.assertIn(text("analyzer.quality_unknown"), self.page.status.text())
         self.page.mode.setCurrentIndex(self.page.mode.findData(AnalyzerMode.SWEEP))
+        self.assertIsNone(scene.latest_frame)
+        self.assertEqual(scene.markers, ())
+        self.assertTrue(scene._empty_overlay.isVisible())
+        self.assertTrue(all(not item.isVisible() for item in scene._marker_lines.values()))
+        self.assertTrue(all(not item.isVisible() for item in scene._marker_labels.values()))
+        self.assertIsNone(scene.place_marker("M1", configuration.center_hz))
+        self.assertIsNone(scene.move_selected_marker_to_peak())
+        self.assertEqual(self.events, ["rtbw-start", "rtbw-stop"])
         self.page.primary.click()
         self.wait(lambda: self.page._last_bundle is not None and self.page._last_bundle.mode == "sweep")
         self.assertIs(self.page.visualization, canvas)

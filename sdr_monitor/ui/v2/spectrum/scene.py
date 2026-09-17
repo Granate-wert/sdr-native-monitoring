@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import sys
 
 import numpy as np
 import pyqtgraph as pg
@@ -57,6 +58,8 @@ def _measurement_signature(frame: object, view: SpectrumFrameView) -> tuple[obje
     return (
         getattr(identity, "source_id", None), getattr(identity, "receiver_id", None),
         getattr(identity, "acquisition_epoch", None), getattr(identity, "config_generation", None),
+        getattr(identity, "session_id", None), getattr(identity, "accumulation_id", None),
+        getattr(identity, "clock_domain", None),
         view.unit_label, int(view.frequencies_hz.size), view.frequencies_hz.tobytes(),
     )
 
@@ -152,9 +155,7 @@ class SpectrumScene(QWidget):
         signature = _measurement_signature(frame, view)
         same_measurement = self._measurement_signature == signature
         if self._measurement_signature is not None and not same_measurement:
-            for kind in TraceKind:
-                self.clear_trace(kind)
-            self.clear_persistence_display()
+            self.clear_measurement()
         self._measurement_signature = signature
         self._latest_view = view
         self._trace_views[TraceKind.CURRENT] = view
@@ -182,6 +183,27 @@ class SpectrumScene(QWidget):
         self._envelopes.pop(kind, None)
         self._trace_views.pop(kind, None)
         self._curves[kind].setData([], [])
+
+    def clear_measurement(self) -> None:
+        """Invalidate all data-derived state, without changing acquisition or UI preferences.
+
+        Hiding a curve alone leaves its frame available to marker/peak commands.
+        Mode, identity and geometry transitions must invalidate that frame too.
+        Ordinary Stop deliberately retains the last measurement instead.
+        """
+        self._latest_view = None
+        self._measurement_signature = None
+        for kind in TraceKind:
+            self.clear_trace(kind)
+        self.clear_persistence_display()
+        self._markers.clear()
+        for marker_id in ("M1", "M2"):
+            self._marker_lines[marker_id].hide()
+            self._marker_labels[marker_id].setText("")
+            self._marker_labels[marker_id].hide()
+        self._cursor_readout.setText(text("spectrum.cursor.empty", self._locale))
+        self._plot_item.setLabel("left", "")
+        self._empty_overlay.setVisible(True)
 
     def set_band_masks(self, masks: tuple[BandMask, ...]) -> None:
         """Render external band-plan masks behind traces without changing a device."""
@@ -291,6 +313,7 @@ class SpectrumScene(QWidget):
         self.setAccessibleName(text("spectrum.accessible.name", self._locale))
         self._persistence_visible.setText(text("spectrum.persistence.visible", self._locale))
         self._persistence_log.setText(text("spectrum.persistence.log", self._locale))
+        self._persistence_log.setToolTip(text("spectrum.persistence.log.help", self._locale))
         self._persistence_mode.setItemText(0, text("spectrum.persistence.mode.direct", self._locale))
         self._persistence_mode.setItemText(1, text("spectrum.persistence.mode.visual", self._locale))
         self._persistence_clear.setText(text("spectrum.persistence.clear", self._locale))
@@ -300,6 +323,8 @@ class SpectrumScene(QWidget):
         self._persistence_legend.set_locale(self._locale)
         for kind, curve in self._curves.items():
             curve.opts["name"] = text(_TRACE_LABEL_KEYS[kind], self._locale)
+        for marker in self._markers.values():
+            self._update_marker_item(marker)
         self._update_range_summary()
         self._refresh_persistence_status()
 
@@ -424,6 +449,18 @@ class SpectrumScene(QWidget):
 
     def keyPressEvent(self, event) -> None:
         key = event.key()
+        if event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+                                | Qt.KeyboardModifier.MetaModifier):
+            super().keyPressEvent(event)
+            return
+        # Qt reports Cyrillic letters under a Russian Windows input layout.
+        # Keep the documented physical graph shortcuts without changing the
+        # system layout or intercepting text fields elsewhere in the window.
+        if sys.platform == "win32":
+            key = {
+                0x41: Qt.Key.Key_A, 0x4D: Qt.Key.Key_M, 0x50: Qt.Key.Key_P,
+                0xDB: Qt.Key.Key_BracketLeft, 0xDD: Qt.Key.Key_BracketRight,
+            }.get(event.nativeVirtualKey(), key)
         if key == Qt.Key.Key_1:
             self._selected_marker_id = "M1"
             event.accept()
@@ -552,6 +589,7 @@ class SpectrumScene(QWidget):
         self._persistence_log = QCheckBox(text("spectrum.persistence.log"), toolbar)
         self._persistence_log.setProperty("ui2Role", "utility-toggle")
         self._persistence_log.setAccessibleName(text("spectrum.persistence.log.name"))
+        self._persistence_log.setToolTip(text("spectrum.persistence.log.help"))
         self._persistence_log.setChecked(True)
         self._persistence_log.toggled.connect(self.set_persistence_logarithmic)
         persistence_controls.addWidget(self._persistence_log)
@@ -712,7 +750,8 @@ class SpectrumScene(QWidget):
         label = self._marker_labels[marker.marker_id]
         line.setValue(marker.frequency_hz)
         line.setVisible(True)
-        label.setText(marker.label)
+        frequency = format_frequency_hz(marker.frequency_hz, locale=self._locale, resolution_hz=1.0)
+        label.setText(f"{marker.marker_id}: {frequency}, {marker.value:.2f} {marker.unit_label}")
         label.setPos(marker.frequency_hz, marker.value)
         label.setVisible(True)
 
@@ -736,7 +775,8 @@ class SpectrumScene(QWidget):
         self._cursor_readout.setText(
             text(
                 "spectrum.cursor.value",
-                frequency=format_frequency_hz(float(view.frequencies_hz[index])),
+                frequency=format_frequency_hz(float(view.frequencies_hz[index]),
+                                              locale=self._locale, resolution_hz=1.0),
                 value=float(view.values[index]),
                 unit=view.unit_label,
             )

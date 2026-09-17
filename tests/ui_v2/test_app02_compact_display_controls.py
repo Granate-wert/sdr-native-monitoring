@@ -66,7 +66,7 @@ class CompactDisplayControlsTests(unittest.TestCase):
         pane.set_locale(UiLocale.EN)
         self.assertEqual(pane.history_rows, 1)
         self.assertEqual(pane.grid_signature, signature)
-        self.assertEqual(pane._frequency_axis.tickStrings([1_000_000.0], 1.0, 1.0), ["1.000 MHz"])
+        self.assertEqual(pane._frequency_axis.tickStrings([1_000_000.0], 1.0, 1.0), ["1.000000 MHz"])
 
 
 if __name__ == "__main__":

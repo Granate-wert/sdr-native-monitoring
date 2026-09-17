@@ -21,5 +21,5 @@ class FrequencyAxis(pg.AxisItem):
         self.update()
 
     def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:  # noqa: N802 - Qt API.
-        del scale, spacing
-        return [format_frequency_hz(value, locale=self._locale) for value in values]
+        del scale
+        return [format_frequency_hz(value, locale=self._locale, resolution_hz=spacing) for value in values]

@@ -109,7 +109,8 @@ def adapt_spectrum_frame(frame: object) -> SpectrumFrameView:
     )
 
 
-def format_frequency_hz(value_hz: float, *, locale: UiLocale = UiLocale.RU) -> str:
+def format_frequency_hz(value_hz: float, *, locale: UiLocale = UiLocale.RU,
+                        resolution_hz: float | None = None) -> str:
     """Format frequency axes and markers without changing the measured value."""
 
     magnitude = abs(float(value_hz))
@@ -119,5 +120,8 @@ def format_frequency_hz(value_hz: float, *, locale: UiLocale = UiLocale.RU) -> s
         (1_000.0, "frequency.kilohertz"),
     ):
         if magnitude >= divisor:
+            if resolution_hz is not None and np.isfinite(resolution_hz) and resolution_hz > 0:
+                decimals = max(3, min(12, int(np.ceil(np.log10(divisor / resolution_hz)))))
+                return text(key + ".precise", locale, value=f"{value_hz / divisor:.{decimals}f}")
             return text(key, locale, value=value_hz / divisor)
     return text("frequency.hertz", locale, value=value_hz)

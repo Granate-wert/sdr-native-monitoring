@@ -11,6 +11,12 @@ import numpy as np
 from ..design.tokens import density_lookup_table
 
 
+# Fixed display transfer, not adaptive normalization of measured probability.
+# log10(1 + 9999*p) / 4: zero stays zero, one stays one, rare observations
+# remain visible across approximately four decades without per-frame pumping.
+LOG_DENSITY_GAIN = 9999.0
+
+
 class DensityValueMode(StrEnum):
     """What each native density value means; UI never guesses this semantic."""
 
@@ -199,7 +205,7 @@ def _map_density_values_into(
     if value_mode is DensityValueMode.COUNT and count_maximum > 0.0:
         out /= count_maximum
     if logarithmic:
-        np.multiply(out, 9.0, out=out)
+        np.multiply(out, LOG_DENSITY_GAIN, out=out)
         np.log1p(out, out=out)
-        out /= np.log(10.0)
+        out /= np.log1p(LOG_DENSITY_GAIN)
     np.clip(out, 0.0, 1.0, out=out)

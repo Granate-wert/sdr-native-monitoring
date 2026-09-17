@@ -106,7 +106,7 @@ class PeakPreservingEnvelopeTests(unittest.TestCase):
         view = adapt_spectrum_frame(frame)
         self.assertIs(view.source_frame, frame)
         self.assertEqual(view.unit_label, "dBFS/bin")
-        self.assertEqual(FrequencyAxis(orientation="bottom").tickStrings([2_400_000_000.0], 1.0, 1.0), ["2.400 ГГц"])
+        self.assertEqual(FrequencyAxis(orientation="bottom").tickStrings([2_400_000_000.0], 1.0, 1.0), ["2.400000000 ГГц"])
 
 
 class PersistenceMappingTests(unittest.TestCase):

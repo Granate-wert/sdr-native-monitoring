@@ -347,6 +347,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "frequency.gigahertz": MappingProxyType(
             {UiLocale.RU: "{value:.3f} ГГц", UiLocale.EN: "{value:.3f} GHz"}
         ),
+        "frequency.gigahertz.precise": MappingProxyType({UiLocale.RU: "{value} ГГц", UiLocale.EN: "{value} GHz"}),
+        "frequency.megahertz.precise": MappingProxyType({UiLocale.RU: "{value} МГц", UiLocale.EN: "{value} MHz"}),
+        "frequency.kilohertz.precise": MappingProxyType({UiLocale.RU: "{value} кГц", UiLocale.EN: "{value} kHz"}),
         "frequency.hertz": MappingProxyType(
             {UiLocale.RU: "{value:.0f} Гц", UiLocale.EN: "{value:.0f} Hz"}
         ),
@@ -1679,6 +1682,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         ),
         "analyzer.applying": MappingProxyType({UiLocale.RU: "Применение…", UiLocale.EN: "Applying…"}),
         "analyzer.quick.name": MappingProxyType({UiLocale.RU: "Частота и разрешение", UiLocale.EN: "Frequency and resolution"}),
+        "analyzer.rtbw_rates": MappingProxyType({UiLocale.RU: "FFT/с: {fft} · Публ./с: {publications} · I/Q MS/s: {iq}", UiLocale.EN: "FFT/s: {fft} · Pub/s: {publications} · I/Q MS/s: {iq}"}),
         "analyzer.quick.center": MappingProxyType({UiLocale.RU: "Центр, МГц", UiLocale.EN: "Center, MHz"}),
         "analyzer.quick.span": MappingProxyType({UiLocale.RU: "Вид, МГц", UiLocale.EN: "View, MHz"}),
         "analyzer.quick.fft": MappingProxyType({UiLocale.RU: "FFT", UiLocale.EN: "FFT"}),
@@ -1688,6 +1692,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "waterfall.time_axis.unknown": MappingProxyType({UiLocale.RU: "Время неизвестно", UiLocale.EN: "Time unknown"}),
         "waterfall.time_axis.host": MappingProxyType({UiLocale.RU: "Время хоста (не RF)", UiLocale.EN: "Host time (not RF)"}),
         "analyzer.applied_prefix": MappingProxyType({UiLocale.RU: "Применено:", UiLocale.EN: "Applied:"}),
+        "analyzer.prepared_prefix": MappingProxyType({UiLocale.RU: "Подготовлено — без проверки устройства:", UiLocale.EN: "Prepared — no RF readback:"}),
+        "analyzer.start_requires_configuration": MappingProxyType({UiLocale.RU: "Выберите устройство и подтвердите настройки перед запуском.", UiLocale.EN: "Select a device and submit its settings before starting."}),
+        "analyzer.rf_readback_prefix": MappingProxyType({UiLocale.RU: "Считано с устройства:", UiLocale.EN: "RF readback:"}),
         "analyzer.applied_capture_range": MappingProxyType({UiLocale.RU: "Полоса по применённым center/Fs: {lower}–{upper} МГц. Это не подтверждение полезной полосы или наличия данных; FFT обозначает физический размер преобразования.", UiLocale.EN: "Band from applied center/Fs: {lower}–{upper} MHz. This does not prove usable bandwidth or data availability; FFT denotes the physical transform size."}),
         "analyzer.rx.observed": MappingProxyType({UiLocale.RU: "Наблюдаемые цифровые цепи: {selections}. Это не применённый выбор и не проверка радиотракта.", UiLocale.EN: "Observed digital chains: {selections}. This is not an applied selection or RF-path verification."}),
         "analyzer.running": MappingProxyType({UiLocale.RU: "Приём", UiLocale.EN: "Acquiring"}),
@@ -1791,6 +1798,18 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         ),
         "spectrum.persistence.log.name": MappingProxyType(
             {UiLocale.RU: "Логарифмическая шкала плотности", UiLocale.EN: "Logarithmic density scale"}
+        ),
+        "spectrum.persistence.log.help": MappingProxyType(
+            {UiLocale.RU: "Цвет = log10(1 + 9999 × p) / 4. Для вероятности p — исходное значение; для числа попаданий p — доля от максимума кадра. Ноль прозрачен, p=1 соответствует максимуму шкалы. Измеренная плотность не изменяется.",
+             UiLocale.EN: "Color = log10(1 + 9999 × p) / 4. For probability, p is the original value; for counts, p is a fraction of the frame maximum. Zero is transparent; p=1 is full scale. Measured density is unchanged."}
+        ),
+        "analyzer.numerical_unknown": MappingProxyType(
+            {UiLocale.RU: "Численные метаданные кадра не опубликованы.",
+             UiLocale.EN: "Frame numerical metadata is not published."}
+        ),
+        "analyzer.numerical_metadata": MappingProxyType(
+            {UiLocale.RU: "Метаданные кадра: окно {window}; детектор {detector}; накопление {averaging} FFT; точность {precision}\nШаг FFT {bin_width} Гц; ENBW {enbw} Гц; номинальная RBW {rbw} Гц\nКалибровка {calibration}; профиль {profile}; неопределённость {uncertainty} дБ",
+             UiLocale.EN: "Frame metadata: window {window}; detector {detector}; accumulation {averaging} FFT; precision {precision}\nFFT bin width {bin_width} Hz; ENBW {enbw} Hz; nominal RBW {rbw} Hz\nCalibration {calibration}; profile {profile}; uncertainty {uncertainty} dB"}
         ),
         "spectrum.persistence.mode.direct": MappingProxyType(
             {UiLocale.RU: "Прямой", UiLocale.EN: "Direct"}
