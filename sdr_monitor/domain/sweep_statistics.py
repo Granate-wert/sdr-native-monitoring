@@ -24,7 +24,8 @@ class SweepStatisticsSettings:
                              (self.density_columns, 2048), (self.max_payload_bytes, 512 * 1024 * 1024)):
             if type(value) is not int or not 1 <= value <= upper:
                 raise ValueError("Sweep statistics setting exceeds bounded integer range")
-        if (not all(math.isfinite(x) for x in (self.power_min_db, self.power_max_db, self.snapshot_rate_hz))
+        if (not all(type(x) in (int, float) and math.isfinite(x)
+                    for x in (self.power_min_db, self.power_max_db, self.snapshot_rate_hz))
                 or not -300 <= self.power_min_db < self.power_max_db <= 100
                 or not 1 <= self.snapshot_rate_hz <= 60):
             raise ValueError("invalid Sweep statistics level/rate range")

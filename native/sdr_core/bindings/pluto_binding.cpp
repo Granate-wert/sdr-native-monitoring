@@ -382,7 +382,9 @@ void bind_pluto(py::module_& module) {
             return SweepStatisticsAccumulator::required_payload_bytes(value, frequency_bins, retained_snapshot_slots);
         }, py::arg("frequency_bins"), py::arg("retained_snapshot_slots") = 1U);
 
-    py::class_<SweepStatisticsSnapshot>(module, "SweepStatisticsSnapshot")
+    // Holder identity lets the bridge reuse an unchanged immutable snapshot.
+    // No constructor or mutable property is exposed; all arrays stay read-only.
+    py::class_<SweepStatisticsSnapshot, std::shared_ptr<SweepStatisticsSnapshot>>(module, "SweepStatisticsSnapshot")
         .def_readonly("source_id", &SweepStatisticsSnapshot::source_id)
         .def_readonly("epoch", &SweepStatisticsSnapshot::epoch)
         .def_readonly("update_sequence", &SweepStatisticsSnapshot::update_sequence)
@@ -415,7 +417,7 @@ void bind_pluto(py::module_& module) {
 
     py::class_<sdr_core::SweepProgressFrame>(module, "SweepProgressFrame")
         .def_property_readonly("statistics", [](const SweepProgressFrame& value) -> py::object {
-            return value.statistics ? py::cast(*value.statistics) : py::none();
+            return value.statistics ? py::cast(std::const_pointer_cast<SweepStatisticsSnapshot>(value.statistics)) : py::none();
         })
         .def_property_readonly("source_id", [](const sdr_core::SweepProgressFrame& value) {
             return value.source.source_id;
@@ -450,7 +452,7 @@ void bind_pluto(py::module_& module) {
 
     py::class_<sdr_core::SweepLineFrame>(module, "SweepLineFrame")
         .def_property_readonly("statistics", [](const SweepLineFrame& value) -> py::object {
-            return value.statistics ? py::cast(*value.statistics) : py::none();
+            return value.statistics ? py::cast(std::const_pointer_cast<SweepStatisticsSnapshot>(value.statistics)) : py::none();
         })
         .def_property_readonly("source_id", [](const sdr_core::SweepLineFrame& value) {
             return value.source.source_id;

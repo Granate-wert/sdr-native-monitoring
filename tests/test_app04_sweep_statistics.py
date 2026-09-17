@@ -11,7 +11,9 @@ from sdr_monitor.domain import BackendKind, LiveConfiguration
 from sdr_monitor.domain.analyzer import bundle_from_sweep
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsFrame, SweepStatisticsSettings
-from sdr_monitor.services.native_continuous_sweep import _to_domain_line, _to_domain_progress, _to_domain_statistics
+from sdr_monitor.services.native_continuous_sweep import (
+    _to_domain_line, _to_domain_progress, _to_domain_statistics, _SweepStatisticsCache,
+)
 from sdr_monitor.services.native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
 
 
@@ -93,6 +95,11 @@ class CompiledSweepStatisticsTests(unittest.TestCase):
     def test_native_frames_survive_conversion_wrapper_destruction_and_gc(self):
         native = importlib.import_module("sdr_monitor._sdr_native")
         partial, final = native._make_test_sweep_statistics_frames(4096)
+        cache = _SweepStatisticsCache()
+        first = _to_domain_statistics(partial, cache=cache)
+        self.assertIs(first, _to_domain_statistics(partial, cache=cache))
+        with self.assertRaises(AttributeError):
+            partial.statistics.epoch = 99
         progress, terminal = _to_domain_progress(partial), _to_domain_line(final)
         statistics = bundle_from_sweep(progress).sweep_statistics
         self.assertEqual(statistics.probability.shape, (64, 128))

@@ -18,6 +18,7 @@ from ..domain import SweepLineFrame, SweepLineGapReason, SweepLineState
 from ..domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from ..domain.sweep_progress import SweepProgressFrame
 from ..domain.sweep_acquisition import SweepSegmentAcquisition
+from ..domain.sweep_statistics import SweepStatisticsFrame
 
 
 class ContinuousSweepDisplayPort(Protocol):
@@ -74,6 +75,7 @@ class NativeContinuousSweepDisplayService:
         self._progress_watermark: tuple[str, int, int, int] | None = None
         self._latest_progress: SweepProgressFrame | None = None
         self._active_identity: tuple[str, int] | None = None
+        self._statistics_cache = _SweepStatisticsCache()
 
     def start(self, native_config: Any) -> None:
         with self._lock:
@@ -100,6 +102,7 @@ class NativeContinuousSweepDisplayService:
             self._terminal_watermark = None
             self._progress_watermark = None
             self._latest_progress = None
+            self._statistics_cache = _SweepStatisticsCache()
 
     def poll_latest(self, *, now_s: float | None = None) -> ContinuousSweepDisplaySnapshot:
         """Drain terminal output even after Stop; preview is running-only."""
@@ -119,7 +122,7 @@ class NativeContinuousSweepDisplayService:
             previous = self._terminal_watermark
             if newest is not None and previous is not None and newest.line_sequence <= previous[2]:
                 newest = None
-            line = _to_domain_line(newest) if newest is not None else None
+            line = _to_domain_line(newest, statistics_cache=self._statistics_cache) if newest is not None else None
             self._ui_superseded += len(lines) - int(line is not None)
             terminal_watermark = self._terminal_watermark
             progress_watermark = self._progress_watermark
@@ -133,7 +136,8 @@ class NativeContinuousSweepDisplayService:
             if (native_progress is not None
                     and (native_progress.source_id, native_progress.epoch) != self._active_identity):
                 raise RuntimeError("continuous sweep progress source/epoch differs from active request")
-            progress = _to_domain_progress(native_progress) if native_progress is not None else None
+            progress = (_to_domain_progress(native_progress, statistics_cache=self._statistics_cache)
+                        if native_progress is not None else None)
             if progress is not None:
                 identity = (progress.source_id, progress.epoch, progress.sequence, progress.revision)
                 if ((terminal_watermark is not None and terminal_watermark[:2] == identity[:2]
@@ -231,7 +235,7 @@ def _to_domain_acquisition(native: Any) -> tuple[SweepSegmentAcquisition, ...] |
     ) for item in records)
 
 
-def _to_domain_progress(native: Any) -> SweepProgressFrame:
+def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None) -> SweepProgressFrame:
     return SweepProgressFrame(
         source_id=native.source_id, sequence=native.line_sequence,
         epoch=native.epoch, revision=native.revision, unit=native.unit,
@@ -241,11 +245,11 @@ def _to_domain_progress(native: Any) -> SweepProgressFrame:
         acquired_segment_generations=tuple(native.acquired_segment_generations),
         pending_segment_indices=tuple(native.pending_segment_indices),
         segment_acquisition=_to_domain_acquisition(native),
-        statistics=_to_domain_statistics(native),
+        statistics=_to_domain_statistics(native, cache=statistics_cache),
     )
 
 
-def _to_domain_line(native: Any) -> SweepLineFrame:
+def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None) -> SweepLineFrame:
     from ..domain.sweep_lines import SweepQualitySchema
 
     try:
@@ -265,7 +269,7 @@ def _to_domain_line(native: Any) -> SweepLineFrame:
             quality_flags=quality,
             quality_schema=SweepQualitySchema.NATIVE_V5,
             segment_acquisition=_to_domain_acquisition(native),
-            statistics=_to_domain_statistics(native),
+            statistics=_to_domain_statistics(native, cache=statistics_cache),
             source_segment_indices=native.source_segment_indices,
             missing_segment_indices=tuple(int(value) for value in native.missing_segment_indices),
             segment_config_generations=tuple(
@@ -287,15 +291,32 @@ def _to_domain_line(native: Any) -> SweepLineFrame:
         raise RuntimeError(f"native continuous sweep line conversion failed: {error}") from error
 
 
-def _to_domain_statistics(native: Any):
-    from ..domain.sweep_statistics import SweepStatisticsFrame
+class _SweepStatisticsCache:
+    """One native owner, not an update-ID cache that could hide a changed payload.
+
+    Only pybind's immutable shared snapshot type is reusable. Mutable fake
+    wrappers are deliberately revalidated. A new run drops this sole owner.
+    """
+    def __init__(self) -> None:
+        self.native: object | None = None
+        self.frame: SweepStatisticsFrame | None = None
+
+
+def _to_domain_statistics(native: Any, *, cache: _SweepStatisticsCache | None = None) -> SweepStatisticsFrame | None:
 
     statistics = getattr(native, "statistics", None)
     if statistics is None:
         return None
-    return SweepStatisticsFrame(**{
+    immutable_native = (type(statistics).__module__ == "sdr_monitor._sdr_native"
+                        and type(statistics).__name__ == "SweepStatisticsSnapshot")
+    if cache is not None and immutable_native and statistics is cache.native:
+        return cache.frame
+    frame = SweepStatisticsFrame(**{
         name: getattr(statistics, name) for name in SweepStatisticsFrame.__dataclass_fields__
     })
+    if cache is not None and immutable_native:
+        cache.native, cache.frame = statistics, frame
+    return frame
 
 
 __all__ = [

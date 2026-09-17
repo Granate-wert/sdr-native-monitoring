@@ -50,7 +50,8 @@ class CompiledSweepStatisticsCompositionTests(unittest.TestCase):
                 page.primary.click()
                 harness.wait(lambda: page._last_statistics_key is not None)
                 scene = page.visualization.spectrum_scene
-                self.assertIs(scene._trace_views[TraceKind.AVERAGE].values, partial.statistics.average_db)
+                self.assertTrue(np.shares_memory(scene._trace_views[TraceKind.AVERAGE].values,
+                                                 partial.statistics.average_db))
                 with patch.object(scene, "set_persistence_frame", wraps=scene.set_persistence_frame) as upload:
                     harness.composition.analyzer_presenter._poll()
                     self.assertEqual(upload.call_count, 0, "unchanged native histogram reuploaded")
