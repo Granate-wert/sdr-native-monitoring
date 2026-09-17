@@ -115,10 +115,9 @@ def waterfall_line_from_sweep(frame: SweepLineFrame | SweepProgressFrame) -> Swe
     values = frame.values_db
     if values.size > _MAX_WATERFALL_COLUMNS:
         values, edges = _reduce_waterfall_columns(values, edges)
-    partial = isinstance(frame, SweepProgressFrame)
     stamp = SweepRowStamp(
-        sequence=frame.sequence, revision=frame.revision if partial else 0,
-        state=SweepRowState.PARTIAL if partial else SweepRowState(frame.state.value),
+        sequence=frame.sequence, revision=frame.revision if isinstance(frame, SweepProgressFrame) else 0,
+        state=SweepRowState.PARTIAL if isinstance(frame, SweepProgressFrame) else SweepRowState(frame.state.value),
     )
     return SweepWaterfallLine(
         row=WaterfallLineFrame(

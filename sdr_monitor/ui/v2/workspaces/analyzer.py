@@ -395,13 +395,13 @@ class AnalyzerWorkspaceV2(QWidget):
             self._last_bundle = bundle
         if state.mode is AnalyzerMode.SWEEP:
             statistics = bundle.sweep_statistics if bundle is not None else None
-            key = ((statistics.source_id, statistics.epoch, statistics.update_sequence)
+            statistics_key = ((statistics.source_id, statistics.epoch, statistics.update_sequence)
                    if statistics is not None else None)
-            if statistics is not None and key != self._last_statistics_key:
+            if statistics is not None and statistics_key != self._last_statistics_key:
                 scene = self.visualization.spectrum_scene
                 scene.set_trace(TraceKind.AVERAGE, statistics)
                 scene.set_persistence_frame(persistence_density_from_sweep(statistics))
-                self._last_statistics_key = key
+                self._last_statistics_key = statistics_key
             elif statistics is None and self._last_statistics_key is not None:
                 self.visualization.spectrum_scene.clear_trace(TraceKind.AVERAGE)
                 self.visualization.spectrum_scene.clear_persistence_display()
