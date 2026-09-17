@@ -30,8 +30,10 @@ class EmptyChartOverlay(QFrame):
         secondary_text = text("component.empty_chart.default.secondary") if secondary_text is None else secondary_text
         self.setProperty("ui2Role", "panel")
         title_label = QLabel(title, self)
+        self._title_label = title_label
         title_label.setProperty("ui2Role", "workspace-heading")
         detail_label = QLabel(detail, self)
+        self._detail_label = detail_label
         detail_label.setProperty("ui2Role", "secondary")
         detail_label.setWordWrap(True)
         self._primary = QPushButton(primary_text, self)
@@ -51,5 +53,14 @@ class EmptyChartOverlay(QFrame):
         layout.addWidget(title_label)
         layout.addWidget(detail_label)
         layout.addLayout(buttons)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(detail)
+
+    def set_content(self, *, title: str, detail: str, primary_text: str, secondary_text: str) -> None:
+        """Retranslate an existing overlay without changing visibility or actions."""
+        self._title_label.setText(title)
+        self._detail_label.setText(detail)
+        self._primary.setText(primary_text)
+        self._secondary.setText(secondary_text)
         self.setAccessibleName(title)
         self.setAccessibleDescription(detail)

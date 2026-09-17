@@ -19,6 +19,7 @@ from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from .analyzer_status_label import AnalyzerStatusLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
+from .analyzer_inspector import AnalyzerInspector
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum import PersistenceDensityFrame
 from ..spectrum.contracts import TraceKind
@@ -154,6 +155,11 @@ class AnalyzerWorkspaceV2(QWidget):
     def set_locale(self) -> None:
         """Translate controls in place; preserve canvas, source and local range."""
         self.setAccessibleName(text("analyzer.title"))
+        self.source.setAccessibleName(text("live.device_selector.name"))
+        with QSignalBlocker(self.source):
+            for index in range(self.source.count()):
+                if self.source.itemData(index) is None:
+                    self.source.setItemText(index, text("live.device.unselected"))
         for widget, key in self._text_bindings:
             widget.setText(text(key))
             widget.setAccessibleName(text(key))
@@ -490,15 +496,6 @@ def analyzer_workspace_definition(model: AnalyzerViewModel) -> WorkspaceDefiniti
     return WorkspaceDefinition(
         workspace_id="analyzer", label=text("analyzer.title"), description=text("analyzer.description"),
         icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(model),
-        inspector_factory=_analyzer_inspector,
+        inspector_factory=lambda: AnalyzerInspector(model),
         label_key="analyzer.title", description_key="analyzer.description",
     )
-
-
-def _analyzer_inspector() -> QWidget:
-    """A theme-aware local-only hint, never a second configuration owner."""
-    label = QLabel(text("analyzer.local"))
-    label.setProperty("ui2Role", "secondary")
-    label.setWordWrap(True)
-    label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-    return label

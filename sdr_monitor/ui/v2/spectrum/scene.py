@@ -325,6 +325,12 @@ class SpectrumScene(QWidget):
         self._locale = UiLocale(locale)
         self._frequency_axis.set_locale(self._locale)
         self.setAccessibleName(text("spectrum.accessible.name", self._locale))
+        self._empty_overlay.set_content(
+            title=text("spectrum.empty.title", self._locale),
+            detail=text("spectrum.empty.detail", self._locale),
+            primary_text=text("spectrum.empty.primary", self._locale),
+            secondary_text=text("spectrum.empty.secondary", self._locale),
+        )
         self._persistence_visible.setText(text("spectrum.persistence.visible", self._locale))
         self._persistence_log.setText(text("spectrum.persistence.log", self._locale))
         self._persistence_log.setToolTip(text("spectrum.persistence.log.help", self._locale))
@@ -543,10 +549,10 @@ class SpectrumScene(QWidget):
         self._persistence = PersistenceOverlay(self._plot_item, z_value=_PERSISTENCE_Z_VALUE)
         host_layout.addWidget(self._graphics)
         self._empty_overlay = EmptyChartOverlay(
-            title=text("spectrum.empty.title"),
-            detail=text("spectrum.empty.detail"),
-            primary_text=text("spectrum.empty.primary"),
-            secondary_text=text("spectrum.empty.secondary"),
+            title=text("spectrum.empty.title", self._locale),
+            detail=text("spectrum.empty.detail", self._locale),
+            primary_text=text("spectrum.empty.primary", self._locale),
+            secondary_text=text("spectrum.empty.secondary", self._locale),
             parent=self._chart_host,
         )
         self._empty_overlay.setEnabled(False)
