@@ -23,7 +23,7 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
-        "analyzer.inspection.title": MappingProxyType({UiLocale.RU: "Измерения Sweep", UiLocale.EN: "Sweep measurements"}),
+        "analyzer.inspection.title": MappingProxyType({UiLocale.RU: "Измерения сканирования", UiLocale.EN: "Sweep measurements"}),
         "analyzer.inspection.segment": MappingProxyType({UiLocale.RU: "Сегмент (индекс от 0)", UiLocale.EN: "Segment (zero-based index)"}),
         "analyzer.inspection.summary": MappingProxyType({UiLocale.RU: "Источник: {source}\nЭпоха {epoch} · проход {sequence} · ревизия {revision}\nПолучено {received}/{total} сегм.; ожидаются {pending}; отсутствуют {missing}\nЕдиница: {unit}", UiLocale.EN: "Source: {source}\nEpoch {epoch} · pass {sequence} · revision {revision}\nReceived {received}/{total} segments; pending {pending}; missing {missing}\nUnit: {unit}"}),
         "analyzer.inspection.scope": MappingProxyType({UiLocale.RU: "Число сегментов — не процент покрытия частот. Получен — не значит без ошибок. Предыдущий проход не подставляется в текущий. Timestamp показан как опубликован: без подтверждённых часов нельзя вычислить возраст или время RF. Позиция RX не опубликована; порядок сегментов не является курсором сканирования.", UiLocale.EN: "Segment counts are not frequency coverage percentages. Received does not mean error-free. Previous-pass data is not substituted into the current pass. Timestamp is shown as published: without a declared clock, RF time and age cannot be calculated. RX position is not published; segment ordering is not a scan cursor."}),

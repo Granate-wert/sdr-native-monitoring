@@ -29,6 +29,7 @@ class AnalyzerInspector(QScrollArea):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(250)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self.refresh)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
