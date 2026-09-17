@@ -38,6 +38,7 @@ class EmptyChartOverlay(QFrame):
         self._primary.setProperty("ui2Role", "primary-action")
         self._primary.clicked.connect(self.primary_requested)
         self._secondary = QPushButton(secondary_text, self)
+        self._secondary.setProperty("ui2Role", "utility-action")
         self._secondary.clicked.connect(self.secondary_requested)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)

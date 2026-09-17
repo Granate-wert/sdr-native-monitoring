@@ -25,6 +25,7 @@ def main():
         page = harness.page
         page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.SWEEP))
         assert page.sweep_preview.resolve()
+        page.sweep_preview.details_button.click()
         for locale in UiLocale:
             harness.shell.select_appearance_locale(locale)
             for width, height in ((1920, 1080), (2560, 1440)):

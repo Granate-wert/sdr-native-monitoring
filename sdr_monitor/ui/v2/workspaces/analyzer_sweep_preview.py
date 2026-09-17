@@ -1,8 +1,9 @@
 """Debounced scalar plan preview; no frame, device or acquisition ownership."""
 from collections.abc import Callable
+from math import ceil
 
-from PySide6.QtCore import QTimer, Signal, Qt
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sdr_monitor.domain import LiveConfiguration
 from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
@@ -11,8 +12,6 @@ from ..i18n import text
 
 
 class AnalyzerSweepPreview(QWidget):
-    changed = Signal()
-
     def __init__(self, calculate: Callable[
         [LiveConfiguration, ContinuousSweepPlanRequest], AnalyzerGeometryPreflight,
     ], parent: QWidget | None = None) -> None:
@@ -34,7 +33,23 @@ class AnalyzerSweepPreview(QWidget):
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByKeyboard
                                              | Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.summary)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.summary, 1)
+        self.details_button = QPushButton(self)
+        self.details_button.setProperty("ui2Role", "utility-action")
+        self.details_button.setCheckable(True)
+        row.addWidget(self.details_button)
+        layout.addLayout(row)
+        self.details = QLabel(self)
+        self.details.setProperty("ui2Role", "secondary")
+        self.details.setWordWrap(True)
+        self.details.setTextFormat(Qt.TextFormat.PlainText)
+        self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByKeyboard
+                                             | Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.details)
+        self.details.hide()
+        self.details_button.toggled.connect(self.details.setVisible)
         self.set_locale()
 
     def set_inputs(self, configuration: LiveConfiguration,
@@ -72,7 +87,6 @@ class AnalyzerSweepPreview(QWidget):
             except Exception as error:
                 self.result, self._error = None, str(error)
         self.set_locale()
-        self.changed.emit()
         return self.result is not None
 
     def set_locale(self) -> None:
@@ -87,7 +101,7 @@ class AnalyzerSweepPreview(QWidget):
                 "analyzer.preview.summary", segments=result.segment_count,
                 bins=result.reduced.output_bins, spacing=f"{result.output_spacing_hz:g}",
                 average=result.fft_averaging_frames,
-                memory=f"{(result.reduced.total_bytes + result.statistics_payload_bytes) / 2**20:.2f}",
+                memory=f"{ceil((result.reduced.total_bytes + result.statistics_payload_bytes) * 100 / 2**20) / 100:.2f}",
             )
             detail = text(
                 "analyzer.preview.details", window=f"{result.usable_window_hz / 1e6:g}",
@@ -101,3 +115,6 @@ class AnalyzerSweepPreview(QWidget):
         self.summary.setToolTip(detail)
         self.summary.setAccessibleName(summary)
         self.summary.setAccessibleDescription(detail)
+        self.details.setText(detail)
+        self.details_button.setText(text("analyzer.preview.expand"))
+        self.details_button.setAccessibleName(text("analyzer.preview.expand"))

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from PySide6.QtTest import QTest
+from PySide6.QtCore import Qt
 
 from sdr_monitor.domain.sweep_speed import SweepSpeedProfile
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
@@ -131,4 +132,28 @@ class SweepPreviewTests(unittest.TestCase):
         request = self.page._sweep_request()
         with self.assertRaisesRegex(ValueError, "64-segment"):
             self.harness.presenter.preview_sweep(config, replace(request, stop_hz=6000e6))
+        self.assertEqual(self.harness.events, [])
+
+    def test_details_keyboard_and_geometry_without_rf_commands(self):
+        self.assertEqual(self.page.visualization.spectrum_scene._empty_overlay._secondary.property(
+            "ui2Role"), "utility-action")
+        self.harness.select_and_apply()
+        self.sweep()
+        self.assertTrue(self.page.sweep_preview.resolve())
+        preview = self.page.sweep_preview
+        preview.details_button.setFocus()
+        QTest.keyClick(preview.details_button, Qt.Key.Key_Space)
+        self.assertTrue(preview.details.isVisible())
+        self.assertIn(text("analyzer.preview.scope"), preview.details.text())
+        for locale in UiLocale:
+            self.harness.shell.select_appearance_locale(locale)
+            for width, height in ((960, 540), (1920, 1080), (2560, 1440)):
+                with self.subTest(locale=locale, size=(width, height)):
+                    self.harness.shell.resize(width, height)
+                    self.harness.app.processEvents()
+                    self.assertTrue(self.page.rect().contains(preview.geometry()))
+                    self.assertLessEqual(preview.minimumSizeHint().width(), self.page.width())
+        preview.details_button.setFocus()
+        QTest.keyClick(preview.details_button, Qt.Key.Key_Space)
+        self.assertFalse(preview.details.isVisible())
         self.assertEqual(self.harness.events, [])
