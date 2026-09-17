@@ -97,7 +97,7 @@ int main() {
     try {
         // A true zero-power bin is -infinity dB, not a missing sample.
         // Preserve it through aligned bins, interpolation and overlap power
-        // averaging; NaN and +infinity must still fail closed as unavailable.
+        // averaging; +infinity is unavailable and NaN is rejected at admission.
         {
             const auto zero = -std::numeric_limits<float>::infinity();
             auto left = segment(0, 11);
@@ -130,7 +130,7 @@ int main() {
             half_grid.target_spacing_hz = 0.5;
             half_grid.segments.resize(1);
             left.spectrum.values = std::make_shared<const std::vector<float>>(
-                std::initializer_list<float>{zero, -90.0F, std::numeric_limits<float>::quiet_NaN(),
+                std::initializer_list<float>{zero, -90.0F, std::numeric_limits<float>::infinity(),
                                              std::numeric_limits<float>::infinity(), zero});
             sdr_core::ContinuousSweepLineAssembler interpolation(half_grid);
             const auto half = interpolation.admit(1, 1, left).at(0);
@@ -309,12 +309,12 @@ int main() {
             std::cerr << "NaN spectrum admitted as measurement" << std::endl;
             return 23;
         }
-        // Infinite source values are non-contributors under the existing
+        // Positive infinite source values are non-contributors under the existing
         // stitch policy. They must not leak their flags into a finite neighbor.
         auto unusable = segment(0U, 11U);
         unusable.spectrum.quality_flags = sdr_core::QualityFlag::AdcOverload;
         unusable.spectrum.values = std::make_shared<std::vector<float>>(
-            5U, -std::numeric_limits<float>::infinity());
+            5U, std::numeric_limits<float>::infinity());
         sdr_core::ContinuousSweepLineAssembler gapped(definition());
         static_cast<void>(gapped.admit(16U, 1000, unusable));
         const auto gap_line = gapped.admit(16U, 1001, segment(1U, 12U));
