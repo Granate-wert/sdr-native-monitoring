@@ -151,6 +151,8 @@ void single_window_numerical_parity() {
         for (const auto window : {sdr_core::WindowType::Rectangular, sdr_core::WindowType::Hann}) {
             for (const auto unit : {sdr_core::SpectrumUnit::DbfsBin, sdr_core::SpectrumUnit::DbfsHz}) {
                 for (const auto average : {1U, 4U}) {
+                    std::cout << "parity profile: FFT=" << fft_size << " window=" << static_cast<int>(window)
+                              << " unit=" << static_cast<int>(unit) << " average=" << average << std::endl;
                     auto profile = config(2'450'000'000.0, 4U);
                     profile.device.buffer_samples = fft_size;
                     profile.dsp.fft_size = fft_size;
@@ -179,7 +181,12 @@ void single_window_numerical_parity() {
                     owner.start();
                     const bool ready = wait_for_sweep_lines(owner, 8U);
                     owner.stop();
-                    if (!ready) throw std::runtime_error("single-window parity timed out");
+                    if (!ready) {
+                        for (const auto& event : owner.poll_events(0U)) {
+                            std::cerr << event.code << ": " << event.message << std::endl;
+                        }
+                        throw std::runtime_error("single-window parity timed out");
+                    }
                     const auto spectra = owner.poll_spectrum_frames(0U);
                     const auto lines = owner.poll_sweep_line_frames(0U);
                     std::uint64_t matched{};
