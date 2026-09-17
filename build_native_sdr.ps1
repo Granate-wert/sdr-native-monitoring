@@ -95,14 +95,26 @@ $env:PATH = "$ninjaDir;$env:PATH"
 # Probe actual output instead of assuming that the optional English MSVC
 # language pack exists. /EP only preprocesses this checked-in source; it
 # creates no object/output file and performs no device or network operation.
-$includeProbe = & cl.exe /nologo /showIncludes /EP /TP "/I$sourceDir/include" "$sourceDir/src/core/api.cpp" 2>&1
-if ($LASTEXITCODE -ne 0) { throw 'MSVC header-dependency probe failed' }
+$probeOutputEncoding = [Console]::OutputEncoding
+try {
+    # MSVC emits localized diagnostics in the Windows ANSI code page even
+    # when this PowerShell host decodes native stdout as UTF-8. Decode only
+    # this child with the actual system ACP; restore the host immediately.
+    $systemAnsiPage = [int](Get-ItemProperty 'HKLM:/SYSTEM/CurrentControlSet/Control/Nls/CodePage' -Name ACP).ACP
+    [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding($systemAnsiPage)
+    $includeProbe = & cl.exe /nologo /showIncludes /EP /TP "/I$sourceDir/include" "$sourceDir/src/core/api.cpp" 2>&1
+    $includeProbeExit = $LASTEXITCODE
+} finally {
+    [Console]::OutputEncoding = $probeOutputEncoding
+}
+if ($includeProbeExit -ne 0) { throw 'MSVC header-dependency probe failed' }
 $includeProbeLine = $includeProbe | ForEach-Object { $_.ToString() } |
     Where-Object { $_ -match '[\\/]sdr_core[\\/]api\.hpp$' } | Select-Object -First 1
 if (-not $includeProbeLine -or $includeProbeLine -notmatch '^(.+?)([A-Za-z]:[\\/])') {
     throw 'MSVC /showIncludes prefix could not be verified from the actual compiler output'
 }
 $dependencyPrefix = $Matches[1]
+if ($dependencyPrefix.Contains([char]0xfffd)) { throw 'MSVC dependency prefix contains undecodable bytes' }
 Write-Host "Verified MSVC /showIncludes prefix: $dependencyPrefix"
 
 $localPybind = Join-Path $sourceDir "out\python-tools\pybind11\share\cmake\pybind11"
