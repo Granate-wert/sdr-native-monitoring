@@ -120,6 +120,15 @@ int main() {
             return 1;
         }
         const auto preview = assembler.preview(10U);
+        if (!preview || !preview->last_admitted_segment || preview->last_admitted_segment->segment_index != 1 ||
+            preview->last_admitted_segment->usable_start_hz != 104.0 ||
+            preview->last_admitted_segment->usable_stop_hz != 108.0 ||
+            !rejects([&] { static_cast<void>(assembler.admit(10, 1002, segment(1, 12))); }) ||
+            !rejects([&] { static_cast<void>(assembler.admit(10, 1003, segment(0, 99))); }) ||
+            assembler.preview(10)->last_admitted_segment->segment_index != 1) {
+            std::cerr << "last-admission position missing or changed after rejection" << std::endl;
+            return 31;
+        }
         if (!preview || preview->segment_acquisition.size() != 1 ||
             preview->segment_acquisition[0].segment_index != 1 ||
             preview->segment_acquisition[0].timestamp_ns != 123 ||
@@ -140,6 +149,15 @@ int main() {
             return 22;
         }
         const auto complete = assembler.admit(10U, 1001, segment(0U, 11U));
+        if (!complete.at(0).last_admitted_segment || complete[0].last_admitted_segment->segment_index != 0 ||
+            complete[0].last_admitted_segment->config_generation != 11 ||
+            preview->last_admitted_segment->segment_index != 1) {
+            std::cerr << "reordered completion inferred position from sorted metadata" << std::endl;
+            return 32;
+        }
+        auto bad_position = complete[0];
+        bad_position.last_admitted_segment->config_generation = 99;
+        if (!rejects([&] { sdr_core::validate(bad_position); })) return 33;
         if (complete.size() != 1 || complete[0].acquired_segments.size() != 2 ||
             complete[0].acquired_segments[0].segment_index != 0 ||
             complete[0].acquired_segments[1].timestamp_ns != 123 ||
@@ -275,6 +293,11 @@ int main() {
             return 5;
         }
         const auto flushed = capacity_assembler.flush(sdr_core::SweepLineGapReason::Cancellation);
+        if (evicted.at(0).last_admitted_segment->segment_index != 0 ||
+            flushed.at(0).last_admitted_segment->segment_index != 0) {
+            std::cerr << "capacity/cancellation gap lost last successful admission" << std::endl;
+            return 34;
+        }
         if (flushed.size() != 1U || flushed[0].gap_reasons !=
             std::vector<sdr_core::SweepLineGapReason>{
                 sdr_core::SweepLineGapReason::Cancellation
@@ -294,6 +317,10 @@ int main() {
             return 17;
         }
         const auto gaps = capacity_assembler.metrics();
+        if (explicit_gap.last_admitted_segment) {
+            std::cerr << "empty control gap invented an admission" << std::endl;
+            return 35;
+        }
         if (gaps.gapped_lines != 3U || gaps.capacity_evicted_lines != 1U || gaps.pending_lines != 0U) {
             std::cerr << "gap metrics mismatch" << std::endl;
             return 7;

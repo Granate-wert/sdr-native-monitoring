@@ -411,6 +411,9 @@ struct SweepLineFrame {
     std::vector<SweepSegmentAcquisition> acquired_segments;
     // Explicitly stamped native statistics; cadence may lag this trace.
     std::shared_ptr<const SweepStatisticsSnapshot> statistics;
+    // Last SUCCESSFUL assembler admission in this pass, not current RF tuning.
+    // Absent for empty control gaps and producers without this contract.
+    std::optional<SweepLineSegmentDefinition> last_admitted_segment;
 };
 
 struct SweepLineAssemblyMetrics {

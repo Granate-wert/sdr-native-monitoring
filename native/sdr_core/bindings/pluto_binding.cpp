@@ -416,6 +416,11 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepProgressFrame>(module, "SweepProgressFrame")
+        .def_property_readonly("last_admitted_segment", [](const SweepProgressFrame& value) -> py::object {
+            if (!value.last_admitted_segment) return py::none();
+            const auto& last = *value.last_admitted_segment;
+            return py::make_tuple(last.segment_index, last.config_generation, last.usable_start_hz, last.usable_stop_hz);
+        })
         .def_property_readonly("statistics", [](const SweepProgressFrame& value) -> py::object {
             return value.statistics ? py::cast(std::const_pointer_cast<SweepStatisticsSnapshot>(value.statistics)) : py::none();
         })
@@ -451,6 +456,11 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepLineFrame>(module, "SweepLineFrame")
+        .def_property_readonly("last_admitted_segment", [](const SweepLineFrame& value) -> py::object {
+            if (!value.last_admitted_segment) return py::none();
+            const auto& last = *value.last_admitted_segment;
+            return py::make_tuple(last.segment_index, last.config_generation, last.usable_start_hz, last.usable_stop_hz);
+        })
         .def_property_readonly("statistics", [](const SweepLineFrame& value) -> py::object {
             return value.statistics ? py::cast(std::const_pointer_cast<SweepStatisticsSnapshot>(value.statistics)) : py::none();
         })
@@ -506,6 +516,38 @@ void bind_pluto(py::module_& module) {
 
     // Explicit deterministic test-only fixture: no device, I/Q, RF clock or
     // throughput claim. Exercises the real accumulator and array ownership.
+    module.def("_make_test_sweep_position_frames", []() {
+        SweepLineDefinition definition;
+        definition.source.source_id = "synthetic-position";
+        definition.source.display_name = "Synthetic position fixture";
+        definition.epoch = 7;
+        definition.start_frequency_hz = 100e6; definition.stop_frequency_hz = 108e6;
+        definition.target_spacing_hz = 1e6;
+        definition.segments = {{0, 11, 100e6, 104e6}, {1, 12, 104e6, 108e6}};
+        ContinuousSweepLineAssembler assembler(definition);
+        const auto make_segment = [&definition](std::uint32_t index) {
+            SpectrumFrame frame;
+            frame.source = definition.source; frame.config_generation = 11 + index;
+            frame.frame_sequence = index; frame.timestamp_ns = 123;
+            frame.center_frequency_hz = (102 + 4 * index) * 1e6;
+            frame.sample_rate_hz = 8e6; frame.analog_bandwidth_hz = 8e6;
+            frame.fft_bin_width_hz = 1e6; frame.enbw_hz = 1e6; frame.nominal_rbw_hz = 1e6;
+            frame.fft_size = 5; frame.hop_size = 2;
+            auto frequencies = std::make_shared<std::vector<double>>(5);
+            for (std::size_t i = 0; i < 5; ++i) (*frequencies)[i] = (100 + 4 * index + i) * 1e6;
+            frame.frequencies_hz = frequencies;
+            frame.values = std::make_shared<const std::vector<float>>(5, -70.0F);
+            return SweepLineSegmentFrame{index, std::move(frame)};
+        };
+        static_cast<void>(assembler.admit(1, 1000, make_segment(1)));
+        auto progress = *assembler.preview(1);
+        auto terminal = assembler.admit(1, 1001, make_segment(0)).at(0);
+        static_cast<void>(assembler.admit(2, 1002, make_segment(0)));
+        auto gap = assembler.flush(SweepLineGapReason::Cancellation).at(0);
+        auto empty = assembler.emit_gap(3, 1003, SweepLineGapReason::Cancellation);
+        return py::make_tuple(progress, terminal, gap, empty);
+    });
+
     module.def("_make_test_sweep_statistics_frames", [](std::uint32_t bins) {
         if (bins < 4 || bins > 16384) throw std::invalid_argument("test bins must be in [4, 16384]");
         SourceDescriptor source;

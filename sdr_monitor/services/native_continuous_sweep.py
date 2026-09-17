@@ -17,7 +17,7 @@ import numpy as np
 from ..domain import SweepLineFrame, SweepLineGapReason, SweepLineState
 from ..domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from ..domain.sweep_progress import SweepProgressFrame
-from ..domain.sweep_acquisition import SweepSegmentAcquisition
+from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
 from ..domain.sweep_statistics import SweepStatisticsFrame
 
 
@@ -235,6 +235,15 @@ def _to_domain_acquisition(native: Any) -> tuple[SweepSegmentAcquisition, ...] |
     ) for item in records)
 
 
+def _to_domain_position(native: Any) -> SweepSegmentPosition | None:
+    value = getattr(native, "last_admitted_segment", None)
+    if value is None:
+        return None
+    if not isinstance(value, tuple) or len(value) != 4:
+        raise ValueError("native last admitted segment must be a four-field tuple")
+    return SweepSegmentPosition(*value)
+
+
 def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None) -> SweepProgressFrame:
     return SweepProgressFrame(
         source_id=native.source_id, sequence=native.line_sequence,
@@ -245,6 +254,7 @@ def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache 
         acquired_segment_generations=tuple(native.acquired_segment_generations),
         pending_segment_indices=tuple(native.pending_segment_indices),
         segment_acquisition=_to_domain_acquisition(native),
+        last_admitted_segment=_to_domain_position(native),
         statistics=_to_domain_statistics(native, cache=statistics_cache),
     )
 
@@ -269,6 +279,7 @@ def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | No
             quality_flags=quality,
             quality_schema=SweepQualitySchema.NATIVE_V5,
             segment_acquisition=_to_domain_acquisition(native),
+            last_admitted_segment=_to_domain_position(native),
             statistics=_to_domain_statistics(native, cache=statistics_cache),
             source_segment_indices=native.source_segment_indices,
             missing_segment_indices=tuple(int(value) for value in native.missing_segment_indices),

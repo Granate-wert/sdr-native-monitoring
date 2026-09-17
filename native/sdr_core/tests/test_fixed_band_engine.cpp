@@ -236,6 +236,9 @@ int main() {
         const auto continuous_metrics = engine.metrics();
         const auto continuous_lines = engine.poll_sweep_line_frames(0U);
         if (continuous_lines.empty() ||
+            !continuous_lines.back().last_admitted_segment ||
+            continuous_lines.back().last_admitted_segment->segment_index != 0 ||
+            continuous_lines.back().last_admitted_segment->config_generation != engine.config_generation() ||
             continuous_lines.back().state != sdr_core::SweepLineState::Complete ||
             continuous_lines.back().epoch != 42U ||
             continuous_lines.back().frequencies_hz->size() < 2U ||

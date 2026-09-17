@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 
 import numpy as np
-from .sweep_acquisition import SweepSegmentAcquisition, validate_acquisition
+from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, validate_acquisition, validate_position
 from .sweep_statistics import SweepStatisticsFrame
 
 
@@ -21,6 +21,7 @@ class SweepProgressFrame:
     pending_segment_indices: tuple[int, ...]
     segment_acquisition: tuple[SweepSegmentAcquisition, ...] | None = None
     statistics: SweepStatisticsFrame | None = None
+    last_admitted_segment: SweepSegmentPosition | None = None
 
     def __post_init__(self) -> None:
         if not self.source_id.strip() or not self.unit.strip():
@@ -58,6 +59,7 @@ class SweepProgressFrame:
         if np.any(arrays[3][missing] != -1) or not np.all(np.isin(arrays[3][~missing], indices)):
             raise ValueError("progress bin provenance must refer only to acquired segments")
         generation_pairs = tuple((pair[0], pair[1]) for pair in acquired)
+        validate_position(self.last_admitted_segment, generation_pairs)
         object.__setattr__(self, "acquired_segment_generations", generation_pairs)
         object.__setattr__(self, "pending_segment_indices", pending)
         object.__setattr__(self, "segment_acquisition",

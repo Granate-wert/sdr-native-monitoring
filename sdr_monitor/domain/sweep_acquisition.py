@@ -5,6 +5,31 @@ import math
 
 
 @dataclass(frozen=True, slots=True)
+class SweepSegmentPosition:
+    """Last successful assembler admission; NEVER the current RF position."""
+    segment_index: int
+    config_generation: int
+    usable_start_hz: float
+    usable_stop_hz: float
+
+    def __post_init__(self) -> None:
+        if (type(self.segment_index) is not int or self.segment_index < 0
+                or type(self.config_generation) is not int or self.config_generation <= 0
+                or not math.isfinite(self.usable_start_hz) or not math.isfinite(self.usable_stop_hz)
+                or self.usable_start_hz < 0 or self.usable_stop_hz <= self.usable_start_hz):
+            raise ValueError("invalid last admitted segment position")
+
+
+def validate_position(position: SweepSegmentPosition | None, generations: Iterable[tuple[int, int]]) -> None:
+    if position is None:
+        return  # Historical/unsupported producer; no inferred cursor.
+    if not isinstance(position, SweepSegmentPosition):
+        raise TypeError("last admitted segment requires a typed immutable position")
+    if dict(generations).get(position.segment_index) != position.config_generation:
+        raise ValueError("last admitted segment must refer to an acquired generation")
+
+
+@dataclass(frozen=True, slots=True)
 class SweepSegmentAcquisition:
     segment_index: int
     config_generation: int

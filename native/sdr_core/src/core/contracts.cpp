@@ -573,6 +573,26 @@ void validate(const SweepLineSegmentFrame& value) {
 }
 
 void validate(const SweepLineFrame& value) {
+    if (value.last_admitted_segment) {
+        const auto& last = *value.last_admitted_segment;
+        const auto match = std::find_if(value.segment_generations.begin(), value.segment_generations.end(),
+            [&last](const auto& segment) {
+                return segment.segment_index == last.segment_index &&
+                    segment.config_generation == last.config_generation &&
+                    segment.usable_start_hz == last.usable_start_hz && segment.usable_stop_hz == last.usable_stop_hz;
+            });
+        const auto acquired = std::find_if(value.acquired_segments.begin(), value.acquired_segments.end(),
+            [&last](const auto& segment) {
+                return segment.segment_index == last.segment_index && segment.config_generation == last.config_generation;
+            });
+        if (match == value.segment_generations.end() || acquired == value.acquired_segments.end() ||
+            !std::isfinite(last.usable_start_hz) || !std::isfinite(last.usable_stop_hz) ||
+            last.usable_stop_hz <= last.usable_start_hz ||
+            std::find(value.missing_segment_indices.begin(), value.missing_segment_indices.end(), last.segment_index)
+                != value.missing_segment_indices.end()) {
+            invalid("last admitted Sweep segment must match an acquired definition");
+        }
+    }
     validate(value.source);
     positive(value.start_frequency_hz, "sweep-line frame start_frequency_hz");
     positive(value.stop_frequency_hz, "sweep-line frame stop_frequency_hz");

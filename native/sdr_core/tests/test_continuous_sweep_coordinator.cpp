@@ -297,10 +297,12 @@ int main() {
         _putenv_s("SDR_MOCK_LIBIIO_REFILL_DELAY_MS", "");
         const auto stopped_lines = progressive.poll_lines(0);
         if (!early || early->revision != 1 || completed_before_stop != 0 ||
+            !early->last_admitted_segment || early->last_admitted_segment->segment_index != 0 ||
             early->acquired_segments.size() != 1 ||
             early->acquired_segments[0].config_generation == 0 ||
             !std::isfinite(early->values->front()) || !std::isnan(early->values->back()) ||
             stopped_lines.size() != 1 ||
+            !stopped_lines[0].last_admitted_segment || stopped_lines[0].last_admitted_segment->segment_index != 0 ||
             !contains_reason(stopped_lines[0], sdr_core::SweepLineGapReason::Cancellation) ||
             !std::isfinite(stopped_lines[0].values->front()) ||
             !std::isnan(stopped_lines[0].values->back()) || progressive.poll_progress()) {

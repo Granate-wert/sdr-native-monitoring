@@ -188,6 +188,9 @@ std::vector<SweepLineFrame> ContinuousSweepLineAssembler::admit(
         throw;
     }
     staging.completed_ns = std::max(staging.completed_ns, completed_ns);
+    // Commit only after all admission checks and accumulation succeeded.
+    // Definition/map order and timestamps need not match arrival order.
+    staging.last_admitted_segment = *expected;
     if (pending->second.segments.size() == definition_.segments.size()) {
         auto line = finalise(line_sequence, pending->second, SweepLineGapReason::MissingSegment);
         if (line.state == SweepLineState::Complete) {
@@ -337,6 +340,7 @@ SweepLineFrame ContinuousSweepLineAssembler::finalise(
         .segment_generations = definition_.segments,
         .gap_reasons = std::move(reasons),
         .acquired_segments = std::move(acquired),
+        .last_admitted_segment = pending.last_admitted_segment,
     };
     validate(result);
     return result;
@@ -373,6 +377,7 @@ std::optional<SweepProgressFrame> ContinuousSweepLineAssembler::preview(
         .acquired_segments = std::move(acquired),
         .pending_segment_indices = std::move(view.missing_segment_indices),
         .segment_acquisition = std::move(view.acquired_segments),
+        .last_admitted_segment = view.last_admitted_segment,
     };
 }
 

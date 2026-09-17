@@ -25,6 +25,7 @@ struct SweepProgressFrame {
     std::vector<std::uint32_t> pending_segment_indices;
     std::vector<SweepSegmentAcquisition> segment_acquisition;
     std::shared_ptr<const SweepStatisticsSnapshot> statistics;
+    std::optional<SweepLineSegmentDefinition> last_admitted_segment;
 };
 
 // Bounded native CPU reference for R10-D line construction.  It consumes
@@ -73,6 +74,7 @@ private:
         std::vector<std::uint32_t> coverage;
         std::vector<std::uint32_t> quality;
         std::vector<std::int32_t> source_indices;
+        std::optional<SweepLineSegmentDefinition> last_admitted_segment;
     };
 
     [[nodiscard]] SweepLineFrame finalise(
