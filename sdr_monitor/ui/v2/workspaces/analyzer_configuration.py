@@ -80,6 +80,13 @@ class AnalyzerConfigurationDrawer(QFrame):
         """Cancel only local edits through the same validated draft owner."""
         self._cancel.click()
 
+    def preview_configuration(self) -> LiveConfiguration:
+        """Immutable local draft, not applied readback or an Apply command."""
+        if self._conflicted or self.pending:
+            raise ValueError(text("live.configuration.conflict") if self._conflicted
+                             else text("live.configuration.requested"))
+        return replace(self._base, **self._draft_changes())
+
     def take_quick_controls(self) -> tuple[QDoubleSpinBox, QSpinBox, QDoubleSpinBox]:
         """Move existing editors to the main bar, never create a second draft."""
         for field in (self._center, self._fft, self._gain):

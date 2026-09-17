@@ -11,6 +11,8 @@ from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from ...application import LiveSessionUseCases
 from ...domain import LiveConfiguration, LiveSnapshot
 from ...domain.live_configuration_patch import LiveConfigurationPatch
+from ...domain.analyzer_resources import AnalyzerGeometryPreflight
+from ...domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ..display_scheduler import DisplayScheduler, DisplaySchedulerMetrics
 
 
@@ -74,6 +76,18 @@ class LivePresenter(QObject):
 
     def select_manual_uri(self, uri: str) -> None:
         self._submit(lambda: self._use_cases.select_manual_uri(uri), self._emit_snapshot)
+
+    def preview_sweep(self, configuration: LiveConfiguration,
+                      request: ContinuousSweepPlanRequest) -> AnalyzerGeometryPreflight:
+        """Bounded scalar-only calculation; no control worker, lease or I/O.
+
+        The application repeats admission against applied readback at Start.
+        A preview neither reserves resources nor authorizes a receiver.
+        """
+        if self._closed or self._closing:
+            raise RuntimeError("Live presenter is closing")
+        self._use_cases.preflight_configuration(configuration)
+        return self._use_cases.preflight_sweep(configuration, request)
 
     def refresh_snapshot(self) -> None:
         """Replay the current immutable service state to a newly created UI."""

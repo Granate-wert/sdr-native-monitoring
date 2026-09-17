@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Protocol
+from sdr_monitor.domain import LiveConfiguration
+from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
+from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
 from ..state.live_view_state import LiveAction, LiveViewState, build_live_view_state
 from ..state.analyzer_layer_cache import AnalyzerLayerCache
@@ -165,6 +168,17 @@ class LiveViewModel:
         """Rebuild labels from the current immutable snapshot without a presenter call."""
 
         self._publish()
+
+    def preview_sweep(self, configuration: LiveConfiguration,
+                      request: ContinuousSweepPlanRequest) -> AnalyzerGeometryPreflight:
+        """Read-only public presenter port; never infer geometry in Qt."""
+        preview = getattr(self._presenter, "preview_sweep", None)
+        if not callable(preview):
+            raise RuntimeError("Sweep preview is unavailable in this composition")
+        result = preview(configuration, request)
+        if not isinstance(result, AnalyzerGeometryPreflight) or result.mode != "sweep":
+            raise ValueError("Invalid Sweep preview result")
+        return result
 
     def dispose(self) -> None:
         """Release signal subscriptions without shutting down the presenter."""

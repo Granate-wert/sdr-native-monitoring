@@ -18,6 +18,7 @@ from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from .analyzer_status_label import AnalyzerStatusLabel
+from .analyzer_sweep_preview import AnalyzerSweepPreview
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum import PersistenceDensityFrame
 from ..spectrum.contracts import TraceKind
@@ -94,6 +95,11 @@ class AnalyzerWorkspaceV2(QWidget):
         self.applied.setProperty("ui2Role", "secondary")
         self.applied.setWordWrap(True)
         layout.addWidget(self.applied)
+        self.sweep_preview = AnalyzerSweepPreview(model.live.preview_sweep, self)
+        layout.addWidget(self.sweep_preview)
+        for field in (self.start_frequency, self.stop_frequency):
+            field.valueChanged.connect(self._refresh_preview)
+        self.drawer.sweep_profile.choice.currentIndexChanged.connect(self._refresh_preview)
         self.error = QLabel(self)
         self.error.setProperty("ui2Role", "secondary")
         self.error.setProperty("ui2Tone", "error")
@@ -159,6 +165,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.start_frequency.setAccessibleName(text("analyzer.start_frequency"))
         self.stop_frequency.setAccessibleName(text("analyzer.stop_frequency"))
         self.drawer.set_locale()
+        self.sweep_preview.set_locale()
         self.frequency_bar.set_locale()
         self.visualization.spectrum_scene.set_locale(current_locale())
         self.visualization.waterfall_pane.set_locale(current_locale())
@@ -192,6 +199,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.drawer.set_theme(theme)
 
     def closeEvent(self, event) -> None:
+        self.sweep_preview.cancel()
         self._unsubscribe()
         self._unsubscribe_devices()
         self.drawer.dispose()
@@ -296,16 +304,35 @@ class AnalyzerWorkspaceV2(QWidget):
                 self._toggle_settings()
         else:
             try:
-                request = (ContinuousSweepPlanRequest(
-                    self.start_frequency.value() * 1e6, self.stop_frequency.value() * 1e6,
-                    statistics=SweepStatisticsSettings(),
-                    speed_profile=self.drawer.sweep_profile.profile,
-                ) if state.mode is AnalyzerMode.SWEEP else None)
+                request = self._sweep_request() if state.mode is AnalyzerMode.SWEEP else None
             except ValueError as error:
                 self.error.setText(str(error))
                 self.error.show()
                 return
+            if request is not None:
+                self._refresh_preview()
+                if not self.sweep_preview.resolve():
+                    return
             self.model.start(request)
+
+    def _sweep_request(self) -> ContinuousSweepPlanRequest:
+        """One immutable draft for preview and Start; no divergent UI planner."""
+        return ContinuousSweepPlanRequest(
+            self.start_frequency.value() * 1e6, self.stop_frequency.value() * 1e6,
+            statistics=SweepStatisticsSettings(),
+            speed_profile=self.drawer.sweep_profile.profile,
+        )
+
+    def _refresh_preview(self, _value: object = None) -> None:
+        state = self.model.state
+        self.sweep_preview.setVisible(state.mode is AnalyzerMode.SWEEP)
+        if state.mode is not AnalyzerMode.SWEEP:
+            self.sweep_preview.cancel()
+        elif not state.controls_locked:
+            try:
+                self.sweep_preview.set_inputs(self.drawer.preview_configuration(), self._sweep_request())
+            except (ValueError, TypeError) as error:
+                self.sweep_preview.invalidate(str(error))
 
     def _execute_keyboard_primary(self) -> None:
         """Graph-local Space may only dispatch an already-enabled Start/Stop."""
@@ -319,6 +346,7 @@ class AnalyzerWorkspaceV2(QWidget):
             self._execute()
 
     def _render(self, state: AnalyzerViewState) -> None:
+        self._refresh_preview()
         self._sync_source(state)
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(self.mode.findData(state.mode))
