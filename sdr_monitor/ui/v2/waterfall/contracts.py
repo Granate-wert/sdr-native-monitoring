@@ -10,6 +10,7 @@ from typing import cast
 import numpy as np
 
 from .bounded_ring import DEFAULT_WATERFALL_PRESENTATION_BUDGET
+from .sweep_rows import SweepRowStamp
 
 
 class WaterfallDirection(StrEnum):
@@ -98,6 +99,26 @@ class WaterfallLineFrame:
             spacing_hz=spacing,
             timestamp_known=self.timestamp_known,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SweepWaterfallLine:
+    """Explicit replaceable pass, using the shared physical-row renderer.
+
+    Completion time is not RF acquisition time for a stitched sweep. Its
+    sequence/status axis is intentionally distinct from RTBW producer age.
+    """
+
+    row: WaterfallLineFrame
+    stamp: SweepRowStamp
+
+    def __post_init__(self) -> None:
+        if self.row.timestamp_known or self.row.timestamp_ns != 0:
+            raise ValueError("Sweep row cannot invent a simultaneous acquisition time")
+        if self.row.sequence != self.stamp.sequence:
+            raise ValueError("Sweep row and stamp sequence must agree")
+        if self.row.values.flags.writeable or self.row.frequency_edges_hz.flags.writeable:
+            raise ValueError("Sweep display rows must be immutable")
 
 
 @dataclass(frozen=True, slots=True)

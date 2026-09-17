@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import numpy as np
 
 from sdr_monitor.domain.live import LivePersistenceFrame, LiveSpectrumFrame
+from sdr_monitor.domain.sweep_lines import SweepLineFrame
+from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from ..spectrum.persistence_contracts import DensityValueMode, PersistenceDensityFrame
-from ..waterfall.contracts import WaterfallLineFrame
+from ..waterfall.contracts import WaterfallLineFrame, SweepWaterfallLine
+from ..waterfall.sweep_rows import SweepRowStamp, SweepRowState
 
 
 _MAX_WATERFALL_COLUMNS = 2048
@@ -83,6 +87,32 @@ def _known_waterfall_timestamp(frame: LiveSpectrumFrame) -> bool:
     """Only the published Unix clock with non-unknown quality supports age labels."""
     quality = getattr(frame.timestamp_quality, "value", frame.timestamp_quality)
     return str(getattr(frame, "clock_domain", "")).casefold() == "unix_ns" and str(quality).casefold() != "unknown"
+
+
+def waterfall_line_from_sweep(frame: SweepLineFrame | SweepProgressFrame) -> SweepWaterfallLine:
+    """Presentation LOD only; keep the original measurement/provenance untouched.
+
+    Reuses the RTBW physical grid and peak/NaN-preserving reduction. No FFT,
+    averaging or histogram work is performed here. Sweep time remains unknown
+    for the whole row; per-segment acquisition records stay on the domain frame.
+    """
+    edges = _regular_edges(frame.frequencies_hz)
+    values = frame.values_db
+    if values.size > _MAX_WATERFALL_COLUMNS:
+        values, edges = _reduce_waterfall_columns(values, edges)
+    partial = isinstance(frame, SweepProgressFrame)
+    stamp = SweepRowStamp(
+        sequence=frame.sequence, revision=frame.revision if partial else 0,
+        state=SweepRowState.PARTIAL if partial else SweepRowState(frame.state.value),
+    )
+    return SweepWaterfallLine(
+        row=WaterfallLineFrame(
+            values=values, frequency_edges_hz=edges, timestamp_ns=0,
+            configuration_generation="sweep:" + json.dumps((frame.source_id, frame.epoch)),
+            unit_label=frame.unit, timestamp_known=False, sequence=frame.sequence,
+        ),
+        stamp=stamp,
+    )
 
 
 def _reduce_waterfall_columns(values: np.ndarray, native_edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

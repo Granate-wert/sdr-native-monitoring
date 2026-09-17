@@ -70,6 +70,7 @@ class _AnalyzerPresenter:
         self.events = events
         self.failure = failure
         self.analyzer_ready = FakeSignal()
+        self.snapshot_ready = FakeSignal()
         self.task_failed = FakeSignal()
         self.starting_changed = FakeSignal()
         self.stopping_changed = FakeSignal()

@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
 from ..state.live_view_state import LiveAction, LiveViewState
@@ -20,7 +21,7 @@ class AnalyzerMode(StrEnum):
 
 
 class SweepPresentationPort(Protocol):
-    analyzer_ready: _SignalPort
+    snapshot_ready: _SignalPort
     task_failed: _SignalPort
     running_changed: _SignalPort
     starting_changed: _SignalPort
@@ -42,6 +43,7 @@ class AnalyzerViewState:
     stop_required: bool
     error: str | None
     configuration_pending: bool = False
+    sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
 
     @property
     def controls_locked(self) -> bool:
@@ -65,13 +67,14 @@ class AnalyzerViewModel:
         self._configuration_pending = False
         self._error: str | None = None
         self._bundle: AnalyzerFrameBundle | None = None
+        self._sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
         self._listeners: list[Callable[[AnalyzerViewState], None]] = []
         self._publishing = False
         self._publication_pending = False
         self._disposed = False
         self._live_identity: tuple[object, ...] | None = None
         self._connections = (
-            (sweep.analyzer_ready, self._on_bundle),
+            (sweep.snapshot_ready, self._on_sweep_snapshot),
             (sweep.task_failed, self._on_error),
             (sweep.starting_changed, self._on_starting),
             (sweep.stopping_changed, self._on_stopping),
@@ -91,6 +94,7 @@ class AnalyzerViewModel:
             not self._sweep.can_close() and not (self._running or self._starting or self._stopping),
             self._error or live.error_label,
             self._configuration_pending,
+            self._sweep_snapshot,
         )
 
     def subscribe(self, callback: Callable[[AnalyzerViewState], None]) -> Callable[[], None]:
@@ -110,6 +114,7 @@ class AnalyzerViewModel:
         if mode is not self._mode:
             self._mode = mode
             self._bundle = None  # Never label a prior-mode frame as current.
+            self._sweep_snapshot = None
             self._error = None
             self._publish()
         return True
@@ -192,19 +197,25 @@ class AnalyzerViewModel:
                     getattr(getattr(snapshot, "device", None), "device_id", None))
         if self._live_identity is not None and identity != self._live_identity:
             self._bundle = None
+            self._sweep_snapshot = None
         self._live_identity = identity
         if self._mode is AnalyzerMode.RTBW:
             self._bundle = state.analyzer_bundle
         self._publish()
 
-    def _on_bundle(self, value: object) -> None:
+    def _on_sweep_snapshot(self, value: object) -> None:
         if self._mode is not AnalyzerMode.SWEEP or not (self._running or self._stopping):
             return
-        if not isinstance(value, AnalyzerFrameBundle) or value.mode != "sweep":
+        if not isinstance(value, ContinuousSweepDisplaySnapshot):
             self._bundle = None
+            self._sweep_snapshot = None
             self._on_error("Invalid Sweep Analyzer bundle")
             return
-        self._bundle = value
+        bundle = value.analyzer_bundle
+        if bundle is None:
+            return  # Counters alone must not erase the last measurement.
+        self._bundle = bundle
+        self._sweep_snapshot = value
         self._publish()
 
     def _on_error(self, error: str) -> None:
@@ -223,6 +234,8 @@ class AnalyzerViewModel:
 
     def _on_running(self, value: bool) -> None:
         self._running = bool(value)
+        if value:
+            self._sweep_snapshot = None
         if value and self._mode is not AnalyzerMode.SWEEP:
             # A successful externally issued command is applied state, unlike
             # a rejected/preflight-only Start. Reflect its actual strategy.

@@ -22,6 +22,7 @@ from ..spectrum import PersistenceDensityFrame
 from ..state.live_view_state import LiveAction
 from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout
 from ..state.analyzer_status_cadence import AnalyzerStatusCadence
+from ..state.analyzer_layers import waterfall_line_from_sweep
 from ..state.configuration_readouts import configuration_prefix
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
@@ -44,6 +45,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self._last_waterfall: WaterfallLineFrame | None = None
         self._last_persistence: PersistenceDensityFrame | None = None
         self._last_identity = None
+        self._last_sweep_snapshot = None
+        self._sweep_waterfall_error = False
         self._status_cadence = AnalyzerStatusCadence()
         self._text_bindings: list[tuple[QLabel | QPushButton, str]] = []
         self.setProperty("ui2Root", True)
@@ -373,8 +376,12 @@ class AnalyzerWorkspaceV2(QWidget):
         if (state.mode is not self._last_mode or changed_identity
                 or state.bundle is None and self._last_bundle is not None):
             self.visualization.spectrum_scene.clear_measurement()
-            self.visualization.waterfall_pane.clear_history()
+            self.visualization.waterfall_pane.clear_history(reset_kind=True)
+            if self._sweep_waterfall_error:
+                self.visualization.spectrum_scene.set_warning(None)
+                self._sweep_waterfall_error = False
             self._last_bundle = self._last_waterfall = self._last_persistence = None
+            self._last_sweep_snapshot = None
             self._last_mode = state.mode
         self._last_identity = identity
         bundle = state.bundle
@@ -394,6 +401,24 @@ class AnalyzerWorkspaceV2(QWidget):
             if isinstance(row, WaterfallLineFrame) and row is not self._last_waterfall:
                 self.visualization.waterfall_pane.set_line(row)
                 self._last_waterfall = row
+        elif state.sweep_snapshot is not None and state.sweep_snapshot is not self._last_sweep_snapshot:
+            snapshot = state.sweep_snapshot
+            # Preserve terminal N and progressive N+1 from the same backend
+            # poll, even though only N+1 is current on the upper spectrum.
+            try:
+                rows = tuple(waterfall_line_from_sweep(frame)
+                             for frame in (snapshot.line, snapshot.progress) if frame is not None)
+            except (ValueError, TypeError) as error:
+                self.visualization.waterfall_pane.clear_history()
+                self.visualization.spectrum_scene.set_warning(text("waterfall.sweep.invalid", reason=str(error)))
+                self._sweep_waterfall_error = True
+            else:
+                for update in rows:
+                    self.visualization.waterfall_pane.set_sweep_line(update)
+                if self._sweep_waterfall_error:
+                    self.visualization.spectrum_scene.set_warning(None)
+                    self._sweep_waterfall_error = False
+            self._last_sweep_snapshot = snapshot
         if self._status_cadence.admit(state, monotonic()):
             status = analyzer_status(state)
             _set_text_if_changed(self.status, status)

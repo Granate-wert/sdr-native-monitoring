@@ -7,6 +7,7 @@ import numpy as np
 
 from ..i18n import UiLocale, text
 from .contracts import WaterfallDirection
+from .sweep_rows import SweepRowStamp, SweepRowState
 
 
 class WaterfallTimeAxis(pg.AxisItem):
@@ -22,6 +23,7 @@ class WaterfallTimeAxis(pg.AxisItem):
         self._row_origin = 0
         self._timestamps_ns: np.ndarray = np.empty(0, dtype=np.int64)
         self._gap_rows: frozenset[int] = frozenset()
+        self._sweep_stamps: tuple[SweepRowStamp | None, ...] = ()
 
     def set_locale(self, locale: UiLocale) -> None:
         self._locale = UiLocale(locale)
@@ -37,11 +39,13 @@ class WaterfallTimeAxis(pg.AxisItem):
         capacity_rows: int,
         timestamps_ns: np.ndarray,
         timestamps_known: bool,
+        sweep_stamps: tuple[SweepRowStamp | None, ...] = (),
     ) -> None:
         self._direction = WaterfallDirection(direction)
         self._rows_per_second = max(1, int(rows_per_second))
         self._display_rows = max(0, int(display_rows))
         self._capacity_rows = max(self._display_rows, int(capacity_rows))
+        self._sweep_stamps = sweep_stamps
         self._row_origin = (
             0 if self._direction is WaterfallDirection.NEWEST_AT_TOP
             else self._capacity_rows - self._display_rows
@@ -69,11 +73,19 @@ class WaterfallTimeAxis(pg.AxisItem):
         index = int(round(row)) - self._row_origin
         if not 0 <= index < self._display_rows:
             return ""
+        source_index = (
+            self._display_rows - 1 - index
+            if self._direction is WaterfallDirection.NEWEST_AT_TOP else index
+        )
+        if len(self._sweep_stamps) == self._display_rows:
+            stamp = self._sweep_stamps[source_index]
+            if stamp is not None:
+                # Axis fonts may lack checkmark/ellipsis glyphs. ASCII markers
+                # remain readable under Windows fallback and are explained by
+                # the localized tooltip/accessibility description.
+                status = {SweepRowState.PARTIAL: "P", SweepRowState.COMPLETE: "C", SweepRowState.GAP: "G"}[stamp.state]
+                return f"#{stamp.sequence} {status}"
         if self._timestamps_ns.size:
-            source_index = (
-                self._display_rows - 1 - index
-                if self._direction is WaterfallDirection.NEWEST_AT_TOP else index
-            )
             age_seconds = max(0.0, (int(self._timestamps_ns[-1]) - int(self._timestamps_ns[source_index])) / 1_000_000_000)
             label = _format_age_seconds(age_seconds, self._locale)
             # A compact glyph marks a producer-time pause without claiming a

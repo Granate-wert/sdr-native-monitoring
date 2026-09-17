@@ -62,6 +62,7 @@ class Live:
 class Sweep:
     def __init__(self):
         self.analyzer_ready = Signal()
+        self.snapshot_ready = Signal()
         self.task_failed = Signal()
         self.starting_changed = Signal()
         self.stopping_changed = Signal()
@@ -143,6 +144,7 @@ class AnalyzerViewModelTests(unittest.TestCase):
         self.assertFalse(self.model.start())
         self.assertEqual(self.live.callbacks, [])
         self.assertEqual(self.sweep.analyzer_ready.callbacks, [])
+        self.assertEqual(self.sweep.snapshot_ready.callbacks, [])
 
     def test_apply_pending_blocks_source_mode_and_start_until_resolved(self):
         self.assertTrue(self.model.apply_configuration(object()))

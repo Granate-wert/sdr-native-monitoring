@@ -32,6 +32,7 @@ from .contracts import (
     WaterfallDisplayConfig,
     WaterfallGridSignature,
     WaterfallPalette,
+    SweepWaterfallLine,
     adapt_waterfall_line,
 )
 
@@ -45,6 +46,8 @@ class WaterfallPaneMetrics:
     """Scalar display delivery observability; no metric claims analytical loss."""
 
     rows_admitted: int = 0
+    sweep_rows_updated: int = 0
+    sweep_updates_rejected: int = 0
     rows_cadence_suppressed: int = 0
     rows_frozen_suppressed: int = 0
     rows_out_of_order_rejected: int = 0
@@ -83,6 +86,7 @@ class WaterfallPane(QWidget):
         self._last_seen_sequence: int | None = None
         self._render_visible = True
         self._frozen = False
+        self._sweep_mode = False
         self._metrics = WaterfallPaneMetrics()
         self._x_syncing = False
         self._linked_frequency_source: pg.ViewBox | None = None
@@ -193,6 +197,7 @@ class WaterfallPane(QWidget):
         self._frequency_axis.set_locale(self._locale)
         self._plot_item.setLabel("left", text("waterfall.axis.time", self._locale))
         self._plot_item.setLabel("bottom", text("waterfall.axis.frequency", self._locale))
+        self._sync_controls()
         self._update_time_axis()
         self._update_status()
 
@@ -216,6 +221,9 @@ class WaterfallPane(QWidget):
             self._set_metrics(rows_frozen_suppressed=self._metrics.rows_frozen_suppressed + 1)
             return
         signature = line.grid_signature
+        if self._sweep_mode:
+            self._sweep_mode = False
+            self._sync_controls()
         if signature != self._grid_signature:
             self._begin_epoch(signature)
         if line.timestamp_known and self._last_seen_timestamp_ns is not None and line.timestamp_ns < self._last_seen_timestamp_ns:
@@ -242,6 +250,36 @@ class WaterfallPane(QWidget):
         self._renderer.append(line.values, rows=rows, timestamp_ns=line.timestamp_ns)
         self._last_admitted_timestamp_ns = line.timestamp_ns if line.timestamp_known else None
         self._set_metrics(rows_admitted=self._metrics.rows_admitted + 1)
+        self._show_initial_physical_grid_if_needed(line.grid_signature)
+        self._update_time_axis()
+        self._update_status()
+        if not self._render_visible:
+            self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
+            return
+        self._upload_tiles()
+
+    def set_sweep_line(self, update: SweepWaterfallLine) -> None:
+        """Replace partial passes in the same ring used by RTBW, never append revisions."""
+        if not isinstance(update, SweepWaterfallLine):
+            raise TypeError("Sweep Waterfall requires an explicit publication adapter")
+        if self._frozen:
+            self._set_metrics(rows_frozen_suppressed=self._metrics.rows_frozen_suppressed + 1)
+            return
+        if not self._sweep_mode:
+            self._sweep_mode = True
+            self._sync_controls()
+        line = update.row
+        if line.grid_signature != self._grid_signature:
+            self._begin_epoch(line.grid_signature)
+        rows, _ = self._config.dimensions(int(line.values.size))
+        action = self._renderer.upsert_sweep(line.values, rows=rows, stamp=update.stamp)
+        if action == "reject":
+            self._set_metrics(sweep_updates_rejected=self._metrics.sweep_updates_rejected + 1)
+            return
+        if action == "append":
+            self._set_metrics(rows_admitted=self._metrics.rows_admitted + 1)
+        else:
+            self._set_metrics(sweep_rows_updated=self._metrics.sweep_rows_updated + 1)
         self._show_initial_physical_grid_if_needed(line.grid_signature)
         self._update_time_axis()
         self._update_status()
@@ -280,10 +318,13 @@ class WaterfallPane(QWidget):
             self._freeze_button.setChecked(self._frozen)
         self._update_status()
 
-    def clear_history(self) -> None:
+    def clear_history(self, *, reset_kind: bool = False) -> None:
         """Clear the local ring and images without modifying spectrum, persistence or RX."""
 
         self._renderer.clear()
+        if reset_kind:
+            self._sweep_mode = False
+            self._sync_controls()
         self._last_admitted_timestamp_ns = None
         self._last_seen_timestamp_ns = None
         self._last_seen_sequence = None
@@ -619,13 +660,17 @@ class WaterfallPane(QWidget):
             capacity_rows=capacity_rows,
             timestamps_ns=self._renderer.timestamps_ns(),
             timestamps_known=signature is not None and signature.timestamp_known,
+            sweep_stamps=self._renderer.sweep_stamps() if self._sweep_mode else (),
         )
         self._plot_item.setLabel(
             "left",
+            text("waterfall.axis.sweep", self._locale) if self._sweep_mode else
             text("waterfall.axis.time", self._locale)
             if signature is None or signature.timestamp_known
             else text("waterfall.time_axis.unknown", self._locale),
         )
+        self._graphics.setToolTip(text("waterfall.sweep.help", self._locale) if self._sweep_mode else "")
+        self._graphics.setAccessibleDescription(self._graphics.toolTip())
 
     def _reject_configuration_change(self) -> None:
         self._sync_controls()
@@ -667,6 +712,15 @@ class WaterfallPane(QWidget):
         self.set_levels(self._level_min.value(), self._level_max.value())
 
     def _sync_controls(self) -> None:
+        self._history_seconds.setPrefix(text(
+            "waterfall.history.blocks" if self._sweep_mode else "waterfall.history.prefix", self._locale))
+        self._history_seconds.setSuffix(text(
+            "waterfall.history.block_size", self._locale, rows=self._config.rows_per_second)
+            if self._sweep_mode else text("waterfall.history.suffix", self._locale))
+        for index, value in enumerate((30, 60, 120)):
+            self._rows_per_second.setItemText(index, text(
+                "waterfall.rows_per_block" if self._sweep_mode else "waterfall.rows_per_second.item",
+                self._locale, value=value))
         maximum = DEFAULT_WATERFALL_PRESENTATION_BUDGET.max_history_seconds(self._config.rows_per_second)
         with QSignalBlocker(self._history_seconds):
             self._history_seconds.setRange(1, maximum)

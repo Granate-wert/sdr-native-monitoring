@@ -26,6 +26,7 @@ class ContinuousSweepPresenter(QObject):
 
     line_ready = Signal(object)
     analyzer_ready = Signal(object)
+    snapshot_ready = Signal(object)
     metrics_ready = Signal(object)
     task_failed = Signal(str)
     running_changed = Signal(bool)
@@ -220,6 +221,7 @@ class ContinuousSweepPresenter(QObject):
             self.line_ready.emit(snapshot.line)
         if bundle is not None:
             self.analyzer_ready.emit(bundle)
+        self.snapshot_ready.emit(snapshot)
 
 
 __all__ = ["ContinuousSweepPresenter"]
