@@ -24,8 +24,8 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
         "waterfall.axis.sweep": MappingProxyType({UiLocale.RU: "Проходы", UiLocale.EN: "Passes"}),
-        "waterfall.sweep.invalid": MappingProxyType({UiLocale.RU: "Waterfall Sweep недоступен: {reason}", UiLocale.EN: "Sweep Waterfall unavailable: {reason}"}),
-        "waterfall.sweep.help": MappingProxyType({UiLocale.RU: "Строка — один проход, а не один момент времени. P — незавершённый; C — Complete; G — Gap. Пропуски номеров означают непоказанные проходы; это не шкала секунд и не оценка потери I/Q.", UiLocale.EN: "One row is one pass, not one instant. P — unfinished; C — Complete; G — Gap. Skipped numbers are undisplayed passes, not a seconds scale or an I/Q loss estimate."}),
+        "waterfall.sweep.invalid": MappingProxyType({UiLocale.RU: "Водопад сканирования недоступен: {reason}", UiLocale.EN: "Sweep Waterfall unavailable: {reason}"}),
+        "waterfall.sweep.help": MappingProxyType({UiLocale.RU: "Строка — один проход, а не один момент времени. P — неполный; C — завершённый; G — с пропусками. Пропуски номеров означают непоказанные проходы; это не шкала секунд и не оценка потери I/Q.", UiLocale.EN: "One row is one pass, not one instant. P — unfinished; C — Complete; G — Gap. Skipped numbers are undisplayed passes, not a seconds scale or an I/Q loss estimate."}),
         "waterfall.history.blocks": MappingProxyType({UiLocale.RU: "История: ", UiLocale.EN: "History: "}),
         "waterfall.history.block_size": MappingProxyType({UiLocale.RU: " × {rows} строк", UiLocale.EN: " × {rows} rows"}),
         "waterfall.rows_per_block": MappingProxyType({UiLocale.RU: "Блок {value} строк", UiLocale.EN: "Block of {value} rows"}),

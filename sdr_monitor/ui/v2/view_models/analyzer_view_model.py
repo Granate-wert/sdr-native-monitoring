@@ -226,6 +226,12 @@ class AnalyzerViewModel:
 
     def _on_starting(self, value: bool) -> None:
         self._starting = bool(value)
+        if value and self._mode is AnalyzerMode.SWEEP:
+            # A new explicit acquisition has a new presentation history even
+            # when a producer reuses its epoch/sequence scalars. Do not invent
+            # replacement provenance; clear the old display at Start instead.
+            self._bundle = None
+            self._sweep_snapshot = None
         self._publish()
 
     def _on_stopping(self, value: bool) -> None:

@@ -250,6 +250,17 @@ class SweepWaterfallProductTests(unittest.TestCase):
                 self.assertEqual(canvas.waterfall_pane.history_rows, 2)
                 self.assertEqual(canvas.waterfall_pane._renderer.sweep_stamps()[-1].state, SweepRowState.GAP)
                 self.assertEqual(harness.events, ["sweep-start", "sweep-stop"])
+                # An explicit new acquisition must discard old presentation
+                # history even for a fixture/producer reusing its epoch value.
+                poll.return_value = ContinuousSweepDisplaySnapshot(
+                    None, ContinuousSweepDisplayMetrics(), progress())
+                page.primary.click()
+                harness.wait(lambda: canvas.spectrum_scene.latest_frame is not None
+                             and canvas.spectrum_scene.latest_frame.spectrum.sequence == 1)
+                self.assertEqual(canvas.waterfall_pane.history_rows, 1)
+                self.assertEqual(canvas.waterfall_pane._renderer.sweep_stamps()[0].state, SweepRowState.PARTIAL)
+                page.primary.click()
+                harness.wait(lambda: harness.composition.analyzer_presenter.can_close())
             page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.RTBW))
             self.assertEqual(canvas.waterfall_pane.history_rows, 0)
             self.assertFalse(canvas.waterfall_pane._sweep_mode)
