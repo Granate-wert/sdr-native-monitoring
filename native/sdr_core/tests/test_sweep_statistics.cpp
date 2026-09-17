@@ -25,6 +25,7 @@ template <typename F> void rejects(F operation) {
 SourceDescriptor source() {
     SourceDescriptor result;
     result.source_id = "test-rx1";
+    result.display_name = "Synthetic test RX1";
     return result;
 }
 
@@ -221,9 +222,14 @@ void actual_assembler_overlap_and_gap() {
 }  // namespace
 
 int main() {
-    replacement_and_late_terminal();
-    errors_are_atomic_and_bounded();
-    numerical_and_coalescing();
-    actual_assembler_overlap_and_gap();
-    std::cout << "Sweep statistics: replacement/order/gaps/budget/identity/numerical/2000-pass oracle PASS\n";
+    try {
+        replacement_and_late_terminal();
+        errors_are_atomic_and_bounded();
+        numerical_and_coalescing();
+        actual_assembler_overlap_and_gap();
+        std::cout << "Sweep statistics: replacement/order/gaps/budget/identity/numerical/2000-pass oracle PASS\n";
+    } catch (const std::exception& error) {
+        std::cerr << "Sweep statistics test failed: " << error.what() << '\n';
+        return 1;
+    }
 }
