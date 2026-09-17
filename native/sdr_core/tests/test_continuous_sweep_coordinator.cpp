@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -22,8 +23,13 @@ namespace {
 class MockPhaseGate {
 public:
     MockPhaseGate() {
-        const auto path = std::getenv("LIBIIO_DLL_PATH");
-        module_ = path ? LoadLibraryA(path) : nullptr;
+        const auto required = GetEnvironmentVariableW(L"LIBIIO_DLL_PATH", nullptr, 0);
+        if (!required) throw std::runtime_error("mock libiio path is unavailable");
+        std::wstring path(required, L'\0');
+        const auto written = GetEnvironmentVariableW(L"LIBIIO_DLL_PATH", path.data(), required);
+        if (!written || written >= required) throw std::runtime_error("mock libiio path changed while reading");
+        path.resize(written);
+        module_ = LoadLibraryW(path.c_str());
         if (!module_) throw std::runtime_error("mock libiio test gate not loaded");
         arm = symbol<void (*)(int, long long, int)>("mock_iio_set_phase_gate");
         entered = symbol<int (*)()>("mock_iio_phase_gate_entered");
