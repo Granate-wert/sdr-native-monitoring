@@ -25,6 +25,7 @@ from ..components import ContextPopover, EmptyChartOverlay, HeatLegend
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
 from ..i18n import UiLocale, text
 from .axis import FrequencyAxis
+from .sweep_position import SweepPositionOverlay
 from .contracts import (
     BandMask,
     EnvelopeTrace,
@@ -90,6 +91,7 @@ class SpectrumScene(QWidget):
         self._shortcut_popover: ContextPopover | None = None
         self._measurement_available: bool | None = None
         self._build_ui()
+        self._sweep_position = SweepPositionOverlay(self._plot_item, self._locale)
         self._set_measurement_available(False)
         self._install_shortcuts()
         self.set_theme(theme)
@@ -170,6 +172,7 @@ class SpectrumScene(QWidget):
         self._set_measurement_available(True)
         self._apply_vertical_range()
         self._update_markers_for_new_frame()
+        self._sweep_position.set_position(getattr(getattr(frame, "spectrum", frame), "last_admitted_segment", None))
 
     def set_trace(self, kind: TraceKind, frame: object) -> None:
         """Render a supplied analytical trace without retaining its full frame."""
@@ -196,6 +199,7 @@ class SpectrumScene(QWidget):
         Ordinary Stop deliberately retains the last measurement instead.
         """
         self._latest_view = None
+        self._sweep_position.clear()
         self._measurement_signature = None
         for kind in TraceKind:
             self.clear_trace(kind)
@@ -317,6 +321,7 @@ class SpectrumScene(QWidget):
         for label in self._marker_labels.values():
             label.setColor(tokens.scientific.marker)
         self._persistence_legend.set_theme(theme)
+        self._sweep_position.set_theme(theme)
         if self._shortcut_popover is not None:
             self._shortcut_popover.setStyleSheet(stylesheet_for_theme(theme))
 
@@ -324,6 +329,7 @@ class SpectrumScene(QWidget):
         """Retranslate scene chrome without replacing measurement-local state."""
         self._locale = UiLocale(locale)
         self._frequency_axis.set_locale(self._locale)
+        self._sweep_position.set_locale(self._locale)
         self.setAccessibleName(text("spectrum.accessible.name", self._locale))
         self._empty_overlay.set_content(
             title=text("spectrum.empty.title", self._locale),

@@ -112,6 +112,11 @@ class AnalyzerInspector(QScrollArea):
                        missing=sum(row.state == "missing" for row in rows), unit=report.unit)
         summary += "\n" + text("analyzer.completed" if report.complete else "analyzer.gapped"
                                 if report.terminal else "analyzer.partial")
+        position = report.last_admitted_segment
+        summary += "\n" + (text("analyzer.position.detail", index=position.segment_index,
+                                 lower=f"{position.usable_start_hz / 1e6:g}",
+                                 upper=f"{position.usable_stop_hz / 1e6:g}") if position is not None
+                            else text("analyzer.position.unknown"))
         if not (state.running or state.starting or state.stopping):
             summary += "\n" + text("analyzer.stopped_last")
         if self.summary.text() != summary:
@@ -125,8 +130,8 @@ class AnalyzerInspector(QScrollArea):
                 self.segment.clear()
                 for label, index in desired:
                     self.segment.addItem(label, index)
-                position = self.segment.findData(selected)
-                self.segment.setCurrentIndex(max(0, position))
+                selected_index = self.segment.findData(selected)
+                self.segment.setCurrentIndex(max(0, selected_index))
         self.segment.setEnabled(bool(rows))
         self._selection()
 

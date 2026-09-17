@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
-from sdr_monitor.domain.sweep_acquisition import SweepSegmentAcquisition
+from sdr_monitor.domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
@@ -28,6 +28,7 @@ class SweepInspection:
     complete: bool
     previous_sequence: int | None
     segments: tuple[SegmentInspection, ...]
+    last_admitted_segment: SweepSegmentPosition | None = None
 
 
 def inspect_sweep(snapshot: ContinuousSweepDisplaySnapshot | None) -> SweepInspection | None:
@@ -70,4 +71,5 @@ def inspect_sweep(snapshot: ContinuousSweepDisplaySnapshot | None) -> SweepInspe
         tuple(SegmentInspection(index, "received" if index in generations else "pending" if partial else "missing",
                                 generations.get(index), records.get(index), previous_generations.get(index),
                                 previous_records.get(index)) for index in indices),
+        frame.last_admitted_segment,
     )

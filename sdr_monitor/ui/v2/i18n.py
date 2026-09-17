@@ -23,6 +23,10 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
+        "analyzer.position.short": MappingProxyType({UiLocale.RU: "Принят №{index}", UiLocale.EN: "Admitted #{index}"}),
+        "analyzer.position.detail": MappingProxyType({UiLocale.RU: "Последний принят: №{index}, полезное окно {lower}–{upper} MHz (не текущая настройка RX)", UiLocale.EN: "Last admitted: #{index}, usable window {lower}–{upper} MHz (not current RX tuning)"}),
+        "analyzer.position.unknown": MappingProxyType({UiLocale.RU: "Последний принятый сегмент не указан", UiLocale.EN: "Last admitted segment not published"}),
+        "analyzer.position.scope": MappingProxyType({UiLocale.RU: "Полезное окно последнего сегмента, принятого сборщиком этого прохода. Не текущая настройка RX, не точная маска полученных точек и не временная метка RF.", UiLocale.EN: "Usable window of the last segment admitted by the assembler for this pass. Not current RX tuning, exact finite-bin coverage or an RF timestamp."}),
         "analyzer.inspection.title": MappingProxyType({UiLocale.RU: "Измерения сканирования", UiLocale.EN: "Sweep measurements"}),
         "analyzer.inspection.segment": MappingProxyType({UiLocale.RU: "Сегмент (индекс от 0)", UiLocale.EN: "Segment (zero-based index)"}),
         "analyzer.inspection.summary": MappingProxyType({UiLocale.RU: "Источник: {source}\nЭпоха {epoch} · проход {sequence} · ревизия {revision}\nПолучено {received}/{total} сегм.; ожидаются {pending}; отсутствуют {missing}\nЕдиница: {unit}", UiLocale.EN: "Source: {source}\nEpoch {epoch} · pass {sequence} · revision {revision}\nReceived {received}/{total} segments; pending {pending}; missing {missing}\nUnit: {unit}"}),
