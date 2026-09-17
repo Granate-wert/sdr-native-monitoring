@@ -37,6 +37,7 @@ add_library(sdr_core STATIC
     src/core/recording_reprocess.cpp
     src/core/recording_writer.cpp
     src/core/sweep_line_assembler.cpp
+    src/core/sweep_statistics.cpp
     src/calibration/calibration.cpp
     src/core/engine.cpp
     src/core/synthetic_source.cpp
@@ -345,6 +346,12 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_platform_defaults(sdr_core_sweep_line_assembler_test)
     sdr_core_apply_sanitizers(sdr_core_sweep_line_assembler_test)
     add_test(NAME sdr_core.sweep_line_assembler COMMAND sdr_core_sweep_line_assembler_test)
+    add_executable(sdr_core_sweep_statistics_test tests/test_sweep_statistics.cpp)
+    target_link_libraries(sdr_core_sweep_statistics_test PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_sweep_statistics_test)
+    sdr_core_apply_sanitizers(sdr_core_sweep_statistics_test)
+    add_test(NAME sdr_core.sweep_statistics COMMAND sdr_core_sweep_statistics_test)
+    set_tests_properties(sdr_core.sweep_statistics PROPERTIES TIMEOUT 120)
     # Explicit R10-D5 v2 CPU tool. It measures only synthetic post-FFT
     # 36-MHz line assembly, so it is deliberately not a CTest or release path.
     add_executable(sdr_core_sweep_line_assembly_bench tests/bench_sweep_line_assembly.cpp)
@@ -693,6 +700,7 @@ if(SDR_CORE_BUILD_TESTS)
             sdr_core_native_smoke
             sdr_core_contracts_test
             sdr_core_sweep_line_assembler_test
+            sdr_core_sweep_statistics_test
             sdr_core_sweep_line_assembly_bench
             sdr_core_synthetic_source_test
             sdr_core_bounded_queue_test
