@@ -75,7 +75,11 @@ void verify(const SweepStatisticsSnapshot& s, const std::vector<std::vector<floa
         require((*s.observations)[f] == count, "frequency observation denominator is wrong");
         for (std::size_t p = 0; p < 4; ++p) {
             require((*s.histogram_counts)[p * 3 + f] == bins[p], "histogram double count or stale hit");
+            require(count == 0 ? std::isnan((*s.probability)[p * 3 + f]) :
+                std::abs((*s.probability)[p * 3 + f] - static_cast<double>(bins[p]) / count) < 1e-7,
+                "native density probability has wrong denominator");
         }
+        require((*s.density_observations)[f] == count, "unpooled density denominator mismatch");
         if (count == 0) {
             require(std::isnan((*s.average_db)[f]), "missing bin became measured zero");
         } else {
@@ -248,6 +252,55 @@ void bounded_publication_cadence() {
             "forced terminal snapshot did not include latest pass");
     verify(*gap.statistics, {{-20, -30, -40}, {nan, nan, nan}});
 }
+
+void pooled_density_is_bounded_without_reducing_average() {
+    auto c = config(); c.density_columns = 2;
+    const auto frequencies = std::make_shared<const std::vector<double>>(
+        std::vector<double>{100e6, 101e6, 102e6, 103e6, 104e6});
+    SweepStatisticsAccumulator a(c, source(), 7, SpectrumUnit::DbfsBin, frequencies);
+    auto f = partial(0, 1, {-90, -60, nan, nan, nan}); f.frequencies_hz = frequencies;
+    require(a.update(f), "pooled first revision rejected");
+    const auto first = a.snapshot();
+    require(*first.density_frequency_edges_hz == std::vector<double>{99.5e6, 102e6, 104.5e6},
+            "pooled density physical edges are not regular");
+    require(*first.density_observations == std::vector<std::uint32_t>{2, 0}, "pooled missing cells counted");
+    require((*first.probability)[0] == 0.5F && (*first.probability)[2] == 0.5F &&
+            std::isnan((*first.probability)[1]), "pooled probability confused bins with passes");
+    f = partial(0, 2, {-20, nan, -40, -80, -80}); f.frequencies_hz = frequencies;
+    require(a.update(f), "pooled replacement rejected");
+    const auto revised = a.snapshot();
+    require(revised.average_db->size() == 5 && (*revised.average_db)[0] == -20 &&
+            std::isnan((*revised.average_db)[1]) && (*revised.average_db)[2] == -40,
+            "density pooling reduced the measurement average grid");
+    require(*revised.density_observations == std::vector<std::uint32_t>{1, 3} &&
+            revised.unique_passes_seen == 1, "revision double-counted pooled observations");
+    require((*revised.histogram_counts)[1] == 2 && (*revised.histogram_counts)[5] == 1 &&
+            (*revised.histogram_counts)[6] == 1, "pooled counts not reassigned on revision");
+    for (std::size_t col = 0; col < 2; ++col) {
+        double sum = 0;
+        for (std::size_t row = 0; row < 4; ++row) sum += (*revised.probability)[row * 2 + col];
+        require(std::abs(sum - 1.0) < 1e-7, "pooled probabilities do not sum to one");
+    }
+    auto last = terminal(1, {-90, -90, -90, -90, -90}); last.frequencies_hz = frequencies;
+    require(a.update(last), "pooled terminal rejected");
+    last = terminal(2, {nan, nan, nan, nan, nan}, SweepLineState::Gap); last.frequencies_hz = frequencies;
+    require(a.update(last), "pooled eviction rejected");
+    require(*a.snapshot().density_observations == std::vector<std::uint32_t>{2, 3},
+            "eviction left stale pooled observations");
+    require(*first.density_observations == std::vector<std::uint32_t>{2, 0}, "snapshot mutated");
+    a.reset();
+    require(*a.snapshot().density_observations == std::vector<std::uint32_t>{0, 0}, "pooled reset incomplete");
+    c = {32, 64, -160, 10, 512U * 1024U * 1024U, 1024};
+    require(SweepStatisticsAccumulator::required_payload_bytes(c, 900'000, 12) < c.max_payload_bytes,
+            "pooled wide Sweep exceeds admitted payload budget");
+    c.density_columns = 0;
+    rejects([&] { static_cast<void>(SweepStatisticsAccumulator::required_payload_bytes(c, 900'000, 12)); });
+    c.max_payload_bytes = std::numeric_limits<std::size_t>::max();
+    c.density_columns = 1; c.window_passes = 5000;
+    rejects([&] { static_cast<void>(SweepStatisticsAccumulator::required_payload_bytes(c, 2'000'000)); });
+    rejects([&] { SweepStatisticsAccumulator invalid(config(), source(), 7, SpectrumUnit::DbfsBin,
+        std::make_shared<const std::vector<double>>(std::vector<double>{1, 2, 4})); });
+}
 }  // namespace
 
 int main() {
@@ -257,6 +310,7 @@ int main() {
         numerical_and_coalescing();
         actual_assembler_overlap_and_gap();
         bounded_publication_cadence();
+        pooled_density_is_bounded_without_reducing_average();
         std::cout << "Sweep statistics: replacement/order/gaps/budget/identity/numerical/2000-pass oracle PASS\n";
     } catch (const std::exception& error) {
         std::cerr << "Sweep statistics test failed: " << error.what() << '\n';

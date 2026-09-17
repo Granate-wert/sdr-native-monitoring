@@ -40,17 +40,26 @@ std::size_t SweepStatisticsAccumulator::required_payload_bytes(
         !std::isfinite(config.power_max_db - config.power_min_db)) {
         throw std::invalid_argument("Invalid Sweep statistics geometry/configuration");
     }
-    const auto per_frequency = checked_add(
-        checked_add(checked_mul(config.window_passes, sizeof(float)),
-                    checked_mul(config.power_bins, 2 * sizeof(std::uint32_t))),
-        sizeof(double) * 3 + sizeof(std::uint32_t) * 2 + sizeof(float)
-    );
-    const auto one_snapshot = checked_mul(frequency_bins, checked_add(
-        checked_mul(config.power_bins, sizeof(std::uint32_t)),
-        sizeof(std::uint32_t) + sizeof(float)));
-    const auto bytes = checked_add(checked_add(checked_mul(frequency_bins, per_frequency),
-                                   checked_mul(config.window_passes, sizeof(Pass))),
-        checked_mul(retained_snapshot_slots - 1, one_snapshot));
+    if (frequency_bins > 2'000'000) throw std::length_error("Sweep statistics frequency bound exceeded");
+    const auto columns = config.density_columns == 0 ? frequency_bins
+        : std::min<std::size_t>(frequency_bins, config.density_columns);
+    const auto per_cell = (frequency_bins + columns - 1) / columns;
+    if (checked_mul(per_cell, config.window_passes) > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::length_error("Sweep density observation counter would overflow");
+    }
+    const auto cells = checked_mul(columns, config.power_bins);
+    const auto state = checked_add(
+        checked_add(checked_mul(frequency_bins, checked_add(
+            checked_mul(config.window_passes, sizeof(float)), 3 * sizeof(double) + sizeof(std::uint32_t))),
+            checked_mul(config.window_passes, sizeof(Pass))),
+        checked_add(checked_mul(cells, sizeof(std::uint32_t)),
+            checked_add(checked_mul(columns, sizeof(std::uint32_t)),
+                        checked_mul(columns + 1, sizeof(double)))));
+    const auto one_snapshot = checked_add(
+        checked_mul(frequency_bins, sizeof(float) + sizeof(std::uint32_t)),
+        checked_add(checked_mul(cells, sizeof(float) + sizeof(std::uint32_t)),
+                    checked_mul(columns, sizeof(std::uint32_t))));
+    const auto bytes = checked_add(state, checked_mul(retained_snapshot_slots, one_snapshot));
     if (bytes > config.max_payload_bytes) {
         throw std::length_error("Sweep statistics exceeds explicit payload budget");
     }
@@ -75,9 +84,25 @@ SweepStatisticsAccumulator::SweepStatisticsAccumulator(
             throw std::invalid_argument("Sweep statistics requires increasing finite frequencies");
         }
     }
+    const auto columns = config_.density_columns == 0 ? n : std::min<std::size_t>(n, config_.density_columns);
+    const double spacing = n > 1 ? (frequencies_->back() - frequencies_->front()) /
+        static_cast<double>(n - 1) : 1.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (std::abs((*frequencies_)[i] - (frequencies_->front() + spacing * static_cast<double>(i))) >
+            std::max(spacing * 1e-7, std::abs(frequencies_->front()) * 2e-15)) {
+            throw std::invalid_argument("Sweep density requires a regular physical grid");
+        }
+    }
     passes_.resize(config_.window_passes);
     values_.resize(n * config_.window_passes, missing);
-    histogram_.resize(n * config_.power_bins);
+    auto edges = std::make_shared<std::vector<double>>(columns + 1);
+    for (std::size_t c = 0; c <= columns; ++c) {
+        (*edges)[c] = frequencies_->front() - spacing / 2 + spacing * static_cast<double>(n) *
+            static_cast<double>(c) / static_cast<double>(columns);
+    }
+    density_edges_ = std::move(edges);
+    histogram_.resize(columns * config_.power_bins);
+    density_observations_.resize(columns);
     observations_.resize(n);
     power_sum_.resize(n);
     power_correction_.resize(n);
@@ -88,6 +113,7 @@ void SweepStatisticsAccumulator::reset() noexcept {
     std::fill(values_.begin(), values_.end(), missing);
     std::fill(histogram_.begin(), histogram_.end(), 0U);
     std::fill(observations_.begin(), observations_.end(), 0U);
+    std::fill(density_observations_.begin(), density_observations_.end(), 0U);
     std::fill(power_sum_.begin(), power_sum_.end(), 0.0);
     std::fill(power_correction_.begin(), power_correction_.end(), 0.0);
     next_slot_ = 0;
@@ -112,6 +138,10 @@ void SweepStatisticsAccumulator::add_power(std::size_t frequency, double value) 
     power_correction_[frequency] += std::abs(sum) >= std::abs(value)
         ? (sum - total) + value : (value - total) + sum;
     sum = total;
+}
+
+std::size_t SweepStatisticsAccumulator::density_column(std::size_t frequency) const noexcept {
+    return ((2 * frequency + 1) * density_observations_.size()) / (2 * frequencies_->size());
 }
 
 bool SweepStatisticsAccumulator::update(const SweepProgressFrame& frame) {
@@ -171,9 +201,12 @@ bool SweepStatisticsAccumulator::admit(
     for (std::size_t f = 0; f < n; ++f) {
         auto& old = values_[offset + f];
         const float value = (*values)[f];
+        const auto column = density_column(f);
+        const auto columns = density_observations_.size();
         if (old == value || (std::isnan(old) && std::isnan(value))) continue;
         if (!std::isnan(old)) {
-            --histogram_[power_bin(old) * n + f];
+            --histogram_[power_bin(old) * columns + column];
+            --density_observations_[column];
             --observations_[f];
             add_power(f, -linear_power(old));
             if (observations_[f] == 0) {
@@ -181,7 +214,8 @@ bool SweepStatisticsAccumulator::admit(
             }
         }
         if (!std::isnan(value)) {
-            ++histogram_[power_bin(value) * n + f];
+            ++histogram_[power_bin(value) * columns + column];
+            ++density_observations_[column];
             ++observations_[f];
             add_power(f, linear_power(value));
         }
@@ -208,13 +242,22 @@ SweepStatisticsSnapshot SweepStatisticsAccumulator::snapshot() const {
         }
         (*averages)[f] = static_cast<float>(10.0 * std::log10(power));
     }
+    auto probability = std::make_shared<std::vector<float>>(histogram_.size(), missing);
+    const auto columns = density_observations_.size();
+    for (std::size_t index = 0; index < histogram_.size(); ++index) {
+        const auto count = density_observations_[index % columns];
+        if (count != 0) (*probability)[index] = static_cast<float>(
+            static_cast<double>(histogram_[index]) / count);
+    }
     return SweepStatisticsSnapshot{
         source_.source_type, source_.source_id,
         epoch_, updates_, newest_sequence_, unique_passes_, retained_, unit_,
         config_.power_min_db, config_.power_max_db, config_.power_bins, frequencies_,
         std::move(averages),
         std::make_shared<const std::vector<std::uint32_t>>(histogram_),
-        std::make_shared<const std::vector<std::uint32_t>>(observations_)
+        std::make_shared<const std::vector<std::uint32_t>>(observations_),
+        density_edges_, std::make_shared<const std::vector<std::uint32_t>>(density_observations_),
+        std::move(probability)
     };
 }
 

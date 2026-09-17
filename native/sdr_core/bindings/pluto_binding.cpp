@@ -2,6 +2,7 @@
 
 #include "sdr_core/recording_writer.hpp"
 #include "sdr_core/dual_rx_dsp.hpp"
+#include "sdr_core/sweep_statistics.hpp"
 #include "sdr_pluto/continuous_sweep_coordinator.hpp"
 #include "sdr_pluto/fixed_band_engine.hpp"
 #include "sdr_pluto/pluto_backend.hpp"
@@ -53,6 +54,12 @@ py::array_t<float> readonly_persistence_image(const sdr_core::PersistenceSnapsho
     );
     result.attr("setflags")(false);
     return result;
+}
+
+template <typename T>
+py::array_t<T> readonly_sweep_image(const SharedArray<T>& values, std::uint32_t rows) {
+    auto flat = readonly_shared_vector(values);
+    return flat.attr("reshape")(rows, values->size() / rows).template cast<py::array_t<T>>();
 }
 
 }  // namespace
@@ -354,6 +361,44 @@ void bind_pluto(py::module_& module) {
             return readonly_persistence_image(value);
         });
 
+    py::class_<SweepStatisticsConfig>(module, "SweepStatisticsConfig")
+        .def(py::init([](std::uint32_t window_passes, std::uint32_t power_bins,
+            double power_min_db, double power_max_db, std::size_t max_payload_bytes,
+            std::uint32_t density_columns) {
+            return SweepStatisticsConfig{window_passes, power_bins, power_min_db,
+                power_max_db, max_payload_bytes, density_columns};
+        }), py::arg("window_passes"), py::arg("power_bins"), py::arg("power_min_db"),
+            py::arg("power_max_db"), py::arg("max_payload_bytes"), py::arg("density_columns") = 0U)
+        .def_readonly("window_passes", &SweepStatisticsConfig::window_passes)
+        .def_readonly("power_bins", &SweepStatisticsConfig::power_bins)
+        .def_readonly("power_min_db", &SweepStatisticsConfig::power_min_db)
+        .def_readonly("power_max_db", &SweepStatisticsConfig::power_max_db)
+        .def_readonly("max_payload_bytes", &SweepStatisticsConfig::max_payload_bytes)
+        .def_readonly("density_columns", &SweepStatisticsConfig::density_columns)
+        .def("required_payload_bytes", [](const SweepStatisticsConfig& value, std::size_t frequency_bins,
+            std::size_t retained_snapshot_slots) {
+            return SweepStatisticsAccumulator::required_payload_bytes(value, frequency_bins, retained_snapshot_slots);
+        }, py::arg("frequency_bins"), py::arg("retained_snapshot_slots") = 1U);
+
+    py::class_<SweepStatisticsSnapshot>(module, "SweepStatisticsSnapshot")
+        .def_readonly("source_id", &SweepStatisticsSnapshot::source_id)
+        .def_readonly("epoch", &SweepStatisticsSnapshot::epoch)
+        .def_readonly("update_sequence", &SweepStatisticsSnapshot::update_sequence)
+        .def_readonly("newest_pass_sequence", &SweepStatisticsSnapshot::newest_pass_sequence)
+        .def_readonly("unique_passes_seen", &SweepStatisticsSnapshot::unique_passes_seen)
+        .def_readonly("retained_passes", &SweepStatisticsSnapshot::retained_passes)
+        .def_readonly("power_min_db", &SweepStatisticsSnapshot::power_min_db)
+        .def_readonly("power_max_db", &SweepStatisticsSnapshot::power_max_db)
+        .def_readonly("power_bins", &SweepStatisticsSnapshot::power_bins)
+        .def_property_readonly("unit", [](const SweepStatisticsSnapshot& value) { return std::string(to_wire(value.unit)); })
+        .def_property_readonly("frequencies_hz", [](const SweepStatisticsSnapshot& value) { return readonly_shared_vector(value.frequencies_hz); })
+        .def_property_readonly("average_db", [](const SweepStatisticsSnapshot& value) { return readonly_shared_vector(value.average_db); })
+        .def_property_readonly("observations", [](const SweepStatisticsSnapshot& value) { return readonly_shared_vector(value.observations); })
+        .def_property_readonly("density_frequency_edges_hz", [](const SweepStatisticsSnapshot& value) { return readonly_shared_vector(value.density_frequency_edges_hz); })
+        .def_property_readonly("density_observations", [](const SweepStatisticsSnapshot& value) { return readonly_shared_vector(value.density_observations); })
+        .def_property_readonly("histogram_counts", [](const SweepStatisticsSnapshot& value) { return readonly_sweep_image(value.histogram_counts, value.power_bins); })
+        .def_property_readonly("probability", [](const SweepStatisticsSnapshot& value) { return readonly_sweep_image(value.probability, value.power_bins); });
+
     py::class_<sdr_core::SweepSegmentAcquisition>(module, "SweepSegmentAcquisition")
         .def_readonly("segment_index", &sdr_core::SweepSegmentAcquisition::segment_index)
         .def_readonly("config_generation", &sdr_core::SweepSegmentAcquisition::config_generation)
@@ -367,6 +412,9 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepProgressFrame>(module, "SweepProgressFrame")
+        .def_property_readonly("statistics", [](const SweepProgressFrame& value) -> py::object {
+            return value.statistics ? py::cast(*value.statistics) : py::none();
+        })
         .def_property_readonly("source_id", [](const sdr_core::SweepProgressFrame& value) {
             return value.source.source_id;
         })
@@ -399,6 +447,9 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepLineFrame>(module, "SweepLineFrame")
+        .def_property_readonly("statistics", [](const SweepLineFrame& value) -> py::object {
+            return value.statistics ? py::cast(*value.statistics) : py::none();
+        })
         .def_property_readonly("source_id", [](const sdr_core::SweepLineFrame& value) {
             return value.source.source_id;
         })
@@ -707,7 +758,9 @@ void bind_pluto(py::module_& module) {
             const std::uint32_t segment_frame_timeout_ms,
             const double usable_window_hz,
             const std::uint32_t analysis_bins_per_usable_window,
-            const double line_snapshot_rate_hz
+            const double line_snapshot_rate_hz,
+            const std::optional<SweepStatisticsConfig>& statistics,
+            const double statistics_snapshot_rate_hz
         ) {
             sdr_pluto::ContinuousSweepCoordinatorConfig result{
                 .epoch = epoch,
@@ -719,6 +772,8 @@ void bind_pluto(py::module_& module) {
                 .output_queue_capacity = output_queue_capacity,
                 .segment_frame_timeout_ms = segment_frame_timeout_ms,
                 .segments = segments,
+                .statistics = statistics,
+                .statistics_snapshot_rate_hz = statistics_snapshot_rate_hz,
             };
             sdr_pluto::validate(result);
             return result;
@@ -729,7 +784,11 @@ void bind_pluto(py::module_& module) {
             py::arg("segment_frame_timeout_ms") = 1000U,
             py::arg("usable_window_hz") = 0.0,
             py::arg("analysis_bins_per_usable_window") = 0U,
-            py::arg("line_snapshot_rate_hz") = 0.0)
+            py::arg("line_snapshot_rate_hz") = 0.0,
+            py::arg("statistics") = py::none(),
+            py::arg("statistics_snapshot_rate_hz") = 15.0)
+        .def_readonly("statistics", &sdr_pluto::ContinuousSweepCoordinatorConfig::statistics)
+        .def_readonly("statistics_snapshot_rate_hz", &sdr_pluto::ContinuousSweepCoordinatorConfig::statistics_snapshot_rate_hz)
         .def_readonly("epoch", &sdr_pluto::ContinuousSweepCoordinatorConfig::epoch)
         .def_readonly("display_start_hz", &sdr_pluto::ContinuousSweepCoordinatorConfig::display_start_hz)
         .def_readonly("display_stop_hz", &sdr_pluto::ContinuousSweepCoordinatorConfig::display_stop_hz)

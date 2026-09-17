@@ -17,6 +17,9 @@ struct SweepStatisticsConfig {
     double power_min_db{};
     double power_max_db{};
     std::size_t max_payload_bytes{};
+    // Zero retains exact per-bin density. Nonzero pools native bin observations
+    // into regular frequency cells; it does NOT reduce the average/FFT grid.
+    std::uint32_t density_columns{};
 };
 
 struct SweepStatisticsSnapshot {
@@ -34,10 +37,13 @@ struct SweepStatisticsSnapshot {
     SharedArray<double> frequencies_hz;
     SharedArray<float> average_db;
     // Includes finite observations from partial AND terminal-gap passes.
-    // Power-major counts. Probability at (power, f) is count / observations[f].
+    // Power-major counts. Probability uses density_observations per cell.
     // Zero observations means unavailable, never a measured zero probability.
     SharedArray<std::uint32_t> histogram_counts;
     SharedArray<std::uint32_t> observations;
+    SharedArray<double> density_frequency_edges_hz;
+    SharedArray<std::uint32_t> density_observations;
+    SharedArray<float> probability;
 };
 
 // Single-owner native kernel. No Qt, device, timer, publication queue or DSP
@@ -86,6 +92,7 @@ private:
         std::uint64_t sequence, std::uint64_t revision, bool terminal
     );
     [[nodiscard]] std::size_t power_bin(float value) const noexcept;
+    [[nodiscard]] std::size_t density_column(std::size_t frequency) const noexcept;
     void add_power(std::size_t frequency, double value) noexcept;
 
     SweepStatisticsConfig config_;
@@ -97,6 +104,8 @@ private:
     std::vector<float> values_;
     std::vector<std::uint32_t> histogram_;
     std::vector<std::uint32_t> observations_;
+    std::vector<std::uint32_t> density_observations_;
+    SharedArray<double> density_edges_;
     std::vector<double> power_sum_;
     std::vector<double> power_correction_;
     std::size_t next_slot_{};
