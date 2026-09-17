@@ -29,3 +29,13 @@ class LiveProfileStore:
         updated = tuple(item for item in self.load() if item.profile_id != profile.profile_id) + (profile,)
         self.save(updated)
         return updated
+
+
+class InMemoryLiveProfileStore:
+    """Qt-free deterministic profile adapter for tests and synthetic renderers."""
+
+    def __init__(self, profiles: tuple[LiveProfile, ...] = ()) -> None:
+        self._profiles = tuple(profiles)
+
+    def load(self) -> tuple[LiveProfile, ...]:
+        return self._profiles

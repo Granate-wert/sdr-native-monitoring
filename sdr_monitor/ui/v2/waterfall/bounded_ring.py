@@ -132,6 +132,28 @@ class BoundedWaterfallRenderer:
         if self._buffer is not None:
             self._buffer.clear()
 
+    def resize_rows(self, rows: int) -> None:
+        """Resize a compatible local history ring, retaining its newest rows.
+
+        This is presentation storage only.  A rate/history control change must
+        not ask the producer to replay rows that have already been admitted.
+        """
+
+        buffer = self._buffer
+        if buffer is None or buffer.rows == int(rows):
+            return
+        replacement = BoundedWaterfallRing(int(rows), buffer.columns)
+        retained = min(buffer.count, replacement.rows)
+        skip = buffer.count - retained
+        timestamps = buffer.chronological_timestamps_ns()
+        position = 0
+        for tile in buffer.chronological_tiles():
+            for row in tile:
+                if position >= skip:
+                    replacement.append(row, timestamp_ns=int(timestamps[position]))
+                position += 1
+        self._buffer = replacement
+
     def append(self, values: np.ndarray, *, rows: int, timestamp_ns: int) -> None:
         columns = int(np.asarray(values).size)
         if self._buffer is None or self._buffer.rows != rows or self._buffer.columns != columns:

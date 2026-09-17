@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from importlib import import_module
 import json
 import os
 import queue
@@ -11,11 +12,20 @@ import struct
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import numpy as np
 
-from ..domain import IQBlock, RecordingHealth, RecordingOptions, RecordingResult, RecordingState, SpectrumFrame
+from ..domain import (
+    DEFAULT_RECORDING_RESOURCE_BUDGET,
+    IQBlock,
+    LossReason,
+    RecordingHealth,
+    RecordingOptions,
+    RecordingResult,
+    RecordingState,
+    SpectrumFrame,
+)
 
 
 _SENTINEL = object()
@@ -28,9 +38,31 @@ def _array_payload(array: np.ndarray) -> dict[str, Any]:
 
 def _json_record(kind: str, value: Any) -> bytes:
     if isinstance(value, IQBlock):
-        payload = {"kind": kind, "sequence": value.sequence, "timestamp_ns": value.timestamp_ns, "sample_rate_hz": value.sample_rate_hz, "source_id": value.source_id, "config_generation": value.config_generation, "samples": _array_payload(np.asarray(value.samples))}
+        payload = {
+            "kind": kind,
+            "sequence": value.sequence,
+            "timestamp_ns": value.timestamp_ns,
+            "timestamp_quality": value.timestamp_quality.value,
+            "loss_reasons": [reason.value for reason in value.loss_reasons],
+            "sample_rate_hz": value.sample_rate_hz,
+            "source_id": value.source_id,
+            "config_generation": value.config_generation,
+            "samples": _array_payload(np.asarray(value.samples)),
+        }
     elif isinstance(value, SpectrumFrame):
-        payload = {"kind": kind, "sequence": value.sequence, "timestamp_ns": value.timestamp_ns, "unit": value.unit, "source_id": value.source_id, "config_generation": value.config_generation, "calibration_profile_id": value.calibration_profile_id, "frequencies_hz": _array_payload(value.frequencies_hz), "values": _array_payload(value.values)}
+        payload = {
+            "kind": kind,
+            "sequence": value.sequence,
+            "timestamp_ns": value.timestamp_ns,
+            "timestamp_quality": value.timestamp_quality.value,
+            "loss_reasons": [reason.value for reason in value.loss_reasons],
+            "unit": value.unit,
+            "source_id": value.source_id,
+            "config_generation": value.config_generation,
+            "calibration_profile_id": value.calibration_profile_id,
+            "frequencies_hz": _array_payload(value.frequencies_hz),
+            "values": _array_payload(value.values),
+        }
     else:
         payload = {"kind": kind, "value": value}
     raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -72,13 +104,20 @@ class RecordingSourceBus:
 
 
 class RecordingService:
-    """Production composition service; it records only explicitly submitted live data."""
+    """Historical bounded ``.sdrrec`` compatibility writer and reader.
+
+    The current native application composition never selects this class for
+    Pluto/AD936x Live recording.  Its JSON/base64 payload is retained solely
+    for deterministic tests and backwards-compatible read/reprocess/recovery
+    of historical files; native RTBW recording belongs to
+    :class:`NativeLiveRecordingService` and keeps I/Q inside C++.
+    """
 
     def __init__(self) -> None:
         self.source_bus = RecordingSourceBus()
         self._queue: queue.Queue[Any] | None = None
         self._worker: threading.Thread | None = None
-        self._handle = None
+        self._handle: BinaryIO | None = None
         self._options: RecordingOptions | None = None
         self._path: Path | None = None
         self._part: Path | None = None
@@ -92,6 +131,7 @@ class RecordingService:
         self._bytes_written = 0
         self._error = ""
         self._metadata: dict[str, Any] = {}
+        self._drop_reasons: set[LossReason] = set()
 
     def start(self, options: RecordingOptions) -> None:
         with self._lock:
@@ -110,11 +150,33 @@ class RecordingService:
             self._iq_blocks = self._spectrum_frames = self._drops = self._gaps = self._bytes_written = 0
             self._error = ""
             self._metadata = dict(options.metadata)
-            header = {"schema": "sdr-native-recording", "version": 1, "record_iq": options.record_iq, "record_spectrum": options.record_spectrum, "sample_rate_hz": options.sample_rate_hz, "center_frequency_hz": options.center_frequency_hz, "metadata": self._metadata}
+            self._drop_reasons.clear()
+            header = {
+                "schema": "sdr-native-recording",
+                "version": 2,
+                "record_iq": options.record_iq,
+                "record_spectrum": options.record_spectrum,
+                "sample_rate_hz": options.sample_rate_hz,
+                "center_frequency_hz": options.center_frequency_hz,
+                "resource_budget": {
+                    "queue_capacity": options.queue_capacity,
+                    "max_queue_bytes": DEFAULT_RECORDING_RESOURCE_BUDGET.estimate(options).max_queue_bytes,
+                },
+                "metadata": self._metadata,
+            }
             self._write_bytes((json.dumps(header, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
-            self._worker = threading.Thread(target=self._writer_loop, name="sdr-recording-writer", daemon=True)
+            self._worker = threading.Thread(target=self._writer_loop, name="sdr-recording-writer", daemon=False)
             self._worker.start()
             self.source_bus.add_recording_sink(self)
+
+    def start_now(self, options: RecordingOptions) -> None:
+        """Reject native-only immediate-start semantics on the legacy writer."""
+
+        del options
+        raise RuntimeError(
+            "Start recording now is available only for native RTBW Live; "
+            "the legacy recorder cannot restart a live engine"
+        )
 
     def submit_iq(self, block: IQBlock) -> bool:
         return self._submit("iq", block, enabled=lambda options: options.record_iq)
@@ -128,14 +190,23 @@ class RecordingService:
     def _submit(self, kind: str, value: Any, *, enabled: Any) -> bool:
         with self._lock:
             options = self._options
-            active = self._state is RecordingState.RECORDING and self._queue is not None
-            if not active or options is None or not enabled(options):
+            queue_ref = self._queue
+            if (
+                self._state is not RecordingState.RECORDING
+                or queue_ref is None
+                or options is None
+                or not enabled(options)
+            ):
                 return False
             try:
-                self._queue.put_nowait((kind, value))
+                DEFAULT_RECORDING_RESOURCE_BUDGET.validate_submission(kind, value)
+            except ValueError:
+                self._note_drop(LossReason.RECORDER)
+                return False
+            try:
+                queue_ref.put_nowait((kind, value))
             except queue.Full:
-                self._drops += 1
-                self._gaps += 1
+                self._note_drop(LossReason.RECORDER)
                 return False
             return True
 
@@ -169,8 +240,7 @@ class RecordingService:
                         break
                     else:
                         with self._lock:
-                            self._drops += 1
-                            self._gaps += 1
+                            self._note_drop(LossReason.SHUTDOWN)
                     try:
                         queue_ref.put_nowait(_SENTINEL)
                         break
@@ -198,10 +268,26 @@ class RecordingService:
                     free = shutil.disk_usage(self._path.parent).free
                 except OSError:
                     pass
-            return RecordingHealth(self._state, self._queue.qsize() if self._queue is not None else 0, self._options.queue_capacity if self._options else 0, self._iq_blocks, self._spectrum_frames, self._drops, self._gaps, self._bytes_written, str(self._path) if self._path else None, self._error, free)
+            return RecordingHealth(
+                self._state,
+                self._queue.qsize() if self._queue is not None else 0,
+                self._options.queue_capacity if self._options else 0,
+                self._iq_blocks,
+                self._spectrum_frames,
+                self._drops,
+                self._gaps,
+                self._bytes_written,
+                str(self._path) if self._path else None,
+                self._error,
+                free,
+                tuple(sorted(self._drop_reasons, key=lambda reason: reason.value)),
+            )
 
     def recover_partial(self, uri: Any) -> dict[str, Any]:
         path = Path(uri)
+        native_scan = _scan_native_recording_prefix(path)
+        if native_scan is not None:
+            return native_scan
         if path.suffix != ".part" or not path.exists():
             return {"uri": str(path), "recovered": False, "reason": "partial file not found"}
         return {"uri": str(path), "recovered": True, "bytes": path.stat().st_size, "requires_finalize": True}
@@ -220,6 +306,8 @@ class RecordingService:
             item = self._queue.get() if self._queue is not None else _SENTINEL
             if item is _SENTINEL:
                 break
+            if not isinstance(item, tuple) or len(item) != 2 or not isinstance(item[0], str):
+                raise RuntimeError("recording queue item has an invalid shape")
             kind, value = item
             try:
                 self._write_bytes(_json_record(kind, value))
@@ -245,8 +333,93 @@ class RecordingService:
         self._handle.write(data)
         self._bytes_written += len(data)
 
+    def _note_drop(self, reason: LossReason) -> None:
+        self._drops += 1
+        self._gaps += 1
+        self._drop_reasons.add(reason)
+
     def _result(self) -> RecordingResult:
-        return RecordingResult(str(self._path) if self._path else "", self._state, self._iq_blocks, self._spectrum_frames, self._drops, self._gaps, self._bytes_written, dict(self._metadata), self._error)
+        return RecordingResult(
+            str(self._path) if self._path else "",
+            self._state,
+            self._iq_blocks,
+            self._spectrum_frames,
+            self._drops,
+            self._gaps,
+            self._bytes_written,
+            dict(self._metadata),
+            self._error,
+            tuple(sorted(self._drop_reasons, key=lambda reason: reason.value)),
+        )
+
+
+def _scan_native_recording_prefix(path: Path) -> dict[str, Any] | None:
+    """Return read-only native recovery evidence when an artifact is present.
+
+    Historical ``.sdrrec.part`` recovery remains untouched. Native artifacts
+    are never repaired, truncated or finalized here: this control-plane method
+    merely returns exact complete-prefix evidence from the portable native
+    scanner.
+    """
+    try:
+        native_module = import_module("sdr_monitor._sdr_native")
+        scan_function = getattr(native_module, "scan_native_recording_prefix")
+    except (ImportError, ModuleNotFoundError, OSError, AttributeError):
+        return None
+    try:
+        scan = scan_function(str(path))
+    except (OSError, RuntimeError, ValueError) as error:
+        return {
+            "uri": str(path),
+            "recovered": False,
+            "scan_only": True,
+            "reason": f"native recording scan failed: {error}",
+        }
+    iq_present = bool(
+        scan.iq_manifest_final
+        or scan.iq_manifest_partial
+        or scan.iq_data_segments
+        or scan.iq_index_complete_records
+        or scan.iq_index_trailing_bytes
+        or scan.iq_gap_complete_records
+        or scan.iq_gap_trailing_bytes
+    )
+    spectrum_present = bool(
+        scan.spectrum_manifest_final
+        or scan.spectrum_manifest_partial
+        or scan.spectrum_complete_records
+        or scan.spectrum_complete_bytes
+        or scan.spectrum_trailing_bytes
+    )
+    if not iq_present and not spectrum_present:
+        return None
+    incomplete = bool(scan.iq_manifest_partial or scan.spectrum_manifest_partial)
+    return {
+        "uri": str(path),
+        "recovered": False,
+        "scan_only": True,
+        "requires_repair": incomplete,
+        "iq": {
+            "manifest_final": bool(scan.iq_manifest_final),
+            "manifest_partial": bool(scan.iq_manifest_partial),
+            "data_segments": int(scan.iq_data_segments),
+            "data_bytes": int(scan.iq_data_bytes),
+            "index_complete_records": int(scan.iq_index_complete_records),
+            "index_complete_bytes": int(scan.iq_index_complete_bytes),
+            "index_trailing_bytes": int(scan.iq_index_trailing_bytes),
+            "gap_complete_records": int(scan.iq_gap_complete_records),
+            "gap_complete_bytes": int(scan.iq_gap_complete_bytes),
+            "gap_trailing_bytes": int(scan.iq_gap_trailing_bytes),
+        },
+        "spectrum": {
+            "manifest_final": bool(scan.spectrum_manifest_final),
+            "manifest_partial": bool(scan.spectrum_manifest_partial),
+            "binary_header_valid": bool(scan.spectrum_binary_header_valid),
+            "complete_records": int(scan.spectrum_complete_records),
+            "complete_bytes": int(scan.spectrum_complete_bytes),
+            "trailing_bytes": int(scan.spectrum_trailing_bytes),
+        },
+    }
 
 
 class InMemoryRecordingService(RecordingService):

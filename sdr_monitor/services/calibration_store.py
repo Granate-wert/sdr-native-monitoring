@@ -6,7 +6,11 @@ import json
 import os
 from pathlib import Path
 
-from ..domain.calibration import CalibrationProfile, CalibrationProfileError
+from ..domain.calibration import (
+    CalibrationProfile,
+    CalibrationProfileError,
+    validate_calibration_profile_id,
+)
 
 
 class CalibrationProfileStore:
@@ -47,9 +51,17 @@ class CalibrationProfileStore:
         return profile
 
     def _path(self, profile_id: str, profile_version: int) -> Path:
-        if not profile_id or any(char in profile_id for char in "\\/:") or profile_version <= 0:
+        try:
+            identifier = validate_calibration_profile_id(profile_id)
+        except CalibrationProfileError as error:
+            raise CalibrationProfileError("invalid calibration profile key") from error
+        if (
+            isinstance(profile_version, bool)
+            or not isinstance(profile_version, int)
+            or profile_version <= 0
+        ):
             raise CalibrationProfileError("invalid calibration profile key")
-        return self.root / profile_id / f"v{profile_version:04d}.json"
+        return self.root / identifier / f"v{profile_version:04d}.json"
 
 
 __all__ = ["CalibrationProfileStore"]

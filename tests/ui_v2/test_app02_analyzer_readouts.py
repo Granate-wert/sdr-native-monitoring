@@ -21,7 +21,7 @@ class AnalyzerReadoutTests(unittest.TestCase):
         self.addCleanup(set_active_locale, locale)
 
     def state(self):
-        frame = LiveSpectrumFrame(1, 12, 101., 256., 256, 128,
+        frame = LiveSpectrumFrame(1, 12, 101., 3., 3, 1,
                                   np.array([100., 101., 102.]), np.array([-80., -40., -70.]))
         live = build_live_view_state(LiveSnapshot(generation=1, sequence=1,
                                                   state=LiveSessionState.RUNNING, spectrum=frame))

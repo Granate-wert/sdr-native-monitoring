@@ -1,4 +1,9 @@
-"""Controlled import boundary for the optional ``esw_dfl._sdr_native`` module."""
+"""Compatibility import boundary for ``sdr_monitor._sdr_native``.
+
+The project has one canonical pybind11 extension identity.  Loading a second
+copy of the same bindings under ``esw_dfl._sdr_native`` causes pybind11 global
+type registration collisions in a process that uses both products.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,7 @@ from types import ModuleType
 from typing import Any
 
 
-NATIVE_MODULE_NAME = "esw_dfl._sdr_native"
+NATIVE_MODULE_NAME = "sdr_monitor._sdr_native"
 _REQUIRED_BUILD_INFO_FIELDS = frozenset(
     {
         "version",

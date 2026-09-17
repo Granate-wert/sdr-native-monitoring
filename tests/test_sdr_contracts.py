@@ -101,6 +101,7 @@ class PythonContractTests(unittest.TestCase):
         self.assertEqual(schema["SourceType"]["DFL_FILE"], "dfl_file")
         self.assertEqual(schema["SpectrumUnit"]["DBM_HZ"], "dBm/Hz")
         self.assertEqual(schema["QualityFlag"]["BACKEND_FALLBACK"], 1 << 14)
+        self.assertEqual(schema["QualityFlag"]["BACKEND_DISCONTINUITY"], 1 << 15)
         self.assertEqual(DeviceState.SHUTTING_DOWN.value, "shutting_down")
 
     def test_configs_are_frozen_and_validate_before_native_call(self) -> None:

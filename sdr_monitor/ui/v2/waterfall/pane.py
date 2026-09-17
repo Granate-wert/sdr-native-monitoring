@@ -223,6 +223,10 @@ class WaterfallPane(QWidget):
         if not line.timestamp_known and line.sequence is not None and self._last_seen_sequence is not None and line.sequence < self._last_seen_sequence:
             self._set_metrics(rows_out_of_order_rejected=self._metrics.rows_out_of_order_rejected + 1)
             return
+        if not line.timestamp_known and line.sequence is not None and line.sequence == self._last_seen_sequence:
+            # Reconstructed snapshots may carry the same acquisition again.
+            # Object identity and unqualified timestamp changes are not new rows.
+            return
         if line.timestamp_known:
             self._last_seen_timestamp_ns = line.timestamp_ns
         elif line.sequence is not None:
@@ -287,7 +291,7 @@ class WaterfallPane(QWidget):
             return
         self._config = proposal
         self._sync_controls()
-        self.clear_history()
+        self._resize_retained_history()
         self._schedule_settings_write()
 
     def set_rows_per_second(self, rows_per_second: int) -> None:
@@ -303,7 +307,7 @@ class WaterfallPane(QWidget):
             return
         self._config = proposal
         self._sync_controls()
-        self.clear_history()
+        self._resize_retained_history()
         self._schedule_settings_write()
 
     def set_palette(self, palette: WaterfallPalette) -> None:
@@ -495,6 +499,19 @@ class WaterfallPane(QWidget):
         self._last_seen_sequence = None
         self._hide_tiles()
         self._status.setText(text("waterfall.new_grid", epoch=self._epoch))
+
+    def _resize_retained_history(self) -> None:
+        """Apply a compatible local capacity change without issuing an RX command."""
+
+        signature = self._grid_signature
+        if signature is None:
+            return
+        rows, _ = self._config.dimensions(signature.columns)
+        self._renderer.resize_rows(rows)
+        self._update_time_axis()
+        self._update_status()
+        if self._render_visible:
+            self._upload_tiles()
 
     def _synchronize_x_range(self, target: pg.ViewBox, interval: list[float]) -> None:
         if self._x_syncing or len(interval) != 2:

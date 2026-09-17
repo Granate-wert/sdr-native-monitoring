@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import isfinite
+
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
@@ -34,6 +36,7 @@ def analyzer_status(state: AnalyzerViewState) -> str:
     )]
     if isinstance(frame, LiveSpectrumFrame):
         parts.append(state.live.data_age_label)
+        parts.append(analyzer_rtbw_rates(state))
         parts.append(text("analyzer.quality_unknown") if frame.native_quality_flags is None else
                      text("analyzer.quality_mask", mask=f"0x{frame.native_quality_flags:08X}"))
         if any((frame.dropped_samples_before, frame.dropped_iq_blocks_before, frame.dropped_fft_frames_before)):
@@ -62,3 +65,40 @@ def analyzer_status(state: AnalyzerViewState) -> str:
     if bundle.coherence_issues:
         parts.append(", ".join(bundle.coherence_issues))
     return " · ".join(parts)
+
+
+def analyzer_rtbw_rates(state: AnalyzerViewState) -> str:
+    """Show producer observations, never substitute configured Fs or UI FPS."""
+    metrics = getattr(state.live.snapshot, "performance", None)
+    interval = getattr(metrics, "rate_observation_interval_s", None)
+    valid_interval = (isinstance(interval, (int, float)) and not isinstance(interval, bool)
+                      and isfinite(interval) and interval > 0)
+
+    def value(name: str, divisor: float = 1.0) -> str:
+        number = getattr(metrics, name, None)
+        if (not valid_interval or not isinstance(number, (int, float))
+                or isinstance(number, bool) or not isfinite(number) or number < 0):
+            return "—"
+        return f"{number / divisor:.3g}"
+
+    return text("analyzer.rtbw_rates", fft=value("analytical_fft_rate_hz"),
+                publications=value("spectrum_snapshot_rate_hz"),
+                iq=value("iq_sample_rate_hz", 1e6))
+
+
+def spectrum_numerical_readout(frame: object | None) -> str:
+    """Producer metadata only: never derive RBW/calibration from UI drafts."""
+    metadata = getattr(frame, "numerical_provenance", None)
+    if metadata is None:
+        return text("analyzer.numerical_unknown")
+
+    def scalar(name: str) -> str:
+        value = getattr(metadata, name)
+        return "—" if value is None else f"{value:g}" if isinstance(value, (int, float)) else value
+
+    return text("analyzer.numerical_metadata", window=scalar("window"),
+                detector=scalar("detector"), precision=scalar("precision_mode"),
+                averaging=scalar("averaging_frames"), bin_width=scalar("fft_bin_width_hz"),
+                enbw=scalar("enbw_hz"), rbw=scalar("nominal_rbw_hz"),
+                calibration=scalar("calibration_status"), profile=scalar("calibration_profile_id"),
+                uncertainty=scalar("estimated_uncertainty_db"))

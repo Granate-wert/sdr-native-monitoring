@@ -55,6 +55,7 @@ from ..domain import (
     as_timestamp_ns,
 )
 from .live_session import InMemoryLiveSessionService
+from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 
 # P07 defaults mirrored from the legacy adapter contract.
 _FFT_SIZE = 4096
@@ -100,6 +101,20 @@ class _NativeRecordingRequest:
     armed_at_ns: int
     start_reason: str
     restart_gap_started_ns: int | None = None
+
+
+def _native_spectrum_unit(value: Any) -> str:
+    """Translate declared native units only; never infer calibration or density."""
+    name = getattr(value, "name", value)
+    units = {
+        "dbfs_bin": "dBFS/bin", "dbfs_hz": "dBFS/Hz",
+        "dbm_bin": "dBm/bin", "dbm_hz": "dBm/Hz", "dbm": "dBm",
+        "dbfs/bin": "dBFS/bin", "dbfs/hz": "dBFS/Hz",
+        "dbm/bin": "dBm/bin", "dbm/hz": "dBm/Hz",
+    }
+    if not isinstance(name, str) or name.casefold() not in units:
+        raise ValueError("unsupported native spectrum unit")
+    return units[name.casefold()]
 
 
 def _native_quality_mask(native_module: Any, frame: Any, name: str) -> bool:
@@ -436,6 +451,11 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 )
             requested = self._snapshot.applied.applied
             device = self._snapshot.device
+            if device is None:
+                return self._fail(
+                    "Select a device before starting a live session",
+                    kind=LiveErrorKind.DEVICE_NOT_FOUND,
+                )
             routes = _start_routes(device, self._native_uri)
             recording_request = self._native_recording_armed
             log_event(
@@ -1250,6 +1270,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         iq_rate = max(0.0, (samples - self._last_metrics_samples) / elapsed)
         analytical_rate = float(getattr(engine_metrics, "analytical_fft_rate", 0.0) or 0.0)
         performance = LivePerformance(
+            rate_observation_interval_s=(elapsed if self._last_metrics_sample_s > 0
+                and all(hasattr(engine_metrics, name) for name in (
+                    "analytical_fft_rate", "spectrum_snapshots_emitted", "iq_samples_received"
+                )) else None),
             analytical_fft_rate_hz=analytical_rate,
             spectrum_snapshot_rate_hz=snapshot_rate,
             iq_sample_rate_hz=iq_rate,
@@ -1432,6 +1456,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             backend_discontinuity = _native_quality_mask(
                 self._native, frame, "BACKEND_DISCONTINUITY"
             )
+            provenance = native_spectrum_provenance(frame)
+            unit = _native_spectrum_unit(frame.unit)
+            validate_absolute_unit(unit, provenance)
             spectrum = LiveSpectrumFrame(
                 sequence=as_frame_sequence(frame.frame_sequence),
                 timestamp_ns=as_timestamp_ns(frame.timestamp_ns),
@@ -1441,7 +1468,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 hop_size=int(frame.hop_size),
                 frequencies_hz=frame.frequencies_hz,
                 values=frame.values,
-                unit=str(frame.unit.name) if hasattr(frame.unit, "name") else str(frame.unit),
+                unit=unit,
                 dropped_samples_before=int(frame.dropped_samples_before),
                 dropped_iq_blocks_before=int(frame.dropped_iq_blocks_before),
                 dropped_fft_frames_before=int(frame.dropped_fft_frames_before),
@@ -1455,6 +1482,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                                       if getattr(frame, "quality_flags", None) is not None else None),
                 acquisition_epoch=publication_context.acquisition_epoch,
                 clock_domain=publication_context.clock_domain,
+                numerical_provenance=provenance,
             )
         except Exception as error:
             self._publish_error(f"Pluto RX frame conversion failed: {error}")
@@ -1488,14 +1516,14 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 device=self._snapshot.device,
                 applied=self._snapshot.applied,
                 quality=LiveQuality(
-                    calibration=current_quality.calibration,
+                    calibration=_frame_calibration_quality(provenance.calibration_status),
                     backend=backend,
                     fallback_reason=fallback_reason,
                     backend_discontinuity=backend_discontinuity,
                     dropped_blocks=dropped,
                     loss_reasons=loss_reasons,
                 ),
-                unit=self._snapshot.unit,
+                unit=spectrum.unit,
                 spectrum=spectrum,
                 persistence=self._snapshot.persistence,
                 performance=self._snapshot.performance,
@@ -1534,7 +1562,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 density=value.density,
                 probability_scale=float(getattr(value, "probability_scale", 1.0)),
                 count_scale=float(getattr(value, "count_scale", 1.0)),
-                unit=(str(getattr(native_unit, "name", native_unit)) if native_unit is not None else None),
+                unit=(_native_spectrum_unit(native_unit) if native_unit is not None else None),
                 producer_identity_available=identity_available,
                 source_id=source_id,
                 config_generation=generation,
@@ -1986,7 +2014,17 @@ def _domain_applied_configuration(
                 adjustments.append(message)
     if requested.backend not in (BackendKind.AUTO, active_backend):
         adjustments.append(f"requested backend {requested.backend.value}; active {active_backend.value}")
-    return AppliedLiveConfiguration(requested=requested, applied=applied, adjustments=tuple(adjustments))
+    readback_fields = tuple(
+        domain_name for native_name, domain_name in (
+            ("center_frequency_hz", "center_hz"), ("sample_rate_hz", "sample_rate_hz"),
+            ("analog_bandwidth_hz", "analog_bandwidth_hz"), ("manual_gain_db", "gain_db"),
+        )
+        if isinstance(getattr(native_applied, native_name, None), (int, float))
+        and not isinstance(getattr(native_applied, native_name, None), bool)
+        and math.isfinite(getattr(native_applied, native_name))
+    )
+    return AppliedLiveConfiguration(requested=requested, applied=applied,
+                                    adjustments=tuple(adjustments), readback_fields=readback_fields)
 
 
 def _backend_fallback_reason(metrics: Any, applied: AppliedLiveConfiguration) -> str | None:
@@ -2053,6 +2091,16 @@ def _backend_kind(applied: Any, *, fallback: Any | None = None) -> BackendKind:
 def _calibration_quality(applied: Any) -> Any:
     from ..domain import CalibrationQuality
 
+    return CalibrationQuality.UNCALIBRATED
+
+
+def _frame_calibration_quality(status: str | None) -> Any:
+    from ..domain import CalibrationQuality
+
+    if status in {"applied", "interpolated"}:
+        return CalibrationQuality.CALIBRATED
+    if status in {"invalid", "extrapolated"}:
+        return CalibrationQuality.MISMATCH
     return CalibrationQuality.UNCALIBRATED
 
 
@@ -2352,6 +2400,10 @@ def _domain_capabilities(
         analog_bandwidths_hz=bandwidths,
         supported_backends=tuple(backends),
         receiver_topology=receiver_topology,
+        sample_rate_ranges_hz=tuple(
+            (float(item.minimum), float(item.maximum), float(getattr(item, "step", 0) or 0))
+            for item in getattr(native_capabilities, "sample_rate_ranges_hz", ())
+        ),
     )
 
 

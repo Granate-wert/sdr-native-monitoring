@@ -21,6 +21,23 @@ def _frame(size: int, values: np.ndarray | None = None) -> LiveSpectrumFrame:
 
 
 class AnalyzerLayerTests(unittest.TestCase):
+    def test_vectorized_reduction_matches_scalar_reference_for_all_bucket_shapes(self):
+        rng = np.random.default_rng(42)
+        for size in (2049, 2051, 4095, 4096, 4097, 16_384, 262_144):
+            with self.subTest(size=size):
+                values = rng.normal(-80, 15, size).astype(np.float32)
+                values[[0, size // 2, -1]] = (np.nan, np.inf, -np.inf)
+                original = values.copy()
+                bucket = ((2 * np.arange(size) + 1) * 2048) // (2 * size)
+                expected = np.full(2048, np.nan, dtype=np.float32)
+                for index in range(2048):
+                    samples = values[bucket == index]
+                    if samples.size and np.all(np.isfinite(samples)):
+                        expected[index] = np.max(samples)
+                actual = waterfall_line_from_spectrum(_frame(size, values))
+                np.testing.assert_array_equal(actual.values, expected)
+                np.testing.assert_array_equal(values, original)
+
     def test_waterfall_lod_is_bounded_regular_and_preserves_bucket_peaks(self) -> None:
         for size in (1024, 4096, 16_384, 262_144):
             with self.subTest(size=size):

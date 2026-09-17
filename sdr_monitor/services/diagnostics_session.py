@@ -5,14 +5,49 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from collections import deque
 from typing import Any, Callable
 
+from ..activity_log import default_activity_log_path
+from .._version import __version__
 from ..domain import BoundedLog, DiagnosticCard, DiagnosticError, DiagnosticStatus, DiagnosticsSnapshot, SelfTestResult, SupportBundleOptions, SupportBundleResult, redact_path
+
+
+_PRIVATE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\[^\\/:]+[\\/]|/(?:[^/\s]+/)+)")
+_SENSITIVE_TEXT = re.compile(
+    r"\b(?:serial|device[ _-]?id|device[ _-]?identity|calibration|raw[ _-]?i/?q)\b\s*[:=]",
+    re.IGNORECASE,
+)
+_SENSITIVE_FIELD_TOKENS = frozenset(
+    {
+        "path",
+        "file",
+        "filename",
+        "directory",
+        "folder",
+        "uri",
+        "url",
+        "route",
+        "serial",
+        "identity",
+        "fingerprint",
+        "uuid",
+        "mac",
+        "calibration",
+        "raw_iq",
+        "iq_data",
+        "iq_samples",
+        "spectrum_data",
+        "spectrum_bins",
+        "capture_data",
+    }
+)
 
 
 class TaskSupervisor:
@@ -40,7 +75,7 @@ class TaskSupervisor:
         with self._lock:
             self._closed = True
             self._cancel.set()
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
 
 class DiagnosticsService:
@@ -114,16 +149,67 @@ class DiagnosticsService:
         options = options or SupportBundleOptions()
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, Any] = {"schema": "sdr-support-bundle", "version": 1, "created_at": datetime.now(timezone.utc).isoformat(), "redacted": not options.include_paths}
+        payload: dict[str, Any] = {
+            "schema": "sdr-support-bundle",
+            "version": 2,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "redacted": True,
+            "product": {"name": "SDR Native Monitoring", "version": __version__},
+            "privacy": {
+                "paths": "always_redacted",
+                "device_identity": "always_redacted",
+                "raw_iq": "never_serialized",
+                "calibration": "never_serialized",
+            },
+        }
         if options.include_platform:
             payload["platform"] = self.collect_platform()
         if options.include_self_tests:
-            payload["self_tests"] = [{"name": item.name, "status": item.status.value, "detail": item.detail, "duration_ms": item.duration_ms} for item in self._self_tests]
+            payload["self_tests"] = [
+                self._sanitize(
+                    {"name": item.name, "status": item.status.value, "detail": item.detail, "duration_ms": item.duration_ms}
+                )
+                for item in self._self_tests
+            ]
         if options.include_errors:
-            payload["errors"] = [self._sanitize(item.__dict__ if hasattr(item, "__dict__") else {"error_id": item.error_id, "summary": item.summary, "reason": item.reason, "recommendation": item.recommendation, "technical_detail": item.technical_detail, "timestamp": item.timestamp, "source": item.source}, options.include_paths) for item in self.errors()]
+            payload["errors"] = [
+                self._sanitize(
+                    {
+                        "error_id": item.error_id,
+                        "summary": item.summary,
+                        "reason": item.reason,
+                        "recommendation": item.recommendation,
+                        "timestamp": item.timestamp,
+                        "source": item.source,
+                    }
+                )
+                for item in self.errors()
+            ]
         if options.include_metrics:
-            payload["metrics"] = self._sanitize(self._metrics, options.include_paths)
-        payload["logs"] = self._sanitize(self._log.items(), options.include_paths)
+            payload["metrics"] = self._sanitize(self._metrics)
+        payload["logs"] = self._sanitize(self._log.items())
+        activity_path = default_activity_log_path()
+        activity_tail: deque[dict[str, Any]] = deque(maxlen=1000)
+        malformed_lines = 0
+        if activity_path.is_file():
+            with activity_path.open("r", encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    try:
+                        value = json.loads(text)
+                    except json.JSONDecodeError:
+                        malformed_lines += 1
+                        continue
+                    if isinstance(value, dict):
+                        activity_tail.append(value)
+        payload["activity_log"] = {
+            "path": "<redacted-path>",
+            "records": self._sanitize(tuple(activity_tail)),
+            "malformed_lines_skipped": malformed_lines,
+            "tail_limit": activity_tail.maxlen,
+        }
         path = root / "sdr-support-bundle.json"
         part = path.with_suffix(path.suffix + ".part")
         part.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -137,14 +223,44 @@ class DiagnosticsService:
         item = tests.get(name)
         return "not run" if item is None else item.status.value
 
-    def _sanitize(self, value: Any, include_paths: bool) -> Any:
+    def _sanitize(self, value: Any) -> Any:
         if isinstance(value, dict):
-            return {str(key): self._sanitize(item, include_paths) for key, item in value.items()}
+            sanitized: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                key_text = str(key)
+                if self._is_sensitive_field(key_text) or self._is_private_path(key_text):
+                    safe_key = "<redacted-field>" if "<redacted-field>" not in sanitized else f"<redacted-field-{index}>"
+                    sanitized[safe_key] = "<redacted-sensitive>"
+                else:
+                    sanitized[key_text] = self._sanitize(item)
+            return sanitized
         if isinstance(value, (tuple, list)):
-            return [self._sanitize(item, include_paths) for item in value]
-        if isinstance(value, str) and not include_paths and (":" in value or "\\" in value or value.startswith("/")):
-            return redact_path(value)
-        return value
+            if value and all(isinstance(item, (int, float, complex)) and not isinstance(item, bool) for item in value):
+                return "<redacted-sample-data>"
+            return [self._sanitize(item) for item in value]
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return "<redacted-binary-data>"
+        if isinstance(value, str):
+            if self._is_private_path(value):
+                return redact_path(value)
+            if _SENSITIVE_TEXT.search(value):
+                return "<redacted-sensitive>"
+            return value
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return "<redacted-unsupported-value>"
+
+    @staticmethod
+    def _is_private_path(value: str) -> bool:
+        return bool(_PRIVATE_PATH.search(value))
+
+    @staticmethod
+    def _is_sensitive_field(key: str) -> bool:
+        tokens = tuple(token for token in re.split(r"[^a-z0-9]+", key.lower()) if token)
+        compact = "".join(tokens)
+        if any(token in _SENSITIVE_FIELD_TOKENS for token in tokens):
+            return True
+        return compact.startswith(("serial", "calibration", "deviceidentity", "rawiq", "iqdata", "iqsamples")) or compact.endswith(("path", "file", "uri", "route", "serial", "serialnumber", "deviceid", "deviceidentity", "fingerprint", "uuid", "mac"))
 
 
 class PlatformDiagnosticsService(DiagnosticsService):

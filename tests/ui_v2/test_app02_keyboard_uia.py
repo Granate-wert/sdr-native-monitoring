@@ -160,6 +160,8 @@ class App02KeyboardUiaTests(unittest.TestCase):
         self.assertIsNot(scene.latest_frame.spectrum, frame)
 
     def test_ru_en_uia_names_and_tab_reach_main_actions_but_not_disabled_rx(self) -> None:
+        self.assertFalse(self.fixture.page.primary.isEnabled())
+        self.fixture.select_and_apply()
         for locale in (UiLocale.RU, UiLocale.EN):
             self.fixture.shell.select_appearance_locale(locale)
             self.app.processEvents()

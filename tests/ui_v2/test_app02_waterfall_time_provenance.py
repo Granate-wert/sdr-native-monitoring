@@ -62,6 +62,14 @@ class WaterfallTimeProvenanceTests(unittest.TestCase):
         self.assertEqual(self.pane.history_rows, 2)
         self.assertEqual(self.pane.metrics.rows_out_of_order_rejected, 1)
 
+    def test_republished_unknown_sequence_does_not_invent_history(self) -> None:
+        self.pane.set_line(waterfall_line_from_spectrum(_frame(7, 1, known=False)))
+        # A reconstructed immutable publication is not a new acquisition.
+        self.pane.set_line(waterfall_line_from_spectrum(_frame(7, 999, known=False)))
+        self.assertEqual(self.pane.history_rows, 1)
+        self.pane.set_line(waterfall_line_from_spectrum(_frame(8, 0, known=False)))
+        self.assertEqual(self.pane.history_rows, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

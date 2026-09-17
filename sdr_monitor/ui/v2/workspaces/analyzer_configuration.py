@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Callable
+from typing import Callable, TypedDict
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
@@ -16,7 +16,16 @@ from sdr_monitor.domain.live_configuration_patch import LiveConfigurationPatch
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import text
+from ..state.configuration_readouts import configuration_prefix
 from ..view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState
+
+
+class _DraftChanges(TypedDict, total=False):
+    center_hz: float
+    sample_rate_hz: float
+    gain_db: float
+    fft_size: int
+    backend: BackendKind
 
 
 class AnalyzerConfigurationDrawer(QFrame):
@@ -309,7 +318,9 @@ class AnalyzerConfigurationDrawer(QFrame):
                 if not self._conflicted:
                     self._conflicted = True
                     state_changed = True
-            elif not self._dirty:
+            elif not self._dirty and (
+                configuration != self._base or identity != self._base_identity
+            ):
                 self._base, self._base_identity = configuration, identity
                 self._load(configuration)
         if self._pending is not None and state.live.error_label:
@@ -327,7 +338,9 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._backend.setEnabled(not editing_locked and self._backend_selectable)
         self._apply.setEnabled(not locked and (self._dirty or not self._has_applied) and not self._conflicted and self._pending is None)
         self._cancel.setEnabled(not locked and self._dirty)
-        self._applied.setText(text("live.configuration.no_applied") if configuration is None else _configuration_summary(configuration))
+        self._applied.setText(text("live.configuration.no_applied") if configuration is None else
+                              configuration_prefix(getattr(snapshot, "applied", None)) + " " +
+                              _configuration_summary(configuration))
         self._render_status()
         if state_changed:
             self.draft_changed.emit()
@@ -348,21 +361,23 @@ class AnalyzerConfigurationDrawer(QFrame):
             with QSignalBlocker(self._backend):
                 self._backend.setCurrentIndex(backend_index)
 
-    def _draft_changes(self) -> dict[str, object]:
+    def _draft_changes(self) -> _DraftChanges:
         backend_value = self._backend.currentData()
         backend = BackendKind(str(backend_value)) if isinstance(backend_value, str) else self._base.backend
-        proposed = {"center_hz": self._center.value() * 1e6, "sample_rate_hz": self._sample_rate.value() * 1e6, "gain_db": self._gain.value(), "fft_size": self._fft.value(), "backend": backend}
-        tolerances = {"center_hz": 500.0, "sample_rate_hz": 500.0, "gain_db": 0.05}
-        changes: dict[str, object] = {}
-        for name, value in proposed.items():
-            base = getattr(self._base, name)
-            tolerance = tolerances.get(name)
-            if tolerance is not None and isinstance(value, float) and isinstance(base, (int, float)):
-                if abs(value - float(base)) <= tolerance:
-                    continue
-            elif value == base:
-                continue
-            changes[name] = value
+        changes: _DraftChanges = {}
+        center = self._center.value() * 1e6
+        rate = self._sample_rate.value() * 1e6
+        gain = self._gain.value()
+        if abs(center - self._base.center_hz) > 500.0:
+            changes["center_hz"] = center
+        if abs(rate - self._base.sample_rate_hz) > 500.0:
+            changes["sample_rate_hz"] = rate
+        if abs(gain - self._base.gain_db) > 0.05:
+            changes["gain_db"] = gain
+        if self._fft.value() != self._base.fft_size:
+            changes["fft_size"] = self._fft.value()
+        if backend != self._base.backend:
+            changes["backend"] = backend
         return changes
 
     def _sync_backend_options(self, snapshot: object | None, configuration: object | None) -> None:

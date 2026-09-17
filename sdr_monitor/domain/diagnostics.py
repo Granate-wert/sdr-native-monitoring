@@ -55,8 +55,10 @@ class SupportBundleOptions:
     include_raw_data: bool = False
 
     def __post_init__(self) -> None:
+        if self.include_paths:
+            raise ValueError("release support bundles always redact private paths")
         if self.include_raw_data:
-            raise ValueError("raw IQ/calibration data is never included by default support bundle")
+            raise ValueError("raw IQ/calibration data is never included in a support bundle")
 
 
 @dataclass(frozen=True, slots=True)

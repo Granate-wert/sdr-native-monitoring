@@ -16,6 +16,7 @@ from .sweep_lines import SweepLineFrame
 from .sweep_progress import SweepProgressFrame
 from .analyzer_identity import (
     MeasurementIdentity, identities_equal, layer_matches_measurement, matches_active_identity,
+    persistence_is_pending,
 )
 
 
@@ -72,6 +73,18 @@ class AnalyzerFrameBundle:
                     or frame.sample_rate_hz <= 0.0 or frame.fft_size <= 0
                     or frame.hop_size <= 0 or frame.hop_size > frame.fft_size):
                 raise ValueError("RTBW physical metadata is invalid")
+            if frequencies.size != frame.fft_size:
+                raise ValueError("RTBW frequency grid size must match physical FFT")
+            spacing = frame.sample_rate_hz / frame.fft_size
+            expected_grid = frame.center_frequency_hz + (
+                np.arange(frame.fft_size, dtype=np.float64) - frame.fft_size // 2
+            ) * spacing
+            # Use a bin-relative tolerance, not an RF-center-relative rtol
+            # which would admit substantial shifts at GHz center frequencies.
+            tolerance = max(spacing * 1e-7,
+                            abs(float(np.spacing(frame.center_frequency_hz))) * 8)
+            if not np.allclose(frequencies, expected_grid, rtol=0.0, atol=tolerance):
+                raise ValueError("RTBW frequency grid must match center and Fs/FFT")
             expected = RtbwFrameMetadata(
                 frame.center_frequency_hz, frame.sample_rate_hz, frame.fft_size, frame.hop_size,
             )
@@ -174,8 +187,9 @@ def bundle_from_live(snapshot: LiveSnapshot) -> AnalyzerFrameBundle | None:
     persistence = getattr(snapshot, "persistence", None)
     issues: list[str] = []
     if persistence is not None and not layer_matches_measurement(identity, persistence):
+        pending = persistence_is_pending(identity, persistence)
         persistence = None
-        issues.append("persistence_identity_mismatch")
+        issues.append("persistence_pending" if pending else "persistence_identity_mismatch")
     waterfall = getattr(snapshot, "waterfall_line", None)
     if waterfall is not None and not layer_matches_measurement(identity, waterfall):
         waterfall = None

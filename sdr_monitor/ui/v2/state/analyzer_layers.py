@@ -93,12 +93,13 @@ def _reduce_waterfall_columns(values: np.ndarray, native_edges: np.ndarray) -> t
     # physical span for non-divisible sizes without a narrower final bucket.
     bucket = (((2 * np.arange(source.size, dtype=np.int64) + 1) * columns) // (2 * source.size))
     starts = np.asarray(np.searchsorted(bucket, np.arange(columns), side="left"), dtype=np.int64).reshape(-1)
-    stops = np.asarray(np.searchsorted(bucket, np.arange(columns), side="right"), dtype=np.int64).reshape(-1)
-    reduced: np.ndarray = np.full(columns, np.nan, dtype=np.float32)
-    for index in range(columns):
-        samples = source[int(starts[index]):int(stops[index])]
-        if samples.size and np.all(np.isfinite(samples)):
-            reduced[index] = np.max(samples)
+    # source.size > columns: monotonic centre assignment covers every output
+    # cell, so reduceat has no empty group. Retain NaN for a cell containing
+    # *any* non-finite source value, including +/-inf. This performs the same
+    # peak-preserving display reduction without 2048 Python loops per frame.
+    reduced: np.ndarray = np.maximum.reduceat(source, starts)
+    finite = np.logical_and.reduceat(np.isfinite(source), starts)
+    reduced[~finite] = np.nan
     span = float(native_edges[-1] - native_edges[0])
     edges = float(native_edges[0]) + np.arange(columns + 1, dtype=np.float64) * (span / columns)
     edges[-1] = native_edges[-1]

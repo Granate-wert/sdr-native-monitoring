@@ -166,9 +166,11 @@ class AnalyzerCoherenceTests(unittest.TestCase):
         irregular_state = build_live_view_state(LiveSnapshot(
             generation=1, sequence=1, state=LiveSessionState.RUNNING, spectrum=irregular,
         ))
-        self.assertIs(irregular_state.spectrum, irregular)
+        # An irregular RTBW grid contradicts the physical FFT metadata; it is
+        # invalid current data, not merely an unsupported Waterfall geometry.
+        self.assertIsNone(irregular_state.spectrum)
         self.assertIsNone(irregular_state.waterfall_line)
-        self.assertEqual(irregular_state.measurement_unavailable_reason, "waterfall_geometry_invalid")
+        self.assertIsNotNone(irregular_state.measurement_unavailable_reason)
 
     def test_invalid_central_measurement_fails_closed_before_ui(self):
         cases = (

@@ -25,6 +25,7 @@ from .identity import (
 )
 from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
+from .spectrum_provenance import SpectrumProvenance
 
 
 class DeviceTransport(StrEnum):
@@ -273,6 +274,10 @@ class DeviceCapabilities:
     # R10-E0: optional, read-only topology facts.  ``None`` means the active
     # adapter did not enumerate them; it never implies single-RX hardware.
     receiver_topology: ReceiverTopologySnapshot | None = None
+    # Presets are not an exhaustive list when the producer publishes ranges.
+    # Triples are (inclusive minimum, inclusive maximum, step); zero step
+    # denotes a continuous range. Native configure/readback remains authoritative.
+    sample_rate_ranges_hz: tuple[tuple[float, float, float], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +372,8 @@ class AppliedLiveConfiguration:
     requested: LiveConfiguration
     applied: LiveConfiguration
     adjustments: tuple[str, ...] = ()
+    # Empty means prepared/legacy-unknown, not hardware confirmation.
+    readback_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +454,8 @@ class LivePerformance:
     source_refill_wait_over_two_nominal_periods: int = 0
     source_inter_refill_gap_ms: float = 0.0
     source_inter_refill_gap_count: int = 0
+    # Append-only: None distinguishes default zeros from observed rates.
+    rate_observation_interval_s: float | None = None
 
 
 # Keep the established public name while making the snapshot role explicit in
@@ -488,8 +497,11 @@ class LiveSpectrumFrame:
     acquisition_epoch: int | None = None
     clock_domain: str | None = None
     accumulation_id: str | None = None
+    numerical_provenance: SpectrumProvenance | None = None
 
     def __post_init__(self) -> None:
+        if self.numerical_provenance is not None and not isinstance(self.numerical_provenance, SpectrumProvenance):
+            raise ValueError("numerical provenance must be immutable SpectrumProvenance or unknown")
         frequencies = np.asarray(self.frequencies_hz, dtype=np.float64).reshape(-1)
         values = np.asarray(self.values, dtype=np.float32).reshape(-1)
         if frequencies.size == 0 or values.size != frequencies.size:

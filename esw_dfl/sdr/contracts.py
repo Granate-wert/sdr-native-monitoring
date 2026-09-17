@@ -18,6 +18,9 @@ CONTRACT_SCHEMA_NAME = "sdr-native-contracts"
 # Version 2: P04 adds EngineState, OverflowPolicy and EventSeverity wire enums.
 # Version 3: P05 restricts DspConfig.fft_size to power-of-two in [256, 262144].
 # Version 4: P08 adds ComputeBackendKind and BackendErrorCode (P08H-00).
+# Version 5: P08H-00 adds the generic backend fallback/discontinuity model.
+# R12-C publishes its already-reserved BACKEND_DISCONTINUITY wire name at the
+# pybind/Python boundary.  The schema remains v5 for recording compatibility.
 CONTRACT_SCHEMA_VERSION = 5
 UINT32_MAX = (1 << 32) - 1
 UINT64_MAX = (1 << 64) - 1
@@ -115,6 +118,7 @@ class QualityFlag(IntFlag):
     MISSING_SEGMENT = 1 << 12
     TIMESTAMP_ESTIMATED = 1 << 13
     BACKEND_FALLBACK = 1 << 14
+    BACKEND_DISCONTINUITY = 1 << 15
 
 
 class BackendKind(StrEnum):

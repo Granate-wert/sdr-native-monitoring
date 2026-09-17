@@ -188,11 +188,32 @@ import gc
 import importlib
 import sys
 for _ in range(20):
-    module = importlib.import_module('esw_dfl._sdr_native')
+    module = importlib.import_module('sdr_monitor._sdr_native')
     assert module.run_self_test()['ok'] is True
     del module
-    sys.modules.pop('esw_dfl._sdr_native', None)
+    sys.modules.pop('sdr_monitor._sdr_native', None)
     gc.collect()
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_legacy_adapter_and_standalone_share_canonical_module(self) -> None:
+        script = """
+import importlib
+
+standalone = importlib.import_module('sdr_monitor._sdr_native')
+from esw_dfl.sdr import native_api
+
+assert native_api.require_native() is standalone
+assert native_api.require_native().__name__ == 'sdr_monitor._sdr_native'
+assert standalone.run_self_test()['ok'] is True
 """
         completed = subprocess.run(
             [sys.executable, "-c", script],

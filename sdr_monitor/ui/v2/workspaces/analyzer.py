@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from time import monotonic
 import numpy as np
-from PySide6.QtCore import QEvent, QSignalBlocker, Qt
+from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QStyle, QStyleOptionButton, QVBoxLayout, QWidget
 
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
@@ -15,10 +16,13 @@ from ..i18n import current_locale, text
 from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
+from .analyzer_status_label import AnalyzerStatusLabel
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum import PersistenceDensityFrame
 from ..state.live_view_state import LiveAction
-from ..state.analyzer_readouts import analyzer_status
+from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout
+from ..state.analyzer_status_cadence import AnalyzerStatusCadence
+from ..state.configuration_readouts import configuration_prefix
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
 
@@ -40,6 +44,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._last_waterfall: WaterfallLineFrame | None = None
         self._last_persistence: PersistenceDensityFrame | None = None
         self._last_identity = None
+        self._status_cadence = AnalyzerStatusCadence()
         self._text_bindings: list[tuple[QLabel | QPushButton, str]] = []
         self.setProperty("ui2Root", True)
         self.setObjectName("analyzerWorkspaceV2")
@@ -102,7 +107,7 @@ class AnalyzerWorkspaceV2(QWidget):
         )
         self.display_controls.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.display_controls.close_requested.connect(self._hide_display)
-        self.status = QLabel(self)
+        self.status = AnalyzerStatusLabel(self)
         self.status.setProperty("ui2Role", "secondary")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -157,11 +162,26 @@ class AnalyzerWorkspaceV2(QWidget):
                      self.visualization.waterfall_pane.plot_item):
             plot.getAxis("bottom").showLabel(False)
         self.display_controls.set_locale(current_locale())
+        self._reserve_primary_width()
         self._render(self.model.state)
+
+    def _reserve_primary_width(self) -> None:
+        option = QStyleOptionButton()
+        option.initFrom(self.primary)
+        metrics = self.primary.fontMetrics()
+        widths = []
+        for key in ("analyzer.applying", "analyzer.starting", "analyzer.stopping",
+                    "analyzer.stop", "live.discover", "analyzer.settings", "analyzer.start"):
+            option.text = text(key)
+            size = QSize(metrics.horizontalAdvance(option.text), metrics.height())
+            widths.append(self.primary.style().sizeFromContents(
+                QStyle.ContentsType.CT_PushButton, option, size, self.primary).width())
+        self.primary.setFixedWidth(max(widths))
 
     def set_theme(self, theme: ThemeId) -> None:
         self._theme = theme
         self.setStyleSheet(stylesheet_for_theme(theme))
+        self._reserve_primary_width()
         self.visualization.set_theme(theme)
         self.drawer.set_theme(theme)
 
@@ -297,43 +317,55 @@ class AnalyzerWorkspaceV2(QWidget):
         key = ("analyzer.applying" if state.configuration_pending
                else "analyzer.starting" if state.starting else "analyzer.stopping" if state.stopping
                else "analyzer.stop" if state.running or state.stop_required
-               else "live.discover" if state.live.primary_action is LiveAction.DISCOVER
-               else "analyzer.settings" if not state.live.has_applied_configuration or self.drawer.dirty
                else "analyzer.start")
-        self.primary.setText(text(key))
-        self.primary.setAccessibleName(text(key))
+        _set_text_if_changed(self.primary, text(key))
+        if self.primary.accessibleName() != text(key):
+            self.primary.setAccessibleName(text(key))
+        ready = (state.live.has_applied_configuration and not self.drawer.dirty
+                 and not self.drawer.pending and state.live.primary_action is LiveAction.START
+                 and state.live.primary_action_enabled)
         self.primary.setEnabled(not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
-                                and (state.running or state.stop_required or state.live.primary_action_enabled))
-        self.error.setText(state.error or "")
+                                and (state.running or state.stop_required or ready))
+        hint = "" if ready or state.running or state.stop_required else text("analyzer.start_requires_configuration")
+        if self.primary.toolTip() != hint:
+            self.primary.setToolTip(hint)
+        _set_text_if_changed(self.error, state.error or "")
         self.error.setVisible(bool(state.error))
         configuration = getattr(getattr(state.live.snapshot, "applied", None), "applied", None)
         receiver = getattr(state.bundle, "receiver_id", None)
-        self.rx.setText(receiver if receiver else text("analyzer.rx.unknown"))
+        _set_text_if_changed(self.rx, receiver if receiver else text("analyzer.rx.unknown"))
         capabilities = getattr(getattr(state.live.snapshot, "device", None), "capabilities", None)
         topology = getattr(capabilities, "receiver_topology", None)
         observed = tuple(getattr(topology, "available_selections", ()))
         receiver_detail = text("analyzer.rx.unavailable")
         if observed:
             receiver_detail += "\n" + text("analyzer.rx.observed", selections=", ".join(item.value for item in observed))
-        self.rx.setToolTip(receiver_detail)
-        self.rx.setAccessibleName(receiver_detail)
-        self.applied.setText(
+        if self.rx.toolTip() != receiver_detail:
+            self.rx.setToolTip(receiver_detail)
+        if self.rx.accessibleName() != receiver_detail:
+            self.rx.setAccessibleName(receiver_detail)
+        _set_text_if_changed(self.applied,
             text("live.configuration.no_applied") if configuration is None else
-            text("analyzer.applied_prefix") + " " +
+            configuration_prefix(getattr(state.live.snapshot, "applied", None)) + " " +
             f"{configuration.center_hz / 1e6:g} MHz · Fs {configuration.sample_rate_hz / 1e6:g} MS/s · "
             f"FFT {configuration.fft_size} · {configuration.gain_db:g} dB"
         )
         if configuration is not None:
-            self.applied.setToolTip(text(
+            detail = text(
                 "analyzer.applied_capture_range",
                 lower=f"{(configuration.center_hz - configuration.sample_rate_hz / 2) / 1e6:g}",
                 upper=f"{(configuration.center_hz + configuration.sample_rate_hz / 2) / 1e6:g}",
-            ))
+            ) + "\n" + spectrum_numerical_readout(getattr(state.bundle, "spectrum", None))
         else:
-            self.applied.setToolTip("")
+            detail = ""
+        if self.applied.toolTip() != detail:
+            self.applied.setToolTip(detail)
+        if self.applied.accessibleDescription() != detail:
+            self.applied.setAccessibleDescription(detail)
         identity = getattr(state.bundle, "identity", None)
         previous = self._last_identity
-        fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch", "config_generation", "unit")
+        fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch", "config_generation",
+                  "clock_domain", "accumulation_id", "unit")
         changed_identity = (identity is not None and previous is not None and (
             any(getattr(identity, name) != getattr(previous, name) for name in fields)
             or not np.array_equal(identity.frequencies_hz, previous.frequencies_hz)
@@ -354,16 +386,29 @@ class AnalyzerWorkspaceV2(QWidget):
             if isinstance(density, PersistenceDensityFrame) and density is not self._last_persistence:
                 self.visualization.spectrum_scene.set_persistence_frame(density)
                 self._last_persistence = density
-            elif density is None and self._last_persistence is not None:
+            elif (density is None and self._last_persistence is not None
+                  and "persistence_pending" not in getattr(bundle, "coherence_issues", ())):
                 self.visualization.spectrum_scene.clear_persistence_display()
                 self._last_persistence = None
             row = state.live.waterfall_line
             if isinstance(row, WaterfallLineFrame) and row is not self._last_waterfall:
                 self.visualization.waterfall_pane.set_line(row)
                 self._last_waterfall = row
-        status = analyzer_status(state)
-        self.status.setText(status)
-        self.status.setToolTip(status)
+        if self._status_cadence.admit(state, monotonic()):
+            status = analyzer_status(state)
+            _set_text_if_changed(self.status, status)
+            if self.status.toolTip() != status:
+                self.status.setToolTip(status)
+
+
+def _set_text_if_changed(widget: QLabel | QPushButton, value: str) -> None:
+    """Do not invalidate control text on every analytical publication.
+
+    This is not a throttle: changed errors, lifecycle states and measurement
+    readouts are still delivered immediately. Spectrum cadence is untouched.
+    """
+    if widget.text() != value:
+        widget.setText(value)
 
 
 def analyzer_workspace_definition(model: AnalyzerViewModel) -> WorkspaceDefinition:

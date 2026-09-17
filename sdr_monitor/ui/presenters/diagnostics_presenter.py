@@ -1,4 +1,4 @@
-"""Asynchronous diagnostics presenter."""
+"""Bounded diagnostics presentation through Qt-free application use cases."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from ...services.diagnostics_session import DiagnosticsService
+from ...application import DiagnosticsControlUseCases
 
 
 class DiagnosticsPresenter(QObject):
@@ -18,42 +18,45 @@ class DiagnosticsPresenter(QObject):
     task_failed = Signal(str)
     busy_changed = Signal(bool)
 
-    def __init__(self, service: DiagnosticsService, parent: QObject | None = None) -> None:
+    def __init__(self, use_cases: DiagnosticsControlUseCases, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._service = service
+        self._use_cases = use_cases
         self._closed = False
+        self._task_pending = False
         self.refresh()
 
     def refresh(self) -> None:
         if not self._closed:
-            self.snapshot_changed.emit(self._service.collect_snapshot())
+            self.snapshot_changed.emit(self._use_cases.snapshot())
 
     def run_self_tests(self) -> None:
-        self._submit(lambda cancel: self._service.run_self_tests(cancel), self.self_tests_changed.emit)
+        self._submit(self._use_cases.start_self_tests, self.self_tests_changed.emit)
 
     def run_rx_test(self, confirmed: bool) -> None:
-        self._submit(lambda cancel: [self._service.run_controlled_rx_test(confirmed, cancel)], self.self_tests_changed.emit)
+        self._submit(lambda: self._use_cases.start_rx_test(confirmed), self.self_tests_changed.emit)
 
     def export_bundle(self, output_dir: Path) -> None:
-        self._submit(lambda _cancel: self._service.export_support_bundle(output_dir), self.bundle_ready.emit)
+        self._submit(lambda: self._use_cases.start_bundle_export(output_dir), self.bundle_ready.emit)
 
     def cancel(self) -> None:
-        self._service.supervisor.cancel()
+        if not self._closed:
+            self._use_cases.cancel()
 
     def report_error(self, summary: str, reason: str, recommendation: str, detail: str) -> None:
-        self._service.report_error(summary, reason, recommendation, detail)
-        self.refresh()
+        if not self._closed:
+            self.snapshot_changed.emit(self._use_cases.report_error(summary, reason, recommendation, detail))
 
     def shutdown(self) -> None:
         self._closed = True
-        self._service.shutdown()
+        self._use_cases.shutdown()
 
     def _submit(self, operation: Any, on_success: Any) -> None:
-        if self._closed:
+        if self._closed or self._task_pending:
             return
+        self._task_pending = True
         self.busy_changed.emit(True)
         try:
-            future = self._service.supervisor.submit(operation)
+            future = operation()
         except Exception as error:
             self.task_failed.emit(str(error))
             self.busy_changed.emit(False)
@@ -69,6 +72,7 @@ class DiagnosticsPresenter(QObject):
             on_success(value)
             self.refresh()
         finally:
+            self._task_pending = False
             self.busy_changed.emit(False)
 
 

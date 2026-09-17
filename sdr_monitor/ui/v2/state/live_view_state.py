@@ -2,8 +2,8 @@
 
 The functions here deliberately accept only immutable snapshot-shaped objects.
 They do not import services, presenters, Qt, or renderer helpers and retain
-renderer-ready spectrum/persistence frames by identity rather than copying
-their arrays.
+renderer-ready spectrum frames by identity. Native auxiliary layers require
+bounded presentation conversion, optionally reused by an owner-local cache.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, bundle_from_live
 
 from ..i18n import text
 from .analyzer_layers import persistence_density_from_native, waterfall_line_from_spectrum
+from .analyzer_layer_cache import AnalyzerLayerCache
 
 
 class LiveAction(StrEnum):
@@ -100,6 +101,7 @@ def build_live_view_state(
     *,
     busy: bool = False,
     now_ns: int | None = None,
+    layer_cache: AnalyzerLayerCache | None = None,
 ) -> LiveViewState:
     """Map a public immutable snapshot to labels and enabled controls.
 
@@ -109,6 +111,8 @@ def build_live_view_state(
     """
 
     if snapshot is None:
+        if layer_cache is not None:
+            layer_cache.clear()
         return _empty_state(busy=busy)
 
     state = _coerce_state(getattr(snapshot, "state", LiveSessionState.DISCONNECTED))
@@ -137,16 +141,20 @@ def build_live_view_state(
         else getattr(snapshot, "waterfall_line", None)
     )
     coherence_issues = list(analyzer_bundle.coherence_issues) if analyzer_bundle is not None else []
+    if analyzer_bundle is None and layer_cache is not None:
+        layer_cache.clear()
     if analyzer_bundle is not None and isinstance(analyzer_bundle.spectrum, LiveSpectrumFrame):
         try:
-            persistence_frame = persistence_density_from_native(analyzer_bundle.persistence)
+            persistence_frame = (persistence_density_from_native(analyzer_bundle.persistence)
+                if layer_cache is None else layer_cache.persistence(analyzer_bundle.persistence))
         except (TypeError, ValueError, OverflowError):
             persistence_frame = None
             coherence_issues.append("persistence_geometry_invalid")
         if analyzer_bundle.persistence is not None and persistence_frame is None:
             coherence_issues.append("persistence_values_invalid")
         try:
-            waterfall_line = waterfall_line_from_spectrum(analyzer_bundle.spectrum)
+            waterfall_line = (waterfall_line_from_spectrum(analyzer_bundle.spectrum)
+                if layer_cache is None else layer_cache.waterfall(analyzer_bundle.spectrum))
         except (TypeError, ValueError, OverflowError):
             waterfall_line = None
             coherence_issues.append("waterfall_geometry_invalid")

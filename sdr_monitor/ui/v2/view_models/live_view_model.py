@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Protocol
 
 from ..state.live_view_state import LiveAction, LiveViewState, build_live_view_state
+from ..state.analyzer_layer_cache import AnalyzerLayerCache
 
 
 class _SignalPort(Protocol):
@@ -51,6 +52,7 @@ class LiveViewModel:
         self._busy = False
         self._command_error: str | None = None
         self._last_snapshot: object | None = None
+        self._layer_cache = AnalyzerLayerCache()
         self._listeners: list[Callable[[LiveViewState], None]] = []
         self._devices: tuple[object, ...] = ()
         self._device_listeners: list[Callable[[tuple[object, ...]], None]] = []
@@ -180,6 +182,7 @@ class LiveViewModel:
                 pass
         self._listeners.clear()
         self._device_listeners.clear()
+        self._layer_cache.clear()
 
     def _on_devices_discovered(self, devices: object) -> None:
         if isinstance(devices, Iterable) and not isinstance(devices, (str, bytes)):
@@ -213,6 +216,7 @@ class LiveViewModel:
             self._last_snapshot,
             busy=self._busy,
             now_ns=self._now_ns() if self._last_snapshot is not None else None,
+            layer_cache=self._layer_cache,
         )
         self._state = (
             state if self._command_error is None else

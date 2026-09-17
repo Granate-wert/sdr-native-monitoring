@@ -28,7 +28,7 @@ class AnalyzerBundleSceneTests(unittest.TestCase):
     def test_rtbw_then_gapped_sweep_use_the_same_scene(self):
         live = LiveSpectrumFrame(
             sequence=1, timestamp_ns=1, center_frequency_hz=101.,
-            sample_rate_hz=256., fft_size=256, hop_size=128,
+            sample_rate_hz=3., fft_size=3, hop_size=1,
             frequencies_hz=np.array([100., 101., 102.]),
             values=np.array([-80., -40., -70.]), unit="dBFS/Hz",
         )

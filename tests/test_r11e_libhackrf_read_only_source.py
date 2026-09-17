@@ -19,21 +19,18 @@ class R11ELibhackrfReadOnlySourceTests(unittest.TestCase):
             for node in ast.walk(tree)
             if isinstance(node, ast.Attribute) and node.attr.startswith("hackrf_")
         }
-        self.assertEqual(
-            symbols,
-            {
-                "hackrf_init",
-                "hackrf_exit",
-                "hackrf_device_list",
-                "hackrf_device_list_open",
-                "hackrf_device_list_free",
-                "hackrf_close",
-                "hackrf_board_id_read",
-                "hackrf_board_partid_serialno_read",
-                "hackrf_version_string_read",
-                "hackrf_usb_api_version_read",
-            },
-        )
+        self.assertEqual(symbols, {
+            "hackrf_init",
+            "hackrf_exit",
+            "hackrf_device_list",
+            "hackrf_device_list_open",
+            "hackrf_device_list_free",
+            "hackrf_close",
+            "hackrf_board_id_read",
+            "hackrf_board_partid_serialno_read",
+            "hackrf_version_string_read",
+            "hackrf_usb_api_version_read",
+        })
 
     def test_source_contains_no_stream_control_or_firmware_symbol(self) -> None:
         text = SOURCE.read_text(encoding="utf-8")

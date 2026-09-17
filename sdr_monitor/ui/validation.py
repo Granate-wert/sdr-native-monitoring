@@ -54,7 +54,17 @@ def audit_accessibility(root: QWidget) -> AccessibilityReport:
 def run_dpi_probe(scale: int, width: int = 1280, height: int = 720) -> subprocess.CompletedProcess[str]:
     if scale not in DPI_MATRIX:
         raise ValueError(f"unsupported DPI scale: {scale}")
-    code = "from PySide6.QtWidgets import QApplication; from sdr_monitor.ui.app_shell import SDRAppShell; app=QApplication([]); w=SDRAppShell(); w.resize(%d,%d); w.show(); app.processEvents(); assert w.width() > 0; w.close(); print('dpi-ok')" % (width, height)
+    # The shell schedules automatic discovery on the first Qt event turn.
+    # A DPI probe must exercise layout only, never start a background device
+    # task that can keep the short-lived subprocess alive after ``close``.
+    code = (
+        "import os; os.environ['SDR_AUTO_DISCOVER']='0'; "
+        "from PySide6.QtWidgets import QApplication; "
+        "from sdr_monitor.ui.app_shell import SDRAppShell; "
+        "app=QApplication([]); w=SDRAppShell(); w.resize(%d,%d); w.show(); "
+        "app.processEvents(); assert w.width() > 0; w.close(); "
+        "app.processEvents(); app.quit(); print('dpi-ok')"
+    ) % (width, height)
     environment = dict(os.environ)
     environment["QT_QPA_PLATFORM"] = "offscreen"
     environment["QT_SCALE_FACTOR"] = str(scale / 96.0)

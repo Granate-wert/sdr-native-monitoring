@@ -74,7 +74,11 @@ class LibhackrfReadOnlyPort:
         self._check(self._dll.hackrf_board_id_read(self._device, ctypes.byref(board)))
         if board.value not in _BOARD_ID_HACKRF_ONE_VALUES:
             raise RuntimeError("opened board is not HackRF One")
-        self._check(self._dll.hackrf_board_partid_serialno_read(self._device, ctypes.byref(part_serial)))
+        self._check(
+            self._dll.hackrf_board_partid_serialno_read(
+                self._device, ctypes.byref(part_serial)
+            )
+        )
         self._check(self._dll.hackrf_version_string_read(self._device, version, 255))
         self._check(self._dll.hackrf_usb_api_version_read(self._device, ctypes.byref(usb_api)))
         try:
@@ -83,7 +87,8 @@ class LibhackrfReadOnlyPort:
             raise RuntimeError("HackRF firmware text is invalid") from None
         return HackrfReadOnlyProbe(
             HackrfBoardKind.HACKRF_ONE,
-            tuple(int(value) for value in part_serial.serial_no),
+            (int(part_serial.serial_no[0]), int(part_serial.serial_no[1]),
+             int(part_serial.serial_no[2]), int(part_serial.serial_no[3])),
             firmware,
             int(usb_api.value),
         )
@@ -154,7 +159,10 @@ class LibhackrfReadOnlyPort:
             ctypes.c_uint8,
         ]
         dll.hackrf_version_string_read.restype = ctypes.c_int
-        dll.hackrf_usb_api_version_read.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint16)]
+        dll.hackrf_usb_api_version_read.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint16),
+        ]
         dll.hackrf_usb_api_version_read.restype = ctypes.c_int
 
     @staticmethod

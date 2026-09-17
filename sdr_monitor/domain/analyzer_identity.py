@@ -7,7 +7,7 @@ joining independently published analytical layers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import numpy as np
 
 
@@ -115,4 +115,28 @@ def layer_matches_measurement(measurement: MeasurementIdentity, layer: object) -
     if getattr(layer, "producer_identity_available", True) is not True:
         return False
     identity = MeasurementIdentity.from_frame(layer, session_id=getattr(layer, "session_id", None))
+    # A native persistence snapshot accumulates through source_frame_sequence;
+    # it is not another instantaneous trace. Independent publication cadence
+    # means it may legitimately end before the latest spectrum. Do not admit
+    # future or unknown endpoints, or relax generic trace/Waterfall matching.
+    from .live import LivePersistenceFrame
+
+    if isinstance(layer, LivePersistenceFrame):
+        endpoint = identity.source_frame_sequence
+        current = measurement.source_frame_sequence
+        if endpoint is None or current is None or endpoint > current:
+            return False
+        identity = replace(identity, source_frame_sequence=current)
     return identities_compatible(measurement, identity)
+
+
+def persistence_is_pending(measurement: MeasurementIdentity, layer: object) -> bool:
+    """Same-measurement histogram arrived before its endpoint spectrum."""
+    from .live import LivePersistenceFrame
+
+    if not isinstance(layer, LivePersistenceFrame) or not layer.producer_identity_available:
+        return False
+    identity = MeasurementIdentity.from_frame(layer, session_id=getattr(layer, "session_id", None))
+    endpoint, current = identity.source_frame_sequence, measurement.source_frame_sequence
+    return (endpoint is not None and current is not None and endpoint > current
+            and identities_compatible(measurement, replace(identity, source_frame_sequence=current)))
