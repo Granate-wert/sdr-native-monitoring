@@ -305,6 +305,24 @@ void pooled_density_is_bounded_without_reducing_average() {
 
 int main() {
     try {
+        {
+            const auto zero = -std::numeric_limits<float>::infinity();
+            auto a = accumulator();
+            require(a.update(terminal(0, {zero, zero, nan})), "zero power rejected");
+            const auto first = a.snapshot();
+            require((*first.average_db)[0] == zero && (*first.observations)[0] == 1 &&
+                    (*first.histogram_counts)[0] == 1 && (*first.probability)[0] == 1 &&
+                    std::isnan((*first.average_db)[2]) && (*first.observations)[2] == 0,
+                    "zero power confused with unknown density/average");
+            require(a.update(terminal(1, {-90, zero, nan})), "mixed zero pass rejected");
+            require(std::abs((*a.snapshot().average_db)[0] - (-90.0F - 3.01029995664F)) < 1e-4F &&
+                    (*a.snapshot().average_db)[1] == zero && (*a.snapshot().observations)[1] == 2,
+                    "zero contributor lost from mean denominator");
+            require(a.update(terminal(2, {zero, zero, nan})), "zero eviction rejected");
+            require(a.update(terminal(3, {zero, zero, nan})), "finite eviction rejected");
+            require((*a.snapshot().average_db)[0] == zero && (*a.snapshot().observations)[0] == 2 &&
+                    (*first.observations)[0] == 1, "zero eviction corrupted retained snapshot or mean");
+        }
         replacement_and_late_terminal();
         errors_are_atomic_and_bounded();
         numerical_and_coalescing();

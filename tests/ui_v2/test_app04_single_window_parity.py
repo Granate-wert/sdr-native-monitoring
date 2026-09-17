@@ -22,6 +22,32 @@ from tests.test_native_live_discovery import _FakeNative
 
 
 class SingleWindowParityTests(unittest.TestCase):
+    def test_zero_power_is_complete_in_native_and_product_contracts(self):
+        from tests.test_app04_sweep_statistics import immutable, statistics_fixture
+        from tests.ui_v2.test_app04_progressive_waterfall import progress
+
+        native = native_api.require_native()
+        backend = native.CpuDspBackend()
+        backend.configure(native.DspConfig(
+            1024, 1024, native.WindowType.HANN, native.DetectorType.SAMPLE,
+            native.SpectrumUnit.DBFS_BIN, native.PrecisionMode.REFERENCE_F64,
+            1, 1, 8.6, native.CalibrationStatus.UNCALIBRATED, "", CONTRACT_SCHEMA_VERSION,
+        ))
+        backend.push_samples(np.zeros(1024, dtype=np.complex64), 3e6, 100e6)
+        raw = backend.poll_spectrum(0)[0]
+        line = _to_domain_line(native._make_test_single_segment_line(raw, 256, 512))
+        self.assertTrue(line.is_complete)
+        self.assertTrue(np.isneginf(line.values_db).all())
+        self.assertFalse(np.any(line.quality_flags & (1 << 12)))
+        partial = replace(progress(), values_db=immutable([-np.inf, np.nan, np.nan, np.nan], np.float32))
+        self.assertTrue(np.isneginf(partial.values_db[0]))
+        with self.assertRaises(ValueError):
+            replace(partial, values_db=immutable([np.inf, np.nan, np.nan, np.nan], np.float32))
+        stats = replace(statistics_fixture(), average_db=immutable([-np.inf, -70, np.nan, np.nan], np.float32))
+        self.assertEqual(stats.observations.tolist(), [1, 1, 0, 0])
+        with self.assertRaises(ValueError):
+            replace(stats, average_db=immutable([np.inf, -70, np.nan, np.nan], np.float32))
+
     def test_compiled_values_grid_and_markers_agree_across_explicit_mode_switch(self):
         native = native_api.require_native()
         profiles = itertools.product(

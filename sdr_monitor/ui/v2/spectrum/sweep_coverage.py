@@ -95,16 +95,18 @@ class SweepCoverageState:
             edges.append(_edge(frequencies, start))
             for offset, rows, size in bucket_batches(stop - start, bucket_size):
                 lower, upper = start + offset, start + offset + rows * size
-                current = np.isfinite(frame.values_db[lower:upper].reshape(rows, size))
+                # Measured zero power (-inf dB) owns coverage even though the
+                # finite display axis cannot draw it. Never fill it with old RF.
+                current = frame.values_db[lower:upper].reshape(rows, size) < np.inf
                 current_count = np.count_nonzero(current, axis=1)
                 flags = (current_count > 0).astype(np.uint8) * CURRENT
                 if self.previous is not None:
                     old = self.previous.values_db[lower:upper].reshape(rows, size)
-                    historical = ~current & np.isfinite(old)
+                    historical = ~current & (old < np.inf)
                     history_count = np.count_nonzero(historical, axis=1)
                     flags |= (history_count > 0).astype(np.uint8) * PREVIOUS
                     x, y = extrema_rows(frequencies[lower:upper].reshape(rows, size), old,
-                                        historical, keep_small=True)
+                                        historical & np.isfinite(old), keep_small=True)
                     history_x.append(x)
                     history_y.append(y)
                 else:

@@ -50,8 +50,8 @@ class SweepProgressFrame:
             raise ValueError("invalid native progress array types")
         if not np.all(np.isfinite(arrays[0])) or np.any(np.diff(arrays[0]) <= 0):
             raise ValueError("invalid progress frequency grid")
-        if np.any(np.isinf(arrays[1])):
-            raise ValueError("progress values must be finite or explicit NaN gaps")
+        if np.any(np.isposinf(arrays[1])):
+            raise ValueError("progress values must be finite, zero power (-inf dB), or explicit NaN gaps")
         missing = np.isnan(arrays[1])
         flagged_missing = (arrays[2] & np.uint32(1 << 12)) != 0
         if not np.array_equal(missing, flagged_missing):

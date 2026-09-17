@@ -108,7 +108,7 @@ class SweepStatisticsFrame:
                            self.frequencies_hz[[0, -1]] + [-spacing / 2, spacing / 2],
                            rtol=0, atol=max(spacing * 1e-7, abs(np.spacing(self.frequencies_hz[-1])) * 8)):
             raise ValueError("density cells must cover the measurement bin edges")
-        if (np.any(self.observations > self.retained_passes) or np.any(np.isinf(self.average_db))
+        if (np.any(self.observations > self.retained_passes) or np.any(np.isposinf(self.average_db))
                 or not np.array_equal(np.isnan(self.average_db), self.observations == 0)):
             raise ValueError("average observations must preserve unknown bins")
         if not np.array_equal(self.histogram_counts.sum(axis=0, dtype=np.uint64), self.density_observations):

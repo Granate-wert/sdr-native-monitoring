@@ -166,13 +166,13 @@ class SweepLineFrame:
         ):
             raise ValueError("sweep-line gap or generation metadata is invalid")
         if self.state is SweepLineState.COMPLETE:
-            if missing or reasons or np.any(~np.isfinite(values)):
+            if missing or reasons or np.any(np.isnan(values) | np.isposinf(values)):
                 raise ValueError("complete sweep-line must not hide gaps or missing bins")
             missing_mask = (1 << 12) if self.quality_schema is SweepQualitySchema.NATIVE_V5 else int(SweepBinQuality.MISSING_SEGMENT)
             if np.any(quality & np.uint16(missing_mask)):
                 raise ValueError("complete sweep-line must not contain missing-segment flags")
         elif self.state is SweepLineState.GAP:
-            if not missing and not reasons and not np.any(~np.isfinite(values)):
+            if not missing and not reasons and not np.any(np.isnan(values) | np.isposinf(values)):
                 raise ValueError("gapped sweep-line requires explicit gap evidence")
         else:
             raise ValueError("unknown sweep-line state")

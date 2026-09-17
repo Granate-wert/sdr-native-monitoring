@@ -656,7 +656,8 @@ void validate(const SweepLineFrame& value) {
     if (value.state == SweepLineState::Complete &&
         (!value.missing_segment_indices.empty() || !value.gap_reasons.empty() ||
          std::any_of(value.values->begin(), value.values->end(), [](const float item) {
-             return !std::isfinite(item);
+             // -infinity dB is measured zero power, not a coverage gap.
+             return std::isnan(item) || item == std::numeric_limits<float>::infinity();
          }))) {
         invalid("complete sweep-line frame cannot hide a gap");
     }

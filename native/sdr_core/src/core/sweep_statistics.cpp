@@ -190,6 +190,7 @@ bool SweepStatisticsAccumulator::admit(
                              (4.0 * config_.window_passes);
     for (float value : *values) {
         if (std::isnan(value)) continue;
+        if (value == -std::numeric_limits<float>::infinity()) continue;
         const double power = linear_power(value);
         if (!std::isfinite(value) || !(power > 0.0) || power > max_power) {
             throw std::invalid_argument("Sweep statistics power is not representable");
@@ -237,10 +238,11 @@ SweepStatisticsSnapshot SweepStatisticsAccumulator::snapshot() const {
     for (std::size_t f = 0; f < averages->size(); ++f) {
         if (observations_[f] == 0) continue;
         const double power = (power_sum_[f] + power_correction_[f]) / observations_[f];
-        if (!(power > 0.0) || !std::isfinite(power)) {
+        if (power < 0.0 || !std::isfinite(power)) {
             throw std::runtime_error("Sweep statistics numerical invariant failed");
         }
-        (*averages)[f] = static_cast<float>(10.0 * std::log10(power));
+        (*averages)[f] = power == 0.0 ? -std::numeric_limits<float>::infinity()
+                                    : static_cast<float>(10.0 * std::log10(power));
     }
     auto probability = std::make_shared<std::vector<float>>(histogram_.size(), missing);
     const auto columns = density_observations_.size();

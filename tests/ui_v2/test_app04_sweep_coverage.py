@@ -11,7 +11,7 @@ from sdr_monitor.ui.v2.spectrum.sweep_coverage import CURRENT, PREVIOUS, MISSING
 
 def line(sequence, values, *, epoch=1):
     values = np.asarray(values, dtype=np.float32)
-    missing = ~np.isfinite(values)
+    missing = np.isnan(values) | np.isposinf(values)
     return SweepLineFrame(
         sequence, epoch, 123, "coverage-fixture", SweepLineState.GAP if missing.any() else SweepLineState.COMPLETE,
         100e6 + np.arange(values.size) * 1000, values, missing.astype(np.uint16),
@@ -24,6 +24,15 @@ def snapshot(frame):
 
 
 class SweepCoverageTests(unittest.TestCase):
+    def test_measured_zero_owns_coverage_without_showing_stale_history(self):
+        state = SweepCoverageState()
+        state.accept(snapshot(line(1, [-20, -np.inf, -90, -np.inf])))
+        state.accept(snapshot(line(2, [-np.inf, np.nan, np.nan, -np.inf])))
+        view = state.project(0, 1e9, 100)
+        np.testing.assert_array_equal(view.states, [CURRENT, PREVIOUS, PREVIOUS, CURRENT])
+        self.assertEqual(view.history.values[np.isfinite(view.history.values)].tolist(), [-90])
+        self.assertNotIn(-20, view.history.values)
+
     def test_exact_bin_states_history_is_masked_at_new_measurements_and_holes(self):
         state = SweepCoverageState()
         old = line(1, [-80, -80, -20, np.nan, -80, -80])
