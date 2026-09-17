@@ -34,6 +34,9 @@ class AnalyzerSessionState:
     phase: AnalyzerPhase = AnalyzerPhase.IDLE
     error: str | None = None
     operation_id: int = 0
+    # Application-assigned continuous-Sweep acquisition epoch, NOT RTBW's
+    # backend epoch or a bounded-tool epoch. Retained after Stop for provenance.
+    sweep_epoch: int | None = None
 
 
 class AnalyzerLivePort(Protocol):
@@ -68,6 +71,7 @@ class AnalyzerSessionApplicationService:
         self._start_dispatched = False
         self._bounded_sweep_active = False
         self._next_operation_id = 0
+        self._last_sweep_epoch = -1
 
     @contextmanager
     def bounded_sweep_operation(self) -> Iterator[None]:
@@ -116,9 +120,21 @@ class AnalyzerSessionApplicationService:
             mode = self._state.mode
             if (mode is AnalyzerMode.SWEEP) != (request is not None):
                 raise ValueError("Sweep requires its request; RTBW uses the applied profile")
+            sweep_epoch = None
+            if request is not None:
+                if not isinstance(request, ContinuousSweepPlanRequest):
+                    raise TypeError("Sweep requires an immutable plan request")
+                if type(request.epoch) is not int or not 0 <= request.epoch <= (1 << 64) - 1:
+                    raise ValueError("Sweep epoch must fit an unsigned 64-bit integer")
+                sweep_epoch = max(request.epoch, self._last_sweep_epoch + 1)
+                if sweep_epoch > (1 << 64) - 1:
+                    raise OverflowError("Sweep epoch space exhausted; no new acquisition was dispatched")
+                request = replace(request, epoch=sweep_epoch)
+                # Never recycle even a rejected/partially started attempt.
+                self._last_sweep_epoch = sweep_epoch
             self._next_operation_id += 1
             self._state = replace(self._state, phase=AnalyzerPhase.STARTING, error=None,
-                                  operation_id=self._next_operation_id)
+                                  operation_id=self._next_operation_id, sweep_epoch=sweep_epoch)
             self._start_dispatched = False
         try:
             if self._live.is_running():

@@ -136,6 +136,9 @@ class LiveSessionApplicationService:
             configuration.sample_rate_hz / configuration.fft_size, 1, 0.0, reduced,
             usable_window_hz=configuration.sample_rate_hz,
             physical_bin_spacing_hz=configuration.sample_rate_hz / configuration.fft_size,
+            fft_averaging_frames=configuration.averaging_frames,
+            minimum_samples_per_spectrum=configuration.fft_size + (configuration.averaging_frames - 1) *
+                max(1, int(round(configuration.fft_size * (1.0 - configuration.overlap_ratio)))),
         )
 
     def preflight_sweep(

@@ -67,6 +67,8 @@ class AnalyzerGeometryPreflight:
     rbw_hz: float | None = None
     enbw_hz: float | None = None
     statistics_payload_bytes: int = 0
+    fft_averaging_frames: int = 1
+    minimum_samples_per_spectrum: int = 0
 
     def __post_init__(self) -> None:
         if self.mode not in ("rtbw", "sweep"):
@@ -97,6 +99,8 @@ class AnalyzerGeometryPreflight:
         if not isinstance(self.reduced, AnalyzerReducedEstimate) or self.reduced.mode != self.mode:
             raise ValueError("reduced estimate must match analyzer strategy")
         _bounded_int(self.statistics_payload_bytes, "statistics payload", minimum=0, maximum=512 * 1024 * 1024)
+        _bounded_int(self.fft_averaging_frames, "FFT averaging", minimum=1, maximum=(1 << 32) - 1)
+        _bounded_int(self.minimum_samples_per_spectrum, "spectrum sample support", minimum=0, maximum=(1 << 63) - 1)
 
 
 def estimate_analyzer_reduced(

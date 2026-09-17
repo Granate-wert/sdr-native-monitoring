@@ -296,6 +296,7 @@ class AnalyzerWorkspaceV2(QWidget):
                 request = (ContinuousSweepPlanRequest(
                     self.start_frequency.value() * 1e6, self.stop_frequency.value() * 1e6,
                     statistics=SweepStatisticsSettings(),
+                    speed_profile=self.drawer.sweep_profile.profile,
                 ) if state.mode is AnalyzerMode.SWEEP else None)
             except ValueError as error:
                 self.error.setText(str(error))

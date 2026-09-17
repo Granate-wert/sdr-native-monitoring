@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import math
 from .sweep_statistics import SweepStatisticsSettings
+from .sweep_speed import SweepSpeedProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -10,6 +11,8 @@ class ContinuousSweepPlanRequest:
     stop_hz: float
     usable_window_hz: float = 36e6
     overlap_hz: float = 2e6
+    # Lower bound for the shared session owner, not permission to reuse an
+    # earlier acquisition epoch. Direct native evidence callers own their epoch.
     epoch: int = 0
     output_queue_capacity: int = 4
     segment_frame_timeout_ms: int = 1000
@@ -19,8 +22,10 @@ class ContinuousSweepPlanRequest:
     analysis_bins_per_usable_window: int = 0
     allow_r10d5_evidence_buffer_geometry: bool = False
     statistics: SweepStatisticsSettings | None = None
+    speed_profile: SweepSpeedProfile = SweepSpeedProfile.APPLIED
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "speed_profile", SweepSpeedProfile(self.speed_profile))
         if self.statistics is not None and not isinstance(self.statistics, SweepStatisticsSettings):
             raise TypeError("Sweep statistics requires explicit bounded settings")
         values = (self.start_hz, self.stop_hz, self.usable_window_hz, self.overlap_hz)
@@ -28,7 +33,8 @@ class ContinuousSweepPlanRequest:
             raise ValueError("continuous sweep frequencies must be finite and increasing")
         if self.usable_window_hz <= 0.0 or self.overlap_hz < 0.0 or self.overlap_hz >= self.usable_window_hz:
             raise ValueError("continuous sweep usable window/overlap is invalid")
-        if self.epoch < 0 or not 1 <= self.output_queue_capacity <= 64 or not 1 <= self.segment_frame_timeout_ms <= 60_000:
+        if (type(self.epoch) is not int or not 0 <= self.epoch <= (1 << 64) - 1
+                or not 1 <= self.output_queue_capacity <= 64 or not 1 <= self.segment_frame_timeout_ms <= 60_000):
             raise ValueError("continuous sweep epoch, queue capacity or timeout is invalid")
         standard_geometry = not (
             self.acquisition_buffer_samples < 4096

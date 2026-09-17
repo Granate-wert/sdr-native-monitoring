@@ -10,6 +10,7 @@ from typing import Any
 
 from ..domain import BackendKind, LiveConfiguration
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.sweep_speed import SweepSpeedProfile
 from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET
 from ..domain.analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
 from .native_live import build_native_fixed_band_config, _SPECTRUM_QUEUE_CAPACITY
@@ -95,6 +96,7 @@ class NativeContinuousSweepPlanFactory:
             raise ValueError("continuous sweep analysis bins must be a power of two in [256, 262144]")
         sample_rate = live.sample_rate_hz
         fft_size = live.fft_size
+        averaging_frames = SweepSpeedProfile(request.speed_profile).averaging_frames(live.averaging_frames)
         bandwidth = live.analog_bandwidth_hz if live.analog_bandwidth_hz is not None else sample_rate
         if (
             isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, float))
@@ -137,10 +139,10 @@ class NativeContinuousSweepPlanFactory:
         if reduced.total_bytes > DEFAULT_LIVE_RESOURCE_BUDGET.max_spectrum_backlog_bytes:
             raise ValueError("continuous sweep reduced spectrum backlog exceeds memory budget")
         statistics_bytes = 0
+        hop = max(1, int(round(fft_size * (1.0 - live.overlap_ratio))))
         if request.statistics is not None:
             # Same producer retention as native configure, plus downstream
             # owners included by payload_upper_bound. No config/device call.
-            hop = max(1, int(round(fft_size * (1.0 - live.overlap_ratio))))
             slots = request.output_queue_capacity * 2 + 4
             if count == 1:
                 burst = request.acquisition_buffer_samples // hop + 1 + 2
@@ -152,6 +154,8 @@ class NativeContinuousSweepPlanFactory:
             analysis_bins_per_usable_window=request.analysis_bins_per_usable_window,
             physical_bin_spacing_hz=physical_spacing,
             statistics_payload_bytes=statistics_bytes,
+            fft_averaging_frames=averaging_frames,
+            minimum_samples_per_spectrum=fft_size + (averaging_frames - 1) * hop,
         )
 
     def build(self, request: ContinuousSweepPlanRequest) -> Any:
@@ -163,7 +167,8 @@ class NativeContinuousSweepPlanFactory:
             usable_start = request.start_hz + index * preflight.segment_stride_hz
             usable_stop = min(request.stop_hz, usable_start + request.usable_window_hz)
             center_hz = (usable_start + usable_stop) / 2.0
-            configuration = replace(live, center_hz=center_hz)
+            configuration = replace(live, center_hz=center_hz,
+                                    averaging_frames=preflight.fft_averaging_frames)
             fixed = build_native_fixed_band_config(
                 self._lease.native_module,
                 configuration,

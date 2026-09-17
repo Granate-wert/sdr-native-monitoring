@@ -17,7 +17,8 @@ from sdr_monitor.domain.live_configuration_patch import LiveConfigurationPatch
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import text
 from ..state.configuration_readouts import configuration_prefix
-from ..view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState
+from ..view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState, AnalyzerMode
+from .analyzer_sweep_profile import AnalyzerSweepProfileControl
 
 
 class _DraftChanges(TypedDict, total=False):
@@ -102,6 +103,7 @@ class AnalyzerConfigurationDrawer(QFrame):
             widget.setAccessibleName(text(key))
         self._uri.setPlaceholderText(text("live.uri.placeholder"))
         self._uri.setAccessibleName(text("live.uri.label"))
+        self.sweep_profile.set_locale()
         if self._uri_error.isVisible():
             self._uri_error.setText(text("live.uri.error.transport"))
         self._render_status()
@@ -175,6 +177,8 @@ class AnalyzerConfigurationDrawer(QFrame):
             self._labels.append((label, key))
             form.addRow(label, field)
         outer.addLayout(form)
+        self.sweep_profile = AnalyzerSweepProfileControl(self)
+        outer.addWidget(self.sweep_profile)
         self._applied = QLabel(self)
         self._applied.setProperty("ui2Role", "secondary")
         self._applied.setWordWrap(True)
@@ -333,6 +337,8 @@ class AnalyzerConfigurationDrawer(QFrame):
         if configuration is None and identity is not None and self._base_identity is None:
             self._base_identity = identity
         editing_locked = locked or self._pending is not None
+        self.sweep_profile.setVisible(state.mode is AnalyzerMode.SWEEP)
+        self.sweep_profile.setEnabled(not editing_locked)
         for field in (self._uri, self._use_uri, self._center, self._sample_rate, self._gain, self._fft):
             field.setEnabled(not editing_locked)
         self._backend.setEnabled(not editing_locked and self._backend_selectable)
