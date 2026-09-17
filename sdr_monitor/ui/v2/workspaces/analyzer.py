@@ -459,6 +459,7 @@ class AnalyzerWorkspaceV2(QWidget):
                 self._last_waterfall = row
         elif state.sweep_snapshot is not None and state.sweep_snapshot is not self._last_sweep_snapshot:
             snapshot = state.sweep_snapshot
+            self.visualization.spectrum_scene.sweep_coverage.accept(snapshot)
             # Preserve terminal N and progressive N+1 from the same backend
             # poll, even though only N+1 is current on the upper spectrum.
             try:
