@@ -211,9 +211,12 @@ void single_window_numerical_parity() {
                         }
                         for (std::size_t index = 0; index < line.values->size(); ++index) {
                             const auto source_index = fft_size / 4U + index;
+                            const auto actual = (*line.values)[index];
+                            const auto expected = (*frame.values)[source_index];
+                            const bool equal_or_near = actual == expected ||
+                                (std::isfinite(actual) && std::isfinite(expected) && std::abs(actual - expected) <= 1e-4F);
                             if ((*line.frequencies_hz)[index] != (*frame.frequencies_hz)[source_index] ||
-                                !std::isfinite((*line.values)[index]) || !std::isfinite((*frame.values)[source_index]) ||
-                                std::abs((*line.values)[index] - (*frame.values)[source_index]) > 1e-4F ||
+                                !equal_or_near ||
                                 (*line.quality_flags_per_bin)[index] != static_cast<std::uint32_t>(frame.quality_flags) ||
                                 (*line.source_segment_indices)[index] != 0) {
                                 throw std::runtime_error("single-window crop changed numerical values/grid/quality");

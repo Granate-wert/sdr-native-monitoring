@@ -6,6 +6,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,57 @@ namespace {
 
 int main() {
     try {
+        // A true zero-power bin is -infinity dB, not a missing sample.
+        // Preserve it through aligned bins, interpolation and overlap power
+        // averaging; NaN and +infinity must still fail closed as unavailable.
+        {
+            const auto zero = -std::numeric_limits<float>::infinity();
+            auto left = segment(0, 11);
+            left.spectrum.values = std::make_shared<const std::vector<float>>(5, zero);
+            auto right = segment(1, 12);
+            right.spectrum.values = std::make_shared<const std::vector<float>>(5, zero);
+            sdr_core::ContinuousSweepLineAssembler zeros(definition());
+            static_cast<void>(zeros.admit(1, 1, left));
+            const auto complete_zero = zeros.admit(1, 2, right).at(0);
+            if (complete_zero.state != sdr_core::SweepLineState::Complete ||
+                zeros.metrics().completed_lines != 1 || zeros.metrics().gapped_lines != 0) {
+                throw std::runtime_error("zero-power bins were mislabeled as missing");
+            }
+            for (std::size_t i = 0; i < complete_zero.values->size(); ++i) {
+                const auto expected = static_cast<std::uint32_t>(sdr_core::QualityFlag::Uncalibrated) |
+                    (i == 4 ? static_cast<std::uint32_t>(sdr_core::QualityFlag::StitchOverlap) : 0U);
+                if ((*complete_zero.values)[i] != zero || (*complete_zero.quality_flags_per_bin)[i] != expected ||
+                    (*complete_zero.source_segment_indices)[i] != (i <= 4 ? 0 : 1)) {
+                    throw std::runtime_error("zero-power bin lost value, quality or source");
+                }
+            }
+            sdr_core::ContinuousSweepLineAssembler overlap(definition());
+            static_cast<void>(overlap.admit(1, 1, left));
+            const auto mixed = overlap.admit(1, 2, segment(1, 12)).at(0);
+            if (std::abs((*mixed.values)[4] - (-90.0F - 3.01029995664F)) > 1e-4F) {
+                throw std::runtime_error("zero-power contributor omitted from overlap average");
+            }
+            auto half_grid = definition();
+            half_grid.stop_frequency_hz = 104;
+            half_grid.target_spacing_hz = 0.5;
+            half_grid.segments.resize(1);
+            left.spectrum.values = std::make_shared<const std::vector<float>>(
+                std::initializer_list<float>{zero, -90.0F, std::numeric_limits<float>::quiet_NaN(),
+                                             std::numeric_limits<float>::infinity(), zero});
+            sdr_core::ContinuousSweepLineAssembler interpolation(half_grid);
+            const auto half = interpolation.admit(1, 1, left).at(0);
+            if (half.state != sdr_core::SweepLineState::Gap || (*half.values)[0] != zero ||
+                std::abs((*half.values)[1] - (-90.0F - 3.01029995664F)) > 1e-4F ||
+                (*half.values)[2] != -90.0F || (*half.values)[8] != zero) {
+                throw std::runtime_error("zero-power interpolation changed numerical meaning");
+            }
+            for (std::size_t i = 3; i <= 7; ++i) {
+                if (!std::isnan((*half.values)[i]) || (*half.source_segment_indices)[i] != -1 ||
+                    (*half.quality_flags_per_bin)[i] != static_cast<std::uint32_t>(sdr_core::QualityFlag::MissingSegment)) {
+                    throw std::runtime_error("invalid input acquired fabricated interpolation coverage");
+                }
+            }
+        }
         sdr_core::ContinuousSweepLineAssembler assembler(definition());
         auto unresolved = definition();
         for (auto& item : unresolved.segments) item.config_generation = 0;
