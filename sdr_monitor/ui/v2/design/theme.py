@@ -38,6 +38,9 @@ QWidget[ui2Root='true'] QWidget {{
 QFrame[ui2Role='panel'], QFrame[ui2Role='card'] {{
     background: {colors.panel}; border: 1px solid {colors.border}; border-radius: {radius.card}px;
 }}
+QScrollArea[ui2Role='panel-scroll'], QWidget[ui2Role='panel-scroll-content'] {{
+    background: {colors.panel}; color: {colors.primary_text}; border: 0;
+}}
 QWidget[ui2Root='true'] QLabel[ui2Role='workspace-heading'] {{
     color: {colors.primary_text}; font-size: {typefaces.workspace_title_px}px; font-weight: 600;
 }}

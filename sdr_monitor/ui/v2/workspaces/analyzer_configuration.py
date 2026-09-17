@@ -95,6 +95,18 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._theme = theme
         self.setStyleSheet(stylesheet_for_theme(theme))
 
+    def preferred_height(self, width: int) -> int:
+        """Fit wrapped content, not QScrollArea's cached/capped size hint.
+
+        The workspace clamps this to its available height; small screens keep
+        normal scroll and keyboard reachability instead of hiding controls.
+        """
+        layout = self._content_layout
+        inner_width = max(1, width - 2 * self.frameWidth())
+        height = (layout.totalHeightForWidth(inner_width) if layout.hasHeightForWidth()
+                  else layout.sizeHint().height())
+        return max(height, layout.minimumSize().height()) + 2 * self.frameWidth()
+
     def set_locale(self, _locale: object | None = None) -> None:
         """Retranslate in place; no widget or draft is recreated."""
         self.setAccessibleName(text("analyzer.settings"))
@@ -123,15 +135,19 @@ class AnalyzerConfigurationDrawer(QFrame):
         shell = QVBoxLayout(self)
         shell.setContentsMargins(0, 0, 0, 0)
         self.scroll_area = QScrollArea(self)
+        self.scroll_area.setProperty("ui2Role", "panel-scroll")
+        self.scroll_area.viewport().setProperty("ui2Role", "panel-scroll-content")
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         contents = QWidget(self.scroll_area)
+        contents.setProperty("ui2Role", "panel-scroll-content")
         outer = QVBoxLayout(contents)
+        self._content_layout = outer
         self.scroll_area.setWidget(contents)
         shell.addWidget(self.scroll_area)
         heading = QHBoxLayout()
         title = QLabel(self)
-        title.setProperty("ui2Role", "section-title")
+        title.setProperty("ui2Role", "section-heading")
         self._labels.append((title, "analyzer.settings"))
         heading.addWidget(title)
         heading.addStretch(1)
@@ -185,6 +201,7 @@ class AnalyzerConfigurationDrawer(QFrame):
         outer.addWidget(self._applied)
         self._status = QLabel(self)
         self._status.setProperty("ui2Role", "secondary")
+        self._status.setWordWrap(True)
         outer.addWidget(self._status)
         buttons = QHBoxLayout()
         self._apply = QPushButton(self)

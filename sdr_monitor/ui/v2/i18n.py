@@ -52,13 +52,13 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.fft": MappingProxyType({UiLocale.RU: "Физический FFT", UiLocale.EN: "Physical FFT"}),
         "analyzer.unavailable": MappingProxyType({UiLocale.RU: "Нет опубликованного кадра", UiLocale.EN: "No published frame"}),
         "analyzer.sweep_time": MappingProxyType({UiLocale.RU: "Сегменты получены в разное время", UiLocale.EN: "Sweep: segments acquired at different times"}),
-        "analyzer.speed.title": MappingProxyType({UiLocale.RU: "Профиль следующего Sweep", UiLocale.EN: "Next Sweep profile"}),
+        "analyzer.speed.title": MappingProxyType({UiLocale.RU: "Профиль следующего сканирования", UiLocale.EN: "Next Sweep profile"}),
         "analyzer.speed.applied": MappingProxyType({UiLocale.RU: "Из применённой конфигурации", UiLocale.EN: "Use applied configuration"}),
         "analyzer.speed.quick": MappingProxyType({UiLocale.RU: "Быстрый — 1 FFT / спектр", UiLocale.EN: "Quick — 1 FFT / spectrum"}),
         "analyzer.speed.balanced": MappingProxyType({UiLocale.RU: "Сбалансированный — 4 FFT / спектр", UiLocale.EN: "Balanced — 4 FFT / spectrum"}),
         "analyzer.speed.averaged": MappingProxyType({UiLocale.RU: "Усреднённый — 16 FFT / спектр", UiLocale.EN: "Averaged — 16 FFT / spectrum"}),
         "analyzer.speed.help": MappingProxyType({
-            UiLocale.RU: "Только для следующего Старт в Sweep; Apply не требуется. Больше FFT — сильнее усреднение, реже новый спектр. Fs, размер FFT, буферы и отбрасывание после перестройки не меняются. LPS не гарантируется; RTBW сохраняет свои настройки.",
+            UiLocale.RU: "Для следующего запуска сканирования; нажимать «Применить» не требуется. Больше FFT — сильнее усреднение, реже новый спектр. Fs, размер FFT, буферы и отбрасывание после перестройки не меняются. LPS не гарантируется; RTBW сохраняет свои настройки.",
             UiLocale.EN: "For the next Sweep Start only; no Apply needed. More FFTs means more averaging and fewer new spectra. Fs, FFT size, buffers and post-retune discard stay unchanged. No guaranteed LPS; RTBW retains its settings.",
         }),
         "analyzer.sweep_statistics": MappingProxyType({

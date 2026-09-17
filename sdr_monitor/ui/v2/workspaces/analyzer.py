@@ -226,6 +226,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self.display.setFocus()
 
     def eventFilter(self, watched, event) -> bool:
+        if (watched is self.drawer.scroll_area.widget()
+                and event.type() == QEvent.Type.LayoutRequest and self.drawer.isVisible()):
+            self._position_settings()
         if ((self.drawer.isVisible() or self.display_controls.isVisible())
                 and event.type() in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress)
                 and event.key() == Qt.Key.Key_Escape):
@@ -239,7 +242,7 @@ class AnalyzerWorkspaceV2(QWidget):
         width = min(460, max(320, self.width() - 16))
         # Below both command rows: the explicit Stop action stays exposed.
         self.drawer.setGeometry(max(8, self.width() - width - 8), 84, width,
-                                min(self.drawer.sizeHint().height(), max(120, self.height() - 92)))
+                                min(self.drawer.preferred_height(width), max(120, self.height() - 92)))
         display_width = min(1180, max(320, self.width() - 16))
         self.display_controls.setGeometry(max(8, self.width() - display_width - 8), 84,
                                          display_width,
