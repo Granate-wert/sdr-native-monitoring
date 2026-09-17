@@ -470,6 +470,12 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
                 UiLocale.EN: "Apply requested; awaiting a confirmed snapshot.",
             }
         ),
+        "analyzer.settings.select_source": MappingProxyType(
+            {
+                UiLocale.RU: "Сначала выберите приёмник в списке источников. Затем можно применить настройки.",
+                UiLocale.EN: "Select a receiver from the source list before applying settings.",
+            }
+        ),
         "live.configuration.identity_missing": MappingProxyType(
             {
                 UiLocale.RU: "Применение недоступно: снимок не содержит идентичность сессии, источника или поколения.",

@@ -8,8 +8,51 @@ import numpy as np
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.live import LiveSpectrumFrame
-from sdr_monitor.ui.v2.i18n import UiLocale
+from sdr_monitor.ui.v2.i18n import UiLocale, text
 import tests.test_app02_analyzer_workspace_product as product_fixture
+
+
+class EmptySourceFrequencyBarTests(unittest.TestCase):
+    def test_both_apply_controls_wait_for_selected_source_without_implicit_commands(self):
+        app = QApplication.instance() or QApplication([])
+        fixture = product_fixture.AnalyzerWorkspaceProductTests("runTest")
+        fixture.app = app
+        fixture.setUp()
+        try:
+            bar, drawer = fixture.page.frequency_bar, fixture.page.drawer
+            with patch.object(fixture.composition.view_model, "apply_configuration") as apply:
+                self.assertFalse(bar.apply.isEnabled())
+                self.assertFalse(drawer.can_apply)
+                bar.gain.setValue(23)
+                for locale in (UiLocale.EN, UiLocale.RU):
+                    fixture.shell.select_appearance_locale(locale)
+                    app.processEvents()
+                    self.assertFalse(bar.apply.isEnabled())
+                    self.assertFalse(drawer.can_apply)
+                    self.assertEqual(drawer._status.text(), text("analyzer.settings.select_source"))
+                    bar.apply.click()
+                    drawer.apply_draft()
+                apply.assert_not_called()
+                self.assertEqual(fixture.events, [])
+                # Discard only the local draft before an explicit fake discovery/selection.
+                bar.cancel.click()
+                fixture.page.discover.click()
+                fixture.wait(lambda: fixture.page.source.count() == 2
+                             and not fixture.composition.view_model.state.busy)
+                fixture.page.source.setCurrentIndex(1)
+                fixture.wait(lambda: fixture.composition.view_model.state.snapshot is not None
+                             and fixture.composition.view_model.state.snapshot.device is not None
+                             and not fixture.composition.view_model.state.busy)
+                self.assertTrue(drawer.can_apply)
+                self.assertTrue(bar.apply.isEnabled())
+                self.assertFalse(fixture.page.primary.isEnabled())
+                apply.assert_not_called()
+                self.assertEqual(fixture.events, [])
+        finally:
+            try:
+                fixture.tearDown()
+            finally:
+                fixture.doCleanups()
 
 
 class FrequencyBarProductTests(unittest.TestCase):

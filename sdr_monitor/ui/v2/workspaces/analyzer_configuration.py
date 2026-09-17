@@ -216,13 +216,13 @@ class AnalyzerConfigurationDrawer(QFrame):
             return
         self._dirty = self._draft_changes() != {}
         locked = self._model.state.controls_locked
-        self._apply.setEnabled(not locked and (self._dirty or not self._has_applied) and not self._conflicted and self._pending is None)
+        self._apply.setEnabled(self._can_submit())
         self._cancel.setEnabled(not locked and self._dirty)
         self._render_status()
         self.draft_changed.emit()
 
     def _on_apply(self) -> None:
-        if self._conflicted or (not self._dirty and self._has_applied):
+        if not self._can_submit():
             return
         changes = self._draft_changes()
         snapshot = self._model.state.live.snapshot
@@ -336,7 +336,7 @@ class AnalyzerConfigurationDrawer(QFrame):
         for field in (self._uri, self._use_uri, self._center, self._sample_rate, self._gain, self._fft):
             field.setEnabled(not editing_locked)
         self._backend.setEnabled(not editing_locked and self._backend_selectable)
-        self._apply.setEnabled(not locked and (self._dirty or not self._has_applied) and not self._conflicted and self._pending is None)
+        self._apply.setEnabled(self._can_submit())
         self._cancel.setEnabled(not locked and self._dirty)
         self._applied.setText(text("live.configuration.no_applied") if configuration is None else
                               configuration_prefix(getattr(snapshot, "applied", None)) + " " +
@@ -410,8 +410,21 @@ class AnalyzerConfigurationDrawer(QFrame):
                 self._backend.addItem(backend.value.upper(), backend.value)
         self._backend_selectable = bool(published) and not retain_unpublished
 
+    def _can_submit(self) -> bool:
+        identity = _identity(self._model.state.live.snapshot)
+        return (
+            identity is not None and identity == self._base_identity
+            and not self._model.state.controls_locked
+            and (self._dirty or not self._has_applied)
+            and not self._conflicted and self._pending is None
+        )
+
     def _render_status(self) -> None:
-        if self._conflicted:
+        if getattr(self._model.state.live.snapshot, "device", None) is None:
+            self._status.setText(text("analyzer.settings.select_source"))
+        elif _identity(self._model.state.live.snapshot) is None:
+            self._status.setText(text("live.configuration.identity_missing"))
+        elif self._conflicted:
             self._status.setText(text("live.configuration.conflict"))
         elif self._pending is not None:
             self._status.setText(text("live.configuration.requested"))

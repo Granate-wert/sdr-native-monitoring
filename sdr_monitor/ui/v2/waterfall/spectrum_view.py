@@ -119,6 +119,9 @@ class SpectrumWaterfallView(QWidget):
         self._splitter.setStretchFactor(1, 2)
         self._splitter.splitterMoved.connect(lambda _position, _index: self._schedule_splitter_write())
         self._waterfall.link_frequency_view_box(self._spectrum.view_box)
+        self._spectrum.measurement_available_changed.connect(
+            self._waterfall.set_linked_frequency_available
+        )
         self._waterfall.visibility_requested.connect(self.set_waterfall_visible)
         self._spectrum.vertical_range_changed.connect(self._on_spectrum_vertical_range)
         layout.addWidget(self._splitter)

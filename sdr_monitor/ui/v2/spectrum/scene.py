@@ -69,6 +69,7 @@ class SpectrumScene(QWidget):
 
     marker_changed = Signal(object)
     vertical_range_changed = Signal(float, float, str)
+    measurement_available_changed = Signal(bool)
 
     def __init__(self, *, theme: ThemeId = ThemeId.DARK, locale: UiLocale = UiLocale.RU,
                  parent: QWidget | None = None) -> None:
@@ -87,7 +88,9 @@ class SpectrumScene(QWidget):
         self._reference_level = 0.0
         self._db_per_division = 10.0
         self._shortcut_popover: ContextPopover | None = None
+        self._measurement_available: bool | None = None
         self._build_ui()
+        self._set_measurement_available(False)
         self._install_shortcuts()
         self.set_theme(theme)
 
@@ -164,6 +167,7 @@ class SpectrumScene(QWidget):
         if not same_measurement:
             self._plot_item.setXRange(float(view.frequencies_hz[0]), float(view.frequencies_hz[-1]), padding=0.0)
         self._empty_overlay.setVisible(False)
+        self._set_measurement_available(True)
         self._apply_vertical_range()
         self._update_markers_for_new_frame()
 
@@ -204,6 +208,16 @@ class SpectrumScene(QWidget):
         self._cursor_readout.setText(text("spectrum.cursor.empty", self._locale))
         self._plot_item.setLabel("left", "")
         self._empty_overlay.setVisible(True)
+        self._set_measurement_available(False)
+
+    def _set_measurement_available(self, available: bool) -> None:
+        """Keep empty axes unlabelled without destroying linked plot geometry."""
+        if available == self._measurement_available:
+            return
+        self._measurement_available = available
+        for name in ("left", "bottom"):
+            self._plot_item.getAxis(name).setStyle(showValues=available)
+        self.measurement_available_changed.emit(available)
 
     def set_band_masks(self, masks: tuple[BandMask, ...]) -> None:
         """Render external band-plan masks behind traces without changing a device."""

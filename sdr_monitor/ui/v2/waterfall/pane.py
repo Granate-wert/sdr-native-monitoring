@@ -86,6 +86,7 @@ class WaterfallPane(QWidget):
         self._metrics = WaterfallPaneMetrics()
         self._x_syncing = False
         self._linked_frequency_source: pg.ViewBox | None = None
+        self._linked_frequency_available = False
         self._settings_timer = QTimer(self)
         self._settings_timer.setSingleShot(True)
         self._settings_timer.timeout.connect(self._write_settings)
@@ -249,6 +250,16 @@ class WaterfallPane(QWidget):
             return
         self._upload_tiles()
 
+    def set_linked_frequency_available(self, available: bool) -> None:
+        """Only a real linked spectrum, not a default ViewBox, supplies an axis."""
+        self._linked_frequency_available = bool(available)
+        self._refresh_frequency_values()
+
+    def _refresh_frequency_values(self) -> None:
+        available = self._linked_frequency_available or self.history_rows > 0
+        if self._frequency_axis.style["showValues"] != available:
+            self._frequency_axis.setStyle(showValues=available)
+
     def set_render_visible(self, visible: bool) -> None:
         """Hide/show paint delivery without changing acquisition or ring admission."""
 
@@ -392,6 +403,7 @@ class WaterfallPane(QWidget):
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
         self._time_axis = WaterfallTimeAxis(locale=self._locale)
         self._frequency_axis = FrequencyAxis(orientation="bottom", locale=self._locale)
+        self._frequency_axis.setStyle(showValues=False)
         self._plot_item = self._graphics.addPlot(
             axisItems={"left": self._time_axis, "bottom": self._frequency_axis}
         )
@@ -595,6 +607,7 @@ class WaterfallPane(QWidget):
             image.setVisible(False)
 
     def _update_time_axis(self) -> None:
+        self._refresh_frequency_values()
         signature = self._grid_signature
         capacity_rows = (
             self._config.dimensions(signature.columns)[0] if signature is not None else 0

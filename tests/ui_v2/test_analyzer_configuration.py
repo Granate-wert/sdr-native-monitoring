@@ -38,6 +38,7 @@ class AnalyzerConfigurationDrawerTests(unittest.TestCase):
         self.app.processEvents()
 
     def test_initial_apply_is_refused_without_selected_source_and_uri_is_validated(self) -> None:
+        self.assertFalse(self.drawer.can_apply)
         self.drawer._uri.setText("bad")
         self.drawer._use_uri.click()
         self.assertEqual(self.live.calls, [])
@@ -45,9 +46,25 @@ class AnalyzerConfigurationDrawerTests(unittest.TestCase):
         self.drawer._use_uri.click()
         self.assertEqual(self.live.calls, [("uri", "usb:")])
         self.drawer._gain.setValue(27.0)
+        self.assertFalse(self.drawer.can_apply)
         self.drawer._apply.click()
         self.assertEqual(self.live.calls, [("uri", "usb:")])
         self.assertFalse(self.drawer.pending)
+
+    def test_lost_source_identity_disables_apply_even_after_local_edits(self) -> None:
+        device = self._device("source-a")
+        self._publish_snapshot(self._snapshot(device, 3, LiveConfiguration()))
+        self.drawer._gain.setValue(22.0)
+        self.assertTrue(self.drawer.can_apply)
+        snapshot = self._snapshot(None, 3, LiveConfiguration())
+        self._publish_snapshot(snapshot)
+        self.assertFalse(self.drawer.can_apply)
+        self.drawer._gain.setValue(23.0)
+        self.assertFalse(self.drawer.can_apply)
+        self.drawer.apply_draft()
+        self.assertEqual(self.live.calls, [])
+        self.assertFalse(self.drawer.pending)
+        self.assertIn(text("analyzer.settings.select_source"), self.drawer._status.text())
 
     def test_locked_state_disables_runtime_controls_without_constructing_hardware(self) -> None:
         self.live.state = replace(self.live.state, busy=True)
