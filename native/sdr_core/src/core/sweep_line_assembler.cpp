@@ -49,6 +49,12 @@ void accumulate_segment_power(
     for (std::size_t index = 0U; index < values.size(); ++index) {
         if (std::isfinite(values[index])) {
             source_power[index] = std::pow(10.0, static_cast<double>(values[index]) / 10.0);
+        } else if (values[index] == -std::numeric_limits<float>::infinity()) {
+            // Native FFTs publish exact zero power as -infinity dB. It is a
+            // measured zero, not an unavailable sample: retain coverage and
+            // its denominator in interpolation/overlap averaging. NaN and
+            // +infinity deliberately remain unavailable.
+            source_power[index] = 0.0;
         }
     }
     if (target_begin >= target_end) {
