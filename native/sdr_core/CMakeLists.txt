@@ -3,10 +3,11 @@ cmake_minimum_required(VERSION 3.25)
 project(sdr_core VERSION 0.6.0 LANGUAGES CXX)
 
 # Localized /showIncludes can be cached with the wrong encoding by CMake.
-# Our Windows presets fix MSVC output to English; explicitly match it even
-# when reusing a compiler cache originally configured in another locale.
-if(MSVC AND "$ENV{VSLANG}" STREQUAL "1033")
-    set(CMAKE_CL_SHOWINCLUDES_PREFIX "Note: including file: ")
+# The Windows build wrapper probes the actual installed compiler language:
+# VSLANG alone does not work when only localized resources are installed.
+set(SDR_MSVC_SHOWINCLUDES_PREFIX "" CACHE STRING "Verified native /showIncludes prefix")
+if(MSVC AND NOT SDR_MSVC_SHOWINCLUDES_PREFIX STREQUAL "")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "${SDR_MSVC_SHOWINCLUDES_PREFIX}")
 endif()
 
 option(SDR_CORE_BUILD_PYTHON "Build the sdr_monitor._sdr_native Python extension" ON)

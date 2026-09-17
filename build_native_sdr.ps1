@@ -92,6 +92,19 @@ if (-not (Test-Path -LiteralPath $cmake) -or -not (Test-Path -LiteralPath $ctest
 }
 $env:PATH = "$ninjaDir;$env:PATH"
 
+# Probe actual output instead of assuming that the optional English MSVC
+# language pack exists. /EP only preprocesses this checked-in source; it
+# creates no object/output file and performs no device or network operation.
+$includeProbe = & cl.exe /nologo /showIncludes /EP /TP "/I$sourceDir/include" "$sourceDir/src/core/api.cpp" 2>&1
+if ($LASTEXITCODE -ne 0) { throw 'MSVC header-dependency probe failed' }
+$includeProbeLine = $includeProbe | ForEach-Object { $_.ToString() } |
+    Where-Object { $_ -match '[\\/]sdr_core[\\/]api\.hpp$' } | Select-Object -First 1
+if (-not $includeProbeLine -or $includeProbeLine -notmatch '^(.+?)([A-Za-z]:[\\/])') {
+    throw 'MSVC /showIncludes prefix could not be verified from the actual compiler output'
+}
+$dependencyPrefix = $Matches[1]
+Write-Host "Verified MSVC /showIncludes prefix: $dependencyPrefix"
+
 $localPybind = Join-Path $sourceDir "out\python-tools\pybind11\share\cmake\pybind11"
 if (Test-Path -LiteralPath $localPybind) {
     $pybindCmakeDir = $localPybind
@@ -126,7 +139,7 @@ if ($Lane -eq "CUDA") {
 
 Push-Location $sourceDir
 try {
-    Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset, "-DSDR_CORE_PYTHON_OUTPUT_DIR=$artifactDir")
+    Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset, "-DSDR_CORE_PYTHON_OUTPUT_DIR=$artifactDir", "-DSDR_MSVC_SHOWINCLUDES_PREFIX=$dependencyPrefix")
     $nativeBuildDir = Join-Path $sourceDir "out/build/$configurePreset"
     $ninja = Join-Path $ninjaDir 'ninja.exe'
     $dependencyObject = 'CMakeFiles/sdr_core.dir/src/core/sweep_line_assembler.cpp.obj'
