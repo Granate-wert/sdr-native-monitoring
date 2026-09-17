@@ -8,6 +8,7 @@ batches; raw I/Q never reaches Python or Qt.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
 import json
 import math
 import os
@@ -120,6 +121,23 @@ class NativeSweepService:
         self._closed = False
         self._lock = threading.Lock()
         self._lease_released = False
+        self._release_pending = False
+        self._engine: Any | None = None
+        self._shutdown_phase = 0
+
+    @contextmanager
+    def _operation(self):
+        if not self._lock.acquire(blocking=False):
+            raise RuntimeError("native sweep lifecycle operation is pending")
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    @property
+    def cleanup_pending(self) -> bool:
+        """An engine or lease must not be discarded after incomplete cleanup."""
+        return self._engine is not None or (self._release_lease is not None and not self._lease_released)
 
     @classmethod
     def from_native_live(cls, live_service: Any) -> "NativeSweepService":
@@ -164,7 +182,8 @@ class NativeSweepService:
         self._assert_open()
         if configuration.execution_mode is not SweepExecutionMode.NATIVE:
             raise ValueError("NativeSweepService requires explicit execution_mode=native")
-        with self._lock:
+        with self._operation():
+            self._assert_open()
             self._cancel_requested.clear()
             self._assert_exclusive()
             try:
@@ -180,6 +199,8 @@ class NativeSweepService:
             cancelled = False
             try:
                 engine = self._native.PlutoFixedBandEngine(self._source.context_uri, self._timeout_ms)
+                self._engine = engine
+                self._shutdown_phase = 0
                 for segment in plan.segments:
                     if self._cancel_requested.is_set():
                         cancelled = True
@@ -207,7 +228,7 @@ class NativeSweepService:
                         evidence.extend(self._unexecuted_evidence(plan.segments[segment.index + 1:], terminal_state, terminal_error))
                         break
             finally:
-                self._shutdown_engine(engine)
+                self._shutdown_engine()
                 self._release_exclusive_lease()
 
             duration = time.monotonic() - started
@@ -256,7 +277,11 @@ class NativeSweepService:
     def close(self) -> None:
         self._closed = True
         self.cancel()
-        self._release_exclusive_lease()
+        # A concurrent executor owns cleanup. Refuse promptly rather than
+        # release its receiver or queue a blocking join on the calling thread.
+        with self._operation():
+            self._shutdown_engine()
+            self._release_exclusive_lease()
 
     def export_result(self, result: SweepResult, output_path: Path) -> Path:
         payload = {
@@ -487,22 +512,27 @@ class NativeSweepService:
             for segment in segments
         ]
 
-    @staticmethod
-    def _shutdown_engine(engine: Any | None) -> None:
+    def _shutdown_engine(self) -> None:
+        engine = self._engine
         if engine is None:
             return
-        try:
-            engine.request_stop()
-        except Exception:
-            pass
-        try:
-            engine.join()
-        except Exception:
-            pass
-        try:
-            engine.disconnect()
-        except Exception:
-            pass
+        if self._shutdown_phase == 0:
+            native_state = getattr(engine, "state", None)
+            state = native_state() if callable(native_state) else None
+            state_name = getattr(state, "name", None)
+            if state_name in ("CREATED", "CONFIGURED"):
+                self._shutdown_phase = 2  # No worker; native Stop/Join reject idle.
+            elif state_name == "STOPPED":
+                self._shutdown_phase = 1  # Reap a completed but joinable worker.
+        phases = ("request_stop", "join", "disconnect")
+        while self._shutdown_phase < len(phases):
+            phase = phases[self._shutdown_phase]
+            try:
+                getattr(engine, phase)()
+            except Exception as error:
+                raise RuntimeError(f"native sweep cleanup pending at {phase}: {error}") from error
+            self._shutdown_phase += 1
+        self._engine = None
 
     @staticmethod
     def _quality_note(state: SweepState, loss_segments: int) -> str:
@@ -533,11 +563,19 @@ class NativeSweepService:
     def _assert_open(self) -> None:
         if self._closed:
             raise RuntimeError("native sweep service is closed")
+        if self._engine is not None:
+            raise RuntimeError("native sweep engine still requires cleanup")
+        if self._release_pending:
+            raise RuntimeError("native sweep lease release still requires cleanup")
+        if self._release_lease is not None and self._lease_released:
+            raise RuntimeError("native sweep lease was already released")
 
     def _release_exclusive_lease(self) -> None:
         if self._release_lease is not None and not self._lease_released:
-            self._lease_released = True
+            self._release_pending = True
             self._release_lease()
+            self._lease_released = True
+            self._release_pending = False
 
 
 def _metric_values(
@@ -701,10 +739,16 @@ def _optional_finite_float(value: Any, name: str) -> float | None:
 
 def _frame_unit(frame: Any) -> str:
     value = getattr(frame, "unit", None)
-    name = str(getattr(value, "name", value or "")).upper()
-    if "DBFS" in name:
-        return "dBFS/Hz" if "HZ" in name else "dBFS/bin"
-    return "dBFS/bin"
+    name = getattr(value, "name", value)
+    units = {
+        "dbfs_bin": "dBFS/bin", "dbfs/bin": "dBFS/bin",
+        "dbfs_hz": "dBFS/Hz", "dbfs/hz": "dBFS/Hz",
+    }
+    # This path has no calibrated-dBm provenance contract. Neither absence nor
+    # a substring match is evidence for a measurement's physical unit.
+    if not isinstance(name, str) or name.casefold() not in units:
+        raise ValueError("unsupported or missing native sweep spectrum unit")
+    return units[name.casefold()]
 
 
 class NativeLiveSweepService:
@@ -738,6 +782,7 @@ class NativeLiveSweepService:
         if configuration.execution_mode is SweepExecutionMode.SYNTHETIC:
             return self._synthetic_service().execute(configuration, progress)
         with self._lock:
+            self._assert_open()
             if self._active_native is not None:
                 raise RuntimeError("native sweep is already running")
             service = NativeSweepService.from_native_live(self._native_live_service)
@@ -747,9 +792,12 @@ class NativeLiveSweepService:
             self._last_native_exporter = service
             return result
         finally:
-            with self._lock:
-                self._active_native = None
-            service.close()
+            # Never retry native shutdown implicitly in this finally block.
+            # Preserve the failed handle for one explicit close attempt.
+            if not service.cleanup_pending:
+                service.close()
+                with self._lock:
+                    self._active_native = None
 
     def cancel(self) -> None:
         with self._lock:
@@ -762,6 +810,13 @@ class NativeLiveSweepService:
     def close(self) -> None:
         self._closed = True
         self.cancel()
+        with self._lock:
+            native = self._active_native
+        if native is not None:
+            native.close()
+            with self._lock:
+                if self._active_native is native:
+                    self._active_native = None
         if self._synthetic is not None:
             self._synthetic.close()
 

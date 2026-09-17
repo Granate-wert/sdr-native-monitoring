@@ -67,11 +67,13 @@ class _Engine:
         self.device_samples += 512
         frequencies = np.linspace(self.center_hz - 50.0, self.center_hz + 50.0, 257, dtype=np.float64)
         stale = SimpleNamespace(
+            unit="dbfs_bin",
             config_generation=self.generation - 1,
             frequencies_hz=frequencies,
             values=np.full(frequencies.size, -20.0, dtype=np.float32),
         )
         current = SimpleNamespace(
+            unit="dbfs_bin",
             config_generation=self.generation,
             frequencies_hz=frequencies,
             values=np.full(frequencies.size, -30.0 + self.reconfigure_calls, dtype=np.float32),

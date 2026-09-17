@@ -63,6 +63,8 @@ class NativeContinuousSweepDisplayService:
         self._coordinator = coordinator_type(context_uri, timeout_ms)
         self._lock = threading.RLock()
         self._closed = False
+        self._closing = False
+        self._stop_required = False
         self._started = False
         self._has_started = False
         self._last_completed = 0
@@ -75,7 +77,7 @@ class NativeContinuousSweepDisplayService:
     def start(self, native_config: Any) -> None:
         with self._lock:
             self._require_open()
-            if self._started:
+            if self._started or self._stop_required:
                 raise RuntimeError("continuous sweep display service is already running")
             epoch = native_config.epoch
             sources = tuple(segment.fixed_band.device.source_id for segment in native_config.segments)
@@ -83,6 +85,9 @@ class NativeContinuousSweepDisplayService:
                     or any(not isinstance(source, str) or not source.strip() for source in sources)
                     or len(set(sources)) != 1):
                 raise ValueError("continuous sweep requires one explicit source and epoch")
+            # A native configure/start may mutate before throwing. Retain the
+            # cleanup obligation before entering either call, not on success.
+            self._stop_required = True
             self._coordinator.configure(native_config)
             self._coordinator.start()
             self._active_identity = (sources[0], epoch)
@@ -135,22 +140,28 @@ class NativeContinuousSweepDisplayService:
 
     def stop(self) -> None:
         with self._lock:
-            if self._closed or not self._started:
+            if self._closed or not self._stop_required:
                 return
-            self._coordinator.stop()
+            native_state = getattr(self._coordinator, "state", None)
+            state = native_state() if callable(native_state) else None
+            # A rejected Configure/Start can leave an explicitly idle native
+            # coordinator. Its Stop API rejects CREATED/CONFIGURED, and no
+            # worker exists in those states. Unknown state never waives Stop.
+            if getattr(state, "name", None) not in ("CREATED", "CONFIGURED"):
+                self._coordinator.stop()
             self._started = False
+            self._stop_required = False
 
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
-            try:
-                if self._started:
-                    self._coordinator.stop()
-            finally:
-                self._started = False
-                self._closed = True
-                self._coordinator.disconnect()
+            self._closing = True
+            self.stop()
+            # Disconnect is forbidden until Stop succeeds. A failed disconnect
+            # keeps this handle retryable without repeating a successful Stop.
+            self._coordinator.disconnect()
+            self._closed = True
 
     def _metrics(self, now_s: float) -> ContinuousSweepDisplayMetrics:
         native = self._coordinator.metrics()
@@ -185,8 +196,8 @@ class NativeContinuousSweepDisplayService:
         )
 
     def _require_open(self) -> None:
-        if self._closed:
-            raise RuntimeError("continuous sweep display service is closed")
+        if self._closed or self._closing:
+            raise RuntimeError("continuous sweep display service is closed or awaiting cleanup")
 
 
 def _to_domain_acquisition(native: Any) -> tuple[SweepSegmentAcquisition, ...] | None:

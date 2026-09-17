@@ -188,8 +188,8 @@ class NativeContinuousSweepPlanFactory:
 
     def close(self) -> None:
         if not self._closed:
-            self._closed = True
             self._lease.release()
+            self._closed = True
 
     def create_display_service(self) -> NativeContinuousSweepDisplayService:
         self._require_open()
@@ -270,6 +270,9 @@ class NativeLiveContinuousSweepDisplayService:
         self._factory: NativeContinuousSweepPlanFactory | None = None
         self._display: NativeContinuousSweepDisplayService | None = None
         self._final_snapshot: ContinuousSweepDisplaySnapshot | None = None
+        self._terminal_poll_attempted = False
+        self._terminal_error: Exception | None = None
+        self._display_closed = False
         self._operation_lock = threading.Lock()
 
     @contextmanager
@@ -288,29 +291,31 @@ class NativeLiveContinuousSweepDisplayService:
             self._start(request)
 
     def _start(self, request: ContinuousSweepPlanRequest) -> None:
-        if self._display is not None:
+        if self._display is not None or self._factory is not None:
             raise RuntimeError("continuous sweep is already running")
         factory = NativeContinuousSweepPlanFactory.from_native_live(self._live_service)
+        self._factory = factory
+        self._terminal_poll_attempted = False
+        self._terminal_error = None
+        self._display_closed = False
+        self._final_snapshot = None
         display = None
         try:
             config = factory.build(request)
             display = factory.create_display_service()
+            self._display = display
             display.start(config)
         except Exception:
+            # No successfully started publication stream was exposed. Cleanup
+            # retries must not poll a failed or already closing display.
+            self._terminal_poll_attempted = True
             if display is not None:
-                try:
-                    display.close()
-                except Exception:
-                    # Cleanup failed: keep ownership and the handle available
-                    # for explicit shutdown, never hand an uncertain RX to Live.
-                    self._factory = factory
-                    self._display = display
-                    raise
+                display.close()
+                self._display_closed = True
             factory.close()
+            self._display = None
+            self._factory = None
             raise
-        self._factory = factory
-        self._display = display
-        self._final_snapshot = None
 
     def poll_latest(self) -> ContinuousSweepDisplaySnapshot:
         with self._operation():
@@ -331,18 +336,27 @@ class NativeLiveContinuousSweepDisplayService:
 
     def _stop(self) -> None:
         display, factory = self._display, self._factory
-        if display is not None:
-            try:
-                display.stop()
-                self._final_snapshot = display.poll_latest()
-            finally:
-                display.close()
+        if display is not None and not self._display_closed:
+            # One explicit attempt per Stop. Do not retry a failing Stop in a
+            # finally/Close path or disconnect an uncertain running receiver.
+            display.stop()
+            if not self._terminal_poll_attempted:
+                self._terminal_poll_attempted = True
+                try:
+                    self._final_snapshot = display.poll_latest()
+                except Exception as error:
+                    self._terminal_error = error
+            display.close()
+            self._display_closed = True
         # Keep the occupied handle throughout Stop and on cleanup failure.
         # A concurrent Start must not acquire another owner before this point.
         if factory is not None:
             factory.close()
         self._display = None
         self._factory = None
+        if self._terminal_error is not None:
+            terminal_error, self._terminal_error = self._terminal_error, None
+            raise terminal_error
 
     def close(self) -> None:
         self.stop()

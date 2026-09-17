@@ -25,6 +25,48 @@ NATIVE_MODULE = ROOT / "sdr_monitor" / "_sdr_native.cp313-win_amd64.pyd"
 @unittest.skipUnless(NATIVE_MODULE.exists(), "compiled standalone native module is unavailable")
 @unittest.skipUnless(MOCK_LIBIIO.exists(), "mock libiio DLL is not built")
 class NativeContinuousSweepBoundaryTests(unittest.TestCase):
+    def test_python_cleanup_after_native_configure_rejection_does_not_call_invalid_idle_stop(self):
+        script = r'''
+from types import SimpleNamespace
+from unittest.mock import patch
+import sdr_monitor._sdr_native as native
+from sdr_monitor.services.native_continuous_sweep import NativeContinuousSweepDisplayService
+from sdr_monitor.services.native_sweep import NativeSweepService, NativeSweepSource
+from sdr_monitor.domain import BackendKind, LiveConfiguration, SweepConfiguration, SweepExecutionMode, SweepState
+
+display = NativeContinuousSweepDisplayService(native, "usb:mock")
+# The wrapper accepts identity, but the actual pybind Configure rejects this
+# wrong native type before device I/O and leaves the coordinator CREATED.
+config = SimpleNamespace(epoch=1, segments=(SimpleNamespace(
+    fixed_band=SimpleNamespace(device=SimpleNamespace(source_id="fake"))),))
+try:
+    display.start(config)
+except TypeError:
+    pass
+else:
+    raise AssertionError("native Configure accepted a forged type")
+assert display._coordinator.state() == native.EngineState.CREATED
+display.close()
+assert display._closed
+
+released = []
+source = NativeSweepSource("usb:mock", "fake", LiveConfiguration(backend=BackendKind.CPU))
+service = NativeSweepService(native, source, assert_exclusive=lambda: None,
+                             release_lease=lambda: released.append(True))
+with patch("sdr_monitor.services.native_sweep.build_native_fixed_band_config", return_value=object()):
+    result = service.execute(SweepConfiguration(start_hz=100e6, stop_hz=101e6,
+        execution_mode=SweepExecutionMode.NATIVE), lambda _: None)
+assert result.state is SweepState.ERROR
+assert released == [True]
+service.close()
+assert released == [True]
+'''
+        environment = dict(os.environ)
+        environment["LIBIIO_DLL_PATH"] = str(MOCK_LIBIIO)
+        completed = subprocess.run([sys.executable, "-c", script], cwd=ROOT,
+                                   env=environment, capture_output=True, text=True, timeout=15)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_completed_lines_are_readonly_and_raw_iq_recording_is_rejected(self) -> None:
         script = r'''
 import time
