@@ -9,7 +9,44 @@
 #include <stdexcept>
 #include <thread>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 namespace {
+
+class MockPhaseGate {
+public:
+    MockPhaseGate() {
+        const auto path = std::getenv("LIBIIO_DLL_PATH");
+        module_ = path ? LoadLibraryA(path) : nullptr;
+        if (!module_) throw std::runtime_error("mock libiio test gate not loaded");
+        arm = symbol<void (*)(int, long long, int)>("mock_iio_set_phase_gate");
+        entered = symbol<int (*)()>("mock_iio_phase_gate_entered");
+        expired = symbol<int (*)()>("mock_iio_phase_gate_expired");
+        release = symbol<void (*)()>("mock_iio_release_phase_gate");
+        live_buffers = symbol<int (*)()>("mock_iio_live_buffers");
+        created_buffers = symbol<int (*)()>("mock_iio_created_buffers");
+    }
+    ~MockPhaseGate() { release(); FreeLibrary(module_); }
+    void (*arm)(int, long long, int){};
+    int (*entered)(){};
+    int (*expired)(){};
+    void (*release)(){};
+    int (*live_buffers)(){};
+    int (*created_buffers)(){};
+private:
+    template <typename T> T symbol(const char* name) {
+        const auto result = GetProcAddress(module_, name);
+        if (!result) { FreeLibrary(module_); throw std::runtime_error("missing mock gate symbol"); }
+        return reinterpret_cast<T>(result);
+    }
+    HMODULE module_{};
+};
 
 [[nodiscard]] sdr_pluto::FixedBandConfig fixed_config(const double center_hz) {
     sdr_pluto::FixedBandConfig result;
@@ -112,6 +149,60 @@ namespace {
     return false;
 }
 
+void cancellation_phase_matrix() {
+    MockPhaseGate gate;
+    // Both initial and later segment control transactions, buffer creation,
+    // transient discard refill and first eligible capture. Do not time a
+    // sleep and guess which native phase happened to be active.
+    for (const auto second_segment : {false, true}) {
+        for (const auto phase : {1, 2, 3, 4, 5}) {
+            sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+            auto profile = coordinator_config();
+            profile.epoch = 800 + second_segment * 10 + phase;
+            for (auto& item : profile.segments) item.fixed_band.discard_blocks_after_start = 3;
+            owner.configure(profile);
+            const auto center = static_cast<long long>(profile.segments[second_segment ? 1 : 0].fixed_band.device.center_frequency_hz);
+            gate.arm(phase == 5 ? 3 : phase, center, phase == 5 ? 4 : 1);
+            owner.start();
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (!gate.entered() && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            const bool entered = gate.entered() != 0;
+            const auto creates_at_cancel = gate.created_buffers();
+            const auto requested_at = std::chrono::steady_clock::now();
+            owner.request_stop();
+            const auto request_duration = std::chrono::steady_clock::now() - requested_at;
+            const bool stopping = owner.state() == sdr_core::EngineState::Stopping;
+            gate.release();
+            owner.join();
+            const auto lines = owner.poll_lines(0);
+            const auto metrics = owner.metrics();
+            std::cout << "APP-04 cancel phase=" << phase << " segment=" << second_segment
+                      << " buffers-at-request=" << creates_at_cancel << " final=" << gate.created_buffers() << '\n';
+            if (!entered || gate.expired() || !stopping ||
+                request_duration > std::chrono::milliseconds(100) || gate.live_buffers() != 0 ||
+                owner.state() != sdr_core::EngineState::Stopped || metrics.has_error ||
+                metrics.expected_cancellations != 1 || metrics.terminal_control_gaps != 1 ||
+                lines.size() != 1 || lines[0].epoch != profile.epoch ||
+                !contains_reason(lines[0], sdr_core::SweepLineGapReason::Cancellation) || owner.poll_progress()) {
+                throw std::runtime_error("phase-controlled cancellation/cleanup failed");
+            }
+            if ((phase == 1 || phase == 2) && gate.created_buffers() != creates_at_cancel) {
+                throw std::runtime_error("RX started after Stop during a control transaction");
+            }
+            if (lines[0].acquired_segments.size() != (second_segment ? 1U : 0U) ||
+                lines[0].missing_segment_indices.size() != (second_segment ? 1U : 2U)) {
+                throw std::runtime_error("cancel lost acquired prefix or invented unadmitted data");
+            }
+            owner.stop();  // Idempotent terminal stop must not emit another gap.
+            if (!owner.poll_lines(0).empty() || owner.metrics().expected_cancellations != 1) {
+                throw std::runtime_error("duplicate Stop duplicated cancellation evidence");
+            }
+        }
+    }
+}
+
 void statistics_pipeline_test(bool single_window) {
     auto config = single_window ? single_window_config() : coordinator_config();
     config.output_queue_capacity = 1;
@@ -169,6 +260,7 @@ void statistics_pipeline_test(bool single_window) {
 
 int main() {
     try {
+        cancellation_phase_matrix();
         // The coordinator owns one native receiver/engine, retunes only inside
         // its worker and emits a multi-generation reduced line; Python/Qt are
         // not involved in the test path.

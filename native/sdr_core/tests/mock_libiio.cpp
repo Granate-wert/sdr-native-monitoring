@@ -34,7 +34,7 @@ struct iio_data_format {
     double scale;
     unsigned int repeat;
 };
-struct iio_buffer { std::size_t samples; bool canceled; std::vector<std::uint8_t> bytes; };
+struct iio_buffer { std::size_t samples; std::atomic<bool> canceled; std::vector<std::uint8_t> bytes; };
 
 namespace {
 iio_device phy{0};
@@ -58,6 +58,23 @@ std::string gain_mode = "manual";
 std::atomic<bool> cancel_in_progress{};
 std::atomic<bool> cancel_release{true};
 std::atomic<bool> destroyed_during_cancel{};
+// Deterministic test-only barriers at actual driver calls. Inactive by
+// default; a missed release self-expires instead of hanging a test worker.
+std::atomic<int> phase_gate_kind{}, phase_gate_ordinal{1}, phase_gate_visits{};
+std::atomic<long long> phase_gate_frequency{};
+std::atomic<bool> phase_gate_entered{}, phase_gate_release{true}, phase_gate_expired{}, phase_gate_written{};
+std::atomic<int> live_buffers{}, created_buffers{};
+
+void phase_gate(int kind, long long center) {
+    if (phase_gate_kind.load() != kind || phase_gate_frequency.load() != center) return;
+    if (++phase_gate_visits != phase_gate_ordinal.load()) return;
+    phase_gate_entered = true;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!phase_gate_release.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!phase_gate_release.load()) phase_gate_expired = true;
+}
 
 bool extended_ad9363_profile() {
     return std::getenv("SDR_MOCK_LIBIIO_AD9363_EXTENDED") != nullptr;
@@ -104,6 +121,17 @@ std::string value_text(const iio_channel* channel, const char* attr) {
 }
 
 extern "C" {
+__declspec(dllexport) void mock_iio_set_phase_gate(int kind, long long center, int ordinal) {
+    phase_gate_kind = 0; phase_gate_frequency = center; phase_gate_ordinal = ordinal;
+    phase_gate_visits = 0; phase_gate_entered = false; phase_gate_release = false;
+    phase_gate_expired = false; phase_gate_written = false; created_buffers = 0;
+    phase_gate_kind = kind;
+}
+__declspec(dllexport) int mock_iio_phase_gate_entered() { return phase_gate_entered.load(); }
+__declspec(dllexport) int mock_iio_phase_gate_expired() { return phase_gate_expired.load(); }
+__declspec(dllexport) void mock_iio_release_phase_gate() { phase_gate_release = true; phase_gate_kind = 0; }
+__declspec(dllexport) int mock_iio_live_buffers() { return live_buffers.load(); }
+__declspec(dllexport) int mock_iio_created_buffers() { return created_buffers.load(); }
 __declspec(dllexport) iio_scan_context* iio_create_scan_context(const char*, unsigned int) { return new iio_scan_context; }
 __declspec(dllexport) void iio_scan_context_destroy(iio_scan_context* value) { delete value; }
 __declspec(dllexport) std::ptrdiff_t iio_scan_context_get_info_list(iio_scan_context*, iio_context_info*** output) {
@@ -222,7 +250,10 @@ __declspec(dllexport) std::ptrdiff_t iio_channel_attr_write(const iio_channel* c
 __declspec(dllexport) int iio_channel_attr_read_longlong(const iio_channel* channel, const char* attr, long long* value) {
     if (channel == &phy_rx && std::strcmp(attr, "sampling_frequency") == 0) *value = sample_rate;
     else if (channel == &phy_rx && std::strcmp(attr, "rf_bandwidth") == 0) *value = bandwidth;
-    else if (channel == &lo && std::strcmp(attr, "frequency") == 0) *value = frequency;
+    else if (channel == &lo && std::strcmp(attr, "frequency") == 0) {
+        if (phase_gate_written.load()) phase_gate(2, frequency);
+        *value = frequency;
+    }
     else return -EINVAL;
     return 0;
 }
@@ -237,9 +268,13 @@ __declspec(dllexport) int iio_channel_attr_write_longlong(const iio_channel* cha
         if (value < 200'000LL || value > 56'000'000LL) return -EINVAL; bandwidth = value; return 0;
     }
     if (channel == &lo && std::strcmp(attr, "frequency") == 0) {
+        phase_gate(1, value);
         const auto fail_at = std::getenv("SDR_MOCK_LIBIIO_LO_WRITE_FAIL_AT_HZ");
         if (fail_at && value == std::strtoll(fail_at, nullptr, 10)) return -EIO;
-        if (value < 70'000'000LL || value > 6'000'000'000LL) return -EINVAL; frequency = value; return 0;
+        if (value < 70'000'000LL || value > 6'000'000'000LL) return -EINVAL;
+        frequency = value;
+        if (value == phase_gate_frequency.load()) phase_gate_written = true;
+        return 0;
     }
     return -EINVAL;
 }
@@ -272,10 +307,17 @@ __declspec(dllexport) iio_buffer* iio_device_create_buffer(const iio_device* val
     if ((!rx1_enabled && !rx2_enabled) || (rx_i.enabled != rx_q.enabled) || (rx2_i.enabled != rx2_q.enabled)) return nullptr;
     const bool dual = rx1_enabled && rx2_enabled;
     auto* buffer = new iio_buffer{count, false, std::vector<std::uint8_t>(count * (dual ? 8U : 4U))};
+    ++live_buffers; ++created_buffers;
+    phase_gate(4, frequency);
     return buffer;
 }
-__declspec(dllexport) void iio_buffer_destroy(iio_buffer* value) { if (cancel_in_progress.load()) destroyed_during_cancel = true; delete value; }
+__declspec(dllexport) void iio_buffer_destroy(iio_buffer* value) {
+    if (cancel_in_progress.load()) destroyed_during_cancel = true;
+    if (value) --live_buffers;
+    delete value;
+}
 __declspec(dllexport) std::ptrdiff_t iio_buffer_refill(iio_buffer* value) {
+    phase_gate(3, frequency);
     delay_from_env("SDR_MOCK_LIBIIO_REFILL_DELAY_MS");
     if (value->canceled) return -ECANCELED;
     if (std::getenv("SDR_MOCK_LIBIIO_REFILL_FAIL") != nullptr) return -EIO;
