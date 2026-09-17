@@ -166,29 +166,29 @@ class ContinuousSweepPresenter(QObject):
             return
         self._closing = True
         if self._start_future is not None:
-            future = self._start_future
+            start_future = self._start_future
             try:
-                future.result()
+                start_future.result()
             except Exception:
                 pass  # Reported exactly once by _finish_start.
-            self._finish_start(future)
+            self._finish_start(start_future)
         # Shutdown owns cleanup after Start resolution; regular Stop remains
         # barred while ``_closing`` prevents any competing UI command.
         if self._timer.isActive() or getattr(self._service, "stop_required", False) is True:
             self._timer.stop()
-            future = self._stop_executor.submit(self._stop_and_snapshot)
-            self._stop_future = future
+            stop_future = self._stop_executor.submit(self._stop_and_snapshot)
+            self._stop_future = stop_future
             self.stopping_changed.emit(True)
-            future.add_done_callback(self._stop_completed.emit)
+            stop_future.add_done_callback(self._stop_completed.emit)
         if self._stop_future is not None:
             # Legacy close is still synchronous; it must not close the service
             # concurrently with the already requested stop worker.
-            future = self._stop_future
+            stop_future = self._stop_future
             try:
-                future.result()
+                stop_future.result()
             except Exception:
                 pass  # Reported exactly once by _finish_stop.
-            self._finish_stop(future)
+            self._finish_stop(stop_future)
         try:
             self._service.close()
         finally:
@@ -200,6 +200,7 @@ class ContinuousSweepPresenter(QObject):
             return
         try:
             snapshot: ContinuousSweepDisplaySnapshot = self._service.poll_latest()
+            self._emit_snapshot(snapshot)
         except Exception as error:
             # A publication error does not mean acquisition has stopped.
             # Latch admission before any externally visible callback, then
@@ -208,14 +209,15 @@ class ContinuousSweepPresenter(QObject):
             self.stop()
             self.task_failed.emit(str(error))
             return
-        self._emit_snapshot(snapshot)
 
     def _emit_snapshot(self, snapshot: ContinuousSweepDisplaySnapshot) -> None:
+        # Validate/convert before any consumer sees part of a rejected packet.
+        # A conversion failure follows the same owned Stop path as poll failure.
+        bundle = snapshot.analyzer_bundle
         metrics: ContinuousSweepDisplayMetrics = snapshot.metrics
         self.metrics_ready.emit(metrics)
         if snapshot.line is not None:
             self.line_ready.emit(snapshot.line)
-        bundle = snapshot.analyzer_bundle
         if bundle is not None:
             self.analyzer_ready.emit(bundle)
 

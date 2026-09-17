@@ -72,6 +72,7 @@ class NativeContinuousSweepDisplayService:
         self._ui_superseded = 0
         self._terminal_watermark: tuple[str, int, int] | None = None
         self._progress_watermark: tuple[str, int, int, int] | None = None
+        self._latest_progress: SweepProgressFrame | None = None
         self._active_identity: tuple[str, int] | None = None
 
     def start(self, native_config: Any) -> None:
@@ -98,6 +99,7 @@ class NativeContinuousSweepDisplayService:
             self._ui_superseded = 0
             self._terminal_watermark = None
             self._progress_watermark = None
+            self._latest_progress = None
 
     def poll_latest(self, *, now_s: float | None = None) -> ContinuousSweepDisplaySnapshot:
         """Drain terminal output even after Stop; preview is running-only."""
@@ -110,14 +112,22 @@ class NativeContinuousSweepDisplayService:
             lines = tuple(self._coordinator.poll_lines()) if self._has_started else ()
             if any((item.source_id, item.epoch) != self._active_identity for item in lines):
                 raise RuntimeError("continuous sweep terminal source/epoch differs from active request")
-            if len(lines) > 1:
-                self._ui_superseded += len(lines) - 1
-            line = _to_domain_line(lines[-1]) if lines else None
+            # Select by producer identity, not arrival position. Keep the
+            # terminal watermark distinct from progressive revisions: a late
+            # terminal still has consumers even after the next preview arrived.
+            newest = max(lines, key=lambda item: item.line_sequence) if lines else None
+            previous = self._terminal_watermark
+            if newest is not None and previous is not None and newest.line_sequence <= previous[2]:
+                newest = None
+            line = _to_domain_line(newest) if newest is not None else None
+            self._ui_superseded += len(lines) - int(line is not None)
+            terminal_watermark = self._terminal_watermark
+            progress_watermark = self._progress_watermark
+            latest_progress = self._latest_progress
             if line is not None:
-                terminal = (line.source_id, line.epoch, line.sequence)
-                previous = self._terminal_watermark
-                if previous is None or previous[:2] != terminal[:2] or terminal[2] > previous[2]:
-                    self._terminal_watermark = terminal
+                terminal_watermark = (line.source_id, line.epoch, line.sequence)
+                if latest_progress is not None and latest_progress.sequence <= line.sequence:
+                    latest_progress = None
             poll_progress = getattr(self._coordinator, "poll_progress", None)
             native_progress = poll_progress() if self._started and callable(poll_progress) else None
             if (native_progress is not None
@@ -126,17 +136,26 @@ class NativeContinuousSweepDisplayService:
             progress = _to_domain_progress(native_progress) if native_progress is not None else None
             if progress is not None:
                 identity = (progress.source_id, progress.epoch, progress.sequence, progress.revision)
-                terminal_watermark = self._terminal_watermark
-                progress_watermark = self._progress_watermark
                 if ((terminal_watermark is not None and terminal_watermark[:2] == identity[:2]
                      and terminal_watermark[2] >= identity[2])
                         or (progress_watermark is not None and progress_watermark[:2] == identity[:2]
                             and progress_watermark[2:] >= identity[2:])):
                     progress = None
                 else:
-                    self._progress_watermark = identity
+                    progress_watermark = identity
+                    latest_progress = progress
+            if line is not None and progress is None and latest_progress is not None:
+                # The chart must not roll back from preview N to late terminal
+                # N-1. Retain just one immutable preview, never a history or an
+                # accumulation buffer. The terminal stays available separately.
+                progress = latest_progress
             metrics = self._metrics(now)
-            return ContinuousSweepDisplaySnapshot(line=line, metrics=metrics, progress=progress)
+            snapshot = ContinuousSweepDisplaySnapshot(line=line, metrics=metrics, progress=progress)
+            # A rejected conversion/coherence packet is not an acknowledgement.
+            self._terminal_watermark = terminal_watermark
+            self._progress_watermark = progress_watermark
+            self._latest_progress = latest_progress
+            return snapshot
 
     def stop(self) -> None:
         with self._lock:
