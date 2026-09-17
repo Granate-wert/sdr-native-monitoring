@@ -15,6 +15,7 @@ from sdr_monitor.services.native_continuous_sweep import (
     _to_domain_line, _to_domain_progress, _to_domain_statistics, _SweepStatisticsCache,
 )
 from sdr_monitor.services.native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
+from sdr_monitor.services.native_sweep import NativeSweepLease, NativeSweepSource
 
 
 def immutable(values, dtype):
@@ -92,6 +93,29 @@ class SweepStatisticsContractTests(unittest.TestCase):
 
 
 class CompiledSweepStatisticsTests(unittest.TestCase):
+    def test_actual_factory_passes_statistics_through_compiled_config_without_device(self):
+        native = importlib.import_module("sdr_monitor._sdr_native")
+        released = []
+        lease = NativeSweepLease(native, NativeSweepSource(
+            "ip:synthetic-never-opened", "synthetic-test", LiveConfiguration(
+                sample_rate_hz=61.44e6, analog_bandwidth_hz=56e6, fft_size=4096,
+                backend=BackendKind.CPU,
+            )), lambda: None, lambda: released.append(True))
+        factory = NativeContinuousSweepPlanFactory(lease)
+        try:
+            for stop in (130e6, 200e6):
+                request = ContinuousSweepPlanRequest(100e6, stop, statistics=SweepStatisticsSettings())
+                config = factory.build(request)
+                self.assertEqual(config.statistics.window_passes, 32)
+                self.assertEqual(config.statistics.density_columns, 1024)
+                self.assertEqual(config.statistics_snapshot_rate_hz, 15.)
+                self.assertEqual(config.segments[0].fixed_band.dsp.fft_size, 4096)
+                self.assertGreater(factory.preflight(request).statistics_payload_bytes, 0)
+            self.assertIsNone(factory.build(ContinuousSweepPlanRequest(100e6, 130e6)).statistics)
+        finally:
+            factory.close()
+        self.assertEqual(released, [True])
+
     def test_native_frames_survive_conversion_wrapper_destruction_and_gc(self):
         native = importlib.import_module("sdr_monitor._sdr_native")
         partial, final = native._make_test_sweep_statistics_frames(4096)
