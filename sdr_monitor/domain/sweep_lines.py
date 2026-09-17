@@ -15,6 +15,7 @@ import numpy as np
 
 from .sweep import SweepBinQuality, SweepPlan
 from .sweep_acquisition import SweepSegmentAcquisition, validate_acquisition
+from .sweep_statistics import SweepStatisticsFrame
 
 
 class SweepLineState(StrEnum):
@@ -97,6 +98,7 @@ class SweepLineFrame:
     physical_fft_size: int = 0
     quality_schema: SweepQualitySchema = SweepQualitySchema.REFERENCE_V1
     segment_acquisition: tuple["SweepSegmentAcquisition", ...] | None = None
+    statistics: SweepStatisticsFrame | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "segment_acquisition", validate_acquisition(
@@ -180,6 +182,11 @@ class SweepLineFrame:
             immutable = np.array(array, copy=True)
             immutable.setflags(write=False)
             object.__setattr__(self, field_name, immutable)
+        if self.statistics is not None:
+            if not isinstance(self.statistics, SweepStatisticsFrame):
+                raise TypeError("Sweep requires an explicit statistics contract")
+            self.statistics.validate_parent(self.source_id, self.epoch, self.sequence,
+                                            self.unit, self.frequencies_hz)
 
     @property
     def is_complete(self) -> bool:

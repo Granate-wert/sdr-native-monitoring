@@ -52,6 +52,10 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.fft": MappingProxyType({UiLocale.RU: "Физический FFT", UiLocale.EN: "Physical FFT"}),
         "analyzer.unavailable": MappingProxyType({UiLocale.RU: "Нет опубликованного кадра", UiLocale.EN: "No published frame"}),
         "analyzer.sweep_time": MappingProxyType({UiLocale.RU: "Сегменты получены в разное время", UiLocale.EN: "Sweep: segments acquired at different times"}),
+        "analyzer.sweep_statistics": MappingProxyType({
+            UiLocale.RU: "Статистика: {passes} проходов, до #{sequence}, отставание {lag}; density {columns} ячеек — доля наблюдений bin; внутри прохода возможна задержка",
+            UiLocale.EN: "Statistics: {passes} passes, through #{sequence}, lag {lag}; density {columns} cells — bin-observation probability; may lag within pass",
+        }),
         "analyzer.local": MappingProxyType({UiLocale.RU: "Масштаб графика локальный — не перестраивает SDR", UiLocale.EN: "Plot zoom is local — does not retune SDR"}),
         "analyzer.rx.unavailable": MappingProxyType({UiLocale.RU: "Выбор RX пока не опубликован общим контрактом управления", UiLocale.EN: "RX selection is not yet published by the shared control contract"}),
         "analyzer.rx.unknown": MappingProxyType({UiLocale.RU: "RX —", UiLocale.EN: "RX —"}),

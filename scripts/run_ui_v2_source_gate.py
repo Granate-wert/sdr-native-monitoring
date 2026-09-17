@@ -15,6 +15,8 @@ import unittest
 
 
 COMPILED_TESTS = frozenset({
+    "test_app04_sweep_statistics_layers.CompiledSweepStatisticsCompositionTests."
+    "test_native_statistics_reach_same_canvas_and_clear_on_mode_change",
     "test_app03_numerical_composition.NumericalCompositionTests."
     "test_native_semantics_reach_canvas_and_accessible_description",
 })

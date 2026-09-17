@@ -66,6 +66,7 @@ class AnalyzerGeometryPreflight:
     physical_bin_spacing_hz: float = 0.0
     rbw_hz: float | None = None
     enbw_hz: float | None = None
+    statistics_payload_bytes: int = 0
 
     def __post_init__(self) -> None:
         if self.mode not in ("rtbw", "sweep"):
@@ -95,6 +96,7 @@ class AnalyzerGeometryPreflight:
                 _finite_positive(value, name)
         if not isinstance(self.reduced, AnalyzerReducedEstimate) or self.reduced.mode != self.mode:
             raise ValueError("reduced estimate must match analyzer strategy")
+        _bounded_int(self.statistics_payload_bytes, "statistics payload", minimum=0, maximum=512 * 1024 * 1024)
 
 
 def estimate_analyzer_reduced(

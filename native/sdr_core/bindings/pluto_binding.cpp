@@ -8,6 +8,8 @@
 #include "sdr_pluto/pluto_backend.hpp"
 
 #include <memory>
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -499,6 +501,53 @@ void bind_pluto(py::module_& module) {
             }
             return result;
         });
+
+    // Explicit deterministic test-only fixture: no device, I/Q, RF clock or
+    // throughput claim. Exercises the real accumulator and array ownership.
+    module.def("_make_test_sweep_statistics_frames", [](std::uint32_t bins) {
+        if (bins < 4 || bins > 16384) throw std::invalid_argument("test bins must be in [4, 16384]");
+        SourceDescriptor source;
+        source.source_id = "synthetic-statistics"; source.display_name = "Synthetic statistics fixture";
+        auto frequencies = std::make_shared<std::vector<double>>(bins);
+        for (std::uint32_t i = 0; i < bins; ++i) (*frequencies)[i] = 100e6 + i * 1000.0;
+        SweepStatisticsPublisher publisher({16, 64, -160, 10, 32U * 1024U * 1024U, 128},
+            source, 7, SpectrumUnit::DbfsBin, frequencies, 15, 4);
+        SweepLineFrame line;
+        line.source = source; line.epoch = 7; line.frequencies_hz = frequencies;
+        line.start_frequency_hz = frequencies->front(); line.stop_frequency_hz = frequencies->back();
+        line.target_spacing_hz = 1000; line.state = SweepLineState::Complete;
+        line.quality_flags_per_bin = std::make_shared<const std::vector<std::uint32_t>>(bins, 0);
+        auto sources = std::make_shared<std::vector<std::int32_t>>(bins);
+        for (std::uint32_t i = 0; i < bins; ++i) (*sources)[i] = i < bins / 2 ? 0 : 1;
+        line.source_segment_indices = sources;
+        line.segment_generations = {{0, 11}, {1, 12}};
+        for (std::uint64_t sequence = 0; sequence < 16; ++sequence) {
+            auto values = std::make_shared<std::vector<float>>(bins);
+            for (std::uint32_t i = 0; i < bins; ++i) {
+                const auto x = static_cast<double>(i) / bins;
+                (*values)[i] = static_cast<float>(-90 + 4 * std::sin(i * 0.71 + static_cast<double>(sequence)) +
+                    55 * std::exp(-std::pow((x - 0.3) / 0.015, 2)) +
+                    45 * std::exp(-std::pow((x - 0.72) / 0.008, 2)));
+            }
+            line.values = values; line.line_sequence = sequence;
+            publisher.consume(line, static_cast<std::int64_t>(sequence) * 100'000'000, true);
+        }
+        SweepProgressFrame progress;
+        progress.source = source; progress.epoch = 7; progress.line_sequence = 16; progress.revision = 1;
+        progress.frequencies_hz = frequencies; progress.acquired_segments = {{0, 11, 100e6, 102e6}};
+        progress.pending_segment_indices = {1};
+        auto partial = std::make_shared<std::vector<float>>(*line.values);
+        auto quality = std::make_shared<std::vector<std::uint32_t>>(bins, 0);
+        auto indices = std::make_shared<std::vector<std::int32_t>>(*sources);
+        for (std::uint32_t i = bins / 2; i < bins; ++i) {
+            (*partial)[i] = std::numeric_limits<float>::quiet_NaN(); (*quality)[i] = 1U << 12; (*indices)[i] = -1;
+        }
+        progress.values = partial; progress.quality_flags_per_bin = quality; progress.source_segment_indices = indices;
+        publisher.consume(progress, 1'600'000'000);
+        line.line_sequence = 16;
+        publisher.consume(line, 1'700'000'000, true);
+        return py::make_tuple(progress, line);
+    }, py::arg("bins") = 4096U);
 
     py::class_<sdr_pluto::ContinuousSweepLineConfig>(module, "ContinuousSweepLineConfig")
         .def(py::init([](

@@ -8,6 +8,7 @@ import numpy as np
 from sdr_monitor.domain.live import LivePersistenceFrame, LiveSpectrumFrame
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
+from sdr_monitor.domain.sweep_statistics import SweepStatisticsFrame
 
 from ..spectrum.persistence_contracts import DensityValueMode, PersistenceDensityFrame
 from ..waterfall.contracts import WaterfallLineFrame, SweepWaterfallLine
@@ -55,6 +56,20 @@ def persistence_density_from_native(
         density=density, frequency_edges_hz=_regular_edges(frame.frequencies_hz),
         level_edges=levels, value_mode=value_mode,
         level_unit=frame.unit or "",
+    )
+
+
+def persistence_density_from_sweep(frame: SweepStatisticsFrame) -> PersistenceDensityFrame:
+    """Display native pooled-bin probabilities, not a Qt-derived histogram.
+
+    Level edges describe native bins; probability and physical cells are views
+    of the producer snapshot. Unknown columns remain NaN/transparent.
+    """
+    levels = np.linspace(frame.power_min_db, frame.power_max_db, frame.probability.shape[0] + 1)
+    levels.setflags(write=False)
+    return PersistenceDensityFrame(
+        density=frame.probability, frequency_edges_hz=frame.density_frequency_edges_hz,
+        level_edges=levels, value_mode=DensityValueMode.PROBABILITY, level_unit=frame.unit,
     )
 
 

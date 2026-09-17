@@ -1,6 +1,7 @@
 """Immutable continuous-Sweep intent, independent of native services and Qt."""
 from dataclasses import dataclass
 import math
+from .sweep_statistics import SweepStatisticsSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,8 +18,11 @@ class ContinuousSweepPlanRequest:
     # Zero retains the physical-FFT grid; nonzero is analysis N within W.
     analysis_bins_per_usable_window: int = 0
     allow_r10d5_evidence_buffer_geometry: bool = False
+    statistics: SweepStatisticsSettings | None = None
 
     def __post_init__(self) -> None:
+        if self.statistics is not None and not isinstance(self.statistics, SweepStatisticsSettings):
+            raise TypeError("Sweep statistics requires explicit bounded settings")
         values = (self.start_hz, self.stop_hz, self.usable_window_hz, self.overlap_hz)
         if not all(math.isfinite(value) for value in values) or self.start_hz <= 0.0 or self.stop_hz <= self.start_hz:
             raise ValueError("continuous sweep frequencies must be finite and increasing")

@@ -241,6 +241,7 @@ def _to_domain_progress(native: Any) -> SweepProgressFrame:
         acquired_segment_generations=tuple(native.acquired_segment_generations),
         pending_segment_indices=tuple(native.pending_segment_indices),
         segment_acquisition=_to_domain_acquisition(native),
+        statistics=_to_domain_statistics(native),
     )
 
 
@@ -264,6 +265,7 @@ def _to_domain_line(native: Any) -> SweepLineFrame:
             quality_flags=quality,
             quality_schema=SweepQualitySchema.NATIVE_V5,
             segment_acquisition=_to_domain_acquisition(native),
+            statistics=_to_domain_statistics(native),
             source_segment_indices=native.source_segment_indices,
             missing_segment_indices=tuple(int(value) for value in native.missing_segment_indices),
             segment_config_generations=tuple(
@@ -283,6 +285,17 @@ def _to_domain_line(native: Any) -> SweepLineFrame:
         )
     except (AttributeError, TypeError, ValueError) as error:
         raise RuntimeError(f"native continuous sweep line conversion failed: {error}") from error
+
+
+def _to_domain_statistics(native: Any):
+    from ..domain.sweep_statistics import SweepStatisticsFrame
+
+    statistics = getattr(native, "statistics", None)
+    if statistics is None:
+        return None
+    return SweepStatisticsFrame(**{
+        name: getattr(statistics, name) for name in SweepStatisticsFrame.__dataclass_fields__
+    })
 
 
 __all__ = [

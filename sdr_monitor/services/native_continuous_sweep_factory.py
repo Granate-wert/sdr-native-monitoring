@@ -12,7 +12,7 @@ from ..domain import BackendKind, LiveConfiguration
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET
 from ..domain.analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
-from .native_live import build_native_fixed_band_config
+from .native_live import build_native_fixed_band_config, _SPECTRUM_QUEUE_CAPACITY
 from .native_continuous_sweep import (
     ContinuousSweepDisplaySnapshot,
     NativeContinuousSweepDisplayService,
@@ -136,11 +136,22 @@ class NativeContinuousSweepPlanFactory:
         )
         if reduced.total_bytes > DEFAULT_LIVE_RESOURCE_BUDGET.max_spectrum_backlog_bytes:
             raise ValueError("continuous sweep reduced spectrum backlog exceeds memory budget")
+        statistics_bytes = 0
+        if request.statistics is not None:
+            # Same producer retention as native configure, plus downstream
+            # owners included by payload_upper_bound. No config/device call.
+            hop = max(1, int(round(fft_size * (1.0 - live.overlap_ratio))))
+            slots = request.output_queue_capacity * 2 + 4
+            if count == 1:
+                burst = request.acquisition_buffer_samples // hop + 1 + 2
+                slots += 2 * max(burst, _SPECTRUM_QUEUE_CAPACITY, request.output_queue_capacity)
+            statistics_bytes = request.statistics.payload_upper_bound(bins, slots)
         return AnalyzerGeometryPreflight(
             "sweep", sample_rate, fft_size, spacing, count, stride, reduced,
             usable_window_hz=request.usable_window_hz,
             analysis_bins_per_usable_window=request.analysis_bins_per_usable_window,
             physical_bin_spacing_hz=physical_spacing,
+            statistics_payload_bytes=statistics_bytes,
         )
 
     def build(self, request: ContinuousSweepPlanRequest) -> Any:
@@ -170,6 +181,16 @@ class NativeContinuousSweepPlanFactory:
                     fixed, usable_start, usable_stop
                 )
             )
+        statistics_arguments: dict[str, Any] = {}
+        if request.statistics is not None:
+            settings = request.statistics
+            statistics_arguments = {
+                "statistics": self._lease.native_module.SweepStatisticsConfig(
+                    settings.window_passes, settings.power_bins, settings.power_min_db,
+                    settings.power_max_db, settings.max_payload_bytes, settings.density_columns,
+                ),
+                "statistics_snapshot_rate_hz": settings.snapshot_rate_hz,
+            }
         return self._lease.native_module.ContinuousSweepCoordinatorConfig(
             request.epoch,
             request.start_hz,
@@ -184,6 +205,7 @@ class NativeContinuousSweepPlanFactory:
                 if request.line_snapshot_rate_hz is not None
                 else 0.0
             ),
+            **statistics_arguments,
         )
 
     def close(self) -> None:

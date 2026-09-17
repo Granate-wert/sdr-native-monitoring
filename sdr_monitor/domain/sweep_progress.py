@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from .sweep_acquisition import SweepSegmentAcquisition, validate_acquisition
+from .sweep_statistics import SweepStatisticsFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,7 @@ class SweepProgressFrame:
     acquired_segment_generations: tuple[tuple[int, int], ...]
     pending_segment_indices: tuple[int, ...]
     segment_acquisition: tuple[SweepSegmentAcquisition, ...] | None = None
+    statistics: SweepStatisticsFrame | None = None
 
     def __post_init__(self) -> None:
         if not self.source_id.strip() or not self.unit.strip():
@@ -60,3 +62,8 @@ class SweepProgressFrame:
         object.__setattr__(self, "pending_segment_indices", pending)
         object.__setattr__(self, "segment_acquisition",
                            validate_acquisition(self.segment_acquisition, generation_pairs))
+        if self.statistics is not None:
+            if not isinstance(self.statistics, SweepStatisticsFrame):
+                raise TypeError("Sweep requires an explicit statistics contract")
+            self.statistics.validate_parent(self.source_id, self.epoch, self.sequence,
+                                            self.unit, self.frequencies_hz)

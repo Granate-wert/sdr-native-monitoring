@@ -44,6 +44,12 @@ def analyzer_status(state: AnalyzerViewState) -> str:
                               blocks=frame.dropped_iq_blocks_before, fft=frame.dropped_fft_frames_before))
     else:
         parts.append(text("analyzer.sweep_time"))
+        statistics = bundle.sweep_statistics
+        if statistics is not None:
+            parts.append(text("analyzer.sweep_statistics", passes=statistics.retained_passes,
+                              sequence=statistics.newest_pass_sequence,
+                              lag=frame.sequence - statistics.newest_pass_sequence,
+                              columns=statistics.density_observations.size))
         if isinstance(frame, SweepProgressFrame):
             received = len(frame.acquired_segment_generations)
             parts.append(text("analyzer.progress", received=received,

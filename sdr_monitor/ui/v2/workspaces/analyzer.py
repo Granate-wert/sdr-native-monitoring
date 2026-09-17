@@ -9,6 +9,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QStyle, QStyleOptionButton, QVBoxLayout, QWidget
 
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from sdr_monitor.domain.sweep_statistics import SweepStatisticsSettings
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..design.icons import V2IconId
@@ -19,10 +20,11 @@ from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from .analyzer_status_label import AnalyzerStatusLabel
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum import PersistenceDensityFrame
+from ..spectrum.contracts import TraceKind
 from ..state.live_view_state import LiveAction
 from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout
 from ..state.analyzer_status_cadence import AnalyzerStatusCadence
-from ..state.analyzer_layers import waterfall_line_from_sweep
+from ..state.analyzer_layers import waterfall_line_from_sweep, persistence_density_from_sweep
 from ..state.configuration_readouts import configuration_prefix
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
@@ -46,6 +48,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._last_persistence: PersistenceDensityFrame | None = None
         self._last_identity = None
         self._last_sweep_snapshot = None
+        self._last_statistics_key: tuple[str, int, int] | None = None
         self._sweep_waterfall_error = False
         self._status_cadence = AnalyzerStatusCadence()
         self._text_bindings: list[tuple[QLabel | QPushButton, str]] = []
@@ -292,6 +295,7 @@ class AnalyzerWorkspaceV2(QWidget):
             try:
                 request = (ContinuousSweepPlanRequest(
                     self.start_frequency.value() * 1e6, self.stop_frequency.value() * 1e6,
+                    statistics=SweepStatisticsSettings(),
                 ) if state.mode is AnalyzerMode.SWEEP else None)
             except ValueError as error:
                 self.error.setText(str(error))
@@ -382,12 +386,26 @@ class AnalyzerWorkspaceV2(QWidget):
                 self._sweep_waterfall_error = False
             self._last_bundle = self._last_waterfall = self._last_persistence = None
             self._last_sweep_snapshot = None
+            self._last_statistics_key = None
             self._last_mode = state.mode
         self._last_identity = identity
         bundle = state.bundle
         if bundle is not None and bundle is not self._last_bundle:
             self.visualization.spectrum_scene.set_frame(bundle)
             self._last_bundle = bundle
+        if state.mode is AnalyzerMode.SWEEP:
+            statistics = bundle.sweep_statistics if bundle is not None else None
+            key = ((statistics.source_id, statistics.epoch, statistics.update_sequence)
+                   if statistics is not None else None)
+            if statistics is not None and key != self._last_statistics_key:
+                scene = self.visualization.spectrum_scene
+                scene.set_trace(TraceKind.AVERAGE, statistics)
+                scene.set_persistence_frame(persistence_density_from_sweep(statistics))
+                self._last_statistics_key = key
+            elif statistics is None and self._last_statistics_key is not None:
+                self.visualization.spectrum_scene.clear_trace(TraceKind.AVERAGE)
+                self.visualization.spectrum_scene.clear_persistence_display()
+                self._last_statistics_key = None
         if state.mode is AnalyzerMode.RTBW:
             density = state.live.persistence_frame
             if isinstance(density, PersistenceDensityFrame) and density is not self._last_persistence:

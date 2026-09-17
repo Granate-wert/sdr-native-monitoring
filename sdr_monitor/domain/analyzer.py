@@ -14,6 +14,7 @@ import numpy as np
 from .live import LiveSnapshot, LiveSpectrumFrame
 from .sweep_lines import SweepLineFrame
 from .sweep_progress import SweepProgressFrame
+from .sweep_statistics import SweepStatisticsFrame
 from .analyzer_identity import (
     MeasurementIdentity, identities_equal, layer_matches_measurement, matches_active_identity,
     persistence_is_pending,
@@ -157,6 +158,12 @@ class AnalyzerFrameBundle:
     @property
     def unit(self) -> str:
         return self.spectrum.unit
+
+    @property
+    def sweep_statistics(self) -> SweepStatisticsFrame | None:
+        """Producer-attached, potentially older snapshot; never joined by arrival."""
+        return (self.spectrum.statistics
+                if isinstance(self.spectrum, (SweepLineFrame, SweepProgressFrame)) else None)
 
 
 def bundle_from_sweep(line: SweepLineFrame | SweepProgressFrame) -> AnalyzerFrameBundle:
