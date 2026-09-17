@@ -1,5 +1,6 @@
 #include "sdr_core/errors.hpp"
 #include "sdr_core/sweep_line_assembler.hpp"
+#include "test_sweep_geometry.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -95,6 +96,7 @@ namespace {
 
 int main() {
     try {
+        app04_geometry_test::run();
         // A true zero-power bin is -infinity dB, not a missing sample.
         // Preserve it through aligned bins, interpolation and overlap power
         // averaging; +infinity is unavailable and NaN is rejected at admission.

@@ -154,11 +154,13 @@ void cancellation_phase_matrix() {
     // Both initial and later segment control transactions, buffer creation,
     // transient discard refill and first eligible capture. Do not time a
     // sleep and guess which native phase happened to be active.
-    for (const auto second_segment : {false, true}) {
+    for (const auto path : {0, 1, 2}) {
+        const bool second_segment = path == 1;
+        const bool single_window = path == 2;
         for (const auto phase : {1, 2, 3, 4, 5}) {
             sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
-            auto profile = coordinator_config();
-            profile.epoch = 800 + second_segment * 10 + phase;
+            auto profile = single_window ? single_window_config() : coordinator_config();
+            profile.epoch = 800 + path * 10 + phase;
             for (auto& item : profile.segments) item.fixed_band.discard_blocks_after_start = 3;
             owner.configure(profile);
             const auto center = static_cast<long long>(profile.segments[second_segment ? 1 : 0].fixed_band.device.center_frequency_hz);
@@ -178,7 +180,7 @@ void cancellation_phase_matrix() {
             owner.join();
             const auto lines = owner.poll_lines(0);
             const auto metrics = owner.metrics();
-            std::cout << "APP-04 cancel phase=" << phase << " segment=" << second_segment
+            std::cout << "APP-04 cancel phase=" << phase << " path=" << path
                       << " buffers-at-request=" << creates_at_cancel << " final=" << gate.created_buffers() << '\n';
             if (!entered || gate.expired() || !stopping ||
                 request_duration > std::chrono::milliseconds(100) || gate.live_buffers() != 0 ||
@@ -192,7 +194,7 @@ void cancellation_phase_matrix() {
                 throw std::runtime_error("RX started after Stop during a control transaction");
             }
             if (lines[0].acquired_segments.size() != (second_segment ? 1U : 0U) ||
-                lines[0].missing_segment_indices.size() != (second_segment ? 1U : 2U)) {
+                lines[0].missing_segment_indices.size() != (second_segment || single_window ? 1U : 2U)) {
                 throw std::runtime_error("cancel lost acquired prefix or invented unadmitted data");
             }
             owner.stop();  // Idempotent terminal stop must not emit another gap.
@@ -201,6 +203,30 @@ void cancellation_phase_matrix() {
             }
         }
     }
+    for (const bool single_window : {false, true}) {
+        sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+        for (int iteration = 0; iteration < 20; ++iteration) {
+            auto profile = single_window ? single_window_config() : coordinator_config();
+            profile.epoch = 900 + iteration;
+            owner.configure(profile);
+            if (owner.poll_progress() || !owner.poll_lines(0).empty()) {
+                throw std::runtime_error("new epoch retained prior publication");
+            }
+            owner.start();
+            owner.request_stop();
+            owner.join();
+            unsigned cancellations = 0;
+            for (const auto& line : owner.poll_lines(0)) {
+                if (line.epoch != profile.epoch) throw std::runtime_error("stale epoch after immediate Stop");
+                if (contains_reason(line, sdr_core::SweepLineGapReason::Cancellation)) ++cancellations;
+            }
+            if (cancellations != 1 || owner.metrics().expected_cancellations != 1 || owner.metrics().has_error ||
+                owner.state() != sdr_core::EngineState::Stopped || gate.live_buffers() != 0) {
+                throw std::runtime_error("immediate Stop lost epoch boundary or leaked RX");
+            }
+        }
+    }
+    std::cout << "APP-04 cancel: 15 phase barriers + 40 immediate-stop/restart epochs PASS\n";
 }
 
 void statistics_pipeline_test(bool single_window) {
