@@ -381,6 +381,8 @@ struct SweepSegmentAcquisition {
     QualityFlag quality_flags{QualityFlag::None};
 };
 
+struct SweepStatisticsSnapshot;
+
 struct SweepLineFrame {
     SourceDescriptor source;
     std::uint64_t line_sequence{};
@@ -407,6 +409,8 @@ struct SweepLineFrame {
     std::vector<SweepLineSegmentDefinition> segment_generations;
     std::vector<SweepLineGapReason> gap_reasons;
     std::vector<SweepSegmentAcquisition> acquired_segments;
+    // Explicitly stamped native statistics; cadence may lag this trace.
+    std::shared_ptr<const SweepStatisticsSnapshot> statistics;
 };
 
 struct SweepLineAssemblyMetrics {

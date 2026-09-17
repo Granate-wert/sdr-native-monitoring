@@ -44,6 +44,8 @@ struct ContinuousSweepCoordinatorConfig {
     std::uint32_t output_queue_capacity{4U};
     std::uint32_t segment_frame_timeout_ms{1000U};
     std::vector<ContinuousSweepSegmentConfig> segments;
+    std::optional<sdr_core::SweepStatisticsConfig> statistics;
+    double statistics_snapshot_rate_hz{15.0};
 };
 
 void validate(const ContinuousSweepCoordinatorConfig& value);

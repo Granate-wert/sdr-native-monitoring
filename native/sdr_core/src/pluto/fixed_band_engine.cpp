@@ -249,6 +249,10 @@ void validate_resource_budget(const FixedBandConfig& config) {
     total_bytes = checked_add(total_bytes, spectrum_backlog_bytes, "live-engine memory");
     total_bytes = checked_add(total_bytes, persistence_bytes, "live-engine memory");
     total_bytes = checked_add(total_bytes, sweep_line_bytes, "live-engine memory");
+    if (config.sweep_statistics_sink) {
+        total_bytes = checked_add(total_bytes, config.sweep_statistics_sink->payload_bytes(),
+                                  "native Sweep statistics");
+    }
     if (iq_pool_bytes > max_iq_pool_bytes ||
         dsp_working_bytes > max_dsp_working_bytes ||
         spectrum_backlog_bytes > max_spectrum_backlog_bytes ||
@@ -300,6 +304,10 @@ void validate(const FixedBandConfig& value) {
     sdr_core::validate(value.dsp);
     sdr_core::validate(value.persistence);
     sdr_core::validate(value.recording);
+    if (value.sweep_statistics_sink && (!value.continuous_sweep_line ||
+        !value.continuous_sweep_line->enabled)) {
+        invalid("native Sweep statistics sink requires the coordinator-owned line path");
+    }
     if (value.continuous_sweep_line.has_value()) {
         validate(*value.continuous_sweep_line);
         if (value.continuous_sweep_line->enabled && value.recording.record_iq) {
@@ -1990,6 +1998,11 @@ private:
                 assembly_metrics.capacity_evicted_lines, std::memory_order_relaxed
             );
             for (auto& line : lines) {
+                if (config_.sweep_statistics_sink) {
+                    const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    config_.sweep_statistics_sink->consume(line, now);
+                }
                 const auto pushed = sweep_line_queue_->try_push(std::move(line));
                 if (pushed == sdr_core::PushResult::Evicted) {
                     sweep_line_snapshots_superseded_.fetch_add(

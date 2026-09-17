@@ -6,6 +6,7 @@
 #include "sdr_core/metrics.hpp"
 #include "sdr_core/persistence.hpp"
 #include "sdr_core/types.hpp"
+#include "sdr_core/sweep_statistics.hpp"
 #include "sdr_pluto/pluto_backend.hpp"
 
 #include <cstddef>
@@ -59,6 +60,9 @@ struct FixedBandConfig {
     // Provisional native-only R10-D1A profile.  Python/Qt presentation is
     // intentionally added only after its bounded C++ path is verified.
     std::optional<ContinuousSweepLineConfig> continuous_sweep_line;
+    // Native-only coordinator sink, intentionally not a Python callback/field.
+    // Consumed by the DSP owner before the bounded single-window relay.
+    std::shared_ptr<sdr_core::SweepStatisticsPublisher> sweep_statistics_sink;
     // P08 compute backend selection. AUTO uses CUDA only after self-test and
     // above the measured workload crossover; see ADR-022.
     sdr_core::ComputeBackendKind backend{sdr_core::ComputeBackendKind::Auto};

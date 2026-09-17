@@ -24,6 +24,7 @@ struct SweepProgressFrame {
     std::vector<SweepLineSegmentDefinition> acquired_segments;
     std::vector<std::uint32_t> pending_segment_indices;
     std::vector<SweepSegmentAcquisition> segment_acquisition;
+    std::shared_ptr<const SweepStatisticsSnapshot> statistics;
 };
 
 // Bounded native CPU reference for R10-D line construction.  It consumes
@@ -53,6 +54,7 @@ public:
     [[nodiscard]] std::vector<SweepLineFrame> flush(SweepLineGapReason reason);
 
     [[nodiscard]] const SweepLineDefinition& definition() const noexcept;
+    [[nodiscard]] const SharedArray<double>& frequencies() const noexcept { return frequencies_; }
     [[nodiscard]] SweepLineAssemblyMetrics metrics() const noexcept;
 
     // On-demand coherent snapshot; owner must bound publication cadence.

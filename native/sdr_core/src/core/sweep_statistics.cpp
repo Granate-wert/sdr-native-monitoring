@@ -30,9 +30,11 @@ double linear_power(float value) noexcept {
 }  // namespace
 
 std::size_t SweepStatisticsAccumulator::required_payload_bytes(
-    const SweepStatisticsConfig& config, std::size_t frequency_bins
+    const SweepStatisticsConfig& config, std::size_t frequency_bins,
+    std::size_t retained_snapshot_slots
 ) {
     if (config.window_passes == 0 || config.power_bins == 0 || frequency_bins == 0 ||
+        retained_snapshot_slots == 0 ||
         !std::isfinite(config.power_min_db) || !std::isfinite(config.power_max_db) ||
         config.power_min_db >= config.power_max_db ||
         !std::isfinite(config.power_max_db - config.power_min_db)) {
@@ -43,8 +45,12 @@ std::size_t SweepStatisticsAccumulator::required_payload_bytes(
                     checked_mul(config.power_bins, 2 * sizeof(std::uint32_t))),
         sizeof(double) * 3 + sizeof(std::uint32_t) * 2 + sizeof(float)
     );
-    const auto bytes = checked_add(checked_mul(frequency_bins, per_frequency),
-                                   checked_mul(config.window_passes, sizeof(Pass)));
+    const auto one_snapshot = checked_mul(frequency_bins, checked_add(
+        checked_mul(config.power_bins, sizeof(std::uint32_t)),
+        sizeof(std::uint32_t) + sizeof(float)));
+    const auto bytes = checked_add(checked_add(checked_mul(frequency_bins, per_frequency),
+                                   checked_mul(config.window_passes, sizeof(Pass))),
+        checked_mul(retained_snapshot_slots - 1, one_snapshot));
     if (bytes > config.max_payload_bytes) {
         throw std::length_error("Sweep statistics exceeds explicit payload budget");
     }
@@ -210,6 +216,58 @@ SweepStatisticsSnapshot SweepStatisticsAccumulator::snapshot() const {
         std::make_shared<const std::vector<std::uint32_t>>(histogram_),
         std::make_shared<const std::vector<std::uint32_t>>(observations_)
     };
+}
+
+SweepStatisticsPublisher::SweepStatisticsPublisher(
+    SweepStatisticsConfig config, SourceDescriptor source, std::uint64_t epoch,
+    SpectrumUnit unit, SharedArray<double> frequencies, double snapshot_rate_hz,
+    std::size_t retained_snapshot_slots
+) : payload_bytes_([&] {
+        if (!std::isfinite(snapshot_rate_hz) || snapshot_rate_hz < 1.0 || snapshot_rate_hz > 60.0) {
+            throw std::invalid_argument("Sweep statistics publication rate must be in [1, 60] Hz");
+        }
+        return SweepStatisticsAccumulator::required_payload_bytes(
+            config, frequencies ? frequencies->size() : 0, retained_snapshot_slots);
+    }()),
+    accumulator_(config, std::move(source), epoch, unit, std::move(frequencies)) {
+    period_ns_ = static_cast<std::int64_t>(std::ceil(1e9 / snapshot_rate_hz));
+}
+
+void SweepStatisticsPublisher::refresh(std::int64_t steady_ns, bool force) {
+    if (steady_ns < 0 || (latest_ && steady_ns < last_snapshot_ns_)) {
+        throw std::invalid_argument("Sweep statistics publication clock regressed");
+    }
+    if (force || !latest_ || steady_ns - last_snapshot_ns_ >= period_ns_) {
+        latest_ = std::make_shared<const SweepStatisticsSnapshot>(accumulator_.snapshot());
+        last_snapshot_ns_ = steady_ns;
+    }
+}
+
+void SweepStatisticsPublisher::consume(SweepProgressFrame& frame, std::int64_t steady_ns) {
+    std::lock_guard lock(mutex_);
+    if (steady_ns < 0 || (latest_ && steady_ns < last_snapshot_ns_)) {
+        throw std::invalid_argument("Sweep statistics publication clock regressed");
+    }
+    if (!accumulator_.update(frame)) throw std::invalid_argument("Duplicate/stale Sweep statistics input");
+    newest_sequence_ = std::max(newest_sequence_, frame.line_sequence);
+    refresh(steady_ns, false);
+    frame.statistics = latest_;
+}
+
+void SweepStatisticsPublisher::consume(SweepLineFrame& frame, std::int64_t steady_ns, bool force_snapshot) {
+    std::lock_guard lock(mutex_);
+    if (steady_ns < 0 || (latest_ && steady_ns < last_snapshot_ns_)) {
+        throw std::invalid_argument("Sweep statistics publication clock regressed");
+    }
+    if (!accumulator_.update(frame)) throw std::invalid_argument("Duplicate/stale Sweep statistics input");
+    newest_sequence_ = std::max(newest_sequence_, frame.line_sequence);
+    refresh(steady_ns, force_snapshot);
+    frame.statistics = latest_;
+}
+
+std::uint64_t SweepStatisticsPublisher::newest_sequence() const {
+    std::lock_guard lock(mutex_);
+    return newest_sequence_;
 }
 
 }  // namespace sdr_core

@@ -227,7 +227,7 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
             invalid("continuous sweep analysis grid requires a denser physical FFT transform");
         }
     }
-    if (first.recording.enabled || first.recorder_enabled ||
+    if (first.recording.enabled || first.recorder_enabled || first.sweep_statistics_sink ||
         (first.continuous_sweep_line.has_value() && first.continuous_sweep_line->enabled)) {
         invalid("continuous sweep coordinator forbids recording and nested line publication");
     }
@@ -236,6 +236,7 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
         const auto& segment = value.segments[index];
         validate(segment.fixed_band);
         if (segment.fixed_band.recording.enabled || segment.fixed_band.recorder_enabled ||
+            segment.fixed_band.sweep_statistics_sink ||
             (segment.fixed_band.continuous_sweep_line.has_value() &&
              segment.fixed_band.continuous_sweep_line->enabled) ||
             !same_geometry(first, segment.fixed_band) ||
@@ -254,6 +255,10 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
         invalid("continuous sweep segments do not cover the display span");
     }
     static_cast<void>(planned_definition(value));
+    if (value.statistics && (!std::isfinite(value.statistics_snapshot_rate_hz) ||
+        value.statistics_snapshot_rate_hz < 1.0 || value.statistics_snapshot_rate_hz > 60.0)) {
+        invalid("Sweep statistics snapshot rate must be in [1, 60] Hz");
+    }
 }
 
 class ContinuousSweepCoordinator::Impl final {
@@ -284,7 +289,26 @@ public:
         if (config.segments.front().fixed_band.device.context_uri != uri_) {
             invalid("continuous sweep coordinator URI differs from its fixed-band segments");
         }
+        std::shared_ptr<sdr_core::SweepStatisticsPublisher> statistics;
+        if (config.statistics) {
+            // Queue copies may share snapshots, but reserve the worst case
+            // before any Apply/RX. Include drained native relay/output batches,
+            // queued items, latest/current preview and a constructing snapshot.
+            std::size_t slots = static_cast<std::size_t>(config.output_queue_capacity) * 2 + 4;
+            if (config.segments.size() == 1) {
+                const auto& fixed = config.segments.front().fixed_band;
+                const auto burst = static_cast<std::size_t>(fixed.device.buffer_samples) /
+                    fixed.dsp.hop_size + fixed.dsp.batch_size + 2;
+                slots += 2 * std::max({burst, static_cast<std::size_t>(fixed.spectrum_queue_capacity),
+                                     static_cast<std::size_t>(config.output_queue_capacity)});
+            }
+            const sdr_core::ContinuousSweepLineAssembler grid(planned_definition(config));
+            statistics = std::make_shared<sdr_core::SweepStatisticsPublisher>(
+                *config.statistics, grid.definition().source, config.epoch, grid.definition().unit,
+                grid.frequencies(), config.statistics_snapshot_rate_hz, slots);
+        }
         config_ = std::move(config);
+        statistics_ = std::move(statistics);
         output_ = std::make_unique<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>>(
             config_.output_queue_capacity, sdr_core::OverflowPolicy::LatestWins
         );
@@ -487,7 +511,10 @@ public:
     }
 
 private:
-    void publish(sdr_core::SweepLineFrame line) noexcept {
+    void publish(sdr_core::SweepLineFrame line) {
+        if (statistics_ && config_.segments.size() > 1) {
+            statistics_->consume(line, monotonic_now_ns(), line.state == sdr_core::SweepLineState::Gap);
+        }
         {
             std::lock_guard lock(progress_mutex_);
             if (progress_ && progress_->epoch == line.epoch &&
@@ -508,7 +535,17 @@ private:
     ) noexcept {
         try {
             sdr_core::ContinuousSweepLineAssembler assembler(planned_definition(config_));
-            publish(assembler.emit_gap(sequence, monotonic_now_ns(), reason));
+            auto gap_sequence = sequence;
+            if (statistics_ && config_.segments.size() == 1) {
+                // Single-window DSP can be ahead of the coordinator's last
+                // drained line. Stop must join that owner before this handoff.
+                gap_sequence = std::max(gap_sequence, statistics_->newest_sequence() + 1U);
+            }
+            auto gap = assembler.emit_gap(gap_sequence, monotonic_now_ns(), reason);
+            if (statistics_ && config_.segments.size() == 1) {
+                statistics_->consume(gap, monotonic_now_ns(), true);
+            }
+            publish(std::move(gap));
             gapped_lines_.fetch_add(1U, std::memory_order_relaxed);
             terminal_control_gaps_.fetch_add(1U, std::memory_order_relaxed);
         } catch (...) {
@@ -572,6 +609,7 @@ private:
                 ? config_.line_snapshot_rate_hz
                 : result.snapshot_rate_hz,
         };
+        result.sweep_statistics_sink = statistics_;
         return result;
     }
 
@@ -885,14 +923,16 @@ private:
                     lines.insert(lines.end(), std::make_move_iterator(emitted.begin()),
                                  std::make_move_iterator(emitted.end()));
                     const auto preview_now = std::chrono::steady_clock::now();
-                    if (lines.empty() && (segment_index == 0 ||
-                        preview_now - last_preview_at >= std::chrono::milliseconds(33))) {
+                    const bool publish_preview = segment_index == 0 ||
+                        preview_now - last_preview_at >= std::chrono::milliseconds(33);
+                    if (lines.empty() && (statistics_ || publish_preview)) {
                         auto preview = assembler->preview(line_sequence);
-                        {
+                        if (statistics_ && preview) statistics_->consume(*preview, monotonic_now_ns());
+                        if (publish_preview) {
                             std::lock_guard lock(progress_mutex_);
                             progress_ = std::move(preview);
+                            last_preview_at = preview_now;
                         }
-                        last_preview_at = preview_now;
                     }
                 }
                 if (terminal) {
@@ -944,16 +984,18 @@ private:
             );
         } catch (...) {
             has_error_.store(true, std::memory_order_relaxed);
-            publish_terminal_gap(
-                line_sequence,
-                engine_.connected() ? sdr_core::SweepLineGapReason::Reconfigure : sdr_core::SweepLineGapReason::Disconnect
-            );
             try {
                 if (engine_.state() == sdr_core::EngineState::Running) {
                     engine_.stop();
                 }
             } catch (...) {
             }
+            // Stop/join the one-window DSP statistics writer before emitting
+            // the coordinator-owned terminal gap into the same accumulator.
+            publish_terminal_gap(
+                line_sequence,
+                engine_.connected() ? sdr_core::SweepLineGapReason::Reconfigure : sdr_core::SweepLineGapReason::Disconnect
+            );
             state_.store(sdr_core::EngineState::Error, std::memory_order_release);
         }
     }
@@ -977,6 +1019,7 @@ private:
     std::string uri_;
     FixedBandEngine engine_;
     ContinuousSweepCoordinatorConfig config_;
+    std::shared_ptr<sdr_core::SweepStatisticsPublisher> statistics_;
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>> output_;
     std::mutex progress_mutex_;
     std::optional<sdr_core::SweepProgressFrame> progress_;

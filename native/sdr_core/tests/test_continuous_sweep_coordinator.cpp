@@ -3,8 +3,10 @@
 #include "sdr_core/errors.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <thread>
 
 namespace {
@@ -108,6 +110,59 @@ namespace {
         if (item == reason) return true;
     }
     return false;
+}
+
+void statistics_pipeline_test(bool single_window) {
+    auto config = single_window ? single_window_config() : coordinator_config();
+    config.output_queue_capacity = 1;
+    config.statistics = sdr_core::SweepStatisticsConfig{8, 8, -140, 20, 32U * 1024U * 1024U};
+    config.statistics_snapshot_rate_hz = 10;
+    sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+    owner.configure(config);
+    for (unsigned run = 0; run < 2; ++run) {
+        owner.start();
+        // Do not poll: final output supersession must not define observations.
+        if (!wait_for_completed(owner, 8)) throw std::runtime_error("statistics producer did not run");
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        owner.stop();
+        const auto metrics = owner.metrics();
+        const auto lines = owner.poll_lines(0);
+        if (metrics.has_error || metrics.output_snapshots_superseded == 0 || lines.empty()) {
+            throw std::runtime_error("statistics output-pressure run failed");
+        }
+        const auto& line = lines.back();
+        if (!line.statistics || line.statistics->epoch != config.epoch ||
+            line.statistics->source_id != config.segments.front().fixed_band.device.source_id ||
+            line.statistics->unit != line.unit || *line.statistics->frequencies_hz != *line.frequencies_hz ||
+            line.statistics->newest_pass_sequence > line.line_sequence) {
+            throw std::runtime_error("native trace/statistics provenance mismatch");
+        }
+        const auto& snapshot = *line.statistics;
+        if (single_window && (line.state != sdr_core::SweepLineState::Gap ||
+            snapshot.unique_passes_seen < metrics.completed_lines + 1 ||
+            snapshot.retained_passes != 8 || snapshot.newest_pass_sequence != line.line_sequence)) {
+            throw std::runtime_error("single-window relay/polling lost statistical observations");
+        }
+        const auto n = snapshot.frequencies_hz->size();
+        for (std::size_t f = 0; f < n; ++f) {
+            std::uint32_t sum = 0;
+            for (std::size_t p = 0; p < snapshot.power_bins; ++p) sum += (*snapshot.histogram_counts)[p * n + f];
+            if (sum != (*snapshot.observations)[f] || sum > 8 ||
+                (sum != 0 && !std::isfinite((*snapshot.average_db)[f]))) {
+                throw std::runtime_error("native statistics observation invariant failed");
+            }
+        }
+        // Same owner, new epoch: no stale histogram/identity from prior run.
+        ++config.epoch;
+        owner.configure(config);
+    }
+    auto denied = config;
+    denied.statistics->max_payload_bytes = 1;
+    bool rejected = false;
+    try { owner.configure(denied); } catch (const std::length_error&) { rejected = true; }
+    if (!rejected || owner.state() != sdr_core::EngineState::Configured) {
+        throw std::runtime_error("statistics memory admission changed owner state or failed to reject");
+    }
 }
 
 }  // namespace
@@ -306,6 +361,7 @@ int main() {
         _putenv_s("SDR_MOCK_LIBIIO_LO_WRITE_FAIL_AT_HZ", "2450500000");
         sdr_pluto::ContinuousSweepCoordinator prefix_failure("usb:mock");
         auto prefix_config = coordinator_config();
+        prefix_config.statistics = sdr_core::SweepStatisticsConfig{8, 8, -140, 20, 32U * 1024U * 1024U};
         prefix_failure.configure(prefix_config);
         prefix_failure.start();
         const auto prefix_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -321,7 +377,10 @@ int main() {
             prefix_lines[0].missing_segment_indices != std::vector<std::uint32_t>{1} ||
             prefix_lines[0].segment_generations[0].config_generation == 0 ||
             !std::isfinite(prefix_lines[0].values->front()) ||
-            !std::isnan(prefix_lines[0].values->back())) {
+            !std::isnan(prefix_lines[0].values->back()) || !prefix_lines[0].statistics ||
+            prefix_lines[0].statistics->unique_passes_seen != 1 ||
+            prefix_lines[0].statistics->observations->front() != 1 ||
+            prefix_lines[0].statistics->observations->back() != 0) {
             std::cerr << "second-segment failure discarded acquired coverage" << std::endl;
             return 27;
         }
@@ -337,6 +396,8 @@ int main() {
             rejected = true;
         }
         if (!rejected) return 6;
+        statistics_pipeline_test(false);
+        statistics_pipeline_test(true);
     } catch (const std::exception& error) {
         std::cerr << error.what() << std::endl;
         return 99;

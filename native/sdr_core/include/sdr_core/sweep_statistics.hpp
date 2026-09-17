@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace sdr_core {
@@ -59,7 +60,8 @@ public:
     // overhead, caller-owned input frames or additional retained snapshots.
     // Throws before allocation on overflow/invalid configuration/over budget.
     [[nodiscard]] static std::size_t required_payload_bytes(
-        const SweepStatisticsConfig& config, std::size_t frequency_bins
+        const SweepStatisticsConfig& config, std::size_t frequency_bins,
+        std::size_t retained_snapshot_slots = 1
     );
 
     // False for duplicates/stale revisions/closed or evicted passes. Terminal
@@ -102,6 +104,30 @@ private:
     std::uint64_t newest_sequence_{};
     std::uint64_t unique_passes_{};
     std::uint64_t updates_{};
+};
+
+// Shared native owner used by the DSP-thread one-window path and coordinator
+// multi-retune path. Consumes measurements before lossy publication queues.
+// A caller-supplied steady-clock value controls only snapshot cost, not RF time.
+class SweepStatisticsPublisher final {
+public:
+    SweepStatisticsPublisher(SweepStatisticsConfig config, SourceDescriptor source,
+        std::uint64_t epoch, SpectrumUnit unit, SharedArray<double> frequencies,
+        double snapshot_rate_hz, std::size_t retained_snapshot_slots);
+    void consume(SweepProgressFrame& frame, std::int64_t steady_ns);
+    void consume(SweepLineFrame& frame, std::int64_t steady_ns, bool force_snapshot = false);
+    [[nodiscard]] std::uint64_t newest_sequence() const;
+    [[nodiscard]] std::size_t payload_bytes() const noexcept { return payload_bytes_; }
+
+private:
+    void refresh(std::int64_t steady_ns, bool force);
+    std::size_t payload_bytes_{};
+    SweepStatisticsAccumulator accumulator_;
+    std::int64_t period_ns_{};
+    std::int64_t last_snapshot_ns_{};
+    std::uint64_t newest_sequence_{};
+    std::shared_ptr<const SweepStatisticsSnapshot> latest_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace sdr_core

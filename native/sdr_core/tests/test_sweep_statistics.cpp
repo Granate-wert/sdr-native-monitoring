@@ -219,6 +219,35 @@ void actual_assembler_overlap_and_gap() {
             "cancelled assembler pass not finalised");
     verify(a.snapshot(), {*lines[0].values, *gaps[0].values});
 }
+
+void bounded_publication_cadence() {
+    auto c = config();
+    const auto one = SweepStatisticsAccumulator::required_payload_bytes(c, 3);
+    const auto four = SweepStatisticsAccumulator::required_payload_bytes(c, 3, 4);
+    require(four > one, "retained snapshots omitted from budget");
+    c.max_payload_bytes = four - 1;
+    rejects([&] { SweepStatisticsPublisher denied(c, source(), 7, SpectrumUnit::DbfsBin, grid(), 10, 4); });
+    c.max_payload_bytes = four;
+    SweepStatisticsPublisher publisher(c, source(), 7, SpectrumUnit::DbfsBin, grid(), 10, 4);
+    auto first = partial(0, 1, {-80, nan, nan});
+    publisher.consume(first, 0);
+    require(first.statistics != nullptr, "initial native statistics not attached");
+    auto revision = partial(0, 2, {-20, -30, nan});
+    publisher.consume(revision, 1);
+    require(revision.statistics == first.statistics, "publication cadence copied histogram per revision");
+    auto final = terminal(0, {-20, -30, -40});
+    publisher.consume(final, 100'000'000);
+    verify(*final.statistics, {{-20, -30, -40}});
+    require(final.statistics != first.statistics && final.statistics->unique_passes_seen == 1,
+            "finalisation recounted same pass");
+    verify(*first.statistics, {{-80, nan, nan}});
+    auto gap = terminal(1, {nan, nan, nan}, SweepLineState::Gap);
+    rejects([&] { publisher.consume(gap, -1, true); });
+    publisher.consume(gap, 100'000'001, true);
+    require(gap.statistics->newest_pass_sequence == 1 && publisher.newest_sequence() == 1,
+            "forced terminal snapshot did not include latest pass");
+    verify(*gap.statistics, {{-20, -30, -40}, {nan, nan, nan}});
+}
 }  // namespace
 
 int main() {
@@ -227,6 +256,7 @@ int main() {
         errors_are_atomic_and_bounded();
         numerical_and_coalescing();
         actual_assembler_overlap_and_gap();
+        bounded_publication_cadence();
         std::cout << "Sweep statistics: replacement/order/gaps/budget/identity/numerical/2000-pass oracle PASS\n";
     } catch (const std::exception& error) {
         std::cerr << "Sweep statistics test failed: " << error.what() << '\n';
