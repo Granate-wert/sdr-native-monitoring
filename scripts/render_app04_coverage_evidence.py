@@ -30,7 +30,8 @@ def main():
             shell.select_appearance_locale(locale)
             shell.set_theme(theme)
             shell.resize(width, height)
-            harness.scene.sweep_coverage.clear()
+            harness.scene.clear_measurement()
+            harness.harness.page.visualization.waterfall_pane.clear_history(reset_kind=True)
             for phase, line, progress in (
                 ("first-partial", None, harness.early),
                 ("previous-partial", harness.previous, harness.early),
