@@ -128,7 +128,7 @@ void errors_are_atomic_and_bounded() {
             std::vector<float>{-10, -20, std::numeric_limits<float>::infinity()});
         if (fault == 7) f.values = std::make_shared<const std::vector<float>>(
             std::vector<float>{-10, -20, 4000});
-        if (fault == 8) f.values = std::make_shared<const std::vector<float>>(2, -10);
+        if (fault == 8) f.values = std::make_shared<const std::vector<float>>(2U, -10.0F);
         rejects([&] { static_cast<void>(a.update(f)); });
         verify(a.snapshot(), {{-80, -60, -40}});
         require(a.snapshot().update_sequence == 1, "failed input changed counters");
@@ -178,11 +178,52 @@ void numerical_and_coalescing() {
                 "publication count affected statistics");
     }
 }
+
+void actual_assembler_overlap_and_gap() {
+    SweepLineDefinition definition;
+    definition.source = source(); definition.epoch = 7;
+    definition.start_frequency_hz = 100e6; definition.stop_frequency_hz = 102e6;
+    definition.target_spacing_hz = 1e6; definition.max_inflight_lines = 2;
+    definition.segments = {
+        {0, 11, 100e6, 101e6}, {1, 12, 101e6, 102e6}
+    };
+    ContinuousSweepLineAssembler assembler(definition);
+    auto segment = [](std::uint32_t index, float value) {
+        SweepLineSegmentFrame result;
+        result.segment_index = index;
+        auto& f = result.spectrum;
+        f.source = source(); f.config_generation = 11 + index;
+        f.frame_sequence = index; f.timestamp_ns = 123;
+        f.center_frequency_hz = 101e6;
+        f.sample_rate_hz = f.analog_bandwidth_hz = 4e6;
+        f.fft_bin_width_hz = f.enbw_hz = f.nominal_rbw_hz = 1e6;
+        f.fft_size = 3; f.hop_size = 1;
+        f.frequencies_hz = grid();
+        f.values = std::make_shared<const std::vector<float>>(3, value);
+        return result;
+    };
+    auto a = accumulator();
+    require(assembler.admit(0, 1000, segment(0, -80)).empty(), "early terminal");
+    const auto p = assembler.preview(0);
+    require(p && a.update(*p), "actual assembler partial rejected");
+    verify(a.snapshot(), {{-80, -80, nan}});
+    const auto lines = assembler.admit(0, 1001, segment(1, -20));
+    require(lines.size() == 1 && a.update(lines[0]), "actual assembler terminal rejected");
+    verify(a.snapshot(), {*lines[0].values});
+    require((*a.snapshot().observations)[1] == 1, "RF overlap became two pass observations");
+    require(assembler.admit(1, 1002, segment(1, -40)).empty(), "early second terminal");
+    require(a.update(*assembler.preview(1)), "second actual partial rejected");
+    const auto gaps = assembler.flush(SweepLineGapReason::Cancellation);
+    require(gaps.size() == 1 && gaps[0].state == SweepLineState::Gap && a.update(gaps[0]),
+            "cancelled assembler pass not finalised");
+    verify(a.snapshot(), {*lines[0].values, *gaps[0].values});
+}
 }  // namespace
 
 int main() {
     replacement_and_late_terminal();
     errors_are_atomic_and_bounded();
     numerical_and_coalescing();
+    actual_assembler_overlap_and_gap();
     std::cout << "Sweep statistics: replacement/order/gaps/budget/identity/numerical/2000-pass oracle PASS\n";
 }

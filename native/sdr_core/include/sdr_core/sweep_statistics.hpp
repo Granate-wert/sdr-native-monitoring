@@ -52,6 +52,8 @@ public:
         SpectrumUnit unit,
         SharedArray<double> frequencies_hz
     );
+    SweepStatisticsAccumulator(const SweepStatisticsAccumulator&) = delete;
+    SweepStatisticsAccumulator& operator=(const SweepStatisticsAccumulator&) = delete;
 
     // Includes owned array payload + one live output snapshot, not allocator
     // overhead, caller-owned input frames or additional retained snapshots.

@@ -60,6 +60,7 @@ SweepStatisticsAccumulator::SweepStatisticsAccumulator(
         throw std::invalid_argument("Sweep statistics requires source and frequency grid");
     }
     static_cast<void>(to_wire(unit_));
+    static_cast<void>(to_wire(source_.source_type));
     const auto n = frequencies_->size();
     static_cast<void>(required_payload_bytes(config_, n));
     for (std::size_t i = 0; i < n; ++i) {
