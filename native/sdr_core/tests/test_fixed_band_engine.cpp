@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <stdexcept>
 #include <thread>
 
 #if defined(_WIN32)
@@ -142,10 +143,94 @@ namespace {
     }
 }
 
+void single_window_numerical_parity() {
+    // Actual libiio-mock acquisition -> native CPU DSP -> BOTH publication
+    // paths. Match the exact FFT identity, not nearest host arrival times.
+    std::uint64_t matched_total{};
+    for (const auto fft_size : {1024U, 4096U}) {
+        for (const auto window : {sdr_core::WindowType::Rectangular, sdr_core::WindowType::Hann}) {
+            for (const auto unit : {sdr_core::SpectrumUnit::DbfsBin, sdr_core::SpectrumUnit::DbfsHz}) {
+                for (const auto average : {1U, 4U}) {
+                    auto profile = config(2'450'000'000.0, 4U);
+                    profile.device.buffer_samples = fft_size;
+                    profile.dsp.fft_size = fft_size;
+                    profile.dsp.hop_size = fft_size;
+                    profile.dsp.batch_size = 1U;
+                    profile.dsp.window = window;
+                    profile.dsp.unit = unit;
+                    profile.dsp.detector = average == 1U ? sdr_core::DetectorType::Sample
+                                                       : sdr_core::DetectorType::AveragePower;
+                    profile.dsp.averaging_frames = average;
+                    profile.spectrum_queue_capacity = 64U;
+                    profile.snapshot_rate_hz = 1'000'000.0;
+                    profile.discard_blocks_after_start = 1U;
+                    profile.continuous_sweep_line = {
+                        .enabled = true,
+                        .epoch = 902U,
+                        .display_start_hz = 2'449'250'000.0,
+                        .display_stop_hz = 2'450'750'000.0,
+                        .usable_window_hz = 1'500'000.0,
+                        .output_queue_capacity = 64U,
+                        .analysis_bins_per_usable_window = fft_size / 2U,
+                        .line_snapshot_rate_hz = 2'000.0,
+                    };
+                    sdr_pluto::FixedBandEngine owner("usb:mock");
+                    const auto applied = owner.configure(profile);
+                    owner.start();
+                    const bool ready = wait_for_sweep_lines(owner, 8U);
+                    owner.stop();
+                    if (!ready) throw std::runtime_error("single-window parity timed out");
+                    const auto spectra = owner.poll_spectrum_frames(0U);
+                    const auto lines = owner.poll_sweep_line_frames(0U);
+                    std::uint64_t matched{};
+                    for (const auto& line : lines) {
+                        const auto found = std::find_if(spectra.begin(), spectra.end(), [&line](const auto& frame) {
+                            return frame.frame_sequence == line.line_sequence;
+                        });
+                        if (found == spectra.end()) continue;
+                        const auto& frame = *found;
+                        if (line.state != sdr_core::SweepLineState::Complete || line.unit != frame.unit ||
+                            line.epoch != 902U || line.values->size() != fft_size / 2U ||
+                            line.acquired_segments.size() != 1U || frame.averaging_frames != average) {
+                            throw std::runtime_error("single-window parity metadata mismatch");
+                        }
+                        const auto& acquired = line.acquired_segments.front();
+                        if (acquired.frame_sequence != frame.frame_sequence ||
+                            acquired.first_sample_index != frame.first_sample_index ||
+                            acquired.timestamp_ns != frame.timestamp_ns || acquired.sample_rate_hz != frame.sample_rate_hz ||
+                            acquired.fft_size != frame.fft_size || acquired.config_generation != applied.config_generation ||
+                            acquired.quality_flags != frame.quality_flags || frame.config_generation != applied.config_generation) {
+                            throw std::runtime_error("single-window parity lost acquisition provenance");
+                        }
+                        for (std::size_t index = 0; index < line.values->size(); ++index) {
+                            const auto source_index = fft_size / 4U + index;
+                            if ((*line.frequencies_hz)[index] != (*frame.frequencies_hz)[source_index] ||
+                                !std::isfinite((*line.values)[index]) || !std::isfinite((*frame.values)[source_index]) ||
+                                std::abs((*line.values)[index] - (*frame.values)[source_index]) > 1e-4F ||
+                                (*line.quality_flags_per_bin)[index] != static_cast<std::uint32_t>(frame.quality_flags) ||
+                                (*line.source_segment_indices)[index] != 0) {
+                                throw std::runtime_error("single-window crop changed numerical values/grid/quality");
+                            }
+                        }
+                        ++matched;
+                    }
+                    if (matched < 4U || owner.streaming() || owner.state() != sdr_core::EngineState::Stopped) {
+                        throw std::runtime_error("single-window parity requires four matched FFTs and clean stop");
+                    }
+                    matched_total += matched;
+                }
+            }
+        }
+    }
+    std::cout << "APP-04 single-window parity: 16 configurations, " << matched_total
+              << " exact-identity FFT/line pairs; tolerance 1e-4 dB" << std::endl;
+}
+
 }  // namespace
 
 int main() {
     try {
+        single_window_numerical_parity();
         {
             auto oversized = config();
             oversized.dsp.fft_size = 262144U;

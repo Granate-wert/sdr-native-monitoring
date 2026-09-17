@@ -35,9 +35,10 @@ struct ContinuousSweepLineConfig {
     // have at least this density before the line assembler is allowed to
     // interpolate down onto the analysis grid.
     std::uint32_t analysis_bins_per_usable_window{};
-    // Rate of completed reduced lines, paced by native FFT timestamps. It is
+    // Rate of completed reduced lines, quota-paced by elapsed host time. It is
     // separate from the Qt/render cadence and bounds native line assembly.
-    // Evidence may select a higher finite cadence without raising Render FPS.
+    // RF frame timestamps stay unchanged. Evidence may select a higher finite
+    // cadence without raising Render FPS; quota never fabricates a frame.
     double line_snapshot_rate_hz{60.0};
 };
 

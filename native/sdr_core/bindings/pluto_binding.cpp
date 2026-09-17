@@ -514,6 +514,35 @@ void bind_pluto(py::module_& module) {
             return result;
         });
 
+    // Test-only CPU-DSP output -> real single-segment assembler seam. No
+    // device access or invented spectrum values, times or generation IDs.
+    module.def("_make_test_single_segment_line", [](const SpectrumFrame& frame,
+                                                   std::uint32_t first_bin,
+                                                   std::uint32_t bin_count) {
+        validate(frame);
+        const auto count = frame.values->size();
+        if (bin_count < 256U || (bin_count & (bin_count - 1U)) != 0U ||
+            first_bin >= count || bin_count > count - first_bin) {
+            throw std::invalid_argument("test crop must be an in-bounds power of two >= 256");
+        }
+        SweepLineDefinition definition;
+        definition.source = frame.source;
+        definition.epoch = 902U;
+        definition.start_frequency_hz = (*frame.frequencies_hz)[first_bin];
+        definition.target_spacing_hz = frame.fft_bin_width_hz;
+        definition.analysis_window_hz = bin_count * frame.fft_bin_width_hz;
+        definition.stop_frequency_hz = definition.start_frequency_hz + definition.analysis_window_hz;
+        definition.analysis_bins_per_usable_window = bin_count;
+        definition.physical_fft_bin_width_hz = frame.fft_bin_width_hz;
+        definition.physical_fft_size = frame.fft_size;
+        definition.unit = frame.unit;
+        definition.max_inflight_lines = 1U;
+        definition.segments = {{0, frame.config_generation,
+                               definition.start_frequency_hz, definition.stop_frequency_hz}};
+        ContinuousSweepLineAssembler assembler(definition);
+        return assembler.admit(frame.frame_sequence, frame.timestamp_ns, {0, frame}).at(0);
+    });
+
     // Explicit deterministic test-only fixture: no device, I/Q, RF clock or
     // throughput claim. Exercises the real accumulator and array ownership.
     module.def("_make_test_sweep_position_frames", []() {
