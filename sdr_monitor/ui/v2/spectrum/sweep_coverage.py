@@ -8,8 +8,8 @@ import numpy as np
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
-from .contracts import EnvelopeTrace, SpectrumFrameView
-from .envelope import peak_preserving_envelope
+from .contracts import EnvelopeTrace
+from .envelope_batch import bucket_batches, extrema_rows
 
 CURRENT = 1
 PREVIOUS = 2
@@ -88,30 +88,33 @@ class SweepCoverageState:
         stop = min(count, int(np.searchsorted(frequencies, right, side="right")) + 1)
         edges: list[float] = []
         states: list[int] = []
-        history_x: list[float] = []
-        history_y: list[float] = []
+        history_x: list[np.ndarray] = []
+        history_y: list[np.ndarray] = []
         if stop > start:
             bucket_size = ceil((stop - start) / max(1, min(MAX_COLUMNS, int(width))))
             edges.append(_edge(frequencies, start))
-            for lower in range(start, stop, bucket_size):
-                upper = min(stop, lower + bucket_size)
-                current = np.isfinite(frame.values_db[lower:upper])
-                old = (self.previous.values_db[lower:upper] if self.previous is not None
-                       else np.full(upper - lower, np.nan, dtype=np.float32))
-                historical = ~current & np.isfinite(old)
-                absent = ~current & ~historical
-                states.append((CURRENT if np.any(current) else 0)
-                              | (PREVIOUS if np.any(historical) else 0)
-                              | (MISSING if np.any(absent) else 0))
-                edges.append(_edge(frequencies, upper))
+            for offset, rows, size in bucket_batches(stop - start, bucket_size):
+                lower, upper = start + offset, start + offset + rows * size
+                current = np.isfinite(frame.values_db[lower:upper].reshape(rows, size))
+                current_count = np.count_nonzero(current, axis=1)
+                flags = (current_count > 0).astype(np.uint8) * CURRENT
                 if self.previous is not None:
-                    view = SpectrumFrameView(self.previous, frequencies[lower:upper],
-                                             np.where(historical, old, np.nan), frame.unit)
-                    envelope = peak_preserving_envelope(view, 1)
-                    history_x.extend(envelope.frequencies_hz)
-                    history_y.extend(envelope.values)
+                    old = self.previous.values_db[lower:upper].reshape(rows, size)
+                    historical = ~current & np.isfinite(old)
+                    history_count = np.count_nonzero(historical, axis=1)
+                    flags |= (history_count > 0).astype(np.uint8) * PREVIOUS
+                    x, y = extrema_rows(frequencies[lower:upper].reshape(rows, size), old,
+                                        historical, keep_small=True)
+                    history_x.append(x)
+                    history_y.append(y)
+                else:
+                    history_count = 0
+                flags |= (current_count + history_count < size).astype(np.uint8) * MISSING
+                states.extend(flags)
+                edges.extend(_edge(frequencies, index) for index in range(lower + size, upper + 1, size))
         arrays = (np.asarray(edges, dtype=np.float64), np.asarray(states, dtype=np.uint8),
-                  np.asarray(history_x, dtype=np.float64), np.asarray(history_y, dtype=np.float64))
+                  np.concatenate(history_x) if history_x else np.empty(0, dtype=np.float64),
+                  np.concatenate(history_y) if history_y else np.empty(0, dtype=np.float64))
         for array in arrays:
             array.setflags(write=False)
         return CoverageProjection(arrays[0], arrays[1], EnvelopeTrace(
