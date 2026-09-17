@@ -987,6 +987,9 @@ private:
             try {
                 if (engine_.state() == sdr_core::EngineState::Running) {
                     engine_.stop();
+                } else if (engine_.state() == sdr_core::EngineState::Stopping ||
+                           engine_.state() == sdr_core::EngineState::Error) {
+                    engine_.join();
                 }
             } catch (...) {
             }

@@ -21,6 +21,7 @@
     },
     {
       "name": "windows-msvc-cpu",
+      "environment": { "VSLANG": "1033" },
       "displayName": "Windows MSVC CPU + Pluto Release",
       "inherits": "base-cpu",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-cpu",

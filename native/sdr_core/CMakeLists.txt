@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.25)
 
 project(sdr_core VERSION 0.6.0 LANGUAGES CXX)
 
+# Localized /showIncludes can be cached with the wrong encoding by CMake.
+# Our Windows presets fix MSVC output to English; explicitly match it even
+# when reusing a compiler cache originally configured in another locale.
+if(MSVC AND "$ENV{VSLANG}" STREQUAL "1033")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "Note: including file: ")
+endif()
+
 option(SDR_CORE_BUILD_PYTHON "Build the sdr_monitor._sdr_native Python extension" ON)
 option(SDR_CORE_BUILD_TESTS "Build native tests" ON)
 option(SDR_CORE_ENABLE_PLUTO "Enable the Pluto/libiio backend" OFF)

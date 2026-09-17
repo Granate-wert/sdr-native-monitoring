@@ -43,7 +43,7 @@ struct SweepStatisticsSnapshot {
 // Single-owner native kernel. No Qt, device, timer, publication queue or DSP
 // reprocessing. The coordinator must feed it BEFORE display coalescing.
 // Identity/grid are fixed for its lifetime; a new epoch requires a new kernel.
-// Not yet wired into the product coordinator or Python render contract.
+// The native coordinator is wired; Python render-contract exposure is separate.
 class SweepStatisticsAccumulator final {
 public:
     SweepStatisticsAccumulator(
@@ -56,7 +56,7 @@ public:
     SweepStatisticsAccumulator(const SweepStatisticsAccumulator&) = delete;
     SweepStatisticsAccumulator& operator=(const SweepStatisticsAccumulator&) = delete;
 
-    // Includes owned array payload + one live output snapshot, not allocator
+    // Includes owned array payload + bounded retained output snapshots, not allocator
     // overhead, caller-owned input frames or additional retained snapshots.
     // Throws before allocation on overflow/invalid configuration/over budget.
     [[nodiscard]] static std::size_t required_payload_bytes(

@@ -83,6 +83,7 @@ if ($Clean) {
 }
 
 $vsInstall = Import-MsvcEnvironment
+$env:VSLANG = '1033'
 $cmake = Join-Path $vsInstall "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 $ctest = Join-Path $vsInstall "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
 $ninjaDir = Join-Path $vsInstall "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
@@ -126,7 +127,24 @@ if ($Lane -eq "CUDA") {
 Push-Location $sourceDir
 try {
     Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset, "-DSDR_CORE_PYTHON_OUTPUT_DIR=$artifactDir")
-    Invoke-Checked -FilePath $cmake -Arguments @("--build", "--preset", $buildPreset)
+    $nativeBuildDir = Join-Path $sourceDir "out/build/$configurePreset"
+    $ninja = Join-Path $ninjaDir 'ninja.exe'
+    $dependencyObject = 'CMakeFiles/sdr_core.dir/src/core/sweep_line_assembler.cpp.obj'
+    $dependencyPattern = 'include[\\/]sdr_core[\\/]types\.hpp'
+    $buildArguments = @('--build', '--preset', $buildPreset)
+    if (Test-Path -LiteralPath (Join-Path $nativeBuildDir $dependencyObject)) {
+        $existingDependencies = (& $ninja -C $nativeBuildDir -t deps $dependencyObject) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or $existingDependencies -notmatch $dependencyPattern) {
+            Write-Warning 'Native header dependencies missing: rebuilding generated objects before acceptance.'
+            $buildArguments += '--clean-first'
+        }
+    }
+    Invoke-Checked -FilePath $cmake -Arguments $buildArguments
+    $verifiedDependencies = (& $ninja -C $nativeBuildDir -t deps $dependencyObject) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $verifiedDependencies -notmatch $dependencyPattern) {
+        throw 'Native header dependency verification failed; refusing to activate or package a stale-ABI build.'
+    }
+    Write-Host 'Native header dependency verification PASS (sweep_line_assembler -> types.hpp)'
     if (-not $SkipTests) {
         Invoke-Checked -FilePath $ctest -Arguments @("--preset", $testPreset)
     }
