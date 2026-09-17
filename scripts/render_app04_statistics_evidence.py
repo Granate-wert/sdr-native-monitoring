@@ -12,6 +12,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
+from sdr_monitor.domain.sweep_speed import SweepSpeedProfile
 from sdr_monitor.services.native_continuous_sweep import _to_domain_line, _to_domain_progress
 from sdr_monitor.ui.v2.i18n import UiLocale
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
@@ -22,7 +23,9 @@ from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
-    output = parser.parse_args().output_dir.resolve()
+    parser.add_argument("--show-profile", choices=[item.value for item in SweepSpeedProfile])
+    args = parser.parse_args()
+    output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     native = importlib.import_module("sdr_monitor._sdr_native")
     partial, terminal = native._make_test_sweep_statistics_frames()
@@ -34,12 +37,17 @@ def main() -> None:
         harness.select_and_apply()
         page = harness.page
         page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.SWEEP))
+        if args.show_profile is not None:
+            choice = page.drawer.sweep_profile.choice
+            choice.setCurrentIndex(choice.findData(args.show_profile))
         page.start_frequency.setValue(100)
         page.stop_frequency.setValue(104.095)
         snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics(), partial)
         with patch.object(_FakeAnalyzerDisplay, "poll_latest", side_effect=lambda: snapshot):
             page.primary.click()
             harness.wait(lambda: page._last_statistics_key is not None)
+            if args.show_profile is not None:
+                page.settings.click()
             for width, height in ((1920, 1080), (2560, 1440)):
                 harness.shell.resize(width, height)
                 harness.app.processEvents()
