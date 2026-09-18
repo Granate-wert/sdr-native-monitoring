@@ -94,6 +94,10 @@ class LiveViewState:
     waterfall_line: object | None
     analyzer_bundle: AnalyzerFrameBundle | None = None
     measurement_unavailable_reason: str | None = None
+    # Control-plane observations, never measurement/session state. None means
+    # no valid discovery result, not an empty result.
+    discovery_pending: bool = False
+    discovery_count: int | None = None
 
 
 def build_live_view_state(

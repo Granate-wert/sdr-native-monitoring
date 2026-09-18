@@ -54,6 +54,8 @@ class LiveViewModel:
         self._now_ns = now_ns
         self._busy = False
         self._command_error: str | None = None
+        self._discovery_pending = False
+        self._discovery_count: int | None = None
         self._last_snapshot: object | None = None
         self._layer_cache = AnalyzerLayerCache()
         self._listeners: list[Callable[[LiveViewState], None]] = []
@@ -110,9 +112,7 @@ class LiveViewModel:
         if not self._state.primary_action_enabled:
             return False
         if action is LiveAction.DISCOVER:
-            self._begin_explicit_command()
-            self._presenter.discover_devices()
-            return True
+            return self.discover_devices()
         if action is LiveAction.START:
             self._begin_explicit_command()
             self._presenter.start()
@@ -132,7 +132,12 @@ class LiveViewModel:
         if self._busy:
             return False
         self._begin_explicit_command()
-        self._presenter.discover_devices()
+        self._discovery_pending = True
+        try:
+            self._presenter.discover_devices()
+        except Exception as error:
+            self._on_task_failed(str(error))
+            return False
         return True
 
     def select_device(self, device_id: str) -> bool:
@@ -199,12 +204,22 @@ class LiveViewModel:
         self._layer_cache.clear()
 
     def _on_devices_discovered(self, devices: object) -> None:
+        valid_sequence = isinstance(devices, Iterable) and not isinstance(devices, (str, bytes))
         if isinstance(devices, Iterable) and not isinstance(devices, (str, bytes)):
             self._devices = tuple(devices)
         else:
             self._devices = ()
+        # Success and busy=False are separate public signals. Keep the search
+        # label until the command settles, without a one-frame generic-busy flash.
+        self._discovery_pending = self._discovery_pending and self._busy
+        # A malformed payload is not evidence that no receiver was found.
+        identifiers = tuple(getattr(device, "device_id", None) for device in self._devices)
+        valid_devices = all(isinstance(identifier, str) and bool(identifier.strip())
+                            for identifier in identifiers)
+        self._discovery_count = len(self._devices) if valid_sequence and valid_devices else None
         for listener in tuple(self._device_listeners):
             listener(self._devices)
+        self._publish()
 
     def _on_snapshot(self, snapshot: object) -> None:
         self._last_snapshot = snapshot
@@ -212,17 +227,24 @@ class LiveViewModel:
 
     def _on_busy_changed(self, busy: bool) -> None:
         self._busy = bool(busy)
+        if not self._busy:
+            self._discovery_pending = False
         self._publish()
 
     def _on_task_failed(self, error: str) -> None:
         # Command failure is presentation control-plane state. It must remain
         # visible without rewriting immutable measurement/session truth.
         self._command_error = str(error)
+        self._discovery_pending = False
+        self._discovery_count = None
         self._publish()
 
     def _begin_explicit_command(self) -> None:
-        if self._command_error is not None:
+        if (self._command_error is not None or self._discovery_pending
+                or self._discovery_count is not None):
             self._command_error = None
+            self._discovery_pending = False
+            self._discovery_count = None
             self._publish()
 
     def _publish(self) -> None:
@@ -236,5 +258,8 @@ class LiveViewModel:
             state if self._command_error is None else
             replace(state, error_label=self._command_error, error_kind="command-not-measurement")
         )
+        if self._discovery_pending or self._discovery_count is not None:
+            self._state = replace(self._state, discovery_pending=self._discovery_pending,
+                                  discovery_count=self._discovery_count)
         for listener in tuple(self._listeners):
             listener(self._state)

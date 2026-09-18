@@ -24,6 +24,7 @@ def urgent_status_key(state: AnalyzerViewState) -> tuple[object, ...]:
         current_locale(), state.mode, state.configuration_pending, state.starting,
         state.stopping, state.running, state.error, state.stop_required,
         state.live.error_kind, source_loss, bool(state.live.loss.source_blocks),
+        state.live.busy, state.live.discovery_pending, state.live.discovery_count,
         state.live.loss.acquisition_blocks, state.live.loss.fft_frames,
         None if age is None else age >= 1000,
         bundle is not None, getattr(frame, "source_id", None),

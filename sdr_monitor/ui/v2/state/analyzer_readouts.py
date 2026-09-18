@@ -22,10 +22,17 @@ def analyzer_status(state: AnalyzerViewState) -> str:
         phase = text("analyzer.stopping")
     elif state.error:
         phase = text("analyzer.failed_last" if bundle is not None else "analyzer.failed")
+    elif state.live.busy:
+        phase = text("analyzer.discovering" if state.live.discovery_pending else "analyzer.busy")
+        if bundle is not None:
+            phase += " · " + text("analyzer.retained_frame")
     elif state.running:
         phase = text("analyzer.running")
     else:
         phase = text("analyzer.stopped_last" if bundle is not None else "analyzer.idle")
+        if state.live.discovery_count is not None:
+            phase += " · " + (text("analyzer.discovery_empty") if state.live.discovery_count == 0
+                               else text("analyzer.discovery_found", count=state.live.discovery_count))
     if bundle is None:
         return phase + " · " + text("analyzer.unavailable")
     frame = bundle.spectrum
