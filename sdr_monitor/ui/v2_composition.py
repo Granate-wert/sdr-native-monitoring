@@ -73,6 +73,7 @@ def build_v2_shell(services=None):
     from ..application.analyzer_continuous_sweep import AnalyzerContinuousSweepApplicationService
     from ..ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
     from ..ui.v2.state.prepared_sweep import prepare_sweep_snapshot
+    from ..ui.v2.state.prepared_live import LiveSnapshotPreparer
     display = getattr(services, "analyzer_display", None)
     if display is None:
         display = NativeLiveContinuousSweepDisplayService(services.live_sdr)
@@ -92,7 +93,7 @@ def build_v2_shell(services=None):
         snapshot_preparer=prepare_sweep_snapshot,
     )
     composition = compose_v2_live_product(
-        LivePresenter(live_application),
+        LivePresenter(live_application, snapshot_preparer=LiveSnapshotPreparer()),
         analyzer_presenter=analyzer_presenter,
         sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep, analyzer=analyzer)),
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),

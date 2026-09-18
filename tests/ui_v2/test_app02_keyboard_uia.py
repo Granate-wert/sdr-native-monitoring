@@ -31,6 +31,8 @@ class App02KeyboardUiaTests(unittest.TestCase):
         self.fixture = product_fixture.AnalyzerWorkspaceProductTests("runTest")
         self.fixture.app = self.app
         self.fixture.setUp()
+        self._clock_ns = time.time_ns()
+        self.fixture.composition.view_model._now_ns = lambda: self._clock_ns
 
     def tearDown(self) -> None:
         try:
@@ -49,7 +51,7 @@ class App02KeyboardUiaTests(unittest.TestCase):
         values[width // 2 + sequence % 31] = -28.0
         frame = LiveSpectrumFrame(
             sequence=sequence,
-            timestamp_ns=time.time_ns(),
+            timestamp_ns=self._clock_ns - 10_000_000,
             timestamp_quality=TimestampQuality.ESTIMATED,
             clock_domain="unix_ns",
             source_id="fake-pluto-usb",
@@ -76,7 +78,7 @@ class App02KeyboardUiaTests(unittest.TestCase):
         )
         self.fixture.live._snapshot = delivered
         self.fixture.presenter._emit_snapshot(delivered)
-        self.app.processEvents()
+        self.fixture.wait(lambda: self.fixture.composition.view_model.state.spectrum is frame)
         return frame
 
     def test_100_actual_publications_retain_canvas_viewport_and_markers(self) -> None:

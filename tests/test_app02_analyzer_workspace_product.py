@@ -233,7 +233,7 @@ class AnalyzerWorkspaceProductTests(unittest.TestCase):
         applied = replace(snapshot.applied, applied=replace(snapshot.applied.applied, gain_db=20))
         delivered = replace(snapshot, generation=snapshot.generation + 1, applied=applied)
         self.presenter._emit_snapshot(delivered)
-        self.app.processEvents()
+        self.wait(lambda: self.composition.view_model.state.snapshot is delivered)
         self.assertFalse(self.composition.analyzer_view_model.state.configuration_pending)
         self.assertEqual(self.page.primary.text(), text("analyzer.start"))
         self.assertTrue(self.page.primary.isEnabled())

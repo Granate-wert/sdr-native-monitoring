@@ -125,7 +125,7 @@ class FrequencyBarProductTests(unittest.TestCase):
         delivered = replace(snapshot, spectrum=frame)
         f.live._snapshot = delivered
         f.presenter._emit_snapshot(delivered)
-        f.app.processEvents()
+        f.wait(lambda: f.composition.view_model.state.snapshot is delivered)
         bar = f.page.frequency_bar
         view = f.page.visualization.spectrum_scene.view_box
         with patch.object(f.composition.view_model, "apply_configuration") as apply:

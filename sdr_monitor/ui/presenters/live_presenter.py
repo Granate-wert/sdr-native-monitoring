@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, replace
 import threading
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 
 from ...application import LiveSessionUseCases
 from ...domain import LiveConfiguration, LiveSnapshot
@@ -29,6 +30,15 @@ def _poll_interval_ms(display_fps: int) -> int:
     return max(1, round(1000.0 / (2.0 * display_fps)))
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedDelivery:
+    snapshot: LiveSnapshot
+    revision: int
+    render: bool
+    value: object | None = None
+    error: str | None = None
+
+
 class LivePresenter(QObject):
     """Moves all potentially blocking service methods off the Qt GUI thread."""
 
@@ -38,8 +48,13 @@ class LivePresenter(QObject):
     busy_changed = Signal(bool)
     render_ready = Signal(object)
     analyzer_ready = Signal(object)
+    prepared_snapshot_ready = Signal(object)
+    _prepared_control_ready = Signal(object)
+    _prepared_render_done = Signal(object)
+    _prepared_command_done = Signal(object)
 
-    def __init__(self, use_cases: LiveSessionUseCases, parent: QObject | None = None) -> None:
+    def __init__(self, use_cases: LiveSessionUseCases, parent: QObject | None = None, *,
+                 snapshot_preparer: Callable[[LiveSnapshot], object] | None = None) -> None:
         super().__init__(parent)
         self._use_cases = use_cases
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-live")
@@ -51,6 +66,15 @@ class LivePresenter(QObject):
         self._publication_lock = threading.Lock()
         self._control_revision = 0
         self._offered_control_revision = 0
+        self._snapshot_preparer = snapshot_preparer
+        self._preparation_future: Future[_PreparedDelivery] | None = None
+        self._pending_preparation: tuple[LiveSnapshot, int, bool] | None = None
+        self._preparation_superseded = 0
+        self._preparation_stale = 0
+        self._pending_commands = 0
+        self._prepared_control_ready.connect(self._deliver_prepared, Qt.ConnectionType.QueuedConnection)
+        self._prepared_render_done.connect(self._finish_preparation, Qt.ConnectionType.QueuedConnection)
+        self._prepared_command_done.connect(self._finish_prepared_command, Qt.ConnectionType.QueuedConnection)
         # GUI-rate coalescing intentionally has no service reference.  This
         # keeps acquisition/control ownership in the presenter and makes the
         # display clock independently testable and bounded to one snapshot.
@@ -125,8 +149,22 @@ class LivePresenter(QObject):
         return self._display_scheduler.fps
 
     @property
+    def prepares_snapshots(self) -> bool:
+        return self._snapshot_preparer is not None
+
+    @property
+    def preparation_superseded(self) -> int:
+        """Replaced waiting display requests, never analytical FFT loss."""
+        return self._preparation_superseded
+
+    @property
+    def preparation_stale(self) -> int:
+        """Prepared display results rejected after a control revision changed."""
+        return self._preparation_stale
+
+    @property
     def superseded_renders(self) -> int:
-        return self._display_scheduler.superseded
+        return self._display_scheduler.superseded + self._preparation_superseded
 
     @property
     def display_metrics(self) -> DisplaySchedulerMetrics:
@@ -150,6 +188,8 @@ class LivePresenter(QObject):
         """Begin a controlled UI measurement without changing render state."""
 
         self._display_scheduler.reset_metrics()
+        self._preparation_superseded = 0
+        self._preparation_stale = 0
 
     def _start_polling(self) -> None:
         if self._poll_started:
@@ -173,6 +213,7 @@ class LivePresenter(QObject):
         if self._closed:
             return
         self._closing = True
+        self._pending_preparation = None
         if not self._shutdown_presentation_complete:
             self._display_scheduler.shutdown()
             self._poll_timer.stop()
@@ -196,6 +237,29 @@ class LivePresenter(QObject):
     def _submit(self, operation: Callable[[], Any], on_success: Callable[[Any], None]) -> None:
         if self._closed or self._closing:
             return
+        if self.prepares_snapshots:
+            # Invalidate at command acceptance, not only after a slow Stop/Apply
+            # finishes. At most the one already-running preparation precedes it.
+            with self._publication_lock:
+                self._control_revision += 1
+                revision = self._control_revision
+            if self._pending_preparation is not None:
+                self._preparation_stale += 1
+                self._pending_preparation = None
+            self._pending_commands += 1
+            self.busy_changed.emit(True)
+            # Preparation is part of the command future. Even an immediately
+            # completed operation cannot release Busy before its prepared state
+            # is acknowledged on GUI (Future callbacks may run inline).
+            def run():
+                value = operation()
+                return (self._prepare(value, revision, render=False)
+                        if on_success == self._emit_snapshot else value)
+
+            future = self._executor.submit(run)
+            future.add_done_callback(lambda result: self._prepared_command_done.emit(
+                (result, on_success, revision)))
+            return
         self.busy_changed.emit(True)
         future = self._executor.submit(operation)
         future.add_done_callback(lambda result: self._complete(result, on_success))
@@ -213,6 +277,15 @@ class LivePresenter(QObject):
     def _emit_snapshot(self, snapshot: LiveSnapshot) -> None:
         with self._publication_lock:
             self._control_revision += 1
+            revision = self._control_revision
+        if self.prepares_snapshots:
+            if QThread.currentThread() == self.thread():
+                # Explicit refresh/test seam may run on GUI; never prepare there.
+                # Reuse the bounded presentation slot instead of queuing work.
+                self._offer_preparation(snapshot, revision, render=False)
+            else:
+                self._prepared_control_ready.emit(self._prepare(snapshot, revision, render=False))
+            return
         self.snapshot_changed.emit(snapshot)
         self._emit_analyzer(snapshot)
 
@@ -220,6 +293,10 @@ class LivePresenter(QObject):
         with self._publication_lock:
             if self._offered_control_revision != self._control_revision:
                 return  # A queued old RUNNING frame cannot undo Stop/Apply.
+            revision = self._control_revision
+        if self.prepares_snapshots:
+            self._offer_preparation(snapshot, revision)
+            return
         self.render_ready.emit(snapshot)
         self._emit_analyzer(snapshot)
 
@@ -233,3 +310,99 @@ class LivePresenter(QObject):
             self.task_failed.emit(f"Analyzer publication rejected: {error}")
             return
         self.analyzer_ready.emit(bundle)
+
+    def _offer_preparation(self, snapshot: LiveSnapshot, revision: int, *, render: bool = True) -> None:
+        if self._closing or self._closed:
+            return
+        if self._pending_preparation is not None:
+            self._preparation_superseded += 1
+        self._pending_preparation = (snapshot, revision, render)
+        self._dispatch_preparation()
+
+    def _dispatch_preparation(self) -> None:
+        if self._pending_commands or self._preparation_future is not None or self._pending_preparation is None:
+            return
+        snapshot, revision, render = self._pending_preparation
+        self._pending_preparation = None
+        with self._publication_lock:
+            current = revision == self._control_revision
+        if not current:
+            self._preparation_stale += 1
+            return
+        future = self._executor.submit(self._prepare, snapshot, revision, render)
+        self._preparation_future = future
+        # Keep the slot occupied until GUI acknowledgement, even after work
+        # finishes. A stalled GUI cannot accumulate prepared packets/signals.
+        future.add_done_callback(self._prepared_render_done.emit)
+
+    def _prepare(self, snapshot: LiveSnapshot, revision: int, render: bool) -> _PreparedDelivery:
+        assert self._snapshot_preparer is not None
+        with self._publication_lock:
+            if revision != self._control_revision:
+                return _PreparedDelivery(snapshot, revision, render)
+        try:
+            value = self._snapshot_preparer(snapshot)
+            return _PreparedDelivery(snapshot, revision, render, value)
+        except Exception as error:
+            return _PreparedDelivery(snapshot, revision, render, error=str(error))
+
+    @Slot(object)
+    def _finish_prepared_command(self, completion: tuple[Future[Any], Callable[[Any], None], int]) -> None:
+        future, on_success, revision = completion
+        try:
+            if self._closed or self._closing or future.cancelled():
+                return
+            with self._publication_lock:
+                current = revision == self._control_revision
+                if current:
+                    # Polls made while the command was busy observed its OLD
+                    # service state. Seal that interval before terminal delivery,
+                    # including failure, so none can overwrite this acknowledgement.
+                    self._control_revision += 1
+                acknowledged_revision = self._control_revision
+            if not current:
+                self._preparation_stale += 1
+                return
+            value = future.result()  # completion notification, never a GUI wait
+            if isinstance(value, _PreparedDelivery):
+                self._deliver_prepared(replace(value, revision=acknowledged_revision))
+            else:
+                on_success(value)
+        except Exception as error:
+            self.task_failed.emit(str(error))
+        finally:
+            self._pending_commands -= 1
+            if not self._closing and not self._closed:
+                self.busy_changed.emit(self._pending_commands > 0)
+                self._dispatch_preparation()
+
+    @Slot(object)
+    def _finish_preparation(self, future: Future[_PreparedDelivery]) -> None:
+        if future is not self._preparation_future:
+            return
+        try:
+            if not future.cancelled():
+                self._deliver_prepared(future.result())  # already complete; never GUI wait
+        finally:
+            self._preparation_future = None
+        if not self._closed and not self._closing:
+            self._dispatch_preparation()
+
+    @Slot(object)
+    def _deliver_prepared(self, delivery: _PreparedDelivery) -> None:
+        if self._closed or self._closing:
+            return
+        with self._publication_lock:
+            current = delivery.revision == self._control_revision
+        if not current:
+            self._preparation_stale += 1
+            return
+        if delivery.error is not None:
+            self.task_failed.emit("Live display preparation failed: " + delivery.error)
+            return
+        self.prepared_snapshot_ready.emit(delivery.value)
+        # Compatibility observers receive the same snapshot; V2 subscribes only
+        # to prepared_snapshot_ready, so no deep GUI conversion is repeated.
+        signal = self.render_ready if delivery.render else self.snapshot_changed
+        signal.emit(delivery.snapshot)
+        self.analyzer_ready.emit(getattr(delivery.value, "analyzer_bundle", None))

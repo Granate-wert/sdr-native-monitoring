@@ -18,6 +18,7 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, bundle_from_live
 from ..i18n import text
 from .analyzer_layers import persistence_density_from_native, waterfall_line_from_spectrum
 from .analyzer_layer_cache import AnalyzerLayerCache
+from ..spectrum.contracts import PreparedSpectrumFrame
 
 
 class LiveAction(StrEnum):
@@ -98,6 +99,7 @@ class LiveViewState:
     # no valid discovery result, not an empty result.
     discovery_pending: bool = False
     discovery_count: int | None = None
+    prepared_spectrum: PreparedSpectrumFrame | None = None
 
 
 def build_live_view_state(
@@ -106,6 +108,7 @@ def build_live_view_state(
     busy: bool = False,
     now_ns: int | None = None,
     layer_cache: AnalyzerLayerCache | None = None,
+    prepared_measurement: LiveViewState | None = None,
 ) -> LiveViewState:
     """Map a public immutable snapshot to labels and enabled controls.
 
@@ -114,6 +117,8 @@ def build_live_view_state(
     fields when they are present. Missing data is unavailable, never inferred.
     """
 
+    if prepared_measurement is not None and prepared_measurement.snapshot is not snapshot:
+        raise ValueError("Prepared Live measurement must retain exact snapshot identity")
     if snapshot is None:
         if layer_cache is not None:
             layer_cache.clear()
@@ -122,7 +127,9 @@ def build_live_view_state(
     state = _coerce_state(getattr(snapshot, "state", LiveSessionState.DISCONNECTED))
     spectrum = getattr(snapshot, "spectrum", None)
     invalid_measurement = False
-    if isinstance(snapshot, LiveSnapshot):
+    if prepared_measurement is not None:
+        analyzer_bundle = prepared_measurement.analyzer_bundle
+    elif isinstance(snapshot, LiveSnapshot):
         try:
             analyzer_bundle = bundle_from_live(snapshot)
         except (TypeError, ValueError, OverflowError):
@@ -147,7 +154,11 @@ def build_live_view_state(
     coherence_issues = list(analyzer_bundle.coherence_issues) if analyzer_bundle is not None else []
     if analyzer_bundle is None and layer_cache is not None:
         layer_cache.clear()
-    if analyzer_bundle is not None and isinstance(analyzer_bundle.spectrum, LiveSpectrumFrame):
+    if prepared_measurement is not None:
+        spectrum = prepared_measurement.spectrum
+        persistence_frame = prepared_measurement.persistence_frame
+        waterfall_line = prepared_measurement.waterfall_line
+    elif analyzer_bundle is not None and isinstance(analyzer_bundle.spectrum, LiveSpectrumFrame):
         try:
             persistence_frame = (persistence_density_from_native(analyzer_bundle.persistence)
                 if layer_cache is None else layer_cache.persistence(analyzer_bundle.persistence))
@@ -215,7 +226,10 @@ def build_live_view_state(
         persistence_frame=persistence_frame,
         waterfall_line=waterfall_line,
         analyzer_bundle=analyzer_bundle,
+        prepared_spectrum=(prepared_measurement.prepared_spectrum
+                           if prepared_measurement is not None else None),
         measurement_unavailable_reason=(
+            prepared_measurement.measurement_unavailable_reason if prepared_measurement is not None else
             coherence_issues[0] if coherence_issues else
             "invalid_measurement" if invalid_measurement else
             "stale_measurement_identity" if isinstance(snapshot, LiveSnapshot)

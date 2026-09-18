@@ -57,14 +57,21 @@ class LiveViewModel:
         self._discovery_pending = False
         self._discovery_count: int | None = None
         self._last_snapshot: object | None = None
+        self._prepared_measurement: LiveViewState | None = None
+        self._expects_prepared = getattr(presenter, "prepares_snapshots", False) is True
         self._layer_cache = AnalyzerLayerCache()
         self._listeners: list[Callable[[LiveViewState], None]] = []
         self._devices: tuple[object, ...] = ()
         self._device_listeners: list[Callable[[tuple[object, ...]], None]] = []
         self._state = build_live_view_state(None)
         presenter.devices_discovered.connect(self._on_devices_discovered)
-        presenter.snapshot_changed.connect(self._on_snapshot)
-        presenter.render_ready.connect(self._on_snapshot)
+        self._snapshot_connections = (
+            ((getattr(presenter, "prepared_snapshot_ready"), self._on_prepared_snapshot),)
+            if self._expects_prepared else
+            ((presenter.snapshot_changed, self._on_snapshot), (presenter.render_ready, self._on_snapshot))
+        )
+        for signal, callback in self._snapshot_connections:
+            signal.connect(callback)
         presenter.busy_changed.connect(self._on_busy_changed)
         presenter.task_failed.connect(self._on_task_failed)
 
@@ -190,8 +197,7 @@ class LiveViewModel:
 
         for signal, callback in (
             (self._presenter.devices_discovered, self._on_devices_discovered),
-            (self._presenter.snapshot_changed, self._on_snapshot),
-            (self._presenter.render_ready, self._on_snapshot),
+            *self._snapshot_connections,
             (self._presenter.busy_changed, self._on_busy_changed),
             (self._presenter.task_failed, self._on_task_failed),
         ):
@@ -202,6 +208,7 @@ class LiveViewModel:
         self._listeners.clear()
         self._device_listeners.clear()
         self._layer_cache.clear()
+        self._prepared_measurement = None
 
     def _on_devices_discovered(self, devices: object) -> None:
         valid_sequence = isinstance(devices, Iterable) and not isinstance(devices, (str, bytes))
@@ -222,7 +229,16 @@ class LiveViewModel:
         self._publish()
 
     def _on_snapshot(self, snapshot: object) -> None:
+        self._prepared_measurement = None
         self._last_snapshot = snapshot
+        self._publish()
+
+    def _on_prepared_snapshot(self, value: object) -> None:
+        if not isinstance(value, LiveViewState):
+            self._on_task_failed("Invalid prepared Live publication")
+            return
+        self._prepared_measurement = value
+        self._last_snapshot = value.snapshot
         self._publish()
 
     def _on_busy_changed(self, busy: bool) -> None:
@@ -253,6 +269,7 @@ class LiveViewModel:
             busy=self._busy,
             now_ns=self._now_ns() if self._last_snapshot is not None else None,
             layer_cache=self._layer_cache,
+            prepared_measurement=self._prepared_measurement,
         )
         self._state = (
             state if self._command_error is None else

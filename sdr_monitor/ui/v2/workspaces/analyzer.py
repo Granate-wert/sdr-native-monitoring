@@ -431,7 +431,8 @@ class AnalyzerWorkspaceV2(QWidget):
         if bundle is not None and bundle is not self._last_bundle:
             prepared = state.prepared_sweep
             self.visualization.spectrum_scene.set_frame(
-                bundle, prepared=prepared.spectrum if prepared is not None else None)
+                bundle, prepared=(prepared.spectrum if prepared is not None else
+                                  state.live.prepared_spectrum if state.mode is AnalyzerMode.RTBW else None))
             self._last_bundle = bundle
         if state.mode is AnalyzerMode.SWEEP:
             statistics = bundle.sweep_statistics if bundle is not None else None
