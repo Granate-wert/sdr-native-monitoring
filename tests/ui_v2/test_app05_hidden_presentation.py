@@ -139,6 +139,32 @@ class HiddenPresentationTests(unittest.TestCase):
         self.view.flush_settings()
         self.assertFalse(self.settings.value("ui_v2/live/waterfall/v1/visible", type=bool))
 
+    def test_user_hidden_density_applies_changed_mapping_without_a_new_frame(self):
+        self.scene.set_persistence_frame(self.density(.25))
+        overlay = self.scene._persistence
+        self.scene.set_persistence_visible(False)
+        uploads = overlay.metrics.image_uploads
+        overlay.set_logarithmic(False)
+        self.assertEqual(overlay.metrics.image_uploads, uploads)
+        self.scene.set_persistence_visible(True)
+        self.assertEqual(overlay.metrics.image_uploads, uploads + 1)
+        np.testing.assert_allclose(overlay.image_item.image, .25)
+        # An unchanged visibility request must not allocate another image.
+        self.scene.set_persistence_visible(True)
+        self.assertEqual(overlay.metrics.image_uploads, uploads + 1)
+
+    def test_hidden_mapping_change_flushes_latest_not_previous_pending_density(self):
+        self.scene.set_persistence_frame(self.density(.1))
+        overlay = self.scene._persistence
+        self.scene.set_persistence_visible(False)
+        self.scene.set_persistence_frame(self.density(.75))
+        overlay.set_logarithmic(False)
+        self.scene.set_persistence_visible(True)
+        np.testing.assert_allclose(overlay.image_item.image, .75)
+        uploads = overlay.metrics.image_uploads
+        overlay.flush_pending(now_ns=10**20)
+        self.assertEqual(overlay.metrics.image_uploads, uploads)
+
     def test_hidden_rtbw_rows_keep_acquisition_time_and_epoch(self):
         self.hide()
         for sequence in range(1, 11):

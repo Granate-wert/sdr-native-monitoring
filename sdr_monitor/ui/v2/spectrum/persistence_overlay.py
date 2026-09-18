@@ -48,6 +48,7 @@ class PersistenceOverlay:
         self._presentation_active = True
         self._logarithmic = True
         self._render_mode = PersistenceRenderMode.DIRECT
+        self._mapping_dirty = False
         self._latest_view: PersistenceDensityView | None = None
         self._pending_view: PersistenceDensityView | None = None
         self._uploaded_density: np.ndarray | None = None
@@ -82,7 +83,12 @@ class PersistenceOverlay:
     def set_visible(self, visible: bool) -> None:
         self._visible = bool(visible)
         self._image.setVisible(self._visible and self._uploaded_density is not None)
-        if self._visible:
+        if not self._visible:
+            self._timer.stop()
+        elif self._presentation_active and self._mapping_dirty and self._latest_view is not None:
+            self._discard_pending()
+            self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
+        elif self._visible:
             self.flush_pending()
 
     def set_presentation_active(self, active: bool) -> None:
@@ -102,6 +108,7 @@ class PersistenceOverlay:
             return
         self._logarithmic = bool(logarithmic)
         self._visual_buffer = None
+        self._mapping_dirty = True
         if self._latest_view is not None:
             self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
 
@@ -110,6 +117,7 @@ class PersistenceOverlay:
             return
         self._render_mode = mode
         self._visual_buffer = None
+        self._mapping_dirty = True
         if self._latest_view is not None:
             self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
 
@@ -120,7 +128,7 @@ class PersistenceOverlay:
             self._pending_view = view
             self._set_metrics(hidden_updates=self._metrics.hidden_updates + 1)
             return
-        if view.density is self._uploaded_density:
+        if view.density is self._uploaded_density and not self._mapping_dirty:
             self._discard_pending()
             self._set_metrics(identity_uploads_suppressed=self._metrics.identity_uploads_suppressed + 1)
             return
@@ -158,6 +166,7 @@ class PersistenceOverlay:
         self._latest_view = None
         self._uploaded_density = None
         self._visual_buffer = None
+        self._mapping_dirty = False
         self._image.clear()
         self._image.setVisible(False)
         self._set_metrics(retained_extra_image_buffers=0)
@@ -165,7 +174,7 @@ class PersistenceOverlay:
     def _upload(self, view: PersistenceDensityView, *, now_ns: int, force: bool = False) -> None:
         if not self._visible or not self._presentation_active:
             return
-        if not force and view.density is self._uploaded_density:
+        if not force and view.density is self._uploaded_density and not self._mapping_dirty:
             return
         image = self._render_image(view)
         left, bottom, width, height = view.physical_rect
@@ -173,6 +182,7 @@ class PersistenceOverlay:
         self._image.setRect(QRectF(left, bottom, width, height))
         self._image.setVisible(True)
         self._uploaded_density = view.density
+        self._mapping_dirty = False
         self._last_upload_ns = now_ns
         self._set_metrics(
             image_uploads=self._metrics.image_uploads + 1,
