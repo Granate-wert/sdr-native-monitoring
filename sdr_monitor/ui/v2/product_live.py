@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from time import time_ns
 from typing import Protocol
+from concurrent.futures import Future
+
+from .spectrum.projection import SpectrumProjection, SpectrumProjector
 
 from .view_models.analyzer_view_model import AnalyzerViewModel, SweepPresentationPort
 from .workspaces.analyzer import analyzer_workspace_definition
@@ -113,6 +116,7 @@ class V2LiveProductComposition:
         *,
         sweep_presenter: SweepPresenterLifecyclePort | None = None,
         analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
+        projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
         diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
         replay_presenter_factory: ReplayPresenterFactory | None = None,
@@ -123,6 +127,7 @@ class V2LiveProductComposition:
         self._presenter = presenter
         self._sweep_presenter = sweep_presenter
         self.analyzer_presenter = analyzer_presenter
+        self.spectrum_projector = None if projection_submit is None else SpectrumProjector(projection_submit)
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.analyzer_view_model = (
@@ -196,7 +201,7 @@ class V2LiveProductComposition:
         if self.analyzer_view_model is not None:
             # Product Analyzer replaces both old routes, not two pages hidden
             # inside a tab. Their application ownership remains unchanged.
-            workspaces = (analyzer_workspace_definition(self.analyzer_view_model),) + tuple(
+            workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector),) + tuple(
                 item for item in workspaces if item.workspace_id not in {"home", "live", "sweep"}
             )
         self.context = V2ShellContext(
@@ -241,6 +246,8 @@ class V2LiveProductComposition:
         # Disconnect presentation callbacks once; these methods own no work
         # and repeating a successful disconnect is not a lifecycle retry.
         if not self._presentation_disposed:
+            if self.spectrum_projector is not None:
+                attempt(self.spectrum_projector.dispose)
             if self.analyzer_view_model is not None:
                 attempt(self.analyzer_view_model.dispose)
             attempt(self.view_model.dispose)
@@ -280,6 +287,7 @@ def compose_v2_live_product(
     *,
     sweep_presenter: SweepPresenterLifecyclePort | None = None,
     analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
+    projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
     diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
     replay_presenter_factory: ReplayPresenterFactory | None = None,
@@ -293,6 +301,7 @@ def compose_v2_live_product(
         presenter,
         sweep_presenter=sweep_presenter,
         analyzer_presenter=analyzer_presenter,
+        projection_submit=projection_submit,
         calibration_presenter=calibration_presenter,
         diagnostics_presenter_factory=diagnostics_presenter_factory,
         replay_presenter_factory=replay_presenter_factory,

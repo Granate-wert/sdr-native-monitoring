@@ -1,4 +1,5 @@
 """Three reusable graphics items; bounded coverage and a separate history trace."""
+from collections.abc import Callable
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt
@@ -69,6 +70,8 @@ class SweepCoverageOverlay:
         self._plot = plot
         self._locale = locale
         self._projection_key: tuple[object, ...] | None = None
+        self.request_projection: Callable[[], None] | None = None
+        self._display_previous = None
         self.strip = _CoverageStrip()
         self.strip.setZValue(-5)
         self.history = pg.PlotDataItem(connect="finite")
@@ -91,11 +94,13 @@ class SweepCoverageOverlay:
                 return
             self._projection_key = None
             self.refresh()
-            self.set_locale(self._locale)
+            if self.request_projection is None:
+                self.set_locale(self._locale)
 
     def clear(self) -> None:
         self.state.clear()
         self.projection = None
+        self._display_previous = None
         self._projection_key = None
         self.strip.runs = []
         self.history.setData([], [])
@@ -119,21 +124,30 @@ class SweepCoverageOverlay:
         width = max(1, int(view.width()))
         key = (left, right, width)
         if key != self._projection_key:
-            self.projection = self.state.project(left, right, width)
-            self.strip.set_projection(self.projection)
-            trace = self.projection.history
-            self.history.setData(trace.frequencies_hz, trace.values, connect="finite")
-            self._projection_key = key
+            if self.request_projection is not None:
+                self.request_projection()
+            else:
+                self.apply_projection(self.state.project(left, right, width), key, self.state.previous)
         self.strip.set_rect(QRectF(left, lower, right - left, upper - lower))
         self.label.setPos(left, lower)
-        self.strip.show()
-        self.label.show()
-        self.history.setVisible(self.state.previous is not None)
+        self.strip.setVisible(self.projection is not None)
+        self.label.setVisible(self.projection is not None)
+        self.history.setVisible(self.projection is not None and self._display_previous is not None)
+
+    def apply_projection(self, projection: CoverageProjection, key: tuple[object, ...], previous) -> None:
+        """GUI upload of a bounded projection with its exact historical label."""
+        self.projection = projection
+        self._projection_key = key
+        self._display_previous = previous
+        self.strip.set_projection(projection)
+        trace = projection.history
+        self.history.setData(trace.frequencies_hz, trace.values, connect="finite")
+        self.set_locale(self._locale)
 
     def set_locale(self, locale: UiLocale) -> None:
         self._locale = locale
         self.label.setText(text("analyzer.coverage.legend", locale))
-        previous = self.state.previous
+        previous = self._display_previous if self.request_projection is not None else self.state.previous
         detail = text("analyzer.coverage.scope", locale)
         if previous is not None:
             detail += " " + text("analyzer.coverage.previous", locale, sequence=previous.sequence)

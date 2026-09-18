@@ -91,7 +91,7 @@ class SingleWindowParityTests(unittest.TestCase):
                     snapshot = replace(baseline, spectrum=live)
                     harness.live._snapshot = snapshot
                     harness.presenter.offer_snapshot_for_render(snapshot)
-                    harness.wait(lambda: scene.latest_frame is not None)
+                    harness.wait(lambda: scene.displayed_frame is not None)
                     self.assertIs(scene.latest_frame.spectrum, live)
                     crop = slice(size // 4, 3 * size // 4)
                     np.testing.assert_array_equal(line.frequencies_hz, live.frequencies_hz[crop])
@@ -115,7 +115,7 @@ class SingleWindowParityTests(unittest.TestCase):
                     sweep = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics())
                     with patch.object(_FakeAnalyzerDisplay, "poll_latest", return_value=sweep):
                         page.primary.click()
-                        harness.wait(lambda: page._last_bundle is not None and page._last_bundle.mode == "sweep")
+                        harness.wait(lambda: scene.displayed_frame is not None and scene.displayed_frame.mode == "sweep")
                         self.assertIs(page.visualization, canvas)
                         self.assertIs(canvas.spectrum_scene, scene)
                         np.testing.assert_array_equal(page._last_bundle.values, line.values_db)

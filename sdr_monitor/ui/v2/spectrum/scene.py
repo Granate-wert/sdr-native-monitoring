@@ -7,7 +7,7 @@ import sys
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
@@ -40,6 +40,7 @@ from .contracts import (
     format_frequency_hz,
 )
 from .envelope import peak_preserving_envelope
+from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
 from .persistence_contracts import (
     PersistenceRenderMode,
     adapt_persistence_density,
@@ -83,6 +84,17 @@ class SpectrumScene(QWidget):
         self._locale = locale
         self._latest_view: SpectrumFrameView | None = None
         self._prepared_spectrum: PreparedSpectrumFrame | None = None
+        self._projector: SpectrumProjector | None = None
+        self._projection_owner = object()
+        self._projection_generation = 0
+        self._projection_key: tuple[object, ...] | None = None
+        self._displayed_view: SpectrumFrameView | None = None
+        self._displayed_extent: tuple[float, float] | None = None
+        self._projection_error: str | None = None
+        self._projection_timer = QTimer(self)
+        self._projection_timer.setSingleShot(True)
+        self._projection_timer.timeout.connect(self._offer_projection)
+        self.projection_stale = 0
         self._trace_views: dict[TraceKind, SpectrumFrameView] = {}
         self._measurement_signature: tuple[object, ...] | None = None
         self._measurement_grid: np.ndarray | None = None
@@ -152,6 +164,92 @@ class SpectrumScene(QWidget):
 
         return self._envelopes.get(kind)
 
+    @property
+    def displayed_frame(self) -> object | None:
+        """Exact source of the current curve and markers, not latest arrival."""
+        view = self._marker_view()
+        return None if view is None else view.source_frame
+
+    def set_projection_port(self, projector: SpectrumProjector) -> None:
+        """Inject application-owned work, once, before the first publication."""
+        if self._projector is not None or self._latest_view is not None:
+            raise RuntimeError("projection port must be injected before spectrum admission")
+        self._projector = projector
+        projector.ready.connect(self._accept_projection)
+        projector.failed.connect(self._projection_failed)
+        self.sweep_coverage.request_projection = self._request_projection
+        self._view_box.sigResized.connect(self._request_projection)
+
+    def _viewport(self) -> tuple[float, float, int]:
+        left, right = self._view_box.viewRange()[0]
+        return float(left), float(right), max(1, int(self._view_box.width()))
+
+    def _invalidate_projection(self) -> None:
+        self._projection_generation += 1
+        self._projection_key = None
+        self._projection_timer.stop()
+        if self._projector is not None:
+            self._projector.cancel_pending(self._projection_owner)
+
+    def _request_projection(self, *_args) -> None:
+        if self._projector is not None and self._presentation_active and self._trace_views:
+            # Coalesce all trace/layer updates from one GUI delivery. There is
+            # one timer, not one posted callback retaining every source frame.
+            if not self._projection_timer.isActive():
+                self._projection_timer.start(0)
+
+    def _offer_projection(self) -> None:
+        if self._projector is None or not self._presentation_active or not self._trace_views:
+            return
+        state = self.sweep_coverage.state
+        viewport = self._viewport()
+        key = (self._projection_generation, viewport,
+               tuple((kind, id(view)) for kind, view in self._trace_views.items()),
+               id(state.current), id(state.previous))
+        if key == self._projection_key:
+            return
+        self._projection_key = key
+        self._projector.offer(ProjectionRequest(
+            self._projection_owner, self._projection_generation, viewport,
+            tuple(self._trace_views.items()), state.current, state.previous, self._prepared_spectrum))
+
+    def _projection_current(self, request: ProjectionRequest) -> bool:
+        return (request.owner is self._projection_owner and self._presentation_active
+                and request.generation == self._projection_generation
+                and request.viewport == self._viewport())
+
+    def _accept_projection(self, result: SpectrumProjection) -> None:
+        request = result.request
+        if request.owner is not self._projection_owner:
+            return
+        if not self._projection_current(request):
+            self.projection_stale += 1
+            return
+        if self._projection_error is not None:
+            if self._warning_readout.text() == self._projection_error:
+                self.set_warning(None)
+            self._projection_error = None
+        views = dict(request.traces)
+        for kind, envelope in result.traces:
+            self._paint_trace(kind, views[kind], envelope)
+        self._displayed_view = views.get(TraceKind.CURRENT)
+        self._displayed_extent = result.finite_extent
+        self._apply_vertical_range()
+        self._update_markers_for_new_frame()
+        frame = self.displayed_frame
+        self._sweep_position.set_position(getattr(getattr(frame, "spectrum", frame), "last_admitted_segment", None))
+        if result.coverage is not None:
+            self.sweep_coverage.apply_projection(result.coverage, request.viewport, request.previous)
+            self.sweep_coverage.refresh()
+
+    def _projection_failed(self, request: ProjectionRequest, reason: str) -> None:
+        if self._projection_current(request):
+            self._projection_error = text("spectrum.projection.failed", self._locale, reason=reason)
+            self.set_warning(self._projection_error)
+
+    def _marker_view(self) -> SpectrumFrameView | None:
+        return self._displayed_view if self._projector is not None else self._latest_view
+
     def set_presentation_active(self, active: bool) -> None:
         """Suspend plot preparation, not frame admission or acquisition.
 
@@ -163,6 +261,8 @@ class SpectrumScene(QWidget):
         if active == self._presentation_active:
             return
         self._presentation_active = active
+        if not active:
+            self._invalidate_projection()
         self._persistence.set_presentation_active(active)
         self.sweep_coverage.set_presentation_active(active)
         if active:
@@ -210,7 +310,8 @@ class SpectrumScene(QWidget):
         self._set_measurement_available(True)
         self._apply_vertical_range()
         self._update_markers_for_new_frame()
-        self._sweep_position.set_position(getattr(getattr(frame, "spectrum", frame), "last_admitted_segment", None))
+        if self._projector is None:
+            self._sweep_position.set_position(getattr(getattr(frame, "spectrum", frame), "last_admitted_segment", None))
 
     def set_trace(self, kind: TraceKind, frame: object) -> None:
         """Render a supplied analytical trace without retaining its full frame."""
@@ -225,9 +326,14 @@ class SpectrumScene(QWidget):
         self._plot_item.showAxis("bottom", show=bool(visible))
 
     def clear_trace(self, kind: TraceKind) -> None:
+        self._invalidate_projection()
         self._envelopes.pop(kind, None)
         self._trace_views.pop(kind, None)
         self._curves[kind].setData([], [])
+        if kind is TraceKind.CURRENT:
+            self._displayed_view = None
+            self._displayed_extent = None
+        self._request_projection()
 
     def clear_measurement(self) -> None:
         """Invalidate all data-derived state, without changing acquisition or UI preferences.
@@ -237,6 +343,7 @@ class SpectrumScene(QWidget):
         Ordinary Stop deliberately retains the last measurement instead.
         """
         self._latest_view = None
+        self._displayed_view = None
         self._prepared_spectrum = None
         self._sweep_position.clear()
         self.sweep_coverage.clear()
@@ -443,11 +550,11 @@ class SpectrumScene(QWidget):
         self._update_range_summary()
 
     def place_marker(self, marker_id: str, frequency_hz: float) -> SpectrumMarker | None:
-        """Place M1/M2 on the nearest finite sample of the latest frame."""
+        """Place M1/M2 on the nearest finite sample of the displayed source."""
 
         if marker_id not in {"M1", "M2"}:
             raise ValueError("only M1 and M2 markers are available")
-        view = self._latest_view
+        view = self._marker_view()
         if view is None:
             return None
         index = _nearest_finite_index(view, frequency_hz)
@@ -468,7 +575,7 @@ class SpectrumScene(QWidget):
     def move_selected_marker_to_peak(self, direction: int = 0) -> SpectrumMarker | None:
         """Move selected M1/M2 to the global, next or prior finite local peak."""
 
-        view = self._latest_view
+        view = self._marker_view()
         if view is None:
             return None
         index = _peak_index(view, self._markers.get(self._selected_marker_id), direction)
@@ -757,8 +864,14 @@ class SpectrumScene(QWidget):
     def _set_trace_view(self, kind: TraceKind, view: SpectrumFrameView) -> None:
         if not self._presentation_active:
             return
+        if self._projector is not None:
+            self._request_projection()
+            return
         visible = self._visible_trace_view(view)
         envelope = peak_preserving_envelope(visible, max(1, self._view_box.width()))
+        self._paint_trace(kind, view, envelope)
+
+    def _paint_trace(self, kind: TraceKind, view: SpectrumFrameView, envelope: EnvelopeTrace) -> None:
         self._envelopes[kind] = envelope
         self._curves[kind].setData(envelope.frequencies_hz, envelope.values, connect="finite")
         if kind is TraceKind.CURRENT:
@@ -770,14 +883,14 @@ class SpectrumScene(QWidget):
     def _apply_vertical_range(self) -> None:
         if not self._presentation_active:
             return
-        view = self._latest_view
+        view = self._marker_view()
         if view is None:
             self._update_range_summary()
             return
         if self._range_mode is VerticalRangeMode.AUTO:
             prepared = self._prepared_spectrum
-            extent = (prepared.finite_extent if prepared is not None
-                      else finite_value_extent(view.values))
+            extent = (self._displayed_extent if self._projector is not None else
+                      prepared.finite_extent if prepared is not None else finite_value_extent(view.values))
             if extent is not None:
                 minimum, maximum = extent
                 data_span = maximum - minimum
@@ -847,7 +960,7 @@ class SpectrumScene(QWidget):
         self.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def _on_mouse_moved(self, scene_position: QPointF) -> None:
-        view = self._latest_view
+        view = self._marker_view()
         if view is None:
             return
         point = self._view_box.mapSceneToView(scene_position)

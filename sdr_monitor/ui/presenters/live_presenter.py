@@ -209,6 +209,16 @@ class LivePresenter(QObject):
         self._last_polled = snapshot
         self.offer_snapshot_for_render(snapshot)
 
+    def submit_display_task(self, operation: Callable[[], Any]) -> Future:
+        """Reuse this owner's worker for one externally bounded viewport job.
+
+        The composition must dispose its projection port before shutdown. This
+        does not discover/configure/start a device or create another executor.
+        """
+        if self._closing or self._closed:
+            raise RuntimeError("Live presentation worker is closing")
+        return self._executor.submit(operation)
+
     def shutdown(self, timeout_s: float = 5.0) -> None:
         if self._closed:
             return

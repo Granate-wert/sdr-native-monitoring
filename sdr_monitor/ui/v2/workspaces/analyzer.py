@@ -23,6 +23,7 @@ from .analyzer_inspector import AnalyzerInspector
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum import PersistenceDensityFrame
 from ..spectrum.contracts import TraceKind
+from ..spectrum.projection import SpectrumProjector
 from ..state.live_view_state import LiveAction
 from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout
 from ..state.analyzer_status_cadence import AnalyzerStatusCadence
@@ -40,7 +41,8 @@ class AnalyzerWorkspaceV2(QWidget):
     a partial Sweep is never appended as a fabricated complete Waterfall row.
     """
 
-    def __init__(self, model: AnalyzerViewModel, *, parent: QWidget | None = None) -> None:
+    def __init__(self, model: AnalyzerViewModel, *, projector: SpectrumProjector | None = None,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.model = model
         self._theme = ThemeId.DARK
@@ -107,6 +109,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self.error.setWordWrap(True)
         layout.addWidget(self.error)
         self.visualization = SpectrumWaterfallView(parent=self)
+        if projector is not None:
+            self.visualization.spectrum_scene.set_projection_port(projector)
         self.frequency_bar.viewport_span_requested.connect(self._change_viewport_span)
         self.visualization.spectrum_scene.view_box.sigXRangeChanged.connect(self._viewport_changed)
         self._acquisition_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self.visualization.spectrum_scene)
@@ -507,10 +511,11 @@ def _set_text_if_changed(widget: QLabel | QPushButton, value: str) -> None:
         widget.setText(value)
 
 
-def analyzer_workspace_definition(model: AnalyzerViewModel) -> WorkspaceDefinition:
+def analyzer_workspace_definition(model: AnalyzerViewModel,
+                                  projector: SpectrumProjector | None = None) -> WorkspaceDefinition:
     return WorkspaceDefinition(
         workspace_id="analyzer", label=text("analyzer.title"), description=text("analyzer.description"),
-        icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(model),
+        icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(model, projector=projector),
         inspector_factory=lambda: AnalyzerInspector(model),
         label_key="analyzer.title", description_key="analyzer.description",
     )

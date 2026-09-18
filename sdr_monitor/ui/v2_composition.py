@@ -92,8 +92,10 @@ def build_v2_shell(services=None):
         AnalyzerContinuousSweepApplicationService(live_application, display),
         snapshot_preparer=prepare_sweep_snapshot,
     )
+    live_presenter = LivePresenter(live_application, snapshot_preparer=LiveSnapshotPreparer())
     composition = compose_v2_live_product(
-        LivePresenter(live_application, snapshot_preparer=LiveSnapshotPreparer()),
+        live_presenter,
+        projection_submit=live_presenter.submit_display_task,
         analyzer_presenter=analyzer_presenter,
         sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep, analyzer=analyzer)),
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),

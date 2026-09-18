@@ -40,8 +40,8 @@ class ZoomMarkerStreamTests(unittest.TestCase):
                 snapshot = replace(baseline, spectrum=frame)
                 fixture.live._snapshot = snapshot
                 fixture.presenter.offer_snapshot_for_render(snapshot)
-                fixture.wait(lambda: scene.latest_frame is not None
-                             and scene.latest_frame.spectrum.sequence == sequence)
+                fixture.wait(lambda: scene.displayed_frame is not None
+                             and scene.displayed_frame.spectrum.sequence == sequence)
                 return frame
 
             publish(1)
