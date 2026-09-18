@@ -214,8 +214,21 @@ class ViewportProjectionTests(unittest.TestCase):
         self.pump()
         self.assertIsNone(self.scene.displayed_frame)
         self.drain()
-        self.assertIs(self.scene.displayed_frame, frame)
+        self.assertIs(self.scene.displayed_frame, frame,
+                      (self.scene._projection_generation, self.scene._projection_key, self.scene._viewport(),
+                       self.port._future, self.port._pending, self.scene.projection_stale))
         self.assertIsNone(self.scene.trace_envelope(TraceKind.AVERAGE))
+
+    def test_late_layout_change_reissues_latest_without_another_source_frame(self):
+        frame = self.admit()
+        left, right, width = self.scene._viewport()
+        with patch.object(self.scene, "_viewport", return_value=(left, right, width - 1)):
+            self.worker.finish()
+            self.pump()
+            self.assertIsNone(self.scene.displayed_frame)
+            self.assertEqual(len(self.worker.jobs), 1)
+            self.drain()
+            self.assertIs(self.scene.displayed_frame, frame)
 
     def test_immediate_future_delivery_is_still_queued_and_dispose_drops_it(self):
         self.admit()

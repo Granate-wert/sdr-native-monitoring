@@ -224,6 +224,10 @@ class SpectrumScene(QWidget):
             return
         if not self._projection_current(request):
             self.projection_stale += 1
+            # Qt can finish axis/layout geometry after a resize notification.
+            # A rejected result must leave a request for the final viewport,
+            # even if no further source publication arrives (stopped view).
+            self._request_projection()
             return
         if self._projection_error is not None:
             if self._warning_readout.text() == self._projection_error:
