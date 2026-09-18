@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 import time
 import unittest
-from unittest.mock import PropertyMock, patch
+from unittest.mock import patch
 
 import numpy as np
 from PySide6.QtWidgets import QApplication
@@ -145,6 +145,33 @@ class SweepPublicationOrderTests(unittest.TestCase):
         self.assertTrue(np.isnan(snapshot.line.values_db[-1]))
         self.assertIsNone(self.service.poll_latest().line)
 
+    def test_superseded_progress_is_rejected_before_full_grid_conversion(self):
+        self.progress = _native_progress(3)
+        self.service.poll_latest()
+        from sdr_monitor.services.native_continuous_sweep import _to_domain_progress
+        with patch("sdr_monitor.services.native_continuous_sweep._to_domain_progress",
+                   wraps=_to_domain_progress) as convert:
+            for sequence in (2, 3):
+                self.progress = _native_progress(sequence)
+                self.assertIsNone(self.service.poll_latest().progress)
+            self.progress = _native_progress(4)
+            self.lines = (_native_line(4),)
+            self.assertIsNone(self.service.poll_latest().progress)
+            self.assertEqual(convert.call_count, 0)
+            self.progress = _native_progress(5)
+            self.assertEqual(self.service.poll_latest().progress.sequence, 5)
+            self.assertEqual(convert.call_count, 1)
+
+    def test_stale_progress_still_checks_producer_and_scalar_identity(self):
+        self.progress = _native_progress(3)
+        self.service.poll_latest()
+        for changes in ({"source_id": "foreign"}, {"epoch": 99},
+                        {"line_sequence": -1}, {"revision": True}):
+            self.progress = _native_progress(2)
+            self.progress.__dict__.update(changes)
+            with self.subTest(changes=changes), self.assertRaises((ValueError, RuntimeError)):
+                self.service.poll_latest()
+
     def test_restart_clears_retained_preview_and_terminal_watermarks(self):
         self.progress = _native_progress(8)
         self.service.poll_latest()
@@ -210,18 +237,27 @@ class SweepPublicationPresenterTests(unittest.TestCase):
                 self.app.processEvents()
                 time.sleep(0.001)
             self.assertFalse(presenter.is_starting)
-            with patch.object(ContinuousSweepDisplaySnapshot, "analyzer_bundle", new_callable=PropertyMock,
-                              side_effect=ValueError("injected bundle conversion failure")):
+            actual_bundle = type(snapshot).analyzer_bundle.fget
+            bundle_calls = 0
+
+            def fail_first_bundle(value):
+                nonlocal bundle_calls
+                bundle_calls += 1
+                if bundle_calls == 1:
+                    raise ValueError("injected bundle conversion failure")
+                return actual_bundle(value)
+
+            with patch.object(ContinuousSweepDisplaySnapshot, "analyzer_bundle", property(fail_first_bundle)):
                 presenter._poll()  # must not escape the Qt timer callback
-                self.assertTrue(presenter.is_stopping)
-                self.assertEqual((metrics, lines, bundles), ([], [], []))
-            while presenter.is_stopping and time.monotonic() < deadline:
-                self.app.processEvents()
-                time.sleep(0.001)
+                while not presenter.can_close() and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(0.001)
             self.assertTrue(presenter.can_close())
             self.assertEqual(calls, ["start", "stop"])
             self.assertEqual(errors, ["injected bundle conversion failure"])
             self.assertEqual(len(lines), 1)  # explicit final poll, after successful Stop
+            self.assertEqual(len(metrics), 1)
+            self.assertEqual(len(bundles), 1)
         finally:
             presenter.shutdown()
 

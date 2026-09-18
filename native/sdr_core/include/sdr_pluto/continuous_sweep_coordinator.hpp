@@ -128,6 +128,7 @@ public:
     // evidence metadata, not a streaming data path: no raw I/Q or
     // SpectrumFrame crosses it.
     [[nodiscard]] std::vector<AppliedConfig> applied_segments() const;
+    // Drain at most the entry queue depth; zero means that finite entry bound.
     [[nodiscard]] std::vector<sdr_core::SweepLineFrame> poll_lines(std::size_t max_items);
     [[nodiscard]] std::optional<sdr_core::SweepProgressFrame> poll_progress();
     // Native-only queue drain for benchmark/evidence consumers. It releases

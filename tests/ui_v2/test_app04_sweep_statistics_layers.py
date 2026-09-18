@@ -54,9 +54,11 @@ class CompiledSweepStatisticsCompositionTests(unittest.TestCase):
                                                  partial.statistics.average_db))
                 with patch.object(scene, "set_persistence_frame", wraps=scene.set_persistence_frame) as upload:
                     harness.composition.analyzer_presenter._poll()
+                    harness.wait(lambda: harness.composition.analyzer_presenter._poll_future is None)
                     self.assertEqual(upload.call_count, 0, "unchanged native histogram reuploaded")
                     poll.return_value = ContinuousSweepDisplaySnapshot(final, ContinuousSweepDisplayMetrics())
                     harness.composition.analyzer_presenter._poll()
+                    harness.wait(lambda: harness.composition.analyzer_presenter._poll_future is None)
                     self.assertEqual(upload.call_count, 1)
                 self.assertEqual(page.visualization.waterfall_pane.history_rows, 1)
                 page.primary.click()

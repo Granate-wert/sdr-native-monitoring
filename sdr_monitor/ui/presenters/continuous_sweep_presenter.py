@@ -1,7 +1,7 @@
 """Qt-side coalescer for native continuous-sweep snapshots.
 
-It runs no SDR processing: the timer merely polls a finite native publication
-queue. Widgets report their own completed render duration back to this class,
+It runs no SDR processing: the timer requests one worker-side drain of a finite
+native publication queue. Widgets report completed render duration to this class,
 keeping completed-line LPS and actual render FPS distinct.
 """
 
@@ -34,6 +34,7 @@ class ContinuousSweepPresenter(QObject):
     stopping_changed = Signal(bool)
     _start_completed = Signal(object)
     _stop_completed = Signal(object)
+    _poll_completed = Signal(object)
 
     def __init__(
         self,
@@ -57,9 +58,11 @@ class ContinuousSweepPresenter(QObject):
         self._stop_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-sweep-stop")
         self._start_future: Future[None] | None = None
         self._stop_future: Future[ContinuousSweepDisplaySnapshot] | None = None
+        self._poll_future: Future[ContinuousSweepDisplaySnapshot] | None = None
         self._stop_failed = False
         self._start_completed.connect(self._finish_start, Qt.ConnectionType.QueuedConnection)
         self._stop_completed.connect(self._finish_stop, Qt.ConnectionType.QueuedConnection)
+        self._poll_completed.connect(self._finish_poll, Qt.ConnectionType.QueuedConnection)
 
     @property
     def is_starting(self) -> bool:
@@ -73,13 +76,14 @@ class ContinuousSweepPresenter(QObject):
 
     def can_close(self) -> bool:
         return (not self._timer.isActive() and not self.is_starting and not self.is_stopping
+                and self._poll_future is None
                 and not self._stop_failed
                 and getattr(self._service, "stop_required", False) is not True)
 
     def start(self, native_config: Any) -> None:
         if self._closed or self._closing:
             raise RuntimeError("continuous Sweep presenter is closing")
-        if self._timer.isActive() or self.is_starting or self.is_stopping:
+        if self._timer.isActive() or self.is_starting or self.is_stopping or self._poll_future is not None:
             return
         if self._stop_failed:
             raise RuntimeError("previous continuous Sweep cleanup is unresolved; retry Stop")
@@ -139,6 +143,11 @@ class ContinuousSweepPresenter(QObject):
     def _finish_stop(self, future: Future[ContinuousSweepDisplaySnapshot]) -> None:
         if future is not self._stop_future:
             return
+        # Both jobs use the same executor. Preserve a terminal publication
+        # already drained by the in-flight poll, before delivering the Stop
+        # snapshot. Qt callback arrival order must not reverse these packets.
+        if self._poll_future is not None:
+            self._finish_poll(self._poll_future)
         try:
             self._emit_snapshot(future.result())
         except Exception as error:
@@ -173,9 +182,20 @@ class ContinuousSweepPresenter(QObject):
             except Exception:
                 pass  # Reported exactly once by _finish_start.
             self._finish_start(start_future)
+        was_running = self._timer.isActive()
+        self._timer.stop()
+        if self._poll_future is not None:
+            poll_future = self._poll_future
+            try:
+                poll_future.result()
+            except Exception:
+                pass  # Reported exactly once by _finish_poll.
+            self._finish_poll(poll_future)
         # Shutdown owns cleanup after Start resolution; regular Stop remains
         # barred while ``_closing`` prevents any competing UI command.
-        if self._timer.isActive() or getattr(self._service, "stop_required", False) is True:
+        if (self._stop_future is None
+                and (was_running or self._stop_failed
+                     or getattr(self._service, "stop_required", False) is True)):
             self._timer.stop()
             stop_future = self._stop_executor.submit(self._stop_and_snapshot)
             self._stop_future = stop_future
@@ -197,11 +217,22 @@ class ContinuousSweepPresenter(QObject):
         self._closed = True
 
     def _poll(self) -> None:
-        if self._closed or self._closing or self.is_starting or self.is_stopping:
+        if (self._closed or self._closing or self.is_starting or self.is_stopping
+                or not self._timer.isActive() or self._poll_future is not None):
+            return
+        # Single-flight until GUI delivery, not merely until worker exit. Timer
+        # ticks never accumulate executor jobs or queued snapshots. Stop joins
+        # behind at most this one finite drain; no parallel service access.
+        future = self._stop_executor.submit(self._service.poll_latest)
+        self._poll_future = future
+        future.add_done_callback(self._poll_completed.emit)
+
+    @Slot(object)
+    def _finish_poll(self, future: Future[ContinuousSweepDisplaySnapshot]) -> None:
+        if future is not self._poll_future or not future.done():
             return
         try:
-            snapshot: ContinuousSweepDisplaySnapshot = self._service.poll_latest()
-            self._emit_snapshot(snapshot)
+            self._emit_snapshot(future.result())
         except Exception as error:
             # A publication error does not mean acquisition has stopped.
             # Latch admission before any externally visible callback, then
@@ -209,7 +240,8 @@ class ContinuousSweepPresenter(QObject):
             self._stop_failed = True
             self.stop()
             self.task_failed.emit(str(error))
-            return
+        finally:
+            self._poll_future = None
 
     def _emit_snapshot(self, snapshot: ContinuousSweepDisplaySnapshot) -> None:
         # Validate/convert before any consumer sees part of a rejected packet.

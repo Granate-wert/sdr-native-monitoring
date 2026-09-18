@@ -479,8 +479,14 @@ public:
         if (!output_) {
             return result;
         }
+        // A bounded queue can be refilled while it is drained. Snapshot the
+        // entry depth so an arbitrarily fast producer cannot prolong this
+        // control-plane call (or its retained vector) without bound.
+        const auto depth = static_cast<std::size_t>(output_->depth());
+        const auto limit = max_items == 0U ? depth : std::min(max_items, depth);
+        result.reserve(limit);
         sdr_core::SweepLineFrame line;
-        while ((max_items == 0U || result.size() < max_items) && output_->try_pop(line)) {
+        while (result.size() < limit && output_->try_pop(line)) {
             result.push_back(std::move(line));
         }
         return result;

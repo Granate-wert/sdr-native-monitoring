@@ -243,7 +243,7 @@ class ProductAnalyzerCompositionTests(unittest.TestCase):
             self._wait(lambda: not analyzer_presenter.is_starting)
             self.assertEqual(events[-1], "sweep-start")
             analyzer_presenter._poll()
-            self.app.processEvents()
+            self._wait(lambda: bool(analyzer_frames))
             self.assertEqual(len(analyzer_frames), 1)
             self.assertEqual(analyzer_frames[0].mode, "sweep")
 

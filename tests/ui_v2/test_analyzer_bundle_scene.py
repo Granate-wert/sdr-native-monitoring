@@ -102,6 +102,9 @@ class AnalyzerBundleSceneTests(unittest.TestCase):
                 time.sleep(0.001)
             self.assertFalse(presenter.is_starting)
             presenter._poll()
+            while scene.latest_frame is None and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.001)
             self.assertEqual(lines, [])
             envelope = scene.trace_envelope(TraceKind.CURRENT)
             np.testing.assert_array_equal(envelope.values, values)

@@ -293,6 +293,34 @@ void statistics_pipeline_test(bool single_window) {
 int main() {
     try {
         cancellation_phase_matrix();
+        // Drain a continuously replenished output with default, explicit-small
+        // and oversized requests. Each vector stays within the configured
+        // resident queue bound, and no publication is returned twice.
+        for (const auto capacity : {1U, 8U, 64U}) {
+            auto config = single_window_config();
+            config.output_queue_capacity = capacity;
+            sdr_pluto::ContinuousSweepCoordinator streaming("usb:mock");
+            streaming.configure(config);
+            streaming.start();
+            if (!wait_for_completed(streaming, 4U)) return 70;
+            std::uint64_t last_sequence = 0;
+            bool received = false;
+            for (std::size_t round = 0; round < 60; ++round) {
+                const auto requested = round % 3 == 0 ? 0U : (round % 3 == 1 ? 1U : 1'000'000U);
+                const auto batch = streaming.poll_lines(requested);
+                if (batch.size() > capacity || (requested == 1U && batch.size() > 1U)) return 71;
+                for (const auto& line : batch) {
+                    if (received && line.line_sequence <= last_sequence) return 72;
+                    received = true;
+                    last_sequence = line.line_sequence;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            streaming.stop();
+            if (!received || streaming.metrics().has_error) return 73;
+            const auto terminal = streaming.poll_lines(0);
+            if (terminal.size() > capacity || !streaming.poll_lines(0).empty()) return 74;
+        }
         // The coordinator owns one native receiver/engine, retunes only inside
         // its worker and emits a multi-generation reduced line; Python/Qt are
         // not involved in the test path.

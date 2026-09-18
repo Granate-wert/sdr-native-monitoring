@@ -1,7 +1,7 @@
 """Snapshot-only bridge for the native R10-D continuous sweep coordinator.
 
 The coordinator owns retuning, acquisition and line assembly in C++.  This
-module is deliberately called by a low-rate UI timer: it drains only bounded
+module is called by a single-flight worker requested by a low-rate UI timer: it drains only bounded
 terminal lines and progressive snapshots, never raw I/Q or individual FFT frames.
 """
 
@@ -136,16 +136,22 @@ class NativeContinuousSweepDisplayService:
             if (native_progress is not None
                     and (native_progress.source_id, native_progress.epoch) != self._active_identity):
                 raise RuntimeError("continuous sweep progress source/epoch differs from active request")
-            progress = (_to_domain_progress(native_progress, statistics_cache=self._statistics_cache)
-                        if native_progress is not None else None)
-            if progress is not None:
-                identity = (progress.source_id, progress.epoch, progress.sequence, progress.revision)
+            progress = None
+            if native_progress is not None:
+                sequence, revision = native_progress.line_sequence, native_progress.revision
+                if any(type(value) is not int or value < 0 for value in (sequence, revision)):
+                    raise ValueError("progress identity must use nonnegative integers")
+                identity = (native_progress.source_id, native_progress.epoch, sequence, revision)
                 if ((terminal_watermark is not None and terminal_watermark[:2] == identity[:2]
                      and terminal_watermark[2] >= identity[2])
                         or (progress_watermark is not None and progress_watermark[:2] == identity[:2]
                             and progress_watermark[2:] >= identity[2:])):
                     progress = None
                 else:
+                    # Native preview is latest-only, but can still precede a
+                    # terminal drained in the same poll. Reject superseded
+                    # identity before touching any full-grid array/statistics.
+                    progress = _to_domain_progress(native_progress, statistics_cache=self._statistics_cache)
                     progress_watermark = identity
                     latest_progress = progress
             if line is not None and progress is None and latest_progress is not None:
