@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from sdr_monitor.ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
 from sdr_monitor.ui.v2.state.prepared_sweep import prepare_sweep_snapshot
+from sdr_monitor.ui.v2.spectrum.contracts import PreparedSpectrumFrame
+from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
 from sdr_monitor.ui.v2.state.analyzer_layers import waterfall_line_from_sweep
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
 from tests import test_app02_analyzer_workspace_product as product
@@ -24,6 +26,8 @@ class PreparedSweepTests(unittest.TestCase):
         prepared = prepare_sweep_snapshot(snapshot, bundle)
         self.assertIs(prepared.snapshot, snapshot)
         self.assertIs(prepared.analyzer_bundle, bundle)
+        self.assertIs(prepared.spectrum.view.source_frame, bundle)
+        self.assertTrue(np.shares_memory(prepared.spectrum.view.values, bundle.values))
         self.assertEqual(len(prepared.waterfall_rows), 2)
         for frame, actual in zip((snapshot.line, snapshot.progress), prepared.waterfall_rows):
             expected = waterfall_line_from_sweep(frame)
@@ -71,6 +75,8 @@ class PreparedSweepTests(unittest.TestCase):
             page = harness.page
             page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.SWEEP))
             with patch.object(ContinuousSweepDisplaySnapshot, "analyzer_bundle", property(bundle)), \
+                 patch("sdr_monitor.ui.v2.spectrum.scene.adapt_spectrum_frame",
+                       side_effect=AssertionError("GUI grid validation fallback used")), \
                  patch("sdr_monitor.ui.v2.workspaces.analyzer.waterfall_line_from_sweep",
                        side_effect=AssertionError("GUI projection fallback used")):
                 page.primary.click()
@@ -90,6 +96,28 @@ class PreparedSweepTests(unittest.TestCase):
         finally:
             harness.tearDown()
             harness.doCleanups()
+
+    def test_prepared_spectrum_rejects_mutable_input_and_mismatched_delivery(self):
+        from tests.ui_v2.test_spectrum_scene import SyntheticSpectrumFrame
+        values, frequencies = np.ones(4), np.arange(4.)
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            PreparedSpectrumFrame(SyntheticSpectrumFrame(frequencies, values))
+        values.setflags(write=False)
+        frequencies.setflags(write=False)
+        frame = SyntheticSpectrumFrame(frequencies, values)
+        prepared = PreparedSpectrumFrame(frame)
+        app = QApplication.instance() or QApplication([])
+        scene = SpectrumScene()
+        try:
+            scene.set_frame(frame, prepared=prepared)
+            self.assertIs(scene.latest_frame, frame)
+            with self.assertRaisesRegex(ValueError, "exact publication"):
+                scene.set_frame(replace(frame, unit="dBFS/bin"), prepared=prepared)
+            self.assertIs(scene.latest_frame, frame)
+        finally:
+            scene.close()
+            scene.deleteLater()
+            app.processEvents()
 
     def test_delayed_preparation_is_single_flight_and_stop_preserves_order(self):
         fixture = worker.SweepPollResponsivenessTests("runTest")

@@ -30,6 +30,7 @@ from .sweep_coverage_overlay import SweepCoverageOverlay
 from .contracts import (
     BandMask,
     EnvelopeTrace,
+    PreparedSpectrumFrame,
     SpectrumFrameView,
     SpectrumMarker,
     TraceKind,
@@ -176,10 +177,15 @@ class SpectrumScene(QWidget):
             self._toolbar.setParent(None)
         return self._toolbar
 
-    def set_frame(self, frame: object) -> None:
+    def set_frame(self, frame: object, *, prepared: PreparedSpectrumFrame | None = None) -> None:
         """Set the latest immutable current frame and redraw one bounded envelope."""
 
-        view = adapt_spectrum_frame(frame)
+        if prepared is not None:
+            if not isinstance(prepared, PreparedSpectrumFrame) or prepared.view.source_frame is not frame:
+                raise ValueError("prepared spectrum must belong to the exact publication")
+            view = prepared.view
+        else:
+            view = adapt_spectrum_frame(frame)
         signature = _measurement_signature(frame, view)
         same_measurement = (self._measurement_signature == signature
                             and _same_grid(self._measurement_grid, view.frequencies_hz))

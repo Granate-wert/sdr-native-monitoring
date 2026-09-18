@@ -429,7 +429,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self._last_identity = identity
         bundle = state.bundle
         if bundle is not None and bundle is not self._last_bundle:
-            self.visualization.spectrum_scene.set_frame(bundle)
+            prepared = state.prepared_sweep
+            self.visualization.spectrum_scene.set_frame(
+                bundle, prepared=prepared.spectrum if prepared is not None else None)
             self._last_bundle = bundle
         if state.mode is AnalyzerMode.SWEEP:
             statistics = bundle.sweep_statistics if bundle is not None else None

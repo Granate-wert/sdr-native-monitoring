@@ -11,6 +11,7 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 
 from ..waterfall.contracts import SweepWaterfallLine
+from ..spectrum.contracts import PreparedSpectrumFrame
 from .analyzer_layers import waterfall_line_from_sweep
 
 
@@ -20,6 +21,7 @@ class PreparedSweepSnapshot:
     analyzer_bundle: AnalyzerFrameBundle | None
     waterfall_rows: tuple[SweepWaterfallLine, ...]
     waterfall_error: str | None = None
+    spectrum: PreparedSpectrumFrame | None = None
 
     def __post_init__(self) -> None:
         terminal = self.snapshot.line
@@ -33,6 +35,9 @@ class PreparedSweepSnapshot:
             raise ValueError("Prepared Sweep admits at most two immutable display rows")
         if self.waterfall_error is not None and self.waterfall_rows:
             raise ValueError("Failed preparation cannot retain stale display rows")
+        if ((self.analyzer_bundle is None) != (self.spectrum is None)
+                or self.spectrum is not None and self.spectrum.view.source_frame is not self.analyzer_bundle):
+            raise ValueError("Prepared spectrum must retain the exact Analyzer bundle")
 
 
 def prepare_sweep_snapshot(snapshot: ContinuousSweepDisplaySnapshot,
@@ -40,11 +45,12 @@ def prepare_sweep_snapshot(snapshot: ContinuousSweepDisplaySnapshot,
     """Validate/reduce at most two rows off GUI; preserve old fail-closed UX."""
     if not isinstance(snapshot, ContinuousSweepDisplaySnapshot):
         raise TypeError("Sweep preparation requires a domain snapshot")
+    spectrum = None if bundle is None else PreparedSpectrumFrame(bundle)
     try:
         rows = tuple(waterfall_line_from_sweep(frame)
                      for frame in (snapshot.line, snapshot.progress) if frame is not None)
     except (ValueError, TypeError) as error:
         # A malformed display grid clears Waterfall and reports its reason;
         # it must not be silently replaced by the preceding successful rows.
-        return PreparedSweepSnapshot(snapshot, bundle, (), str(error))
-    return PreparedSweepSnapshot(snapshot, bundle, rows)
+        return PreparedSweepSnapshot(snapshot, bundle, (), str(error), spectrum)
+    return PreparedSweepSnapshot(snapshot, bundle, rows, spectrum=spectrum)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from enum import StrEnum
 from math import isfinite
 
@@ -55,6 +55,25 @@ class SpectrumFrameView:
     @property
     def point_count(self) -> int:
         return int(self.values.size)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PreparedSpectrumFrame:
+    """Validated immutable view; no Qt/viewport work or copied source arrays.
+
+    Only frozen publications with read-only arrays may reuse validation on
+    GUI delivery. Source identity remains available for exact markers.
+    """
+
+    view: SpectrumFrameView
+
+    def __init__(self, frame: object) -> None:
+        if not is_dataclass(frame) or not getattr(getattr(frame, "__dataclass_params__", None), "frozen", False):
+            raise ValueError("prepared spectrum requires a frozen publication")
+        view = adapt_spectrum_frame(frame)
+        if view.frequencies_hz.flags.writeable or view.values.flags.writeable:
+            raise ValueError("prepared spectrum arrays must be read-only")
+        object.__setattr__(self, "view", view)
 
 
 @dataclass(frozen=True, slots=True)
