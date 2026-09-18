@@ -62,7 +62,7 @@ def _measurement_signature(frame: object, view: SpectrumFrameView) -> tuple[obje
         getattr(identity, "acquisition_epoch", None), getattr(identity, "config_generation", None),
         getattr(identity, "session_id", None), getattr(identity, "accumulation_id", None),
         getattr(identity, "clock_domain", None),
-        view.unit_label, int(view.frequencies_hz.size), view.frequencies_hz.tobytes(),
+        view.unit_label, int(view.frequencies_hz.size), view.frequencies_hz.dtype.str,
     )
 
 
@@ -81,6 +81,7 @@ class SpectrumScene(QWidget):
         self._latest_view: SpectrumFrameView | None = None
         self._trace_views: dict[TraceKind, SpectrumFrameView] = {}
         self._measurement_signature: tuple[object, ...] | None = None
+        self._measurement_grid: np.ndarray | None = None
         self._envelopes: dict[TraceKind, EnvelopeTrace] = {}
         self._band_masks: tuple[BandMask, ...] = ()
         self._band_mask_items: list[pg.LinearRegionItem] = []
@@ -160,10 +161,16 @@ class SpectrumScene(QWidget):
 
         view = adapt_spectrum_frame(frame)
         signature = _measurement_signature(frame, view)
-        same_measurement = self._measurement_signature == signature
+        same_measurement = (self._measurement_signature == signature
+                            and _same_grid(self._measurement_grid, view.frequencies_hz))
         if self._measurement_signature is not None and not same_measurement:
             self.clear_measurement()
         self._measurement_signature = signature
+        if not same_measurement:
+            # Own one comparison baseline, even for public-shaped mutable arrays.
+            # Do not serialize/copy the full grid on every unchanged publication.
+            self._measurement_grid = view.frequencies_hz.copy()
+            self._measurement_grid.setflags(write=False)
         self._latest_view = view
         self._trace_views[TraceKind.CURRENT] = view
         self._set_trace_view(TraceKind.CURRENT, view)
@@ -204,6 +211,7 @@ class SpectrumScene(QWidget):
         self._sweep_position.clear()
         self.sweep_coverage.clear()
         self._measurement_signature = None
+        self._measurement_grid = None
         for kind in TraceKind:
             self.clear_trace(kind)
         self.clear_persistence_display()
@@ -896,13 +904,43 @@ def _spin_box(
 
 
 def _nearest_finite_index(view: SpectrumFrameView, frequency_hz: float) -> int | None:
-    finite = np.flatnonzero(np.isfinite(view.values))
-    if finite.size == 0:
+    if not np.isfinite(frequency_hz):
         return None
-    ordered = view.frequencies_hz[finite]
-    position = int(np.searchsorted(ordered, frequency_hz))
-    candidates = finite[max(0, position - 1) : min(finite.size, position + 1)]
-    return int(min(candidates, key=lambda index: abs(float(view.frequencies_hz[index]) - frequency_hz)))
+    position = int(np.searchsorted(view.frequencies_hz, frequency_hz))
+    left = _finite_neighbor(view.values, position - 1, -1)
+    right = _finite_neighbor(view.values, position, 1)
+    candidates = [index for index in (left, right) if index is not None]
+    if not candidates:
+        return None
+    # Source order preserves the existing lower-frequency tie break.
+    return min(candidates, key=lambda index: abs(float(view.frequencies_hz[index]) - frequency_hz))
+
+
+def _finite_neighbor(values: np.ndarray, index: int, direction: int) -> int | None:
+    """Nearest finite value on one side; dense markers inspect only two samples."""
+    if not 0 <= index < values.size:
+        return None
+    if np.isfinite(values[index]):
+        return index
+    count = 256
+    while 0 <= index < values.size:
+        first, stop = ((index, min(values.size, index + count)) if direction > 0
+                       else (max(0, index - count + 1), index + 1))
+        finite = np.isfinite(values[first:stop])
+        if np.any(finite):
+            return (first + int(np.argmax(finite)) if direction > 0
+                    else stop - 1 - int(np.argmax(finite[::-1])))
+        index = stop if direction > 0 else first - 1
+        count = min(65_536, count * 2)
+    return None
+
+
+def _same_grid(previous: np.ndarray | None, current: np.ndarray) -> bool:
+    """Exact full-grid comparison with bounded scratch; never endpoints only."""
+    if previous is None or previous.shape != current.shape or previous.dtype != current.dtype:
+        return False
+    return all(np.array_equal(previous[first:first + 65_536], current[first:first + 65_536])
+               for first in range(0, current.size, 65_536))
 
 
 def _peak_index(view: SpectrumFrameView, selected: SpectrumMarker | None, direction: int) -> int | None:
