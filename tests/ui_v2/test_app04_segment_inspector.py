@@ -125,12 +125,14 @@ class SegmentInspectorTests(unittest.TestCase):
         path = "sdr_monitor.ui.v2.workspaces.analyzer_inspector.inspect_sweep"
         with patch(path, wraps=inspect_sweep) as project:
             for sequence in range(3, 30):
-                self.model._on_sweep_snapshot(snapshot(sequence))
+                value = snapshot(sequence)
+                self.model._on_sweep_snapshot(prepare_sweep_snapshot(value, value.analyzer_bundle))
             self.assertEqual(project.call_count, 0)
             self.harness.wait(lambda: inspector._report.sequence == 29)
             self.assertEqual(project.call_count, 1)
             inspector.hide()
-            self.model._on_sweep_snapshot(snapshot(30))
+            value = snapshot(30)
+            self.model._on_sweep_snapshot(prepare_sweep_snapshot(value, value.analyzer_bundle))
             QTest.qWait(280)
             self.assertEqual(project.call_count, 1)
             inspector.show()
