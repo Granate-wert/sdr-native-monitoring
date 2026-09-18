@@ -66,6 +66,7 @@ class PreparedSpectrumFrame:
     """
 
     view: SpectrumFrameView
+    finite_extent: tuple[float, float] | None
 
     def __init__(self, frame: object) -> None:
         if not is_dataclass(frame) or not getattr(getattr(frame, "__dataclass_params__", None), "frozen", False):
@@ -74,6 +75,25 @@ class PreparedSpectrumFrame:
         if view.frequencies_hz.flags.writeable or view.values.flags.writeable:
             raise ValueError("prepared spectrum arrays must be read-only")
         object.__setattr__(self, "view", view)
+        object.__setattr__(self, "finite_extent", finite_value_extent(view.values))
+
+
+def finite_value_extent(values: np.ndarray) -> tuple[float, float] | None:
+    """Exact full-frame Auto-Y extrema with bounded scratch, not a detector.
+
+    NaN and either infinity keep their old presentation semantics: they do
+    not determine Auto Y. No value is replaced in the original spectrum.
+    Chunking bounds the temporary mask and gathered finite values to 64K
+    elements, independently of the analytical grid size.
+    """
+    extent: tuple[float, float] | None = None
+    for start in range(0, values.size, 65536):
+        chunk = values[start:start + 65536]
+        finite = chunk[np.isfinite(chunk)]
+        if finite.size:
+            low, high = float(np.min(finite)), float(np.max(finite))
+            extent = (low, high) if extent is None else (min(extent[0], low), max(extent[1], high))
+    return extent
 
 
 @dataclass(frozen=True, slots=True)

@@ -36,6 +36,7 @@ from .contracts import (
     TraceKind,
     VerticalRangeMode,
     adapt_spectrum_frame,
+    finite_value_extent,
     format_frequency_hz,
 )
 from .envelope import peak_preserving_envelope
@@ -81,6 +82,7 @@ class SpectrumScene(QWidget):
         self._presentation_active = True
         self._locale = locale
         self._latest_view: SpectrumFrameView | None = None
+        self._prepared_spectrum: PreparedSpectrumFrame | None = None
         self._trace_views: dict[TraceKind, SpectrumFrameView] = {}
         self._measurement_signature: tuple[object, ...] | None = None
         self._measurement_grid: np.ndarray | None = None
@@ -198,6 +200,7 @@ class SpectrumScene(QWidget):
             self._measurement_grid = view.frequencies_hz.copy()
             self._measurement_grid.setflags(write=False)
         self._latest_view = view
+        self._prepared_spectrum = prepared
         self._trace_views[TraceKind.CURRENT] = view
         self._set_trace_view(TraceKind.CURRENT, view)
         self._plot_item.setLabel("left", view.unit_label)
@@ -234,6 +237,7 @@ class SpectrumScene(QWidget):
         Ordinary Stop deliberately retains the last measurement instead.
         """
         self._latest_view = None
+        self._prepared_spectrum = None
         self._sweep_position.clear()
         self.sweep_coverage.clear()
         self._measurement_signature = None
@@ -771,10 +775,11 @@ class SpectrumScene(QWidget):
             self._update_range_summary()
             return
         if self._range_mode is VerticalRangeMode.AUTO:
-            finite = view.values[np.isfinite(view.values)]
-            if finite.size:
-                maximum = float(np.max(finite))
-                minimum = float(np.min(finite))
+            prepared = self._prepared_spectrum
+            extent = (prepared.finite_extent if prepared is not None
+                      else finite_value_extent(view.values))
+            if extent is not None:
+                minimum, maximum = extent
                 data_span = maximum - minimum
                 margin = max(3.0, data_span * 0.08)
                 total_span = max(20.0, data_span + 2.0 * margin)
