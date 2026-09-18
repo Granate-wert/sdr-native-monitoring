@@ -77,6 +77,7 @@ class SpectrumScene(QWidget):
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._theme = theme
+        self._presentation_active = True
         self._locale = locale
         self._latest_view: SpectrumFrameView | None = None
         self._trace_views: dict[TraceKind, SpectrumFrameView] = {}
@@ -147,6 +148,25 @@ class SpectrumScene(QWidget):
         """Return bounded paint data; never a retained average/max/min source frame."""
 
         return self._envelopes.get(kind)
+
+    def set_presentation_active(self, active: bool) -> None:
+        """Suspend plot preparation, not frame admission or acquisition.
+
+        Hidden pages keep only the existing latest views and measurement
+        identity. Returning projects those views once; no publication backlog.
+        This transient gate never changes a user's layer-visibility preference.
+        """
+        active = bool(active)
+        if active == self._presentation_active:
+            return
+        self._presentation_active = active
+        self._persistence.set_presentation_active(active)
+        self.sweep_coverage.set_presentation_active(active)
+        if active:
+            for kind, view in self._trace_views.items():
+                self._set_trace_view(kind, view)
+            self._apply_vertical_range()
+            self._update_markers_for_new_frame()
 
     def take_display_controls(self) -> QWidget:
         """Detach and return the existing controls without rebuilding canvas state."""
@@ -725,6 +745,8 @@ class SpectrumScene(QWidget):
         return lines, labels
 
     def _set_trace_view(self, kind: TraceKind, view: SpectrumFrameView) -> None:
+        if not self._presentation_active:
+            return
         visible = self._visible_trace_view(view)
         envelope = peak_preserving_envelope(visible, max(1, self._view_box.width()))
         self._envelopes[kind] = envelope
@@ -736,6 +758,8 @@ class SpectrumScene(QWidget):
             )
 
     def _apply_vertical_range(self) -> None:
+        if not self._presentation_active:
+            return
         view = self._latest_view
         if view is None:
             self._update_range_summary()
@@ -779,6 +803,8 @@ class SpectrumScene(QWidget):
         )
 
     def _update_markers_for_new_frame(self) -> None:
+        if not self._presentation_active:
+            return
         selected = self._selected_marker_id
         for marker_id, marker in tuple(self._markers.items()):
             if self.place_marker(marker_id, marker.frequency_hz) is None:

@@ -93,6 +93,16 @@ class SpectrumWaterfallView(QWidget):
         self.flush_settings()
         super().closeEvent(event)
 
+    def hideEvent(self, event) -> None:
+        self._spectrum.set_presentation_active(False)
+        self._waterfall.set_presentation_active(False)
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._spectrum.set_presentation_active(True)
+        self._waterfall.set_presentation_active(True)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self._initial_sizes_applied or self.height() <= 0:

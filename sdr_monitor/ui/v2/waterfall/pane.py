@@ -85,6 +85,7 @@ class WaterfallPane(QWidget):
         self._last_seen_timestamp_ns: int | None = None
         self._last_seen_sequence: int | None = None
         self._render_visible = True
+        self._presentation_active = True
         self._frozen = False
         self._sweep_mode = False
         self._metrics = WaterfallPaneMetrics()
@@ -253,7 +254,7 @@ class WaterfallPane(QWidget):
         self._show_initial_physical_grid_if_needed(line.grid_signature)
         self._update_time_axis()
         self._update_status()
-        if not self._render_visible:
+        if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
             return
         self._upload_tiles()
@@ -283,7 +284,7 @@ class WaterfallPane(QWidget):
         self._show_initial_physical_grid_if_needed(line.grid_signature)
         self._update_time_axis()
         self._update_status()
-        if not self._render_visible:
+        if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
             return
         self._upload_tiles()
@@ -309,6 +310,16 @@ class WaterfallPane(QWidget):
         else:
             self._hide_tiles()
         self._schedule_settings_write()
+
+    def set_presentation_active(self, active: bool) -> None:
+        """Stop image uploads while retaining bounded row/time/gap history."""
+        active = bool(active)
+        if active == self._presentation_active:
+            return
+        self._presentation_active = active
+        if active:
+            self._update_time_axis()
+            self._upload_tiles()
 
     def set_frozen(self, frozen: bool) -> None:
         """Freeze only local row admission; no backend pause/stop command exists here."""
@@ -588,7 +599,7 @@ class WaterfallPane(QWidget):
         self._synchronize_x_range(self._view_box, [signature.first_edge_hz, signature.last_edge_hz])
 
     def _upload_tiles(self) -> None:
-        if not self._render_visible:
+        if not self._render_visible or not self._presentation_active:
             return
         signature = self._grid_signature
         if signature is None:
@@ -648,6 +659,8 @@ class WaterfallPane(QWidget):
             image.setVisible(False)
 
     def _update_time_axis(self) -> None:
+        if not self._presentation_active:
+            return
         self._refresh_frequency_values()
         signature = self._grid_signature
         capacity_rows = (

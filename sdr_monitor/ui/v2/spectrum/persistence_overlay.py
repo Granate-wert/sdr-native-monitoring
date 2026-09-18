@@ -45,6 +45,7 @@ class PersistenceOverlay:
         self._image.setVisible(False)
         self._plot_item.addItem(self._image)
         self._visible = True
+        self._presentation_active = True
         self._logarithmic = True
         self._render_mode = PersistenceRenderMode.DIRECT
         self._latest_view: PersistenceDensityView | None = None
@@ -84,6 +85,18 @@ class PersistenceOverlay:
         if self._visible:
             self.flush_pending()
 
+    def set_presentation_active(self, active: bool) -> None:
+        """Transient page visibility; preserve the user's density toggle."""
+        active = bool(active)
+        if active == self._presentation_active:
+            return
+        self._presentation_active = active
+        if not active:
+            self._timer.stop()
+        elif self._visible and self._latest_view is not None:
+            self._discard_pending()
+            self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
+
     def set_logarithmic(self, logarithmic: bool) -> None:
         if self._logarithmic == bool(logarithmic):
             return
@@ -103,7 +116,7 @@ class PersistenceOverlay:
     def set_frame(self, view: PersistenceDensityView, *, now_ns: int | None = None) -> None:
         self._latest_view = view
         now = monotonic_ns() if now_ns is None else now_ns
-        if not self._visible:
+        if not self._visible or not self._presentation_active:
             self._pending_view = view
             self._set_metrics(hidden_updates=self._metrics.hidden_updates + 1)
             return
@@ -121,7 +134,7 @@ class PersistenceOverlay:
 
     def flush_pending(self, now_ns: int | None = None) -> None:
         view = self._pending_view
-        if view is None or not self._visible:
+        if view is None or not self._visible or not self._presentation_active:
             return
         now = monotonic_ns() if now_ns is None else now_ns
         if self._last_upload_ns is not None and now - self._last_upload_ns < self._interval_ns:
@@ -142,6 +155,7 @@ class PersistenceOverlay:
         """Clear only the presentation layer; no native accumulation/reset command exists."""
 
         self._discard_pending()
+        self._latest_view = None
         self._uploaded_density = None
         self._visual_buffer = None
         self._image.clear()
@@ -149,7 +163,7 @@ class PersistenceOverlay:
         self._set_metrics(retained_extra_image_buffers=0)
 
     def _upload(self, view: PersistenceDensityView, *, now_ns: int, force: bool = False) -> None:
-        if not self._visible:
+        if not self._visible or not self._presentation_active:
             return
         if not force and view.density is self._uploaded_density:
             return

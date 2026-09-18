@@ -64,6 +64,7 @@ class SweepCoverageOverlay:
     """No device commands, clock, accumulation or independent publication queue."""
     def __init__(self, plot: pg.PlotItem, locale: UiLocale) -> None:
         self.state = SweepCoverageState()
+        self._presentation_active = True
         self.projection: CoverageProjection | None = None
         self._plot = plot
         self._locale = locale
@@ -101,7 +102,14 @@ class SweepCoverageOverlay:
         for item in (self.strip, self.history, self.label):
             item.hide()
 
+    def set_presentation_active(self, active: bool) -> None:
+        self._presentation_active = bool(active)
+        if self._presentation_active:
+            self.refresh()
+
     def refresh(self, *_args) -> None:
+        if not self._presentation_active:
+            return
         if self.state.current is None:
             for item in (self.strip, self.history, self.label):
                 item.hide()
