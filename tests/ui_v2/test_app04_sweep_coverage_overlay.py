@@ -43,6 +43,10 @@ class SweepCoverageOverlayTests(unittest.TestCase):
         snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(), progress)
         # This is a deterministic presentation fixture, not a worker/RF test.
         self.model._on_sweep_snapshot(prepare_sweep_snapshot(snapshot, snapshot.analyzer_bundle))
+        expected = self.scene.latest_frame
+        self.harness.wait(lambda: self.scene.displayed_frame is expected
+                          and self.layer.projection is not None
+                          and self.layer._projection_key == self.scene._viewport())
 
     def test_coalesced_terminal_and_next_partial_history_never_feeds_markers_or_scale(self):
         self.publish(self.previous, self.early)
@@ -94,8 +98,10 @@ class SweepCoverageOverlayTests(unittest.TestCase):
                 self.assertIn(text("analyzer.coverage.previous", sequence=1), self.layer.label.toolTip())
                 self.assertFalse(self.harness.shell.grab().isNull())
         self.scene.view_box.setXRange(105e6, 107e6, padding=0)
+        self.harness.wait(lambda: self.layer._projection_key == self.scene._viewport())
         self.assertTrue(np.all(self.layer.projection.states == CURRENT))
         self.scene.view_box.setXRange(100e6, 102e6, padding=0)
+        self.harness.wait(lambda: self.layer._projection_key == self.scene._viewport())
         self.assertIn(-20, self.layer.projection.history.values)
         self.harness.shell.resize(1920, 1080)
         self.harness.app.processEvents()

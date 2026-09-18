@@ -40,6 +40,8 @@ class SweepPositionOverlayTests(unittest.TestCase):
         snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(), progress)
         # This is a deterministic presentation fixture, not a worker/RF test.
         self.model._on_sweep_snapshot(prepare_sweep_snapshot(snapshot, snapshot.analyzer_bundle))
+        expected = self.scene.latest_frame
+        self.harness.wait(lambda: self.scene.displayed_frame is expected)
 
     def test_reordered_progress_terminal_stop_and_mode_reset(self):
         self.publish(progress=self.early)
