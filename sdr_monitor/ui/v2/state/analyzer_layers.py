@@ -16,20 +16,43 @@ from ..waterfall.sweep_rows import SweepRowStamp, SweepRowState
 
 
 _MAX_WATERFALL_COLUMNS = 2048
+_GRID_VALIDATION_BATCH = 65_536
+
+
+def _regular_spacing(values: np.ndarray) -> float:
+    """Validate every physical interval with bounded scratch, including seams."""
+    if values.size < 2:
+        raise ValueError("physical centers require at least two finite points")
+    step = float(values[1] - values[0])
+    for first in range(0, values.size - 1, _GRID_VALIDATION_BATCH):
+        batch = values[first:first + _GRID_VALIDATION_BATCH + 1]
+        if not np.all(np.isfinite(batch)):
+            raise ValueError("physical centers require at least two finite points")
+        spacing = np.diff(batch)
+        if np.any(spacing <= 0.0) or not np.allclose(spacing, step, rtol=1e-9, atol=1e-9):
+            raise ValueError("presentation layers require a regular physical grid")
+    return step
 
 
 def _regular_edges(centers: np.ndarray) -> np.ndarray:
     values = np.asarray(centers, dtype=np.float64).reshape(-1)
-    if values.size < 2 or not np.all(np.isfinite(values)):
-        raise ValueError("physical centers require at least two finite points")
-    spacing = np.diff(values)
-    if np.any(spacing <= 0.0) or not np.allclose(spacing, spacing[0], rtol=1e-9, atol=1e-9):
-        raise ValueError("presentation layers require a regular physical grid")
+    spacing = _regular_spacing(values)
     edges: np.ndarray = np.empty(values.size + 1, dtype=np.float64)
-    edges[:-1] = values - spacing[0] / 2.0
-    edges[-1] = values[-1] + spacing[0] / 2.0
+    edges[:-1] = values - spacing / 2.0
+    edges[-1] = values[-1] + spacing / 2.0
     edges.setflags(write=False)
     return edges
+
+
+def _waterfall_projection(centers: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if values.size <= _MAX_WATERFALL_COLUMNS:
+        return values, _regular_edges(centers)
+    # Reduction needs only the endpoints, not N+1 full-resolution edges. Still
+    # validate ALL intervals: endpoints alone cannot prove a regular grid.
+    centers = np.asarray(centers, dtype=np.float64).reshape(-1)
+    spacing = _regular_spacing(centers)
+    bounds = np.array([centers[0] - spacing / 2, centers[-1] + spacing / 2])
+    return _reduce_waterfall_columns(values, bounds)
 
 
 def persistence_density_from_native(
@@ -84,12 +107,7 @@ def waterfall_line_from_spectrum(frame: LiveSpectrumFrame) -> WaterfallLineFrame
     cell.  A cell containing any unknown sample remains NaN, so display LOD
     cannot bridge an acquisition/analysis gap with a neighbouring peak.
     """
-    native_edges = _regular_edges(frame.frequencies_hz)
-    values = frame.values
-    if values.size <= _MAX_WATERFALL_COLUMNS:
-        reduced_values, reduced_edges = values, native_edges
-    else:
-        reduced_values, reduced_edges = _reduce_waterfall_columns(values, native_edges)
+    reduced_values, reduced_edges = _waterfall_projection(frame.frequencies_hz, frame.values)
     return WaterfallLineFrame(
         values=reduced_values, frequency_edges_hz=reduced_edges,
         timestamp_ns=int(frame.timestamp_ns),
@@ -111,10 +129,7 @@ def waterfall_line_from_sweep(frame: SweepLineFrame | SweepProgressFrame) -> Swe
     averaging or histogram work is performed here. Sweep time remains unknown
     for the whole row; per-segment acquisition records stay on the domain frame.
     """
-    edges = _regular_edges(frame.frequencies_hz)
-    values = frame.values_db
-    if values.size > _MAX_WATERFALL_COLUMNS:
-        values, edges = _reduce_waterfall_columns(values, edges)
+    values, edges = _waterfall_projection(frame.frequencies_hz, frame.values_db)
     stamp = SweepRowStamp(
         sequence=frame.sequence, revision=frame.revision if isinstance(frame, SweepProgressFrame) else 0,
         state=SweepRowState.PARTIAL if isinstance(frame, SweepProgressFrame) else SweepRowState(frame.state.value),
@@ -135,14 +150,19 @@ def _reduce_waterfall_columns(values: np.ndarray, native_edges: np.ndarray) -> t
     source = np.asarray(values, dtype=np.float32).reshape(-1)
     # Mapping source-bin *centres* to equal physical cells retains the full
     # physical span for non-divisible sizes without a narrower final bucket.
-    bucket = (((2 * np.arange(source.size, dtype=np.int64) + 1) * columns) // (2 * source.size))
-    starts = np.asarray(np.searchsorted(bucket, np.arange(columns), side="left"), dtype=np.int64).reshape(-1)
+    # Invert floor((2*j+1)*columns/(2*N)) >= cell exactly in integer arithmetic.
+    # O(columns) indices replace the former O(N) bucket array and search.
+    cells: np.ndarray = np.arange(columns, dtype=np.int64)
+    starts = (2 * source.size * cells + columns - 1) // (2 * columns)
     # source.size > columns: monotonic centre assignment covers every output
     # cell, so reduceat has no empty group. Retain NaN for a cell containing
     # *any* non-finite source value, including +/-inf. This performs the same
     # peak-preserving display reduction without 2048 Python loops per frame.
     reduced: np.ndarray = np.maximum.reduceat(source, starts)
-    finite = np.logical_and.reduceat(np.isfinite(source), starts)
+    # max propagates NaN/+inf; min additionally detects any -inf. Checking both
+    # preserves the original any-nonfinite rule without an N-element bool mask.
+    minimum = np.minimum.reduceat(source, starts)
+    finite = np.isfinite(reduced) & np.isfinite(minimum)
     reduced[~finite] = np.nan
     span = float(native_edges[-1] - native_edges[0])
     edges = float(native_edges[0]) + np.arange(columns + 1, dtype=np.float64) * (span / columns)
