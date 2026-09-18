@@ -1,7 +1,21 @@
+<#
+.SYNOPSIS
+Validate or publish a complete SDR package to a fixed launch directory.
+.DESCRIPTION
+Without -Promote this prints a read-only plan. The default destination is the
+stable CPU/CUDA directory. -TargetTag explicitly selects a separate fixed test
+directory. Previous bytes are archived, replacements are manifest-verified,
+and failed installs roll back. This script never launches an EXE or modifies
+firewall rules. A fixed path does not guarantee Windows will not prompt again.
+.EXAMPLE
+./publish_sdr_current.ps1 -SourcePackage ./dist/SDRNativeMonitoring-CPU-build42/SDRNativeMonitoring -Lane CPU -TargetTag test-current
+Inspect the plan for a separate test directory; add -Promote to publish it.
+#>
 [CmdletBinding()]
 param(
     [string]$SourcePackage,
     [ValidateSet('CPU', 'CUDA')][string]$Lane = 'CPU',
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')][string]$TargetTag,
     [switch]$Promote
 )
 
@@ -74,7 +88,11 @@ function Assert-SdrCurrentStopped([string]$Current) {
 
 function Publish-SdrCurrent {
     [CmdletBinding()]
-    param([string]$RepositoryRoot, [string]$SourcePackage, [string]$Lane, [switch]$Promote)
+    param(
+        [string]$RepositoryRoot, [string]$SourcePackage, [string]$Lane,
+        [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')][string]$TargetTag,
+        [switch]$Promote
+    )
     if ($Lane -notin @('CPU', 'CUDA')) { throw 'Unsupported lane' }
     if (-not $SourcePackage) { throw 'SourcePackage is required' }
     $dist = (Resolve-Path -LiteralPath (Join-Path $RepositoryRoot 'dist')).Path.TrimEnd('\', '/')
@@ -86,8 +104,16 @@ function Publish-SdrCurrent {
         $sourceInfo.Parent.Name -notmatch "^SDRNativeMonitoring-$Lane-[A-Za-z0-9][A-Za-z0-9_-]*$") {
         throw 'Source must be a tagged package directly under this repository dist'
     }
-    $currentParent = Join-Path $dist "SDRNativeMonitoring-$Lane"
+    # An explicitly named test lane reuses its authorized launch path without
+    # promoting experimental bytes over the user's default/current installation.
+    # Tags are directory names, never arbitrary destination paths.
+    $targetName = "SDRNativeMonitoring-$Lane"
+    if ($TargetTag) { $targetName = "$targetName-$TargetTag" }
+    $currentParent = Join-Path $dist $targetName
     $current = Join-Path $currentParent 'SDRNativeMonitoring'
+    if ($source.Equals($current, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Source and target must be different package directories'
+    }
     Assert-SdrPlainTree $source
     if (Test-Path -LiteralPath $currentParent) { Assert-SdrPlainTree $currentParent }
     $sourceManifestHash = (Get-FileHash -LiteralPath (Join-Path $source 'release_manifest.json') -Algorithm SHA256).Hash
@@ -96,14 +122,16 @@ function Publish-SdrCurrent {
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
     $archiveRoot = Join-Path $dist 'archive'
     if (Test-Path -LiteralPath $archiveRoot) { Assert-SdrPlainTree $archiveRoot }
-    $archive = Join-Path $archiveRoot "SDRNativeMonitoring-$Lane-$stamp"
-    $stage = Join-Path $dist ".sdr-current-stage-$Lane-$stamp"
+    $archive = Join-Path $archiveRoot "$targetName-$stamp"
+    $stage = Join-Path $dist ".sdr-current-stage-$targetName-$stamp"
     $result = [ordered]@{ source = $source; current = $current; archive = $archive;
-        version = $manifest.version; lane = $Lane; promoted = $false }
+        version = $manifest.version; lane = $Lane; target_tag = $TargetTag; promoted = $false }
     if (-not $Promote) { return [pscustomobject]$result }
 
     # The complete directory is copied into a fresh sibling, then verified.
     # No merge, recursive deletion, running-process termination, or firewall edit.
+    # Keep one shared per-backend lock: a source may be another test target,
+    # so independent target locks would permit racing swaps.
     $lock = [IO.File]::Open((Join-Path $dist ".sdr-current-$Lane.lock"),
         [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
@@ -148,6 +176,8 @@ function Publish-SdrCurrent {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    Publish-SdrCurrent -RepositoryRoot $PSScriptRoot -SourcePackage $SourcePackage -Lane $Lane -Promote:$Promote |
-        ConvertTo-Json
+    $publishArgs = @{ RepositoryRoot = $PSScriptRoot; SourcePackage = $SourcePackage;
+        Lane = $Lane; Promote = $Promote }
+    if ($TargetTag) { $publishArgs.TargetTag = $TargetTag }
+    Publish-SdrCurrent @publishArgs | ConvertTo-Json
 }

@@ -39,10 +39,11 @@ class CurrentReleaseTests(unittest.TestCase):
                                                    sha256=hashlib.sha256(payload).hexdigest())])
         (path / "release_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-    def run_promotion(self, promote=True, setup="", source=None):
+    def run_promotion(self, promote=True, setup="", source=None, target_tag=None):
+        target = "" if target_tag is None else f"-TargetTag '{target_tag}' "
         command = (f". {quoted(SCRIPT)}; {setup}; Publish-SdrCurrent -RepositoryRoot {quoted(self.root)} "
                    f"-SourcePackage {quoted(source or self.source)} -Lane CPU "
-                   + ("-Promote " if promote else "") + "| ConvertTo-Json")
+                   + target + ("-Promote " if promote else "") + "| ConvertTo-Json")
         return subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-Command", command],
                               capture_output=True, text=True, timeout=30)
 
@@ -57,6 +58,89 @@ class CurrentReleaseTests(unittest.TestCase):
         self.assert_old_unchanged()
         self.assertFalse((self.root / "dist/archive").exists())
         self.assertFalse(list((self.root / "dist").glob(".sdr-current*")))
+
+    def test_cli_default_and_tagged_plans_match_library_destinations(self):
+        script = self.root / SCRIPT.name
+        shutil.copyfile(SCRIPT, script)
+        for tag in (None, "APP04-fixed"):
+            with self.subTest(tag=tag):
+                command = [SHELL, "-NoProfile", "-NonInteractive", "-File", str(script),
+                           "-SourcePackage", str(self.source), "-Lane", "CPU"]
+                if tag is not None:
+                    command += ["-TargetTag", tag]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                observed = json.loads(result.stdout)
+                expected = (self.current if tag is None else
+                            self.root / f"dist/SDRNativeMonitoring-CPU-{tag}/SDRNativeMonitoring")
+                self.assertEqual(Path(observed["current"]), expected)
+                self.assertFalse(observed["promoted"])
+                self.assert_old_unchanged()
+        self.assertFalse((self.root / "dist/archive").exists())
+
+    def test_fixed_test_path_swap_leaves_stable_untouched(self):
+        target = self.root / "dist/SDRNativeMonitoring-CPU-APP04-fixed/SDRNativeMonitoring"
+        self.package(target, b"old test build")
+        result = self.run_promotion(target_tag="APP04-fixed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(Path(observed["current"]), target)
+        self.assertEqual(observed["target_tag"], "APP04-fixed")
+        self.assertTrue(observed["promoted"])
+        self.assert_old_unchanged()
+        self.assertEqual((target / "SDRNativeMonitoring.exe").read_bytes(),
+                         (self.source / "SDRNativeMonitoring.exe").read_bytes())
+        self.assertEqual((Path(observed["archive"]) / "SDRNativeMonitoring.exe").read_bytes(),
+                         b"old test build")
+
+    def test_test_path_plan_is_read_only(self):
+        result = self.run_promotion(False, target_tag="APP04-fixed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertFalse(observed["promoted"])
+        self.assertFalse(Path(observed["current"]).exists())
+        self.assertFalse((self.root / "dist/archive").exists())
+        self.assert_old_unchanged()
+
+    def test_same_source_target_and_unsafe_target_tags_are_rejected(self):
+        for tag in ("test", "TEST", "../escape", "a/b", "a:b", "x" * 65):
+            with self.subTest(tag=tag):
+                result = self.run_promotion(target_tag=tag)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assert_old_unchanged()
+                self.assertFalse((self.root / "dist/archive").exists())
+                self.assertEqual((self.source / "SDRNativeMonitoring.exe").read_bytes(),
+                                 b"synthetic new package, not executable")
+
+    def test_failed_test_path_verification_restores_only_test_target(self):
+        target = self.root / "dist/SDRNativeMonitoring-CPU-APP04-fixed/SDRNativeMonitoring"
+        self.package(target, b"old test build")
+        setup = f"""function Move-Item {{
+            param($LiteralPath, $Destination)
+            Microsoft.PowerShell.Management\\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+            if ([IO.Path]::GetFileName($LiteralPath) -like '.sdr-current-stage-*') {{
+                [IO.File]::WriteAllText((Join-Path {quoted(target)} 'extra.txt'), 'synthetic corruption')
+            }}
+        }}"""
+        result = self.run_promotion(setup=setup, target_tag="APP04-fixed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_old_unchanged()
+        self.assertEqual((target / "SDRNativeMonitoring.exe").read_bytes(), b"old test build")
+        stages = list((self.root / "dist").glob(".sdr-current-stage-*"))
+        self.assertEqual(len(stages), 1)
+        self.assertTrue((stages[0] / "extra.txt").exists())
+
+    def test_running_test_target_is_the_guarded_directory(self):
+        target = self.root / "dist/SDRNativeMonitoring-CPU-APP04-fixed/SDRNativeMonitoring"
+        self.package(target, b"old test build")
+        setup = f"""function Assert-SdrCurrentStopped {{
+            param([string]$Current)
+            if ($Current -eq {quoted(target)}) {{ throw 'synthetic running test target' }}
+        }}"""
+        result = self.run_promotion(setup=setup, target_tag="APP04-fixed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_old_unchanged()
+        self.assertEqual((target / "SDRNativeMonitoring.exe").read_bytes(), b"old test build")
 
     def test_complete_swap_preserves_archive_and_tagged_source(self):
         result = self.run_promotion()
