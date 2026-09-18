@@ -5,6 +5,9 @@ latency or Windows DPI evidence. Frame construction is outside the measured
 presentation interval. The queued action is a Qt marker command, not OS input.
 Closed-loop delivery waits for each partial paint; this is not an overload,
 producer-coalescing or sustained-throughput benchmark. Persistence is absent.
+Hidden mode navigates away, measures delivery and queued-command completion
+without painting, then measures one resume-to-paint per grid. It does not stop
+acquisition or report hidden delivery timings as paint/FPS measurements.
 """
 import argparse
 import cProfile
@@ -27,6 +30,7 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--repeats", type=int, default=8)
     parser.add_argument("--bins", type=int, nargs="+", default=[65536, 262144, 2000000])
+    parser.add_argument("--visibility", choices=("visible", "hidden"), default="visible")
     args = parser.parse_args()
     if not sys.flags.isolated or not 3 <= args.repeats <= 50:
         parser.error("use Python -I and 3..50 repeats")
@@ -61,6 +65,7 @@ def main():
             sleep(.001)
 
     rows = []
+    resumes = []
     profiler = cProfile.Profile()
     with patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics):
         harness = AnalyzerWorkspaceProductTests("runTest")
@@ -80,6 +85,12 @@ def main():
         targets = (id(scene._graphics), id(waterfall._graphics))
         sequence = 0
         for count in args.bins:
+            if args.visibility == "hidden":
+                harness.shell.select_workspace("calibration")
+                harness.app.processEvents()
+                if harness.page.visualization.isVisible():
+                    raise AssertionError("Analyzer must be hidden before delivery")
+            uploads_before = waterfall.metrics.image_uploads
             frequencies = np.linspace(100e6, 200e6, count)
             frequencies.setflags(write=False)
             for sample in range(args.repeats + 2):
@@ -109,18 +120,23 @@ def main():
                 QTimer.singleShot(0, marker_command)
                 presenter.snapshot_ready.emit(snapshot)
                 submitted = perf_counter_ns()
-                wait(lambda: bool(command) and all(any(row[0] == target for row in paints) for target in targets))
+                wait(lambda: bool(command) and (args.visibility == "hidden" or
+                     all(any(row[0] == target for row in paints) for target in targets)))
                 if scene.latest_frame.spectrum is not frame or not command[0][2]:
                     raise AssertionError("partial frame or marker was not delivered")
-                first = [next(row for row in paints if row[0] == target) for target in targets]
+                if args.visibility == "hidden" and any(row[0] in targets for row in paints):
+                    raise AssertionError("hidden Analyzer painted")
                 if sample >= 2:
-                    rows.append(dict(bins=count, partial_fraction=filled/count,
+                    row = dict(bins=count, partial_fraction=filled/count,
                         dispatch_ms=(submitted-start)/1e6,
-                        spectrum_paint_ms=(first[0][2]-first[0][1])/1e6,
-                        waterfall_paint_ms=(first[1][2]-first[1][1])/1e6,
-                        both_first_paints_ms=(max(row[2] for row in first)-start)/1e6,
                         queued_marker_ms=(command[0][1]-start)/1e6,
-                        marker_execution_ms=(command[0][1]-command[0][0])/1e6))
+                        marker_execution_ms=(command[0][1]-command[0][0])/1e6)
+                    if args.visibility == "visible":
+                        first = [next(item for item in paints if item[0] == target) for target in targets]
+                        row.update(spectrum_paint_ms=(first[0][2]-first[0][1])/1e6,
+                            waterfall_paint_ms=(first[1][2]-first[1][1])/1e6,
+                            both_first_paints_ms=(max(item[2] for item in first)-start)/1e6)
+                    rows.append(row)
             # Separate profiled sample: never mix cProfile overhead into timings.
             profiled = replace(frame, sequence=sequence+1)
             sequence += 1
@@ -128,6 +144,20 @@ def main():
             presenter.snapshot_ready.emit(ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics(), profiled))
             harness.app.processEvents()
             profiler.disable()
+            if args.visibility == "hidden":
+                if waterfall.metrics.image_uploads != uploads_before:
+                    raise AssertionError("hidden Waterfall uploaded image data")
+                paints.clear()
+                start = perf_counter_ns()
+                harness.shell.select_workspace("analyzer")
+                resumed = perf_counter_ns()
+                wait(lambda: all(any(row[0] == target for row in paints) for target in targets))
+                if scene.latest_frame.spectrum is not profiled:
+                    raise AssertionError("resume did not preserve the latest frame")
+                first = [next(row for row in paints if row[0] == target) for target in targets]
+                resumes.append(dict(bins=count, resume_dispatch_ms=(resumed-start)/1e6,
+                    resume_both_first_paints_ms=(max(row[2] for row in first)-start)/1e6,
+                    hidden_image_uploads=0, latest_frame_preserved=True))
         if harness.events:
             raise AssertionError(f"Unexpected acquisition commands: {harness.events}")
     finally:
@@ -162,6 +192,7 @@ def main():
         python=sys.version.split()[0], numpy=np.__version__, pyside=PySide6.__version__,
         pyqtgraph=pg.__version__, host_platform=platform.platform(), processor=platform.processor(),
         platform="Qt offscreen", logical_size=[1920, 1080], device_pixel_ratio=device_pixel_ratio,
+        visibility=args.visibility, resumes=resumes,
         warmups_per_grid=2,
         product_imports_outside_checkout=outside, source_sha256=source,
         samples=rows, summaries=summaries, separate_cprofile_top=top)
