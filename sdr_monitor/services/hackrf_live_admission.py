@@ -59,8 +59,11 @@ _WINDOWS = frozenset(
 )
 _DETECTORS = frozenset(("sample", "peak", "negative_peak", "rms", "average_power"))
 _MAX_QUEUE_CAPACITY = 64
-# The current native factory admits one fixed 262144-byte CI8 transfer at a
-# time, then drains CPU output. Keep the analytical burst buffer distinct from
+# The qualified official runtime supplies 262144-byte CI8 transfers; the native
+# pipeline drains CPU output after each transfer. A different runtime transfer
+# size needs requalification against its reported source.slot_bytes. This is
+# a default for the qualified runtime, not an inferred hardware guarantee.
+# Keep the analytical burst buffer distinct from
 # the small freshest-window presentation queue. These are bounded scalar
 # policy values, not runtime discovery or a process-RSS guarantee.
 _TRANSFER_SAMPLES = 262_144 // 2
@@ -125,8 +128,10 @@ class HackrfLiveRequest:
     persistence_enabled: bool = False
     slot_count: int = 32
     ready_capacity: int = 24
-    # None resolves to enough outputs for one transfer, including FFT overlap
-    # carried from the preceding transfer. Explicit smaller queues remain
+    # None selects enough outputs for one transfer, including FFT overlap
+    # carried from the preceding transfer. Keep the automatic policy as None
+    # so dataclasses.replace(..., fft_size=..., hop_size=...) recalculates it.
+    # Explicit smaller queues remain
     # available for bounded lossy/diagnostic profiles and are never increased.
     dsp_output_capacity: int | None = None
     presentation_capacity: int = 4
@@ -195,10 +200,16 @@ class HackrfLiveRequest:
         frame_bytes = fft_size * 12 + _SPECTRUM_FRAME_OVERHEAD_ALLOWANCE_BYTES
         if (output_capacity + presentation_capacity) * frame_bytes > _SPECTRUM_QUEUE_BUDGET_BYTES:
             raise ValueError("HackRF spectrum queues exceed the 64 MiB allocation policy")
-        object.__setattr__(self, "dsp_output_capacity", output_capacity)
         object.__setattr__(self, "presentation_capacity", presentation_capacity)
         object.__setattr__(self, "configuration_generation", _bounded_integer(self.configuration_generation, "configuration_generation", 1, _MAX_GENERATION))
         object.__setattr__(self, "source_id", _opaque_source_id(self.source_id))
+
+    @property
+    def resolved_dsp_output_capacity(self) -> int:
+        """Validated, deterministic native value; no runtime lookup or allocation."""
+        if self.dsp_output_capacity is not None:
+            return self.dsp_output_capacity
+        return (_TRANSFER_SAMPLES + self.hop_size - 1) // self.hop_size
 
 
 @dataclass(frozen=True, slots=True, init=False)

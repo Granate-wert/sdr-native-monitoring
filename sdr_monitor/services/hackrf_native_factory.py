@@ -121,7 +121,7 @@ class HackrfNativeRuntimeFactory:
                 detector=_native_detector(native_module, request.detector),
                 slot_count=request.slot_count,
                 ready_capacity=request.ready_capacity,
-                dsp_output_capacity=request.dsp_output_capacity,
+                dsp_output_capacity=request.resolved_dsp_output_capacity,
                 presentation_capacity=request.presentation_capacity,
                 configuration_generation=request.configuration_generation,
                 source_id=str(request.source_id),
