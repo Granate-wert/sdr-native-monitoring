@@ -114,6 +114,11 @@ class PreparedLiveTests(unittest.TestCase):
             self.assertIs(f.presenter._preparation_future, future)
             self.assertEqual(f.presenter._pending_preparation[0].spectrum.sequence, 101)
             self.assertEqual(f.presenter.preparation_superseded, 99)
+            self.assertFalse(any(s.spectrum is first.spectrum for s in delivered))
+            # Start's earlier empty RUNNING poll may already have been queued
+            # before installing the barrier. The invariant below starts at
+            # Stop acceptance, not at an unrelated earlier GUI pump.
+            delivered.clear()
             f.page.primary.click()
             self.assertTrue(f.composition.view_model.state.busy)
             self.assertIsNone(f.presenter._pending_preparation)
@@ -125,7 +130,8 @@ class PreparedLiveTests(unittest.TestCase):
             f.wait(lambda: not f.live.is_running() and not f.composition.view_model.state.busy)
             f.wait(lambda: f.presenter._preparation_future is None)
             self.assertTrue(delivered)
-            self.assertTrue(all(s.state is not LiveSessionState.RUNNING for s in delivered))
+            self.assertTrue(all(s.state is not LiveSessionState.RUNNING for s in delivered),
+                            [(s.state, getattr(s.spectrum, "sequence", None)) for s in delivered])
             self.assertGreaterEqual(f.presenter.preparation_stale, 1)
             self.assertEqual(f.events, ["rtbw-start", "rtbw-stop"])
         finally:
