@@ -463,8 +463,19 @@ class AnalyzerWorkspaceV2(QWidget):
             # Preserve terminal N and progressive N+1 from the same backend
             # poll, even though only N+1 is current on the upper spectrum.
             try:
-                rows = tuple(waterfall_line_from_sweep(frame)
-                             for frame in (snapshot.line, snapshot.progress) if frame is not None)
+                prepared = state.prepared_sweep
+                if prepared is not None:
+                    if prepared.snapshot is not snapshot:
+                        raise ValueError("Prepared Sweep snapshot identity mismatch")
+                    if prepared.waterfall_error is not None:
+                        raise ValueError(prepared.waterfall_error)
+                    rows = prepared.waterfall_rows
+                else:
+                    # Unprepared injected/fake ports retain the public legacy
+                    # adapter seam; normal V2 composition always prepares in
+                    # its existing single-flight worker, never in this branch.
+                    rows = tuple(waterfall_line_from_sweep(frame)
+                                 for frame in (snapshot.line, snapshot.progress) if frame is not None)
             except (ValueError, TypeError) as error:
                 self.visualization.waterfall_pane.clear_history()
                 self.visualization.spectrum_scene.set_warning(text("waterfall.sweep.invalid", reason=str(error)))

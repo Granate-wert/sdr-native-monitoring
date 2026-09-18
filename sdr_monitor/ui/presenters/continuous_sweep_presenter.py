@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot, Qt
@@ -19,6 +21,14 @@ from ...services.native_continuous_sweep import (
     ContinuousSweepDisplaySnapshot,
 )
 from ..performance import BoundedRenderMetrics, RenderPerformanceSnapshot
+from ...domain.analyzer import AnalyzerFrameBundle
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedPublication:
+    snapshot: ContinuousSweepDisplaySnapshot
+    bundle: AnalyzerFrameBundle | None
+    presentation: object
 
 
 class ContinuousSweepPresenter(QObject):
@@ -27,6 +37,7 @@ class ContinuousSweepPresenter(QObject):
     line_ready = Signal(object)
     analyzer_ready = Signal(object)
     snapshot_ready = Signal(object)
+    prepared_snapshot_ready = Signal(object)
     metrics_ready = Signal(object)
     task_failed = Signal(str)
     running_changed = Signal(bool)
@@ -42,12 +53,14 @@ class ContinuousSweepPresenter(QObject):
         *,
         max_poll_hz: float = 60.0,
         render_budget_ms: float = 16.67,
+        snapshot_preparer: Callable[[ContinuousSweepDisplaySnapshot, AnalyzerFrameBundle | None], object] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         if max_poll_hz <= 0.0 or render_budget_ms <= 0.0:
             raise ValueError("continuous sweep UI cadence and render budget must be positive")
         self._service = service
+        self._snapshot_preparer = snapshot_preparer
         self._render_budget_ms = float(render_budget_ms)
         self._render_metrics = BoundedRenderMetrics(capacity=512)
         self._timer = QTimer(self)
@@ -57,12 +70,17 @@ class ContinuousSweepPresenter(QObject):
         self._closing = False
         self._stop_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-sweep-stop")
         self._start_future: Future[None] | None = None
-        self._stop_future: Future[ContinuousSweepDisplaySnapshot] | None = None
-        self._poll_future: Future[ContinuousSweepDisplaySnapshot] | None = None
+        self._stop_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication] | None = None
+        self._poll_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication] | None = None
         self._stop_failed = False
         self._start_completed.connect(self._finish_start, Qt.ConnectionType.QueuedConnection)
         self._stop_completed.connect(self._finish_stop, Qt.ConnectionType.QueuedConnection)
         self._poll_completed.connect(self._finish_poll, Qt.ConnectionType.QueuedConnection)
+
+    @property
+    def prepares_snapshots(self) -> bool:
+        """Composition-selected presentation channel; immutable for this owner."""
+        return self._snapshot_preparer is not None
 
     @property
     def is_starting(self) -> bool:
@@ -135,12 +153,22 @@ class ContinuousSweepPresenter(QObject):
         self.stopping_changed.emit(True)
         future.add_done_callback(self._stop_completed.emit)
 
-    def _stop_and_snapshot(self) -> ContinuousSweepDisplaySnapshot:
+    def _poll_and_prepare(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication:
+        snapshot = self._service.poll_latest()
+        if self._snapshot_preparer is None:
+            return snapshot
+        # Build the immutable coherent bundle once, on this same worker. The
+        # property validates large arrays; consumers must not reconstruct it
+        # repeatedly on the GUI thread merely to obtain the same packet.
+        bundle = snapshot.analyzer_bundle
+        return _PreparedPublication(snapshot, bundle, self._snapshot_preparer(snapshot, bundle))
+
+    def _stop_and_snapshot(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication:
         self._service.stop()
-        return self._service.poll_latest()
+        return self._poll_and_prepare()
 
     @Slot(object)
-    def _finish_stop(self, future: Future[ContinuousSweepDisplaySnapshot]) -> None:
+    def _finish_stop(self, future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication]) -> None:
         if future is not self._stop_future:
             return
         # Both jobs use the same executor. Preserve a terminal publication
@@ -223,12 +251,12 @@ class ContinuousSweepPresenter(QObject):
         # Single-flight until GUI delivery, not merely until worker exit. Timer
         # ticks never accumulate executor jobs or queued snapshots. Stop joins
         # behind at most this one finite drain; no parallel service access.
-        future = self._stop_executor.submit(self._service.poll_latest)
+        future = self._stop_executor.submit(self._poll_and_prepare)
         self._poll_future = future
         future.add_done_callback(self._poll_completed.emit)
 
     @Slot(object)
-    def _finish_poll(self, future: Future[ContinuousSweepDisplaySnapshot]) -> None:
+    def _finish_poll(self, future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication]) -> None:
         if future is not self._poll_future or not future.done():
             return
         try:
@@ -243,16 +271,24 @@ class ContinuousSweepPresenter(QObject):
         finally:
             self._poll_future = None
 
-    def _emit_snapshot(self, snapshot: ContinuousSweepDisplaySnapshot) -> None:
+    def _emit_snapshot(self, publication: ContinuousSweepDisplaySnapshot | _PreparedPublication) -> None:
         # Validate/convert before any consumer sees part of a rejected packet.
         # A conversion failure follows the same owned Stop path as poll failure.
-        bundle = snapshot.analyzer_bundle
+        if isinstance(publication, _PreparedPublication):
+            snapshot = publication.snapshot
+        else:
+            if self.prepares_snapshots:
+                raise ValueError("Configured Sweep presentation requires worker preparation")
+            snapshot = publication
+        bundle = publication.bundle if isinstance(publication, _PreparedPublication) else snapshot.analyzer_bundle
         metrics: ContinuousSweepDisplayMetrics = snapshot.metrics
         self.metrics_ready.emit(metrics)
         if snapshot.line is not None:
             self.line_ready.emit(snapshot.line)
         if bundle is not None:
             self.analyzer_ready.emit(bundle)
+        if isinstance(publication, _PreparedPublication):
+            self.prepared_snapshot_ready.emit(publication.presentation)
         self.snapshot_ready.emit(snapshot)
 
 

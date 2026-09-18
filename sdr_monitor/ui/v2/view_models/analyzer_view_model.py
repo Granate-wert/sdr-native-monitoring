@@ -12,6 +12,7 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
 from ..state.live_view_state import LiveAction, LiveViewState
+from ..state.prepared_sweep import PreparedSweepSnapshot
 from .live_view_model import LiveViewModel, _SignalPort
 
 
@@ -44,6 +45,7 @@ class AnalyzerViewState:
     error: str | None
     configuration_pending: bool = False
     sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
+    prepared_sweep: PreparedSweepSnapshot | None = None
 
     @property
     def controls_locked(self) -> bool:
@@ -68,13 +70,16 @@ class AnalyzerViewModel:
         self._error: str | None = None
         self._bundle: AnalyzerFrameBundle | None = None
         self._sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
+        self._prepared_sweep: PreparedSweepSnapshot | None = None
+        self._expects_prepared = getattr(sweep, "prepares_snapshots", False) is True
         self._listeners: list[Callable[[AnalyzerViewState], None]] = []
         self._publishing = False
         self._publication_pending = False
         self._disposed = False
         self._live_identity: tuple[object, ...] | None = None
         self._connections = (
-            (sweep.snapshot_ready, self._on_sweep_snapshot),
+            (getattr(sweep, "prepared_snapshot_ready") if self._expects_prepared else sweep.snapshot_ready,
+             self._on_sweep_snapshot),
             (sweep.task_failed, self._on_error),
             (sweep.starting_changed, self._on_starting),
             (sweep.stopping_changed, self._on_stopping),
@@ -95,6 +100,7 @@ class AnalyzerViewModel:
             self._error or live.error_label,
             self._configuration_pending,
             self._sweep_snapshot,
+            self._prepared_sweep,
         )
 
     def subscribe(self, callback: Callable[[AnalyzerViewState], None]) -> Callable[[], None]:
@@ -115,6 +121,7 @@ class AnalyzerViewModel:
             self._mode = mode
             self._bundle = None  # Never label a prior-mode frame as current.
             self._sweep_snapshot = None
+            self._prepared_sweep = None
             self._error = None
             self._publish()
         return True
@@ -198,6 +205,7 @@ class AnalyzerViewModel:
         if self._live_identity is not None and identity != self._live_identity:
             self._bundle = None
             self._sweep_snapshot = None
+            self._prepared_sweep = None
         self._live_identity = identity
         if self._mode is AnalyzerMode.RTBW:
             self._bundle = state.analyzer_bundle
@@ -206,16 +214,27 @@ class AnalyzerViewModel:
     def _on_sweep_snapshot(self, value: object) -> None:
         if self._mode is not AnalyzerMode.SWEEP or not (self._running or self._stopping):
             return
+        prepared = value if isinstance(value, PreparedSweepSnapshot) else None
+        if prepared is not None:
+            value = prepared.snapshot
+        elif self._expects_prepared:
+            self._bundle = None
+            self._sweep_snapshot = None
+            self._prepared_sweep = None
+            self._on_error("Missing prepared Sweep presentation")
+            return
         if not isinstance(value, ContinuousSweepDisplaySnapshot):
             self._bundle = None
             self._sweep_snapshot = None
+            self._prepared_sweep = None
             self._on_error("Invalid Sweep Analyzer bundle")
             return
-        bundle = value.analyzer_bundle
+        bundle = prepared.analyzer_bundle if prepared is not None else value.analyzer_bundle
         if bundle is None:
             return  # Counters alone must not erase the last measurement.
         self._bundle = bundle
         self._sweep_snapshot = value
+        self._prepared_sweep = prepared
         self._publish()
 
     def _on_error(self, error: str) -> None:
@@ -232,6 +251,7 @@ class AnalyzerViewModel:
             # replacement provenance; clear the old display at Start instead.
             self._bundle = None
             self._sweep_snapshot = None
+            self._prepared_sweep = None
         self._publish()
 
     def _on_stopping(self, value: bool) -> None:
@@ -242,6 +262,7 @@ class AnalyzerViewModel:
         self._running = bool(value)
         if value:
             self._sweep_snapshot = None
+            self._prepared_sweep = None
         if value and self._mode is not AnalyzerMode.SWEEP:
             # A successful externally issued command is applied state, unlike
             # a rejected/preflight-only Start. Reflect its actual strategy.

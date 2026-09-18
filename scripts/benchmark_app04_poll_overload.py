@@ -8,6 +8,10 @@ Optional page cycling exercises hidden delivery/history without stopping the
 source. Timing samples are bounded to the last 8192 observations; optional
 tracemalloc observes Python-traced allocations, NOT total/native/GPU RSS, and
 its instrumentation overhead means that run is not a latency baseline.
+service_return_to_snapshot_subscriber_ms starts when the domain service returns
+and ends after earlier synchronous V2 snapshot subscribers have run. It includes
+optional worker presentation preparation, Qt queueing and GUI delivery/render
+preparation; it is not pure worker-to-GUI scheduling latency.
 """
 import argparse
 from collections import deque
@@ -268,7 +272,7 @@ def main():
                     ui_superseded=service._ui_superseded, poll_count=len(polls),
                     all_polls_off_gui=all(item[1] for item in polls),
                     domain_poll_ms=summary([item[0] for item in polls]),
-                    worker_return_to_gui_delivery_ms=summary(publications),
+                    service_return_to_snapshot_subscriber_ms=summary(publications),
                     heartbeat_interval_ms=summary(list(np.diff(beats)*1000)),
                     cpu_paint_ms=summary(paints),
                     stop_timer_lateness_ms=(stop_times[0]-due)*1000,
