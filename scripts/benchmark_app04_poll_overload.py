@@ -4,6 +4,10 @@ Includes worker drain/conversion, Qt delivery, canvas and queued Stop under load
 Not native FFT throughput, RF, EXE, DWM, OS input, persistence or Windows DPI.
 The fake coordinator owns one preview and four terminals; immutable array
 templates are reused (producer allocation and DSP costs are NOT measured).
+Optional page cycling exercises hidden delivery/history without stopping the
+source. Timing samples are bounded to the last 8192 observations; optional
+tracemalloc observes Python-traced allocations, NOT total/native/GPU RSS, and
+its instrumentation overhead means that run is not a latency baseline.
 """
 import argparse
 from collections import deque
@@ -15,6 +19,7 @@ import platform
 import subprocess
 import sys
 import threading
+import tracemalloc
 from time import perf_counter, sleep
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -26,9 +31,13 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--seconds", type=float, default=5)
     parser.add_argument("--bins", type=int, nargs="+", default=[65536, 262144, 2000000])
+    parser.add_argument("--page-cycle-seconds", type=float, default=0)
+    parser.add_argument("--trace-memory", action="store_true")
     args = parser.parse_args()
-    if not sys.flags.isolated or not 1 <= args.seconds <= 20:
-        parser.error("use Python -I and 1..20 seconds per grid")
+    if not sys.flags.isolated or not 1 <= args.seconds <= 1200:
+        parser.error("use Python -I and 1..1200 seconds per grid")
+    if args.page_cycle_seconds != 0 and not 1 <= args.page_cycle_seconds <= 60:
+        parser.error("page cycle must be zero (off) or 1..60 seconds")
     if any(not 256 <= n <= 2000000 for n in args.bins):
         parser.error("grid must have 256..2000000 bins")
     if args.output.exists():
@@ -149,7 +158,10 @@ def main():
             SimpleNamespace(NativeContinuousSweepCoordinator=lambda *_: producer), "usb:fake")
         config = SimpleNamespace(epoch=count, segments=(SimpleNamespace(
             fixed_band=SimpleNamespace(device=SimpleNamespace(source_id="synthetic-overload"))),))
-        polls, beats, paints, publications, stop_times = [], [], [], [], []
+        polls, beats, paints, publications = (deque(maxlen=8192) for _ in range(4))
+        stop_times = []
+        memory_samples = []
+        page_switches = []
         poll_ends = {}
         gui_thread = threading.get_ident()
 
@@ -189,6 +201,8 @@ def main():
             stop_timer = QTimer()
             stop_timer.setTimerType(Qt.TimerType.PreciseTimer)
             stop_timer.setSingleShot(True)
+            cycle_timer = QTimer()
+            memory_timer = QTimer()
             try:
                 harness.select_and_apply()
                 harness.shell.resize(1920, 1080)
@@ -203,6 +217,24 @@ def main():
                     publications.append((perf_counter()-ended)*1000)
 
                 presenter.snapshot_ready.connect(delivered)
+                def cycle_page():
+                    hidden = page.visualization.isVisible()
+                    harness.shell.select_workspace("calibration" if hidden else "analyzer")
+                    page_switches.append(hidden)
+
+                def sample_memory():
+                    current, peak = tracemalloc.get_traced_memory()
+                    memory_samples.append(dict(elapsed_s=perf_counter()-began,
+                        traced_current_bytes=current, traced_peak_bytes=peak,
+                        waterfall_rows=page.visualization.waterfall_pane.history_rows))
+
+                if args.trace_memory:
+                    tracemalloc.start()
+                    memory_timer.timeout.connect(sample_memory)
+                    memory_timer.start(5000)
+                if args.page_cycle_seconds:
+                    cycle_timer.timeout.connect(cycle_page)
+                    cycle_timer.start(round(args.page_cycle_seconds * 1000))
                 heartbeat.start()
                 began = perf_counter()
 
@@ -243,13 +275,20 @@ def main():
                     stop_click_return_ms=(stop_times[1]-stop_times[0])*1000,
                     stop_to_idle_ms=(ended-stop_times[0])*1000,
                     terminal_control_gaps=producer.control_gaps,
+                    page_switches=len(page_switches),
+                    waterfall_rows=page.visualization.waterfall_pane.history_rows,
+                    memory_samples=memory_samples,
                     device_pixel_ratio=harness.shell.devicePixelRatioF()))
             finally:
+                cycle_timer.stop()
+                memory_timer.stop()
                 heartbeat.stop()
                 stop_timer.stop()
                 harness.tearDown()
                 harness.doCleanups()
                 service.close()
+                if args.trace_memory:
+                    tracemalloc.stop()
         print(json.dumps(rows[-1]))
     outside = [name for name, module in list(sys.modules.items())
                if name.startswith(("sdr_monitor", "tests")) and getattr(module, "__file__", None)
@@ -262,6 +301,8 @@ def main():
         python=sys.version.split()[0], numpy=np.__version__, pyside=PySide6.__version__,
         pyqtgraph=pg.__version__, host_platform=platform.platform(), processor=platform.processor(),
         platform="Qt offscreen", logical_size=[1920, 1080],
+        timing_window_samples=8192, trace_memory=args.trace_memory,
+        page_cycle_seconds=args.page_cycle_seconds,
         product_imports_outside_checkout=outside, results=rows)
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
