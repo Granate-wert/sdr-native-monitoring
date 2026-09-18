@@ -101,12 +101,25 @@ class SweepCoverageState:
                 current_count = np.count_nonzero(current, axis=1)
                 flags = (current_count > 0).astype(np.uint8) * CURRENT
                 if self.previous is not None:
-                    old = self.previous.values_db[lower:upper].reshape(rows, size)
-                    historical = ~current & (old < np.inf)
-                    history_count = np.count_nonzero(historical, axis=1)
-                    flags |= (history_count > 0).astype(np.uint8) * PREVIOUS
-                    x, y = extrema_rows(frequencies[lower:upper].reshape(rows, size), old,
-                                        historical & np.isfinite(old), keep_small=True)
+                    if np.all(current_count == size):
+                        # Every bin in this batch already belongs to this pass,
+                        # including measured -inf. No previous value can be
+                        # displayed here, so do not rescan/reduce the old array.
+                        # Keep exactly the reducer's empty-bucket sentinels:
+                        # omitting them would join history across current RF.
+                        history_count = 0
+                        if size <= 4:
+                            x = frequencies[lower:upper]
+                            y = np.full(rows * size, np.nan, dtype=self.previous.values_db.dtype)
+                        else:
+                            x, y = np.full(rows, np.nan), np.full(rows, np.nan)
+                    else:
+                        old = self.previous.values_db[lower:upper].reshape(rows, size)
+                        historical = ~current & (old < np.inf)
+                        history_count = np.count_nonzero(historical, axis=1)
+                        flags |= (history_count > 0).astype(np.uint8) * PREVIOUS
+                        x, y = extrema_rows(frequencies[lower:upper].reshape(rows, size), old,
+                                            historical & np.isfinite(old), keep_small=True)
                     history_x.append(x)
                     history_y.append(y)
                 else:

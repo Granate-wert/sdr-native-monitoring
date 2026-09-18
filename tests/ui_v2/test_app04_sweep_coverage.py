@@ -1,6 +1,7 @@
 """Coverage is physical, bounded display data; history never becomes current."""
 from dataclasses import replace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -24,6 +25,64 @@ def snapshot(frame):
 
 
 class SweepCoverageTests(unittest.TestCase):
+    def test_fully_current_batches_skip_old_extrema_and_keep_exact_empty_geometry(self):
+        for count, width in ((20, 100), (200_003, 1024), (200_003, 17)):
+            with self.subTest(count=count, width=width):
+                state = SweepCoverageState()
+                state.accept(snapshot(line(1, np.full(count, -10.0))))
+                values = np.full(count, -80.0)
+                values[::7] = -np.inf  # Measured zero is current, not a hole.
+                state.accept(snapshot(line(2, values)))
+                with patch("sdr_monitor.ui.v2.spectrum.sweep_coverage.extrema_rows",
+                           side_effect=AssertionError("fully replaced history was reduced")):
+                    actual = state.project(0, 1e12, width)
+                np.testing.assert_array_equal(actual.states, np.full(actual.states.size, CURRENT))
+                self.assertTrue(np.isnan(actual.history.values).all())
+                self.assertEqual(actual.history.display_point_count,
+                                 count if count <= width * 4 else actual.states.size)
+                self.assertFalse(actual.history.values.flags.writeable)
+
+    def test_optimized_history_matches_reference_across_current_batch_and_short_tail(self):
+        from sdr_monitor.ui.v2.spectrum.envelope_batch import extrema_rows
+        from sdr_monitor.ui.v2.spectrum import sweep_coverage
+        state = SweepCoverageState()
+        count = 200_003
+        old = np.linspace(-95, -35, count, dtype=np.float32)
+        state.accept(snapshot(line(1, old)))
+        values = np.full(count, np.nan)
+        values[65_536:131_072] = -np.inf
+        values[-3:] = -70
+        state.accept(snapshot(line(2, values)))
+        # Force the reference path only for the small row-count condition,
+        # without changing NumPy globally or the extrema implementation.
+        class NumpyReference:
+            def __getattr__(self, name):
+                return getattr(np, name)
+
+            @staticmethod
+            def all(_value):
+                return False
+
+        for width in (16, 1024, 2048):
+            with self.subTest(width=width):
+                with patch.object(sweep_coverage, "np", NumpyReference()):
+                    expected = state.project(0, 1e12, width)
+                actual = state.project(0, 1e12, width)
+                for a, b in ((actual.edges_hz, expected.edges_hz),
+                             (actual.states, expected.states),
+                             (actual.history.values, expected.history.values),
+                             (actual.history.frequencies_hz, expected.history.frequencies_hz)):
+                    np.testing.assert_array_equal(a, b)
+        # Exercise a whole middle batch and the keep_small branch separately.
+        with patch.object(sweep_coverage, "MAX_COLUMNS", count):
+            expected_x, expected_y = extrema_rows(
+                state.current.frequencies_hz.reshape(-1, 1),
+                state.previous.values_db.reshape(-1, 1),
+                np.isnan(values).reshape(-1, 1), keep_small=True)
+            actual = state.project(0, 1e12, count)
+            np.testing.assert_array_equal(actual.history.frequencies_hz, expected_x)
+            np.testing.assert_array_equal(actual.history.values, expected_y)
+
     def test_measured_zero_owns_coverage_without_showing_stale_history(self):
         state = SweepCoverageState()
         state.accept(snapshot(line(1, [-20, -np.inf, -90, -np.inf])))
