@@ -260,6 +260,42 @@ void test_cpu_fft_drop_remains_analytical_and_sets_frame_quality() {
            "CPU FFT drop contaminated independent presentation delivery");
 }
 
+void test_real_transfer_sized_burst_capacity_keeps_analysis_loss_free() {
+    // One normal 262144-byte CI8 callback contains 131072 complex samples.
+    // A 64-frame output queue used to lose 192 FFT1024/hop512 outputs per
+    // steady-state callback, even though acquisition and CPU kept up.
+    constexpr std::uint32_t samples = 131'072U;
+    const auto bytes = constant_ci8(samples);
+    for (const auto fft : {1024U, 4096U, 16384U}) {
+        for (const auto hop : {fft / 2U, fft - 7U}) {
+            sdr_hackrf::HackrfRxIngress ingress(ingress_config(samples * 2U));
+            auto config = dsp_config(4U);
+            config.dsp.fft_size = fft;
+            config.dsp.hop_size = hop;
+            config.dsp_output_capacity = (samples + hop - 1U) / hop;
+            sdr_hackrf::HackrfFixedBandDsp dsp(std::move(config));
+            for (std::uint32_t block = 0; block < 3U; ++block) {
+                push_one(ingress, dsp, bytes, 1'000'000 + block * 600'000'000LL);
+                const auto frames = dsp.poll_spectrum_frames();
+                expect(!frames.empty(), "transfer-sized burst did not produce output");
+                for (const auto& frame : frames) {
+                    expect(frame.dropped_fft_frames_before == 0U,
+                           "burst-sized queue lost analytical FFT output");
+                }
+            }
+            const auto metrics = dsp.metrics();
+            expect(metrics.dsp.fft_frames_computed == (3U * samples - fft) / hop + 1U,
+                   "overlap FFT count across transfer boundaries is incorrect");
+            expect(metrics.dsp.fft_frames_dropped == 0U,
+                   "bounded burst queue induced analytical loss");
+            expect(metrics.presentation_frames_superseded > 0U,
+                   "freshest-window supersession must remain separate and visible");
+            expect(metrics.presentation.high_water <= 4U,
+                   "analytical buffer enlargement changed presentation bound");
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -269,6 +305,7 @@ int main() {
         test_gap_flushes_partial_state_and_retains_loss_flag();
         test_presentation_latest_wins_is_exact_and_separate_from_fft_loss();
         test_cpu_fft_drop_remains_analytical_and_sets_frame_quality();
+        test_real_transfer_sized_burst_capacity_keeps_analysis_loss_free();
         std::cout << "R11-I HackRF fixed-band CPU DSP OK\n";
         return 0;
     } catch (const std::exception& error) {

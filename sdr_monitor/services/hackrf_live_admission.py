@@ -59,6 +59,14 @@ _WINDOWS = frozenset(
 )
 _DETECTORS = frozenset(("sample", "peak", "negative_peak", "rms", "average_power"))
 _MAX_QUEUE_CAPACITY = 64
+# The current native factory admits one fixed 262144-byte CI8 transfer at a
+# time, then drains CPU output. Keep the analytical burst buffer distinct from
+# the small freshest-window presentation queue. These are bounded scalar
+# policy values, not runtime discovery or a process-RSS guarantee.
+_TRANSFER_SAMPLES = 262_144 // 2
+_MAX_DSP_OUTPUT_CAPACITY = 4096
+_SPECTRUM_QUEUE_BUDGET_BYTES = 64 * 1024 * 1024
+_SPECTRUM_FRAME_OVERHEAD_ALLOWANCE_BYTES = 1024
 _MAX_GENERATION = (1 << 63) - 1
 _PLAN_ISSUER = object()
 
@@ -117,7 +125,10 @@ class HackrfLiveRequest:
     persistence_enabled: bool = False
     slot_count: int = 32
     ready_capacity: int = 24
-    dsp_output_capacity: int = 8
+    # None resolves to enough outputs for one transfer, including FFT overlap
+    # carried from the preceding transfer. Explicit smaller queues remain
+    # available for bounded lossy/diagnostic profiles and are never increased.
+    dsp_output_capacity: int | None = None
     presentation_capacity: int = 4
     configuration_generation: int = 1
     source_id: SourceId = SourceId("native.hackrf.live")
@@ -153,7 +164,8 @@ class HackrfLiveRequest:
         if fft_size & (fft_size - 1):
             raise ValueError("fft_size must be a power of two")
         object.__setattr__(self, "fft_size", fft_size)
-        object.__setattr__(self, "hop_size", _bounded_integer(self.hop_size, "hop_size", 1, fft_size))
+        hop_size = _bounded_integer(self.hop_size, "hop_size", 1, fft_size)
+        object.__setattr__(self, "hop_size", hop_size)
         window = self.window.strip().casefold().replace("-", "_") if isinstance(self.window, str) else ""
         detector = self.detector.strip().casefold().replace("-", "_") if isinstance(self.detector, str) else ""
         if window not in _WINDOWS:
@@ -171,8 +183,20 @@ class HackrfLiveRequest:
         ready_capacity = _bounded_integer(self.ready_capacity, "ready_capacity", 1, slot_count)
         object.__setattr__(self, "slot_count", slot_count)
         object.__setattr__(self, "ready_capacity", ready_capacity)
-        object.__setattr__(self, "dsp_output_capacity", _bounded_integer(self.dsp_output_capacity, "dsp_output_capacity", 1, _MAX_QUEUE_CAPACITY))
-        object.__setattr__(self, "presentation_capacity", _bounded_integer(self.presentation_capacity, "presentation_capacity", 1, _MAX_QUEUE_CAPACITY))
+        output_capacity = self.dsp_output_capacity
+        if output_capacity is None:
+            output_capacity = (_TRANSFER_SAMPLES + hop_size - 1) // hop_size
+        output_capacity = _bounded_integer(
+            output_capacity, "dsp_output_capacity", 1, _MAX_DSP_OUTPUT_CAPACITY)
+        presentation_capacity = _bounded_integer(
+            self.presentation_capacity, "presentation_capacity", 1, _MAX_QUEUE_CAPACITY)
+        # Worst-case independent float64 frequencies + float32 values per frame;
+        # sharing a frequency grid may reduce actual memory, never raise the cap.
+        frame_bytes = fft_size * 12 + _SPECTRUM_FRAME_OVERHEAD_ALLOWANCE_BYTES
+        if (output_capacity + presentation_capacity) * frame_bytes > _SPECTRUM_QUEUE_BUDGET_BYTES:
+            raise ValueError("HackRF spectrum queues exceed the 64 MiB allocation policy")
+        object.__setattr__(self, "dsp_output_capacity", output_capacity)
+        object.__setattr__(self, "presentation_capacity", presentation_capacity)
         object.__setattr__(self, "configuration_generation", _bounded_integer(self.configuration_generation, "configuration_generation", 1, _MAX_GENERATION))
         object.__setattr__(self, "source_id", _opaque_source_id(self.source_id))
 
