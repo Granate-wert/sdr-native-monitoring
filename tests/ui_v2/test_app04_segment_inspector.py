@@ -10,6 +10,7 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, C
 from sdr_monitor.domain.sweep_acquisition import SweepSegmentAcquisition
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.state.sweep_inspection import inspect_sweep
+from sdr_monitor.ui.v2.state.prepared_sweep import prepare_sweep_snapshot
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
 from sdr_monitor.ui.v2.workspaces.analyzer_inspector import AnalyzerInspector
 from tests.ui_v2.test_app04_progressive_waterfall import progress, terminal
@@ -97,7 +98,7 @@ class SegmentInspectorTests(unittest.TestCase):
     def publish(self, value):
         # Public adapter signal boundary with deterministic immutable data only.
         self.model._on_running(True)
-        self.model._on_sweep_snapshot(value)
+        self.model._on_sweep_snapshot(prepare_sweep_snapshot(value, value.analyzer_bundle))
 
     def open(self):
         self.harness.shell._inspector_toggle.click()

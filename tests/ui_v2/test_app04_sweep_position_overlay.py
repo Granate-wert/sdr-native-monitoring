@@ -9,6 +9,7 @@ from sdr_monitor.services.native_continuous_sweep import _to_domain_line, _to_do
 from sdr_monitor.ui.v2.design import ThemeId
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
+from sdr_monitor.ui.v2.state.prepared_sweep import prepare_sweep_snapshot
 from sdr_monitor.ui.v2.workspaces.analyzer_inspector import AnalyzerInspector
 from tests import test_app02_analyzer_workspace_product as fixture
 
@@ -36,7 +37,9 @@ class SweepPositionOverlayTests(unittest.TestCase):
             self.harness.doCleanups()
 
     def publish(self, line=None, progress=None):
-        self.model._on_sweep_snapshot(ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(), progress))
+        snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(), progress)
+        # This is a deterministic presentation fixture, not a worker/RF test.
+        self.model._on_sweep_snapshot(prepare_sweep_snapshot(snapshot, snapshot.analyzer_bundle))
 
     def test_reordered_progress_terminal_stop_and_mode_reset(self):
         self.publish(progress=self.early)

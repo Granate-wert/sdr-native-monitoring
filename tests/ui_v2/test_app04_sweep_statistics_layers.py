@@ -58,7 +58,9 @@ class CompiledSweepStatisticsCompositionTests(unittest.TestCase):
                     self.assertEqual(upload.call_count, 0, "unchanged native histogram reuploaded")
                     poll.return_value = ContinuousSweepDisplaySnapshot(final, ContinuousSweepDisplayMetrics())
                     harness.composition.analyzer_presenter._poll()
-                    harness.wait(lambda: harness.composition.analyzer_presenter._poll_future is None)
+                    # An earlier poll may already own the old snapshot. Wait
+                    # for the requested measurement, not just any poll's end.
+                    harness.wait(lambda: page._last_bundle.spectrum is final)
                     self.assertEqual(upload.call_count, 1)
                 self.assertEqual(page.visualization.waterfall_pane.history_rows, 1)
                 page.primary.click()
