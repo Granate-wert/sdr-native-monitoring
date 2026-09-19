@@ -90,6 +90,7 @@ class WaterfallPane(QWidget):
         self._presentation_active = True
         self._frozen = False
         self._sweep_mode = False
+        self._capacity_change_rejected = False
         self._metrics = WaterfallPaneMetrics()
         self._x_syncing = False
         self._linked_frequency_source: pg.ViewBox | None = None
@@ -362,10 +363,7 @@ class WaterfallPane(QWidget):
             return
         if proposal == self._config:
             return
-        self._config = proposal
-        self._sync_controls()
-        self._resize_retained_history()
-        self._schedule_settings_write()
+        self._apply_history_configuration(proposal)
 
     def set_rows_per_second(self, rows_per_second: int) -> None:
         try:
@@ -378,10 +376,7 @@ class WaterfallPane(QWidget):
             return
         if proposal == self._config:
             return
-        self._config = proposal
-        self._sync_controls()
-        self._resize_retained_history()
-        self._schedule_settings_write()
+        self._apply_history_configuration(proposal)
 
     def set_palette(self, palette: WaterfallPalette) -> None:
         proposal = replace(self._config, palette=WaterfallPalette(palette))
@@ -574,22 +569,31 @@ class WaterfallPane(QWidget):
         self._hide_tiles()
         self._status.setText(text("waterfall.new_grid", epoch=self._epoch))
 
-    def _resize_retained_history(self) -> None:
-        """Apply a compatible local capacity change without issuing an RX command."""
+    def _apply_history_configuration(self, proposal: WaterfallDisplayConfig) -> None:
+        """Commit controls/settings only after the existing ring admits resize.
+
+        A rejected proposal must not become an implicit retry on the next row:
+        renderer.append would replace (and lose) the old history on recovery.
+        Before a first grid exists this remains a validated capacity preference.
+        """
 
         signature = self._grid_signature
-        if signature is None:
-            return
-        rows, _ = self._config.dimensions(signature.columns)
         try:
-            self._renderer.resize_rows(rows)
+            if signature is not None:
+                rows, _ = proposal.dimensions(signature.columns)
+                self._renderer.resize_rows(rows)
         except PresentationBudgetExceeded:
-            self._status.setText(text("waterfall.memory_limited"))
+            self._capacity_change_rejected = True
+            self._reject_configuration_change()
             return
+        self._config = proposal
+        self._capacity_change_rejected = False
+        self._sync_controls()
         self._update_time_axis()
         self._update_status()
         if self._render_visible:
             self._upload_tiles()
+        self._schedule_settings_write()
 
     def _synchronize_x_range(self, target: pg.ViewBox, interval: list[float]) -> None:
         if self._x_syncing or len(interval) != 2:
@@ -705,7 +709,9 @@ class WaterfallPane(QWidget):
         self._update_status()
 
     def _update_status(self) -> None:
-        if self._frozen:
+        if self._capacity_change_rejected:
+            self._status.setText(text("waterfall.capacity_rejected", self._locale))
+        elif self._frozen:
             self._status.setText(text("waterfall.status.frozen", self._locale, rows=self.history_rows))
         elif self._grid_signature is None:
             self._status.setText(text("waterfall.status.waiting", self._locale))
