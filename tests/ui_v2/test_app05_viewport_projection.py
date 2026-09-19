@@ -34,6 +34,8 @@ class ManualWorker:
 
     def finish(self, error=None):
         future, operation = self.jobs.pop(0)
+        if not future.set_running_or_notify_cancel():
+            return
 
         def run():
             try:
@@ -155,7 +157,7 @@ class ViewportProjectionTests(unittest.TestCase):
         self.worker.finish()
         self.pump()
         self.assertIsNone(self.scene.displayed_frame)
-        self.assertGreater(self.scene.projection_stale, 0)
+        self.assertGreater(self.scene.projection_stale + self.port.cancelled, 0)
         self.drain()
         self.assertIs(self.scene.displayed_frame, frame)
         envelope = self.scene.trace_envelope(TraceKind.CURRENT)
@@ -287,13 +289,13 @@ class ActualCompositionProjectionTests(unittest.TestCase):
             reducer = projection.peak_preserving_envelope
             coverage = SweepCoverageState.project
 
-            def reduce(*args):
+            def reduce(*args, **kwargs):
                 threads.append(threading.get_ident())
-                return reducer(*args)
+                return reducer(*args, **kwargs)
 
-            def cover(state, *args):
+            def cover(state, *args, **kwargs):
                 coverage_threads.append(threading.get_ident())
-                return coverage(state, *args)
+                return coverage(state, *args, **kwargs)
 
             with patch.object(projection, "peak_preserving_envelope", side_effect=reduce), \
                  patch.object(SweepCoverageState, "project", cover), \

@@ -9,6 +9,7 @@ from math import isfinite
 import numpy as np
 
 from ..i18n import UiLocale, text
+from .cancellation import CancelCheck, check_cancelled
 
 class TraceKind(StrEnum):
     """Visible analytical trace roles; their data is already computed upstream."""
@@ -78,7 +79,7 @@ class PreparedSpectrumFrame:
         object.__setattr__(self, "finite_extent", finite_value_extent(view.values))
 
 
-def finite_value_extent(values: np.ndarray) -> tuple[float, float] | None:
+def finite_value_extent(values: np.ndarray, *, cancelled: CancelCheck = None) -> tuple[float, float] | None:
     """Exact full-frame Auto-Y extrema with bounded scratch, not a detector.
 
     NaN and either infinity keep their old presentation semantics: they do
@@ -88,6 +89,7 @@ def finite_value_extent(values: np.ndarray) -> tuple[float, float] | None:
     """
     extent: tuple[float, float] | None = None
     for start in range(0, values.size, 65536):
+        check_cancelled(cancelled)
         chunk = values[start:start + 65536]
         finite = chunk[np.isfinite(chunk)]
         if finite.size:

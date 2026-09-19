@@ -9,7 +9,7 @@ from concurrent.futures import Future
 
 from .spectrum.projection import SpectrumProjection, SpectrumProjector
 
-from .view_models.analyzer_view_model import AnalyzerViewModel, SweepPresentationPort
+from .view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState, SweepPresentationPort
 from .workspaces.analyzer import analyzer_workspace_definition
 
 from .shell.contracts import ClosePort, V2ShellContext
@@ -134,6 +134,10 @@ class V2LiveProductComposition:
             AnalyzerViewModel(self.view_model, analyzer_presenter)
             if analyzer_presenter is not None else None
         )
+        self._unsubscribe_projection = (
+            self.analyzer_view_model.subscribe(self._on_projection_control)
+            if self.analyzer_view_model is not None and self.spectrum_projector is not None else None
+        )
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
         self.calibration_view_model = (
             None if calibration_presenter is None else CalibrationProfileViewModel(calibration_presenter)
@@ -217,6 +221,11 @@ class V2LiveProductComposition:
             automatic_discovery_enabled=False,
         )
 
+    def _on_projection_control(self, state: AnalyzerViewState) -> None:
+        projector = self.spectrum_projector
+        if projector is not None:
+            projector.set_suspended(state.live.busy or state.starting or state.stopping)
+
     def can_close(self) -> bool:
         """Refuse a silent close while presenter work or a Live stream is active."""
 
@@ -246,6 +255,8 @@ class V2LiveProductComposition:
         # Disconnect presentation callbacks once; these methods own no work
         # and repeating a successful disconnect is not a lifecycle retry.
         if not self._presentation_disposed:
+            if self._unsubscribe_projection is not None:
+                attempt(self._unsubscribe_projection)
             if self.spectrum_projector is not None:
                 attempt(self.spectrum_projector.dispose)
             if self.analyzer_view_model is not None:

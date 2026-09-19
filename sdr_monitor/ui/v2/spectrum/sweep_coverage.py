@@ -10,6 +10,7 @@ from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from .contracts import EnvelopeTrace
 from .envelope_batch import bucket_batches, extrema_rows
+from .cancellation import CancelCheck, check_cancelled
 
 CURRENT = 1
 PREVIOUS = 2
@@ -72,13 +73,15 @@ class SweepCoverageState:
         self.current, self.previous = frame, previous
         return changed
 
-    def project(self, left: float, right: float, width: int) -> CoverageProjection:
+    def project(self, left: float, right: float, width: int,
+                *, cancelled: CancelCheck = None) -> CoverageProjection:
         """O(visible bins), O(columns + one bucket) scratch, no full-grid copy.
 
         At most 2,048 columns and nine history points per column. The existing
         extrema reducer keeps peaks and explicit holes. A zoom reprojects the
         immutable sources, never the already reduced screen representation.
         """
+        check_cancelled(cancelled)
         frame = self.current
         if frame is None:
             raise ValueError("no Sweep measurement for coverage")
@@ -94,6 +97,7 @@ class SweepCoverageState:
             bucket_size = ceil((stop - start) / max(1, min(MAX_COLUMNS, int(width))))
             edges.append(_edge(frequencies, start))
             for offset, rows, size in bucket_batches(stop - start, bucket_size):
+                check_cancelled(cancelled)
                 lower, upper = start + offset, start + offset + rows * size
                 # Measured zero power (-inf dB) owns coverage even though the
                 # finite display axis cannot draw it. Never fill it with old RF.
@@ -127,6 +131,7 @@ class SweepCoverageState:
                 flags |= (current_count + history_count < size).astype(np.uint8) * MISSING
                 states.extend(flags)
                 edges.extend(_edge(frequencies, index) for index in range(lower + size, upper + 1, size))
+        check_cancelled(cancelled)
         arrays = (np.asarray(edges, dtype=np.float64), np.asarray(states, dtype=np.uint8),
                   np.concatenate(history_x) if history_x else np.empty(0, dtype=np.float64),
                   np.concatenate(history_y) if history_y else np.empty(0, dtype=np.float64))
