@@ -29,6 +29,18 @@ class MemorySamplerTests(unittest.TestCase):
         self.assertEqual(summary["phases"]["calibration"]["last"]["index"], 9998)
         self.assertNotIn("inventory", summary["phases"]["analyzer"]["first"])
         self.assertEqual(summary["timing_distribution_scope"], "retained samples only")
+        self.assertEqual(len(summary["checkpoints"]), 100)
+        self.assertEqual(summary["checkpoints"][0]["index"], 0)
+        self.assertEqual(summary["checkpoints"][-1]["index"], 9900)
+        self.assertNotIn("inventory", summary["checkpoints"][0])
+
+    def test_checkpoint_history_has_fixed_bound_beyond_cli_profile_limit(self):
+        recorder = MemorySamples(1)
+        for index in range(20001):
+            recorder.append(sample(index))
+        self.assertEqual(len(recorder.checkpoints), 100)
+        self.assertEqual(recorder.checkpoints[0]["index"], 10100)
+        self.assertEqual(recorder.checkpoints[-1]["index"], 20000)
 
     def test_default_preserves_original_all_samples_mode(self):
         recorder = MemorySamples()

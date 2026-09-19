@@ -8,6 +8,7 @@ from collections import deque
 import ctypes
 from ctypes import wintypes
 from dataclasses import asdict, replace
+import gc
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,9 @@ class MemorySamples:
         self.phases = {}
         self.peak_arrays = self.peak_observed_reserved = self.peak_reservations = 0
         self.first_private = self.last_private = None
+        # Fixed-size scalar history for long-run plateau checks, independent of
+        # evidence-row capacity. Never retains frames, inventories or Qt objects.
+        self.checkpoints = deque(maxlen=100)
 
     def append(self, row):
         # Same full inventory serialization work in bounded/unbounded modes.
@@ -71,6 +75,8 @@ class MemorySamples:
         phase = self.phases.setdefault(row["page"], {"first": scalar, "last": scalar, "count": 0})
         phase["last"] = scalar
         phase["count"] += 1
+        if row["index"] % 100 == 0:
+            self.checkpoints.append({"page": row["page"], **scalar})
         inventory = row["inventory"]
         self.peak_arrays = max(self.peak_arrays, inventory["unique_array_bytes"])
         ledger = inventory.get("allocation_budget") or {}
@@ -84,10 +90,12 @@ class MemorySamples:
                 "unique_array_peak": self.peak_arrays,
                 "ledger_peak_observed_reserved": self.peak_observed_reserved,
                 "post_ack_reserved_peak": self.peak_reservations,
+                "checkpoints": list(self.checkpoints),
                 "timing_distribution_scope": "retained samples only"}
 
 
-def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_allocations=False):
+def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_allocations=False,
+        collect_endpoints=False):
     recorder = MemorySamples(sample_capacity)
     app = QApplication.instance() or QApplication([])
     fixture = AnalyzerWorkspaceProductTests("runTest")
@@ -96,6 +104,7 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
     started = time.monotonic()
     traced_first = {}
     traced_result = None
+    collection_endpoints = []
     if trace_allocations:
         tracemalloc.start(8)
     try:
@@ -130,8 +139,13 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
             recorder.append({"index": index, "seconds": time.monotonic() - started,
                          "page": fixture.shell.active_workspace_id, "sample_ms": sample_ms,
                          **process_memory(), "inventory": asdict(inventory)})
+            page = fixture.shell.active_workspace_id
+            if collect_endpoints and (index in (0, 20) or index == frames - 1):
+                before = process_memory()
+                collected = gc.collect()
+                collection_endpoints.append({"index": index, "page": page, "collected": collected,
+                                             "before": before, "after": process_memory()})
             if trace_allocations:
-                page = fixture.shell.active_workspace_id
                 if page not in traced_first:
                     traced_first[page] = (index, tracemalloc.take_snapshot())
                 if index == frames - 1:
@@ -147,7 +161,9 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
                 "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                 "bins": bins, "power_bins": power_bins, "frames": frames,
                 "sampling": recorder.summary(), "samples": list(recorder.rows),
-                "allocation_trace": traced_result}
+                "allocation_trace": traced_result,
+                "collection_endpoints": collection_endpoints,
+                "collection_scope": "Explicit diagnostic endpoint collection only; not normal product behavior"}
     finally:
         fixture.tearDown()
         fixture.doCleanups()
@@ -163,6 +179,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--sample-capacity", type=int, help="Keep only this many latest evidence rows; still sample every frame")
     parser.add_argument("--trace-allocations", action="store_true", help="Perturbing Python allocation attribution, not a timing/RSS baseline")
+    parser.add_argument("--collect-endpoints", action="store_true", help="Diagnostic GC at first visibility phases and last frame only")
     args = parser.parse_args()
     if (not 1 <= args.frames <= 10000 or not 2 <= args.bins <= 2_000_000
             or not 1 <= args.power_bins <= 64 or args.bins * args.power_bins > 8_388_608):
@@ -170,7 +187,7 @@ if __name__ == "__main__":
     if args.sample_capacity is not None and args.sample_capacity < 1:
         parser.error("sample capacity must be positive")
     output = run(args.frames, args.bins, args.power_bins, sample_capacity=args.sample_capacity,
-                 trace_allocations=args.trace_allocations)
+                 trace_allocations=args.trace_allocations, collect_endpoints=args.collect_endpoints)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
     samples = output["samples"]
