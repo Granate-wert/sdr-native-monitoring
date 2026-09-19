@@ -13,6 +13,7 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from ..waterfall.contracts import SweepWaterfallLine
 from ..spectrum.contracts import PreparedSpectrumFrame
 from .analyzer_layers import waterfall_line_from_sweep
+from ..spectrum.allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class PreparedSweepSnapshot:
     waterfall_rows: tuple[SweepWaterfallLine, ...]
     waterfall_error: str | None = None
     spectrum: PreparedSpectrumFrame | None = None
+    memory_limited: bool = False
 
     def __post_init__(self) -> None:
         terminal = self.snapshot.line
@@ -54,3 +56,26 @@ def prepare_sweep_snapshot(snapshot: ContinuousSweepDisplaySnapshot,
         # it must not be silently replaced by the preceding successful rows.
         return PreparedSweepSnapshot(snapshot, bundle, (), str(error), spectrum)
     return PreparedSweepSnapshot(snapshot, bundle, rows, spectrum=spectrum)
+
+
+class SweepSnapshotPreparer:
+    """Use the same derived-array ledger without turning display pressure into Stop."""
+
+    def __init__(self, allocation_budget: PresentationAllocationBudget) -> None:
+        self.allocation_budget = allocation_budget
+
+    def __call__(self, snapshot: ContinuousSweepDisplaySnapshot,
+                 bundle: AnalyzerFrameBundle | None) -> PreparedSweepSnapshot:
+        self.allocation_budget.observe(snapshot, bundle)
+        size = sum(min(2048, frame.values_db.size) * 12 + 8
+                   for frame in (snapshot.line, snapshot.progress) if frame is not None)
+        try:
+            with self.allocation_budget.reserve(int(size)) as allocation:
+                prepared = prepare_sweep_snapshot(snapshot, bundle)
+                allocation.commit(*prepared.waterfall_rows)
+                return prepared
+        except PresentationBudgetExceeded as error:
+            # Preserve the exact spectrum and terminal lifecycle publication;
+            # only the optional derived Waterfall rows are unavailable.
+            return PreparedSweepSnapshot(snapshot, bundle, (), str(error),
+                                         None if bundle is None else PreparedSpectrumFrame(bundle), memory_limited=True)

@@ -1892,6 +1892,15 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "spectrum.persistence.scale.log": MappingProxyType(
             {UiLocale.RU: "логарифмическая плотность", UiLocale.EN: "log density"}
         ),
+        "spectrum.persistence.memory_limited": MappingProxyType(
+            {UiLocale.RU: "Персистенция не отображается: лимит памяти UI", UiLocale.EN: "Persistence unavailable: UI memory budget"}
+        ),
+        "waterfall.memory_limited": MappingProxyType(
+            {UiLocale.RU: "История Waterfall ограничена бюджетом памяти UI", UiLocale.EN: "Waterfall history limited by UI memory budget"}
+        ),
+        "analyzer.memory_limited": MappingProxyType(
+            {UiLocale.RU: "Часть слоёв отображения недоступна: лимит памяти UI", UiLocale.EN: "Some display layers unavailable: UI memory budget"}
+        ),
         "spectrum.persistence.status": MappingProxyType(
             {UiLocale.RU: "Накопление: {mode} · {scale}{suffix}", UiLocale.EN: "Persistence: {mode} · {scale}{suffix}"}
         ),

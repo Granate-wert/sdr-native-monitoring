@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..spectrum.allocation_budget import PresentationBudgetExceeded
+
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import cast
@@ -248,7 +250,11 @@ class WaterfallPane(QWidget):
             self._set_metrics(rows_cadence_suppressed=self._metrics.rows_cadence_suppressed + 1)
             return
         rows, _ = self._config.dimensions(int(line.values.size))
-        self._renderer.append(line.values, rows=rows, timestamp_ns=line.timestamp_ns)
+        try:
+            self._renderer.append(line.values, rows=rows, timestamp_ns=line.timestamp_ns)
+        except PresentationBudgetExceeded:
+            self._status.setText(text("waterfall.memory_limited"))
+            return
         self._last_admitted_timestamp_ns = line.timestamp_ns if line.timestamp_known else None
         self._set_metrics(rows_admitted=self._metrics.rows_admitted + 1)
         self._show_initial_physical_grid_if_needed(line.grid_signature)
@@ -273,7 +279,11 @@ class WaterfallPane(QWidget):
         if line.grid_signature != self._grid_signature:
             self._begin_epoch(line.grid_signature)
         rows, _ = self._config.dimensions(int(line.values.size))
-        action = self._renderer.upsert_sweep(line.values, rows=rows, stamp=update.stamp)
+        try:
+            action = self._renderer.upsert_sweep(line.values, rows=rows, stamp=update.stamp)
+        except PresentationBudgetExceeded:
+            self._status.setText(text("waterfall.memory_limited"))
+            return
         if action == "reject":
             self._set_metrics(sweep_updates_rejected=self._metrics.sweep_updates_rejected + 1)
             return
@@ -571,7 +581,11 @@ class WaterfallPane(QWidget):
         if signature is None:
             return
         rows, _ = self._config.dimensions(signature.columns)
-        self._renderer.resize_rows(rows)
+        try:
+            self._renderer.resize_rows(rows)
+        except PresentationBudgetExceeded:
+            self._status.setText(text("waterfall.memory_limited"))
+            return
         self._update_time_axis()
         self._update_status()
         if self._render_visible:

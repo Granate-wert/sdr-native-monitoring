@@ -8,6 +8,7 @@ from typing import Literal
 import numpy as np
 
 from .sweep_rows import SweepRowStamp
+from ..spectrum.allocation_budget import PresentationAllocationBudget
 
 _MEBIBYTE = 1024 * 1024
 
@@ -164,6 +165,18 @@ class BoundedWaterfallRenderer:
 
     def __init__(self) -> None:
         self._buffer: BoundedWaterfallRing | None = None
+        self.allocation_budget: PresentationAllocationBudget | None = None
+
+    def _new_ring(self, rows: int, columns: int) -> BoundedWaterfallRing:
+        DEFAULT_WATERFALL_PRESENTATION_BUDGET.estimate(rows, columns)
+        if self.allocation_budget is None:
+            return BoundedWaterfallRing(rows, columns)
+        # Old ring/tiles remain charged until all actual image consumers drop
+        # them. Resizing cannot assume assignment immediately frees that data.
+        with self.allocation_budget.reserve(int(rows * (columns * 4 + 8))) as allocation:
+            ring = BoundedWaterfallRing(rows, columns)
+            allocation.commit(ring._data, ring._timestamps_ns)
+            return ring
 
     @property
     def buffer(self) -> BoundedWaterfallRing | None:
@@ -186,7 +199,7 @@ class BoundedWaterfallRenderer:
         buffer = self._buffer
         if buffer is None or buffer.rows == int(rows):
             return
-        replacement = BoundedWaterfallRing(int(rows), buffer.columns)
+        replacement = self._new_ring(int(rows), buffer.columns)
         retained = min(buffer.count, replacement.rows)
         skip = buffer.count - retained
         timestamps = buffer.chronological_timestamps_ns()
@@ -202,7 +215,7 @@ class BoundedWaterfallRenderer:
     def append(self, values: np.ndarray, *, rows: int, timestamp_ns: int) -> None:
         columns = int(np.asarray(values).size)
         if self._buffer is None or self._buffer.rows != rows or self._buffer.columns != columns:
-            self._buffer = BoundedWaterfallRing(rows, columns)
+            self._buffer = self._new_ring(rows, columns)
         self._buffer.append(values, timestamp_ns=timestamp_ns)
 
     def tiles(self) -> tuple[np.ndarray, ...]:
@@ -211,7 +224,7 @@ class BoundedWaterfallRenderer:
     def upsert_sweep(self, values: np.ndarray, *, rows: int, stamp: SweepRowStamp) -> Literal["append", "replace", "reject"]:
         columns = int(np.asarray(values).size)
         if self._buffer is None or self._buffer.rows != rows or self._buffer.columns != columns:
-            self._buffer = BoundedWaterfallRing(rows, columns)
+            self._buffer = self._new_ring(rows, columns)
         return self._buffer.upsert_sweep(values, stamp)
 
     def sweep_stamps(self) -> tuple[SweepRowStamp | None, ...]:

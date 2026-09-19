@@ -18,6 +18,7 @@ from .sweep_coverage import CoverageProjection, SweepCoverageState, SweepFrame
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from .cancellation import CancelCheck, check_cancelled
 from .retained_bytes import retained_arrays, union_bytes
+from .allocation_budget import AllocationReservation, PresentationAllocationBudget
 
 DEFAULT_PROJECTION_BYTES = 256 * 1024 * 1024
 
@@ -103,8 +104,11 @@ class SpectrumProjector(QObject):
     _done = Signal(object)
 
     def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
-                 *, max_retained_bytes: int = DEFAULT_PROJECTION_BYTES) -> None:
+                 *, max_retained_bytes: int = DEFAULT_PROJECTION_BYTES,
+                 allocation_budget: PresentationAllocationBudget | None = None) -> None:
         super().__init__()
+        self.allocation_budget = allocation_budget
+        self._allocation: AllocationReservation | None = None
         if isinstance(max_retained_bytes, bool) or not isinstance(max_retained_bytes, int) or max_retained_bytes < 1:
             raise ValueError("projection byte budget must be a positive integer")
         self.max_retained_bytes = max_retained_bytes
@@ -130,6 +134,9 @@ class SpectrumProjector(QObject):
         if self._closed:
             return
         try:
+            if self.allocation_budget is not None:
+                self.allocation_budget.observe(*(view for _, view in request.traces),
+                                               request.current, request.previous, request.prepared)
             storage, reserve = _request_storage(request), _output_reserve(request)
         except (TypeError, ValueError) as error:
             self.failed.emit(request, str(error))
@@ -208,8 +215,25 @@ class SpectrumProjector(QObject):
         self._active = request
         cancel = self._cancel = Event()
         try:
-            future = self._submit(lambda: project_spectrum(request, cancelled=cancel.is_set))
+            allocation = (None if self.allocation_budget is None else
+                          self.allocation_budget.reserve(self._active_reserve))
+            self._allocation = allocation
+
+            def project():
+                try:
+                    result = project_spectrum(request, cancelled=cancel.is_set)
+                    if allocation is not None:
+                        allocation.commit(*(trace for _, trace in result.traces), result.coverage)
+                    return result
+                finally:
+                    if allocation is not None:
+                        allocation.close()
+
+            future = self._submit(project)
         except Exception as error:
+            if self._allocation is not None:
+                self._allocation.close()
+                self._allocation = None
             self._active = None
             self._active_storage = {}
             self._active_reserve = 0
@@ -236,6 +260,9 @@ class SpectrumProjector(QObject):
             if not self._closed:
                 self.failed.emit(request, str(error))
         finally:
+            if self._allocation is not None:
+                self._allocation.close()  # Also covers cancellation before worker execution.
+                self._allocation = None
             self._future = self._active = None
             self._active_storage = {}
             self._active_reserve = 0

@@ -19,6 +19,7 @@ from ..i18n import text
 from .analyzer_layers import persistence_density_from_native, waterfall_line_from_spectrum
 from .analyzer_layer_cache import AnalyzerLayerCache
 from ..spectrum.contracts import PreparedSpectrumFrame
+from ..spectrum.allocation_budget import PresentationBudgetExceeded
 
 
 class LiveAction(StrEnum):
@@ -162,6 +163,9 @@ def build_live_view_state(
         try:
             persistence_frame = (persistence_density_from_native(analyzer_bundle.persistence)
                 if layer_cache is None else layer_cache.persistence(analyzer_bundle.persistence))
+        except PresentationBudgetExceeded:
+            persistence_frame = None
+            coherence_issues.append("presentation_memory_budget")
         except (TypeError, ValueError, OverflowError):
             persistence_frame = None
             coherence_issues.append("persistence_geometry_invalid")
@@ -170,6 +174,9 @@ def build_live_view_state(
         try:
             waterfall_line = (waterfall_line_from_spectrum(analyzer_bundle.spectrum)
                 if layer_cache is None else layer_cache.waterfall(analyzer_bundle.spectrum))
+        except PresentationBudgetExceeded:
+            waterfall_line = None
+            coherence_issues.append("presentation_memory_budget")
         except (TypeError, ValueError, OverflowError):
             waterfall_line = None
             coherence_issues.append("waterfall_geometry_invalid")

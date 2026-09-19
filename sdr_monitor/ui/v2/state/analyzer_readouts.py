@@ -43,6 +43,8 @@ def analyzer_status(state: AnalyzerViewState) -> str:
     )]
     if isinstance(frame, LiveSpectrumFrame):
         parts.append(state.live.data_age_label)
+        if state.live.measurement_unavailable_reason == "presentation_memory_budget":
+            parts.append(text("analyzer.memory_limited"))
         parts.append(analyzer_rtbw_rates(state))
         parts.append(text("analyzer.quality_unknown") if frame.native_quality_flags is None else
                      text("analyzer.quality_mask", mask=f"0x{frame.native_quality_flags:08X}"))

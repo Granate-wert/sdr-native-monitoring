@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QStyl
 
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsSettings
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..design.icons import V2IconId
@@ -24,6 +26,7 @@ from ..shell.contracts import WorkspaceDefinition
 from ..spectrum import PersistenceDensityFrame
 from ..spectrum.contracts import TraceKind
 from ..spectrum.projection import SpectrumProjector
+from ..spectrum.allocation_budget import PresentationBudgetExceeded
 from ..state.live_view_state import LiveAction
 from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout
 from ..state.analyzer_status_cadence import AnalyzerStatusCadence
@@ -46,12 +49,12 @@ class AnalyzerWorkspaceV2(QWidget):
         super().__init__(parent)
         self.model = model
         self._theme = ThemeId.DARK
-        self._last_bundle = None
+        self._last_bundle: AnalyzerFrameBundle | None = None
         self._last_mode = model.state.mode
         self._last_waterfall: WaterfallLineFrame | None = None
         self._last_persistence: PersistenceDensityFrame | None = None
         self._last_identity = None
-        self._last_sweep_snapshot = None
+        self._last_sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
         self._last_statistics_key: tuple[str, int, int] | None = None
         self._sweep_waterfall_error = False
         self._status_cadence = AnalyzerStatusCadence()
@@ -111,6 +114,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.visualization = SpectrumWaterfallView(parent=self)
         if projector is not None:
             self.visualization.spectrum_scene.set_projection_port(projector)
+            self.visualization.waterfall_pane._renderer.allocation_budget = projector.allocation_budget
         self.frequency_bar.viewport_span_requested.connect(self._change_viewport_span)
         self.visualization.spectrum_scene.view_box.sigXRangeChanged.connect(self._viewport_changed)
         self._acquisition_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self.visualization.spectrum_scene)
@@ -474,6 +478,8 @@ class AnalyzerWorkspaceV2(QWidget):
                 if prepared is not None:
                     if prepared.snapshot is not snapshot:
                         raise ValueError("Prepared Sweep snapshot identity mismatch")
+                    if prepared.memory_limited:
+                        raise PresentationBudgetExceeded(prepared.waterfall_error)
                     if prepared.waterfall_error is not None:
                         raise ValueError(prepared.waterfall_error)
                     rows = prepared.waterfall_rows
@@ -483,6 +489,9 @@ class AnalyzerWorkspaceV2(QWidget):
                     # its existing single-flight worker, never in this branch.
                     rows = tuple(waterfall_line_from_sweep(frame)
                                  for frame in (snapshot.line, snapshot.progress) if frame is not None)
+            except PresentationBudgetExceeded:
+                self.visualization.spectrum_scene.set_warning(text("analyzer.memory_limited"))
+                self._sweep_waterfall_error = True
             except (ValueError, TypeError) as error:
                 self.visualization.waterfall_pane.clear_history()
                 self.visualization.spectrum_scene.set_warning(text("waterfall.sweep.invalid", reason=str(error)))

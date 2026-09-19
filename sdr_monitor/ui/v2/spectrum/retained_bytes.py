@@ -16,7 +16,12 @@ def retained_arrays(*publications: object) -> dict[int, int]:
     is charged by the exposed root array, not its unknowable allocator capacity.
     Independent root arrays sharing a capsule are conservatively charged apart.
     """
-    result: dict[int, int] = {}
+    return {key: size for key, (size, _) in retained_roots(*publications).items()}
+
+
+def retained_roots(*publications: object) -> dict[int, tuple[int, dict[int, np.ndarray]]]:
+    """Same backing accounting, with temporary root references for weak tracking."""
+    result: dict[int, tuple[int, dict[int, np.ndarray]]] = {}
     seen: set[int] = set()
     pending = list(publications)
     while pending:
@@ -40,7 +45,9 @@ def retained_arrays(*publications: object) -> dict[int, int]:
             elif isinstance(base, np.ndarray):
                 pending.append(base)
                 continue
-            result[id(owner)] = max(result.get(id(owner), 0), size)
+            old_size, aliases = result.get(id(owner), (0, {}))
+            aliases[id(root)] = root
+            result[id(owner)] = (max(old_size, size), aliases)
         elif is_dataclass(value) and not isinstance(value, type):
             pending.extend(getattr(value, field.name) for field in fields(value))
     return result

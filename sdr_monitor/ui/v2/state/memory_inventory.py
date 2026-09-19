@@ -11,6 +11,7 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from ..spectrum.retained_bytes import retained_arrays, union_bytes
+from ..spectrum.allocation_budget import AllocationBudgetSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +28,7 @@ class PresentationMemorySnapshot:
     projection_reserved_bytes: int
     in_flight: tuple[str, ...]
     missing: tuple[str, ...]
+    allocation_budget: AllocationBudgetSnapshot | None = None
 
     @property
     def exposed_plus_reserved_bytes(self) -> int:
@@ -126,4 +128,5 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
     per_owner = tuple(ArrayOwnerBytes(name, sum(storage.values())) for name, storage in owners.items())
     unique = union_bytes(*owners.values())
     return PresentationMemorySnapshot(per_owner, unique, sum(item.bytes for item in per_owner) - unique,
-                                      reserved, tuple(in_flight), tuple(missing))
+                                      reserved, tuple(in_flight), tuple(missing),
+                                      composition.allocation_budget.snapshot())

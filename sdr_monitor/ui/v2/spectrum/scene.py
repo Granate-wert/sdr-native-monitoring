@@ -175,6 +175,8 @@ class SpectrumScene(QWidget):
         if self._projector is not None or self._latest_view is not None:
             raise RuntimeError("projection port must be injected before spectrum admission")
         self._projector = projector
+        self._persistence.allocation_budget = projector.allocation_budget
+        self._persistence.on_budget_changed = self._refresh_persistence_status
         projector.ready.connect(self._accept_projection)
         projector.failed.connect(self._projection_failed)
         projector.retry_ready.connect(self._retry_projection_capacity)
@@ -322,6 +324,10 @@ class SpectrumScene(QWidget):
             # Do not serialize/copy the full grid on every unchanged publication.
             self._measurement_grid = view.frequencies_hz.copy()
             self._measurement_grid.setflags(write=False)
+        if self._projector is not None and self._projector.allocation_budget is not None:
+            # Source and comparison baseline already exist. Count their actual
+            # lifetime; do not claim this observes or caps backend allocations.
+            self._projector.allocation_budget.observe(frame, self._measurement_grid)
         self._latest_view = view
         self._prepared_spectrum = prepared
         self._trace_views[TraceKind.CURRENT] = view
@@ -1017,6 +1023,9 @@ class SpectrumScene(QWidget):
         self.set_persistence_render_mode(PersistenceRenderMode(str(value)))
 
     def _refresh_persistence_status(self) -> None:
+        if self._persistence.allocation_limited:
+            self._persistence_status.setText(text("spectrum.persistence.memory_limited", self._locale))
+            return
         view = self._persistence.latest_view
         if view is None:
             return

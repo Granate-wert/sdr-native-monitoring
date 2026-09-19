@@ -8,6 +8,7 @@ from typing import Protocol
 from concurrent.futures import Future
 
 from .spectrum.projection import SpectrumProjection, SpectrumProjector
+from .spectrum.allocation_budget import PresentationAllocationBudget
 
 from .view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState, SweepPresentationPort
 from .workspaces.analyzer import analyzer_workspace_definition
@@ -118,6 +119,7 @@ class V2LiveProductComposition:
         sweep_presenter: SweepPresenterLifecyclePort | None = None,
         analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
         projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
+        allocation_budget: PresentationAllocationBudget | None = None,
         async_shutdown: bool = False,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
         diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
@@ -129,7 +131,9 @@ class V2LiveProductComposition:
         self._presenter = presenter
         self._sweep_presenter = sweep_presenter
         self.analyzer_presenter = analyzer_presenter
-        self.spectrum_projector = None if projection_submit is None else SpectrumProjector(projection_submit)
+        self.allocation_budget = allocation_budget or PresentationAllocationBudget()
+        self.spectrum_projector = (None if projection_submit is None else SpectrumProjector(
+            projection_submit, allocation_budget=self.allocation_budget))
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.analyzer_view_model = (
@@ -361,6 +365,7 @@ def compose_v2_live_product(
     sweep_presenter: SweepPresenterLifecyclePort | None = None,
     analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
     projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
+    allocation_budget: PresentationAllocationBudget | None = None,
     async_shutdown: bool = False,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
     diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
@@ -376,6 +381,7 @@ def compose_v2_live_product(
         sweep_presenter=sweep_presenter,
         analyzer_presenter=analyzer_presenter,
         projection_submit=projection_submit,
+        allocation_budget=allocation_budget,
         async_shutdown=async_shutdown,
         calibration_presenter=calibration_presenter,
         diagnostics_presenter_factory=diagnostics_presenter_factory,

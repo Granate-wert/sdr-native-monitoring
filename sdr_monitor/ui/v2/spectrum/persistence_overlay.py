@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import nullcontext
 from time import monotonic_ns
 
 import numpy as np
 import pyqtgraph as pg
+from .allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
 from PySide6.QtCore import QRectF, QTimer
 
 from .persistence_contracts import (
@@ -29,6 +32,7 @@ class PersistenceOverlayMetrics:
     cadence_uploads_deferred: int = 0
     hidden_updates: int = 0
     retained_extra_image_buffers: int = 0
+    allocation_denials: int = 0
 
 
 class PersistenceOverlay:
@@ -56,6 +60,9 @@ class PersistenceOverlay:
         self._row_scratch: np.ndarray | None = None
         self._last_upload_ns: int | None = None
         self._metrics = PersistenceOverlayMetrics()
+        self.allocation_budget: PresentationAllocationBudget | None = None
+        self.allocation_limited = False
+        self.on_budget_changed: Callable[[], None] | None = None
         self._timer = QTimer()
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.flush_pending)
@@ -128,6 +135,8 @@ class PersistenceOverlay:
             self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
 
     def set_frame(self, view: PersistenceDensityView, *, now_ns: int | None = None) -> None:
+        if self.allocation_budget is not None:
+            self.allocation_budget.observe(view)
         self._latest_view = view
         now = monotonic_ns() if now_ns is None else now_ns
         if not self._visible or not self._presentation_active:
@@ -176,13 +185,36 @@ class PersistenceOverlay:
         self._image.clear()
         self._image.setVisible(False)
         self._set_metrics(retained_extra_image_buffers=0)
+        self._set_allocation_limited(False)
 
     def _upload(self, view: PersistenceDensityView, *, now_ns: int, force: bool = False) -> None:
         if not self._visible or not self._presentation_active:
             return
         if not force and view.density is self._uploaded_density and not self._mapping_dirty:
             return
-        image = self._render_image(view)
+        reuse = (self._render_mode is PersistenceRenderMode.VISUAL and self._visual_buffer is not None
+                 and self._visual_buffer.shape == view.density.shape)
+        reserve = 0 if reuse else int(view.density.size * 4)
+        if reuse and (self._row_scratch is None or self._row_scratch.size != view.density.shape[1]):
+            reserve += int(view.density.shape[1] * 4)
+        try:
+            allocation = (nullcontext(None) if self.allocation_budget is None else
+                          self.allocation_budget.reserve(reserve, view))
+            with allocation as ticket:
+                image = self._render_image(view)
+                if ticket is not None:
+                    ticket.commit(image, self._visual_buffer, self._row_scratch)
+        except PresentationBudgetExceeded:
+            # Do not mislabel an old image as the current measurement. Keep
+            # latest and smoothing intent, but never queue a retry timer here.
+            self._discard_pending()
+            self._uploaded_density = None
+            self._image.clear()
+            self._image.setVisible(False)
+            self._set_metrics(allocation_denials=self._metrics.allocation_denials + 1,
+                              retained_extra_image_buffers=int(self._visual_buffer is not None))
+            self._set_allocation_limited(True)
+            return
         left, bottom, width, height = view.physical_rect
         self._image.setImage(image, autoLevels=False, levels=(0.0, 1.0))
         self._image.setRect(QRectF(left, bottom, width, height))
@@ -190,6 +222,7 @@ class PersistenceOverlay:
         self._uploaded_density = view.density
         self._mapping_dirty = False
         self._last_upload_ns = now_ns
+        self._set_allocation_limited(False)
         self._set_metrics(
             image_uploads=self._metrics.image_uploads + 1,
             retained_extra_image_buffers=1,
@@ -252,7 +285,14 @@ class PersistenceOverlay:
             retained_extra_image_buffers=updates.get(
                 "retained_extra_image_buffers", self._metrics.retained_extra_image_buffers
             ),
+            allocation_denials=updates.get("allocation_denials", self._metrics.allocation_denials),
         )
+
+    def _set_allocation_limited(self, limited: bool) -> None:
+        if self.allocation_limited != limited:
+            self.allocation_limited = limited
+            if self.on_budget_changed is not None:
+                self.on_budget_changed()
 
 
 def _count_maximum(view: PersistenceDensityView) -> float:
