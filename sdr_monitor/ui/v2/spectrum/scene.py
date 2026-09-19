@@ -177,6 +177,7 @@ class SpectrumScene(QWidget):
         self._projector = projector
         projector.ready.connect(self._accept_projection)
         projector.failed.connect(self._projection_failed)
+        projector.retry_ready.connect(self._retry_projection_capacity)
         self.sweep_coverage.request_projection = self._request_projection
         self._view_box.sigResized.connect(self._request_projection)
 
@@ -250,6 +251,10 @@ class SpectrumScene(QWidget):
         if self._projection_current(request):
             self._projection_error = text("spectrum.projection.failed", self._locale, reason=reason)
             self.set_warning(self._projection_error)
+
+    def _retry_projection_capacity(self) -> None:
+        self._projection_key = None
+        self._request_projection()
 
     def _marker_view(self) -> SpectrumFrameView | None:
         return self._displayed_view if self._projector is not None else self._latest_view

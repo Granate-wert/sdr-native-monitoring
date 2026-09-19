@@ -17,6 +17,25 @@ from .envelope import peak_preserving_envelope
 from .sweep_coverage import CoverageProjection, SweepCoverageState, SweepFrame
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from .cancellation import CancelCheck, check_cancelled
+from .retained_bytes import retained_arrays, union_bytes
+
+DEFAULT_PROJECTION_BYTES = 256 * 1024 * 1024
+
+
+def _request_storage(request: "ProjectionRequest") -> dict[int, int]:
+    return retained_arrays(*(view for _, view in request.traces), request.current,
+                           request.previous, request.prepared)
+
+
+def _output_reserve(request: "ProjectionRequest") -> int:
+    # At most nine points per viewport column per envelope, with float64
+    # coordinates and values. Coverage uses at most 2048 columns + edges.
+    # This reserves final result arrays, NOT reducer scratch or Qt paint data.
+    width = max(1, int(request.viewport[2]))
+    traces = sum(9 * min(width, view.point_count) *
+                 (max(8, view.frequencies_hz.dtype.itemsize) + max(8, view.values.dtype.itemsize))
+                 for _, view in request.traces)
+    return traces + (2048 * (9 * 16 + 9) + 8 if request.current is not None else 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,10 +99,21 @@ class SpectrumProjector(QObject):
 
     ready = Signal(object)
     failed = Signal(object, str)
+    retry_ready = Signal()
     _done = Signal(object)
 
-    def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future]) -> None:
+    def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
+                 *, max_retained_bytes: int = DEFAULT_PROJECTION_BYTES) -> None:
         super().__init__()
+        if isinstance(max_retained_bytes, bool) or not isinstance(max_retained_bytes, int) or max_retained_bytes < 1:
+            raise ValueError("projection byte budget must be a positive integer")
+        self.max_retained_bytes = max_retained_bytes
+        self._active_storage: dict[int, int] = {}
+        self._pending_storage: dict[int, int] = {}
+        self._active_reserve = self._pending_reserve = 0
+        self._retry_capacity = False
+        self.byte_rejections = 0
+        self.peak_retained_bytes = 0
         self._submit = submit
         self._future: Future | None = None
         self._active: ProjectionRequest | None = None
@@ -99,9 +129,29 @@ class SpectrumProjector(QObject):
     def offer(self, request: ProjectionRequest) -> None:
         if self._closed:
             return
+        try:
+            storage, reserve = _request_storage(request), _output_reserve(request)
+        except (TypeError, ValueError) as error:
+            self.failed.emit(request, str(error))
+            return
+        alone = union_bytes(storage) + reserve
+        proposed = union_bytes(self._active_storage, storage) + self._active_reserve + reserve
+        if proposed > self.max_retained_bytes:
+            self.byte_rejections += 1
+            # Discard an older queued request as well, never render it as the
+            # rejected latest source. Do not retain the rejected publication.
+            self._pending = None
+            self._pending_storage = {}
+            self._pending_reserve = 0
+            self._retry_capacity = alone <= self.max_retained_bytes and self._active is not None
+            self.failed.emit(request, "Spectrum projection retained-byte budget exceeded")
+            return
         if self._pending is not None:
             self.superseded += 1
         self._pending = request
+        self._retry_capacity = False
+        self._pending_storage, self._pending_reserve = storage, reserve
+        self.peak_retained_bytes = max(self.peak_retained_bytes, self.retained_bytes)
         active = self._active
         if active is not None and (active.owner is not request.owner
                 or active.generation != request.generation or active.viewport != request.viewport):
@@ -111,6 +161,8 @@ class SpectrumProjector(QObject):
     def cancel_pending(self, owner: object) -> None:
         if self._pending is not None and self._pending.owner is owner:
             self._pending = None
+            self._pending_storage = {}
+            self._pending_reserve = 0
         if self._active is not None and self._active.owner is owner:
             self._cancel_active()
 
@@ -126,6 +178,9 @@ class SpectrumProjector(QObject):
         if self._suspended:
             if self._pending is None and self._active is not None:
                 self._pending = self._active
+                self._pending_storage = self._active_storage
+                # No second result is reserved until the cancelled job acks.
+                self._pending_reserve = 0
             self._cancel_active()
         else:
             self._dispatch()
@@ -138,6 +193,9 @@ class SpectrumProjector(QObject):
     def dispose(self) -> None:
         self._closed = True
         self._pending = None
+        self._pending_storage = {}
+        self._pending_reserve = 0
+        self._retry_capacity = False
         # Never join a worker from Qt. Its application owner performs cleanup.
         self._cancel_active()
 
@@ -145,12 +203,16 @@ class SpectrumProjector(QObject):
         if self._closed or self._suspended or self._future is not None or self._pending is None:
             return
         request, self._pending = self._pending, None
+        self._active_storage, self._pending_storage = self._pending_storage, {}
+        self._active_reserve, self._pending_reserve = _output_reserve(request), 0
         self._active = request
         cancel = self._cancel = Event()
         try:
             future = self._submit(lambda: project_spectrum(request, cancelled=cancel.is_set))
         except Exception as error:
             self._active = None
+            self._active_storage = {}
+            self._active_reserve = 0
             self.failed.emit(request, str(error))
             return
         self._future = future
@@ -175,4 +237,15 @@ class SpectrumProjector(QObject):
                 self.failed.emit(request, str(error))
         finally:
             self._future = self._active = None
+            self._active_storage = {}
+            self._active_reserve = 0
             self._dispatch()
+            if self._retry_capacity and not self._closed:
+                self._retry_capacity = False
+                self.retry_ready.emit()  # Scene reoffers latest, no retained backlog.
+
+    @property
+    def retained_bytes(self) -> int:
+        """Exposed backing arrays + reserved results until GUI acknowledgement."""
+        return (union_bytes(self._active_storage, self._pending_storage)
+                + self._active_reserve + self._pending_reserve)
