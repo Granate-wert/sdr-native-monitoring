@@ -952,6 +952,10 @@ class SpectrumScene(QWidget):
     def _update_markers_for_new_frame(self) -> None:
         if not self._presentation_active:
             return
+        if self._projector is not None and self._displayed_view is None:
+            # A temporarily hidden/relocalized canvas has no acknowledged
+            # paint yet. Keep frequency intent until that result arrives.
+            return
         selected = self._selected_marker_id
         for marker_id, marker in tuple(self._markers.items()):
             if self.place_marker(marker_id, marker.frequency_hz) is None:
@@ -966,6 +970,10 @@ class SpectrumScene(QWidget):
     def _update_marker_item(self, marker: SpectrumMarker) -> None:
         line = self._marker_lines[marker.marker_id]
         label = self._marker_labels[marker.marker_id]
+        if not self._presentation_active or (self._projector is not None and self._displayed_view is None):
+            line.hide()
+            label.hide()
+            return
         line.setValue(marker.frequency_hz)
         line.setVisible(True)
         frequency = format_frequency_hz(marker.frequency_hz, locale=self._locale, resolution_hz=1.0)
