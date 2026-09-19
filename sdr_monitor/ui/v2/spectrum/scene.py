@@ -332,7 +332,10 @@ class SpectrumScene(QWidget):
         self._prepared_spectrum = prepared
         self._trace_views[TraceKind.CURRENT] = view
         self._set_trace_view(TraceKind.CURRENT, view)
-        self._plot_item.setLabel("left", view.unit_label)
+        # AxisItem.setLabel rebuilds rich text and invalidates geometry even
+        # when unchanged; frame cadence must not become chrome-update cadence.
+        if self._plot_item.getAxis("left").labelText != view.unit_label:
+            self._plot_item.setLabel("left", view.unit_label)
         if not same_measurement:
             self._plot_item.setXRange(float(view.frequencies_hz[0]), float(view.frequencies_hz[-1]), padding=0.0)
         self._empty_overlay.setVisible(False)

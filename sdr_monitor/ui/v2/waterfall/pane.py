@@ -693,15 +693,17 @@ class WaterfallPane(QWidget):
             timestamps_known=signature is not None and signature.timestamp_known,
             sweep_stamps=self._renderer.sweep_stamps() if self._sweep_mode else (),
         )
-        self._plot_item.setLabel(
-            "left",
-            text("waterfall.axis.sweep", self._locale) if self._sweep_mode else
-            text("waterfall.axis.time", self._locale)
-            if signature is None or signature.timestamp_known
-            else text("waterfall.time_axis.unknown", self._locale),
-        )
-        self._graphics.setToolTip(text("waterfall.sweep.help", self._locale) if self._sweep_mode else "")
-        self._graphics.setAccessibleDescription(self._graphics.toolTip())
+        caption = (text("waterfall.axis.sweep", self._locale) if self._sweep_mode else
+                   text("waterfall.axis.time", self._locale)
+                   if signature is None or signature.timestamp_known
+                   else text("waterfall.time_axis.unknown", self._locale))
+        if self._plot_item.getAxis("left").labelText != caption:
+            self._plot_item.setLabel("left", caption)
+        help_text = text("waterfall.sweep.help", self._locale) if self._sweep_mode else ""
+        if self._graphics.toolTip() != help_text:
+            self._graphics.setToolTip(help_text)
+        if self._graphics.accessibleDescription() != help_text:
+            self._graphics.setAccessibleDescription(help_text)
 
     def _reject_configuration_change(self) -> None:
         self._sync_controls()
