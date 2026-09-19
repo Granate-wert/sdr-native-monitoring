@@ -271,7 +271,9 @@ class ProductAnalyzerCompositionTests(unittest.TestCase):
             if live.is_running():
                 live_presenter.stop()
                 self._wait(lambda: not live.is_running())
-            closed = shell.close()
+            shell.close()
+            self._wait(lambda: shell._is_closed)
+            closed = shell._is_closed
             composition.shutdown()
             shell.deleteLater()
             self.app.processEvents()

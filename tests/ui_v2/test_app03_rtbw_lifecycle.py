@@ -69,7 +69,8 @@ class RtbwLifecycleTests(unittest.TestCase):
                              and not fixture.composition.view_model.state.busy)
                 self.assertTrue(fixture.composition.can_close())
                 stop.assert_called_once()
-                self.assertTrue(fixture.shell.close())
+                fixture.shell.close()
+                fixture.wait(lambda: fixture.shell._is_closed)
                 # The in-memory shutdown port performs an idempotent stop
                 # after normal Stop. This is not a second owned RX cleanup.
                 self.assertFalse(fixture.live.is_running())
@@ -193,7 +194,8 @@ class RtbwLifecycleTests(unittest.TestCase):
                 self.assertEqual(stop.call_count, 2)
                 self.assertEqual(fixture.events.count("rtbw-stop"), 1)
                 self.assertTrue(fixture.composition.can_close())
-                self.assertTrue(fixture.shell.close())
+                fixture.shell.close()
+                fixture.wait(lambda: fixture.shell._is_closed)
                 self.assertEqual(fixture.live.stop_and_wait_calls, 1)
         finally:
             release.set()

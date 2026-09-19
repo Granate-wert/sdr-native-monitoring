@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from time import monotonic, sleep
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -82,7 +83,12 @@ class CurrentV2CompositionTests(unittest.TestCase):
         finally:
             for presenter in deferred:
                 presenter.shutdown()
-            self.assertTrue(shell.close())
+            shell.close()
+            deadline = monotonic() + 3
+            while not shell._is_closed and monotonic() < deadline:
+                self.app.processEvents()
+                sleep(.001)
+            self.assertTrue(shell._is_closed)
             composition.shutdown()
             shell.deleteLater()
             self.app.processEvents()

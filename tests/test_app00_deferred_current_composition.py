@@ -69,9 +69,10 @@ class DeferredCurrentCompositionTests(unittest.TestCase):
                 self.assertIsNotNone(replay_vm._presenter)
                 self.assertIsNotNone(tiny_vm._presenter)
             finally:
-                composition.shutdown()
-                composition.shutdown()
                 shell.close()
+                self.wait_idle(lambda: shell._is_closed)
+                composition.shutdown()
+                composition.shutdown()
                 shell.deleteLater()
                 self.app.processEvents()
         diagnostics.shutdown.assert_called_once_with()
