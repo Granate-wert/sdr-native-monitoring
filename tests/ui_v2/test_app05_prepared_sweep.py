@@ -68,13 +68,13 @@ class PreparedSweepTests(unittest.TestCase):
 
         harness = product.AnalyzerWorkspaceProductTests("runTest")
         harness.app = QApplication.instance() or QApplication([])
-        with patch("sdr_monitor.ui.v2.state.prepared_sweep.prepare_sweep_snapshot", prepare):
-            harness.setUp()
+        harness.setUp()
         try:
             harness.select_and_apply()
             page = harness.page
             page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.SWEEP))
-            with patch.object(ContinuousSweepDisplaySnapshot, "analyzer_bundle", property(bundle)), \
+            with patch("sdr_monitor.ui.v2.state.prepared_sweep.prepare_sweep_snapshot", prepare), \
+                 patch.object(ContinuousSweepDisplaySnapshot, "analyzer_bundle", property(bundle)), \
                  patch("sdr_monitor.ui.v2.spectrum.scene.adapt_spectrum_frame",
                        side_effect=AssertionError("GUI grid validation fallback used")), \
                  patch("sdr_monitor.ui.v2.spectrum.scene.finite_value_extent",

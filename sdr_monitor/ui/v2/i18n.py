@@ -1896,7 +1896,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Персистенция не отображается: лимит памяти UI", UiLocale.EN: "Persistence unavailable: UI memory budget"}
         ),
         "waterfall.memory_limited": MappingProxyType(
-            {UiLocale.RU: "История Waterfall ограничена бюджетом памяти UI", UiLocale.EN: "Waterfall history limited by UI memory budget"}
+            {UiLocale.RU: "История спектрограммы ограничена бюджетом памяти UI", UiLocale.EN: "Waterfall history limited by UI memory budget"}
         ),
         "analyzer.memory_limited": MappingProxyType(
             {UiLocale.RU: "Часть слоёв отображения недоступна: лимит памяти UI", UiLocale.EN: "Some display layers unavailable: UI memory budget"}

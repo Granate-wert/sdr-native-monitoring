@@ -48,6 +48,7 @@ class StatusCadenceTests(unittest.TestCase):
             replace(state, stopping=True), replace(state, starting=True),
             replace(state, live=replace(state.live, loss=LiveLossSummary(fft_frames=1))),
             replace(state, live=replace(state.live, data_age_ms=2000)),
+            replace(state, live=replace(state.live, measurement_unavailable_reason="presentation_memory_budget")),
             replace(state, bundle=replace(state.bundle, coherence_issues=("bad unit",))),
         ):
             with self.subTest(update=update.error):
