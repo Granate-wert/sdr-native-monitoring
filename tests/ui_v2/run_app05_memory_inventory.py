@@ -4,6 +4,7 @@ Run as a module from an exact checkout. JSON separates Windows process memory
 from exposed backing-array inventory. Neither is a native allocator proof.
 """
 import argparse
+from collections import deque
 import ctypes
 from ctypes import wintypes
 from dataclasses import asdict, replace
@@ -45,12 +46,52 @@ def process_memory():
     return {"working_set": int(counters.working_set), "private_bytes": int(counters.private_bytes)}
 
 
-def run(frames=120, bins=65536, power_bins=64):
+class MemorySamples:
+    """Optional bounded evidence retention; still measure every produced frame."""
+
+    def __init__(self, capacity=None):
+        if capacity is not None and (isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1):
+            raise ValueError("sample capacity must be a positive integer or None")
+        self.rows = deque(maxlen=capacity)
+        self.total = 0
+        self.phases = {}
+        self.peak_arrays = self.peak_observed_reserved = self.peak_reservations = 0
+        self.first_private = self.last_private = None
+
+    def append(self, row):
+        # Same full inventory serialization work in bounded/unbounded modes.
+        # Only retention changes; no pipeline frame/event/sampling decimation.
+        self.rows.append(row)
+        self.total += 1
+        if self.total == 1:
+            self.first_private = row["private_bytes"]
+        self.last_private = row["private_bytes"]
+        scalar = {key: row[key] for key in ("index", "seconds", "private_bytes", "working_set")}
+        phase = self.phases.setdefault(row["page"], {"first": scalar, "last": scalar, "count": 0})
+        phase["last"] = scalar
+        phase["count"] += 1
+        inventory = row["inventory"]
+        self.peak_arrays = max(self.peak_arrays, inventory["unique_array_bytes"])
+        ledger = inventory.get("allocation_budget") or {}
+        self.peak_observed_reserved = max(self.peak_observed_reserved, ledger.get("peak_bytes", 0))
+        self.peak_reservations = max(self.peak_reservations, ledger.get("reserved_bytes", 0))
+
+    def summary(self):
+        return {"capacity": self.rows.maxlen, "total_sampled": self.total,
+                "retained": len(self.rows), "phases": self.phases,
+                "private_first": self.first_private, "private_last": self.last_private,
+                "unique_array_peak": self.peak_arrays,
+                "ledger_peak_observed_reserved": self.peak_observed_reserved,
+                "post_ack_reserved_peak": self.peak_reservations,
+                "timing_distribution_scope": "retained samples only"}
+
+
+def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None):
+    recorder = MemorySamples(sample_capacity)
     app = QApplication.instance() or QApplication([])
     fixture = AnalyzerWorkspaceProductTests("runTest")
     fixture.app = app
     fixture.setUp()
-    rows = []
     started = time.monotonic()
     try:
         fixture.select_and_apply()
@@ -81,12 +122,13 @@ def run(frames=120, bins=65536, power_bins=64):
             sampled = time.perf_counter()
             inventory = fixture.composition.memory_snapshot(fixture.page)
             sample_ms = (time.perf_counter() - sampled) * 1000
-            rows.append({"index": index, "seconds": time.monotonic() - started,
+            recorder.append({"index": index, "seconds": time.monotonic() - started,
                          "page": fixture.shell.active_workspace_id, "sample_ms": sample_ms,
                          **process_memory(), "inventory": asdict(inventory)})
         return {"kind": "synthetic post-domain RTBW, not RF/FPS or long-soak acceptance",
                 "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-                "bins": bins, "power_bins": power_bins, "frames": frames, "samples": rows}
+                "bins": bins, "power_bins": power_bins, "frames": frames,
+                "sampling": recorder.summary(), "samples": list(recorder.rows)}
     finally:
         fixture.tearDown()
         fixture.doCleanups()
@@ -98,15 +140,17 @@ if __name__ == "__main__":
     parser.add_argument("--bins", type=int, default=65536)
     parser.add_argument("--power-bins", type=int, default=64)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--sample-capacity", type=int, help="Keep only this many latest evidence rows; still sample every frame")
     args = parser.parse_args()
     if (not 1 <= args.frames <= 10000 or not 2 <= args.bins <= 2_000_000
             or not 1 <= args.power_bins <= 64 or args.bins * args.power_bins > 8_388_608):
         parser.error("bounded synthetic profile dimensions exceeded")
-    output = run(args.frames, args.bins, args.power_bins)
+    if args.sample_capacity is not None and args.sample_capacity < 1:
+        parser.error("sample capacity must be positive")
+    output = run(args.frames, args.bins, args.power_bins, sample_capacity=args.sample_capacity)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
     samples = output["samples"]
-    print(json.dumps({"output": str(args.output), "frames": len(samples),
-                      "private_first": samples[0]["private_bytes"], "private_last": samples[-1]["private_bytes"],
-                      "unique_array_peak": max(s["inventory"]["unique_array_bytes"] for s in samples),
-                      "inventory_p95_ms": float(np.percentile([s["sample_ms"] for s in samples], 95))}))
+    print(json.dumps({"output": str(args.output), "frames": output["frames"],
+                      **output["sampling"],
+                      "retained_inventory_p95_ms": float(np.percentile([s["sample_ms"] for s in samples], 95))}))
