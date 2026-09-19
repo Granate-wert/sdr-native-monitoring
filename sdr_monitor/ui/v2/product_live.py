@@ -244,6 +244,11 @@ class V2LiveProductComposition:
         analyzer_can_close = self.analyzer_presenter is None or self.analyzer_presenter.can_close()
         return live_can_close and sweep_can_close and calibration_can_close and diagnostics_can_close and replay_can_close and tinysa_can_close and analyzer_can_close
 
+    def memory_snapshot(self, workspace=None):
+        """On-demand scalar diagnostic; creates no page and issues no RX call."""
+        from .state.memory_inventory import presentation_memory_snapshot
+        return presentation_memory_snapshot(self, workspace)
+
     def request_shutdown(self) -> CloseState:
         assert self.close_lifecycle is not None
         if self.close_lifecycle.state.phase == "idle" and not self.can_close():

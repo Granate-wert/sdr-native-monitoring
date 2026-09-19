@@ -68,6 +68,7 @@ class LivePresenter(QObject):
         self._offered_control_revision = 0
         self._snapshot_preparer = snapshot_preparer
         self._preparation_future: Future[_PreparedDelivery] | None = None
+        self._active_preparation_snapshot: LiveSnapshot | None = None
         self._pending_preparation: tuple[LiveSnapshot, int, bool] | None = None
         self._preparation_superseded = 0
         self._preparation_stale = 0
@@ -353,6 +354,7 @@ class LivePresenter(QObject):
             return
         future = self._executor.submit(self._prepare, snapshot, revision, render)
         self._preparation_future = future
+        self._active_preparation_snapshot = snapshot
         # Keep the slot occupied until GUI acknowledgement, even after work
         # finishes. A stalled GUI cannot accumulate prepared packets/signals.
         future.add_done_callback(self._prepared_render_done.emit)
@@ -407,6 +409,7 @@ class LivePresenter(QObject):
                 self._deliver_prepared(future.result())  # already complete; never GUI wait
         finally:
             self._preparation_future = None
+            self._active_preparation_snapshot = None
         if not self._closed and not self._closing:
             self._dispatch_preparation()
 
