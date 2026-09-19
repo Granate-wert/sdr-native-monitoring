@@ -118,6 +118,26 @@ class PresentationInventoryTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(errors), 1)
 
+    def test_hide_releases_painted_source_but_marker_intent_returns_with_latest(self):
+        self.select_and_apply()
+        self.presenter._emit_snapshot(measurement(self))
+        scene = self.page.visualization.spectrum_scene
+        self.wait(lambda: scene.displayed_frame is not None)
+        marker = scene.place_marker("M1", self.page._last_bundle.frequencies_hz[10])
+        self.assertIsNotNone(marker)
+        self.shell.select_workspace("calibration")
+        self.assertIsNone(scene._displayed_view)
+        self.assertEqual(scene._envelopes, {})
+        self.assertFalse(scene._marker_labels["M1"].isVisible())
+        self.assertIsNone(scene._persistence.image_item.image)
+        latest = measurement(self, sequence=2)
+        self.presenter._emit_snapshot(latest)
+        self.wait(lambda: self.composition.view_model.state.spectrum is latest.spectrum)
+        self.shell.select_workspace("analyzer")
+        self.wait(lambda: scene.displayed_frame is self.page._last_bundle)
+        self.assertEqual(scene.markers[0].frequency_hz, marker.frequency_hz)
+        self.assertEqual(scene.markers[0].value, -68)
+
 
 if __name__ == "__main__":
     unittest.main()

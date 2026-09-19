@@ -99,6 +99,12 @@ class PersistenceOverlay:
         self._presentation_active = active
         if not active:
             self._timer.stop()
+            self._uploaded_density = None
+            self._image.clear()
+            self._image.setVisible(False)
+            # Keep smoothing history if requested, but Direct has no visual
+            # history to preserve. Latest/pending analytical views stay intact.
+            self._set_metrics(retained_extra_image_buffers=int(self._visual_buffer is not None))
         elif self._visible and self._latest_view is not None:
             self._discard_pending()
             self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)

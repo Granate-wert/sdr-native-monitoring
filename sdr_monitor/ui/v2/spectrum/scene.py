@@ -272,13 +272,27 @@ class SpectrumScene(QWidget):
         self._presentation_active = active
         if not active:
             self._invalidate_projection()
+            # Hidden pixels need not pin a previous coherent bundle (including
+            # its potentially large native density). Preserve latest sources,
+            # viewport and marker frequency intent, not stale painted values.
+            self._displayed_view = None
+            self._displayed_extent = None
+            self._envelopes.clear()
+            for curve in self._curves.values():
+                curve.setData([], [])
+            for marker_id in self._markers:
+                self._marker_lines[marker_id].hide()
+                self._marker_labels[marker_id].hide()
         self._persistence.set_presentation_active(active)
         self.sweep_coverage.set_presentation_active(active)
         if active:
             for kind, view in self._trace_views.items():
                 self._set_trace_view(kind, view)
             self._apply_vertical_range()
-            self._update_markers_for_new_frame()
+            if self._projector is None:
+                self._update_markers_for_new_frame()
+            # Worker path restores markers only with the exact displayed
+            # source acknowledgement, not before its first resumed paint.
 
     def take_display_controls(self) -> QWidget:
         """Detach and return the existing controls without rebuilding canvas state."""

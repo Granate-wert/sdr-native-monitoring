@@ -228,7 +228,8 @@ class HiddenAnalyzerProductTests(unittest.TestCase):
                 self.assertEqual(pane._renderer.sweep_stamps()[-1].state.value, "gap")
                 self.assertEqual(harness.events, ["sweep-start", "sweep-stop"])
                 self.assertFalse(harness.composition.analyzer_view_model.state.running)
-                self.assertIsNotNone(scene.trace_envelope(TraceKind.CURRENT))
+                harness.wait(lambda: scene.trace_envelope(TraceKind.CURRENT) is not None)
+                self.assertIs(scene.displayed_frame, scene.latest_frame)
         finally:
             try:
                 harness.tearDown()
