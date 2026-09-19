@@ -194,6 +194,10 @@ class PersistenceOverlay:
             return
         reuse = (self._render_mode is PersistenceRenderMode.VISUAL and self._visual_buffer is not None
                  and self._visual_buffer.shape == view.density.shape)
+        if not reuse:
+            # Incompatible smoothing history has no meaning on a changed
+            # density geometry. Do not pin it across repeated budget refusals.
+            self._visual_buffer = None
         reserve = 0 if reuse else int(view.density.size * 4)
         if reuse and (self._row_scratch is None or self._row_scratch.size != view.density.shape[1]):
             reserve += int(view.density.shape[1] * 4)

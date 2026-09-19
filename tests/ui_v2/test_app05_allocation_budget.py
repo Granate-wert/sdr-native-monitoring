@@ -110,6 +110,34 @@ class AllocationBudgetTests(unittest.TestCase):
         self.assertEqual(budget.snapshot().reserved_bytes, 0)
         self.assertIsNone(port._future)
 
+    def test_projection_capacity_retry_after_release_is_once_and_has_no_payload_backlog(self):
+        worker = ManualWorker()
+        budget = PresentationAllocationBudget(10000)
+        port = SpectrumProjector(worker.submit, allocation_budget=budget)
+        req = request()
+        retained = np.zeros(9000, dtype=np.uint8)
+        budget.observe(retained)
+        port.retry_ready.connect(lambda: port.offer(req))
+        port.offer(req)
+        for _ in range(10):
+            self.app.processEvents()
+        self.assertEqual(budget.snapshot().rejections, 2)  # initial + one deferred attempt
+        self.assertIsNone(port._pending)
+        self.assertEqual(worker.jobs, [])
+        # A new viewport identity gets its own bounded recovery opportunity.
+        req = replace(req, generation=2)
+        port.offer(req)
+        del retained
+        gc.collect()
+        for _ in range(5):
+            self.app.processEvents()
+        self.assertEqual(len(worker.jobs), 1)
+        worker.finish()
+        for _ in range(5):
+            self.app.processEvents()
+        self.assertEqual(budget.snapshot().reserved_bytes, 0)
+        port.dispose()
+
     def test_waterfall_resize_reserves_both_rings_and_old_tiles_stay_charged(self):
         budget = PresentationAllocationBudget(2000)
         renderer = BoundedWaterfallRenderer()

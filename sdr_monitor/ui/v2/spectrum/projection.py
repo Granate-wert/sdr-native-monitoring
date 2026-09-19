@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from threading import Event
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 
 from .contracts import EnvelopeTrace, PreparedSpectrumFrame, SpectrumFrameView, TraceKind, finite_value_extent
 from .envelope import peak_preserving_envelope
@@ -18,7 +18,7 @@ from .sweep_coverage import CoverageProjection, SweepCoverageState, SweepFrame
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from .cancellation import CancelCheck, check_cancelled
 from .retained_bytes import retained_arrays, union_bytes
-from .allocation_budget import AllocationReservation, PresentationAllocationBudget
+from .allocation_budget import AllocationReservation, PresentationAllocationBudget, PresentationBudgetExceeded
 
 DEFAULT_PROJECTION_BYTES = 256 * 1024 * 1024
 
@@ -109,6 +109,7 @@ class SpectrumProjector(QObject):
         super().__init__()
         self.allocation_budget = allocation_budget
         self._allocation: AllocationReservation | None = None
+        self._shared_retry_key: tuple | None = None
         if isinstance(max_retained_bytes, bool) or not isinstance(max_retained_bytes, int) or max_retained_bytes < 1:
             raise ValueError("projection byte budget must be a positive integer")
         self.max_retained_bytes = max_retained_bytes
@@ -218,6 +219,7 @@ class SpectrumProjector(QObject):
             allocation = (None if self.allocation_budget is None else
                           self.allocation_budget.reserve(self._active_reserve))
             self._allocation = allocation
+            self._shared_retry_key = None
 
             def project():
                 try:
@@ -238,9 +240,23 @@ class SpectrumProjector(QObject):
             self._active_storage = {}
             self._active_reserve = 0
             self.failed.emit(request, str(error))
+            if isinstance(error, PresentationBudgetExceeded) and self.allocation_budget is not None:
+                # One queued reoffer allows the just-acknowledged Future/stack
+                # roots to die first. Never retain its payload or spin on an
+                # intrinsically oversized / persistently unavailable request.
+                key = (id(request.owner), request.generation, request.viewport,
+                       tuple((kind, id(view.source_frame)) for kind, view in request.traces))
+                alone = union_bytes(_request_storage(request)) + _output_reserve(request)
+                if alone <= self.allocation_budget.limit_bytes and key != self._shared_retry_key:
+                    self._shared_retry_key = key
+                    QTimer.singleShot(0, lambda key=key: self._retry_shared(key))
             return
         self._future = future
         future.add_done_callback(self._done.emit)
+
+    def _retry_shared(self, key: tuple) -> None:
+        if not self._closed and self._shared_retry_key == key:
+            self.retry_ready.emit()  # Actual scene supplies its latest, not a stored rejected frame.
 
     @Slot(object)
     def _finish(self, future: Future) -> None:
