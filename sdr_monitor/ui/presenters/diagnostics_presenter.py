@@ -22,6 +22,7 @@ class DiagnosticsPresenter(QObject):
         super().__init__(parent)
         self._use_cases = use_cases
         self._closed = False
+        self._shutdown_complete = False
         self._task_pending = False
         self.refresh()
 
@@ -46,9 +47,18 @@ class DiagnosticsPresenter(QObject):
         if not self._closed:
             self.snapshot_changed.emit(self._use_cases.report_error(summary, reason, recommendation, detail))
 
-    def shutdown(self) -> None:
+    def prepare_shutdown(self) -> None:
         self._closed = True
+
+    def shutdown(self) -> None:
+        self.prepare_shutdown()
+        self.finish_shutdown()
+
+    def finish_shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
         self._use_cases.shutdown()
+        self._shutdown_complete = True
 
     def _submit(self, operation: Any, on_success: Any) -> None:
         if self._closed or self._task_pending:

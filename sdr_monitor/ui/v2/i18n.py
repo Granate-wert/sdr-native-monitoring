@@ -1726,6 +1726,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "shell.close_requires_stop": MappingProxyType(
             {UiLocale.RU: "Закрытие требует завершить активную операцию", UiLocale.EN: "Close requires the active operation to finish"}
         ),
+        "shell.close.pending": MappingProxyType({UiLocale.RU: "Завершение работы: {detail}", UiLocale.EN: "Closing: {detail}"}),
+        "shell.close.timeout": MappingProxyType({UiLocale.RU: "Завершение занимает больше времени; ресурсы ещё заняты: {detail}", UiLocale.EN: "Cleanup is taking longer; resources remain owned: {detail}"}),
+        "shell.close.failed": MappingProxyType({UiLocale.RU: "Не удалось завершить работу: {detail}. Повторите закрытие для новой попытки.", UiLocale.EN: "Cleanup failed: {detail}. Close again to retry."}),
         "shell.context_inspector": MappingProxyType(
             {UiLocale.RU: "Контекстный инспектор", UiLocale.EN: "Context inspector"}
         ),

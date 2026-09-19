@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtCore import QSettings, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -99,6 +99,10 @@ class AppShellV2(QMainWindow):
         self._workspace_pages: dict[str, QWidget] = {}
         self._nav_buttons: dict[str, NavigationItem] = {}
         self._shutdown_port_names: set[str] = set()
+        self._close_started = False
+        self._close_timer = QTimer(self)
+        self._close_timer.setInterval(25)
+        self._close_timer.timeout.connect(self._poll_close)
         self._active_workspace_id = self._context.initial_workspace_id
         self._inspector_workspace_id: str | None = None
         self._navigation_expanded = False
@@ -271,18 +275,68 @@ class AppShellV2(QMainWindow):
         if self._is_closed:
             event.accept()
             return
-        if any(not port.can_close() for port in self._context.close_ports):
+        if not self._close_started and any(not port.can_close() for port in self._context.close_ports):
+            self._status_bar.show()
             self._status_message.set_value(text("shell.close_requires_stop"))
             event.ignore()
             return
         for port in self._context.close_ports:
             if port.name not in self._shutdown_port_names:
-                port.shutdown()
+                if port.request_shutdown is not None:
+                    self._close_started = True
+                    self._root.setEnabled(False)
+                    try:
+                        state = port.request_shutdown()
+                    except Exception as error:
+                        self._show_close_state("failed", str(error))
+                        event.ignore()
+                        return
+                    if state.phase != "complete":
+                        self._show_close_state(state.phase, state.detail)
+                        if state.phase in {"pending", "timeout"}:
+                            self._close_timer.start()
+                        event.ignore()
+                        return
+                else:
+                    try:
+                        port.shutdown()
+                    except Exception as error:
+                        self._show_close_state("failed", str(error))
+                        event.ignore()
+                        return
                 self._shutdown_port_names.add(port.name)
+        self._close_timer.stop()
         self._hide_narrow_inspector_drawer()
         self._save_settings()
         self._is_closed = True
         event.accept()
+
+    def _show_close_state(self, phase: str, detail: str) -> None:
+        self._status_bar.show()  # Analyzer normally hides the navigation status.
+        key = "shell.close." + (phase if phase in {"pending", "timeout", "failed"} else "failed")
+        self._status_message.set_value(text(key, self._locale, detail=detail))
+
+    def _poll_close(self) -> None:
+        for port in self._context.close_ports:
+            if port.name in self._shutdown_port_names:
+                continue
+            if port.poll_shutdown is None:
+                break
+            try:
+                state = port.poll_shutdown()
+            except Exception as error:
+                self._close_timer.stop()
+                self._show_close_state("failed", str(error))
+                return
+            if state.phase != "complete":
+                self._show_close_state(state.phase, state.detail)
+                if state.phase == "failed":
+                    self._close_timer.stop()  # Retry requires another explicit Close.
+                return
+            self._shutdown_port_names.add(port.name)
+            break  # Request the next owner through closeEvent before polling it.
+        self._close_timer.stop()
+        self.close()  # Every active owner acknowledged; finish settings/Qt close.
 
     def _build_shell(self) -> None:
         self.setWindowTitle(text("shell.title"))

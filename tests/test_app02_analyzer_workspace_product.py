@@ -77,6 +77,7 @@ class AnalyzerWorkspaceProductTests(unittest.TestCase):
             self.presenter.stop()
             self.wait(lambda: not self.live.is_running() and not self.composition.view_model.state.busy)
         self.shell.close()
+        self.wait(lambda: self.shell._is_closed)
         self.composition.shutdown()
         self.shell.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

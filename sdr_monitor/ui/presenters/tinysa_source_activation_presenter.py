@@ -81,6 +81,7 @@ class TinySaSourceActivationPresenter(QObject):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tinysa-source")
         self._pending = False
         self._closed = False
+        self._shutdown_complete = False
         self._operations_started = 0
         self._operations_rejected = 0
         self._operation_failures = 0
@@ -136,11 +137,18 @@ class TinySaSourceActivationPresenter(QObject):
     def compose_selected(self) -> None:
         self._submit("compose", self._use_cases.compose_selected)
 
-    def shutdown(self) -> None:
-        if self._closed:
-            return
+    def prepare_shutdown(self) -> None:
         self._closed = True
+
+    def shutdown(self) -> None:
+        self.prepare_shutdown()
+        self.finish_shutdown()
+
+    def finish_shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
         self._executor.shutdown(wait=True, cancel_futures=True)
+        self._shutdown_complete = True
 
     def _submit(self, kind: str, operation: object) -> None:
         if self._closed:

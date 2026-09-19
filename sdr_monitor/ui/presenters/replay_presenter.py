@@ -26,6 +26,8 @@ class ReplayPresenter(QObject):
         self._use_cases = use_cases
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-replay")
         self._closed = False
+        self._shutdown_complete = False
+        self._shutdown_service_complete = False
         self._control_pending = False
         self._reprocess_pending = False
         self._cancel_pending = False
@@ -75,13 +77,21 @@ class ReplayPresenter(QObject):
         finally:
             self._cancel_pending = False
 
-    def shutdown(self) -> None:
-        if self._closed:
-            return
+    def prepare_shutdown(self) -> None:
         self._closed = True
-        shutdown = self._executor.submit(self._use_cases.shutdown)
-        shutdown.result()
+
+    def shutdown(self) -> None:
+        self.prepare_shutdown()
+        self.finish_shutdown()
+
+    def finish_shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
+        if not self._shutdown_service_complete:
+            self._executor.submit(self._use_cases.shutdown).result()
+            self._shutdown_service_complete = True
         self._executor.shutdown(wait=True, cancel_futures=True)
+        self._shutdown_complete = True
 
     def _frame_or_position(self, result: tuple[Any | None, ReplayPosition]) -> None:
         frame, position = result

@@ -55,6 +55,12 @@ class SweepPresenter(QObject):
     def export_result(self, result: SweepResult, output_path: Path) -> None:
         self._submit_control(lambda: self._use_cases.export_result(result, output_path), self.export_ready.emit)
 
+    def prepare_shutdown(self) -> None:
+        self._closing = True
+
+    def finish_shutdown(self) -> None:
+        self.shutdown()  # No Qt timers/widgets; existing retryable worker cleanup.
+
     def shutdown(self) -> None:
         if self._closed:
             return

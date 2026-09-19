@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..design.icons import V2IconId
 from ..i18n import text
+from .close_lifecycle import CloseState
 
 WorkspaceFactory = Callable[[], QWidget]
 
@@ -57,12 +58,20 @@ class ClosePort:
     name: str
     can_close: Callable[[], bool]
     shutdown: Callable[[], None]
+    request_shutdown: Callable[[], CloseState] | None = None
+    poll_shutdown: Callable[[], CloseState] | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("close port name must not be blank")
         if not callable(self.can_close) or not callable(self.shutdown):
             raise TypeError("close port callbacks must be callable")
+        if (self.request_shutdown is None) != (self.poll_shutdown is None):
+            raise ValueError("async close requires both request and poll callbacks")
+        if self.request_shutdown is not None and (
+            not callable(self.request_shutdown) or not callable(self.poll_shutdown)
+        ):
+            raise TypeError("async close callbacks must be callable")
 
 
 @dataclass(frozen=True, slots=True)

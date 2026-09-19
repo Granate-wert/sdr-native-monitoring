@@ -199,7 +199,21 @@ class DeferredTinySaSourceActivationViewModel:
         presenter.compose_selected()
         return True
 
-    def dispose(self) -> None:
+    def prepare_shutdown(self):
+        """Quiesce an already-created presenter; never instantiate on close."""
+        presenter = self._presenter
+        if presenter is None:
+            self.dispose(shutdown_presenter=False)
+            return None
+        prepare = getattr(presenter, "prepare_shutdown", None)
+        finish = getattr(presenter, "finish_shutdown", None)
+        if not callable(prepare) or not callable(finish):
+            raise TypeError("presenter has no split shutdown contract")
+        prepare()
+        self.dispose(shutdown_presenter=False)
+        return finish
+
+    def dispose(self, *, shutdown_presenter: bool = True) -> None:
         if self._disposed:
             return
         self._disposed = True
@@ -210,7 +224,8 @@ class DeferredTinySaSourceActivationViewModel:
                     signal.disconnect(callback)
                 except (RuntimeError, TypeError, ValueError):
                     pass
-            presenter.shutdown()
+            if shutdown_presenter:
+                presenter.shutdown()
         self._listeners.clear()
         self._binding_listeners.clear()
 
@@ -389,6 +404,17 @@ class TinySaAnalyzerViewModel:
         """Invoke the external presenter's explicit shutdown once composition closes."""
 
         self._binding.presenter.shutdown()
+
+    def prepare_shutdown(self):
+        """Return cleanup of the bound owner without any serial operation."""
+        presenter = self._binding.presenter
+        prepare = getattr(presenter, "prepare_shutdown", None)
+        finish = getattr(presenter, "finish_shutdown", None)
+        if not callable(prepare) or not callable(finish):
+            raise TypeError("tinySA analyzer has no split shutdown contract")
+        prepare()
+        self.dispose()
+        return finish
 
     def _connections(
         self,

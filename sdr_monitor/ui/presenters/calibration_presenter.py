@@ -25,6 +25,7 @@ class CalibrationPresenter(QObject):
         self._use_cases = use_cases
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-calibration")
         self._closed = False
+        self._shutdown_complete = False
 
     def refresh(self) -> None:
         self._submit(self._use_cases.list_profiles, self.profiles_changed.emit)
@@ -50,11 +51,18 @@ class CalibrationPresenter(QObject):
     def clear_active(self) -> None:
         self._submit(self._use_cases.clear_active, lambda _unused: self.active_changed.emit(None))
 
-    def shutdown(self) -> None:
-        if self._closed:
-            return
+    def prepare_shutdown(self) -> None:
         self._closed = True
+
+    def shutdown(self) -> None:
+        self.prepare_shutdown()
+        self.finish_shutdown()
+
+    def finish_shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
         self._executor.shutdown(wait=True, cancel_futures=True)
+        self._shutdown_complete = True
 
     def _finalized(self, result: tuple[CalibrationProfile, tuple[CalibrationProfile, ...]]) -> None:
         profile, profiles = result

@@ -219,7 +219,8 @@ class LivePresenter(QObject):
             raise RuntimeError("Live presentation worker is closing")
         return self._executor.submit(operation)
 
-    def shutdown(self, timeout_s: float = 5.0) -> None:
+    def prepare_shutdown(self) -> None:
+        """GUI quiesce only; finish_shutdown owns potentially blocking cleanup."""
         if self._closed:
             return
         self._closing = True
@@ -229,6 +230,17 @@ class LivePresenter(QObject):
             self._poll_timer.stop()
             self._poll_started = False
             self._shutdown_presentation_complete = True
+
+    def shutdown(self, timeout_s: float = 5.0) -> None:
+        self.prepare_shutdown()
+        self.finish_shutdown(timeout_s)
+
+    def finish_shutdown(self, timeout_s: float = 5.0) -> None:
+        """Run on the lifecycle worker after GUI quiesce, never on its executor."""
+        if self._closed:
+            return
+        if not self._shutdown_presentation_complete:
+            raise RuntimeError("Live must be quiesced on GUI before cleanup")
         # Stop the native stream before waiting for queued operations.  The
         # service owns cancellation/join semantics, so no worker survives a
         # closed Qt shell merely because it was blocked in a device call.

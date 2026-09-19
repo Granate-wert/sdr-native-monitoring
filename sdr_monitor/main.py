@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 from collections.abc import Mapping
@@ -209,7 +210,14 @@ def _run_offscreen_shell(*, default_composition: bool) -> dict[str, object]:
             automatic_discovery_pending = bool(shell._context.automatic_discovery_enabled)
             live_running = bool(services.live_sdr.is_running())
             shell.close()
-            app.processEvents()
+            # V2 acknowledges cleanup asynchronously; never destroy its owners
+            # after just one event turn. This bounded wait is smoke-only.
+            close_deadline = time.monotonic() + 10.0
+            while not shell._is_closed and time.monotonic() < close_deadline:
+                app.processEvents()
+                time.sleep(.001)
+            if not shell._is_closed:
+                raise RuntimeError("offscreen shell cleanup did not acknowledge within 10 seconds")
             closed = not shell.isVisible()
             shell.deleteLater()
             app.processEvents()

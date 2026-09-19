@@ -159,7 +159,21 @@ class DeferredReplayViewModel:
         presenter.cancel_reprocess()
         return True
 
-    def dispose(self) -> None:
+    def prepare_shutdown(self):
+        """Quiesce an already-created presenter; never instantiate on close."""
+        presenter = self._presenter
+        if presenter is None:
+            self.dispose(shutdown_presenter=False)
+            return None
+        prepare = getattr(presenter, "prepare_shutdown", None)
+        finish = getattr(presenter, "finish_shutdown", None)
+        if not callable(prepare) or not callable(finish):
+            raise TypeError("presenter has no split shutdown contract")
+        prepare()
+        self.dispose(shutdown_presenter=False)
+        return finish
+
+    def dispose(self, *, shutdown_presenter: bool = True) -> None:
         if self._disposed:
             return
         self._disposed = True
@@ -170,7 +184,8 @@ class DeferredReplayViewModel:
                     signal.disconnect(callback)
                 except (RuntimeError, TypeError, ValueError):
                     pass
-            presenter.shutdown()
+            if shutdown_presenter:
+                presenter.shutdown()
         self._listeners.clear()
 
     def _ready_presenter(self) -> ReplayPresenterPort | None:

@@ -13,6 +13,7 @@ from .view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewStat
 from .workspaces.analyzer import analyzer_workspace_definition
 
 from .shell.contracts import ClosePort, V2ShellContext
+from .shell.close_lifecycle import CloseLifecycle, CloseState
 from .shell.placeholders import default_workspace_definitions
 from .state.live_view_state import LiveAction
 from .view_models.calibration_view_model import CalibrationProfilePresenterPort, CalibrationProfileViewModel
@@ -117,6 +118,7 @@ class V2LiveProductComposition:
         sweep_presenter: SweepPresenterLifecyclePort | None = None,
         analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
         projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
+        async_shutdown: bool = False,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
         diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
         replay_presenter_factory: ReplayPresenterFactory | None = None,
@@ -160,6 +162,7 @@ class V2LiveProductComposition:
         else:
             raise ValueError("tinySA V2 requires both deferred activation and analyzer factories")
         self._is_shutdown = False
+        self.close_lifecycle = CloseLifecycle(self._prepare_async_shutdown) if async_shutdown else None
         self._presentation_disposed = False
         live_definition = live_workspace_definition(self.view_model)
         sweep_definition = None if self.sweep_view_model is None else sweep_workspace_definition(self.sweep_view_model)
@@ -216,6 +219,8 @@ class V2LiveProductComposition:
                     name="live-presenter",
                     can_close=self.can_close,
                     shutdown=self.shutdown,
+                    request_shutdown=self.request_shutdown if async_shutdown else None,
+                    poll_shutdown=self.poll_shutdown if async_shutdown else None,
                 ),
             ),
             automatic_discovery_enabled=False,
@@ -239,10 +244,62 @@ class V2LiveProductComposition:
         analyzer_can_close = self.analyzer_presenter is None or self.analyzer_presenter.can_close()
         return live_can_close and sweep_can_close and calibration_can_close and diagnostics_can_close and replay_can_close and tinysa_can_close and analyzer_can_close
 
+    def request_shutdown(self) -> CloseState:
+        assert self.close_lifecycle is not None
+        if self.close_lifecycle.state.phase == "idle" and not self.can_close():
+            return CloseState("failed", "Stop must acknowledge before application close")
+        return self.close_lifecycle.request()
+
+    def poll_shutdown(self) -> CloseState:
+        assert self.close_lifecycle is not None
+        state = self.close_lifecycle.poll()
+        if state.phase == "complete":
+            self._is_shutdown = True
+        return state
+
+    def _prepare_async_shutdown(self) -> tuple[tuple[str, Callable[[], None]], ...]:
+        """GUI-only phase; no device operations, waits or deferred factories."""
+        tasks: list[tuple[str, Callable[[], None]]] = []
+        for name, presenter in (("sweep-reservation", self._sweep_presenter),
+                                ("analyzer", self.analyzer_presenter),
+                                ("live", self._presenter),
+                                ("calibration", self._calibration_presenter)):
+            if presenter is not None:
+                prepare = getattr(presenter, "prepare_shutdown", None)
+                finish = getattr(presenter, "finish_shutdown", None)
+                if not callable(prepare) or not callable(finish):
+                    raise TypeError(f"{name} has no split shutdown contract")
+                prepare()
+                tasks.append((name, finish))
+        for name, model in (("diagnostics", self.diagnostics_view_model),
+                            ("replay", self.replay_view_model),
+                            ("tinysa-activation", None if self._tinysa is None else self._tinysa.activation_view_model),
+                            ("tinysa-analyzer", None if self._tinysa is None else self._tinysa.analyzer_view_model)):
+            if model is not None:
+                finish = model.prepare_shutdown()
+                if finish is not None:
+                    tasks.append((name, finish))
+        if self._unsubscribe_projection is not None:
+            self._unsubscribe_projection()
+        if self.spectrum_projector is not None:
+            self.spectrum_projector.dispose()
+        for model in (self.analyzer_view_model, self.view_model, self.sweep_view_model,
+                      self.calibration_view_model):
+            if model is not None:
+                model.dispose()
+        self._presentation_disposed = True
+        return tuple(tasks)
+
     def shutdown(self) -> None:
         """Release presentation subscriptions, then invoke the presenter's existing shutdown."""
 
         if self._is_shutdown:
+            return
+        if self.close_lifecycle is not None:
+            state = self.request_shutdown()
+            if state.phase != "complete":
+                raise RuntimeError("asynchronous shutdown requires terminal acknowledgement")
+            self._is_shutdown = True
             return
         errors: list[Exception] = []
 
@@ -299,6 +356,7 @@ def compose_v2_live_product(
     sweep_presenter: SweepPresenterLifecyclePort | None = None,
     analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
     projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
+    async_shutdown: bool = False,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
     diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
     replay_presenter_factory: ReplayPresenterFactory | None = None,
@@ -313,6 +371,7 @@ def compose_v2_live_product(
         sweep_presenter=sweep_presenter,
         analyzer_presenter=analyzer_presenter,
         projection_submit=projection_submit,
+        async_shutdown=async_shutdown,
         calibration_presenter=calibration_presenter,
         diagnostics_presenter_factory=diagnostics_presenter_factory,
         replay_presenter_factory=replay_presenter_factory,

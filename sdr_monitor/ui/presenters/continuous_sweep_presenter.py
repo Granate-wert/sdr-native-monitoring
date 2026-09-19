@@ -199,6 +199,27 @@ class ContinuousSweepPresenter(QObject):
     def render_metrics(self, *, now_s: float | None = None) -> RenderPerformanceSnapshot:
         return self._render_metrics.snapshot(time.monotonic() if now_s is None else now_s)
 
+    def prepare_shutdown(self) -> None:
+        """V2 closes only after explicit Stop and its terminal acknowledgement."""
+        if self._closed:
+            return
+        if not self.can_close():
+            raise RuntimeError("continuous Sweep must acknowledge Stop before close")
+        self._closing = True
+        self._timer.stop()
+
+    def finish_shutdown(self) -> None:
+        """Idle, quiesced close; no Qt timer or finish handler on this worker."""
+        if self._closed:
+            return
+        if not self._closing:
+            raise RuntimeError("Sweep must be quiesced before cleanup")
+        try:
+            self._service.close()
+        finally:
+            self._stop_executor.shutdown(wait=True)
+        self._closed = True
+
     def shutdown(self) -> None:
         if self._closed:
             return

@@ -96,6 +96,7 @@ def build_v2_shell(services=None):
     composition = compose_v2_live_product(
         live_presenter,
         projection_submit=live_presenter.submit_display_task,
+        async_shutdown=True,
         analyzer_presenter=analyzer_presenter,
         sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep, analyzer=analyzer)),
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),
