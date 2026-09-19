@@ -1,7 +1,7 @@
 """The memory observation harness must expose and bound its own retention."""
 import unittest
 
-from tests.ui_v2.run_app05_memory_inventory import MemorySamples
+from tests.ui_v2.run_app05_memory_inventory import MemorySamples, should_sample
 
 
 def sample(index):
@@ -48,6 +48,24 @@ class MemorySamplerTests(unittest.TestCase):
             recorder.append(sample(index))
         self.assertEqual(len(recorder.rows), 100)
         self.assertIsNone(recorder.summary()["capacity"])
+
+    def test_process_only_does_not_report_unmeasured_arrays_as_zero(self):
+        recorder = MemorySamples(2)
+        for index in range(3):
+            recorder.append({**sample(index), "inventory": None})
+        summary = recorder.summary()
+        self.assertEqual(summary["total_sampled"], 3)
+        self.assertEqual(summary["inventory_sampled"], 0)
+        for field in ("unique_array_peak", "ledger_peak_observed_reserved", "post_ack_reserved_peak"):
+            self.assertIsNone(summary[field])
+
+    def test_sampling_policy_preserves_first_phase_and_final_endpoints(self):
+        for mode in ("full", "process-only"):
+            self.assertTrue(all(should_sample(i, 1000, mode) for i in range(1000)))
+        self.assertEqual([i for i in range(1000) if should_sample(i, 1000, "checkpoints")],
+                         [0, 20, 100, 200, 300, 400, 500, 600, 700, 800, 900, 999])
+        with self.assertRaises(ValueError):
+            should_sample(0, 10, "skip-all")
 
     def test_invalid_capacity_rejected_before_starting_any_fixture(self):
         for capacity in (0, -1, True, 1.5, "32"):

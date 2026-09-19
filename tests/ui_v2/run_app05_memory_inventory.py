@@ -57,7 +57,8 @@ class MemorySamples:
         self.rows = deque(maxlen=capacity)
         self.total = 0
         self.phases = {}
-        self.peak_arrays = self.peak_observed_reserved = self.peak_reservations = 0
+        self.peak_arrays = self.peak_observed_reserved = self.peak_reservations = None
+        self.inventory_sampled = 0
         self.first_private = self.last_private = None
         # Fixed-size scalar history for long-run plateau checks, independent of
         # evidence-row capacity. Never retains frames, inventories or Qt objects.
@@ -78,14 +79,18 @@ class MemorySamples:
         if row["index"] % 100 == 0:
             self.checkpoints.append({"page": row["page"], **scalar})
         inventory = row["inventory"]
-        self.peak_arrays = max(self.peak_arrays, inventory["unique_array_bytes"])
+        if inventory is None:
+            return
+        self.inventory_sampled += 1
+        self.peak_arrays = max(self.peak_arrays or 0, inventory["unique_array_bytes"])
         ledger = inventory.get("allocation_budget") or {}
-        self.peak_observed_reserved = max(self.peak_observed_reserved, ledger.get("peak_bytes", 0))
-        self.peak_reservations = max(self.peak_reservations, ledger.get("reserved_bytes", 0))
+        self.peak_observed_reserved = max(self.peak_observed_reserved or 0, ledger.get("peak_bytes", 0))
+        self.peak_reservations = max(self.peak_reservations or 0, ledger.get("reserved_bytes", 0))
 
     def summary(self):
         return {"capacity": self.rows.maxlen, "total_sampled": self.total,
                 "retained": len(self.rows), "phases": self.phases,
+                "inventory_sampled": self.inventory_sampled,
                 "private_first": self.first_private, "private_last": self.last_private,
                 "unique_array_peak": self.peak_arrays,
                 "ledger_peak_observed_reserved": self.peak_observed_reserved,
@@ -94,8 +99,15 @@ class MemorySamples:
                 "timing_distribution_scope": "retained samples only"}
 
 
+def should_sample(index, frames, observation):
+    if observation not in ("full", "process-only", "checkpoints"):
+        raise ValueError("unknown observation mode")
+    return observation != "checkpoints" or index in (0, 20, frames - 1) or index % 100 == 0
+
+
 def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_allocations=False,
-        collect_endpoints=False):
+        collect_endpoints=False, observation="full"):
+    should_sample(0, frames, observation)  # reject before constructing any GUI
     recorder = MemorySamples(sample_capacity)
     app = QApplication.instance() or QApplication([])
     fixture = AnalyzerWorkspaceProductTests("runTest")
@@ -133,12 +145,14 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
             fixture.wait(lambda: fixture.composition.view_model.state.spectrum is frame
                          and fixture.presenter._preparation_future is None)
             fixture.wait(lambda: fixture.composition.spectrum_projector._future is None)
-            sampled = time.perf_counter()
-            inventory = fixture.composition.memory_snapshot(fixture.page)
-            sample_ms = (time.perf_counter() - sampled) * 1000
-            recorder.append({"index": index, "seconds": time.monotonic() - started,
-                         "page": fixture.shell.active_workspace_id, "sample_ms": sample_ms,
-                         **process_memory(), "inventory": asdict(inventory)})
+            if should_sample(index, frames, observation):
+                sampled = time.perf_counter()
+                inventory = (fixture.composition.memory_snapshot(fixture.page)
+                             if observation == "full" else None)
+                sample_ms = (time.perf_counter() - sampled) * 1000
+                recorder.append({"index": index, "seconds": time.monotonic() - started,
+                             "page": fixture.shell.active_workspace_id, "sample_ms": sample_ms,
+                             **process_memory(), "inventory": None if inventory is None else asdict(inventory)})
             page = fixture.shell.active_workspace_id
             if collect_endpoints and (index in (0, 20) or index == frames - 1):
                 before = process_memory()
@@ -160,6 +174,8 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
         return {"kind": "synthetic post-domain RTBW, not RF/FPS or long-soak acceptance",
                 "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                 "bins": bins, "power_bins": power_bins, "frames": frames,
+                "observation": observation,
+                "observation_scope": "Only diagnostic sampling changes; every pipeline frame and visibility transition still runs",
                 "sampling": recorder.summary(), "samples": list(recorder.rows),
                 "allocation_trace": traced_result,
                 "collection_endpoints": collection_endpoints,
@@ -180,6 +196,8 @@ if __name__ == "__main__":
     parser.add_argument("--sample-capacity", type=int, help="Keep only this many latest evidence rows; still sample every frame")
     parser.add_argument("--trace-allocations", action="store_true", help="Perturbing Python allocation attribution, not a timing/RSS baseline")
     parser.add_argument("--collect-endpoints", action="store_true", help="Diagnostic GC at first visibility phases and last frame only")
+    parser.add_argument("--observation", choices=("full", "process-only", "checkpoints"), default="full",
+                        help="Causal sampling isolation: full inventory+process, process every frame, or process checkpoints only")
     args = parser.parse_args()
     if (not 1 <= args.frames <= 10000 or not 2 <= args.bins <= 2_000_000
             or not 1 <= args.power_bins <= 64 or args.bins * args.power_bins > 8_388_608):
@@ -187,7 +205,8 @@ if __name__ == "__main__":
     if args.sample_capacity is not None and args.sample_capacity < 1:
         parser.error("sample capacity must be positive")
     output = run(args.frames, args.bins, args.power_bins, sample_capacity=args.sample_capacity,
-                 trace_allocations=args.trace_allocations, collect_endpoints=args.collect_endpoints)
+                 trace_allocations=args.trace_allocations, collect_endpoints=args.collect_endpoints,
+                 observation=args.observation)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
     samples = output["samples"]
