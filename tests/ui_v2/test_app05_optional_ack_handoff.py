@@ -160,6 +160,13 @@ class OptionalAckHandoffTests(unittest.TestCase):
     def test_short_worker_wait_rearms_only_remaining_start_to_start_period(self):
         self.density_deadline(overdue=False)
 
+    def test_density_deadline_uses_precise_timer_without_changing_image_period(self):
+        from PySide6.QtCore import Qt
+        overlay = self.f.page.visualization.spectrum_scene._persistence
+        self.assertEqual(overlay._timer.timerType(), Qt.TimerType.PreciseTimer)
+        self.assertTrue(overlay._timer.isSingleShot())
+        self.assertEqual(overlay._interval_ns, int(1_000_000_000 / 15.0))
+
     def test_overdue_worker_wait_does_not_add_a_new_density_period_after_ack(self):
         self.density_deadline(overdue=True)
 
