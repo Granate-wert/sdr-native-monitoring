@@ -3,7 +3,8 @@
 Synthetic/offscreen ONLY. Instrumentation perturbs timing. Requests identified
 by scalar id plus publication key; no frames/arrays/widgets retained. Missing
 or reordered stages are reported, not fabricated or filled from another frame.
-Use steady profile without viewport/page churn for queue attribution.
+Request-local delivery stamps distinguish re-projection after viewport/show.
+Navigation context is scalar timing, not proof of causation.
 """
 from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -47,10 +48,16 @@ class StageRecords:
         self.capacity = capacity
         self.frames = OrderedDict()
         self.requests = OrderedDict()
+        self.accepted_requests = OrderedDict()
         self.rows = deque(maxlen=capacity)
+        self.details = deque(maxlen=capacity)
         self.missing = self.reordered = 0
         self.projection_events = Counter()
         self.last_offer = None
+        self.last_visibility = None
+        self.last_show = None
+        self.last_viewport = None
+        self.viewport_changed_at = None
         self.lock = threading.RLock()
 
     def mark(self, identity, stage, when=None):
@@ -58,6 +65,11 @@ class StageRecords:
             return
         with self.lock:
             row = self.frames.setdefault(identity, {})
+            if stage == "coalesced":
+                # Same source may be prepared again after show. Never attach
+                # its earlier preparation to a later projection request.
+                row = self.frames[identity] = {name: row[name] for name in
+                    ("publish", "offer") if name in row}
             row.setdefault(stage, perf_counter() if when is None else when)
             while len(self.frames) > self.capacity:
                 self.frames.popitem(last=False)
@@ -78,7 +90,18 @@ class StageRecords:
                     if previous[0] == identity and previous[2] != request.viewport:
                         self.projection_events["same_source_new_viewport"] += 1
                 self.last_offer = signature
-            row = self.requests.setdefault((id(request), identity), {})
+            request_key = (id(request), identity, request.generation, request.viewport)
+            if stage == "projection_offer":
+                self.requests[request_key] = {}  # id reuse / explicit retry is a new offer
+            row = self.requests.setdefault(request_key, {})
+            if stage == "projection_offer":
+                # Copy scalar delivery stamps at offer, not at eventual ack:
+                # a later preparation of this source can already be in flight.
+                row["source_stages"] = {name: value for name, value in
+                    self.frames.get(identity, {}).items() if name in
+                    ("publish", "offer", "coalesced", "prepare_dispatch",
+                     "prepare_begin", "prepare_end", "delivered")}
+                row["geometry"] = (request.generation, request.viewport)
             row.setdefault(stage, perf_counter())
             while len(self.requests) > self.capacity:
                 self.requests.popitem(last=False)
@@ -87,12 +110,37 @@ class StageRecords:
         identity = key(request.traces[0][1].source_frame) if request.traces else None
         with self.lock:
             if identity in self.frames:
-                self.frames[identity].update(self.requests.get((id(request), identity), {}))
-                self.frames[identity]["applied"] = perf_counter()
+                request_row = self.requests.get(
+                    (id(request), identity, request.generation, request.viewport), {})
+                # Missing stages must not survive from an earlier accepted
+                # viewport of the same source and look like a complete witness.
+                row = dict(request_row.get("source_stages", {}))
+                row.update({name: value for name, value in request_row.items()
+                            if name != "source_stages"})
+                row["applied"] = perf_counter()
+                self.accepted_requests[identity] = row
+                self.accepted_requests.move_to_end(identity)
+                while len(self.accepted_requests) > self.capacity:
+                    self.accepted_requests.popitem(last=False)
+
+    def visibility(self, active, when=None):
+        when = perf_counter() if when is None else when
+        with self.lock:
+            if self.last_visibility != bool(active):
+                self.last_visibility = bool(active)
+                if active:
+                    self.last_show = when
+
+    def viewport(self, viewport, when=None):
+        when = perf_counter() if when is None else when
+        with self.lock:
+            if self.last_viewport != viewport:
+                self.last_viewport = viewport
+                self.viewport_changed_at = when
 
     def painted(self, identity, when):
         with self.lock:
-            row = self.frames.get(identity, {})
+            row = self.accepted_requests.get(identity, self.frames.get(identity, {}))
             names = ("publish", "offer", "coalesced", "prepare_begin", "prepare_end",
                      "delivered", "projection_offer", "projection_begin", "projection_end", "applied")
             if not all(name in row for name in names):
@@ -102,8 +150,14 @@ class StageRecords:
             if any(b < a for a, b in zip(stamps, stamps[1:])):
                 self.reordered += 1
                 return
-            self.rows.append({"token": identity[0], "total": (when - stamps[0]) * 1000,
-                **{name: (b - a) * 1000 for name, a, b in zip(names[1:] + ("paint",), stamps, stamps[1:])}})
+            durations = {"token": identity[0], "total": (when - stamps[0]) * 1000,
+                **{name: (b - a) * 1000 for name, a, b in zip(names[1:] + ("paint",), stamps, stamps[1:])}}
+            self.rows.append(durations)
+            self.details.append(dict(identity=identity, durations=durations.copy(),
+                geometry=row.get("geometry"), visible=self.last_visibility,
+                since_show_ms=None if self.last_show is None else (when - self.last_show) * 1000,
+                since_viewport_ms=None if self.viewport_changed_at is None else
+                    (when - self.viewport_changed_at) * 1000))
 
 
 def main():
@@ -136,13 +190,22 @@ def main():
                 records.painted(identity, when)
         return painted
 
-    def accept_done(value, scene, result):
-        with records.lock:
-            records.projection_events["accept_callback"] += 1
-            records.projection_events["accept_current" if scene._projection_current(result.request)
-                                      else "accept_obsolete_geometry"] += 1
-        if result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
-            records.accepted(result.request)
+    def accept_projection(original):
+        @wraps(original)
+        def invoke(scene, result):
+            current = scene._projection_current(result.request)
+            began = thread_time()
+            value = original(scene, result)
+            cpu["accept"].append((thread_time() - began) * 1000)
+            with records.lock:
+                records.projection_events["accept_callback"] += 1
+                records.projection_events["accept_current" if current else "accept_obsolete_geometry"] += 1
+            # An obsolete viewport can reference the already displayed source.
+            # Source equality alone is not evidence that this request applied.
+            if current and result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
+                records.accepted(result.request)
+            return value
+        return invoke
 
     def dispatching(port):
         if (not port._closed and not port._suspended and port._future is None
@@ -196,7 +259,11 @@ def main():
         instrument(projection, "project_spectrum", wrap(
             before=lambda request, **kwargs: records.request(request, "projection_begin"),
             after=lambda result, request, **kwargs: records.request(request, "projection_end"), cpu_name="project"))
-        instrument(SpectrumScene, "_accept_projection", wrap(after=accept_done, cpu_name="accept"))
+        instrument(SpectrumScene, "_accept_projection", accept_projection)
+        instrument(SpectrumScene, "set_presentation_active", wrap(
+            before=lambda scene, active: records.visibility(active)))
+        instrument(SpectrumScene, "_request_projection", wrap(
+            before=lambda scene, *_: records.viewport(scene._viewport())))
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
@@ -208,7 +275,9 @@ def main():
                                       ("dispatch_to_prepare_begin", "prepare_dispatch", "prepare_begin"),
                                       ("project_end_to_gui_callback", "projection_end", "projection_callback"),
                                       ("gui_callback_to_applied", "projection_callback", "applied"))
-            if (values := [(entry[stop] - entry[start]) * 1000 for identity, entry in records.frames.items()
+            if (values := [(entry[stop] - entry[start]) * 1000 for identity, entry in
+                           (records.accepted_requests if start.startswith("projection") or start == "projection_callback"
+                            else records.frames).items()
                            if identity[0] > 100 and start in entry and stop in entry and entry[stop] >= entry[start]])},
         projection_events=dict(records.projection_events),
         projection_wait_ms={name: dict(zip(("p50", "p95", "p99", "max"), map(float,
@@ -218,6 +287,8 @@ def main():
             if (values := [(entry[stop] - entry[start]) * 1000 for entry in records.requests.values()
                            if start in entry and stop in entry and entry[stop] >= entry[start]])},
         missing=records.missing, reordered=records.reordered,
+        paired_slow_frames=sorted(records.details, key=lambda row: row["durations"]["total"], reverse=True)[:40],
+        navigation_scope="Latest visibility and viewport at paint; source/delivery stages copied per exact request at offer; bounded scalar witnesses only",
         cpu_scope="Windows thread CPU clock is quantized (observed15.625ms); aggregated retained-call totals only, NOT per-call CPU latency percentiles",
         cpu_ms={name: dict(calls=len(data), total=sum(data), mean=sum(data) / len(data))
                 for name, data in cpu.items() if data},

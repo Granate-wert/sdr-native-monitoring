@@ -99,6 +99,61 @@ class StageObserverTests(unittest.TestCase):
         self.assertEqual(records.projection_events["same_source_new_viewport"], 1)
         self.assertEqual(records.projection_events["new_source"], 1)
 
+    def test_request_keeps_its_delivery_when_same_source_is_prepared_again(self):
+        records = OBSERVER.StageRecords()
+        self.frame_stages(records)
+        old = request()
+        with patch.object(OBSERVER, "perf_counter", side_effect=(6, 7, 8, 9)):
+            records.request(old, "projection_offer")
+            records.mark((1, "rtbw", 1), "coalesced", 20)
+            records.mark((1, "rtbw", 1), "prepare_begin", 21)
+            records.mark((1, "rtbw", 1), "prepare_end", 22)
+            records.mark((1, "rtbw", 1), "delivered", 23)
+            records.request(old, "projection_begin")
+            records.request(old, "projection_end")
+            records.accepted(old)
+        records.painted((1, "rtbw", 1), 10)
+        self.assertEqual(records.rows[0]["prepare_begin"], 1000)
+        self.assertEqual(records.frames[(1, "rtbw", 1)]["prepare_begin"], 21)
+        self.assertEqual(records.reordered, 0)
+
+    def test_incomplete_new_viewport_cannot_borrow_previous_accepted_stages(self):
+        records = OBSERVER.StageRecords()
+        self.frame_stages(records)
+        first, second = request(), request()
+        second.viewport = (0., 2., 100)
+        with patch.object(OBSERVER, "perf_counter", side_effect=(6, 7, 8, 9, 10, 11)):
+            for stage in ("projection_offer", "projection_begin", "projection_end"):
+                records.request(first, stage)
+            records.accepted(first)
+            records.request(second, "projection_offer")
+            records.accepted(second)
+        records.painted((1, "rtbw", 1), 12)
+        self.assertEqual(records.missing, 1)
+        self.assertFalse(records.rows)
+
+    def test_navigation_and_details_are_bounded_scalar_witnesses(self):
+        records = OBSERVER.StageRecords(2)
+        for token in range(5):
+            self.frame_stages(records, (token, "rtbw", 1))
+            value = request(token)
+            with patch.object(OBSERVER, "perf_counter", side_effect=(6, 7, 8, 9)):
+                for stage in ("projection_offer", "projection_begin", "projection_end"):
+                    records.request(value, stage)
+                records.accepted(value)
+            records.visibility(False, 8)
+            records.visibility(True, 9)
+            records.visibility(True, 9.5)  # redundant signal must not reset show time
+            records.viewport((0., 1., 100), 8)
+            records.painted((token, "rtbw", 1), 10)
+        self.assertEqual(len(records.accepted_requests), 2)
+        self.assertEqual(len(records.details), 2)
+        detail = records.details[-1]
+        self.assertEqual(detail["identity"], (4, "rtbw", 1))
+        self.assertEqual(detail["since_show_ms"], 1000)
+        self.assertEqual(detail["since_viewport_ms"], 2000)
+        self.assertEqual(detail["geometry"], (1, (0., 1., 100)))
+
 
 if __name__ == "__main__":
     unittest.main()
