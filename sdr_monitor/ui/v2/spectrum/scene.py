@@ -210,7 +210,7 @@ class SpectrumScene(QWidget):
         self._persistence.worker_settled(request.persistence)
         # Pending trace refreshes may refer to the just-accepted smoothing
         # base. Refresh that ONE slot before dispatch, never map it twice.
-        if self._projector is not None and self._projector.has_pending:
+        if request.persistence is not None and self._projector is not None and self._projector.has_pending:
             self._request_persistence_projection()
             self.commit_projection()
 

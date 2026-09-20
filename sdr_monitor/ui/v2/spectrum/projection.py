@@ -376,7 +376,8 @@ class SpectrumProjector(QObject):
             if self._allocation is not None:
                 self._allocation.close()  # Also covers cancellation before worker execution.
                 self._allocation = None
-            self.settled.emit(request)
+            if not self._closed:
+                self.settled.emit(request)
             self._future = self._active = None
             self._active_storage = {}
             self._active_reserve = 0
