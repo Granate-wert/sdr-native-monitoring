@@ -129,6 +129,42 @@ class ProjectionCancellationTests(unittest.TestCase):
         self.pump()
         self.assertEqual((delivered, failures, port.completed, port.cancelled), ([], [], 0, 1))
 
+    def test_backpressure_releases_at_gui_ack_even_with_pending_failure_or_cancel(self):
+        for outcome in ("success", "error", "cancel"):
+            with self.subTest(outcome=outcome):
+                worker = ManualWorker()
+                port = SpectrumProjector(worker.submit)
+                events = []
+                port.work_active_changed.connect(events.append)
+                first = request()
+                port.offer(first)
+                port.offer(replace(first, traces=request().traces))
+                if outcome == "cancel":
+                    port._cancel_active()
+                worker.finish(RuntimeError("injected") if outcome == "error" else None)
+                self.assertEqual(events, [True])  # worker done is NOT GUI ack
+                self.pump()
+                self.assertEqual(events, [True, False, True])
+                self.assertEqual(len(worker.jobs), 1)  # latest viewport still runs
+                worker.finish()
+                self.pump()
+                self.assertEqual(events, [True, False, True, False])
+                port.dispose()
+
+    def test_submit_failure_never_latches_backpressure(self):
+        def reject(_operation):
+            raise RuntimeError("worker rejected")
+
+        port = SpectrumProjector(reject)
+        events, errors = [], []
+        port.work_active_changed.connect(events.append)
+        port.failed.connect(lambda *_: errors.append(True))
+        port.offer(request())
+        self.assertEqual(events, [])
+        self.assertEqual(errors, [True])
+        self.assertIsNone(port._future)
+        port.dispose()
+
     def test_dispose_cooperatively_interrupts_real_running_batch(self):
         entered, release = threading.Event(), threading.Event()
         calls = []
