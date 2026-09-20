@@ -21,6 +21,17 @@ def reference(values, mode, logarithmic, maximum):
 
 
 class PersistenceMappingTests(unittest.TestCase):
+    def test_contiguous_integer_counts_and_wide_strided_rows_match_exactly(self):
+        for dtype in (np.uint16, np.uint32, np.uint64, np.float32, np.float64):
+            source = (np.arange(2 * 65539) % 37).astype(dtype)
+            for values in (source, source[::-1], source.reshape(2, -1)):
+                for logarithmic in (False, True):
+                    target = np.empty(values.shape, np.float32)
+                    expected = reference(values, contracts.DensityValueMode.COUNT, logarithmic, 36)
+                    contracts._map_density_values_into(values, value_mode=contracts.DensityValueMode.COUNT,
+                        logarithmic=logarithmic, count_maximum=36, out=target)
+                    np.testing.assert_array_equal(target.view(np.uint32), expected.view(np.uint32))
+
     def test_exact_bits_on_dense_sparse_missing_and_chunk_seams(self):
         rng = np.random.default_rng(193)
         for dtype in (np.float32, np.float64):

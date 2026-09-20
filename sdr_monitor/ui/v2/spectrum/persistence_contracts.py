@@ -219,7 +219,8 @@ def _map_density_values_into(
         for prefix in np.ndindex(values.shape[:-2]):
             for row in range(0, values.shape[-2], rows):
                 for column in range(0, values.shape[-1], _MAPPING_BATCH):
-                    index = (*prefix, slice(row, row + rows), slice(column, column + _MAPPING_BATCH))
+                    index: tuple[int | slice, ...] = (
+                        *prefix, slice(row, row + rows), slice(column, column + _MAPPING_BATCH))
                     _map_density_chunk(values[index], value_mode, logarithmic, count_maximum, out[index])
 
 
