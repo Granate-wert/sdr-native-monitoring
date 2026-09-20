@@ -25,7 +25,7 @@ class TerminalPresentationTests(unittest.TestCase):
     def wait(self, predicate):
         run_qt_until(predicate, 3)
 
-    def measurement(self):
+    def measurement(self, *, visual=False):
         self.select_and_apply()
         self.page.primary.click()
         self.wait(lambda: self.live.is_running() and not self.composition.view_model.state.busy)
@@ -41,8 +41,16 @@ class TerminalPresentationTests(unittest.TestCase):
         self.presenter.offer_snapshot_for_render(snapshot)
         scene = self.page.visualization.spectrum_scene
         pane = self.page.visualization.waterfall_pane
+        if visual:
+            scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
         self.wait(lambda: scene.displayed_frame is not None and scene._persistence.metrics.image_uploads > 0
                   and pane.history_rows > 0)
+        if visual:
+            frame = replace(frame, sequence=2, timestamp_ns=2)
+            snapshot = replace(snapshot, spectrum=frame, persistence=synthetic_persistence(frame, 32, 2, 2))
+            self.live._snapshot = snapshot
+            self.presenter.offer_snapshot_for_render(snapshot)
+            self.wait(lambda: scene._persistence._row_scratch is not None)
         self.page.primary.click()
         self.wait(lambda: not self.live.is_running() and not self.composition.view_model.state.busy)
         self.wait(lambda: self.composition.spectrum_projector._future is None)
@@ -150,10 +158,8 @@ class TerminalPresentationTests(unittest.TestCase):
         self.assert_payloads_released()
 
     def test_visual_buffers_and_destroyed_inspector_wrapper_release(self):
-        self.measurement()
+        self.measurement(visual=True)
         scene = self.page.visualization.spectrum_scene
-        scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
-        scene.set_persistence_logarithmic(False)
         density = weakref.ref(scene._persistence._latest_view.density)
         visual = weakref.ref(scene._persistence._visual_buffer)
         scratch = weakref.ref(scene._persistence._row_scratch)
@@ -226,7 +232,18 @@ class TerminalPresentationTests(unittest.TestCase):
             self.shell.close()
             self.wait(lambda: len(attempts) == 1)
             self.assertFalse(self.shell._is_closed)
+            after_owner_close = list(self.events)
             self.shell.close()
             self.wait(lambda: self.shell._is_closed)
         self.assert_payloads_released()
-        self.assertEqual(self.events, ["rtbw-start", "rtbw-stop"])
+        self.assertEqual(self.events, after_owner_close)
+
+    def test_early_release_is_rejected_without_mutating_measurement(self):
+        self.measurement()
+        before = self.page.visualization.spectrum_scene.latest_frame
+        for owner in (self.presenter, self.composition.analyzer_presenter,
+                      self.composition.view_model, self.composition.analyzer_view_model,
+                      self.composition.spectrum_projector):
+            with self.assertRaises(RuntimeError):
+                owner.release_presentation_after_shutdown()
+        self.assertIs(self.page.visualization.spectrum_scene.latest_frame, before)
