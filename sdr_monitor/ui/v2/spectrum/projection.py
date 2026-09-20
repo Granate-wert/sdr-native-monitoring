@@ -290,11 +290,23 @@ class SpectrumProjector(QObject):
             self._future = self._active = None
             self._active_storage = {}
             self._active_reserve = 0
-            # Release one latest preparation before dispatching a pending
-            # viewport. This acknowledgement is a fairness boundary, not a
-            # promise that every pending viewport has drained.
-            self.work_active_changed.emit(False)
-            self._dispatch()
+            # A newer prepared source already waiting must precede another
+            # preparation on the shared worker. Otherwise the two independent
+            # slots can lock into a permanent extra-frame queue after resize.
+            # Same-source viewport churn still releases one preparation first:
+            # waiting for ALL viewports to drain would starve fresh frames.
+            pending = self._pending
+            old_view = None if request is None else dict(request.traces).get(TraceKind.CURRENT)
+            new_view = None if pending is None else dict(pending.traces).get(TraceKind.CURRENT)
+            newer_source = (old_view is not None and new_view is not None
+                            and old_view.source_frame is not new_view.source_frame)
+            if newer_source and not self._closed and not self._suspended:
+                self._dispatch()
+                if self._future is None:  # refusal/error must not latch backpressure
+                    self.work_active_changed.emit(False)
+            else:
+                self.work_active_changed.emit(False)
+                self._dispatch()
             if self._retry_capacity and not self._closed:
                 self._retry_capacity = False
                 self.retry_ready.emit()  # Scene reoffers latest, no retained backlog.

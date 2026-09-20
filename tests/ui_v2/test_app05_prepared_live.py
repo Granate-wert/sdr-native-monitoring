@@ -151,6 +151,50 @@ class PreparedLiveTests(unittest.TestCase):
         self.assertEqual(f.live.latest_snapshot().applied.applied.gain_db, 20)
         f.presenter.set_projection_in_flight(False)
 
+    def test_prepared_pending_source_precedes_next_preparation_on_actual_worker(self):
+        from sdr_monitor.ui.v2.spectrum import projection
+        from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
+        f = self.fixture
+        first, second, third = (measurement(f, sequence) for sequence in (1, 2, 3))
+        prepared_second = f.presenter._snapshot_preparer(second)
+        entered, release = threading.Event(), threading.Event()
+        original_prepare = f.presenter._snapshot_preparer
+        original_project = projection.project_spectrum
+        operations = []
+
+        def preparing(snapshot):
+            operations.append(("prepare", snapshot.spectrum.sequence))
+            return original_prepare(snapshot)
+
+        def projecting(request, **kwargs):
+            sequence = request.traces[0][1].source_frame.spectrum.sequence
+            operations.append(("project", sequence))
+            if sequence == 1:
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("pending prepared source barrier")
+            return original_project(request, **kwargs)
+
+        port = f.composition.spectrum_projector
+        with patch.object(projection, "project_spectrum", side_effect=projecting), \
+             patch.object(f.presenter, "_snapshot_preparer", side_effect=preparing):
+            try:
+                revision = f.presenter._control_revision
+                f.presenter._offer_preparation(first, revision)
+                f.wait(entered.is_set)
+                # Recreate a prepared source arriving behind an earlier viewport
+                # task, as can happen after showing/resizing a running scene.
+                port.offer(replace(port._active,
+                    traces=((TraceKind.CURRENT, prepared_second.prepared_spectrum.view),),
+                    prepared=prepared_second.prepared_spectrum))
+                f.presenter._offer_preparation(third, revision)
+                release.set()
+                f.wait(lambda: ("prepare", 3) in operations)
+                f.wait(lambda: port._future is None and f.presenter._preparation_future is None)
+                self.assertLess(operations.index(("project", 2)), operations.index(("prepare", 3)))
+            finally:
+                release.set()
+
     def test_owner_close_disconnects_late_prepared_commit(self):
         f = self.fixture
         seen = []

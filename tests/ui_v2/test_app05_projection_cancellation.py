@@ -144,12 +144,45 @@ class ProjectionCancellationTests(unittest.TestCase):
                 worker.finish(RuntimeError("injected") if outcome == "error" else None)
                 self.assertEqual(events, [True])  # worker done is NOT GUI ack
                 self.pump()
-                self.assertEqual(events, [True, False, True])
+                self.assertEqual(events, [True, True])  # newer prepared source has priority
                 self.assertEqual(len(worker.jobs), 1)  # latest viewport still runs
                 worker.finish()
                 self.pump()
-                self.assertEqual(events, [True, False, True, False])
+                self.assertEqual(events, [True, True, False])
                 port.dispose()
+
+    def test_same_source_viewport_ack_releases_preparation_before_next_projection(self):
+        worker = ManualWorker()
+        port = SpectrumProjector(worker.submit)
+        events = []
+        port.work_active_changed.connect(events.append)
+        first = request()
+        port.offer(first)
+        port.offer(replace(first, viewport=(1, 1000, 200)))
+        worker.finish()
+        self.pump()
+        self.assertEqual(events, [True, False, True])
+        worker.finish()
+        self.pump()
+        self.assertEqual(events, [True, False, True, False])
+        port.dispose()
+
+    def test_pending_new_source_submit_failure_releases_backpressure(self):
+        worker = ManualWorker()
+        port = SpectrumProjector(worker.submit)
+        events = []
+        port.work_active_changed.connect(events.append)
+        first = request()
+        port.offer(first)
+        port.offer(replace(first, traces=request().traces))
+        def reject(_operation):
+            raise RuntimeError("pending submit rejected")
+        port._submit = reject
+        worker.finish()
+        self.pump()
+        self.assertEqual(events, [True, False])
+        self.assertIsNone(port._future)
+        port.dispose()
 
     def test_submit_failure_never_latches_backpressure(self):
         def reject(_operation):
