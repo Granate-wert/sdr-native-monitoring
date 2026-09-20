@@ -197,5 +197,99 @@ class PersistenceWiringTests(unittest.TestCase):
         self.assertEqual(self.scene._persistence.metrics.image_uploads, 0)
 
 
+class PersistenceCompositionTests(unittest.TestCase):
+    def setUp(self):
+        from tests import test_app02_analyzer_workspace_product as product
+        self.f = product.AnalyzerWorkspaceProductTests("runTest")
+        self.f.app = QApplication.instance() or QApplication([])
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.addCleanup(self.f.tearDown)
+        self.f.select_and_apply()
+
+    def test_stopped_rtbw_policy_change_while_existing_worker_is_mapping(self):
+        from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
+        from tests.ui_v2.test_app05_prepared_live import measurement
+        f = self.f
+        scene = f.page.visualization.spectrum_scene
+        scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
+        source = measurement(f)
+        source = replace(source, persistence=synthetic_persistence(source.spectrum, 32, 1, 1))
+        entered, release = threading.Event(), threading.Event()
+        threads, policies = [], []
+
+        def prepare(request, **kwargs):
+            threads.append(threading.get_ident())
+            policies.append(request.policy)
+            if len(threads) == 1:
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("density mapping barrier")
+            return prepare_persistence_image(request, **kwargs)
+
+        with patch.object(projection, "prepare_persistence_image", side_effect=prepare), \
+             patch.object(scene._persistence, "_render_image", side_effect=AssertionError("GUI mapping")):
+            try:
+                f.presenter._emit_snapshot(source)
+                f.wait(entered.is_set)
+                scene.set_persistence_logarithmic(False)
+                self.assertEqual(scene.persistence_metrics.image_uploads, 0)
+                release.set()
+                f.wait(lambda: scene.persistence_metrics.image_uploads == 1
+                       and f.composition.spectrum_projector._future is None)
+                history = scene._persistence._worker_history
+                self.assertFalse(history.policy.logarithmic)
+                self.assertNotEqual(policies[0], history.policy)
+                self.assertEqual(history.revision, 1)  # cancelled image was never history
+                f.shell.select_workspace("calibration")
+                f.shell.select_workspace("analyzer")
+                f.wait(lambda: scene.persistence_metrics.image_uploads == 2)
+            finally:
+                release.set()
+        self.assertEqual(len(set(threads)), 1)
+        self.assertNotIn(threading.get_ident(), threads)
+        self.assertEqual(f.events, [])  # stopped restoration never starts a receiver
+
+    def test_compiled_sweep_statistics_use_worker_and_stop_keeps_latest_then_mode_clears(self):
+        import importlib
+        from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
+        from sdr_monitor.services.native_continuous_sweep import _to_domain_progress, _to_domain_line
+        from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
+        from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
+        partial, final = importlib.import_module("sdr_monitor._sdr_native")._make_test_sweep_statistics_frames()
+        partial, final = _to_domain_progress(partial), _to_domain_line(final)
+        f = self.f
+        scene = f.page.visualization.spectrum_scene
+        f.page.mode.setCurrentIndex(f.page.mode.findData(AnalyzerMode.SWEEP))
+        scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
+        threads = []
+
+        def prepare(request, **kwargs):
+            threads.append(threading.get_ident())
+            return prepare_persistence_image(request, **kwargs)
+
+        source = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics(), partial)
+        with patch.object(_FakeAnalyzerDisplay, "poll_latest", return_value=source) as poll, \
+             patch.object(projection, "prepare_persistence_image", side_effect=prepare), \
+             patch.object(scene._persistence, "_render_image", side_effect=AssertionError("GUI mapping")):
+            f.page.primary.click()
+            f.wait(lambda: scene.persistence_metrics.image_uploads > 0)
+            self.assertIs(scene._persistence._uploaded_density, partial.statistics.probability)
+            poll.return_value = ContinuousSweepDisplaySnapshot(final, ContinuousSweepDisplayMetrics())
+            f.composition.analyzer_presenter._poll()
+            f.wait(lambda: scene._persistence._uploaded_density is final.statistics.probability)
+            f.page.primary.click()
+            f.wait(lambda: f.composition.analyzer_presenter.can_close()
+                   and f.composition.spectrum_projector._future is None)
+            self.assertIs(scene._persistence._uploaded_density, final.statistics.probability)
+            self.assertIsNotNone(scene._persistence._worker_history)
+        self.assertEqual(len(set(threads)), 1)
+        self.assertNotIn(threading.get_ident(), threads)
+        f.page.mode.setCurrentIndex(f.page.mode.findData(AnalyzerMode.RTBW))
+        self.assertIsNone(scene._persistence.image_item.image)
+        self.assertIsNone(scene._persistence._worker_history)
+        self.assertEqual(f.events, ["sweep-start", "sweep-stop"])
+
+
 if __name__ == "__main__":
     unittest.main()
