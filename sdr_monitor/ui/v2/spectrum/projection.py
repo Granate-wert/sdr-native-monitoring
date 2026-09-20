@@ -187,6 +187,7 @@ class SpectrumProjector(QObject):
         self._required_result: SpectrumProjection | None = None
         self._required_delivered = False
         self._active_serial = 0
+        self._live_preparation_in_flight = False
         self.superseded = 0
         self.completed = 0
         self.cancelled = 0
@@ -296,6 +297,20 @@ class SpectrumProjector(QObject):
         self._preparation_in_flight = False
         self._dispatch()
 
+    def set_live_preparation_in_flight(self, active: bool) -> None:
+        """Coalesce optional-only work behind an already owned Live delivery.
+
+        Required spectra keep their existing scheduling. No running job is
+        released early; a pending density uses the completed coherent scene.
+        """
+        if self._closed or self._live_preparation_in_flight == bool(active):
+            return
+        self._live_preparation_in_flight = bool(active)
+        if not active:
+            if self._pending is not None:
+                self.request_commit()
+            self._dispatch()
+
     def dispose(self) -> None:
         self._closed = True
         self._clear_required()
@@ -321,6 +336,8 @@ class SpectrumProjector(QObject):
                 or self._pending is None):
             return
         if self._preparation_in_flight and self._pending.requires_preparation_handoff:
+            return
+        if self._live_preparation_in_flight and not self._pending.required_work:
             return
         request, self._pending = self._pending, None
         self._active_storage, self._pending_storage = self._pending_storage, {}
