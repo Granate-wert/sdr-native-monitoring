@@ -224,6 +224,8 @@ class LiveViewModel:
         self._state = build_live_view_state(None)
 
     def _on_devices_discovered(self, devices: object) -> None:
+        if self._disposed:
+            return
         valid_sequence = isinstance(devices, Iterable) and not isinstance(devices, (str, bytes))
         if isinstance(devices, Iterable) and not isinstance(devices, (str, bytes)):
             self._devices = tuple(devices)
@@ -242,11 +244,15 @@ class LiveViewModel:
         self._publish()
 
     def _on_snapshot(self, snapshot: object) -> None:
+        if self._disposed:
+            return
         self._prepared_measurement = None
         self._last_snapshot = snapshot
         self._publish()
 
     def _on_prepared_snapshot(self, value: object) -> None:
+        if self._disposed:
+            return
         if not isinstance(value, LiveViewState):
             self._on_task_failed("Invalid prepared Live publication")
             return
@@ -255,12 +261,16 @@ class LiveViewModel:
         self._publish()
 
     def _on_busy_changed(self, busy: bool) -> None:
+        if self._disposed:
+            return
         self._busy = bool(busy)
         if not self._busy:
             self._discovery_pending = False
         self._publish()
 
     def _on_task_failed(self, error: str) -> None:
+        if self._disposed:
+            return
         # Command failure is presentation control-plane state. It must remain
         # visible without rewriting immutable measurement/session truth.
         self._command_error = str(error)

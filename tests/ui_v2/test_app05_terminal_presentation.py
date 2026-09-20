@@ -8,7 +8,11 @@ import weakref
 import numpy as np
 
 from sdr_monitor.domain.live import LiveSpectrumFrame
+from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
+from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
+from sdr_monitor.ui.v2.shell.contracts import ClosePort
 from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
+from scripts.benchmark_app04_poll_overload import run_qt_until
 from tests import test_app02_analyzer_workspace_product as product
 
 
@@ -16,8 +20,10 @@ class TerminalPresentationTests(unittest.TestCase):
     setUpClass = classmethod(product.AnalyzerWorkspaceProductTests.setUpClass.__func__)
     setUp = product.AnalyzerWorkspaceProductTests.setUp
     tearDown = product.AnalyzerWorkspaceProductTests.tearDown
-    wait = product.AnalyzerWorkspaceProductTests.wait
     select_and_apply = product.AnalyzerWorkspaceProductTests.select_and_apply
+
+    def wait(self, predicate):
+        run_qt_until(predicate, 3)
 
     def measurement(self):
         self.select_and_apply()
@@ -130,3 +136,97 @@ class TerminalPresentationTests(unittest.TestCase):
         finally:
             release.set()
         self.assert_payloads_released()
+
+    def test_sweep_terminal_and_preparation_grid_release(self):
+        self.measurement()
+        self.page.mode.setCurrentIndex(self.page.mode.findData(AnalyzerMode.SWEEP))
+        self.page.primary.click()
+        self.wait(lambda: self.page._last_bundle is not None and self.page._last_bundle.mode == "sweep")
+        self.page.primary.click()
+        self.wait(lambda: self.composition.analyzer_presenter.can_close())
+        self.assertIsNotNone(self.composition.analyzer_view_model.state.prepared_sweep)
+        self.shell.close()
+        self.wait(lambda: self.shell._is_closed)
+        self.assert_payloads_released()
+
+    def test_visual_buffers_and_destroyed_inspector_wrapper_release(self):
+        self.measurement()
+        scene = self.page.visualization.spectrum_scene
+        scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
+        scene.set_persistence_logarithmic(False)
+        density = weakref.ref(scene._persistence._latest_view.density)
+        visual = weakref.ref(scene._persistence._visual_buffer)
+        scratch = weakref.ref(scene._persistence._row_scratch)
+        self.shell._inspector_toggle.click()
+        from sdr_monitor.ui.v2.workspaces.analyzer_inspector import AnalyzerInspector
+        inspectors = self.shell.findChildren(AnalyzerInspector)
+        self.assertEqual(len(inspectors), 1)
+        inspector = inspectors[0]  # Keep Python wrapper alive across normal Qt deletion.
+        self.assertIsNotNone(inspector._state.bundle)
+        self.shell.close()
+        self.wait(lambda: self.shell._is_closed and inspector._state is None)
+        self.assert_payloads_released()
+        self.assertTrue(all(ref() is None for ref in (density, visual, scratch)))
+
+    def test_late_prepared_callbacks_cannot_restore_closed_payloads(self):
+        self.measurement()
+        live_state = self.composition.view_model.state
+        analyzer_state = self.composition.analyzer_view_model.state
+        self.shell.close()
+        self.wait(lambda: self.shell._is_closed)
+        live = self.composition.view_model
+        analyzer = self.composition.analyzer_view_model
+        live._on_snapshot(live_state.snapshot)
+        live._on_prepared_snapshot(live_state)
+        live._on_busy_changed(True)
+        live._on_task_failed("late")
+        analyzer._on_live(live_state)
+        analyzer._on_running(True)
+        self.page._render(analyzer_state)
+        self.assert_payloads_released()
+
+    def test_workspace_release_waits_for_all_shell_ports_and_retry_is_idempotent(self):
+        self.measurement()
+        before = self.page.visualization.spectrum_scene.latest_frame
+        attempts = []
+
+        def extra():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("extra owner failed")
+
+        self.shell._context = replace(self.shell._context, close_ports=(
+            *self.shell._context.close_ports, ClosePort("extra", lambda: True, extra)))
+        with patch.object(self.page, "release_presentation_after_shutdown",
+                          wraps=self.page.release_presentation_after_shutdown) as cleanup:
+            self.shell.close()
+            self.wait(lambda: len(attempts) == 1)
+            self.assertFalse(self.shell._is_closed)
+            cleanup.assert_not_called()
+            self.assertIs(self.page.visualization.spectrum_scene.latest_frame, before)
+            self.shell.close()
+            self.wait(lambda: self.shell._is_closed)
+            cleanup.assert_called_once()
+            self.shell.close()
+            cleanup.assert_called_once()
+        self.assert_payloads_released()
+
+    def test_terminal_workspace_cleanup_failure_remains_retryable_without_owner_restart(self):
+        self.measurement()
+        original = self.page.release_presentation_after_shutdown
+        attempts = []
+
+        def fail_once():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("local cleanup failed")
+            original()
+
+        with patch.object(self.page, "release_presentation_after_shutdown", side_effect=fail_once):
+            self.shell.close()
+            self.wait(lambda: len(attempts) == 1)
+            self.assertFalse(self.shell._is_closed)
+            self.shell.close()
+            self.wait(lambda: self.shell._is_closed)
+        self.assert_payloads_released()
+        self.assertEqual(self.events, ["rtbw-start", "rtbw-stop"])

@@ -1,4 +1,5 @@
 """Read-only contextual inspector; bounded scalars, no device commands."""
+import weakref
 from PySide6.QtCore import QSignalBlocker, QTimer, Qt
 from PySide6.QtWidgets import QComboBox, QFrame, QLabel, QScrollArea, QVBoxLayout, QWidget
 
@@ -24,7 +25,8 @@ class AnalyzerInspector(QScrollArea):
         content = QWidget(self)
         content.setProperty("ui2Role", "panel-scroll-content")
         self.setWidget(content)
-        self._state = model.state
+        self._state: AnalyzerViewState | None = model.state
+        self._disposed = False
         self._report: SweepInspection | None = None
         self._key: tuple[object, ...] | None = None
         self._timer = QTimer(self)
@@ -51,7 +53,19 @@ class AnalyzerInspector(QScrollArea):
         layout.addStretch(1)
         self.setAccessibleName(text("analyzer.inspection.title"))
         unsubscribe = model.subscribe(self._offer)
-        self.destroyed.connect(lambda _object=None: unsubscribe())
+        reference = weakref.ref(self)
+
+        def destroyed(_object=None):
+            unsubscribe()
+            inspector = reference()
+            if inspector is not None:
+                # Qt is already destroying the widget: Python fields only.
+                # A retained wrapper/closure must not pin a full publication.
+                inspector._disposed = True
+                inspector._state = None
+                inspector._report = None
+
+        self.destroyed.connect(destroyed)
 
     def _label(self, key: str) -> QLabel:
         label = QLabel(text(key), self)
@@ -63,6 +77,8 @@ class AnalyzerInspector(QScrollArea):
         return label
 
     def _offer(self, state: AnalyzerViewState) -> None:
+        if self._disposed:
+            return
         self._state = state
         frame = getattr(state.bundle, "spectrum", None)
         key = (state.mode, getattr(frame, "source_id", None), getattr(frame, "epoch", None),
@@ -87,6 +103,8 @@ class AnalyzerInspector(QScrollArea):
     def refresh(self) -> None:
         self._timer.stop()
         state = self._state
+        if state is None:
+            return
         omission = presentation_omission(state)
         if omission is not None:
             self._report = None

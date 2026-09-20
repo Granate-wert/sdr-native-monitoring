@@ -207,6 +207,8 @@ class AnalyzerViewModel:
         self._prepared_sweep = None
 
     def _on_live(self, state: LiveViewState) -> None:
+        if self._disposed:
+            return
         snapshot = state.snapshot
         identity = (getattr(snapshot, "session_id", None), getattr(snapshot, "generation", None),
                     getattr(getattr(snapshot, "device", None), "device_id", None))
@@ -220,6 +222,8 @@ class AnalyzerViewModel:
         self._publish()
 
     def _on_sweep_snapshot(self, value: object) -> None:
+        if self._disposed:
+            return
         if self._mode is not AnalyzerMode.SWEEP or not (self._running or self._stopping):
             return
         prepared = value if isinstance(value, PreparedSweepSnapshot) else None
@@ -246,12 +250,16 @@ class AnalyzerViewModel:
         self._publish()
 
     def _on_error(self, error: str) -> None:
+        if self._disposed:
+            return
         if self._mode is not AnalyzerMode.SWEEP:
             return  # A late other-strategy callback cannot relabel RTBW.
         self._error = str(error)
         self._publish()
 
     def _on_starting(self, value: bool) -> None:
+        if self._disposed:
+            return
         self._starting = bool(value)
         if value and self._mode is AnalyzerMode.SWEEP:
             # A new explicit acquisition has a new presentation history even
@@ -263,10 +271,14 @@ class AnalyzerViewModel:
         self._publish()
 
     def _on_stopping(self, value: bool) -> None:
+        if self._disposed:
+            return
         self._stopping = bool(value)
         self._publish()
 
     def _on_running(self, value: bool) -> None:
+        if self._disposed:
+            return
         self._running = bool(value)
         if value:
             self._sweep_snapshot = None
