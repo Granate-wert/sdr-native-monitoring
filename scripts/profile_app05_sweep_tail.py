@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import sys
 from time import perf_counter
+from threading import Event
 from unittest.mock import patch
 
 STAGES = ("publish", "selected", "domain_end", "prepare_begin", "prepare_end",
@@ -28,12 +29,16 @@ def paired_paint(records, identity, when):
             records.reordered += 1
             return
         records.rows.append(dict(identity=identity, total=(when - stamps[0]) * 1000,
+            projection_window=(row["projection_begin"], row["projection_end"]),
             **{name: (b - a) * 1000 for name, a, b in zip(STAGES[1:] + ("paint",), stamps, stamps[1:])}))
 
 
 def main():
     if not sys.flags.isolated:
         raise SystemExit("Python -I required")
+    gate_poll = "--diagnostic-gate-poll" in sys.argv
+    if gate_poll:
+        sys.argv.remove("--diagnostic-gate-poll")
     root = Path(sys.argv[sys.argv.index("--checkout") + 1]).resolve(strict=True)
     output = Path(sys.argv[sys.argv.index("--output") + 1])
     sys.path.insert(0, str(root))
@@ -51,6 +56,26 @@ def main():
 
     records = shared.StageRecords()
     polls = deque(maxlen=4096)
+    projecting = Event()
+    gated_ticks = 0
+
+    def gate_projection(original):
+        def invoke(*args, **kwargs):
+            projecting.set()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                projecting.clear()
+        return invoke
+
+    def gate_polling(original):
+        def invoke(*args, **kwargs):
+            nonlocal gated_ticks
+            if projecting.is_set():
+                gated_ticks += 1
+                return None
+            return original(*args, **kwargs)
+        return invoke
 
     def poll_interval(original):
         def invoke(*args, **kwargs):
@@ -102,20 +127,25 @@ def main():
             before=lambda request, **kw: records.request(request, "projection_begin"),
             after=lambda value, request, **kw: records.request(request, "projection_end")))
         hook(SpectrumScene, "_accept_projection", wrap(after=accepted))
+        if gate_poll:
+            # Diagnostic scheduling experiment only; not a product feature.
+            hook(projection, "project_spectrum", gate_projection)
+            hook(ContinuousSweepPresenter, "_poll", gate_polling)
         observer.main()
     rows = list(records.rows)
     overlap = {}
     for row in rows:
-        stamps = records.frames.get(row["identity"], {})
-        if "projection_begin" in stamps and "projection_end" in stamps:
-            left, right = stamps["projection_begin"], stamps["projection_end"]
-            overlap[row["identity"]] = sum(max(0., min(right, end) - max(left, begin))
-                                           for begin, end in polls) * 1000
+        # Carry these scalar endpoints at paint: high-rate publications may
+        # evict the original frame record before the run's final report.
+        left, right = row.pop("projection_window")
+        overlap[row["identity"]] = sum(max(0., min(right, end) - max(left, begin))
+                                       for begin, end in polls) * 1000
     names = ("total",) + STAGES[1:] + ("paint",)
     groups = {"all": rows, "over_50ms": [row for row in rows if row["total"] > 50],
               "at_most_50ms": [row for row in rows if row["total"] <= 50]}
     report = dict(scope=__doc__, capacity=records.capacity, retained=len(rows),
         missing=records.missing, reordered=records.reordered,
+        diagnostic_gate_poll=gate_poll, gated_ticks=gated_ticks,
         overlap_scope="Inclusive overlap with existing Sweep poll+prepare worker; not an additive stage or causal proof",
         projection_poll_overlap={group: dict(count=len(values),
             overlapping=sum(overlap.get(row["identity"], 0.) > 0 for row in values),
