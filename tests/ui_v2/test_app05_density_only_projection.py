@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from sdr_monitor.ui.v2.spectrum import projection
+from sdr_monitor.ui.v2.spectrum.contracts import PreparedSpectrumFrame, TraceKind
 from tests.ui_v2 import test_app05_persistence_wiring as wiring
 
 
@@ -53,3 +54,36 @@ class DensityOnlyProjectionTests(unittest.TestCase):
             self.drain()
             self.assertGreater(reduce.call_count, 0)
         self.assertEqual(self.scene._displayed_projection_geometry[1], self.scene._viewport())
+
+    def test_changed_secondary_trace_requires_reduction_with_same_current_source(self):
+        current = self.scene.displayed_frame
+        secondary = self.spectrum(-43)
+        self.scene.set_frame(current, prepared=PreparedSpectrumFrame(current))
+        self.drain()
+        with patch.object(projection, "peak_preserving_envelope", wraps=projection.peak_preserving_envelope) as reduce:
+            self.scene.set_trace(TraceKind.MAX_HOLD, secondary)
+            self.density()
+            self.drain()
+            self.assertEqual(reduce.call_count, 2)
+        self.assertIs(self.scene.displayed_frame, current)
+
+    def test_late_old_required_ack_does_not_mark_new_source_clean(self):
+        self.spectrum(-60)
+        self.density()
+        self.worker.finish()  # old required/density result, GUI ack held
+        fresh = self.spectrum(-30)
+        self.scene.commit_projection()
+        self.drain()
+        self.assertIs(self.scene.displayed_frame, fresh)
+        self.assertFalse(self.scene._required_projection_dirty)
+
+    def test_show_after_hidden_density_projects_required_latest(self):
+        self.scene.set_presentation_active(False)
+        fresh = self.spectrum(-31)
+        self.density()
+        self.drain()
+        with patch.object(projection, "peak_preserving_envelope", wraps=projection.peak_preserving_envelope) as reduce:
+            self.scene.set_presentation_active(True)
+            self.drain()
+            self.assertGreater(reduce.call_count, 0)
+        self.assertIs(self.scene.displayed_frame, fresh)

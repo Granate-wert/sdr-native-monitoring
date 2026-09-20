@@ -20,12 +20,17 @@ from tests.ui_v2 import test_app05_persistence_wiring as wiring
 
 class StagedPersistenceQueueTests(unittest.TestCase):
     setUpClass = classmethod(wiring.PersistenceWiringTests.setUpClass.__func__)
-    setUp = wiring.PersistenceWiringTests.setUp
     tearDown = wiring.PersistenceWiringTests.tearDown
     pump = wiring.PersistenceWiringTests.pump
     drain = wiring.PersistenceWiringTests.drain
     spectrum = wiring.PersistenceWiringTests.spectrum
     density = wiring.PersistenceWiringTests.density
+
+    def setUp(self):
+        wiring.PersistenceWiringTests.setUp(self)
+        # Stage-order tests need NEW required work. A density-only update of
+        # already admitted pixels intentionally has no required-stage signal.
+        self.spectrum(-69)
 
     def test_final_before_queued_stage_paints_and_commits_only_once(self):
         with patch.object(self.scene, "_paint_trace", wraps=self.scene._paint_trace) as paint:
@@ -48,6 +53,7 @@ class StagedPersistenceQueueTests(unittest.TestCase):
         old_serial = self.port._active_serial
         self.port._finish(self.port._future)
         self.scene._persistence._last_upload_ns = 0
+        self.spectrum(-68)
         self.density(.8)
         self.worker.finish()
         result = self.port._required_result
