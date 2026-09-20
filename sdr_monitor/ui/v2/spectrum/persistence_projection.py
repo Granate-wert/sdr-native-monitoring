@@ -71,13 +71,6 @@ class PreparedPersistenceImage:
     policy: PersistenceImagePolicy
     base_history_revision: int | None
     image: np.ndarray
-    count_maximum: float = 0.0
-
-    @property
-    def quantitative_labels(self) -> tuple[str, str]:
-        if self.view.value_mode is DensityValueMode.PROBABILITY:
-            return ("0.000 probability", "1.000 probability")
-        return ("0 count", f"{self.count_maximum:.0f} count")
 
     def __post_init__(self) -> None:
         _validate_image(self.image)
@@ -164,4 +157,4 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                 np.add(old, delta, out=target)
     check_cancelled(cancelled)
     image.setflags(write=False)
-    return PreparedPersistenceImage(view, request.policy, request.history_revision, image, maximum)
+    return PreparedPersistenceImage(view, request.policy, request.history_revision, image)

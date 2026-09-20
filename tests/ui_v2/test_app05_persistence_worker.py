@@ -211,9 +211,9 @@ class PersistenceWorkerTests(unittest.TestCase):
         for outcome in ("success", "cancel", "error", "dispose", "denied", "density-denied"):
             with self.subTest(outcome=outcome):
                 worker = ManualWorker()
-                density = request(np.full((4, 256), .5, np.float32)) if outcome == "density-denied" else request()
+                density = request()
                 budget = PresentationAllocationBudget(1 if outcome == "denied" else
-                                                      9000 if outcome == "density-denied" else 1000000)
+                                                      3000 if outcome == "density-denied" else 1000000)
                 port = projection.SpectrumProjector(worker.submit, allocation_budget=budget)
                 delivered = []
                 port.ready.connect(delivered.append)

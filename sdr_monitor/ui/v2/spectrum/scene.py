@@ -92,7 +92,6 @@ class SpectrumScene(QWidget):
         self._displayed_view: SpectrumFrameView | None = None
         self._displayed_extent: tuple[float, float] | None = None
         self._projection_error: str | None = None
-        self._early_projection_request: ProjectionRequest | None = None
         self._projection_timer = QTimer(self)
         self._projection_timer.setSingleShot(True)
         self._projection_timer.timeout.connect(self._offer_projection)
@@ -188,13 +187,10 @@ class SpectrumScene(QWidget):
         self._projector = projector
         self._persistence.allocation_budget = projector.allocation_budget
         self._persistence.on_budget_changed = self._refresh_persistence_status
-        self._persistence.request_projection = self._request_persistence_projection
         projector.ready.connect(self._accept_projection)
-        projector.spectrum_ready.connect(self._accept_early_projection)
         projector.failed.connect(self._projection_failed)
         projector.retry_ready.connect(self._retry_projection_capacity)
         projector.commit_requested.connect(self.commit_projection)
-        projector.settled.connect(self._projection_settled)
         self.sweep_coverage.request_projection = self._request_projection
         self._view_box.sigResized.connect(self._request_projection)
 
@@ -202,24 +198,7 @@ class SpectrumScene(QWidget):
         left, right = self._view_box.viewRange()[0]
         return float(left), float(right), max(1, int(self._view_box.width()))
 
-    def _request_persistence_projection(self) -> None:
-        self._projection_key = None
-        self._request_projection()
-
-    def _projection_settled(self, request: ProjectionRequest) -> None:
-        if request.owner is not self._projection_owner:
-            return
-        if self._early_projection_request is request:
-            self._early_projection_request = None
-        self._persistence.worker_settled(request.persistence)
-        # Pending trace refreshes may refer to the just-accepted smoothing
-        # base. Refresh that ONE slot before dispatch, never map it twice.
-        if request.persistence is not None and self._projector is not None and self._projector.has_pending:
-            self._request_persistence_projection()
-            self.commit_projection()
-
     def _invalidate_projection(self) -> None:
-        self._early_projection_request = None
         self._projection_generation += 1
         self._displayed_projection_geometry = None
         self._projection_key = None
@@ -241,8 +220,7 @@ class SpectrumScene(QWidget):
         viewport = self._viewport()
         key = (self._projection_generation, viewport,
                tuple((kind, id(view)) for kind, view in self._trace_views.items()),
-               id(state.current), id(state.previous), self._persistence.worker_policy_key,
-               id(self._persistence.worker_request))
+               id(state.current), id(state.previous))
         if key == self._projection_key:
             return
         self._projection_key = key
@@ -250,9 +228,7 @@ class SpectrumScene(QWidget):
             self._projection_owner, self._projection_generation, viewport,
             tuple(self._trace_views.items()), state.current, state.previous, self._prepared_spectrum,
             requires_preparation_handoff=(self._displayed_projection_geometry !=
-                                          (self._projection_generation, viewport)),
-            persistence=self._persistence.worker_request,
-            persistence_policy=self._persistence.worker_policy_key))
+                                          (self._projection_generation, viewport))))
 
     def commit_projection(self) -> None:
         """Submit one coherent GUI delivery before the next preparation queues.
@@ -270,12 +246,7 @@ class SpectrumScene(QWidget):
                 and request.generation == self._projection_generation
                 and request.viewport == self._viewport())
 
-    def _accept_early_projection(self, result: SpectrumProjection) -> None:
-        if self._projection_current(result.request):
-            self._accept_projection(result, required_only=True)
-            self._early_projection_request = result.request
-
-    def _accept_projection(self, result: SpectrumProjection, *, required_only: bool = False) -> None:
+    def _accept_projection(self, result: SpectrumProjection) -> None:
         request = result.request
         if request.owner is not self._projection_owner:
             return
@@ -285,11 +256,6 @@ class SpectrumScene(QWidget):
             # A rejected result must leave a request for the final viewport,
             # even if no further source publication arrives (stopped view).
             self._request_projection()
-            return
-        if not required_only and self._early_projection_request is request:
-            # Required pixels were already admitted, not another distinct
-            # spectrum paint. Only the optional exact image/history may commit.
-            self._accept_density_projection(result)
             return
         if self._projection_error is not None:
             if self._warning_readout.text() == self._projection_error:
@@ -308,23 +274,8 @@ class SpectrumScene(QWidget):
             self.sweep_coverage.apply_projection(result.coverage, request.viewport, request.previous)
             self.sweep_coverage.refresh()
         self._displayed_projection_geometry = (request.generation, request.viewport)
-        if not required_only:
-            self._accept_density_projection(result)
-
-    def _accept_density_projection(self, result: SpectrumProjection) -> None:
-        request = result.request
-        if request.persistence is not None and self._persistence.accept_worker_image(
-                request.persistence, result.persistence, result.persistence_error):
-            if result.persistence is not None:
-                self._persistence_legend.set_labels(*result.persistence.quantitative_labels)
-            else:
-                self._persistence_legend.set_labels(text("spectrum.persistence.no_data", self._locale),
-                                                  text("spectrum.persistence.no_data", self._locale))
-            self._refresh_persistence_status()
 
     def _projection_failed(self, request: ProjectionRequest, reason: str) -> None:
-        if request.owner is self._projection_owner:
-            self._persistence.worker_failed(request.persistence)
         if self._projection_current(request):
             self._projection_error = text("spectrum.projection.failed", self._locale, reason=reason)
             self.set_warning(self._projection_error)
@@ -510,8 +461,8 @@ class SpectrumScene(QWidget):
 
         view = adapt_persistence_density(frame)
         self._persistence.set_frame(view, now_ns=now_ns)
-        if self._projector is None:
-            self._persistence_legend.set_labels(*view.quantitative_labels)
+        minimum, maximum = view.quantitative_labels
+        self._persistence_legend.set_labels(minimum, maximum)
         self._refresh_persistence_status()
 
     def set_persistence_visible(self, visible: bool) -> None:
