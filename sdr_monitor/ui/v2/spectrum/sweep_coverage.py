@@ -89,29 +89,28 @@ class SweepCoverageState:
         count = frequencies.size
         start = max(0, int(np.searchsorted(frequencies, left)) - 1)
         stop = min(count, int(np.searchsorted(frequencies, right, side="right")) + 1)
-        edges: list[float] = []
+        edges = np.empty(0, dtype=np.float64)
         states: list[int] = []
         history_x: list[np.ndarray] = []
         history_y: list[np.ndarray] = []
         if stop > start:
             bucket_size = ceil((stop - start) / max(1, min(MAX_COLUMNS, int(width))))
-            edges.append(_edge(frequencies, start))
             for offset, rows, size in bucket_batches(stop - start, bucket_size):
                 check_cancelled(cancelled)
                 lower, upper = start + offset, start + offset + rows * size
                 # Measured zero power (-inf dB) owns coverage even though the
                 # finite display axis cannot draw it. Never fill it with old RF.
                 current = frame.values_db[lower:upper].reshape(rows, size) < np.inf
-                current_count = np.count_nonzero(current, axis=1)
-                flags = (current_count > 0).astype(np.uint8) * CURRENT
+                current_any = np.any(current, axis=1)
+                covered = np.all(current, axis=1)
+                flags = np.asarray(current_any, dtype=np.uint8) * CURRENT
                 if self.previous is not None:
-                    if np.all(current_count == size):
+                    if np.all(covered):
                         # Every bin in this batch already belongs to this pass,
                         # including measured -inf. No previous value can be
                         # displayed here, so do not rescan/reduce the old array.
                         # Keep exactly the reducer's empty-bucket sentinels:
                         # omitting them would join history across current RF.
-                        history_count = 0
                         if size <= 4:
                             x = frequencies[lower:upper]
                             y = np.full(rows * size, np.nan, dtype=self.previous.values_db.dtype)
@@ -120,17 +119,26 @@ class SweepCoverageState:
                     else:
                         old = self.previous.values_db[lower:upper].reshape(rows, size)
                         historical = ~current & (old < np.inf)
-                        history_count = np.count_nonzero(historical, axis=1)
-                        flags |= (history_count > 0).astype(np.uint8) * PREVIOUS
+                        flags |= np.any(historical, axis=1).astype(np.uint8) * PREVIOUS
+                        # Only full/partial ownership matters, not integer counts.
+                        # -inf is owned RF even though it has no finite ordinate.
+                        covered = np.all(current | historical, axis=1)
                         x, y = extrema_rows(frequencies[lower:upper].reshape(rows, size), old,
                                             historical & np.isfinite(old), keep_small=True)
                     history_x.append(x)
                     history_y.append(y)
-                else:
-                    history_count = 0
-                flags |= (current_count + history_count < size).astype(np.uint8) * MISSING
+                flags |= (~covered).astype(np.uint8) * MISSING
                 states.extend(flags)
-                edges.extend(_edge(frequencies, index) for index in range(lower + size, upper + 1, size))
+            # Bounded by display columns, not measurement bins. Preserve the
+            # exact midpoint expression/dtype and the clipped short last bucket.
+            boundaries = np.minimum(start + np.arange(1, len(states) + 1) * bucket_size, stop)
+            interior = boundaries[boundaries < count]
+            edges = np.empty(len(states) + 1, dtype=np.float64)
+            edges[0] = _edge(frequencies, start)
+            lower_edges = frequencies[interior - 1]
+            edges[1:1 + interior.size] = lower_edges + (frequencies[interior] - lower_edges) / 2
+            if boundaries[-1] == count:
+                edges[-1] = _edge(frequencies, count)
         check_cancelled(cancelled)
         arrays = (np.asarray(edges, dtype=np.float64), np.asarray(states, dtype=np.uint8),
                   np.concatenate(history_x) if history_x else np.empty(0, dtype=np.float64),

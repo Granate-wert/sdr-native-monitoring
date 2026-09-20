@@ -60,8 +60,10 @@ class SweepCoverageTests(unittest.TestCase):
                 return getattr(np, name)
 
             @staticmethod
-            def all(_value):
-                return False
+            def all(value, *args, **kwargs):
+                # Disable only the batch-wide fully-current shortcut. Per-row
+                # ownership reductions must retain their actual NumPy semantics.
+                return np.all(value, *args, **kwargs) if args or kwargs else False
 
         for width in (16, 1024, 2048):
             with self.subTest(width=width):
