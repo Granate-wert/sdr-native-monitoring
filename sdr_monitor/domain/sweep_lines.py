@@ -164,7 +164,8 @@ class SweepLineFrame:
         raw_quality = np.asarray(self.quality_flags)
         if raw_quality.dtype.kind not in "iu" or (
             raw_quality.size and (
-                np.any(raw_quality < 0) or np.any(raw_quality > np.iinfo(np.uint16).max)
+                (raw_quality.dtype.kind == "i" and int(np.min(raw_quality)) < 0)
+                or int(np.max(raw_quality)) > np.iinfo(np.uint16).max
             )
         ):
             raise ValueError("sweep-line quality flags must be unsigned 16-bit integer masks")
@@ -194,7 +195,9 @@ class SweepLineFrame:
             if missing or reasons or _has_unknown_power(values):
                 raise ValueError("complete sweep-line must not hide gaps or missing bins")
             missing_mask = (1 << 12) if self.quality_schema is SweepQualitySchema.NATIVE_V5 else int(SweepBinQuality.MISSING_SEGMENT)
-            if np.any(quality & np.uint16(missing_mask)):
+            # The union tests the same bit in every bin without allocating a
+            # full-width masked array. Shape/range have already been checked.
+            if int(np.bitwise_or.reduce(quality, initial=np.uint16(0))) & missing_mask:
                 raise ValueError("complete sweep-line must not contain missing-segment flags")
         elif self.state is SweepLineState.GAP:
             if not missing and not reasons and not _has_unknown_power(values):

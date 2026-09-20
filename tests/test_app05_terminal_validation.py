@@ -10,6 +10,44 @@ from sdr_monitor.domain.sweep_lines import SweepLineFrame, SweepLineState, Sweep
 
 
 class TerminalValidationTests(unittest.TestCase):
+    def test_integer_range_reduction_matches_elementwise_oracle(self):
+        for dtype in (np.int8, np.int16, np.int32, np.int64,
+                      np.uint8, np.uint16, np.uint32, np.uint64):
+            info = np.iinfo(dtype)
+            for value in {0, int(info.min), int(info.max), min(65535, int(info.max)),
+                          min(65536, int(info.max))}:
+                for position in (0, 65536, 131072):
+                    flags = np.zeros(262146, dtype=dtype)[::2]
+                    flags[position] = value
+                    expected = not bool(np.any(flags < 0) or np.any(flags > 65535))
+                    with self.subTest(dtype=dtype, value=value, position=position):
+                        args = (1, 1, 0, "source", SweepLineState.GAP,
+                            np.arange(flags.size, dtype=np.float64),
+                            np.full(flags.size, np.nan, dtype=np.float32), flags,
+                            np.full(flags.size, -1, dtype=np.int32), (0,), (), (), "dBFS/bin")
+                        if expected:
+                            frame = SweepLineFrame(*args)
+                            np.testing.assert_array_equal(frame.quality_flags, flags)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "unsigned 16-bit integer masks"):
+                                SweepLineFrame(*args)
+
+    def test_missing_bit_union_matches_both_schemas_at_every_seam(self):
+        for schema in SweepQualitySchema:
+            mask = 1 << 12 if schema is SweepQualitySchema.NATIVE_V5 else int(module.SweepBinQuality.MISSING_SEGMENT)
+            for position in (0, 65535, 65536, 131072):
+                flags = np.full(131073, 65535 ^ mask, dtype=np.uint16)
+                args = (1, 1, 0, "source", SweepLineState.COMPLETE,
+                    np.arange(flags.size, dtype=np.float64),
+                    np.full(flags.size, -np.inf, dtype=np.float32), flags,
+                    np.zeros(flags.size, dtype=np.int32), (), ((0, 1),), (), "dBFS/bin")
+                with self.subTest(schema=schema, position=position):
+                    frame = SweepLineFrame(*args, quality_schema=schema)
+                    self.assertEqual(frame.aggregate_quality_flags, 65535 ^ mask)
+                    flags[position] |= mask
+                    with self.assertRaisesRegex(ValueError, "missing-segment flags"):
+                        SweepLineFrame(*args, quality_schema=schema)
+
     def test_quality_narrowing_is_final_owned_buffer_not_recopied(self):
         # Native uint32, already-domain uint16, signed and strided inputs all
         # retain exactly the same immutable, mutation-isolated domain contract.
