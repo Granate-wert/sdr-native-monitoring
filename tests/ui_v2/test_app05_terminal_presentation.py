@@ -84,6 +84,13 @@ class TerminalPresentationTests(unittest.TestCase):
         self.assertIsNone(ring())
         self.assertIsNone(grid())
         self.assertIsNone(curve_x())
+        # The source is external to UI presentation: closing a view must not
+        # mutate its immutable backend snapshot to make ledger bytes zero.
+        from sdr_monitor.ui.v2.spectrum.retained_bytes import retained_arrays
+        source_roots = retained_arrays(self.live.latest_snapshot())
+        self.assertEqual(set(self.composition.allocation_budget._roots), set(source_roots))
+        self.assertEqual(self.composition.allocation_budget.snapshot().observed_bytes,
+                         sum(source_roots.values()))
         self.shell.close()  # Repeated close must not resurrect storage or repeat backend work.
         self.assert_payloads_released()
 
