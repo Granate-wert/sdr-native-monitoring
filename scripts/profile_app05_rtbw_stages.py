@@ -252,7 +252,7 @@ def main():
                 records.projection_events["accept_current" if current else "accept_obsolete_geometry"] += 1
             # An obsolete viewport can reference the already displayed source.
             # Source equality alone is not evidence that this request applied.
-                records.projection_events["optional_only_callback" if optional_only else "required_callback"] += 1
+                records.projection_events["optional_only_callback" if optional_only else "required_admission_callback"] += 1
             if (current and not optional_only and result.request.traces
                     and scene.displayed_frame is result.request.traces[0][1].source_frame):
                 records.accepted(result.request, required_only=required_only)
