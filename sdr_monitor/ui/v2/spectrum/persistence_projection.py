@@ -154,8 +154,15 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
             source = source_row[first:first + IMAGE_BATCH]
             target = image[row_index, first:first + IMAGE_BATCH]
             mapped = target if scratch is None else scratch[:source.size]
-            map_density_row_for_display(source, value_mode=view.value_mode,
-                logarithmic=request.policy.logarithmic, count_maximum=maximum, out=mapped)
+            if np.count_nonzero(source) == 0:
+                # All measured cells are signed zero: transfer is identity in
+                # every mode. Avoid finite-mask/fill/clip passes, not cells or
+                # validation. Nonfinite chunks cannot enter this branch. Visual
+                # decay below must still execute against the accepted history.
+                np.copyto(mapped, source)
+            else:
+                map_density_row_for_display(source, value_mode=view.value_mode,
+                    logarithmic=request.policy.logarithmic, count_maximum=maximum, out=mapped)
             if history is not None:
                 old = history[row_index, first:first + IMAGE_BATCH]
                 delta = mapped - old
