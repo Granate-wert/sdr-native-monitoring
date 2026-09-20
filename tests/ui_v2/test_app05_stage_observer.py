@@ -13,7 +13,8 @@ SPEC.loader.exec_module(OBSERVER)
 
 def request(token=1):
     frame = SimpleNamespace(timestamp_ns=token, config_generation=1)
-    return SimpleNamespace(traces=(("current", SimpleNamespace(source_frame=frame)),))
+    return SimpleNamespace(traces=(("current", SimpleNamespace(source_frame=frame)),),
+                           generation=1, viewport=(0., 1., 100))
 
 
 class StageObserverTests(unittest.TestCase):
@@ -57,6 +58,22 @@ class StageObserverTests(unittest.TestCase):
         self.assertEqual(len(records.requests), 2)
         records.painted((0, "rtbw", 1), 10)
         self.assertEqual(records.missing, 1)
+
+    def test_source_reoffer_distinguishes_viewport_and_generation(self):
+        records = OBSERVER.StageRecords()
+        first = request()
+        records.request(first, "projection_offer")
+        records.request(first, "projection_offer")
+        changed = request()
+        changed.viewport = (0., 2., 100)
+        records.request(changed, "projection_offer")
+        changed.generation = 2
+        records.request(changed, "projection_offer")
+        records.request(request(2), "projection_offer")
+        self.assertEqual(records.projection_events["same_source"], 3)
+        self.assertEqual(records.projection_events["same_source_generation_viewport"], 1)
+        self.assertEqual(records.projection_events["same_source_new_viewport"], 1)
+        self.assertEqual(records.projection_events["new_source"], 1)
 
 
 if __name__ == "__main__":

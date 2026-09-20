@@ -133,6 +133,11 @@ def main():
         if result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
             records.accepted(result.request)
 
+    def dispatching(port):
+        if (not port._closed and not port._suspended and port._future is None
+                and port._pending is not None):
+            records.request(port._pending, "projection_dispatch")
+
     with ExitStack() as stack:
         def instrument(owner, name, wrapper):
             stack.enter_context(patch.object(owner, name, wrapper(getattr(owner, name))))
@@ -147,6 +152,7 @@ def main():
             before=lambda _, delivery: records.mark(key(delivery.snapshot), "delivered")))
         instrument(projection.SpectrumProjector, "offer", wrap(
             before=lambda _, request: records.request(request, "projection_offer")))
+        instrument(projection.SpectrumProjector, "_dispatch", wrap(before=dispatching))
         instrument(projection, "project_spectrum", wrap(
             before=lambda request, **kwargs: records.request(request, "projection_begin"),
             after=lambda result, request, **kwargs: records.request(request, "projection_end"), cpu_name="project"))
@@ -155,6 +161,12 @@ def main():
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
         projection_events=dict(records.projection_events),
+        projection_wait_ms={name: dict(zip(("p50", "p95", "p99", "max"), map(float,
+            (*np.percentile(values, [50, 95, 99]), max(values)))))
+            for name, start, stop in (("offer_to_dispatch", "projection_offer", "projection_dispatch"),
+                                      ("dispatch_to_begin", "projection_dispatch", "projection_begin"))
+            if (values := [(entry[stop] - entry[start]) * 1000 for entry in records.requests.values()
+                           if start in entry and stop in entry and entry[stop] >= entry[start]])},
         missing=records.missing, reordered=records.reordered,
         cpu_scope="Windows thread CPU clock is quantized (observed15.625ms); aggregated retained-call totals only, NOT per-call CPU latency percentiles",
         cpu_ms={name: dict(calls=len(data), total=sum(data), mean=sum(data) / len(data))
