@@ -8,6 +8,7 @@ Use steady profile without viewport/page churn for queue attribution.
 from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from functools import wraps
 import hashlib
 import json
 import os
@@ -23,6 +24,22 @@ def key(frame):
     if frame is None or not hasattr(frame, "timestamp_ns"):
         return None
     return (int(frame.timestamp_ns), "rtbw", int(frame.config_generation))
+
+
+def instrumented_call(original, before=None, after=None, cpu_samples=None):
+    """Keep bound-method metadata so submit hooks identify the real operation."""
+    @wraps(original)
+    def invoke(*args, **kwargs):
+        if before:
+            before(*args, **kwargs)
+        began = thread_time() if cpu_samples is not None else 0
+        value = original(*args, **kwargs)
+        if cpu_samples is not None:
+            cpu_samples.append((thread_time() - began) * 1000)
+        if after:
+            after(value, *args, **kwargs)
+        return value
+    return invoke
 
 
 class StageRecords:
@@ -107,17 +124,8 @@ def main():
 
     def wrap(before=None, after=None, cpu_name=None):
         def factory(original):
-            def invoke(*args, **kwargs):
-                if before:
-                    before(*args, **kwargs)
-                began = thread_time() if cpu_name else 0
-                value = original(*args, **kwargs)
-                if cpu_name:
-                    cpu[cpu_name].append((thread_time() - began) * 1000)
-                if after:
-                    after(value, *args, **kwargs)
-                return value
-            return invoke
+            return instrumented_call(original, before, after,
+                                     cpu[cpu_name] if cpu_name else None)
         return factory
 
     def first_paint(original):

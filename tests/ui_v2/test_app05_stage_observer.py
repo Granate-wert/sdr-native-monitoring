@@ -1,5 +1,6 @@
 """Paired stage timings never borrow another source or projection's stamps."""
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -18,6 +19,29 @@ def request(token=1):
 
 
 class StageObserverTests(unittest.TestCase):
+    def test_wrapped_bound_operation_is_identifiable_at_actual_submit(self):
+        class Owner:
+            def _prepare(self, snapshot):
+                return snapshot
+
+        owner, snapshot = Owner(), object()
+        submitted, prepared, cpu = [], [], []
+        original_submit = ThreadPoolExecutor.submit
+
+        def before_submit(executor, operation, *args, **kwargs):
+            if isinstance(getattr(operation, "__self__", None), Owner) and operation.__name__ == "_prepare":
+                submitted.append(args[0])
+
+        with patch.object(Owner, "_prepare", OBSERVER.instrumented_call(
+                Owner._prepare, before=lambda _, value: prepared.append(value), cpu_samples=cpu)), \
+                patch.object(ThreadPoolExecutor, "submit", OBSERVER.instrumented_call(
+                    original_submit, before=before_submit)), ThreadPoolExecutor(max_workers=1) as executor:
+            self.assertIs(executor.submit(owner._prepare, snapshot).result(timeout=2), snapshot)
+            self.assertIs(owner._prepare.__self__, owner)
+        self.assertEqual(submitted, [snapshot])
+        self.assertEqual(prepared, [snapshot])
+        self.assertEqual(len(cpu), 1)
+
     def frame_stages(self, records, identity=(1, "rtbw", 1)):
         for when, name in enumerate(("publish", "offer", "coalesced", "prepare_begin", "prepare_end", "delivered")):
             records.mark(identity, name, when)
