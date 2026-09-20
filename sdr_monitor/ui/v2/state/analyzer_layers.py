@@ -10,7 +10,7 @@ from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsFrame
 
-from ..spectrum.persistence_contracts import DensityValueMode, PersistenceDensityFrame
+from ..spectrum.persistence_contracts import DensityValueMode, PersistenceDensityFrame, density_range_error
 from ..waterfall.contracts import WaterfallLineFrame, SweepWaterfallLine
 from ..waterfall.sweep_rows import SweepRowStamp, SweepRowState
 from ..spectrum.grid_baseline import MeasurementGridCache
@@ -72,9 +72,7 @@ def persistence_density_from_native(
     if frame.power_max_db <= frame.power_min_db:
         return None
     density = np.multiply(frame.density, scale, dtype=np.float32)
-    if np.any(np.isfinite(density) & (density < 0.0)):
-        return None
-    if value_mode is DensityValueMode.PROBABILITY and np.any(np.isfinite(density) & (density > 1.0)):
+    if density_range_error(density, value_mode) is not None:
         return None
     density.setflags(write=False)
     levels = np.linspace(frame.power_min_db, frame.power_max_db, frame.power_bins + 1)

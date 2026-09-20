@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterator
 from enum import StrEnum
 from functools import lru_cache
 
@@ -16,6 +17,7 @@ from ..design.tokens import density_lookup_table
 # remain visible across approximately four decades without per-frame pumping.
 LOG_DENSITY_GAIN = 9999.0
 _MAPPING_BATCH = 65_536
+_VALIDATION_BATCH = 65_536
 
 
 class DensityValueMode(StrEnum):
@@ -56,15 +58,44 @@ class PersistenceDensityFrame:
             raise ValueError("persistence level unit must be explicit")
         _validate_regular_edges(frequencies, "frequency")
         _validate_regular_edges(levels, "level")
-        if np.any(np.isfinite(density) & (density < 0.0)):
-            raise ValueError("persistence density must not contain negative values")
-        if self.value_mode is DensityValueMode.PROBABILITY and np.any(
-            np.isfinite(density) & (density > 1.0)
-        ):
-            raise ValueError("probability density must not exceed one")
+        error = density_range_error(density, self.value_mode)
+        if error is not None:
+            raise ValueError(error)
         object.__setattr__(self, "density", density)
         object.__setattr__(self, "frequency_edges_hz", frequencies)
         object.__setattr__(self, "level_edges", levels)
+
+
+def density_range_error(density: np.ndarray, mode: DensityValueMode) -> str | None:
+    """Full numeric range check for a caller-validated nonempty 2D numeric array.
+
+    Both public construction and native adaptation validate independently; no
+    identity/readonly certificate skips cells. Nonfinite values retain their
+    existing missing semantics. Negative values take priority over >1 anywhere
+    in the matrix, even when that negative occurs in a later block.
+    """
+    above_one = False
+    for batch in _density_validation_batches(density):
+        finite = np.isfinite(batch)
+        if np.any(finite & (batch < 0.0)):
+            return "persistence density must not contain negative values"
+        if mode is DensityValueMode.PROBABILITY and np.any(finite & (batch > 1.0)):
+            above_one = True
+    return "probability density must not exceed one" if above_one else None
+
+
+def _density_validation_batches(density: np.ndarray) -> Iterator[np.ndarray]:
+    if density.flags.c_contiguous or density.flags.f_contiguous:
+        values = density.reshape(-1, order="A")
+        for first in range(0, values.size, _VALIDATION_BATCH):
+            yield values[first:first + _VALIDATION_BATCH]
+    else:
+        # Bounded rectangular views cover reversed/transposed/strided sources
+        # without a full contiguous copy or one Python iteration per tiny row.
+        rows = max(1, _VALIDATION_BATCH // density.shape[1])
+        for row in range(0, density.shape[0], rows):
+            for column in range(0, density.shape[1], _VALIDATION_BATCH):
+                yield density[row:row + rows, column:column + _VALIDATION_BATCH]
 
 
 @dataclass(frozen=True, slots=True)
