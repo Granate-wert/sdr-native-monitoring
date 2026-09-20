@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from ..components import ContextPopover, EmptyChartOverlay, HeatLegend
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
 from ..i18n import UiLocale, text
-from .axis import BatchedAxisItem, FrequencyAxis
+from .axis import FrequencyAxis
 from .sweep_position import SweepPositionOverlay
 from .sweep_coverage_overlay import SweepCoverageOverlay
 from .contracts import (
@@ -827,8 +827,7 @@ class SpectrumScene(QWidget):
         # of stacking pyqtgraph's default outer padding inside another frame.
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
         self._frequency_axis = FrequencyAxis(orientation="bottom", locale=self._locale)
-        self._plot_item = self._graphics.addPlot(axisItems={"bottom": self._frequency_axis,
-                                                          "left": BatchedAxisItem(orientation="left")})
+        self._plot_item = self._graphics.addPlot(axisItems={"bottom": self._frequency_axis})
         self._plot_item.setMenuEnabled(False)
         self._plot_item.hideButtons()
         self._view_box = self._plot_item.getViewBox()
