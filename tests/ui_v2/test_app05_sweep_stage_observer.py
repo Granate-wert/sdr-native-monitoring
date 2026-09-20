@@ -1,5 +1,6 @@
 """Sweep profiling follows exact accepted requests, including page re-projection."""
 import importlib.util
+from collections import Counter
 import json
 from pathlib import Path
 import subprocess
@@ -24,6 +25,21 @@ SWEEP = module("sweep_stages", "profile_app05_sweep_tail.py")
 
 
 class SweepStageObserverTests(unittest.TestCase):
+    def test_stale_viewport_cannot_ack_same_already_displayed_source(self):
+        source = object()
+        request = SimpleNamespace(traces=(("current", SimpleNamespace(source_frame=source)),))
+        result = SimpleNamespace(request=request)
+        acknowledgements = []
+        records = SimpleNamespace(accepted=acknowledgements.append, projection_events=Counter())
+        scene = SimpleNamespace(displayed_frame=source, _projection_current=lambda _: False)
+        wrapped = SWEEP.accepted_projection(records, lambda *args: "done")
+        self.assertEqual(wrapped(scene, result), "done")
+        self.assertEqual(acknowledgements, [])
+        self.assertEqual(records.projection_events["stale_same_source_rejected"], 1)
+        scene._projection_current = lambda _: True
+        self.assertEqual(wrapped(scene, result), "done")
+        self.assertEqual(acknowledgements, [request])
+
     def test_exact_accepted_request_keeps_sweep_stages_across_new_same_source_conversion(self):
         records = SHARED.StageRecords(source_stages=SWEEP.STAGES[:7])
         identity = (1, "partial", 1)

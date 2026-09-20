@@ -45,6 +45,22 @@ def paired_paint(records, identity, when):
             **{name: (b - a) * 1000 for name, a, b in zip(STAGES[1:] + ("paint",), stamps, stamps[1:])}))
 
 
+def accepted_projection(records, original):
+    """An old viewport may share a source with displayed data but is not accepted."""
+    def invoke(scene, result):
+        current = scene._projection_current(result.request)
+        value = original(scene, result)
+        if (current and result.request.traces
+                and scene.displayed_frame is result.request.traces[0][1].source_frame):
+            records.accepted(result.request)
+        elif not current:
+            records.projection_events["stale_accept_rejected"] += 1
+            if result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
+                records.projection_events["stale_same_source_rejected"] += 1
+        return value
+    return invoke
+
+
 def main():
     if not sys.flags.isolated:
         raise SystemExit("Python -I required")
@@ -136,10 +152,6 @@ def main():
                 paired_paint(records, scoped(identity), when)
         return invoke
 
-    def accepted(value, scene, result):
-        if result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
-            records.accepted(result.request)
-
     def preparation(original):
         def invoke(owner, snapshot, bundle):
             identity = key(bundle)
@@ -195,7 +207,7 @@ def main():
         hook(projection, "project_spectrum", wrap(
             before=lambda request, **kw: records.request(request, "projection_begin"),
             after=lambda value, request, **kw: records.request(request, "projection_end")))
-        hook(SpectrumScene, "_accept_projection", wrap(after=accepted))
+        hook(SpectrumScene, "_accept_projection", lambda original: accepted_projection(records, original))
         hook(SpectrumScene, "set_presentation_active", activation)
         if gate_poll:
             # Diagnostic scheduling experiment only; not a product feature.
@@ -223,6 +235,7 @@ def main():
                            for index in range(1, cycle + 1)},
         missing=records.missing, reordered=records.reordered,
         missing_stages=dict(records.missing_stages),
+        projection_events=dict(records.projection_events),
         navigation_scope="Visibility at first paint, resume first250ms after show, not causal proof; exact accepted request carries copied preparation/delivery stamps",
         diagnostic_gate_poll=gate_poll, gated_ticks=gated_ticks,
         diagnostic_resume_commit=resume_commit,
