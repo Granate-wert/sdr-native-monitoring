@@ -98,10 +98,13 @@ def main():
         return None if not len(values) else dict(zip(("p50", "p95", "p99", "max"),
             map(float, (*np.percentile(values, [50, 95, 99]), max(values)))))
 
-    age = PaintAgeTracker()
-    beats = deque(maxlen=8192)
-    paints = {name: deque(maxlen=8192) for name in ("spectrum", "waterfall")}
-    callbacks = {name: deque(maxlen=8192) for name in ("page", "viewport")}
+    # Memory runs need only short timing context; do not warm tens of thousands
+    # of diagnostic float samples while attributing process memory growth.
+    timing_capacity = 512 if args.memory_seconds else 8192
+    age = PaintAgeTracker(timing_capacity)
+    beats = deque(maxlen=timing_capacity)
+    paints = {name: deque(maxlen=timing_capacity) for name in ("spectrum", "waterfall")}
+    callbacks = {name: deque(maxlen=timing_capacity) for name in ("page", "viewport")}
     keys, upload_tokens = {}, {}
     failures, stops, driver_entries = [], [], []
     gui = threading.get_ident()
@@ -113,7 +116,7 @@ def main():
     original_start_method, original_stop_method = _AtomicFakeLive.start, _AtomicFakeLive.stop
     control = {}
     control_phase, resumed_until = "idle", 0.0
-    phase_ages = {phase: {name: deque(maxlen=8192) for name in age.ages}
+    phase_ages = {phase: {name: deque(maxlen=timing_capacity) for name in age.ages}
                   for phase in ("starting", "stopping", "idle", "hidden", "resume", "steady")}
     phase_counts = {phase: dict.fromkeys(age.ages, 0) for phase in phase_ages}
     memory_rows = deque(maxlen=2048)
@@ -370,7 +373,8 @@ def main():
             report["paint_return_phases"] = {phase: dict(counts=phase_counts[phase],
                 age_ms={name: summary(data) for name, data in samples.items()})
                 for phase, samples in phase_ages.items()}
-            report["phase_scope"] = "Paint-return context; resume is first 250ms after show/Start ack, not causal attribution; last8192 per phase/canvas"
+            report["timing_sample_capacity"] = timing_capacity
+            report["phase_scope"] = "Paint-return context; resume is first 250ms after show/Start ack, not causal attribution; bounded last samples per phase/canvas"
             if args.memory_seconds:
                 memory_timer.stop()
                 sample_memory("before-close")

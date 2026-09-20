@@ -42,6 +42,7 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
         memory = report["memory"]
+        self.assertEqual(report["timing_sample_capacity"], 512)
         self.assertLessEqual(len(memory["samples"]), memory["capacity"])
         self.assertGreaterEqual(memory["total_samples"], len(memory["samples"]))
         self.assertEqual(memory["samples"][0]["label"], "before-start")
