@@ -18,17 +18,29 @@ STAGES = ("publish", "selected", "domain_end", "prepare_begin", "prepare_end",
           "delivered", "delivery_end", "projection_offer", "projection_begin", "projection_end", "applied")
 
 
+def mark_selected(records, identity):
+    """A new conversion of the same source must not inherit old stage stamps."""
+    with records.lock:
+        records.frames[identity] = {name: stamp for name, stamp in records.frames.get(identity, {}).items()
+                                    if name == "publish"}
+        records.mark(identity, "selected")
+
+
 def paired_paint(records, identity, when):
     with records.lock:
-        row = records.frames.get(identity, {})
+        row = records.accepted_requests.get(identity, {})
         if not all(name in row for name in STAGES):
             records.missing += 1
+            records.missing_stages.update(name for name in STAGES if name not in row)
             return
         stamps = [row[name] for name in STAGES] + [when]
         if any(b < a for a, b in zip(stamps, stamps[1:])):
             records.reordered += 1
             return
         records.rows.append(dict(identity=identity, total=(when - stamps[0]) * 1000,
+            visible=records.last_visibility,
+            since_show_ms=None if records.last_show is None else (when - records.last_show) * 1000,
+            geometry=row.get("geometry"),
             projection_window=(row["projection_begin"], row["projection_end"]),
             **{name: (b - a) * 1000 for name, a, b in zip(STAGES[1:] + ("paint",), stamps, stamps[1:])}))
 
@@ -54,7 +66,7 @@ def main():
     def key(frame):
         return observer.sweep_key(getattr(frame, "spectrum", frame))
 
-    records = shared.StageRecords()
+    records = shared.StageRecords(source_stages=STAGES[:7])
     polls = deque(maxlen=4096)
     projecting = Event()
     gated_ticks = 0
@@ -101,6 +113,38 @@ def main():
         if result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
             records.accepted(result.request)
 
+    def preparation(original):
+        def invoke(owner, snapshot, bundle):
+            identity = key(bundle)
+            with records.lock:
+                row = {name: stamp for name, stamp in records.frames.get(identity, {}).items()
+                       if name in STAGES[:3]}
+            row["prepare_begin"] = perf_counter()
+            value = original(owner, snapshot, bundle)
+            row["prepare_end"] = perf_counter()
+            with records.lock:
+                records.prepared_deliveries[(id(value), key(value.analyzer_bundle))] = row
+                while len(records.prepared_deliveries) > records.capacity:
+                    records.prepared_deliveries.popitem(last=False)
+            return value
+        return invoke
+
+    def delivery(original):
+        def invoke(owner, publication):
+            identity = key(publication.bundle)
+            with records.lock:
+                row = dict(records.prepared_deliveries.get((id(publication.presentation), identity), {}))
+                row["delivered"] = perf_counter()
+            value = original(owner, publication)
+            row["delivery_end"] = perf_counter()
+            with records.lock:
+                records.deliveries[identity] = row
+                records.deliveries.move_to_end(identity)
+                while len(records.deliveries) > records.capacity:
+                    records.deliveries.popitem(last=False)
+            return value
+        return invoke
+
     with ExitStack() as stack:
         stack.enter_context(patch.object(shared, "key", key))
 
@@ -111,22 +155,20 @@ def main():
         hook(ContinuousSweepPresenter, "_poll_and_prepare", poll_interval)
         hook(observer.PaintAgeTracker, "painted", first_paint)
         hook(service, "_to_domain_progress", wrap(
-            before=lambda n, **kw: records.mark((n.line_sequence, "partial", n.revision), "selected"),
+            before=lambda n, **kw: mark_selected(records, (n.line_sequence, "partial", n.revision)),
             after=lambda result, *a, **kw: records.mark(key(result), "domain_end")))
         hook(service, "_to_domain_line", wrap(
-            before=lambda n, **kw: records.mark((n.line_sequence, n.state, 0), "selected"),
+            before=lambda n, **kw: mark_selected(records, (n.line_sequence, n.state, 0)),
             after=lambda result, *a, **kw: records.mark(key(result), "domain_end")))
-        hook(SweepSnapshotPreparer, "__call__", wrap(
-            before=lambda _, snapshot, bundle: records.mark(key(bundle), "prepare_begin"),
-            after=lambda value, *a, **kw: records.mark(key(value.analyzer_bundle), "prepare_end")))
-        hook(ContinuousSweepPresenter, "_emit_snapshot", wrap(
-            before=lambda _, publication: records.mark(key(publication.bundle), "delivered"),
-            after=lambda value, _, publication: records.mark(key(publication.bundle), "delivery_end")))
+        hook(SweepSnapshotPreparer, "__call__", preparation)
+        hook(ContinuousSweepPresenter, "_emit_snapshot", delivery)
         hook(projection.SpectrumProjector, "offer", wrap(before=lambda _, request: records.request(request, "projection_offer")))
         hook(projection, "project_spectrum", wrap(
             before=lambda request, **kw: records.request(request, "projection_begin"),
             after=lambda value, request, **kw: records.request(request, "projection_end")))
         hook(SpectrumScene, "_accept_projection", wrap(after=accepted))
+        hook(SpectrumScene, "set_presentation_active", wrap(
+            before=lambda scene, active: records.visibility(active)))
         if gate_poll:
             # Diagnostic scheduling experiment only; not a product feature.
             hook(projection, "project_spectrum", gate_projection)
@@ -142,9 +184,15 @@ def main():
                                        for begin, end in polls) * 1000
     names = ("total",) + STAGES[1:] + ("paint",)
     groups = {"all": rows, "over_50ms": [row for row in rows if row["total"] > 50],
-              "at_most_50ms": [row for row in rows if row["total"] <= 50]}
+              "at_most_50ms": [row for row in rows if row["total"] <= 50],
+              "resume_250ms": [row for row in rows if row["since_show_ms"] is not None
+                               and row["since_show_ms"] < 250],
+              "steady_visible": [row for row in rows if row["visible"]
+                                 and row["since_show_ms"] is not None and row["since_show_ms"] >= 250]}
     report = dict(scope=__doc__, capacity=records.capacity, retained=len(rows),
         missing=records.missing, reordered=records.reordered,
+        missing_stages=dict(records.missing_stages),
+        navigation_scope="Visibility at first paint, resume first250ms after show, not causal proof; exact accepted request carries copied preparation/delivery stamps",
         diagnostic_gate_poll=gate_poll, gated_ticks=gated_ticks,
         overlap_scope="Inclusive overlap with existing Sweep poll+prepare worker; not an additive stage or causal proof",
         projection_poll_overlap={group: dict(count=len(values),

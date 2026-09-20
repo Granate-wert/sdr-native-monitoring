@@ -44,8 +44,10 @@ def instrumented_call(original, before=None, after=None, cpu_samples=None):
 
 
 class StageRecords:
-    def __init__(self, capacity=4096):
+    def __init__(self, capacity=4096, *, source_stages=None):
         self.capacity = capacity
+        self.source_stages = source_stages or ("publish", "offer", "coalesced", "prepare_dispatch",
+                                              "prepare_begin", "prepare_end", "delivered")
         self.frames = OrderedDict()
         self.requests = OrderedDict()
         self.accepted_requests = OrderedDict()
@@ -102,8 +104,7 @@ class StageRecords:
                 # a later preparation of this source can already be in flight.
                 row["source_stages"] = {name: value for name, value in
                     self.deliveries.get(identity, self.frames.get(identity, {})).items() if name in
-                    ("publish", "offer", "coalesced", "prepare_dispatch",
-                     "prepare_begin", "prepare_end", "delivered")}
+                    self.source_stages}
                 row["geometry"] = (request.generation, request.viewport)
             row.setdefault(stage, perf_counter())
             while len(self.requests) > self.capacity:
