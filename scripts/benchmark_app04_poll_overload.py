@@ -205,6 +205,25 @@ def sweep_key(frame):
     return (frame.sequence, frame.state.value, 0)
 
 
+def sweep_stop_phase(presenter, projector):
+    # Reuse the same Future vocabulary as RTBW; this is not a worker barrier.
+    from scripts.benchmark_app05_rtbw_observation import future_phase
+    return dict(poll=future_phase(presenter._poll_future),
+                projection=future_phase(projector._future))
+
+
+def sweep_phase_matches(phase, requested):
+    if requested == "any":
+        return True
+    if requested == "idle":
+        return phase["poll"] == phase["projection"] == "idle"
+    if requested == "poll-only":
+        return phase["poll"] == "running" and phase["projection"] == "idle"
+    if requested == "projection-only":
+        return phase["projection"] == "running" and phase["poll"] == "idle"
+    raise ValueError("unknown Sweep Stop phase")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", required=True, type=Path)
@@ -213,6 +232,7 @@ def main():
     parser.add_argument("--bins", type=int, nargs="+", default=[65536, 262144, 2000000])
     parser.add_argument("--page-cycle-seconds", type=float, default=0)
     parser.add_argument("--trace-memory", action="store_true")
+    parser.add_argument("--stop-phase", choices=("any", "idle", "poll-only", "projection-only"), default="any")
     args = parser.parse_args()
     if not sys.flags.isolated or not 1 <= args.seconds <= 1200:
         parser.error("use Python -I and 1..1200 seconds per grid")
@@ -349,6 +369,8 @@ def main():
         polls, beats, paints, publications = (deque(maxlen=8192) for _ in range(4))
         stop_times = []
         stop_stages = {}
+        stop_intent_phase = {}
+        stop_phase_observations = 0
         memory_samples = []
         page_switches = []
         poll_ends = {}
@@ -481,6 +503,16 @@ def main():
                 began = perf_counter()
 
                 def request_stop():
+                    nonlocal stop_phase_observations
+                    phase = sweep_stop_phase(presenter, harness.composition.spectrum_projector)
+                    stop_phase_observations += 1
+                    if not sweep_phase_matches(phase, args.stop_phase):
+                        if perf_counter() > due + 3:
+                            errors.append(f"Stop phase unavailable: {args.stop_phase}; last={phase}")
+                        else:
+                            stop_timer.start(2)
+                            return
+                    stop_intent_phase.update(phase)
                     phases.transition("stop")
                     entered = perf_counter()
                     page.primary.click()
@@ -491,7 +523,7 @@ def main():
                 run_qt_until(lambda: not presenter.is_starting, 3)
                 due = perf_counter() + args.seconds
                 stop_timer.start(round(args.seconds*1000))
-                run_qt_until(lambda: bool(stop_times) and presenter.can_close(), args.seconds + 5)
+                run_qt_until(lambda: bool(stop_times) and presenter.can_close(), args.seconds + 8)
                 ended = perf_counter()
                 if errors or harness.events != ["sweep-start", "sweep-stop"]:
                     raise AssertionError((errors, harness.events))
@@ -524,6 +556,8 @@ def main():
                     stop_timer_lateness_ms=(stop_times[0]-due)*1000,
                     stop_click_return_ms=(stop_times[1]-stop_times[0])*1000,
                     stop_to_idle_ms=(ended-stop_times[0])*1000,
+                    stop_phase_at_intent=stop_intent_phase,
+                    stop_phase_observations=stop_phase_observations,
                     stop_stage_ms=dict(
                         intent_to_worker=(stop_stages["worker_begin"]-stop_times[0])*1000,
                         service_stop=(stop_stages["service_stopped"]-stop_stages["worker_begin"])*1000,
@@ -560,6 +594,8 @@ def main():
         event_pump="QEventLoop.exec (normal deferred-delete delivery)",
         age_scope="host synthetic publication to first paint return; newest uploaded Waterfall row; same-key both is not atomic/DWM/RF age",
         phase_scope="event observation time; startup/resume first250ms, hidden, steady, Stop through terminal acknowledgement; counts include successful calls, not distinct RF frames; return counts are not additive pipeline timings",
+        requested_stop_phase=args.stop_phase,
+        stop_phase_scope="Instantaneous GUI-side Future state immediately before click, not a worker barrier. Poll includes domain conversion and preparation. Phase wait is timer lateness, excluded from intent-to-idle; unmatched phase fails after cleanup.",
         timing_window_samples=8192, trace_memory=args.trace_memory,
         page_cycle_seconds=args.page_cycle_seconds,
         product_imports_outside_checkout=outside, results=rows)

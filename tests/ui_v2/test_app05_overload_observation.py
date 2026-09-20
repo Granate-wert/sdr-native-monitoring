@@ -19,6 +19,20 @@ SPEC.loader.exec_module(OBSERVER)
 
 
 class PhaseThroughputTests(unittest.TestCase):
+    def test_stop_selectors_exclude_overlap_queued_and_done_states(self):
+        for poll in ("idle", "running", "queued", "done-awaiting-gui"):
+            for projection in ("idle", "running", "queued", "done-awaiting-gui"):
+                phase = dict(poll=poll, projection=projection)
+                self.assertTrue(OBSERVER.sweep_phase_matches(phase, "any"))
+                self.assertEqual(OBSERVER.sweep_phase_matches(phase, "idle"),
+                                 poll == projection == "idle")
+                self.assertEqual(OBSERVER.sweep_phase_matches(phase, "poll-only"),
+                                 poll == "running" and projection == "idle")
+                self.assertEqual(OBSERVER.sweep_phase_matches(phase, "projection-only"),
+                                 projection == "running" and poll == "idle")
+        with self.assertRaises(ValueError):
+            OBSERVER.sweep_phase_matches(dict(poll="idle", projection="idle"), "unknown")
+
     def test_exposure_is_split_without_timer_samples_and_stop_is_terminal(self):
         clock = [0.]
         phases = OBSERVER.PhaseThroughput(lambda: clock[0])
