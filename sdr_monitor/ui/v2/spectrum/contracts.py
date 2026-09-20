@@ -142,16 +142,31 @@ def adapt_spectrum_frame(frame: object) -> SpectrumFrameView:
         raise ValueError("spectrum frame requires equally sized non-empty arrays")
     if not np.issubdtype(frequencies.dtype, np.number) or not np.issubdtype(values.dtype, np.number):
         raise TypeError("spectrum frame arrays must be numeric")
-    if not np.all(np.isfinite(frequencies)):
-        raise ValueError("spectrum frame frequency grid must be finite")
-    if np.any(np.diff(frequencies) <= 0.0):
-        raise ValueError("spectrum frame frequency grid must be strictly increasing")
+    _validate_frequency_grid(frequencies)
     return SpectrumFrameView(
         source_frame=frame,
         frequencies_hz=frequencies,
         values=values,
         unit_label=unit_label,
     )
+
+
+def _validate_frequency_grid(frequencies: np.ndarray) -> None:
+    """Check every interval with <=64K difference scratch, including seams.
+
+    Keep the former dtype-specific np.diff semantics and finite-error priority:
+    a later non-finite bin wins over an earlier non-ascending interval. Do not
+    trust source identity or cache a borrowed array's validity.
+    """
+    ascending = True
+    for first in range(0, frequencies.size, 65536):
+        chunk = frequencies[first:first + 65537]
+        if not np.all(np.isfinite(chunk)):
+            raise ValueError("spectrum frame frequency grid must be finite")
+        if ascending and np.any(np.diff(chunk) <= 0.0):
+            ascending = False
+    if not ascending:
+        raise ValueError("spectrum frame frequency grid must be strictly increasing")
 
 
 def format_frequency_hz(value_hz: float, *, locale: UiLocale = UiLocale.RU,
