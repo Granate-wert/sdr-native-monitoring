@@ -21,6 +21,7 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEventLoop, QTimer
 from sdr_monitor.domain.live import LivePersistenceFrame
 from tests.test_app02_analyzer_workspace_product import AnalyzerWorkspaceProductTests
 from tests.ui_v2.test_app05_prepared_live import measurement
@@ -122,10 +123,25 @@ def qt_wrapper_counts():
                         for item in shiboken6.getAllValidWrappers()))
 
 
+def qt_idle_turn():
+    """Return through a real Qt loop, including deferred-delete delivery.
+
+    Repeated processEvents() inside a Python loop alone can starve deleteLater
+    events. Do not measure that artificial backlog as a product ownership leak.
+    No direct deletion, global GC, receiver call or product workaround here.
+    """
+    loop = QEventLoop()
+    QTimer.singleShot(0, loop.quit)
+    loop.exec()
+
+
 def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_allocations=False,
-        collect_endpoints=False, observation="full", visibility="alternate", qt_census=False, switch_every=20):
+        collect_endpoints=False, observation="full", visibility="alternate", qt_census=False, switch_every=20,
+        event_pump="qt-turn"):
     should_sample(0, frames, observation)  # reject before constructing any GUI
     workspace_for(0, visibility, switch_every)
+    if event_pump not in ("qt-turn", "manual"):
+        raise ValueError("unknown event pump")
     recorder = MemorySamples(sample_capacity)
     app = QApplication.instance() or QApplication([])
     fixture = AnalyzerWorkspaceProductTests("runTest")
@@ -165,6 +181,8 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
             fixture.wait(lambda: fixture.composition.view_model.state.spectrum is frame
                          and fixture.presenter._preparation_future is None)
             fixture.wait(lambda: fixture.composition.spectrum_projector._future is None)
+            if event_pump == "qt-turn":
+                qt_idle_turn()
             if should_sample(index, frames, observation, switch_every):
                 sampled = time.perf_counter()
                 inventory = (fixture.composition.memory_snapshot(fixture.page)
@@ -199,6 +217,7 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
                 "observation": observation,
                 "visibility": visibility, "qt_wrapper_census": qt_endpoints,
                 "switch_every": switch_every,
+                "event_pump": event_pump,
                 "observation_scope": "Only diagnostic sampling changes; every pipeline frame and visibility transition still runs",
                 "sampling": recorder.summary(), "samples": list(recorder.rows),
                 "allocation_trace": traced_result,
@@ -226,6 +245,8 @@ if __name__ == "__main__":
                         help="Causal render isolation; all pipeline frames still admitted")
     parser.add_argument("--qt-census", action="store_true", help="Scalar Shiboken wrapper counts at three endpoints only")
     parser.add_argument("--switch-every", type=int, default=20, help="Visibility stress cadence in admitted frames")
+    parser.add_argument("--event-pump", choices=("qt-turn", "manual"), default="qt-turn",
+                        help="Real Qt idle turn (default); manual is historical deferred-delete starvation control only")
     args = parser.parse_args()
     if (not 1 <= args.frames <= 10000 or not 2 <= args.bins <= 2_000_000
             or not 1 <= args.power_bins <= 64 or args.bins * args.power_bins > 8_388_608):
@@ -237,7 +258,7 @@ if __name__ == "__main__":
     output = run(args.frames, args.bins, args.power_bins, sample_capacity=args.sample_capacity,
                  trace_allocations=args.trace_allocations, collect_endpoints=args.collect_endpoints,
                  observation=args.observation, visibility=args.visibility, qt_census=args.qt_census,
-                 switch_every=args.switch_every)
+                 switch_every=args.switch_every, event_pump=args.event_pump)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
     samples = output["samples"]
