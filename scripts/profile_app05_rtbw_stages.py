@@ -17,6 +17,7 @@ from pathlib import Path
 import sys
 import threading
 from time import perf_counter, thread_time
+from typing import Any
 from unittest.mock import patch
 
 
@@ -53,11 +54,11 @@ class StageRecords:
         self.accepted_requests = OrderedDict()
         self.prepared_deliveries = OrderedDict()
         self.deliveries = OrderedDict()
-        self.rows = deque(maxlen=capacity)
-        self.details = deque(maxlen=capacity)
+        self.rows: deque[dict[str, float]] = deque(maxlen=capacity)
+        self.details: deque[dict[str, Any]] = deque(maxlen=capacity)
         self.missing = self.reordered = 0
-        self.missing_stages = Counter()
-        self.projection_events = Counter()
+        self.missing_stages: Counter[str] = Counter()
+        self.projection_events: Counter[str] = Counter()
         self.last_offer = None
         self.last_visibility = None
         self.last_show = None
@@ -244,7 +245,7 @@ def main():
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     records = StageRecords()
-    cpu = {name: deque(maxlen=4096) for name in ("prepare", "project", "accept")}
+    cpu: dict[str, deque[float]] = {name: deque(maxlen=4096) for name in ("prepare", "project", "accept")}
 
     def wrap(before=None, after=None, cpu_name=None):
         def factory(original):

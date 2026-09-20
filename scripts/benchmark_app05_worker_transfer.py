@@ -55,7 +55,8 @@ def main():
                     p50_ms=float(np.median(times)), p95_ms=float(np.percentile(times, 95)),
                     output_sha256=hashlib.sha256(result.image.tobytes()).hexdigest())
     outside = [n for n, m in tuple(sys.modules.items()) if n.startswith("sdr_monitor")
-               and getattr(m, "__file__", None) and not Path(m.__file__).resolve().is_relative_to(root)]
+               and (module_file := getattr(m, "__file__", None))
+               and not Path(module_file).resolve().is_relative_to(root)]
     if outside:
         raise AssertionError(outside)
     report = dict(scope=__doc__, cases=cases, outside=outside,
