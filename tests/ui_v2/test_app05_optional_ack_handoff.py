@@ -100,6 +100,69 @@ class OptionalAckHandoffTests(unittest.TestCase):
     def test_final_ack_cannot_invent_a_cadence_ticket_for_pending_publication(self):
         self.exercise(admitted=False)
 
+    def density_deadline(self, *, overdue):
+        f = self.f
+        scene, port = f.page.visualization.spectrum_scene, f.composition.spectrum_projector
+        f.presenter._display_scheduler._timer.stop()
+        f.presenter._poll_timer.stop()
+        source = measurement(f)
+        f.presenter._emit_snapshot(source)
+        f.wait(lambda: scene.displayed_frame is not None and port._future is None
+               and f.presenter._preparation_future is None)
+        source = replace(source, persistence=synthetic_persistence(source.spectrum, 32, 1, 1))
+        overlay = scene._persistence
+        entered, release = threading.Event(), threading.Event()
+        original = projection.prepare_persistence_image
+
+        def hold(request, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("density deadline barrier")
+            return original(request, **kwargs)
+
+        with patch.object(projection, "prepare_persistence_image", side_effect=hold):
+            try:
+                f.presenter._emit_snapshot(source)
+                f.wait(entered.is_set)
+                active, future = port._active, port._future
+                start, period = overlay._worker_request_ns, overlay._interval_ns
+                values = np.full(active.persistence.view.density.shape, .25, np.float32)
+                values.setflags(write=False)
+                newest = replace(active.persistence.view.source_frame, density=values)
+                scene.set_persistence_frame(newest, now_ns=start + 1)
+                self.assertIs(overlay.worker_request, active.persistence)
+                release.set()
+                future.result(timeout=3)
+                ack = start + (2 * period if overdue else period // 2)
+                with patch("sdr_monitor.ui.v2.spectrum.persistence_overlay.monotonic_ns", return_value=ack):
+                    port._finish(future)
+                self.assertEqual(overlay.metrics.image_uploads, 1)
+                self.assertEqual(overlay._last_upload_ns, start)
+                self.assertTrue(overlay._timer.isActive())
+                expected_delay = max(1, int((start + period - ack) / 1_000_000))
+                self.assertEqual(overlay._timer.interval(), expected_delay)
+                overlay._timer.stop()  # deliver precisely this pending timeout below
+                self.assertIsNone(overlay.worker_request)
+                if not overdue:
+                    overlay.flush_pending(start + period - 1)
+                    self.assertIsNone(overlay.worker_request)
+                    overlay._timer.stop()
+                overlay.flush_pending(max(ack, start + period))
+                self.assertIs(overlay.worker_request.view.source_frame, newest)
+                scene.commit_projection()
+                f.wait(lambda: overlay.metrics.image_uploads == 2 and port._future is None)
+                self.assertIs(overlay._uploaded_density, values)
+                self.assertEqual(port.allocation_budget.snapshot().reserved_bytes, 0)
+            finally:
+                release.set()
+        self.assertEqual(f.events, [])
+
+    def test_short_worker_wait_rearms_only_remaining_start_to_start_period(self):
+        self.density_deadline(overdue=False)
+
+    def test_overdue_worker_wait_does_not_add_a_new_density_period_after_ack(self):
+        self.density_deadline(overdue=True)
+
 
 if __name__ == "__main__":
     unittest.main()
