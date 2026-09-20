@@ -165,7 +165,12 @@ class ContinuousSweepPresenter(QObject):
         # property validates large arrays; consumers must not reconstruct it
         # repeatedly on the GUI thread merely to obtain the same packet.
         bundle = snapshot.analyzer_bundle
-        return _PreparedPublication(snapshot, bundle, self._snapshot_preparer(snapshot, bundle))
+        prepared = self._snapshot_preparer(snapshot, bundle)
+        projected = getattr(prepared, "snapshot", None)
+        if isinstance(projected, ContinuousSweepDisplaySnapshot):
+            snapshot = projected
+            bundle = getattr(prepared, "analyzer_bundle", bundle)
+        return _PreparedPublication(snapshot, bundle, prepared)
 
     def _stop_and_snapshot(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication:
         self._service.stop()

@@ -314,12 +314,16 @@ class SpectrumScene(QWidget):
         else:
             view = adapt_spectrum_frame(frame)
         signature = _measurement_signature(frame, view)
+        baseline = None if prepared is None else prepared.measurement_grid
         same_measurement = (self._measurement_signature == signature
-                            and _same_grid(self._measurement_grid, view.frequencies_hz))
+                            and (baseline is not None and baseline is self._measurement_grid
+                                 or _same_grid(self._measurement_grid, view.frequencies_hz)))
         if self._measurement_signature is not None and not same_measurement:
             self.clear_measurement()
         self._measurement_signature = signature
-        if not same_measurement:
+        if baseline is not None:
+            self._measurement_grid = baseline
+        elif not same_measurement:
             # Own one comparison baseline, even for public-shaped mutable arrays.
             # Do not serialize/copy the full grid on every unchanged publication.
             self._measurement_grid = view.frequencies_hz.copy()

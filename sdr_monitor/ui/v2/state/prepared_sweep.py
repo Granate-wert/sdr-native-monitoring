@@ -14,6 +14,8 @@ from ..waterfall.contracts import SweepWaterfallLine
 from ..spectrum.contracts import PreparedSpectrumFrame
 from .analyzer_layers import waterfall_line_from_sweep
 from ..spectrum.allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
+from ..spectrum.grid_baseline import MeasurementGridCache
+from .source_admission import PresentationSourceAdmission
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,11 +45,12 @@ class PreparedSweepSnapshot:
 
 
 def prepare_sweep_snapshot(snapshot: ContinuousSweepDisplaySnapshot,
-                           bundle: AnalyzerFrameBundle | None) -> PreparedSweepSnapshot:
+                           bundle: AnalyzerFrameBundle | None, *,
+                           spectrum: PreparedSpectrumFrame | None = None) -> PreparedSweepSnapshot:
     """Validate/reduce at most two rows off GUI; preserve old fail-closed UX."""
     if not isinstance(snapshot, ContinuousSweepDisplaySnapshot):
         raise TypeError("Sweep preparation requires a domain snapshot")
-    spectrum = None if bundle is None else PreparedSpectrumFrame(bundle)
+    spectrum = spectrum if spectrum is not None else None if bundle is None else PreparedSpectrumFrame(bundle)
     try:
         rows = tuple(waterfall_line_from_sweep(frame)
                      for frame in (snapshot.line, snapshot.progress) if frame is not None)
@@ -63,21 +66,31 @@ class SweepSnapshotPreparer:
 
     def __init__(self, allocation_budget: PresentationAllocationBudget) -> None:
         self.allocation_budget = allocation_budget
+        self._grid = MeasurementGridCache(allocation_budget)
 
     def __call__(self, snapshot: ContinuousSweepDisplaySnapshot,
                  bundle: AnalyzerFrameBundle | None) -> PreparedSweepSnapshot:
         if snapshot.presentation_omission is not None:
+            self._grid.clear()
             return PreparedSweepSnapshot(snapshot, None, (), "presentation_memory_budget", memory_limited=True)
         self.allocation_budget.observe(snapshot, bundle)
+        if bundle is None:
+            self._grid.clear()
+        try:
+            spectrum = None if bundle is None else PreparedSpectrumFrame(bundle, grid_cache=self._grid)
+        except PresentationBudgetExceeded:
+            self._grid.clear()
+            omitted = PresentationSourceAdmission(self.allocation_budget).omit_sweep(snapshot)
+            return PreparedSweepSnapshot(omitted, None, (), "presentation_memory_budget", memory_limited=True)
         size = sum(min(2048, frame.values_db.size) * 12 + 8
                    for frame in (snapshot.line, snapshot.progress) if frame is not None)
         try:
             with self.allocation_budget.reserve(int(size)) as allocation:
-                prepared = prepare_sweep_snapshot(snapshot, bundle)
+                prepared = prepare_sweep_snapshot(snapshot, bundle, spectrum=spectrum)
                 allocation.commit(*prepared.waterfall_rows)
                 return prepared
         except PresentationBudgetExceeded as error:
             # Preserve the exact spectrum and terminal lifecycle publication;
             # only the optional derived Waterfall rows are unavailable.
             return PreparedSweepSnapshot(snapshot, bundle, (), str(error),
-                                         None if bundle is None else PreparedSpectrumFrame(bundle), memory_limited=True)
+                                         spectrum, memory_limited=True)

@@ -10,6 +10,7 @@ import numpy as np
 
 from ..i18n import UiLocale, text
 from .cancellation import CancelCheck, check_cancelled
+from .grid_baseline import MeasurementGridCache
 
 class TraceKind(StrEnum):
     """Visible analytical trace roles; their data is already computed upstream."""
@@ -68,8 +69,9 @@ class PreparedSpectrumFrame:
 
     view: SpectrumFrameView
     finite_extent: tuple[float, float] | None
+    measurement_grid: np.ndarray | None
 
-    def __init__(self, frame: object) -> None:
+    def __init__(self, frame: object, *, grid_cache: MeasurementGridCache | None = None) -> None:
         if not is_dataclass(frame) or not getattr(getattr(frame, "__dataclass_params__", None), "frozen", False):
             raise ValueError("prepared spectrum requires a frozen publication")
         view = adapt_spectrum_frame(frame)
@@ -77,6 +79,8 @@ class PreparedSpectrumFrame:
             raise ValueError("prepared spectrum arrays must be read-only")
         object.__setattr__(self, "view", view)
         object.__setattr__(self, "finite_extent", finite_value_extent(view.values))
+        object.__setattr__(self, "measurement_grid", None if grid_cache is None else
+                           grid_cache.prepare(view.frequencies_hz))
 
 
 def finite_value_extent(values: np.ndarray, *, cancelled: CancelCheck = None) -> tuple[float, float] | None:

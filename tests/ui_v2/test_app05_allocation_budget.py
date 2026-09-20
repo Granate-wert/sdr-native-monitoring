@@ -290,6 +290,7 @@ class ProductAllocationBudgetTests(unittest.TestCase):
         snap = replace(snap, spectrum=frame, persistence=density)
         budget = self.composition.allocation_budget
         budget.observe(snap)
+        self.presenter._snapshot_preparer._grid.prepare(frame.frequencies_hz)
         budget.limit_bytes = 1
         with patch("sdr_monitor.ui.v2.state.analyzer_layer_cache.persistence_density_from_native",
                    side_effect=AssertionError("conversion before admission")):

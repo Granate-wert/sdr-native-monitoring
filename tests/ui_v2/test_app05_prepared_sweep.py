@@ -58,9 +58,9 @@ class PreparedSweepTests(unittest.TestCase):
         preparation_threads, bundle_threads = [], []
         bundle_property = ContinuousSweepDisplaySnapshot.analyzer_bundle.fget
 
-        def prepare(snapshot, bundle):
+        def prepare(snapshot, bundle, **kwargs):
             preparation_threads.append(threading.get_ident())
-            return prepare_sweep_snapshot(snapshot, bundle)
+            return prepare_sweep_snapshot(snapshot, bundle, **kwargs)
 
         def bundle(snapshot):
             bundle_threads.append(threading.get_ident())

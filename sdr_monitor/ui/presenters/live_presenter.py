@@ -378,6 +378,9 @@ class LivePresenter(QObject):
                 return _PreparedDelivery(snapshot, revision, render)
         try:
             value = self._snapshot_preparer(snapshot)
+            projected = getattr(value, "snapshot", None)
+            if isinstance(projected, LiveSnapshot):
+                snapshot = projected
             return _PreparedDelivery(snapshot, revision, render, value)
         except Exception as error:
             return _PreparedDelivery(snapshot, revision, render, error=str(error))

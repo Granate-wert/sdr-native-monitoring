@@ -100,6 +100,9 @@ class PreparedLiveTests(unittest.TestCase):
 
         f.presenter._snapshot_preparer = slow
         f.presenter.prepared_snapshot_ready.connect(lambda state: delivered.append(state.snapshot))
+        # This test drives exact offers/flushes itself. A real timer racing the
+        # first barrier would add an unrelated pending offer to the count.
+        f.presenter._poll_timer.stop()
         try:
             first = measurement(f)
             f.live._snapshot = first

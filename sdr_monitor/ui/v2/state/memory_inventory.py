@@ -76,6 +76,7 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
     if getattr(live, "_pending_commands", 0):
         in_flight.append("live.control: publication not yet acknowledged")
     cache = getattr(getattr(live, "_snapshot_preparer", None), "_layers", None)
+    add("live.grid-cache", getattr(getattr(getattr(live, "_snapshot_preparer", None), "_grid", None), "baseline", None))
     add("live.preparation-cache", *(getattr(cache, name, None) for name in
         ("_density_source", "_density", "_waterfall_source", "_waterfall")))
     add("live.view-model", composition.view_model.state)
@@ -85,6 +86,7 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
     analyzer = composition.analyzer_view_model
     add("analyzer.view-model", None if analyzer is None else analyzer.state)
     presenter = composition.analyzer_presenter
+    add("sweep.grid-cache", getattr(getattr(getattr(presenter, "_snapshot_preparer", None), "_grid", None), "baseline", None))
     packets = tuple(result("sweep." + name, getattr(presenter, "_" + name + "_future", None))
                     for name in ("start", "poll", "stop"))
     add("sweep.presenter", *packets,
