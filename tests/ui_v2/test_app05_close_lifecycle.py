@@ -101,6 +101,11 @@ class CloseLifecycleTests(unittest.TestCase):
         del owner, plan
         try:
             close.request()
+            deadline = time.monotonic() + 3
+            while not entered.is_set():
+                close.poll()
+                self.assertLess(time.monotonic(), deadline, close.state)
+                time.sleep(.001)
             self.wait(close, "timeout")
             self.assertTrue(entered.is_set())
             self.assertEqual(close._completed, {"first"})
