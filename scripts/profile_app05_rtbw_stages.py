@@ -49,6 +49,8 @@ class StageRecords:
         self.frames = OrderedDict()
         self.requests = OrderedDict()
         self.accepted_requests = OrderedDict()
+        self.prepared_deliveries = OrderedDict()
+        self.deliveries = OrderedDict()
         self.rows = deque(maxlen=capacity)
         self.details = deque(maxlen=capacity)
         self.missing = self.reordered = 0
@@ -99,13 +101,43 @@ class StageRecords:
                 # Copy scalar delivery stamps at offer, not at eventual ack:
                 # a later preparation of this source can already be in flight.
                 row["source_stages"] = {name: value for name, value in
-                    self.frames.get(identity, {}).items() if name in
+                    self.deliveries.get(identity, self.frames.get(identity, {})).items() if name in
                     ("publish", "offer", "coalesced", "prepare_dispatch",
                      "prepare_begin", "prepare_end", "delivered")}
                 row["geometry"] = (request.generation, request.viewport)
             row.setdefault(stage, perf_counter())
             while len(self.requests) > self.capacity:
                 self.requests.popitem(last=False)
+
+    def preparation_started(self, identity):
+        with self.lock:
+            row = {name: value for name, value in self.frames.get(identity, {}).items()
+                   if name in ("publish", "offer", "coalesced", "prepare_dispatch")}
+            row["prepare_begin"] = perf_counter()
+            self.mark(identity, "prepare_begin", row["prepare_begin"])
+            return row
+
+    def preparation_finished(self, delivery, row):
+        identity = key(delivery.snapshot)
+        with self.lock:
+            row["prepare_end"] = perf_counter()
+            self.mark(identity, "prepare_end", row["prepare_end"])
+            # Control ack may replace the outer delivery/revision; its immutable
+            # prepared value is unchanged. Capture only its scalar id, not owner.
+            self.prepared_deliveries[(id(delivery.value), identity)] = row
+            while len(self.prepared_deliveries) > self.capacity:
+                self.prepared_deliveries.popitem(last=False)
+
+    def delivered(self, delivery):
+        identity = key(delivery.snapshot)
+        with self.lock:
+            row = dict(self.prepared_deliveries.get((id(delivery.value), identity), {}))
+            row["delivered"] = perf_counter()
+            self.mark(identity, "delivered", row["delivered"])
+            self.deliveries[identity] = row
+            self.deliveries.move_to_end(identity)
+            while len(self.deliveries) > self.capacity:
+                self.deliveries.popitem(last=False)
 
     def accepted(self, request):
         identity = key(request.traces[0][1].source_frame) if request.traces else None
@@ -240,6 +272,17 @@ def main():
             # a new timer tick. Record its actual admission/dispatch boundary.
             records.mark(key(snapshot), "coalesced")
 
+    def preparing(original):
+        @wraps(original)
+        def invoke(presenter, snapshot, *args, **kwargs):
+            row = records.preparation_started(key(snapshot))
+            began = thread_time()
+            delivery = original(presenter, snapshot, *args, **kwargs)
+            cpu["prepare"].append((thread_time() - began) * 1000)
+            records.preparation_finished(delivery, row)
+            return delivery
+        return invoke
+
     with ExitStack() as stack:
         def instrument(owner, name, wrapper):
             stack.enter_context(patch.object(owner, name, wrapper(getattr(owner, name))))
@@ -250,11 +293,9 @@ def main():
         instrument(ThreadPoolExecutor, "submit", wrap(before=preparation_submitted))
         if hasattr(DisplayScheduler, "take_pending_replacement"):
             instrument(DisplayScheduler, "take_pending_replacement", wrap(after=replacement_taken))
-        instrument(LivePresenter, "_prepare", wrap(
-            before=lambda _, snapshot, *args, **kwargs: records.mark(key(snapshot), "prepare_begin"),
-            after=lambda value, _, snapshot, *args, **kwargs: records.mark(key(snapshot), "prepare_end"), cpu_name="prepare"))
+        instrument(LivePresenter, "_prepare", preparing)
         instrument(LivePresenter, "_deliver_prepared", wrap(
-            before=lambda _, delivery: records.mark(key(delivery.snapshot), "delivered")))
+            before=lambda _, delivery: records.delivered(delivery)))
         instrument(projection.SpectrumProjector, "offer", wrap(before=offering))
         instrument(projection.SpectrumProjector, "_dispatch", wrap(before=dispatching))
         instrument(projection.SpectrumProjector, "_finish", wrap(before=projection_callback))

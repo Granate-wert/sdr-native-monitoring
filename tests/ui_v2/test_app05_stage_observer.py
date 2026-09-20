@@ -154,6 +154,31 @@ class StageObserverTests(unittest.TestCase):
         self.assertEqual(detail["since_viewport_ms"], 2000)
         self.assertEqual(detail["geometry"], (1, (0., 1., 100)))
 
+    def test_running_preparation_survives_same_source_coalescing_and_control_ack_wrapper(self):
+        records = OBSERVER.StageRecords(2)
+        value = request()
+        identity = (1, "rtbw", 1)
+        for when, name in enumerate(("publish", "offer", "coalesced")):
+            records.mark(identity, name, when)
+        packet = SimpleNamespace(snapshot=value.traces[0][1].source_frame, value=object())
+        with patch.object(OBSERVER, "perf_counter", side_effect=(3, 4, 5, 6, 7, 8, 9)):
+            started = records.preparation_started(identity)
+            records.mark(identity, "coalesced", 3.5)  # newer pending tick, same source
+            records.preparation_finished(packet, started)
+            records.delivered(SimpleNamespace(snapshot=packet.snapshot, value=packet.value))
+            for stage in ("projection_offer", "projection_begin", "projection_end"):
+                records.request(value, stage)
+            records.accepted(value)
+        records.painted(identity, 10)
+        self.assertEqual(records.missing, 0)
+        self.assertEqual(records.rows[-1]["prepare_begin"], 1000)
+        for token in range(3, 10):
+            new_packet = SimpleNamespace(snapshot=SimpleNamespace(timestamp_ns=token, config_generation=1), value=object())
+            records.preparation_finished(new_packet, {})
+            records.delivered(new_packet)
+        self.assertEqual(len(records.prepared_deliveries), 2)
+        self.assertEqual(len(records.deliveries), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
