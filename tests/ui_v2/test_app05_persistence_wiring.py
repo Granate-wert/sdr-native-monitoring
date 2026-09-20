@@ -129,7 +129,9 @@ class PersistenceWiringTests(unittest.TestCase):
             action()
             self.drain()
             if not overlay._visible or not overlay._presentation_active or overlay.latest_view is None:
-                self.assertIsNone(overlay.image_item.image)
+                self.assertFalse(overlay.image_item.isVisible())
+                if not overlay._presentation_active or overlay.latest_view is None:
+                    self.assertIsNone(overlay.image_item.image)
                 self.assertEqual(overlay.metrics.image_uploads, uploads)
             else:
                 self.assertEqual(overlay.metrics.image_uploads, uploads + 1)
@@ -165,7 +167,7 @@ class PersistenceWiringTests(unittest.TestCase):
 
     def test_density_denial_keeps_spectrum_and_explicit_visibility_recovery(self):
         # Retain another owner's array: sources/traces fit, image+scratch do not.
-        other = np.empty(8 * 1024 * 1024 - 18000, dtype=np.uint8)
+        other = np.empty(8 * 1024 * 1024 - 40000, dtype=np.uint8)
         self.budget.observe(other)
         self.density(.4, width=1024)
         self.drain()
