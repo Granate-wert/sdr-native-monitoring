@@ -104,7 +104,7 @@ class ServiceCosts:
 
 class GuiIntervals:
     """Bounded actual GUI callback intervals; nested rows must not be summed."""
-    def __init__(self, capacity=8192):
+    def __init__(self, capacity=16384):
         self.rows: deque[dict[str, Any]] = deque(maxlen=capacity)
         self.evictions = 0
         self.gui_thread = threading.get_ident()
@@ -326,7 +326,7 @@ def main():
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
-    from pyqtgraph import ImageItem, GraphicsLayoutWidget
+    from pyqtgraph import ImageItem, GraphicsLayoutWidget, PlotCurveItem, AxisItem
     from sdr_monitor.ui.v2.state import analyzer_layer_cache, prepared_live, live_view_state
     records = StageRecords()
     gui_intervals = GuiIntervals()
@@ -662,6 +662,8 @@ def main():
         instrument(projection, "prepare_persistence_image", density_transferring)
         for owner, name, label in (
                 (GraphicsLayoutWidget, "paintEvent", graphics_name),
+                (PlotCurveItem, "paint", "curve_paint"),
+                (AxisItem, "paint", "axis_paint"),
                 (LivePresenter, "_deliver_prepared", "coherent_delivery"),
                 (LivePresenter, "_poll_frames", "poll_callback"),
                 (DisplayScheduler, "_flush", "source_flush"),
