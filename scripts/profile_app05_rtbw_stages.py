@@ -5,7 +5,7 @@ by scalar id plus publication key; no frames/arrays/widgets retained. Missing
 or reordered stages are reported, not fabricated or filled from another frame.
 Use steady profile without viewport/page churn for queue attribution.
 """
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from contextlib import ExitStack
 import json
 import os
@@ -30,6 +30,8 @@ class StageRecords:
         self.requests = OrderedDict()
         self.rows = deque(maxlen=capacity)
         self.missing = self.reordered = 0
+        self.projection_events = Counter()
+        self.last_offer = None
         self.lock = threading.RLock()
 
     def mark(self, identity, stage, when=None):
@@ -46,6 +48,17 @@ class StageRecords:
         if identity is None:
             return
         with self.lock:
+            self.projection_events[stage] += 1
+            if stage == "projection_offer":
+                signature = (identity, request.generation, request.viewport)
+                previous = self.last_offer
+                if previous is not None:
+                    self.projection_events["same_source" if previous[0] == identity else "new_source"] += 1
+                    if previous == signature:
+                        self.projection_events["same_source_generation_viewport"] += 1
+                    if previous[0] == identity and previous[2] != request.viewport:
+                        self.projection_events["same_source_new_viewport"] += 1
+                self.last_offer = signature
             row = self.requests.setdefault((id(request), identity), {})
             row.setdefault(stage, perf_counter())
             while len(self.requests) > self.capacity:
@@ -113,6 +126,10 @@ def main():
         return painted
 
     def accept_done(value, scene, result):
+        with records.lock:
+            records.projection_events["accept_callback"] += 1
+            records.projection_events["accept_current" if scene._projection_current(result.request)
+                                      else "accept_obsolete_geometry"] += 1
         if result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
             records.accepted(result.request)
 
@@ -137,6 +154,7 @@ def main():
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
+        projection_events=dict(records.projection_events),
         missing=records.missing, reordered=records.reordered,
         cpu_scope="Windows thread CPU clock is quantized (observed15.625ms); aggregated retained-call totals only, NOT per-call CPU latency percentiles",
         cpu_ms={name: dict(calls=len(data), total=sum(data), mean=sum(data) / len(data))
