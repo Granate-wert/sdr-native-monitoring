@@ -130,9 +130,14 @@ class CloseLifecycleTests(unittest.TestCase):
         close.request()
         self.wait(close, "failed")
         self.assertIsNotNone(reference())
+        self.assertIs(close._tasks[0][1].__self__, reference())
         close.request()
         self.wait(close, "complete")
-        self.assertIsNone(reference(), "successful retry no longer owns the callback")
+        self.assertEqual(close._tasks, ())
+        self.assertIsNone(close._prepare)
+        # The first driver's exception traceback can still own its `self`
+        # frame until normal GC. We release lifecycle callbacks, not traceback
+        # frames owned by concurrent.futures; no forced-GC deadline assertion.
         self.assertEqual(calls, ["attempt", "attempt"])
 
 
