@@ -165,6 +165,22 @@ class PersistenceWiringTests(unittest.TestCase):
         self.assertIsNot(overlay._worker_history, history)
         self.assertEqual(overlay.metrics.image_uploads, 2)
 
+    def test_worker_wait_is_inside_existing_start_to_start_density_cadence(self):
+        overlay = self.scene._persistence
+        first = view(np.full((4, 16), .2, np.float32))
+        overlay.set_frame(first, now_ns=1_000_000_000)
+        self.scene.commit_projection()
+        self.worker.finish()
+        with patch("sdr_monitor.ui.v2.spectrum.persistence_overlay.monotonic_ns", return_value=1_020_000_000):
+            self.pump()
+        self.assertEqual(overlay._last_upload_ns, 1_000_000_000)
+        second = view(np.full((4, 16), .7, np.float32))
+        overlay.set_frame(second, now_ns=1_068_000_000)
+        self.assertIsNotNone(overlay.worker_request)
+        self.assertIs(overlay.worker_request.view, second)
+        self.scene.commit_projection()
+        self.drain()
+
     def test_density_denial_keeps_spectrum_and_explicit_visibility_recovery(self):
         # Retain another owner's array: sources/traces fit, image+scratch do not.
         other = np.empty(8 * 1024 * 1024 - 40000, dtype=np.uint8)

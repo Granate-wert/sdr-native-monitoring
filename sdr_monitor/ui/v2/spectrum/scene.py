@@ -297,6 +297,9 @@ class SpectrumScene(QWidget):
                 request.persistence, result.persistence, result.persistence_error):
             if result.persistence is not None:
                 self._persistence_legend.set_labels(*result.persistence.quantitative_labels)
+            else:
+                self._persistence_legend.set_labels(text("spectrum.persistence.no_data", self._locale),
+                                                  text("spectrum.persistence.no_data", self._locale))
             self._refresh_persistence_status()
 
     def _projection_failed(self, request: ProjectionRequest, reason: str) -> None:

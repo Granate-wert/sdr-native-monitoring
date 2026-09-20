@@ -73,6 +73,7 @@ class PersistenceOverlay:
         self._worker_history_revision = 0
         self._worker_history: PersistenceImageHistory | None = None
         self._worker_request: PersistenceImageRequest | None = None
+        self._worker_request_ns = 0
         self._timer = QTimer()
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.flush_pending)
@@ -157,13 +158,15 @@ class PersistenceOverlay:
             self._visual_buffer = result.image
         self._uploaded_density = result.view.density
         self._mapping_dirty = False
-        self._last_upload_ns = monotonic_ns()
+        # Preserve the original start-to-start cadence. Waiting for the worker
+        # is part of this interval, not an extra delay added after completion.
+        self._last_upload_ns = self._worker_request_ns
         self._set_allocation_limited(False)
         self._set_metrics(image_uploads=self._metrics.image_uploads + 1, retained_extra_image_buffers=1)
         latest = self._latest_view
         if latest is not None and latest.density is not self._uploaded_density:
             self._pending_view = latest
-            self._schedule_pending(self._last_upload_ns)
+            self._schedule_pending(monotonic_ns())
         else:
             self._discard_pending()
         return True
@@ -318,6 +321,7 @@ class PersistenceOverlay:
             if self._worker_request is None:
                 self._worker_request = PersistenceImageRequest(view, self.worker_policy_key[0],
                                                                self._worker_history)
+                self._worker_request_ns = now_ns
                 self.request_projection()
             else:
                 self._pending_view = view
