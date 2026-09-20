@@ -154,7 +154,7 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
             source = source_row[first:first + IMAGE_BATCH]
             target = image[row_index, first:first + IMAGE_BATCH]
             mapped = target if scratch is None else scratch[:source.size]
-            if np.count_nonzero(source) == 0:
+            if not np.any(source):
                 # All measured cells are signed zero: transfer is identity in
                 # every mode. Avoid finite-mask/fill/clip passes, not cells or
                 # validation. Nonfinite chunks cannot enter this branch. Visual
