@@ -48,7 +48,10 @@ def instrumented_call(original, before=None, after=None, cpu_samples=None):
 class ServiceCosts:
     """Bounded scalar wall-service attribution; nested intervals are subtracted.
 
-    Includes GIL/OS preemption inside an operation, NOT CPU time. Thread-local
+    Wall fields include GIL/OS preemption inside an operation, NOT CPU time.
+    Separate aggregate CPU totals use the quantized Windows thread clock; no
+    per-call CPU distribution or attribution of wall-minus-CPU to GIL alone.
+    Thread-local
     stacks prevent concurrent GUI calls from being subtracted from worker work.
     Only completed rows enter the inventory; total counters survive eviction.
     """
@@ -71,8 +74,8 @@ class ServiceCosts:
             outcome = "ok"
             try:
                 return original(*args, **kwargs)
-            except BaseException:
-                outcome = "error"
+            except BaseException as error:
+                outcome = type(error).__name__
                 raise
             finally:
                 elapsed = perf_counter() - state[0]

@@ -23,13 +23,16 @@ class StageObserverTests(unittest.TestCase):
         costs = OBSERVER.ServiceCosts(capacity=2)
         inner = costs.wrap("inner", lambda value: value, lambda value: value)
         outer = costs.wrap("outer", lambda value: inner(value), lambda value: value)
-        with patch.object(OBSERVER, "perf_counter", side_effect=(0, 1, 3, 5, 10, 11)):
+        with patch.object(OBSERVER, "perf_counter", side_effect=(0, 1, 3, 5, 10, 11)), \
+             patch.object(OBSERVER, "thread_time", side_effect=(0, 1, 2, 3, 4, 5)):
             self.assertEqual(outer(7), 7)
             self.assertEqual(inner(8), 8)
         self.assertEqual(costs.totals["outer"]["elapsed_ms"], 5000)
         self.assertEqual(costs.totals["outer"]["exclusive_ms"], 3000)
         self.assertEqual(costs.totals["inner"]["exclusive_ms"], 3000)
         self.assertEqual(costs.totals["inner"]["calls"], 2)
+        self.assertEqual(costs.totals["outer"]["cpu_ms"], 3000)
+        self.assertEqual(costs.totals["outer"]["exclusive_cpu_ms"], 2000)
         self.assertEqual(costs.evictions, 1)
         self.assertEqual(len(costs.rows), 2)
 
@@ -42,7 +45,7 @@ class StageObserverTests(unittest.TestCase):
                 costs.wrap("failed", fail)()
         self.assertEqual(costs.local.stack, [])
         self.assertEqual(costs.totals["failed"]["errors"], 1)
-        self.assertEqual(costs.rows[0]["outcome"], "error")
+        self.assertEqual(costs.rows[0]["outcome"], "ValueError")
 
     def test_wrapped_bound_operation_is_identifiable_at_actual_submit(self):
         class Owner:
