@@ -54,7 +54,7 @@ def main():
     from scripts import benchmark_app05_rtbw_observation as runner
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
-    constructed_modes = Counter()
+    constructed_modes: Counter[str] = Counter()
     original = SpectrumScene.__init__
 
     @wraps(original)

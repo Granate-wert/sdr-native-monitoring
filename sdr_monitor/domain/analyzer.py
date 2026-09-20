@@ -84,7 +84,19 @@ class AnalyzerFrameBundle:
             # which would admit substantial shifts at GHz center frequencies.
             tolerance = max(spacing * 1e-7,
                             abs(float(np.spacing(frame.center_frequency_hz))) * 8)
-            if not np.allclose(frequencies, expected_grid, rtol=0.0, atol=tolerance):
+            if isfinite(tolerance):
+                # Frequencies were fully checked finite above and rtol is
+                # exactly zero. Reuse owned expected-grid scratch for the
+                # same abs(a-b) <= atol predicate, avoiding generic isclose's
+                # relative/finite/equality temporaries. No source is mutated.
+                np.subtract(frequencies, expected_grid, out=expected_grid)
+                np.abs(expected_grid, out=expected_grid)
+                matches_grid = bool(np.all(expected_grid <= tolerance))
+            else:
+                # Extreme finite RF centers can yield infinite np.spacing.
+                # Preserve NumPy's special-value semantics on this rare path.
+                matches_grid = bool(np.allclose(frequencies, expected_grid, rtol=0.0, atol=tolerance))
+            if not matches_grid:
                 raise ValueError("RTBW frequency grid must match center and Fs/FFT")
             expected = RtbwFrameMetadata(
                 frame.center_frequency_hz, frame.sample_rate_hz, frame.fft_size, frame.hop_size,
