@@ -51,9 +51,7 @@ class TerminalPresentationTests(unittest.TestCase):
             snapshot = replace(snapshot, spectrum=frame, persistence=synthetic_persistence(frame, 32, 2, 2))
             self.live._snapshot = snapshot
             self.presenter.offer_snapshot_for_render(snapshot)
-            self.wait(lambda: scene._persistence._worker_history is not None
-                      and scene._persistence._worker_history.revision >= 2)
-            self.assertIsNone(scene._persistence._row_scratch)
+            self.wait(lambda: scene._persistence._row_scratch is not None)
         self.page.primary.click()
         self.wait(lambda: not self.live.is_running() and not self.composition.view_model.state.busy)
         self.wait(lambda: self.composition.spectrum_projector._future is None)
@@ -178,8 +176,7 @@ class TerminalPresentationTests(unittest.TestCase):
         scene = self.page.visualization.spectrum_scene
         density = weakref.ref(scene._persistence._latest_view.density)
         visual = weakref.ref(scene._persistence._visual_buffer)
-        history_image = weakref.ref(scene._persistence._worker_history.image)
-        self.assertIsNone(scene._persistence._row_scratch)  # scratch belongs only to worker
+        scratch = weakref.ref(scene._persistence._row_scratch)
         self.shell._inspector_toggle.click()
         from sdr_monitor.ui.v2.workspaces.analyzer_inspector import AnalyzerInspector
         inspectors = self.shell.findChildren(AnalyzerInspector)
@@ -189,9 +186,7 @@ class TerminalPresentationTests(unittest.TestCase):
         self.shell.close()
         self.wait(lambda: self.shell._is_closed and inspector._state is None)
         self.assert_payloads_released()
-        self.assertTrue(all(ref() is None for ref in (density, visual, history_image)))
-        self.assertIsNone(scene._persistence._worker_history)
-        self.assertIsNone(scene._persistence._worker_request)
+        self.assertTrue(all(ref() is None for ref in (density, visual, scratch)))
 
     def test_late_prepared_callbacks_cannot_restore_closed_payloads(self):
         self.measurement()

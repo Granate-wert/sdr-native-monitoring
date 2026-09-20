@@ -29,8 +29,6 @@ DEFAULT_PROJECTION_BYTES = 256 * 1024 * 1024
 
 
 def _density_policy_key(request: "ProjectionRequest") -> tuple | None:
-    if request.persistence_policy is not None:
-        return request.persistence_policy
     density = request.persistence
     return None if density is None else (density.policy, density.history_revision)
 
@@ -65,9 +63,6 @@ class ProjectionRequest:
     # An ordinary new source on accepted geometry can keep the pipeline moving.
     requires_preparation_handoff: bool = True
     persistence: PersistenceImageRequest | None = None
-    # Explicit intent survives trace-only cadence skips. None retains the
-    # standalone caller's original request/history cancellation contract.
-    persistence_policy: tuple | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +135,6 @@ class SpectrumProjector(QObject):
     failed = Signal(object, str)
     retry_ready = Signal()
     commit_requested = Signal()
-    settled = Signal(object)
     work_active_changed = Signal(bool)
     _done = Signal(object)
 
@@ -214,10 +208,6 @@ class SpectrumProjector(QObject):
         """The owning preparation boundary completed its synchronous delivery."""
         if not self._closed:
             self.commit_requested.emit()
-
-    @property
-    def has_pending(self) -> bool:
-        return self._pending is not None
 
     def cancel_pending(self, owner: object) -> None:
         if self._pending is not None and self._pending.owner is owner:
@@ -376,8 +366,6 @@ class SpectrumProjector(QObject):
             if self._allocation is not None:
                 self._allocation.close()  # Also covers cancellation before worker execution.
                 self._allocation = None
-            if not self._closed:
-                self.settled.emit(request)
             self._future = self._active = None
             self._active_storage = {}
             self._active_reserve = 0

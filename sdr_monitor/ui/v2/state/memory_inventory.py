@@ -123,8 +123,7 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
                                       for array in (getattr(layer, "xData", None), getattr(layer, "yData", None))))
         density = scene._persistence
         add("persistence", density._latest_view, density._pending_view, density._uploaded_density,
-            density._visual_buffer, density._row_scratch, density.image_item.image,
-            density._worker_request, density._worker_history)
+            density._visual_buffer, density._row_scratch, density.image_item.image)
         ring = pane._renderer.buffer
         add("waterfall", None if ring is None else ring._data,
             None if ring is None else ring._timestamps_ns,
