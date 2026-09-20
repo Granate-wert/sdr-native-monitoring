@@ -88,7 +88,10 @@ class StagedPersistenceBarrierTests(unittest.TestCase):
         scene = SpectrumScene()
         scene.plot_item.getAxis("left").setWidth(80)
         scene.set_projection_port(port)
-        scene.resize(1100, 600)
+        # Keep this ordering barrier at stable geometry. A narrow standalone
+        # widget grows when the first status text establishes its minimum size.
+        # Actual resize/cancel/reissue is exercised by viewport and wiring tests.
+        scene.setFixedSize(1800, 700)
         scene.show()
         for _ in range(8):
             self.app.processEvents()
