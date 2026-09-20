@@ -108,6 +108,7 @@ class GuiIntervals:
         self.rows: deque[dict[str, Any]] = deque(maxlen=capacity)
         self.evictions = 0
         self.gui_thread = threading.get_ident()
+        self.totals: dict[str, dict[str, float]] = {}
 
     def wrap(self, name, original):
         @wraps(original)
@@ -116,12 +117,18 @@ class GuiIntervals:
                 return original(*args, **kwargs)
             label = name(*args, **kwargs) if callable(name) else name
             begin = monotonic_ns()
+            cpu_begin = thread_time()
             try:
                 return original(*args, **kwargs)
             finally:
                 end = monotonic_ns()
+                cpu_ms = max(0., (thread_time() - cpu_begin) * 1000)
                 self.evictions += int(len(self.rows) == self.rows.maxlen)
                 self.rows.append(dict(stage=label, begin_ns=begin, end_ns=end))
+                total = self.totals.setdefault(label, dict(calls=0, wall_ms=0., cpu_ms=0.))
+                total["calls"] += 1
+                total["wall_ms"] += (end - begin) / 1_000_000
+                total["cpu_ms"] += cpu_ms
         return invoke
 
 
@@ -683,6 +690,8 @@ def main():
         density_render_scope="Actual deferred pyqtgraph QImage preparation after exact image upload, not GPU/DWM presentation. Weak item binding, scalar request only; repeated renders retained separately.",
         gui_interval_scope=GuiIntervals.__doc__, gui_intervals=list(gui_intervals.rows),
         gui_interval_evictions=gui_intervals.evictions,
+        gui_cpu_scope="Aggregate GUI thread CPU only; Windows clock is quantized. Nested totals must not be summed. Wall-minus-CPU does not isolate GIL from OS preemption or other waits.",
+        gui_totals=gui_intervals.totals,
         service_scope=ServiceCosts.__doc__, service_totals=service.totals,
         service_row_evictions=service.evictions,
         service_rows=list(service.rows),
