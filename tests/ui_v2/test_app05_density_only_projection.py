@@ -61,7 +61,7 @@ class DensityOnlyProjectionTests(unittest.TestCase):
         self.scene.set_frame(current, prepared=PreparedSpectrumFrame(current))
         self.drain()
         with patch.object(projection, "peak_preserving_envelope", wraps=projection.peak_preserving_envelope) as reduce:
-            self.scene.set_trace(TraceKind.MAX_HOLD, secondary)
+            self.scene.set_trace(TraceKind.MAXIMUM, secondary)
             self.density()
             self.drain()
             self.assertEqual(reduce.call_count, 2)
