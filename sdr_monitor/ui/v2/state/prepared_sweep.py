@@ -66,6 +66,8 @@ class SweepSnapshotPreparer:
 
     def __call__(self, snapshot: ContinuousSweepDisplaySnapshot,
                  bundle: AnalyzerFrameBundle | None) -> PreparedSweepSnapshot:
+        if snapshot.presentation_omission is not None:
+            return PreparedSweepSnapshot(snapshot, None, (), "presentation_memory_budget", memory_limited=True)
         self.allocation_budget.observe(snapshot, bundle)
         size = sum(min(2048, frame.values_db.size) * 12 + 8
                    for frame in (snapshot.line, snapshot.progress) if frame is not None)

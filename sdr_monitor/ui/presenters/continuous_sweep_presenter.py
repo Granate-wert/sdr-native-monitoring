@@ -54,6 +54,7 @@ class ContinuousSweepPresenter(QObject):
         max_poll_hz: float = 60.0,
         render_budget_ms: float = 16.67,
         snapshot_preparer: Callable[[ContinuousSweepDisplaySnapshot, AnalyzerFrameBundle | None], object] | None = None,
+        snapshot_admitter: Callable[[ContinuousSweepDisplaySnapshot], ContinuousSweepDisplaySnapshot] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -61,6 +62,7 @@ class ContinuousSweepPresenter(QObject):
             raise ValueError("continuous sweep UI cadence and render budget must be positive")
         self._service = service
         self._snapshot_preparer = snapshot_preparer
+        self._snapshot_admitter = snapshot_admitter
         self._render_budget_ms = float(render_budget_ms)
         self._render_metrics = BoundedRenderMetrics(capacity=512)
         self._timer = QTimer(self)
@@ -155,6 +157,8 @@ class ContinuousSweepPresenter(QObject):
 
     def _poll_and_prepare(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication:
         snapshot = self._service.poll_latest()
+        if self._snapshot_admitter is not None:
+            snapshot = self._snapshot_admitter(snapshot)
         if self._snapshot_preparer is None:
             return snapshot
         # Build the immutable coherent bundle once, on this same worker. The

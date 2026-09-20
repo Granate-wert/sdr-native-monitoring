@@ -230,7 +230,7 @@ class AnalyzerViewModel:
             self._on_error("Invalid Sweep Analyzer bundle")
             return
         bundle = prepared.analyzer_bundle if prepared is not None else value.analyzer_bundle
-        if bundle is None:
+        if bundle is None and value.presentation_omission is None:
             return  # Counters alone must not erase the last measurement.
         self._bundle = bundle
         self._sweep_snapshot = value

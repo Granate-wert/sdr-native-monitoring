@@ -6,6 +6,7 @@ import numpy as np
 from .analyzer import AnalyzerFrameBundle, bundle_from_sweep
 from .sweep_lines import SweepLineFrame
 from .sweep_progress import SweepProgressFrame
+from .presentation_omission import PresentationOmission
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +32,13 @@ class ContinuousSweepDisplaySnapshot:
     line: SweepLineFrame | None
     metrics: ContinuousSweepDisplayMetrics
     progress: SweepProgressFrame | None = None
+    presentation_omission: PresentationOmission | None = None
 
     def __post_init__(self) -> None:
+        if self.presentation_omission is not None and not isinstance(self.presentation_omission, PresentationOmission):
+            raise TypeError("invalid Sweep presentation omission")
+        if self.presentation_omission is not None and (self.line is not None or self.progress is not None):
+            raise ValueError("omitted Sweep presentation cannot retain measurement arrays")
         if self.line is not None and not isinstance(self.line, SweepLineFrame):
             raise TypeError("Sweep terminal publication must be a SweepLineFrame")
         if self.progress is not None and not isinstance(self.progress, SweepProgressFrame):

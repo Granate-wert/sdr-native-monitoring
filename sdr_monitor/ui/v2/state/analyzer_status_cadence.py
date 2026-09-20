@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..i18n import current_locale
 from ..view_models.analyzer_view_model import AnalyzerViewState
+from .analyzer_readouts import presentation_omission
 
 
 def urgent_status_key(state: AnalyzerViewState) -> tuple[object, ...]:
@@ -14,6 +15,7 @@ def urgent_status_key(state: AnalyzerViewState) -> tuple[object, ...]:
     frame = getattr(bundle, "spectrum", None)
     age = state.live.data_age_ms
     performance = getattr(state.live.snapshot, "performance", None)
+    omission = presentation_omission(state)
     # Historical quality.dropped_blocks also includes publication-queue loss.
     # Keep that aggregate visible, but do not treat each increment as RF loss.
     # Prefer the separately accounted producer counter for urgent updates.
@@ -25,6 +27,8 @@ def urgent_status_key(state: AnalyzerViewState) -> tuple[object, ...]:
         state.stopping, state.running, state.error, state.stop_required,
         state.live.error_kind, source_loss, bool(state.live.loss.source_blocks),
         state.live.measurement_unavailable_reason,
+        None if omission is None else tuple((item.source_id, item.epoch, item.state, item.gap_reasons)
+                                            for item in omission.measurements),
         state.live.busy, state.live.discovery_pending, state.live.discovery_count,
         state.live.loss.acquisition_blocks, state.live.loss.fft_frames,
         None if age is None else age >= 1000,

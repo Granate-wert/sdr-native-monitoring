@@ -1,6 +1,7 @@
 """Shared admission for derived arrays, following actual backing lifetimes.
 
-Already-created source arrays are observed, not evicted or called bounded.
+Source admission precedes UI retention; backend allocation remains independent.
+Explicit observe() is accounting only, not admission or eviction.
 Reservations cover retained outputs, NOT numerical scratch/native/Qt capacity.
 No payload is strongly retained here and no GUI callback runs on root release.
 """
@@ -44,6 +45,25 @@ class PresentationAllocationBudget:
         roots = retained_roots(*publications)
         with self._lock:
             self._observe(roots)
+
+    def admit_sources(self, *publications: object) -> bool:
+        """Admit before a new UI holder; never register a rejected backing root.
+
+        Sources already exist in the backend/caller. This bounds admitted UI
+        roots jointly with derived outputs, not the backend's transient/RSS use.
+        Array-free lifecycle notifications always pass, including during pressure.
+        """
+        roots = retained_roots(*publications)
+        if not roots:
+            return True
+        with self._lock:
+            added = sum(max(0, size - self._roots.get(key, (0, {}))[0])
+                        for key, (size, _) in roots.items())
+            if added and self._observed + self._reserved + added > self.limit_bytes:
+                self._rejections += 1
+                return False
+            self._observe(roots)
+            return True
 
     def _observe(self, roots: dict[int, tuple[int, dict[int, np.ndarray]]]) -> None:
         for key, (size, arrays) in roots.items():

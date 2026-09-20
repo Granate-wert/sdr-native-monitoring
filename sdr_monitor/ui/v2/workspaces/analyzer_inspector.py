@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QComboBox, QFrame, QLabel, QScrollArea, QVBoxLayou
 
 from ..i18n import text
 from ..state.sweep_inspection import SweepInspection, inspect_sweep
+from ..state.analyzer_readouts import presentation_omission, omission_readout
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 
 
@@ -86,6 +87,14 @@ class AnalyzerInspector(QScrollArea):
     def refresh(self) -> None:
         self._timer.stop()
         state = self._state
+        omission = presentation_omission(state)
+        if omission is not None:
+            self._report = None
+            self.summary.setText(omission_readout(omission))
+            self.segment.clear()
+            self.segment.setEnabled(False)
+            self.detail.clear()
+            return
         snapshot = state.sweep_snapshot if state.mode is AnalyzerMode.SWEEP else None
         try:
             self._report = inspect_sweep(snapshot)

@@ -54,7 +54,8 @@ class LivePresenter(QObject):
     _prepared_command_done = Signal(object)
 
     def __init__(self, use_cases: LiveSessionUseCases, parent: QObject | None = None, *,
-                 snapshot_preparer: Callable[[LiveSnapshot], object] | None = None) -> None:
+                 snapshot_preparer: Callable[[LiveSnapshot], object] | None = None,
+                 snapshot_admitter: Callable[[LiveSnapshot], LiveSnapshot] | None = None) -> None:
         super().__init__(parent)
         self._use_cases = use_cases
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-live")
@@ -67,6 +68,7 @@ class LivePresenter(QObject):
         self._control_revision = 0
         self._offered_control_revision = 0
         self._snapshot_preparer = snapshot_preparer
+        self._snapshot_admitter = snapshot_admitter
         self._preparation_future: Future[_PreparedDelivery] | None = None
         self._active_preparation_snapshot: LiveSnapshot | None = None
         self._pending_preparation: tuple[LiveSnapshot, int, bool] | None = None
@@ -83,6 +85,7 @@ class LivePresenter(QObject):
         self._display_scheduler.frame_ready.connect(self._emit_render)
         self._poll_started = False
         self._last_polled: LiveSnapshot | None = None
+        self._last_poll_key: tuple[int, object, object] | None = None
         self._poll_timer = QTimer(self)
         # Polling is intentionally faster than rendering.  The service owns a
         # latest immutable snapshot, so this timer never builds a backlog; it
@@ -181,6 +184,7 @@ class LivePresenter(QObject):
 
     def offer_snapshot_for_render(self, snapshot: LiveSnapshot) -> None:
         """Coalesce producer-rate publications into a bounded configured-FPS stream."""
+        snapshot = self._admit_snapshot(snapshot)
         with self._publication_lock:
             self._offered_control_revision = self._control_revision
         self._display_scheduler.offer(snapshot)
@@ -205,10 +209,15 @@ class LivePresenter(QObject):
         if not frames:
             return
         snapshot = frames[-1]
-        if snapshot is self._last_polled:
+        key = (id(snapshot), snapshot.generation, snapshot.sequence)
+        if key == self._last_poll_key:
             return
-        self._last_polled = snapshot
-        self.offer_snapshot_for_render(snapshot)
+        self._last_poll_key = key
+        self._last_polled = self._admit_snapshot(snapshot)
+        self.offer_snapshot_for_render(self._last_polled)
+
+    def _admit_snapshot(self, snapshot: LiveSnapshot) -> LiveSnapshot:
+        return snapshot if self._snapshot_admitter is None else self._snapshot_admitter(snapshot)
 
     def submit_display_task(self, operation: Callable[[], Any]) -> Future:
         """Reuse this owner's worker for one externally bounded viewport job.
@@ -298,6 +307,7 @@ class LivePresenter(QObject):
             self.busy_changed.emit(False)
 
     def _emit_snapshot(self, snapshot: LiveSnapshot) -> None:
+        snapshot = self._admit_snapshot(snapshot)
         with self._publication_lock:
             self._control_revision += 1
             revision = self._control_revision
@@ -337,6 +347,7 @@ class LivePresenter(QObject):
     def _offer_preparation(self, snapshot: LiveSnapshot, revision: int, *, render: bool = True) -> None:
         if self._closing or self._closed:
             return
+        snapshot = self._admit_snapshot(snapshot)
         if self._pending_preparation is not None:
             self._preparation_superseded += 1
         self._pending_preparation = (snapshot, revision, render)
@@ -361,6 +372,7 @@ class LivePresenter(QObject):
 
     def _prepare(self, snapshot: LiveSnapshot, revision: int, render: bool) -> _PreparedDelivery:
         assert self._snapshot_preparer is not None
+        snapshot = self._admit_snapshot(snapshot)
         with self._publication_lock:
             if revision != self._control_revision:
                 return _PreparedDelivery(snapshot, revision, render)

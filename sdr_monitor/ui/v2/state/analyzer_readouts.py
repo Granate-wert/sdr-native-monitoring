@@ -10,6 +10,24 @@ from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from ..i18n import text
 from ..view_models.analyzer_view_model import AnalyzerViewState
+from sdr_monitor.domain.presentation_omission import PresentationOmission
+
+
+def presentation_omission(state: AnalyzerViewState) -> PresentationOmission | None:
+    snapshot = state.sweep_snapshot if state.mode.value == "sweep" else state.live.snapshot
+    return getattr(snapshot, "presentation_omission", None)
+
+
+def omission_readout(omission: PresentationOmission) -> str:
+    parts = [text("analyzer.source_memory_limited")]
+    for item in omission.measurements:
+        parts.append(text("analyzer.omitted_measurement", source=item.source_id or "—",
+                          epoch=item.epoch if item.epoch is not None else "—",
+                          sequence=item.sequence if item.sequence is not None else "—",
+                          state=item.state, unit=item.unit))
+        if item.gap_reasons:
+            parts.append(", ".join(item.gap_reasons))
+    return " · ".join(parts)
 
 
 def analyzer_status(state: AnalyzerViewState) -> str:
@@ -34,6 +52,9 @@ def analyzer_status(state: AnalyzerViewState) -> str:
             phase += " · " + (text("analyzer.discovery_empty") if state.live.discovery_count == 0
                                else text("analyzer.discovery_found", count=state.live.discovery_count))
     if bundle is None:
+        omission = presentation_omission(state)
+        if omission is not None:
+            return phase + " · " + omission_readout(omission)
         return phase + " · " + text("analyzer.unavailable")
     frame = bundle.spectrum
     parts = [phase, text(

@@ -232,13 +232,17 @@ class ProductAllocationBudgetTests(unittest.TestCase):
         with patch.object(_FakeAnalyzerDisplay, "poll_latest", return_value=first) as poll:
             self.page.primary.click()
             self.wait(lambda: pane.history_rows == 1)
-            self.composition.allocation_budget.limit_bytes = 1
             second = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics(), progress(2, 2))
+            budget = self.composition.allocation_budget
+            # This gate exercises derived-output pressure, not source refusal.
+            budget.observe(second)
+            budget.limit_bytes = 1
             poll.return_value = second
             self.wait(lambda: self.composition.analyzer_view_model.state.sweep_snapshot is second)
             self.assertEqual(pane.history_rows, 1)
             self.assertTrue(self.composition.analyzer_view_model.state.running)
             final = ContinuousSweepDisplaySnapshot(terminal(2, gap=True), ContinuousSweepDisplayMetrics(gapped_lines=1))
+            budget.observe(final)
             poll.return_value = final
             self.composition.analyzer_view_model.stop()
             self.wait(lambda: self.composition.analyzer_presenter.can_close())
@@ -261,7 +265,8 @@ class ProductAllocationBudgetTests(unittest.TestCase):
         frame = measurement(self)
         self.live._snapshot = frame
         self.presenter._emit_snapshot(frame)
-        self.wait(lambda: self.composition.view_model.state.spectrum is frame.spectrum)
+        self.wait(lambda: self.composition.view_model.state.snapshot.presentation_omission is not None)
+        self.assertIsNone(self.composition.view_model.state.spectrum)
         self.assertEqual(self.composition.view_model.state.measurement_unavailable_reason,
                          "presentation_memory_budget")
         self.assertTrue(self.live.is_running())
@@ -283,7 +288,9 @@ class ProductAllocationBudgetTests(unittest.TestCase):
             source_id=frame.source_id, config_generation=frame.config_generation, unit=frame.unit,
             producer_identity_available=True, acquisition_epoch=1, receiver_id="test-rx", clock_domain="unknown")
         snap = replace(snap, spectrum=frame, persistence=density)
-        self.composition.allocation_budget.limit_bytes = 1
+        budget = self.composition.allocation_budget
+        budget.observe(snap)
+        budget.limit_bytes = 1
         with patch("sdr_monitor.ui.v2.state.analyzer_layer_cache.persistence_density_from_native",
                    side_effect=AssertionError("conversion before admission")):
             self.presenter._emit_snapshot(snap)

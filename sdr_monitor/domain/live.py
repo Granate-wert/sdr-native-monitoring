@@ -26,6 +26,7 @@ from .identity import (
 from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
+from .presentation_omission import PresentationOmission
 
 
 class DeviceTransport(StrEnum):
@@ -609,8 +610,14 @@ class LiveSnapshot:
     acquisition_epoch: int | None = None
     clock_domain: str | None = None
     active_config_generation: int | None = None
+    # Application display projection only; never changes quality or RX state.
+    presentation_omission: "PresentationOmission | None" = None
 
     def __post_init__(self) -> None:
+        if self.presentation_omission is not None and not isinstance(self.presentation_omission, PresentationOmission):
+            raise TypeError("invalid Live presentation omission")
+        if self.presentation_omission is not None and (self.spectrum is not None or self.persistence is not None):
+            raise ValueError("omitted Live presentation cannot retain measurement arrays")
         object.__setattr__(self, "generation", as_configuration_generation(self.generation))
         object.__setattr__(self, "sequence", as_frame_sequence(self.sequence))
         object.__setattr__(self, "session_id", as_session_id(self.session_id))

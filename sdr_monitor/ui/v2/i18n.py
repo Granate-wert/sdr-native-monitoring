@@ -23,6 +23,12 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
+        "analyzer.source_memory_limited": MappingProxyType({
+            UiLocale.RU: "Кадр не показан: лимит памяти UI. График и история очищены; это не признак потери RF-данных.",
+            UiLocale.EN: "Frame not displayed: UI memory limit. Plot and history cleared; this does not imply RF data loss."}),
+        "analyzer.omitted_measurement": MappingProxyType({
+            UiLocale.RU: "Источник {source} · epoch {epoch} · sequence {sequence} · {state} · {unit}",
+            UiLocale.EN: "Source {source} · epoch {epoch} · sequence {sequence} · {state} · {unit}"}),
         "analyzer.coverage.legend": MappingProxyType({UiLocale.RU: "Покрытие: сплошное — текущие · горизонтали — история · диагонали — нет данных · крест — смешанное", UiLocale.EN: "Coverage: solid = current · horizontal = history · diagonal = missing · cross = mixed"}),
         "analyzer.coverage.scope": MappingProxyType({UiLocale.RU: "Пунктирная кривая — ранее опубликованный проход, только там, где нет текущих измерений. История не участвует в маркерах, статистике или экспорте. Покрытие означает наличие значений, а не отсутствие потерь. Смешанный столбец не считается полностью измеренным; возраст RF неизвестен.", UiLocale.EN: "Dashed curve: an older published pass, only where current measurements are absent. History never feeds markers, statistics or export. Coverage means values exist, not loss-free acquisition. Mixed columns are not fully measured; RF age is unknown."}),
         "analyzer.coverage.previous": MappingProxyType({UiLocale.RU: "Исторический проход: {sequence}.", UiLocale.EN: "Historical pass: {sequence}."}),

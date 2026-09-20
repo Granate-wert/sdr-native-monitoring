@@ -237,6 +237,7 @@ def build_live_view_state(
                            if prepared_measurement is not None else None),
         measurement_unavailable_reason=(
             prepared_measurement.measurement_unavailable_reason if prepared_measurement is not None else
+            "presentation_memory_budget" if getattr(snapshot, "presentation_omission", None) is not None else
             coherence_issues[0] if coherence_issues else
             "invalid_measurement" if invalid_measurement else
             "stale_measurement_identity" if isinstance(snapshot, LiveSnapshot)

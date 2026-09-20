@@ -75,7 +75,9 @@ def build_v2_shell(services=None):
     from ..ui.v2.state.prepared_sweep import SweepSnapshotPreparer
     from ..ui.v2.state.prepared_live import LiveSnapshotPreparer
     from ..ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
+    from ..ui.v2.state.source_admission import PresentationSourceAdmission
     allocation_budget = PresentationAllocationBudget()
+    source_admission = PresentationSourceAdmission(allocation_budget)
     display = getattr(services, "analyzer_display", None)
     if display is None:
         display = NativeLiveContinuousSweepDisplayService(services.live_sdr)
@@ -93,8 +95,10 @@ def build_v2_shell(services=None):
     analyzer_presenter = ContinuousSweepPresenter(
         AnalyzerContinuousSweepApplicationService(live_application, display),
         snapshot_preparer=SweepSnapshotPreparer(allocation_budget),
+        snapshot_admitter=source_admission.sweep,
     )
-    live_presenter = LivePresenter(live_application, snapshot_preparer=LiveSnapshotPreparer(allocation_budget))
+    live_presenter = LivePresenter(live_application, snapshot_preparer=LiveSnapshotPreparer(allocation_budget),
+                                   snapshot_admitter=source_admission.live)
     composition = compose_v2_live_product(
         live_presenter,
         projection_submit=live_presenter.submit_display_task,
