@@ -12,9 +12,14 @@ service_return_to_snapshot_subscriber_ms starts when the domain service returns
 and ends after earlier synchronous V2 snapshot subscribers have run. It includes
 optional worker presentation preparation, Qt queueing and GUI delivery/render
 preparation; it is not pure worker-to-GUI scheduling latency.
+The measured interval uses QEventLoop.exec, not a processEvents-only loop.
+Age witnesses use the synthetic publisher's host monotonic clock and exact
+pass/state/revision. They exclude RF/transport/DSP age and DWM presentation.
+Waterfall age is for the newest uploaded row; older row corrections are not
+counted. First-paint distributions exclude repeated paints of the same key.
 """
 import argparse
-from collections import deque
+from collections import deque, OrderedDict
 import hashlib
 import json
 import os
@@ -24,9 +29,108 @@ import subprocess
 import sys
 import threading
 import tracemalloc
-from time import perf_counter, sleep
+from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import patch
+
+
+def run_qt_until(predicate, timeout_seconds):
+    """Deliver real Qt deferred lifecycle events; timeout is checked on GUI.
+
+    A blocked GUI can delay this timeout: it is not a hard driver watchdog.
+    Callback exceptions are re-raised outside Qt instead of being swallowed.
+    """
+    from PySide6.QtCore import QEventLoop, QTimer, Qt
+    loop = QEventLoop()
+    check, deadline = QTimer(loop), QTimer(loop)
+    check.setTimerType(Qt.TimerType.PreciseTimer)
+    check.setInterval(5)
+    deadline.setSingleShot(True)
+    failure = []
+
+    def poll():
+        try:
+            if predicate():
+                loop.quit()
+        except Exception as error:
+            failure.append(error)
+            loop.quit()
+
+    def expired():
+        failure.append(TimeoutError("Qt observation deadline exceeded"))
+        loop.quit()
+
+    check.timeout.connect(poll)
+    deadline.timeout.connect(expired)
+    check.start()
+    deadline.start(max(1, round(timeout_seconds * 1000)))
+    try:
+        loop.exec()
+    finally:
+        check.stop()
+        deadline.stop()
+    if failure:
+        raise failure[0]
+
+
+class PaintAgeTracker:
+    """Bounded scalar-only host publication -> first paint-return witness.
+
+    Keys distinguish partial revision from terminal publication of the SAME
+    pass. No RF timestamp inference; both means the SAME key painted in each
+    canvas, not simultaneous paints or an atomic screen presentation.
+    """
+    def __init__(self, capacity=8192):
+        if capacity < 1:
+            raise ValueError("positive witness capacity required")
+        self.capacity = capacity
+        self.lock = threading.Lock()
+        self.sources = OrderedDict()
+        self.ages = {name: deque(maxlen=capacity) for name in ("spectrum", "waterfall", "both")}
+        self.counts = {name: 0 for name in self.ages}
+        self.partial_counts = {name: 0 for name in self.ages}
+        self.missing = self.repeated = self.evicted = self.changed_during_paint = 0
+
+    def publish(self, key, when):
+        with self.lock:
+            if key in self.sources:
+                raise ValueError("duplicate publication identity")
+            self.sources[key] = (when, set())
+            if len(self.sources) > self.capacity:
+                self.sources.popitem(last=False)
+                self.evicted += 1
+
+    def painted(self, pane, key, when):
+        if key is None:
+            return
+        if pane not in ("spectrum", "waterfall"):
+            raise ValueError("unknown canvas")
+        with self.lock:
+            source = self.sources.get(key)
+            if source is None:
+                self.missing += 1
+                return
+            began, seen = source
+            if when < began:
+                raise ValueError("paint precedes publication")
+            if pane in seen:
+                self.repeated += 1
+                return
+            seen.add(pane)
+            targets = (pane, "both") if len(seen) == 2 else (pane,)
+            for target in targets:
+                self.ages[target].append((when - began) * 1000)
+                self.counts[target] += 1
+                self.partial_counts[target] += key[1] == "partial"
+
+
+def sweep_key(frame):
+    """Only actual domain metadata, never the latest offered frame's identity."""
+    if frame is None:
+        return None
+    if hasattr(frame, "revision"):
+        return (frame.sequence, "partial", frame.revision)
+    return (frame.sequence, frame.state.value, 0)
 
 
 def main():
@@ -92,6 +196,9 @@ def main():
                 self.thread = None
 
             def frame(self, partial, *, gap=False):
+                key = (self.seq, "gap" if gap else "partial" if partial else "complete",
+                       1 if partial and not gap else 0)
+                age_tracker.publish(key, perf_counter())
                 values, quality, owners = arrays[int(not partial)]
                 return SimpleNamespace(source_id="synthetic-overload", epoch=count,
                     line_sequence=self.seq, revision=1, unit="dBFS/bin", frequencies_hz=freq,
@@ -157,6 +264,7 @@ def main():
             def disconnect(self):
                 pass
 
+        age_tracker = PaintAgeTracker()
         producer = Producer()
         service = NativeContinuousSweepDisplayService(
             SimpleNamespace(NativeContinuousSweepCoordinator=lambda *_: producer), "usb:fake")
@@ -168,12 +276,24 @@ def main():
         page_switches = []
         poll_ends = {}
         gui_thread = threading.get_ident()
+        canvas_keys = {}
+        canvas_paints = {name: deque(maxlen=8192) for name in ("spectrum", "waterfall")}
 
         class MeasuredGraphics(pg.GraphicsLayoutWidget):
             def paintEvent(self, event):
+                tracked = canvas_keys.get(id(self))
+                key = None if tracked is None else tracked[1]()
                 began = perf_counter()
                 super().paintEvent(event)
-                paints.append((perf_counter() - began) * 1000)
+                ended = perf_counter()
+                paints.append((ended - began) * 1000)
+                if tracked is not None:
+                    pane, current_key = tracked
+                    canvas_paints[pane].append((ended - began) * 1000)
+                    if key == current_key():
+                        age_tracker.painted(pane, key, ended)
+                    else:
+                        age_tracker.changed_during_paint += 1
 
         def start(display, _request):
             display.events.append("sweep-start")
@@ -213,6 +333,25 @@ def main():
                 page = harness.page
                 page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.SWEEP))
                 presenter = harness.composition.analyzer_presenter
+                scene = page.visualization.spectrum_scene
+                waterfall = page.visualization.waterfall_pane
+
+                def spectrum_key():
+                    bundle = scene.displayed_frame
+                    return sweep_key(None if bundle is None else bundle.spectrum)
+
+                def waterfall_key():
+                    # Metadata installed alongside the uploaded image, not a
+                    # newer producer frame or the hidden page's retained ring.
+                    if not any(item.isVisible() for item in waterfall._image_items):
+                        return None
+                    stamps = waterfall._time_axis._sweep_stamps
+                    stamp = stamps[-1] if stamps else None
+                    return None if stamp is None else (stamp.sequence, stamp.state.value,
+                        stamp.revision if stamp.state.value == "partial" else 0)
+
+                canvas_keys[id(scene._graphics)] = ("spectrum", spectrum_key)
+                canvas_keys[id(waterfall._graphics)] = ("waterfall", waterfall_key)
                 errors = []
                 presenter.task_failed.connect(errors.append)
 
@@ -249,15 +388,10 @@ def main():
 
                 stop_timer.timeout.connect(request_stop)
                 page.primary.click()
-                harness.wait(lambda: not presenter.is_starting)
+                run_qt_until(lambda: not presenter.is_starting, 3)
                 due = perf_counter() + args.seconds
                 stop_timer.start(round(args.seconds*1000))
-                deadline = due + 5
-                while not stop_times or not presenter.can_close():
-                    harness.app.processEvents()
-                    if perf_counter() > deadline:
-                        raise RuntimeError("overload Stop deadline exceeded")
-                    sleep(.001)
+                run_qt_until(lambda: bool(stop_times) and presenter.can_close(), args.seconds + 5)
                 ended = perf_counter()
                 if errors or harness.events != ["sweep-start", "sweep-stop"]:
                     raise AssertionError((errors, harness.events))
@@ -275,6 +409,15 @@ def main():
                     service_return_to_snapshot_subscriber_ms=summary(publications),
                     heartbeat_interval_ms=summary(list(np.diff(beats)*1000)),
                     cpu_paint_ms=summary(paints),
+                    canvas_cpu_paint_ms={name: summary(values) for name, values in canvas_paints.items()},
+                    host_publication_to_first_paint_return_ms={name: summary(values) if values else None
+                        for name, values in age_tracker.ages.items()},
+                    first_paint_publications=age_tracker.counts,
+                    first_partial_paint_publications=age_tracker.partial_counts,
+                    paint_witness_misses=age_tracker.missing,
+                    paint_witness_evicted=age_tracker.evicted,
+                    repeated_paints=age_tracker.repeated,
+                    changed_during_paint=age_tracker.changed_during_paint,
                     stop_timer_lateness_ms=(stop_times[0]-due)*1000,
                     stop_click_return_ms=(stop_times[1]-stop_times[0])*1000,
                     stop_to_idle_ms=(ended-stop_times[0])*1000,
@@ -305,6 +448,8 @@ def main():
         python=sys.version.split()[0], numpy=np.__version__, pyside=PySide6.__version__,
         pyqtgraph=pg.__version__, host_platform=platform.platform(), processor=platform.processor(),
         platform="Qt offscreen", logical_size=[1920, 1080],
+        event_pump="QEventLoop.exec (normal deferred-delete delivery)",
+        age_scope="host synthetic publication to first paint return; newest uploaded Waterfall row; same-key both is not atomic/DWM/RF age",
         timing_window_samples=8192, trace_memory=args.trace_memory,
         page_cycle_seconds=args.page_cycle_seconds,
         product_imports_outside_checkout=outside, results=rows)
