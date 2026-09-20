@@ -663,7 +663,10 @@ def main():
         for owner, name, label in (
                 (GraphicsLayoutWidget, "paintEvent", graphics_name),
                 (PlotCurveItem, "paint", "curve_paint"),
-                (AxisItem, "paint", "axis_paint"),
+                (AxisItem, "paint", lambda axis, *a, **kw:
+                 "axis_paint:" + axis.orientation + (":cached" if axis.picture is not None else ":rebuild")),
+                (AxisItem, "generateDrawSpecs", "axis_specs"),
+                (AxisItem, "drawPicture", "axis_record_picture"),
                 (LivePresenter, "_deliver_prepared", "coherent_delivery"),
                 (LivePresenter, "_poll_frames", "poll_callback"),
                 (DisplayScheduler, "_flush", "source_flush"),
