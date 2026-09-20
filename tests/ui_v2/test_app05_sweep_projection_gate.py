@@ -7,6 +7,8 @@ from PySide6.QtWidgets import QApplication
 
 from tests import test_app02_analyzer_workspace_product as product
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
+from sdr_monitor.ui.v2.spectrum.projection import project_spectrum
+from tests.ui_v2.test_app05_projection_cancellation import request
 
 
 class SweepProjectionGateTests(unittest.TestCase):
@@ -58,6 +60,37 @@ class SweepProjectionGateTests(unittest.TestCase):
         self.assertIsNone(self.fixture.composition._sweep_projection_backpressure)
         self.port.work_active_changed.emit(True)
         self.assertFalse(p._projection_in_flight)
+
+    def test_actual_projection_success_failure_and_cancel_release_waiting_poll(self):
+        p = self.presenter
+        interval = p._timer.interval()
+        for outcome in ("success", "failure", "cancel"):
+            projected, polled = Future(), Future()
+            p._timer.start(100000)
+            try:
+                with self.subTest(outcome=outcome), \
+                        patch.object(self.port, "_submit", return_value=projected), \
+                        patch.object(p._stop_executor, "submit", return_value=polled) as submit:
+                    value = request()
+                    self.port.offer(value)
+                    self.port.request_commit()
+                    self.assertTrue(p._projection_in_flight)
+                    p._poll()
+                    submit.assert_not_called()
+                    if outcome == "success":
+                        projected.set_result(project_spectrum(value))
+                    elif outcome == "failure":
+                        projected.set_exception(RuntimeError("projection fixture error"))
+                    else:
+                        projected.cancel()
+                    self.fixture.wait(lambda: p._poll_future is polled)
+                    self.assertFalse(p._projection_in_flight)
+                    self.assertFalse(p._projection_poll_pending)
+                    self.assertEqual(submit.call_count, 1)
+            finally:
+                p._poll_future = None
+                p._timer.stop()
+        p._timer.setInterval(interval)
 
     def test_stop_bypasses_gate_clears_pending_and_preserves_terminal_delivery(self):
         f, p = self.fixture, self.presenter
