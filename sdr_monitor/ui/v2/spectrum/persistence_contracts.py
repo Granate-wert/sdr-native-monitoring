@@ -15,6 +15,7 @@ from ..design.tokens import density_lookup_table
 # log10(1 + 9999*p) / 4: zero stays zero, one stays one, rare observations
 # remain visible across approximately four decades without per-frame pumping.
 LOG_DENSITY_GAIN = 9999.0
+_MAPPING_BATCH = 65_536
 
 
 class DensityValueMode(StrEnum):
@@ -200,11 +201,41 @@ def _map_density_values_into(
 ) -> None:
     if out.shape != values.shape or out.dtype != np.float32:
         raise ValueError("persistence mapping output shape or dtype is invalid")
+    if values.size <= _MAPPING_BATCH:
+        _map_density_chunk(values, value_mode, logarithmic, count_maximum, out)
+    elif values.flags.c_contiguous and out.flags.c_contiguous:
+        source, target = values.reshape(-1), out.reshape(-1)
+        for first in range(0, values.size, _MAPPING_BATCH):
+            _map_density_chunk(source[first:first + _MAPPING_BATCH], value_mode, logarithmic,
+                               count_maximum, target[first:first + _MAPPING_BATCH])
+    elif values.ndim == 1:
+        for first in range(0, values.size, _MAPPING_BATCH):
+            _map_density_chunk(values[first:first + _MAPPING_BATCH], value_mode, logarithmic,
+                               count_maximum, out[first:first + _MAPPING_BATCH])
+    else:
+        # Preserve arbitrary input/output strides without flattening copies.
+        # Narrow transposed rows are grouped, avoiding one Python call per bin.
+        rows = max(1, _MAPPING_BATCH // values.shape[-1])
+        for prefix in np.ndindex(values.shape[:-2]):
+            for row in range(0, values.shape[-2], rows):
+                for column in range(0, values.shape[-1], _MAPPING_BATCH):
+                    index = (*prefix, slice(row, row + rows), slice(column, column + _MAPPING_BATCH))
+                    _map_density_chunk(values[index], value_mode, logarithmic, count_maximum, out[index])
+
+
+def _map_density_chunk(values: np.ndarray, value_mode: DensityValueMode, logarithmic: bool,
+                       count_maximum: float, out: np.ndarray) -> None:
+    """Same transfer in bounded scratch; log(1 + 0) is exactly zero.
+
+    This skips only numerical work on all-zero display chunks, never measured
+    cells, source validation, resolution, or update cadence. Signed zeros stay
+    in the output. Dense/nonfinite chunks use the original arithmetic order.
+    """
     out.fill(0.0)
     np.copyto(out, values, where=np.isfinite(values))
     if value_mode is DensityValueMode.COUNT and count_maximum > 0.0:
         out /= count_maximum
-    if logarithmic:
+    if logarithmic and np.any(out):
         np.multiply(out, LOG_DENSITY_GAIN, out=out)
         np.log1p(out, out=out)
         out /= np.log1p(LOG_DENSITY_GAIN)
