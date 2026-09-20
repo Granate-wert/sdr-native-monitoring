@@ -7,6 +7,7 @@ Use steady profile without viewport/page churn for queue attribution.
 """
 from collections import Counter, OrderedDict, deque
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -147,6 +148,18 @@ def main():
             with records.lock:
                 records.projection_events["new_source_while_previous_queued"] += 1
 
+    def preparation_dispatching(presenter):
+        pending = presenter._pending_preparation
+        if presenter._pending_commands or presenter._preparation_future is not None or pending is None:
+            return
+        snapshot, revision, render = pending
+        if not (render and presenter._projection_in_flight) and revision == presenter._control_revision:
+            records.mark(key(snapshot), "prepare_dispatch")
+
+    def projection_callback(port, future):
+        if future is port._future and port._active is not None:
+            records.request(port._active, "projection_callback")
+
     with ExitStack() as stack:
         def instrument(owner, name, wrapper):
             stack.enter_context(patch.object(owner, name, wrapper(getattr(owner, name))))
@@ -154,6 +167,7 @@ def main():
         instrument(PaintAgeTracker, "painted", first_paint)
         instrument(LivePresenter, "offer_snapshot_for_render", wrap(before=lambda _, snapshot: records.mark(key(snapshot), "offer")))
         instrument(LivePresenter, "_emit_render", wrap(before=lambda _, snapshot: records.mark(key(snapshot), "coalesced")))
+        instrument(LivePresenter, "_dispatch_preparation", wrap(before=preparation_dispatching))
         instrument(LivePresenter, "_prepare", wrap(
             before=lambda _, snapshot, *args, **kwargs: records.mark(key(snapshot), "prepare_begin"),
             after=lambda value, _, snapshot, *args, **kwargs: records.mark(key(snapshot), "prepare_end"), cpu_name="prepare"))
@@ -161,6 +175,7 @@ def main():
             before=lambda _, delivery: records.mark(key(delivery.snapshot), "delivered")))
         instrument(projection.SpectrumProjector, "offer", wrap(before=offering))
         instrument(projection.SpectrumProjector, "_dispatch", wrap(before=dispatching))
+        instrument(projection.SpectrumProjector, "_finish", wrap(before=projection_callback))
         instrument(projection, "project_spectrum", wrap(
             before=lambda request, **kwargs: records.request(request, "projection_begin"),
             after=lambda result, request, **kwargs: records.request(request, "projection_end"), cpu_name="project"))
@@ -168,6 +183,16 @@ def main():
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
+        profiler_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        queue_attribution_scope="Exact scalar identity with both endpoints, including unpainted accepted frames; first 100 tokens excluded; not pooled first-paint ages",
+        queue_attribution_ms={name: dict(count=len(values), **dict(zip(("p50", "p95", "p99", "max"), map(float,
+            (*np.percentile(values, [50, 95, 99]), max(values))))))
+            for name, start, stop in (("coalesced_to_dispatch", "coalesced", "prepare_dispatch"),
+                                      ("dispatch_to_prepare_begin", "prepare_dispatch", "prepare_begin"),
+                                      ("project_end_to_gui_callback", "projection_end", "projection_callback"),
+                                      ("gui_callback_to_applied", "projection_callback", "applied"))
+            if (values := [(entry[stop] - entry[start]) * 1000 for identity, entry in records.frames.items()
+                           if identity[0] > 100 and start in entry and stop in entry and entry[stop] >= entry[start]])},
         projection_events=dict(records.projection_events),
         projection_wait_ms={name: dict(zip(("p50", "p95", "p99", "max"), map(float,
             (*np.percentile(values, [50, 95, 99]), max(values)))))
