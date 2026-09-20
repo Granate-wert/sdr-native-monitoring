@@ -593,11 +593,17 @@ class AppShellV2(QMainWindow):
 
     def _replace_inspector(self, workspace_id: str, definition: WorkspaceDefinition) -> None:
         self._clear_inspector_layout()
-        inspector = definition.inspector_factory()
-        if not isinstance(inspector, QWidget):
-            raise TypeError("inspector factory must return QWidget")
-        self._apply_theme_to_widget(inspector)
-        self._inspector_layout.addWidget(inspector)
+        # Analyzer always uses the explicit overlay, even on a wide monitor.
+        # Its permanently hidden dock must not construct a second inspector
+        # (and model subscription) on every return to the running spectrum.
+        # The drawer factory below still creates fresh, current-state content
+        # when explicitly opened, including after navigation/locale rebuild.
+        if workspace_id != "analyzer":
+            inspector = definition.inspector_factory()
+            if not isinstance(inspector, QWidget):
+                raise TypeError("inspector factory must return QWidget")
+            self._apply_theme_to_widget(inspector)
+            self._inspector_layout.addWidget(inspector)
         self._inspector_workspace_id = workspace_id
         if self._narrow_inspector_drawer_open:
             self._show_narrow_inspector_drawer()

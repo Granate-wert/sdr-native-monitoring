@@ -34,15 +34,36 @@ class ProfileInspectorLifecycleTests(unittest.TestCase):
         initial_listeners = len(model._listeners)
         key = "sdr_monitor.ui.v2.workspaces.analyzer_inspector.AnalyzerInspector"
         initial_inspectors = qt_wrapper_counts().get(key, 0)
-        self.assertEqual(initial_inspectors, 1)
+        self.assertEqual(initial_inspectors, 0)
         for _ in range(40):
             self.shell.select_workspace("calibration")
             qt_idle_turn()
             self.assertEqual(qt_wrapper_counts().get(key, 0), 0)
-            self.assertLess(len(model._listeners), initial_listeners)
+            self.assertEqual(len(model._listeners), initial_listeners)
             self.shell.select_workspace("analyzer")
             qt_idle_turn()
             self.assertEqual(qt_wrapper_counts().get(key, 0), initial_inspectors)
+            self.assertEqual(len(model._listeners), initial_listeners)
+
+    def test_analyzer_inspector_is_created_only_for_explicit_drawer_and_released(self):
+        qt_idle_turn()
+        model = self.composition.analyzer_view_model
+        initial_listeners = len(model._listeners)
+        key = "sdr_monitor.ui.v2.workspaces.analyzer_inspector.AnalyzerInspector"
+        for width in (1280, 1920, 2560):
+            self.shell.resize(width, 900)
+            qt_idle_turn()
+            self.assertEqual(self.shell._inspector_layout.count(), 0)
+            self.assertEqual(self.shell.inspector_workspace_id, "analyzer")
+            self.shell.toggle_inspector()
+            qt_idle_turn()
+            self.assertTrue(self.shell._narrow_inspector_drawer_open)
+            self.assertEqual(qt_wrapper_counts().get(key, 0), 1)
+            self.assertEqual(len(model._listeners), initial_listeners + 1)
+            self.shell.toggle_inspector()
+            qt_idle_turn()
+            self.assertFalse(self.shell._narrow_inspector_drawer_open)
+            self.assertEqual(qt_wrapper_counts().get(key, 0), 0)
             self.assertEqual(len(model._listeners), initial_listeners)
 
 
