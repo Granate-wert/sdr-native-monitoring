@@ -103,7 +103,15 @@ class PersistenceWorkerTests(unittest.TestCase):
             expected = prepare_persistence_image(replace(current, history=None))
             np.testing.assert_array_equal(actual.image, expected.image)
         current = request(np.full((4, 8), .8, np.float32), policy=policy, history=history)
-        np.testing.assert_array_equal(prepare_persistence_image(current).image, .8)
+        np.testing.assert_array_equal(prepare_persistence_image(current).image,
+                                      np.full((4, 8), .8, np.float32))
+        current = request(np.full((4, 16), .8, np.float32), policy=policy, history=history)
+        edges = current.view.frequency_edges_hz + 1e6
+        edges.setflags(write=False)
+        shifted = replace(current.view.source_frame, frequency_edges_hz=edges)
+        current = replace(current, view=adapt_persistence_density(shifted))
+        np.testing.assert_array_equal(prepare_persistence_image(current).image,
+                                      np.full((4, 16), .8, np.float32))
 
     def test_rejects_mutable_handoff_and_invalid_policy(self):
         frame = _persistence_frame(np.zeros((2, 4), np.float32))
