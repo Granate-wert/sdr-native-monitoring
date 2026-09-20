@@ -24,7 +24,7 @@ class PersistencePressureTests(unittest.TestCase):
     def setUp(self):
         self.scene = SpectrumScene()
         self.overlay = self.scene._persistence
-        self.budget = PresentationAllocationBudget(1_000_000)
+        self.budget = PresentationAllocationBudget(10_000_000)
         self.overlay.allocation_budget = self.budget
         self.overlay.set_logarithmic(False)
         self.renderer = BoundedWaterfallRenderer()
@@ -40,17 +40,18 @@ class PersistencePressureTests(unittest.TestCase):
     def view(self, value, width=16):
         return adapt_persistence_density(_persistence_frame(np.full((4, width), value, np.float32)))
 
-    def visual_history(self):
+    def visual_history(self, width=16):
         self.overlay.set_render_mode(PersistenceRenderMode.VISUAL)
-        self.overlay.set_frame(self.view(.25), now_ns=1)
-        self.overlay.set_frame(self.view(.75), now_ns=10**9)
+        self.overlay.set_frame(self.view(.25, width), now_ns=1)
+        self.overlay.set_frame(self.view(.75, width), now_ns=10**9)
         self.assertIsNotNone(self.overlay._row_scratch)
         return weakref.ref(self.overlay._row_scratch)
 
     def recovery(self, *, visual=False):
         if visual:
             self.overlay.set_render_mode(PersistenceRenderMode.VISUAL)
-        self.overlay.set_frame(self.view(.25), now_ns=1)
+        first = self.view(.25)  # A separate consumer still owns the older source.
+        self.overlay.set_frame(first, now_ns=1)
         latest = self.view(.75)
         self.budget.observe(latest)
         self.renderer.append(np.ones(16, np.float32), rows=20, timestamp_ns=1)
@@ -82,6 +83,8 @@ class PersistencePressureTests(unittest.TestCase):
         self.assertIs(self.overlay.latest_view, latest)
         expected = .25 + (.75 - .25) * .65 if visual else .75
         np.testing.assert_allclose(self.overlay.image_item.image, expected)
+        np.testing.assert_array_equal(first.density, np.full((4, 16), .25, np.float32))
+        np.testing.assert_array_equal(latest.density, np.full((4, 16), .75, np.float32))
         self.assertIs(self.overlay._uploaded_density, latest.density)
         self.assertEqual(self.budget.snapshot().reserved_bytes, 0)
         self.assertLessEqual(self.budget.snapshot().observed_bytes, self.budget.limit_bytes)
@@ -97,13 +100,13 @@ class PersistencePressureTests(unittest.TestCase):
         self.recovery(visual=True)
 
     def test_direct_mode_releases_visual_scratch_even_while_hidden(self):
-        scratch = self.visual_history()
+        scratch = self.visual_history(width=65536)
         self.overlay.set_visible(False)
         before = self.budget.snapshot().observed_bytes
         self.overlay.set_render_mode(PersistenceRenderMode.DIRECT)
         self.assertIsNone(scratch())
         self.assertIsNone(self.overlay._row_scratch)
-        self.assertEqual(self.budget.snapshot().observed_bytes, before - 64)
+        self.assertEqual(self.budget.snapshot().observed_bytes, before - 65536 * 4)
 
     def test_mapping_reset_releases_visual_scratch_even_while_hidden(self):
         scratch = self.visual_history()
