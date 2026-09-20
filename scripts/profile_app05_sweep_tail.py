@@ -5,10 +5,12 @@ never borrowed from another frame. Inclusive function percentiles are not added.
 Run Python -I with benchmark_app04_poll_overload arguments; sidecar .stages.json.
 """
 from contextlib import ExitStack
+from collections import deque
 import hashlib
 import json
 from pathlib import Path
 import sys
+from time import perf_counter
 from unittest.mock import patch
 
 STAGES = ("publish", "selected", "domain_end", "prepare_begin", "prepare_end",
@@ -48,6 +50,16 @@ def main():
         return observer.sweep_key(getattr(frame, "spectrum", frame))
 
     records = shared.StageRecords()
+    polls = deque(maxlen=4096)
+
+    def poll_interval(original):
+        def invoke(*args, **kwargs):
+            began = perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                polls.append((began, perf_counter()))
+        return invoke
 
     def wrap(before=None, after=None):
         return lambda original: shared.instrumented_call(original, before=before, after=after)
@@ -71,6 +83,7 @@ def main():
             stack.enter_context(patch.object(owner, name, wrapper(getattr(owner, name))))
 
         hook(observer.PaintAgeTracker, "publish", wrap(before=lambda _, identity, when: records.mark(identity, "publish", when)))
+        hook(ContinuousSweepPresenter, "_poll_and_prepare", poll_interval)
         hook(observer.PaintAgeTracker, "painted", first_paint)
         hook(service, "_to_domain_progress", wrap(
             before=lambda n, **kw: records.mark((n.line_sequence, "partial", n.revision), "selected"),
@@ -91,20 +104,33 @@ def main():
         hook(SpectrumScene, "_accept_projection", wrap(after=accepted))
         observer.main()
     rows = list(records.rows)
+    overlap = {}
+    for row in rows:
+        stamps = records.frames.get(row["identity"], {})
+        if "projection_begin" in stamps and "projection_end" in stamps:
+            left, right = stamps["projection_begin"], stamps["projection_end"]
+            overlap[row["identity"]] = sum(max(0., min(right, end) - max(left, begin))
+                                           for begin, end in polls) * 1000
     names = ("total",) + STAGES[1:] + ("paint",)
     groups = {"all": rows, "over_50ms": [row for row in rows if row["total"] > 50],
               "at_most_50ms": [row for row in rows if row["total"] <= 50]}
     report = dict(scope=__doc__, capacity=records.capacity, retained=len(rows),
         missing=records.missing, reordered=records.reordered,
+        overlap_scope="Inclusive overlap with existing Sweep poll+prepare worker; not an additive stage or causal proof",
+        projection_poll_overlap={group: dict(count=len(values),
+            overlapping=sum(overlap.get(row["identity"], 0.) > 0 for row in values),
+            overlap_ms_p50=float(np.median([overlap[row["identity"]] for row in values if row["identity"] in overlap])))
+            for group, values in groups.items() if values and any(row["identity"] in overlap for row in values)},
         profiler_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         groups={group: dict(count=len(values), stages={name: dict(zip(("p50", "p95", "max"), map(float,
             (*np.percentile([row[name] for row in values], [50, 95]), max(row[name] for row in values)))))
             for name in names}) for group, values in groups.items() if values},
-        slowest=sorted(rows, key=lambda row: row["total"], reverse=True)[:40])
+        slowest=[dict(row, projection_poll_overlap_ms=overlap.get(row["identity"]))
+                 for row in sorted(rows, key=lambda row: row["total"], reverse=True)[:40]])
     with output.with_suffix(".stages.json").open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
     print(json.dumps(dict(retained=len(rows), missing=records.missing, reordered=records.reordered,
-                         groups=report["groups"], slowest=report["slowest"][:5])))
+                         overlap=report["projection_poll_overlap"], groups=report["groups"], slowest=report["slowest"][:5])))
 
 
 if __name__ == "__main__":
