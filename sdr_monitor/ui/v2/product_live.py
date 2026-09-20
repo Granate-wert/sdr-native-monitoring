@@ -144,6 +144,17 @@ class V2LiveProductComposition:
             self.analyzer_view_model.subscribe(self._on_projection_control)
             if self.analyzer_view_model is not None and self.spectrum_projector is not None else None
         )
+        # LiveViewModel connected first: its synchronous Analyzer subscribers
+        # finish all layers before this same-worker preparation boundary flushes
+        # the pending viewport. Sweep owns a different preparation worker and
+        # keeps normal timer coalescing, as do chrome-only model notifications.
+        self._projection_delivery_signal = (
+            getattr(presenter, "prepared_snapshot_ready")
+            if self.spectrum_projector is not None and getattr(presenter, "prepares_snapshots", False) is True
+            else None
+        )
+        if self._projection_delivery_signal is not None:
+            self._projection_delivery_signal.connect(self._commit_live_projection)
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
         self.calibration_view_model = (
             None if calibration_presenter is None else CalibrationProfileViewModel(calibration_presenter)
@@ -235,6 +246,15 @@ class V2LiveProductComposition:
         if projector is not None:
             projector.set_suspended(state.live.busy or state.starting or state.stopping)
 
+    def _commit_live_projection(self, _state: object) -> None:
+        if self.spectrum_projector is not None:
+            self.spectrum_projector.request_commit()
+
+    def _disconnect_projection_delivery(self) -> None:
+        if self._projection_delivery_signal is not None:
+            self._projection_delivery_signal.disconnect(self._commit_live_projection)
+            self._projection_delivery_signal = None
+
     def can_close(self) -> bool:
         """Refuse a silent close while presenter work or a Live stream is active."""
 
@@ -290,12 +310,13 @@ class V2LiveProductComposition:
                     tasks.append((name, finish))
         if self._unsubscribe_projection is not None:
             self._unsubscribe_projection()
+        self._disconnect_projection_delivery()
         if self.spectrum_projector is not None:
             self.spectrum_projector.dispose()
-        for model in (self.analyzer_view_model, self.view_model, self.sweep_view_model,
+        for bound_model in (self.analyzer_view_model, self.view_model, self.sweep_view_model,
                       self.calibration_view_model):
-            if model is not None:
-                model.dispose()
+            if bound_model is not None:
+                bound_model.dispose()
         self._presentation_disposed = True
         return tuple(tasks)
 
@@ -323,6 +344,7 @@ class V2LiveProductComposition:
         if not self._presentation_disposed:
             if self._unsubscribe_projection is not None:
                 attempt(self._unsubscribe_projection)
+            attempt(self._disconnect_projection_delivery)
             if self.spectrum_projector is not None:
                 attempt(self.spectrum_projector.dispose)
             if self.analyzer_view_model is not None:

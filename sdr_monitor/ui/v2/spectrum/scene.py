@@ -180,6 +180,7 @@ class SpectrumScene(QWidget):
         projector.ready.connect(self._accept_projection)
         projector.failed.connect(self._projection_failed)
         projector.retry_ready.connect(self._retry_projection_capacity)
+        projector.commit_requested.connect(self.commit_projection)
         self.sweep_coverage.request_projection = self._request_projection
         self._view_box.sigResized.connect(self._request_projection)
 

@@ -83,6 +83,34 @@ class PreparedLiveTests(unittest.TestCase):
                 release.set()
         self.assertLess(operations.index(("project", 1)), operations.index(("prepare", 2)))
 
+    def test_live_boundary_commits_after_render_consumers_not_on_chrome_updates(self):
+        f = self.fixture
+        seen = []
+        scene = f.page.visualization.spectrum_scene
+        f.composition.spectrum_projector.commit_requested.connect(lambda: seen.append(scene.latest_frame))
+        snapshot = measurement(f)
+        f.presenter._emit_snapshot(snapshot)
+        f.wait(lambda: bool(seen))
+        self.assertIs(seen[-1].spectrum, snapshot.spectrum)
+        count = len(seen)
+        for _ in range(10):
+            f.page._render(f.composition.analyzer_view_model.state)
+        self.assertEqual(len(seen), count)
+
+    def test_owner_close_disconnects_late_prepared_commit(self):
+        f = self.fixture
+        seen = []
+        port = f.composition.spectrum_projector
+        port.commit_requested.connect(lambda: seen.append(True))
+        state = f.composition.view_model.state
+        f.shell.close()
+        f.wait(lambda: f.shell._is_closed)
+        self.assertIsNone(f.composition._projection_delivery_signal)
+        f.composition._disconnect_projection_delivery()  # idempotent cleanup
+        f.presenter.prepared_snapshot_ready.emit(state)
+        port.request_commit()  # closed port rejects a late external request
+        self.assertEqual(seen, [])
+
     def test_actual_composition_prepares_once_off_gui_and_reuses_on_busy_labels(self):
         f = self.fixture
         gui = threading.get_ident()

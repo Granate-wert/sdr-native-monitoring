@@ -508,10 +508,6 @@ class AnalyzerWorkspaceV2(QWidget):
             _set_text_if_changed(self.status, status)
             if self.status.toolTip() != status:
                 self.status.setToolTip(status)
-        # All current/analytical/coverage layers now belong to this delivery.
-        # Submit before LivePresenter dispatches its next queued preparation,
-        # rather than inserting a zero-timer turn that lets it overtake us.
-        self.visualization.spectrum_scene.commit_projection()
 
 
 def _set_text_if_changed(widget: QLabel | QPushButton, value: str) -> None:

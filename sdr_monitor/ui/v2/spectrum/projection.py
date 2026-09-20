@@ -101,6 +101,7 @@ class SpectrumProjector(QObject):
     ready = Signal(object)
     failed = Signal(object, str)
     retry_ready = Signal()
+    commit_requested = Signal()
     _done = Signal(object)
 
     def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
@@ -165,6 +166,11 @@ class SpectrumProjector(QObject):
                 or active.generation != request.generation or active.viewport != request.viewport):
             self._cancel_active()
         self._dispatch()
+
+    def request_commit(self) -> None:
+        """The owning preparation boundary completed its synchronous delivery."""
+        if not self._closed:
+            self.commit_requested.emit()
 
     def cancel_pending(self, owner: object) -> None:
         if self._pending is not None and self._pending.owner is owner:
