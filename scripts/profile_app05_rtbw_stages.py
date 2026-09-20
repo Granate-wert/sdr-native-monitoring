@@ -246,6 +246,10 @@ def main():
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     records = StageRecords()
     cpu: dict[str, deque[float]] = {name: deque(maxlen=4096) for name in ("prepare", "project", "accept")}
+    # GUI-only nesting marker, scalar rows only. One final acknowledgement may
+    # synchronously submit the next preparation; do not infer that from paints.
+    ack_active: list[dict[str, Any]] = []
+    ack_rows: deque[dict[str, Any]] = deque(maxlen=4096)
 
     def wrap(before=None, after=None, cpu_name=None):
         def factory(original):
@@ -309,10 +313,30 @@ def main():
         if (isinstance(getattr(operation, "__self__", None), LivePresenter)
                 and getattr(operation, "__name__", None) == "_prepare" and args):
             records.mark(key(args[0]), "prepare_dispatch")
+            if ack_active:
+                ack_active[-1]["next_source"] = key(args[0])
+                ack_active[-1]["prepare_submit"] = perf_counter()
 
-    def projection_callback(port, future):
-        if future is port._future and port._active is not None:
-            records.request(port._active, "projection_callback")
+    def final_ack(original):
+        def invoke(port, future):
+            request = port._active
+            if future is not port._future or request is None:
+                return original(port, future)
+            records.request(request, "projection_callback")
+            identity = key(request.traces[0][1].source_frame) if request.traces else None
+            request_key = (id(request), identity, request.generation, request.viewport)
+            with records.lock:
+                ended = records.requests.get(request_key, {}).get("projection_end")
+            row = dict(source=identity, optional=getattr(request, "persistence", None) is not None,
+                       worker_end=ended, ack_begin=perf_counter())
+            ack_active.append(row)
+            try:
+                return original(port, future)
+            finally:
+                row["ack_end"] = perf_counter()
+                ack_active.pop()
+                ack_rows.append(row)
+        return invoke
 
     def required_callback(port, serial):
         if serial == port._active_serial and port._active is not None:
@@ -367,7 +391,7 @@ def main():
             before=lambda _, delivery: records.delivered(delivery)))
         instrument(projection.SpectrumProjector, "offer", wrap(before=offering))
         instrument(projection.SpectrumProjector, "_dispatch", dispatching)
-        instrument(projection.SpectrumProjector, "_finish", wrap(before=projection_callback))
+        instrument(projection.SpectrumProjector, "_finish", final_ack)
         if hasattr(projection.SpectrumProjector, "_accept_required"):
             instrument(projection.SpectrumProjector, "_accept_required", wrap(before=required_callback))
         instrument(projection, "project_spectrum", projecting)
@@ -379,6 +403,21 @@ def main():
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
+        final_ack_scope="Bounded scalar actual final acknowledgements, after token100; optional completion is NOT early required-ready. Nested preparation submission recorded on the same GUI call stack. Missing submission does not prove a missing cadence ticket.",
+        final_ack_counts=dict(Counter(
+            ("optional" if row["optional"] else "required") +
+            ("_with_prepare_submit" if "prepare_submit" in row else "_without_prepare_submit")
+            for row in ack_rows if row["source"] is not None and row["source"][0] > 100)),
+        final_ack_ms={kind + ":" + name: dict(count=len(values), **dict(zip(("p50", "p95", "p99", "max"),
+            map(float, (*np.percentile(values, [50, 95, 99]), max(values))))))
+            for kind in ("optional", "required")
+            for name, start, stop in (("worker_end_to_ack", "worker_end", "ack_begin"),
+                                      ("ack_to_prepare_submit", "ack_begin", "prepare_submit"),
+                                      ("ack_duration", "ack_begin", "ack_end"))
+            if (values := [(row[stop] - row[start]) * 1000 for row in ack_rows
+                if row["source"] is not None and row["source"][0] > 100
+                and row["optional"] == (kind == "optional") and row.get(start) is not None
+                and row.get(stop) is not None and row[stop] >= row[start]])},
         flow_scope="Distinct exact source identities after token100 in bounded scalar history. Required projections only; density-only callbacks cannot imply spectrum admission. Evicted sources are not classified. Not RF loss.",
         flow_evictions=records.flow_evictions,
         flow_counts=dict(Counter(stage for identity, stages in records.flow.items()
