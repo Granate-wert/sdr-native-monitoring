@@ -56,6 +56,33 @@ def paint_phase(control_phase, visible, now, resumed_until):
     return "resume" if now < resumed_until else "steady"
 
 
+def future_phase(future):
+    """Read-only instantaneous public Future state, not a worker lock/barrier."""
+    if future is None:
+        return "idle"
+    if future.cancelled():
+        return "cancelled-awaiting-gui"
+    if future.done():
+        return "done-awaiting-gui"
+    return "running" if future.running() else "queued"
+
+
+def stop_phase(presenter, projector):
+    return dict(preparation=future_phase(presenter._preparation_future),
+                projection=future_phase(projector._future),
+                preparation_pending=presenter._pending_preparation is not None,
+                projection_pending=projector._pending is not None)
+
+
+def phase_matches(phase, requested):
+    if requested == "any":
+        return True
+    if requested == "idle":
+        return phase["preparation"] == phase["projection"] == "idle"
+    owner, state = requested.split(":", 1)
+    return phase[owner] == state
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
@@ -67,6 +94,10 @@ def main():
     parser.add_argument("--page-seconds", type=float, default=0)
     parser.add_argument("--viewport-seconds", type=float, default=0)
     parser.add_argument("--driver-stop-ms", type=float, default=0)
+    parser.add_argument("--stop-phase", default="any", choices=("any", "idle",
+        "preparation:running", "preparation:done-awaiting-gui",
+        "projection:running", "projection:done-awaiting-gui"),
+        help="After due time observe up to 2s for this Future phase; producer stays active. Not a worker barrier.")
     parser.add_argument("--memory-seconds", type=float, default=0,
                         help="0 disables; 0.25..60 second scalar inventory/process samples (perturbs timing)")
     parser.add_argument("--collect-after-context", action="store_true",
@@ -111,7 +142,7 @@ def main():
     paints = {name: deque(maxlen=timing_capacity) for name in ("spectrum", "waterfall")}
     callbacks = {name: deque(maxlen=timing_capacity) for name in ("page", "viewport")}
     keys, upload_tokens = {}, {}
-    failures, stops, driver_entries = [], [], []
+    failures, stops, driver_entries, driver_returns = [], [], [], []
     gui = threading.get_ident()
     generated = page_changes = viewport_changes = 0
     producer = None
@@ -217,13 +248,22 @@ def main():
                 if active:
                     driver_entries.append((perf_counter(), threading.get_ident() != gui))
                     # Simulated blocking driver, on the existing control worker.
-                    threading.Event().wait(args.driver_stop_ms / 1000)
+                    # Windows timed waits may return slightly before their
+                    # requested interval. Record/enforce an actual host deadline
+                    # without a sub-ms busy spin; not a real driver guarantee.
+                    driver_deadline = perf_counter() + args.driver_stop_ms / 1000
+                    delay = threading.Event()
+                    while (remaining := driver_deadline - perf_counter()) > 0:
+                        delay.wait(max(.001, remaining))
                     halt.set()
                     producer.join(timeout=2)
                     if producer.is_alive():
                         raise RuntimeError("synthetic producer failed to terminate")
                 with snapshot_lock:
-                    return original_stop_method(f.live)
+                    result = original_stop_method(f.live)
+                if active:
+                    driver_returns.append(perf_counter())
+                return result
 
             def spectrum_key():
                 bundle = scene.displayed_frame
@@ -319,11 +359,21 @@ def main():
                     count_before = generated
                     due = perf_counter() + args.seconds
                     intent = []
+                    intent_phase = {}
+                    phase_observations = 0
                     def request_stop():
-                        nonlocal control_phase
+                        nonlocal control_phase, phase_observations
                         entered = perf_counter()
                         if producer is None or not producer.is_alive() or generated <= count_before:
                             raise AssertionError("Stop was not tested under an active producer")
+                        phase = stop_phase(f.presenter, f.composition.spectrum_projector)
+                        phase_observations += 1
+                        if not phase_matches(phase, args.stop_phase):
+                            if entered - due > 2:
+                                raise AssertionError(f"Requested Stop phase not observed: {args.stop_phase}; last={phase}")
+                            stop_timer.start(1)
+                            return
+                        intent_phase.update(phase)
                         control_phase = "stopping"
                         f.page.primary.click()
                         intent.extend((entered, perf_counter(), generated))
@@ -339,14 +389,17 @@ def main():
                     control_phase = "idle"
                     page_timer.stop()
                     view_timer.stop()
-                    if len(driver_entries) != cycle + 1 or producer.is_alive():
+                    if len(driver_entries) != cycle + 1 or len(driver_returns) != cycle + 1 or producer.is_alive():
                         raise AssertionError("control did not stop exactly one active producer")
                     worker_entry, off_gui = driver_entries[-1]
                     stops.append(dict(cycle=cycle, producer_active_at_intent=True,
+                        phase_at_intent=intent_phase, phase_observations=phase_observations,
                         generated_at_intent=intent[2], generated_at_idle=generated,
                         timer_lateness_ms=(intent[0] - due) * 1000,
                         click_return_ms=(intent[1] - intent[0]) * 1000,
                         intent_to_worker_ms=(worker_entry - intent[0]) * 1000,
+                        driver_elapsed_ms=(driver_returns[-1] - worker_entry) * 1000,
+                        driver_return_to_idle_ms=(idle - driver_returns[-1]) * 1000,
                         intent_to_idle_ms=(idle - intent[0]) * 1000, worker_off_gui=off_gui,
                         heartbeat_ticks_during_driver_delay=sum(worker_entry < beat <
                             worker_entry + args.driver_stop_ms / 1000 for beat in beats)))
@@ -368,13 +421,25 @@ def main():
                 witness_misses=age.missing, witness_evictions=age.evicted,
                 changed_during_paint=age.changed_during_paint,
                 controls=stops, control_distributions={name: summary([s[name] for s in stops]) for name in
-                    ("timer_lateness_ms", "click_return_ms", "intent_to_worker_ms", "intent_to_idle_ms")},
+                    ("timer_lateness_ms", "click_return_ms", "intent_to_worker_ms", "driver_elapsed_ms",
+                     "driver_return_to_idle_ms", "intent_to_idle_ms")},
                 navigation_call_ms={name: summary(data) for name, data in callbacks.items()},
                 waterfall_rows=waterfall.history_rows, waterfall_metrics=asdict(waterfall.metrics),
                 allocation_budget=asdict(f.composition.allocation_budget.snapshot()),
                 display_metrics=asdict(f.presenter.display_metrics),
                 preparation_superseded=f.presenter.preparation_superseded,
                 preparation_stale=f.presenter.preparation_stale)
+            report["requested_stop_phase"] = args.stop_phase
+            report["stop_phase_scope"] = "Instantaneous GUI-side Future observation before click; worker may finish before click. Phase wait is in timer_lateness, not intent_to_idle. No worker barrier/driver deadline."
+            phase_names = sorted({(s["phase_at_intent"]["preparation"], s["phase_at_intent"]["projection"])
+                                  for s in stops})
+            report["control_by_phase"] = {
+                f"preparation={a},projection={b}": dict(count=len(rows),
+                    **{name: summary([s[name] for s in rows]) for name in
+                       ("intent_to_worker_ms", "driver_elapsed_ms", "driver_return_to_idle_ms", "intent_to_idle_ms")})
+                for a, b in phase_names
+                if (rows := [s for s in stops if s["phase_at_intent"]["preparation"] == a
+                             and s["phase_at_intent"]["projection"] == b])}
             report["paint_return_phases"] = {phase: dict(counts=phase_counts[phase],
                 age_ms={name: summary(data) for name, data in samples.items()})
                 for phase, samples in phase_ages.items()}
