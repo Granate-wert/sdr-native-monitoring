@@ -171,16 +171,26 @@ class RealQtObservationTests(unittest.TestCase):
         OBSERVER.run_qt_until(lambda: True, 1)
 
     def test_actual_composition_cli_records_both_canvases_without_hardware(self):
+        self.check_cli()
+
+    def test_sparse_terminal_cli_preserves_domain_identity_and_final_gap(self):
+        self.check_cli(terminal_every=100)
+
+    def check_cli(self, terminal_every=1):
         with TemporaryDirectory(prefix="app05-observer-") as temporary:
             output = Path(temporary) / "result.json"
             result = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/benchmark_app04_poll_overload.py"),
                                      "--checkout", str(ROOT), "--output", str(output), "--seconds", "1",
-                                     "--bins", "256"], cwd=ROOT, capture_output=True, text=True, timeout=30)
+                                     "--bins", "256", "--terminal-every", str(terminal_every)],
+                                    cwd=ROOT, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(report["product_imports_outside_checkout"], [])
         self.assertIn("QEventLoop.exec", report["event_pump"])
         row = report["results"][0]
+        self.assertEqual(report["terminal_every"], terminal_every)
+        if terminal_every > 1:
+            self.assertGreater(row["source_superseded"], 0)
         self.assertEqual(row["changed_during_paint"], 0)
         self.assertEqual(row["paint_witness_misses"], 0)
         self.assertEqual(row["terminal_control_gaps"], 1)

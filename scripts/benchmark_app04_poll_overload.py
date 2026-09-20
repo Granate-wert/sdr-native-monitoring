@@ -232,7 +232,8 @@ def main():
     parser.add_argument("--bins", type=int, nargs="+", default=[65536, 262144, 2000000])
     parser.add_argument("--page-cycle-seconds", type=float, default=0)
     parser.add_argument("--trace-memory", action="store_true")
-    parser.add_argument("--previews-per-line", type=int, default=1)
+    parser.add_argument("--terminal-every", type=int, default=1,
+                        help="Synthetic terminal relay thinning; omitted completions count as source superseded, not RF loss")
     parser.add_argument("--stop-phase", choices=("any", "idle", "poll-only", "projection-only"), default="any")
     args = parser.parse_args()
     if not sys.flags.isolated or not 1 <= args.seconds <= 1200:
@@ -243,8 +244,8 @@ def main():
         parser.error("grid must have 256..2000000 bins")
     if args.output.exists():
         parser.error("output exists")
-    if not 1 <= args.previews_per_line <= 1000:
-        parser.error("previews per synthetic line must be in 1..1000")
+    if not 1 <= args.terminal_every <= 1000:
+        parser.error("synthetic terminal relay interval must be in 1..1000")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -289,17 +290,16 @@ def main():
                 self.preview = None
                 self.lines = deque(maxlen=4)
                 self.seq = self.completed = self.dropped = self.preview_dropped = 0
-                self.revision = 0
                 self.high_water = self.control_gaps = 0
                 self.thread = None
 
             def frame(self, partial, *, gap=False):
                 key = (self.seq, "gap" if gap else "partial" if partial else "complete",
-                       self.revision if partial and not gap else 0)
+                       1 if partial and not gap else 0)
                 age_tracker.publish(key, perf_counter())
                 values, quality, owners = arrays[int(not partial)]
                 return SimpleNamespace(source_id="synthetic-overload", epoch=count,
-                    line_sequence=self.seq, revision=self.revision, unit="dBFS/bin", frequencies_hz=freq,
+                    line_sequence=self.seq, revision=1, unit="dBFS/bin", frequencies_hz=freq,
                     values=values, quality_flags_per_bin=quality, source_segment_indices=owners,
                     acquired_segment_generations=((0, 1),), pending_segment_indices=(1,),
                     state="gap" if gap else "complete", completed_ns=0,
@@ -319,17 +319,17 @@ def main():
                 def produce():
                     while not self.done.wait(.002):
                         with self.lock:
-                            self.revision = self.revision % args.previews_per_line + 1
-                            if self.revision == 1:
-                                self.seq += 1
+                            self.seq += 1
                             self.preview_dropped += self.preview is not None
                             self.preview = self.frame(True)
                         if self.done.wait(.002):
                             break
                         with self.lock:
-                            if self.revision == args.previews_per_line:
+                            if self.seq % args.terminal_every == 0:
                                 self.append(self.frame(False))
-                                self.completed += 1
+                            else:
+                                self.dropped += 1
+                            self.completed += 1
                 self.thread = threading.Thread(target=produce, name="synthetic-sweep-publications")
                 self.thread.start()
 
@@ -535,7 +535,7 @@ def main():
                 run_qt_until(lambda: not presenter.is_starting, 3)
                 due = perf_counter() + args.seconds
                 stop_timer.start(round(args.seconds*1000))
-                run_qt_until(lambda: bool(stop_times) and presenter.can_close(), args.seconds + 8)
+                run_qt_until(lambda: bool(errors) or bool(stop_times) and presenter.can_close(), args.seconds + 8)
                 ended = perf_counter()
                 if errors or harness.events != ["sweep-start", "sweep-stop"]:
                     raise AssertionError((errors, harness.events))
@@ -608,7 +608,7 @@ def main():
         age_scope="host synthetic publication to first paint return; newest uploaded Waterfall row; same-key both is not atomic/DWM/RF age",
         phase_scope="event observation time; startup/resume first250ms, hidden, steady, Stop through terminal acknowledgement; counts include successful calls, not distinct RF frames; return counts are not additive pipeline timings",
         requested_stop_phase=args.stop_phase,
-        previews_per_line=args.previews_per_line,
+        terminal_every=args.terminal_every,
         stop_phase_scope="Instantaneous GUI-side Future state immediately before click, not a worker barrier. Poll includes domain conversion and preparation. Phase wait is timer lateness, excluded from intent-to-idle; unmatched phase fails after cleanup.",
         timing_window_samples=8192, trace_memory=args.trace_memory,
         page_cycle_seconds=args.page_cycle_seconds,
