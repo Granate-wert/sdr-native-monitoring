@@ -180,6 +180,7 @@ class SpectrumProjector(QObject):
         # The Future remains active through OPTIONAL work and final GUI ack.
         self._required_lock = Lock()
         self._required_result: SpectrumProjection | None = None
+        self._required_delivered = False
         self._active_serial = 0
         self.superseded = 0
         self.completed = 0
@@ -342,6 +343,7 @@ class SpectrumProjector(QObject):
                         if self._closed or cancel.is_set() or serial != self._active_serial:
                             return
                         self._required_result = partial
+                        self._required_delivered = False
                     self._required_done.emit(serial)
 
                 try:
@@ -389,13 +391,23 @@ class SpectrumProjector(QObject):
     def _clear_required(self) -> None:
         with self._required_lock:
             self._required_result = None
+            self._required_delivered = False
+
+    @property
+    def required_result(self) -> SpectrumProjection | None:
+        """Active immutable stage for bounded ownership inventory, not a queue."""
+        with self._required_lock:
+            return self._required_result
 
     @Slot(int)
     def _accept_required(self, serial: int) -> None:
         if serial != self._active_serial:
             return  # A late scalar notification must not consume the next job.
         with self._required_lock:
-            result, self._required_result = self._required_result, None
+            if self._required_delivered:
+                return
+            result = self._required_result
+            self._required_delivered = True
         if (result is not None and not self._closed and not self._cancel.is_set()
                 and self._active is result.request):
             self.spectrum_ready.emit(result)

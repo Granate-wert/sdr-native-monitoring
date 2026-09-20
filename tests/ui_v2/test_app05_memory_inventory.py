@@ -105,6 +105,44 @@ class PresentationInventoryTests(unittest.TestCase):
         changed = self.snapshot()
         self.assertEqual(next(x.bytes for x in changed.owners if x.name == "spectrum.sources"), 0)
 
+    def test_required_stage_is_visible_and_not_double_reserved_during_density_work(self):
+        from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
+        from sdr_monitor.ui.v2.spectrum import projection
+        from sdr_monitor.ui.v2.spectrum.persistence_projection import persistence_image_reserve
+        self.select_and_apply()
+        snap = measurement(self)
+        snap = dataclasses.replace(snap, persistence=synthetic_persistence(snap.spectrum, 32, 1, 1))
+        entered, release = threading.Event(), threading.Event()
+        original = projection.prepare_persistence_image
+
+        def blocked(request, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("inventory density barrier")
+            return original(request, **kwargs)
+
+        try:
+            with patch.object(projection, "prepare_persistence_image", side_effect=blocked):
+                self.presenter._emit_snapshot(snap)
+                scene = self.page.visualization.spectrum_scene
+                self.wait(lambda: entered.is_set() and scene.displayed_frame is not None)
+                port = self.composition.spectrum_projector
+                required = port.required_result
+                self.assertIsNotNone(required)
+                report = self.snapshot()
+                owners = {owner.name: owner.bytes for owner in report.owners}
+                self.assertGreater(owners["viewport.required"], 0)
+                self.assertEqual(report.projection_reserved_bytes,
+                                 port._pending_reserve + persistence_image_reserve(required.request.persistence))
+                self.assertIn("viewport.worker", report.in_flight)
+                self.assertEqual(report.unique_array_bytes,
+                                 sum(owners.values()) - report.shared_alias_bytes)
+                release.set()
+                self.wait(lambda: port._future is None)
+                self.assertIsNone(port.required_result)
+        finally:
+            release.set()
+
     def test_inventory_refuses_non_gui_thread(self):
         errors = []
         def read():
