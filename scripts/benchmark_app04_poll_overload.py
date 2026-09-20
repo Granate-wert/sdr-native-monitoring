@@ -281,6 +281,7 @@ def main():
             fixed_band=SimpleNamespace(device=SimpleNamespace(source_id="synthetic-overload"))),))
         polls, beats, paints, publications = (deque(maxlen=8192) for _ in range(4))
         stop_times = []
+        stop_stages = {}
         memory_samples = []
         page_switches = []
         poll_ends = {}
@@ -309,13 +310,17 @@ def main():
             service.start(config)
 
         def stop(display):
+            stop_stages["worker_begin"] = perf_counter()
             display.events.append("sweep-stop")
             service.stop()
+            stop_stages["service_stopped"] = perf_counter()
 
         def poll(_display):
             began = perf_counter()
             snapshot = service.poll_latest()
             ended = perf_counter()
+            if "service_stopped" in stop_stages:
+                stop_stages["final_poll_end"] = ended
             polls.append(((ended-began)*1000, threading.get_ident() != gui_thread))
             poll_ends[id(snapshot)] = ended
             return snapshot
@@ -367,6 +372,8 @@ def main():
                 def delivered(snapshot):
                     ended = poll_ends.pop(id(snapshot))
                     publications.append((perf_counter()-ended)*1000)
+                    if "final_poll_end" in stop_stages and ended == stop_stages["final_poll_end"]:
+                        stop_stages["final_delivered"] = perf_counter()
 
                 presenter.snapshot_ready.connect(delivered)
                 def cycle_page():
@@ -432,6 +439,12 @@ def main():
                     stop_timer_lateness_ms=(stop_times[0]-due)*1000,
                     stop_click_return_ms=(stop_times[1]-stop_times[0])*1000,
                     stop_to_idle_ms=(ended-stop_times[0])*1000,
+                    stop_stage_ms=dict(
+                        intent_to_worker=(stop_stages["worker_begin"]-stop_times[0])*1000,
+                        service_stop=(stop_stages["service_stopped"]-stop_stages["worker_begin"])*1000,
+                        final_poll=(stop_stages["final_poll_end"]-stop_stages["service_stopped"])*1000,
+                        final_prepare_and_gui_delivery=(stop_stages["final_delivered"]-stop_stages["final_poll_end"])*1000,
+                        delivery_to_idle_observation=(ended-stop_stages["final_delivered"])*1000),
                     terminal_control_gaps=producer.control_gaps,
                     page_switches=len(page_switches),
                     waterfall_rows=page.visualization.waterfall_pane.history_rows,
