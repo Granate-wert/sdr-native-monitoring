@@ -129,3 +129,39 @@ class DensityOnlyCompositionTests(unittest.TestCase):
                 self.assertEqual(scene.persistence_metrics.image_uploads, 2)
             finally:
                 release.set()
+
+    def test_failed_preparation_releases_optional_gate_and_preserves_stopped_latest(self):
+        from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
+        from tests.ui_v2.test_app05_prepared_live import measurement
+        f = self.f
+        scene, port = f.page.visualization.spectrum_scene, f.composition.spectrum_projector
+        source = measurement(f)
+        source = replace(source, persistence=synthetic_persistence(source.spectrum, 32, 1, 1))
+        f.presenter._emit_snapshot(source)
+        f.wait(lambda: scene.persistence_metrics.image_uploads == 1 and port._future is None)
+        previous = scene.displayed_frame
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+        f.presenter.task_failed.connect(errors.append)
+
+        def fail(*args):
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("failed preparation barrier")
+            raise ValueError("expected preparation error")
+
+        with patch.object(f.presenter, "_snapshot_preparer", fail):
+            try:
+                f.presenter._offer_preparation(source, f.presenter._control_revision)
+                f.wait(entered.is_set)
+                scene.set_persistence_logarithmic(False)
+                scene.commit_projection()
+                self.assertTrue(port._live_preparation_in_flight)
+                self.assertIsNone(port._future)
+                release.set()
+                f.wait(lambda: not port._live_preparation_in_flight and port._future is None
+                       and scene.persistence_metrics.image_uploads == 2)
+            finally:
+                release.set()
+        self.assertIs(scene.displayed_frame, previous)
+        self.assertTrue(any("expected preparation error" in value for value in errors))
