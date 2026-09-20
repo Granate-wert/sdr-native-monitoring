@@ -78,6 +78,49 @@ class AppShellV2Tests(unittest.TestCase):
         self.assertIsNot(first, second)
         self.assertEqual(shell.inspector_workspace_id, "sweep")
 
+    def test_show_observes_new_context_and_previous_page_is_hidden_first(self) -> None:
+        events = []
+        selected = {}
+
+        class Page(QWidget):
+            def __init__(self, identifier):
+                super().__init__()
+                self.identifier = identifier
+
+            def hideEvent(self, event):
+                events.append(("hide", self.identifier))
+                super().hideEvent(event)
+
+            def showEvent(self, event):
+                super().showEvent(event)
+                shell = selected.get("shell")
+                if shell is not None:
+                    events.append(("show", self.identifier, shell.active_workspace_id,
+                                   shell.inspector_workspace_id,
+                                   shell._nav_buttons[self.identifier].is_active,
+                                   shell._status_bar.isHidden(),
+                                   shell.inspector_hidden_for_narrow_width))
+
+        definitions = tuple(WorkspaceDefinition(
+            workspace_id=name, label=name, description=name, icon=V2IconId.INFO,
+            workspace_factory=lambda name=name: Page(name),
+            inspector_factory=lambda name=name: QLabel(name))
+            for name in ("home", "analyzer"))
+        shell = self._make_shell(context=V2ShellContext(workspaces=definitions))
+        selected["shell"] = shell
+        shell.resize(1920, 1080)
+        shell.show()
+        self.app.processEvents()
+        for _ in range(3):
+            events.clear()
+            shell.select_workspace("analyzer")
+            self.assertEqual(events[:2], [("hide", "home"),
+                ("show", "analyzer", "analyzer", "analyzer", True, True, True)])
+            events.clear()
+            shell.select_workspace("home")
+            self.assertEqual(events[:2], [("hide", "analyzer"),
+                ("show", "home", "home", "home", True, False, False)])
+
     def test_close_ports_are_once_only_and_blockers_fail_closed(self) -> None:
         calls: list[str] = []
         blocked = [True]

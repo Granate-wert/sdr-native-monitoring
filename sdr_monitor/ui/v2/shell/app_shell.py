@@ -172,7 +172,11 @@ class AppShellV2(QMainWindow):
             self._workspace_pages[workspace_id] = page
             self._stack.addWidget(page)
             self._connect_workspace_navigation(page)
-        self._stack.setCurrentWidget(page)
+        previous = self._stack.currentWidget()
+        if previous is not None and previous is not page:
+            # Suspend its plot before shared chrome changes resize the stack.
+            # Navigation is presentation-only: acquisition/history keep running.
+            previous.hide()
         self._active_workspace_id = workspace_id
         # Analyzer has its own measurement status strip; do not reserve a
         # second permanent row for the historical navigation-only disclaimer.
@@ -181,6 +185,10 @@ class AppShellV2(QMainWindow):
             button.set_active(identifier == workspace_id)
         self._replace_inspector(workspace_id, definition)
         self._apply_responsive_layout()
+        # showEvent must observe the selected navigation/inspector/status
+        # context, not the previous page's geometry policy and selection.
+        self._stack.setCurrentWidget(page)
+        self._position_narrow_inspector_drawer()
         self.workspace_changed.emit(workspace_id)
 
     def _connect_workspace_navigation(self, page: QWidget) -> None:
