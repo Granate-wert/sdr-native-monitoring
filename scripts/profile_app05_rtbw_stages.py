@@ -138,6 +138,15 @@ def main():
                 and port._pending is not None):
             records.request(port._pending, "projection_dispatch")
 
+    def offering(port, request):
+        records.request(request, "projection_offer")
+        active = port._active
+        if (active is not None and port._future is not None and not port._future.running()
+                and not port._future.done() and request.traces and active.traces
+                and key(request.traces[0][1].source_frame) != key(active.traces[0][1].source_frame)):
+            with records.lock:
+                records.projection_events["new_source_while_previous_queued"] += 1
+
     with ExitStack() as stack:
         def instrument(owner, name, wrapper):
             stack.enter_context(patch.object(owner, name, wrapper(getattr(owner, name))))
@@ -150,8 +159,7 @@ def main():
             after=lambda value, _, snapshot, *args, **kwargs: records.mark(key(snapshot), "prepare_end"), cpu_name="prepare"))
         instrument(LivePresenter, "_deliver_prepared", wrap(
             before=lambda _, delivery: records.mark(key(delivery.snapshot), "delivered")))
-        instrument(projection.SpectrumProjector, "offer", wrap(
-            before=lambda _, request: records.request(request, "projection_offer")))
+        instrument(projection.SpectrumProjector, "offer", wrap(before=offering))
         instrument(projection.SpectrumProjector, "_dispatch", wrap(before=dispatching))
         instrument(projection, "project_spectrum", wrap(
             before=lambda request, **kwargs: records.request(request, "projection_begin"),
