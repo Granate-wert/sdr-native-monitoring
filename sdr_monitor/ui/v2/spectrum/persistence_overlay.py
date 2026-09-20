@@ -10,7 +10,7 @@ from time import monotonic_ns
 import numpy as np
 import pyqtgraph as pg
 from .allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
-from PySide6.QtCore import QRectF, QTimer, Qt
+from PySide6.QtCore import QRectF, QTimer
 
 from .persistence_contracts import (
     DensityValueMode,
@@ -75,10 +75,6 @@ class PersistenceOverlay:
         self._worker_request: PersistenceImageRequest | None = None
         self._worker_request_ns = 0
         self._timer = QTimer()
-        # A ready latest image should not incur coarse timer slack in addition
-        # to the exact start-to-start deadline and the shared-worker handoff.
-        # flush_pending still enforces that deadline; this does not raise Hz.
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.flush_pending)
 
