@@ -2,6 +2,7 @@
 import threading
 import time
 import unittest
+import weakref
 from unittest.mock import Mock, patch
 from dataclasses import replace
 
@@ -72,6 +73,67 @@ class CloseLifecycleTests(unittest.TestCase):
         close = CloseLifecycle(lambda: ())
         self.assertEqual(close.request().phase, "complete")
         self.assertIsNone(close._worker)
+
+    def test_acknowledged_callback_and_preparer_release_while_next_owner_is_pending(self):
+        calls = []
+        entered, release = threading.Event(), threading.Event()
+
+        class Owner:
+            def finish(self):
+                calls.append("first")
+
+        class Plan:
+            def __init__(self, operation):
+                self.operation = operation
+
+            def prepare(self):
+                return (("first", self.operation), ("slow", slow))
+
+        def slow():
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError("test barrier expired")
+
+        owner = Owner()
+        plan = Plan(owner.finish)
+        owner_ref, plan_ref = weakref.ref(owner), weakref.ref(plan)
+        close = CloseLifecycle(plan.prepare, timeout_s=.02)
+        del owner, plan
+        try:
+            close.request()
+            self.wait(close, "timeout")
+            self.assertTrue(entered.is_set())
+            self.assertEqual(close._completed, {"first"})
+            self.assertIsNone(plan_ref(), "valid cached plan no longer needs its factory owner")
+            self.assertIsNone(owner_ref(), "acknowledged callback must not retain completed owner")
+        finally:
+            release.set()
+            self.wait(close, "complete")
+        self.assertEqual(calls, ["first"])
+        self.assertEqual(close._tasks, ())
+        self.assertEqual(close.request().phase, "complete")
+
+    def test_failed_callback_remains_owned_until_retry_acknowledges(self):
+        calls = []
+
+        class Owner:
+            def finish(self):
+                calls.append("attempt")
+                if len(calls) == 1:
+                    raise RuntimeError("retry me")
+
+        def create():
+            owner = Owner()
+            return CloseLifecycle(lambda: (("owner", owner.finish),)), weakref.ref(owner)
+
+        close, reference = create()
+        close.request()
+        self.wait(close, "failed")
+        self.assertIsNotNone(reference())
+        close.request()
+        self.wait(close, "complete")
+        self.assertIsNone(reference(), "successful retry no longer owns the callback")
+        self.assertEqual(calls, ["attempt", "attempt"])
 
 
 class ProductCloseTests(unittest.TestCase):
