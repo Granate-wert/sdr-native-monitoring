@@ -66,7 +66,7 @@ class ServiceCosts:
             stack = getattr(self.local, "stack", None)
             if stack is None:
                 stack = self.local.stack = []
-            state = [perf_counter(), 0.0]
+            state = [perf_counter(), 0.0, thread_time(), 0.0]
             stack.append(state)
             outcome = "ok"
             try:
@@ -76,19 +76,26 @@ class ServiceCosts:
                 raise
             finally:
                 elapsed = perf_counter() - state[0]
+                cpu_elapsed = thread_time() - state[2]
                 stack.pop()
                 if stack:
                     stack[-1][1] += elapsed
+                    stack[-1][3] += cpu_elapsed
                 exclusive = max(0.0, elapsed - state[1])
                 with self.lock:
                     self.evictions += int(len(self.rows) == self.rows.maxlen)
                     self.rows.append(dict(stage=stage, source=source, elapsed_ms=elapsed * 1000,
                                           exclusive_ms=exclusive * 1000, outcome=outcome))
-                    total = self.totals.setdefault(stage, dict(calls=0, errors=0, elapsed_ms=0, exclusive_ms=0))
+                    total = self.totals.setdefault(stage, dict(calls=0, errors=0, elapsed_ms=0, exclusive_ms=0,
+                                                               cpu_ms=0, exclusive_cpu_ms=0))
                     total["calls"] += 1
                     total["errors"] += int(outcome != "ok")
                     total["elapsed_ms"] += elapsed * 1000
                     total["exclusive_ms"] += exclusive * 1000
+                    # Totals only: Windows thread clock is quantized, so no
+                    # per-call CPU distribution or wall-minus-CPU GIL claim.
+                    total["cpu_ms"] += cpu_elapsed * 1000
+                    total["exclusive_cpu_ms"] += max(0.0, cpu_elapsed - state[3]) * 1000
         return invoke
 
 
