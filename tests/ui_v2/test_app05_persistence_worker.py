@@ -104,7 +104,7 @@ class PersistenceWorkerTests(unittest.TestCase):
                         scene._persistence._render_image(previous)
                         zero = np.zeros((3, 65539), np.float32)
                         zero[:, ::2] = -0.0
-                        source = view(zero[:, ::-1], value_mode)
+                        source = view(zero, value_mode)
                         with patch.object(density_worker, "map_density_row_for_display",
                                           wraps=density_worker.map_density_row_for_display) as mapping:
                             actual = prepare_persistence_image(PersistenceImageRequest(source, policy, history))
@@ -115,6 +115,25 @@ class PersistenceWorkerTests(unittest.TestCase):
             scene.close()
             scene.deleteLater()
             self.app.processEvents()
+
+    def test_dense_and_strided_chunks_do_not_add_an_input_zero_scan(self):
+        original = np.any
+        for values in (np.full((3, 65539), .25, np.float32),
+                       np.asfortranarray(np.zeros((3, 65539), np.float32)),
+                       np.zeros((3, 65539), np.float32)[:, ::-1]):
+            source = view(values)
+            scans = []
+
+            def scan(values, *args, **kwargs):
+                if np.shares_memory(values, source.density):
+                    scans.append(values.size)
+                return original(values, *args, **kwargs)
+
+            with patch.object(density_worker.np, "any", side_effect=scan):
+                result = prepare_persistence_image(PersistenceImageRequest(source,
+                    PersistenceImagePolicy(0, PersistenceRenderMode.DIRECT, True)))
+            self.assertFalse(scans)
+            self.assertEqual(result.image.shape, source.density.shape)
 
     def test_history_has_no_source_or_previous_chain_and_policy_geometry_reset(self):
         policy = PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False)
