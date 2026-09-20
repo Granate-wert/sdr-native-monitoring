@@ -283,6 +283,25 @@ class LivePresenter(QObject):
                 self._shutdown_executor_complete = True
         self._closed = True
 
+    def release_presentation_after_shutdown(self) -> None:
+        """V2 GUI finalization, after successful service/executor acknowledgement.
+
+        Never called by Stop or prepare_shutdown. Queued preparation callbacks
+        see a detached Future and cannot republish data into a closed product.
+        This releases UI holders, not snapshots owned by an external service.
+        """
+        if not self._closed or not self._shutdown_executor_complete:
+            raise RuntimeError("Live presentation release requires completed shutdown")
+        if self._preparation_future is not None and not self._preparation_future.done():
+            raise RuntimeError("Live preparation still active after shutdown")
+        self._last_polled = None
+        self._pending_preparation = None
+        self._active_preparation_snapshot = None
+        self._preparation_future = None
+        clear = getattr(self._snapshot_preparer, "clear", None)
+        if callable(clear):
+            clear()
+
     def _submit(self, operation: Callable[[], Any], on_success: Callable[[Any], None]) -> None:
         if self._closed or self._closing:
             return

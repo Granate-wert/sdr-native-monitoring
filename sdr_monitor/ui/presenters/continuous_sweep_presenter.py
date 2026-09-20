@@ -273,6 +273,15 @@ class ContinuousSweepPresenter(QObject):
             self._stop_executor.shutdown(wait=True)
         self._closed = True
 
+    def release_presentation_after_shutdown(self) -> None:
+        """V2 terminal-only cache release; failed/active owners remain intact."""
+        if not self._closed or any(future is not None for future in
+                                   (self._start_future, self._poll_future, self._stop_future)):
+            raise RuntimeError("Sweep presentation release requires completed shutdown")
+        clear = getattr(self._snapshot_preparer, "clear", None)
+        if callable(clear):
+            clear()
+
     def shutdown(self) -> None:
         if self._closed:
             return

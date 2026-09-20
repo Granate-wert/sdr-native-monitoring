@@ -48,6 +48,7 @@ class AnalyzerWorkspaceV2(QWidget):
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.model = model
+        self._terminal_released = False
         self._theme = ThemeId.DARK
         self._last_bundle: AnalyzerFrameBundle | None = None
         self._last_mode = model.state.mode
@@ -219,6 +220,21 @@ class AnalyzerWorkspaceV2(QWidget):
         self.drawer.dispose()
         super().closeEvent(event)
 
+    def release_presentation_after_shutdown(self) -> None:
+        """Explicit parent-shell terminal hook; never used for Stop/hide."""
+        if self._terminal_released:
+            return
+        self._unsubscribe()
+        self._unsubscribe_devices()
+        self.sweep_preview.cancel()
+        self.drawer.dispose()
+        self.visualization.spectrum_scene.set_presentation_active(False)
+        self.visualization.spectrum_scene.clear_measurement()
+        self.visualization.waterfall_pane.release_presentation_after_shutdown()
+        self._last_bundle = self._last_waterfall = self._last_persistence = None
+        self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
+        self._terminal_released = True
+
     def _toggle_settings(self) -> None:
         self.display_controls.hide()
         if self.drawer.isVisible():
@@ -360,6 +376,8 @@ class AnalyzerWorkspaceV2(QWidget):
             self._execute()
 
     def _render(self, state: AnalyzerViewState) -> None:
+        if self._terminal_released:
+            return
         self._refresh_preview()
         self._sync_source(state)
         with QSignalBlocker(self.mode):
@@ -544,4 +562,11 @@ def analyzer_workspace_definition(model: AnalyzerViewModel,
         icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(model, projector=projector),
         inspector_factory=lambda: AnalyzerInspector(model),
         label_key="analyzer.title", description_key="analyzer.description",
+        terminal_cleanup=_release_analyzer_workspace,
     )
+
+
+def _release_analyzer_workspace(widget: QWidget) -> None:
+    if not isinstance(widget, AnalyzerWorkspaceV2):
+        raise TypeError("Analyzer terminal cleanup requires its actual workspace")
+    widget.release_presentation_after_shutdown()

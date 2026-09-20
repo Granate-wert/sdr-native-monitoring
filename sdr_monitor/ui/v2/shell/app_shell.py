@@ -99,6 +99,7 @@ class AppShellV2(QMainWindow):
         self._workspace_pages: dict[str, QWidget] = {}
         self._nav_buttons: dict[str, NavigationItem] = {}
         self._shutdown_port_names: set[str] = set()
+        self._terminal_workspace_names: set[str] = set()
         self._close_started = False
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(25)
@@ -316,6 +317,19 @@ class AppShellV2(QMainWindow):
         self._close_timer.stop()
         self._hide_narrow_inspector_drawer()
         self._save_settings()
+        # Child closeEvent is not a reliable terminal notification from a
+        # parent close. Release only created pages, after every close port has
+        # acknowledged, without constructing any lazy workspace/inspector.
+        for name, page in self._workspace_pages.items():
+            cleanup = self._definitions[name].terminal_cleanup
+            if cleanup is not None and name not in self._terminal_workspace_names:
+                try:
+                    cleanup(page)
+                except Exception as error:
+                    self._show_close_state("failed", str(error))
+                    event.ignore()
+                    return
+                self._terminal_workspace_names.add(name)
         self._is_closed = True
         event.accept()
 

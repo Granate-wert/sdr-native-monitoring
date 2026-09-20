@@ -53,6 +53,7 @@ class LiveViewModel:
         self._presenter = presenter
         self._now_ns = now_ns
         self._busy = False
+        self._disposed = False
         self._command_error: str | None = None
         self._discovery_pending = False
         self._discovery_count: int | None = None
@@ -195,6 +196,8 @@ class LiveViewModel:
     def dispose(self) -> None:
         """Release signal subscriptions without shutting down the presenter."""
 
+        if self._disposed:
+            return
         for signal, callback in (
             (self._presenter.devices_discovered, self._on_devices_discovered),
             *self._snapshot_connections,
@@ -209,6 +212,16 @@ class LiveViewModel:
         self._device_listeners.clear()
         self._layer_cache.clear()
         self._prepared_measurement = None
+        self._disposed = True
+
+    def release_presentation_after_shutdown(self) -> None:
+        """Drop immutable display payloads after composition shutdown succeeds."""
+        if not self._disposed:
+            raise RuntimeError("Live presentation must be disconnected before terminal release")
+        self._last_snapshot = None
+        self._prepared_measurement = None
+        self._layer_cache.clear()
+        self._state = build_live_view_state(None)
 
     def _on_devices_discovered(self, devices: object) -> None:
         valid_sequence = isinstance(devices, Iterable) and not isinstance(devices, (str, bytes))

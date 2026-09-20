@@ -188,6 +188,7 @@ class V2LiveProductComposition:
         else:
             raise ValueError("tinySA V2 requires both deferred activation and analyzer factories")
         self._is_shutdown = False
+        self._terminal_presentation_released = False
         self.close_lifecycle = CloseLifecycle(self._prepare_async_shutdown) if async_shutdown else None
         self._presentation_disposed = False
         live_definition = live_workspace_definition(self.view_model)
@@ -297,14 +298,38 @@ class V2LiveProductComposition:
         assert self.close_lifecycle is not None
         if self.close_lifecycle.state.phase == "idle" and not self.can_close():
             return CloseState("failed", "Stop must acknowledge before application close")
-        return self.close_lifecycle.request()
+        state = self.close_lifecycle.request()
+        if state.phase == "complete":
+            self._release_terminal_presentation()
+            self._is_shutdown = True
+        return state
 
     def poll_shutdown(self) -> CloseState:
         assert self.close_lifecycle is not None
         state = self.close_lifecycle.poll()
         if state.phase == "complete":
+            self._release_terminal_presentation()
             self._is_shutdown = True
         return state
+
+    def _release_terminal_presentation(self) -> None:
+        """GUI-only finalization after ALL composition owners acknowledged.
+
+        Optional presenters without V2 caches retain their existing lifecycle.
+        No backend snapshot is rewritten and no data is cleared on failed close.
+        """
+        if self._terminal_presentation_released:
+            return
+        for presenter in (self._presenter, self.analyzer_presenter):
+            # Only declared hooks; do not invent a port on dynamic mocks/adapters.
+            if callable(getattr(type(presenter), "release_presentation_after_shutdown", None)):
+                getattr(presenter, "release_presentation_after_shutdown")()
+        if self.spectrum_projector is not None:
+            self.spectrum_projector.release_presentation_after_shutdown()
+        self.view_model.release_presentation_after_shutdown()
+        if self.analyzer_view_model is not None:
+            self.analyzer_view_model.release_presentation_after_shutdown()
+        self._terminal_presentation_released = True
 
     def _prepare_async_shutdown(self) -> tuple[tuple[str, Callable[[], None]], ...]:
         """GUI-only phase; no device operations, waits or deferred factories."""
@@ -398,6 +423,7 @@ class V2LiveProductComposition:
             # Do not make a partial cleanup look terminal; idempotent owners may
             # be retried by an explicit application shutdown path.
             raise errors[0]
+        self._release_terminal_presentation()
         self._is_shutdown = True
 
 

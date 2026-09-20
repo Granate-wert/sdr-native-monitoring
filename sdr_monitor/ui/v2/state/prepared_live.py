@@ -28,6 +28,12 @@ class LiveSnapshotPreparer:
     def __call__(self, snapshot: LiveSnapshot) -> LiveViewState:
         return self.prepare_cancellable(snapshot)
 
+    def clear(self) -> None:
+        """Release owned caches after the caller has joined their worker."""
+        self._layers.clear()
+        if self._grid is not None:
+            self._grid.clear()
+
     def prepare_cancellable(self, snapshot: LiveSnapshot, *, cancelled: CancelCheck = None) -> LiveViewState:
         """Abort obsolete render work between complete, owned preparation stages.
 

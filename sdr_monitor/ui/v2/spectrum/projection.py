@@ -239,6 +239,16 @@ class SpectrumProjector(QObject):
         # Never join a worker from Qt. Its application owner performs cleanup.
         self._cancel_active()
 
+    def release_presentation_after_shutdown(self) -> None:
+        """Release a joined worker result even when its Qt callback is queued."""
+        if not self._closed:
+            raise RuntimeError("Projection must be disposed before terminal release")
+        future = self._future
+        if future is not None:
+            if not future.done():
+                raise RuntimeError("Projection worker has not acknowledged shutdown")
+            self._finish(future)  # closed: no result emission or new work
+
     def _dispatch(self) -> None:
         if (self._closed or self._suspended or self._future is not None
                 or self._pending is None):

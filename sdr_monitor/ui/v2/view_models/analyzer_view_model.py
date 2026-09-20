@@ -198,6 +198,14 @@ class AnalyzerViewModel:
             signal.disconnect(callback)
         self._listeners.clear()
 
+    def release_presentation_after_shutdown(self) -> None:
+        """No notification/repaint: the composition's terminal close owns this."""
+        if not self._disposed:
+            raise RuntimeError("Analyzer presentation must be disconnected before terminal release")
+        self._bundle = None
+        self._sweep_snapshot = None
+        self._prepared_sweep = None
+
     def _on_live(self, state: LiveViewState) -> None:
         snapshot = state.snapshot
         identity = (getattr(snapshot, "session_id", None), getattr(snapshot, "generation", None),

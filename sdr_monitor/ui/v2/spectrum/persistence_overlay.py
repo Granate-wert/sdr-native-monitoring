@@ -181,6 +181,7 @@ class PersistenceOverlay:
         self._latest_view = None
         self._uploaded_density = None
         self._visual_buffer = None
+        self._row_scratch = None
         self._mapping_dirty = False
         self._image.clear()
         self._image.setVisible(False)

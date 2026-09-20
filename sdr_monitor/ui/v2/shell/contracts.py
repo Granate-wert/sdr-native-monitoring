@@ -27,6 +27,7 @@ class WorkspaceDefinition:
     optional: bool = False
     label_key: str | None = None
     description_key: str | None = None
+    terminal_cleanup: Callable[[QWidget], None] | None = None
 
     def __post_init__(self) -> None:
         if not self.workspace_id.strip():
@@ -35,6 +36,8 @@ class WorkspaceDefinition:
             raise ValueError("workspace labels must not be blank")
         if not callable(self.workspace_factory) or not callable(self.inspector_factory):
             raise TypeError("workspace factories must be callable")
+        if self.terminal_cleanup is not None and not callable(self.terminal_cleanup):
+            raise TypeError("workspace terminal cleanup must be callable")
         if self.label_key is not None and not self.label_key.strip():
             raise ValueError("workspace label_key must not be blank")
         if self.description_key is not None and not self.description_key.strip():

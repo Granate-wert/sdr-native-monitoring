@@ -74,6 +74,10 @@ class SweepSnapshotPreparer:
                  bundle: AnalyzerFrameBundle | None) -> PreparedSweepSnapshot:
         return self.prepare_cancellable(snapshot, bundle)
 
+    def clear(self) -> None:
+        """Release owned geometry only after the preparation owner is terminal."""
+        self._grid.clear()
+
     def prepare_cancellable(self, snapshot: ContinuousSweepDisplaySnapshot,
                             bundle: AnalyzerFrameBundle | None, *,
                             cancelled: CancelCheck = None) -> PreparedSweepSnapshot:
