@@ -403,8 +403,16 @@ class LivePresenter(QObject):
         with self._publication_lock:
             if revision != self._control_revision:
                 return _PreparedDelivery(snapshot, revision, render)
+        def obsolete() -> bool:
+            with self._publication_lock:
+                return self._closing or self._closed or revision != self._control_revision
         try:
-            value = self._snapshot_preparer(snapshot)
+            preparer = self._snapshot_preparer
+            # Explicit opt-in on the callable's type, not dynamic instance
+            # attributes (injected adapters/mocks remain one-argument callables).
+            cancellable = getattr(type(preparer), "prepare_cancellable", None)
+            value = (cancellable(preparer, snapshot, cancelled=obsolete)
+                     if render and callable(cancellable) else preparer(snapshot))
             projected = getattr(value, "snapshot", None)
             if isinstance(projected, LiveSnapshot):
                 snapshot = projected

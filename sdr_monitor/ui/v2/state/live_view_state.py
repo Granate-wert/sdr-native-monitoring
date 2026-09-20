@@ -20,6 +20,7 @@ from .analyzer_layers import persistence_density_from_native, waterfall_line_fro
 from .analyzer_layer_cache import AnalyzerLayerCache
 from ..spectrum.contracts import PreparedSpectrumFrame
 from ..spectrum.allocation_budget import PresentationBudgetExceeded
+from ..spectrum.cancellation import CancelCheck, check_cancelled
 
 
 class LiveAction(StrEnum):
@@ -110,6 +111,7 @@ def build_live_view_state(
     now_ns: int | None = None,
     layer_cache: AnalyzerLayerCache | None = None,
     prepared_measurement: LiveViewState | None = None,
+    cancelled: CancelCheck = None,
 ) -> LiveViewState:
     """Map a public immutable snapshot to labels and enabled controls.
 
@@ -126,6 +128,7 @@ def build_live_view_state(
         return _empty_state(busy=busy)
 
     state = _coerce_state(getattr(snapshot, "state", LiveSessionState.DISCONNECTED))
+    check_cancelled(cancelled)
     spectrum = getattr(snapshot, "spectrum", None)
     invalid_measurement = False
     if prepared_measurement is not None:
@@ -139,6 +142,7 @@ def build_live_view_state(
     else:
         analyzer_bundle = None
     if isinstance(snapshot, LiveSnapshot):
+        check_cancelled(cancelled)
         spectrum = analyzer_bundle.spectrum if analyzer_bundle is not None else None
     # Product LiveSnapshot layers pass only through the domain coherence gate.
     # Snapshot-shaped test/public adapters retain their established behavior.
@@ -171,6 +175,7 @@ def build_live_view_state(
             coherence_issues.append("persistence_geometry_invalid")
         if analyzer_bundle.persistence is not None and persistence_frame is None:
             coherence_issues.append("persistence_values_invalid")
+        check_cancelled(cancelled)
         try:
             waterfall_line = (waterfall_line_from_spectrum(analyzer_bundle.spectrum)
                 if layer_cache is None else layer_cache.waterfall(analyzer_bundle.spectrum))
@@ -180,6 +185,7 @@ def build_live_view_state(
         except (TypeError, ValueError, OverflowError):
             waterfall_line = None
             coherence_issues.append("waterfall_geometry_invalid")
+        check_cancelled(cancelled)
     has_spectrum = spectrum is not None
     frozen_last_frame = state is LiveSessionState.CONNECTED and has_spectrum
     connection_label, acquisition_label, action = _state_labels(state, frozen_last_frame)

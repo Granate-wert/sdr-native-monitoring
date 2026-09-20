@@ -71,16 +71,21 @@ class PreparedSpectrumFrame:
     finite_extent: tuple[float, float] | None
     measurement_grid: np.ndarray | None
 
-    def __init__(self, frame: object, *, grid_cache: MeasurementGridCache | None = None) -> None:
+    def __init__(self, frame: object, *, grid_cache: MeasurementGridCache | None = None,
+                 cancelled: CancelCheck = None) -> None:
         if not is_dataclass(frame) or not getattr(getattr(frame, "__dataclass_params__", None), "frozen", False):
             raise ValueError("prepared spectrum requires a frozen publication")
+        check_cancelled(cancelled)
         view = adapt_spectrum_frame(frame)
+        check_cancelled(cancelled)
         if view.frequencies_hz.flags.writeable or view.values.flags.writeable:
             raise ValueError("prepared spectrum arrays must be read-only")
         object.__setattr__(self, "view", view)
-        object.__setattr__(self, "finite_extent", finite_value_extent(view.values))
+        object.__setattr__(self, "finite_extent", finite_value_extent(view.values, cancelled=cancelled))
+        check_cancelled(cancelled)
         object.__setattr__(self, "measurement_grid", None if grid_cache is None else
                            grid_cache.prepare(view.frequencies_hz))
+        check_cancelled(cancelled)
 
 
 def finite_value_extent(values: np.ndarray, *, cancelled: CancelCheck = None) -> tuple[float, float] | None:

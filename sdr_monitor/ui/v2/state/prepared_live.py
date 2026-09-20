@@ -9,6 +9,7 @@ from .live_view_state import LiveViewState, build_live_view_state
 from ..spectrum.allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
 from ..spectrum.grid_baseline import MeasurementGridCache
 from .source_admission import PresentationSourceAdmission
+from ..spectrum.cancellation import CancelCheck, check_cancelled
 
 
 class LiveSnapshotPreparer:
@@ -25,20 +26,32 @@ class LiveSnapshotPreparer:
         self._layers = AnalyzerLayerCache(allocation_budget, grid_cache=self._grid)
 
     def __call__(self, snapshot: LiveSnapshot) -> LiveViewState:
+        return self.prepare_cancellable(snapshot)
+
+    def prepare_cancellable(self, snapshot: LiveSnapshot, *, cancelled: CancelCheck = None) -> LiveViewState:
+        """Abort obsolete render work between complete, owned preparation stages.
+
+        Control/terminal preparation uses __call__ without cancellation. This
+        is cooperative presentation cancellation, not device cancellation or
+        a hard deadline for a currently executing numerical operation.
+        """
         if not isinstance(snapshot, LiveSnapshot):
             raise TypeError("Live preparation requires an immutable domain snapshot")
+        check_cancelled(cancelled)
         if self.allocation_budget is not None:
             self.allocation_budget.observe(snapshot)
-        state = build_live_view_state(snapshot, layer_cache=self._layers)
+        state = build_live_view_state(snapshot, layer_cache=self._layers, cancelled=cancelled)
+        check_cancelled(cancelled)
         bundle = state.analyzer_bundle
         if bundle is None and self._grid is not None:
             self._grid.clear()
         try:
             return replace(state, prepared_spectrum=None if bundle is None else
-                           PreparedSpectrumFrame(bundle, grid_cache=self._grid))
+                           PreparedSpectrumFrame(bundle, grid_cache=self._grid, cancelled=cancelled))
         except PresentationBudgetExceeded:
             assert self.allocation_budget is not None and self._grid is not None
             self._layers.clear()
             self._grid.clear()
+            check_cancelled(cancelled)
             omitted = PresentationSourceAdmission(self.allocation_budget).omit_live(snapshot)
             return build_live_view_state(omitted, layer_cache=self._layers)
