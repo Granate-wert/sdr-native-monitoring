@@ -98,6 +98,7 @@ def main():
     from scripts import benchmark_app05_rtbw_observation as observer
     from scripts.benchmark_app04_poll_overload import PaintAgeTracker
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
+    from sdr_monitor.ui.display_scheduler import DisplayScheduler
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     records = StageRecords()
@@ -160,6 +161,13 @@ def main():
         if future is port._future and port._active is not None:
             records.request(port._active, "projection_callback")
 
+    def replacement_taken(snapshot, scheduler, admitted):
+        if snapshot is not None:
+            # Fresh publication reuses an already granted cadence slot, not
+            # a new timer tick. Record its actual admission/dispatch boundary.
+            records.mark(key(snapshot), "coalesced")
+            records.mark(key(snapshot), "prepare_dispatch")
+
     with ExitStack() as stack:
         def instrument(owner, name, wrapper):
             stack.enter_context(patch.object(owner, name, wrapper(getattr(owner, name))))
@@ -168,6 +176,8 @@ def main():
         instrument(LivePresenter, "offer_snapshot_for_render", wrap(before=lambda _, snapshot: records.mark(key(snapshot), "offer")))
         instrument(LivePresenter, "_emit_render", wrap(before=lambda _, snapshot: records.mark(key(snapshot), "coalesced")))
         instrument(LivePresenter, "_dispatch_preparation", wrap(before=preparation_dispatching))
+        if hasattr(DisplayScheduler, "take_pending_replacement"):
+            instrument(DisplayScheduler, "take_pending_replacement", wrap(after=replacement_taken))
         instrument(LivePresenter, "_prepare", wrap(
             before=lambda _, snapshot, *args, **kwargs: records.mark(key(snapshot), "prepare_begin"),
             after=lambda value, _, snapshot, *args, **kwargs: records.mark(key(snapshot), "prepare_end"), cpu_name="prepare"))

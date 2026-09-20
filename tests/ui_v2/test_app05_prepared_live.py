@@ -151,6 +151,83 @@ class PreparedLiveTests(unittest.TestCase):
         self.assertEqual(f.live.latest_snapshot().applied.applied.gain_db, 20)
         f.presenter.set_projection_in_flight(False)
 
+    def test_waiting_cadence_slot_takes_newest_pending_without_second_emission(self):
+        f = self.fixture
+        scheduler = f.presenter._display_scheduler
+        scheduler._timer.stop()
+        f.presenter.set_projection_in_flight(True)
+        old, latest = measurement(f, 1), measurement(f, 2)
+        seen = []
+        original = f.presenter._snapshot_preparer
+
+        def prepare(snapshot):
+            seen.append(snapshot)
+            return original(snapshot)
+
+        with patch.object(f.presenter, "_snapshot_preparer", side_effect=prepare):
+            f.presenter.offer_snapshot_for_render(old)
+            scheduler._flush()  # One cadence ticket, blocked by projection ack.
+            f.presenter.offer_snapshot_for_render(latest)  # No second timer tick.
+            emitted = scheduler.metrics.emitted
+            f.presenter.set_projection_in_flight(False)
+            f.wait(lambda: f.presenter._preparation_future is None)
+            self.assertEqual(len(seen), 1)
+            self.assertIs(seen[0], latest)
+            self.assertFalse(scheduler.pending)
+            self.assertEqual(scheduler.metrics.emitted, emitted)
+            self.assertEqual(scheduler.metrics.preparation_replacements, 1)
+            scheduler._flush()
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(scheduler.metrics.emitted, emitted)
+
+    def test_pending_replacement_preserves_generation_order_deadline_and_metrics(self):
+        scheduler = self.fixture.presenter._display_scheduler
+        scheduler._timer.stop()
+        admitted = replace(measurement(self.fixture), sequence=10)
+        deadline = scheduler._next_deadline_s
+        for candidate in (replace(admitted, generation=admitted.generation - 1),
+                          replace(admitted, generation=admitted.generation + 1),
+                          replace(admitted, sequence=9)):
+            scheduler.offer(candidate)
+            self.assertIsNone(scheduler.take_pending_replacement(admitted))
+            self.assertTrue(scheduler.pending)
+        newest = replace(admitted, sequence=11)
+        scheduler.offer(newest)
+        before = scheduler.metrics
+        self.assertIs(scheduler.take_pending_replacement(admitted), newest)
+        self.assertEqual(scheduler.metrics.emitted, before.emitted)
+        self.assertEqual(scheduler.metrics.preparation_replacements, 1)
+        self.assertEqual(scheduler._next_deadline_s, deadline)
+        self.assertFalse(scheduler.pending)
+        scheduler.reset_metrics()
+        self.assertEqual(scheduler.metrics.preparation_replacements, 0)
+
+    def test_pending_scheduler_cannot_replace_explicit_refresh_or_cross_revision(self):
+        f = self.fixture
+        scheduler = f.presenter._display_scheduler
+        scheduler._timer.stop()
+        first, latest = measurement(f, 1), measurement(f, 2)
+        f.presenter.offer_snapshot_for_render(latest)
+        seen = []
+        original = f.presenter._snapshot_preparer
+
+        def prepare(snapshot):
+            seen.append(snapshot)
+            return original(snapshot)
+
+        with patch.object(f.presenter, "_snapshot_preparer", side_effect=prepare):
+            f.presenter._offer_preparation(first, f.presenter._control_revision, render=False)
+            f.wait(lambda: f.presenter._preparation_future is None)
+            self.assertIs(seen[-1], first)
+            self.assertTrue(scheduler.pending)
+            f.presenter._control_revision += 1  # Acknowledgement seals old offers.
+            f.presenter._offer_preparation(first, f.presenter._control_revision)
+            f.wait(lambda: f.presenter._preparation_future is None)
+            self.assertIs(seen[-1], first)
+            self.assertEqual(scheduler.metrics.preparation_replacements, 0)
+            scheduler._flush()  # The sealed old revision must not reappear.
+            self.assertEqual(len(seen), 2)
+
     def test_prepared_pending_source_precedes_next_preparation_on_actual_worker(self):
         from sdr_monitor.ui.v2.spectrum import projection
         from sdr_monitor.ui.v2.spectrum.contracts import TraceKind

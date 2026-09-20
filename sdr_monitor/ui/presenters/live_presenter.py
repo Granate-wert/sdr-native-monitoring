@@ -382,6 +382,14 @@ class LivePresenter(QObject):
         if not current:
             self._preparation_stale += 1
             return
+        if render and self._offered_control_revision == revision:
+            # The existing cadence ticket may have waited for projection/GUI
+            # acknowledgement while a fresher publication entered the scheduler.
+            # Consume it for THIS task, not a second task at the next timer tick.
+            replacement = self._display_scheduler.take_pending_replacement(snapshot)
+            if replacement is not None and replacement is not snapshot:
+                self._preparation_superseded += 1
+                snapshot = replacement
         future = self._executor.submit(self._prepare, snapshot, revision, render)
         self._preparation_future = future
         self._active_preparation_snapshot = snapshot

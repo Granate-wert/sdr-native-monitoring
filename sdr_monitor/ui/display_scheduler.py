@@ -30,6 +30,7 @@ class DisplaySchedulerMetrics:
     timer_early_rearms: int = 0
     timer_lateness_ns: int = 0
     timer_max_lateness_ns: int = 0
+    preparation_replacements: int = 0
 
 
 class DisplayScheduler(QObject):
@@ -57,6 +58,7 @@ class DisplayScheduler(QObject):
         self._timer_early_rearms = 0
         self._timer_lateness_ns = 0
         self._timer_max_lateness_ns = 0
+        self._preparation_replacements = 0
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._on_timer)
@@ -92,7 +94,24 @@ class DisplayScheduler(QObject):
             timer_early_rearms=self._timer_early_rearms,
             timer_lateness_ns=self._timer_lateness_ns,
             timer_max_lateness_ns=self._timer_max_lateness_ns,
+            preparation_replacements=self._preparation_replacements,
         )
+
+    def take_pending_replacement(self, admitted: LiveSnapshot) -> LiveSnapshot | None:
+        """Refresh ONE already cadence-admitted, not-yet-dispatched render.
+
+        GUI-owner only. This does not grant a new render slot, emit a signal,
+        move the FPS deadline or touch an active preparation. Configuration
+        generations never cross this hand-off. Separate accounting avoids
+        counting the replacement as another timer emission or analytical loss.
+        """
+        pending = self._pending
+        if (pending is None or pending.generation != admitted.generation
+                or pending.sequence < admitted.sequence):
+            return None
+        self._pending = None
+        self._preparation_replacements += 1
+        return pending
 
     def set_fps(self, fps: int) -> None:
         value = int(fps)
@@ -136,6 +155,7 @@ class DisplayScheduler(QObject):
         self._timer_early_rearms = 0
         self._timer_lateness_ns = 0
         self._timer_max_lateness_ns = 0
+        self._preparation_replacements = 0
 
     def _on_timer(self) -> None:
         """Emit at the requested average cadence despite integer Qt intervals.
