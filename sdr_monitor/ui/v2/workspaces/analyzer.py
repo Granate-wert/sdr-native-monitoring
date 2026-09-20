@@ -419,7 +419,12 @@ class AnalyzerWorkspaceV2(QWidget):
         previous = self._last_identity
         fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch", "config_generation",
                   "clock_domain", "accumulation_id", "unit")
-        changed_identity = (identity is not None and previous is not None and (
+        # Lifecycle/error/locale publications can carry the exact bundle already
+        # applied below. They are not new measurements: do not re-scan its entire
+        # frequency grid on the GUI thread. Every different bundle still gets
+        # exact content comparison, even if it reuses the same array storage.
+        changed_identity = (state.bundle is not self._last_bundle
+                            and identity is not None and previous is not None and (
             any(getattr(identity, name) != getattr(previous, name) for name in fields)
             or not np.array_equal(identity.frequencies_hz, previous.frequencies_hz)
         ))
