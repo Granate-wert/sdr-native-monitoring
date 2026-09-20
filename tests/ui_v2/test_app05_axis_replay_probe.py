@@ -68,10 +68,13 @@ class AxisReplayProbeTests(unittest.TestCase):
             state = PROBE.painter_state(painter)
             state["device_transform"] = QTransform.fromTranslate(78, 134)
             state["system_clip"] = QRegion(QRect(130, 167, 60, 50))
-            PROBE.restore_state(painter, state)
-            self.assertEqual(painter.paintEngine().systemClip(), QRegion(QRect(57, 38, 60, 50)))
         finally:
             painter.end()
+        replay = PROBE.begin_replay(image, state)
+        try:
+            self.assertEqual(replay.paintEngine().systemClip(), QRegion(QRect(57, 38, 60, 50)))
+        finally:
+            replay.end()
 
     def test_captured_qt_state_is_detached_from_later_painter_mutations(self):
         image = QImage(100, 100, QImage.Format.Format_ARGB32_Premultiplied)
@@ -91,6 +94,19 @@ class AxisReplayProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "8192"):
             PROBE.image_for(dict(pixel_width=8193, pixel_height=1))
 
+    def test_system_clip_restricts_pixels_on_first_and_repeated_replay(self):
+        source = QImage(100, 100, QImage.Format.Format_ARGB32_Premultiplied)
+        painter = QPainter(source)
+        state = PROBE.painter_state(painter)
+        painter.end()
+        state["system_clip"] = QRegion(QRect(20, 10, 10, 15))
+        picture = self.picture()
+        for _ in range(2):
+            raw = PROBE.pixels(picture, state)
+            result = QImage(raw, 100, 100, QImage.Format.Format_ARGB32_Premultiplied)
+            self.assertEqual(result.pixelColor(5, 21), QColor(32, 32, 32))
+            self.assertNotEqual(result.pixelColor(25, 21), QColor(32, 32, 32))
+
 
 class ActualAxisCaptureTests(unittest.TestCase):
     def test_real_v2_capture_is_exact_bounded_and_not_a_normal_speed_gate(self):
@@ -104,11 +120,13 @@ class ActualAxisCaptureTests(unittest.TestCase):
                 cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertTrue(output.with_suffix(".qpic").is_file())
+            self.assertTrue(output.with_suffix(".png").is_file())
             report = json.loads(output.read_text(encoding="utf-8"))
         capture = report["axis_replay_diagnostic"]
         self.assertFalse(report["normal_performance_acceptance"])
         self.assertTrue(capture["reconstructed_picture_bitidentical"])
         self.assertTrue(capture["direct_pixels_bitidentical"])
+        self.assertTrue(capture["serialized_pixels_bitidentical"])
         self.assertGreaterEqual(capture["cached_axis_samples"], 41)
         self.assertLessEqual(capture["cached_axis_samples"], 512)
         self.assertEqual(len(capture["capture"]["same_device_ms"]), 3)

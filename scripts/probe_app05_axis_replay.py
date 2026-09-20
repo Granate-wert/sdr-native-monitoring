@@ -44,7 +44,7 @@ def painter_state(painter):
         depth=device.depth(), device_type=device.devType(), engine_type=engine.type().name)
 
 
-def restore_state(painter, state, *, system_clip=True):
+def restore_state(painter, state):
     from PySide6.QtCore import Qt
     painter.setWindow(state["window"])
     painter.setViewport(state["viewport"])
@@ -62,16 +62,7 @@ def restore_state(painter, state, *, system_clip=True):
     painter.setBackground(state["background"])
     painter.setBackgroundMode(state["background_mode"])
     painter.setLayoutDirection(state["layout"])
-    # The engine's implicit system clip is in device pixels; install before
-    # the user clip (which is in logical painter coordinates).
-    if system_clip:
-        # QWidget's backing-store offset is absent on a standalone QImage.
-        # Map the physical clip to the new device, not its old global offset.
-        inverse, invertible = state["device_transform"].inverted()
-        if not invertible:
-            raise ValueError("non-invertible captured device transform")
-        mapping = inverse * painter.deviceTransform()
-        painter.paintEngine().setSystemClip(mapping.map(state["system_clip"]))
+    # Implicit engine clip belongs to begin_replay BEFORE painter.begin().
     painter.setClipping(False)
     if state["clipping"]:
         painter.setClipPath(state["clip"], Qt.ClipOperation.ReplaceClip)
@@ -111,13 +102,34 @@ def image_for(state):
     return image
 
 
+def begin_replay(target, state, *, system_clip=True):
+    """Install implicit device clip BEFORE begin; changing it mid-paint is stale.
+
+    Use a short setup painter only to derive the exact target device transform,
+    then begin the measured painter against the prepared engine. Setup is not
+    part of picture replay timing. This also handles DPR/view transforms.
+    """
+    from PySide6.QtGui import QPainter, QRegion
+    setup = QPainter(target)
+    try:
+        restore_state(setup, state)
+        inverse, invertible = state["device_transform"].inverted()
+        if not invertible:
+            raise ValueError("non-invertible captured device transform")
+        clip = (inverse * setup.deviceTransform()).map(state["system_clip"]) if system_clip else QRegion()
+    finally:
+        setup.end()
+    target.paintEngine().setSystemClip(clip)
+    painter = QPainter(target)
+    restore_state(painter, state)
+    return painter
+
+
 def replay(picture, state, *, system_clip=True, repeats=40):
-    from PySide6.QtGui import QPainter
     image = image_for(state)
-    painter = QPainter(image)
+    painter = begin_replay(image, state, system_clip=system_clip)
     durations = []
     try:
-        restore_state(painter, state, system_clip=system_clip)
         effective = describe(painter_state(painter))
         for index in range(repeats + 3):
             painter.save()
@@ -137,11 +149,9 @@ def replay(picture, state, *, system_clip=True, repeats=40):
 
 def pixels(picture, state):
     """Single pass, unlike the deliberately overdrawn timing image."""
-    from PySide6.QtGui import QPainter
     image = image_for(state)
-    painter = QPainter(image)
+    painter = begin_replay(image, state)
     try:
-        restore_state(painter, state)
         if not picture.play(painter):
             raise RuntimeError("pixel replay failed")
     finally:
@@ -155,7 +165,8 @@ def main():
     root = Path(sys.argv[sys.argv.index("--checkout") + 1]).resolve(strict=True)
     output = Path(sys.argv[sys.argv.index("--output") + 1]).resolve()
     picture_path = output.with_suffix(".qpic")
-    if output.exists() or picture_path.exists():
+    reference_path = output.with_suffix(".png")
+    if output.exists() or picture_path.exists() or reference_path.exists():
         raise SystemExit("new output/picture paths required")
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -265,6 +276,14 @@ def main():
     exact_pixels = pixels(picture, state)
     if pixels(direct_picture, state) != exact_pixels:
         raise AssertionError("direct real-axis draw changed pixels")
+    reloaded = QPicture()
+    if not reloaded.load(str(picture_path)) or pixels(reloaded, state) != exact_pixels:
+        raise AssertionError("saved/reloaded picture changed the reference pixels")
+    from PySide6.QtGui import QImage
+    reference = QImage(exact_pixels, state["pixel_width"], state["pixel_height"],
+                       QImage.Format.Format_ARGB32_Premultiplied)
+    if not reference.save(str(reference_path)):
+        raise RuntimeError("could not save exact CPU reference")
     def component(kind):
         def draw(painter):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
@@ -311,7 +330,8 @@ def main():
         replay_with_system_clip=replay(picture, state),
         replay_without_system_clip=replay(picture, state, system_clip=False),
         direct_actual_specs=replay(direct_picture, state), components=components,
-        direct_pixels_bitidentical=True, pixel_sha256=hashlib.sha256(exact_pixels).hexdigest(),
+        direct_pixels_bitidentical=True, serialized_pixels_bitidentical=True,
+        pixel_sha256=hashlib.sha256(exact_pixels).hexdigest(),
         actual_axis=line_description(latest_specs["axis"]),
         actual_ticks=[line_description(row) for row in latest_specs["ticks"]],
         actual_labels=len(latest_specs["texts"]), reconstructed_picture_bitidentical=True,
