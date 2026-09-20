@@ -28,6 +28,7 @@ class PaintAgeWitnessTests(unittest.TestCase):
         witness.painted("waterfall", partial, 5)
         self.assertEqual(list(witness.ages["both"]), [4000])
         self.assertEqual(witness.partial_counts["both"], 1)
+        self.assertEqual(list(witness.partial_ages["waterfall"]), [4000])
         witness.painted("spectrum", partial, 6)
         self.assertEqual(witness.counts["spectrum"], 1)
         self.assertEqual(witness.repeated, 1)

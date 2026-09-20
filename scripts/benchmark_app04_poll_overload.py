@@ -87,6 +87,7 @@ class PaintAgeTracker:
         self.lock = threading.Lock()
         self.sources = OrderedDict()
         self.ages = {name: deque(maxlen=capacity) for name in ("spectrum", "waterfall", "both")}
+        self.partial_ages = {name: deque(maxlen=capacity) for name in self.ages}
         self.counts = {name: 0 for name in self.ages}
         self.partial_counts = {name: 0 for name in self.ages}
         self.missing = self.repeated = self.evicted = self.changed_during_paint = 0
@@ -122,6 +123,8 @@ class PaintAgeTracker:
                 self.ages[target].append((when - began) * 1000)
                 self.counts[target] += 1
                 self.partial_counts[target] += key[1] == "partial"
+                if key[1] == "partial":
+                    self.partial_ages[target].append((when - began) * 1000)
 
 
 def sweep_key(frame):
@@ -412,6 +415,8 @@ def main():
                     canvas_cpu_paint_ms={name: summary(values) for name, values in canvas_paints.items()},
                     host_publication_to_first_paint_return_ms={name: summary(values) if values else None
                         for name, values in age_tracker.ages.items()},
+                    host_partial_to_first_paint_return_ms={name: summary(values) if values else None
+                        for name, values in age_tracker.partial_ages.items()},
                     first_paint_publications=age_tracker.counts,
                     first_partial_paint_publications=age_tracker.partial_counts,
                     paint_witness_misses=age_tracker.missing,
