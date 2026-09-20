@@ -124,9 +124,10 @@ class PresentationInventoryTests(unittest.TestCase):
         try:
             with patch.object(projection, "prepare_persistence_image", side_effect=blocked):
                 self.presenter._emit_snapshot(snap)
-                scene = self.page.visualization.spectrum_scene
-                self.wait(lambda: entered.is_set() and scene.displayed_frame is not None)
                 port = self.composition.spectrum_projector
+                # Inventory must cover an active stage even if Qt first-show
+                # geometry changes reject its pixels and require a reproject.
+                self.wait(lambda: entered.is_set() and port.required_result is not None)
                 required = port.required_result
                 self.assertIsNotNone(required)
                 report = self.snapshot()
