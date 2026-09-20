@@ -8,7 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
 from contextlib import nullcontext
 from dataclasses import dataclass
-from threading import Event
+from threading import Event, Lock
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
@@ -29,6 +29,8 @@ DEFAULT_PROJECTION_BYTES = 256 * 1024 * 1024
 
 
 def _density_policy_key(request: "ProjectionRequest") -> tuple | None:
+    if request.persistence_policy is not None:
+        return request.persistence_policy
     density = request.persistence
     return None if density is None else (density.policy, density.history_revision)
 
@@ -63,6 +65,9 @@ class ProjectionRequest:
     # An ordinary new source on accepted geometry can keep the pipeline moving.
     requires_preparation_handoff: bool = True
     persistence: PersistenceImageRequest | None = None
+    # Explicit intent survives trace-only cadence skips. None retains the
+    # standalone caller's original request/history cancellation contract.
+    persistence_policy: tuple | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +81,8 @@ class SpectrumProjection:
 
 
 def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = None,
-                     persistence_budget: PresentationAllocationBudget | None = None) -> SpectrumProjection:
+                     persistence_budget: PresentationAllocationBudget | None = None,
+                     spectrum_ready: Callable[[SpectrumProjection], None] | None = None) -> SpectrumProjection:
     check_cancelled(cancelled)
     left, right, width = request.viewport
     traces = []
@@ -112,6 +118,11 @@ def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = Non
     check_cancelled(cancelled)
     density, density_error = None, None
     if request.persistence is not None:
+        # Required trace/coverage is immutable and complete. Optional density
+        # must not hold its GUI delivery until this same Future finishes.
+        if spectrum_ready is not None:
+            spectrum_ready(SpectrumProjection(request, tuple(traces), coverage, extent))
+        check_cancelled(cancelled)
         try:
             reservation = (nullcontext(None) if persistence_budget is None else
                            persistence_budget.reserve(persistence_image_reserve(request.persistence),
@@ -132,11 +143,14 @@ class SpectrumProjector(QObject):
     """Application-owned single-flight projection; submit owns the worker."""
 
     ready = Signal(object)
+    spectrum_ready = Signal(object)
     failed = Signal(object, str)
     retry_ready = Signal()
     commit_requested = Signal()
+    settled = Signal(object)
     work_active_changed = Signal(bool)
     _done = Signal(object)
+    _required_done = Signal(object)  # Python scalar serial, not a 32-bit Qt int
 
     def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
                  *, max_retained_bytes: int = DEFAULT_PROJECTION_BYTES,
@@ -162,10 +176,17 @@ class SpectrumProjector(QObject):
         self._suspended = False
         self._preparation_in_flight = False
         self._cancel = Event()
+        # One notification for this active job, no payload-bearing Qt backlog.
+        # The Future remains active through OPTIONAL work and final GUI ack.
+        self._required_lock = Lock()
+        self._required_result: SpectrumProjection | None = None
+        self._required_delivered = False
+        self._active_serial = 0
         self.superseded = 0
         self.completed = 0
         self.cancelled = 0
         self._done.connect(self._finish, Qt.ConnectionType.QueuedConnection)
+        self._required_done.connect(self._accept_required, Qt.ConnectionType.QueuedConnection)
 
     def offer(self, request: ProjectionRequest) -> None:
         if self._closed:
@@ -208,6 +229,10 @@ class SpectrumProjector(QObject):
         """The owning preparation boundary completed its synchronous delivery."""
         if not self._closed:
             self.commit_requested.emit()
+
+    @property
+    def has_pending(self) -> bool:
+        return self._pending is not None
 
     def cancel_pending(self, owner: object) -> None:
         if self._pending is not None and self._pending.owner is owner:
@@ -264,6 +289,7 @@ class SpectrumProjector(QObject):
 
     def dispose(self) -> None:
         self._closed = True
+        self._clear_required()
         self._pending = None
         self._pending_storage = {}
         self._pending_reserve = 0
@@ -291,6 +317,8 @@ class SpectrumProjector(QObject):
         self._active_storage, self._pending_storage = self._pending_storage, {}
         self._active_reserve, self._pending_reserve = _output_reserve(request), 0
         self._active = request
+        self._active_serial += 1
+        serial = self._active_serial
         cancel = self._cancel = Event()
         try:
             # Reserve spectrum outputs here; density separately reserves its
@@ -304,10 +332,25 @@ class SpectrumProjector(QObject):
             self._shared_retry_key = None
 
             def project():
+                committed = False
+
+                def required_ready(partial: SpectrumProjection) -> None:
+                    nonlocal committed
+                    if allocation is not None:
+                        allocation.commit(*(trace for _, trace in partial.traces), partial.coverage)
+                    committed = True
+                    with self._required_lock:
+                        if self._closed or cancel.is_set() or serial != self._active_serial:
+                            return
+                        self._required_result = partial
+                        self._required_delivered = False
+                    self._required_done.emit(serial)
+
                 try:
                     result = (project_spectrum(request, cancelled=cancel.is_set) if request.persistence is None else
-                              project_spectrum(request, cancelled=cancel.is_set, persistence_budget=density_budget))
-                    if allocation is not None:
+                              project_spectrum(request, cancelled=cancel.is_set, persistence_budget=density_budget,
+                                               spectrum_ready=required_ready))
+                    if allocation is not None and not committed:
                         allocation.commit(*(trace for _, trace in result.traces), result.coverage,
                                           None if result.persistence is None else result.persistence.image)
                     return result
@@ -317,6 +360,8 @@ class SpectrumProjector(QObject):
 
             future = self._submit(project)
         except Exception as error:
+            cancel.set()
+            self._clear_required()
             if self._allocation is not None:
                 self._allocation.close()
                 self._allocation = None
@@ -345,6 +390,30 @@ class SpectrumProjector(QObject):
         if not self._closed and self._shared_retry_key == key:
             self.retry_ready.emit()  # Actual scene supplies its latest, not a stored rejected frame.
 
+    def _clear_required(self) -> None:
+        with self._required_lock:
+            self._required_result = None
+            self._required_delivered = False
+
+    @property
+    def required_result(self) -> SpectrumProjection | None:
+        """Active immutable stage for bounded ownership inventory, not a queue."""
+        with self._required_lock:
+            return self._required_result
+
+    @Slot(object)
+    def _accept_required(self, serial: int) -> None:
+        if serial != self._active_serial:
+            return  # A late scalar notification must not consume the next job.
+        with self._required_lock:
+            if self._required_delivered:
+                return
+            result = self._required_result
+            self._required_delivered = True
+        if (result is not None and not self._closed and not self._cancel.is_set()
+                and self._active is result.request):
+            self.spectrum_ready.emit(result)
+
     @Slot(object)
     def _finish(self, future: Future) -> None:
         if future is not self._future:
@@ -363,9 +432,12 @@ class SpectrumProjector(QObject):
             if not self._closed:
                 self.failed.emit(request, str(error))
         finally:
+            self._clear_required()
             if self._allocation is not None:
                 self._allocation.close()  # Also covers cancellation before worker execution.
                 self._allocation = None
+            if not self._closed:
+                self.settled.emit(request)
             self._future = self._active = None
             self._active_storage = {}
             self._active_reserve = 0

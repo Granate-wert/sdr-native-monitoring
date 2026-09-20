@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 
 from ..spectrum.retained_bytes import retained_arrays, union_bytes
 from ..spectrum.allocation_budget import AllocationBudgetSnapshot
+from ..spectrum.persistence_projection import persistence_image_reserve
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +102,22 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
         add("viewport.requests", *(view for request in requests if request is not None for _, view in request.traces),
             *(value for request in requests if request is not None for value in
               (request.current, request.previous, request.prepared)))
+        add("viewport.density-requests", *(request.persistence for request in requests if request is not None))
         projection = result("viewport.worker", projector._future)
         add("viewport.result", *(trace for _, trace in getattr(projection, "traces", ())),
-            getattr(projection, "coverage", None))
+            getattr(projection, "coverage", None), getattr(projection, "persistence", None))
+        required = projector.required_result
+        add("viewport.required", *(trace for _, trace in getattr(required, "traces", ())),
+            getattr(required, "coverage", None))
         # A completed result is already counted as an actual array; retaining
         # the reservation too would double-count it. Pending is still reserved.
-        reserved = projector._pending_reserve + (projector._active_reserve if projection is None else 0)
+        active_reserve = projector._active_reserve
+        if required is not None:
+            # Required roots are committed and exposed even while OPTIONAL
+            # mapping is still running. Do not count their old reservation.
+            density = required.request.persistence
+            active_reserve = 0 if density is None else persistence_image_reserve(density)
+        reserved = projector._pending_reserve + (active_reserve if projection is None else 0)
     if workspace is None:
         missing.append("workspace not supplied")
     else:
@@ -123,7 +134,8 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
                                       for array in (getattr(layer, "xData", None), getattr(layer, "yData", None))))
         density = scene._persistence
         add("persistence", density._latest_view, density._pending_view, density._uploaded_density,
-            density._visual_buffer, density._row_scratch, density.image_item.image)
+            density._visual_buffer, density._row_scratch, density.image_item.image,
+            density._worker_request, density._worker_history)
         ring = pane._renderer.buffer
         add("waterfall", None if ring is None else ring._data,
             None if ring is None else ring._timestamps_ns,
