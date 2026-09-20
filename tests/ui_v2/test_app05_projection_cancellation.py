@@ -152,6 +152,11 @@ class ProjectionCancellationTests(unittest.TestCase):
                     release.set()
                     with self.assertRaises(CancelledError):
                         future.result(timeout=3)
+                    # Future.result wakes before its done callbacks necessarily
+                    # enqueue Qt acknowledgement. Join a following single-worker
+                    # task before pumping; ten immediate processEvents calls
+                    # alone can all run before the completion signal is emitted.
+                    worker.submit(lambda: None).result(timeout=3)
                     self.pump()
                     self.assertEqual(len(calls), 1)
                     self.assertEqual(port.cancelled, 1)
