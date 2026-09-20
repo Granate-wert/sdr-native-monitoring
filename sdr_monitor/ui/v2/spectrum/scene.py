@@ -89,6 +89,7 @@ class SpectrumScene(QWidget):
         self._projection_generation = 0
         self._displayed_projection_geometry: tuple[int, tuple[float, float, int]] | None = None
         self._projection_key: tuple[object, ...] | None = None
+        self._required_projection_dirty = True
         self._displayed_view: SpectrumFrameView | None = None
         self._displayed_extent: tuple[float, float] | None = None
         self._projection_error: str | None = None
@@ -204,7 +205,7 @@ class SpectrumScene(QWidget):
 
     def _request_persistence_projection(self) -> None:
         self._projection_key = None
-        self._request_projection()
+        self._schedule_projection()
 
     def _projection_settled(self, request: ProjectionRequest) -> None:
         if request.owner is not self._projection_owner:
@@ -219,6 +220,7 @@ class SpectrumScene(QWidget):
             self.commit_projection()
 
     def _invalidate_projection(self) -> None:
+        self._required_projection_dirty = True
         self._early_projection_request = None
         self._projection_generation += 1
         self._displayed_projection_geometry = None
@@ -228,6 +230,10 @@ class SpectrumScene(QWidget):
             self._projector.cancel_pending(self._projection_owner)
 
     def _request_projection(self, *_args) -> None:
+        self._required_projection_dirty = True
+        self._schedule_projection()
+
+    def _schedule_projection(self) -> None:
         if self._projector is not None and self._presentation_active and self._trace_views:
             # Coalesce all trace/layer updates from one GUI delivery. There is
             # one timer, not one posted callback retaining every source frame.
@@ -239,10 +245,15 @@ class SpectrumScene(QWidget):
             return
         state = self.sweep_coverage.state
         viewport = self._viewport()
+        required = (self._required_projection_dirty or self._displayed_projection_geometry !=
+                    (self._projection_generation, viewport))
+        if not required and self._persistence.worker_request is None:
+            self._projector.discard_pending(self._projection_owner)
+            return
         key = (self._projection_generation, viewport,
                tuple((kind, id(view)) for kind, view in self._trace_views.items()),
                id(state.current), id(state.previous), self._persistence.worker_policy_key,
-               id(self._persistence.worker_request))
+               id(self._persistence.worker_request), required)
         if key == self._projection_key:
             return
         self._projection_key = key
@@ -252,7 +263,7 @@ class SpectrumScene(QWidget):
             requires_preparation_handoff=(self._displayed_projection_geometry !=
                                           (self._projection_generation, viewport)),
             persistence=self._persistence.worker_request,
-            persistence_policy=self._persistence.worker_policy_key))
+            persistence_policy=self._persistence.worker_policy_key, required_work=required))
 
     def commit_projection(self) -> None:
         """Submit one coherent GUI delivery before the next preparation queues.
@@ -286,7 +297,7 @@ class SpectrumScene(QWidget):
             # even if no further source publication arrives (stopped view).
             self._request_projection()
             return
-        if not required_only and self._early_projection_request is request:
+        if not request.required_work or (not required_only and self._early_projection_request is request):
             # Required pixels were already admitted, not another distinct
             # spectrum paint. Only the optional exact image/history may commit.
             self._accept_density_projection(result)
@@ -308,6 +319,15 @@ class SpectrumScene(QWidget):
             self.sweep_coverage.apply_projection(result.coverage, request.viewport, request.previous)
             self.sweep_coverage.refresh()
         self._displayed_projection_geometry = (request.generation, request.viewport)
+        # A late required result may be displayed while a newer source waits.
+        # Only exact current bindings can mark required work clean. No saved
+        # array owner/cache or raw pointer equality is used for this witness.
+        state = self.sweep_coverage.state
+        self._required_projection_dirty = not (
+            len(request.traces) == len(self._trace_views)
+            and all(self._trace_views.get(kind) is view for kind, view in request.traces)
+            and request.current is state.current and request.previous is state.previous
+            and request.prepared is self._prepared_spectrum)
         if not required_only:
             self._accept_density_projection(result)
 

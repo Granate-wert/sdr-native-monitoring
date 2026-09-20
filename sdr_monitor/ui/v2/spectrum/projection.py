@@ -49,6 +49,8 @@ def _output_reserve(request: "ProjectionRequest") -> int:
                  (max(8, view.frequencies_hz.dtype.itemsize) + max(8, view.values.dtype.itemsize))
                  for _, view in request.traces)
     density = 0 if request.persistence is None else persistence_image_reserve(request.persistence)
+    if not request.required_work:
+        return density
     return traces + (2048 * (9 * 16 + 9) + 8 if request.current is not None else 0) + density
 
 
@@ -68,6 +70,9 @@ class ProjectionRequest:
     # Explicit intent survives trace-only cadence skips. None retains the
     # standalone caller's original request/history cancellation contract.
     persistence_policy: tuple | None = None
+    # The scene has already admitted all required layers on this geometry.
+    # A density-only request neither recomputes nor clears those pixels.
+    required_work: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +92,7 @@ def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = Non
     left, right, width = request.viewport
     traces = []
     extent = None
-    for kind, view in request.traces:
+    for kind, view in (request.traces if request.required_work else ()):
         check_cancelled(cancelled)
         if view.frequencies_hz.flags.writeable or view.values.flags.writeable:
             raise ValueError("viewport projection requires immutable spectrum arrays")
@@ -109,7 +114,7 @@ def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = Non
         envelope.values.setflags(write=False)
         traces.append((kind, envelope))
     coverage = None
-    if request.current is not None:
+    if request.required_work and request.current is not None:
         # A worker-local state, not the mutable GUI cache. Domain frames are
         # immutable and their compatibility was already admitted by accept().
         state = SweepCoverageState()
@@ -120,7 +125,7 @@ def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = Non
     if request.persistence is not None:
         # Required trace/coverage is immutable and complete. Optional density
         # must not hold its GUI delivery until this same Future finishes.
-        if spectrum_ready is not None:
+        if request.required_work and spectrum_ready is not None:
             spectrum_ready(SpectrumProjection(request, tuple(traces), coverage, extent))
         check_cancelled(cancelled)
         try:
@@ -234,11 +239,15 @@ class SpectrumProjector(QObject):
     def has_pending(self) -> bool:
         return self._pending is not None
 
-    def cancel_pending(self, owner: object) -> None:
+    def discard_pending(self, owner: object) -> None:
+        """Remove redundant queued presentation without cancelling active work."""
         if self._pending is not None and self._pending.owner is owner:
             self._pending = None
             self._pending_storage = {}
             self._pending_reserve = 0
+
+    def cancel_pending(self, owner: object) -> None:
+        self.discard_pending(owner)
         if self._active is not None and self._active.owner is owner:
             self._cancel_active()
 
