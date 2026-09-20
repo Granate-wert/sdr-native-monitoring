@@ -307,7 +307,7 @@ def main():
         def invoke(frame):
             result = original(frame)
             if result is not None:
-                density_bindings[id(result)] = (weakref.ref(result), density_key(frame))
+                density_bindings[id(result.density)] = (weakref.ref(result.density), density_key(frame))
                 while len(density_bindings) > 4096:
                     density_bindings.popitem(last=False)
             return result
@@ -315,8 +315,8 @@ def main():
 
     def transfer_identity(request, **kwargs):
         frame = request.view.source_frame
-        pair = density_bindings.get(id(frame))
-        return (pair[1] if pair is not None and pair[0]() is frame else None, request.policy.mode.value)
+        pair = density_bindings.get(id(frame.density))
+        return (pair[1] if pair is not None and pair[0]() is frame.density else None, request.policy.mode.value)
     cpu: dict[str, deque[float]] = {name: deque(maxlen=4096) for name in ("prepare", "project", "accept")}
     # GUI-only nesting marker, scalar rows only. One final acknowledgement may
     # synchronously submit the next preparation; do not infer that from paints.
