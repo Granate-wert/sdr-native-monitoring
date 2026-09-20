@@ -21,13 +21,15 @@ def main():
     import numpy as np
     from sdr_monitor.domain.analyzer import bundle_from_live
     from sdr_monitor.domain.live import LiveSnapshot, LiveSessionState, LiveSpectrumFrame
+    from sdr_monitor.domain.identity import ConfigurationGeneration, FrameSequence, TimestampNs
     cases = {}
     for n in (65536, 262144):
-        frame = LiveSpectrumFrame(sequence=1, timestamp_ns=1, center_frequency_hz=2.4e9,
+        frame = LiveSpectrumFrame(sequence=FrameSequence(1), timestamp_ns=TimestampNs(1), center_frequency_hz=2.4e9,
             sample_rate_hz=61.44e6, fft_size=n, hop_size=n,
             frequencies_hz=2.4e9 + (np.arange(n) - n // 2) * (61.44e6 / n),
             values=np.full(n, -70, np.float32), unit="dBFS/bin")
-        source = LiveSnapshot(generation=0, sequence=1, state=LiveSessionState.RUNNING, spectrum=frame)
+        source = LiveSnapshot(generation=ConfigurationGeneration(0), sequence=FrameSequence(1),
+                              state=LiveSessionState.RUNNING, spectrum=frame)
         before = hashlib.sha256(frame.frequencies_hz.tobytes()).hexdigest()
         for _ in range(10):
             bundle_from_live(source)
@@ -36,7 +38,7 @@ def main():
             began = perf_counter()
             result = bundle_from_live(source)
             samples.append((perf_counter() - began) * 1000)
-            if result.spectrum is not frame:
+            if result is None or result.spectrum is not frame:
                 raise AssertionError("changed source")
         tracemalloc.start()
         bundle_from_live(source)
