@@ -1,5 +1,6 @@
 """RTBW age observes uploaded/displayed publications, not newer hidden buffers."""
 import importlib.util
+from dataclasses import replace
 from concurrent.futures import Future
 import json
 from pathlib import Path
@@ -25,6 +26,57 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_synthetic_persistence_is_coherent_normalized_owned_and_not_future(self):
+        from sdr_monitor.domain.live import LiveSpectrumFrame, LiveSnapshot, LiveSessionState
+        from sdr_monitor.domain.analyzer import bundle_from_live
+        from sdr_monitor.ui.v2.state.analyzer_layers import persistence_density_from_native
+        frame = LiveSpectrumFrame(sequence=11, timestamp_ns=11, source_id="synthetic",
+            config_generation=7, center_frequency_hz=100e6, sample_rate_hz=256e3,
+            fft_size=256, hop_size=256, frequencies_hz=100e6 + (np.arange(256) - 128) * 1000,
+            values=np.full(256, -80, np.float32))
+        for count in (1, 4):
+            raw = OBSERVER.synthetic_persistence(frame, 32, 3, count)
+            other = OBSERVER.synthetic_persistence(frame, 32, 4, count)
+            self.assertFalse(np.shares_memory(raw.density, other.density))
+            self.assertFalse(raw.density.flags.writeable)
+            self.assertFalse(raw.frequencies_hz.flags.writeable)
+            self.assertEqual(raw.source_frame_sequence, frame.sequence)
+            self.assertEqual(raw.processed_frames, count)
+            self.assertEqual(raw.timestamp_quality.value, "unknown")
+            normalized = persistence_density_from_native(raw)
+            np.testing.assert_array_equal(normalized.density.sum(axis=0), np.ones(256))
+            np.testing.assert_array_equal(raw.density.sum(axis=0), np.full(256, count))
+            snapshot = LiveSnapshot(generation=7, sequence=11, state=LiveSessionState.RUNNING,
+                                    spectrum=frame, persistence=raw)
+            bundle = bundle_from_live(snapshot)
+            self.assertIs(bundle.persistence, raw)
+            self.assertEqual(bundle.coherence_issues, ())
+            # A later spectrum can reuse the old histogram, never the reverse.
+            self.assertIs(bundle_from_live(replace(snapshot, spectrum=replace(frame, sequence=12))).persistence, raw)
+            self.assertIsNone(bundle_from_live(replace(snapshot, spectrum=replace(frame, sequence=10))).persistence)
+
+    def test_persistence_memory_cli_updates_and_uploads_without_forced_collection(self):
+        with TemporaryDirectory(prefix="app05-persistence-memory-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", "-X", "faulthandler",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--seconds", "1", "--cycles", "2", "--bins", "4096",
+                "--page-seconds", ".3", "--viewport-seconds", ".2", "--memory-seconds", ".25",
+                "--persistence-power-bins", "32", "--persistence-every", "10"],
+                cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        density = report["persistence"]
+        self.assertTrue(density["enabled"])
+        self.assertGreater(density["accepted"], 2)
+        self.assertGreaterEqual(density["generated"], density["accepted"])
+        self.assertGreater(density["overlay_metrics"]["image_uploads"], 0)
+        self.assertGreater(density["overlay_metrics"]["hidden_updates"], 0)
+        self.assertEqual(report["remaining_workers"], [])
+        self.assertEqual(report["product_imports_outside_checkout"], [])
+        self.assertEqual(report["memory"]["after_context_return"]["allocation_budget"]["reserved_bytes"], 0)
+        self.assertNotIn("diagnostic_after_collection", report["memory"])
+
     def test_stop_phase_preserves_queued_running_done_and_cancelled_without_mutation(self):
         future = Future()
         self.assertEqual(OBSERVER.future_phase(None), "idle")

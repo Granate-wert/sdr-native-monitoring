@@ -1,7 +1,9 @@
 """Synthetic RTBW -> normal V2 presenter/shared canvases, with live-source Stop.
 
 No SDR, DSP/transport/native ingress, EXE, DWM or OS-input claim. Immutable
-arrays are reused by a one-latest-slot fake source; persistence is disabled.
+Spectrum arrays are reused by a one-latest-slot fake source. Optional persistence
+allocates a fresh histogram at a declared cadence: up to four identical spectra
+in a rolling window, not native DSP performance or persistence paint-FPS evidence.
 Unknown-clock timestamp_ns is a unique SYNTHETIC token, not a time estimate.
 Age uses a separate host perf_counter witness. Waterfall identity is captured
 only after an actual image upload, never from a newer hidden ring admission.
@@ -83,6 +85,34 @@ def phase_matches(phase, requested):
     return phase[owner] == state
 
 
+def synthetic_persistence(frame, power_bins, update_sequence, processed_frames):
+    """Fresh immutable exact-window histogram of repeated synthetic spectra.
+
+    No producer history is retained: the synthetic spectrum is constant and
+    every occupied cell contains the number of repeated frames in this window.
+    Domain imports occur only after the CLI has selected its isolated checkout.
+    """
+    import numpy as np
+    from sdr_monitor.domain.live import LivePersistenceFrame
+    if not 16 <= power_bins <= 128 or not 1 <= processed_frames <= 4:
+        raise ValueError("synthetic histogram requires 16..128 power bins and 1..4 frames")
+    if not np.all(np.isfinite(frame.values)) or np.any((frame.values < -140) | (frame.values >= 20)):
+        raise ValueError("synthetic spectrum must be finite and inside histogram range")
+    rows = ((frame.values + 140) * (power_bins / 160)).astype(np.intp)
+    density = np.zeros((power_bins, frame.fft_size), dtype=np.float32)
+    density[rows, np.arange(frame.fft_size)] = processed_frames
+    density.setflags(write=False)
+    return LivePersistenceFrame(update_sequence=update_sequence, timestamp_ns=frame.timestamp_ns,
+        source_frame_sequence=frame.sequence, power_min_db=-140, power_max_db=20,
+        power_bins=power_bins, frequency_bins=frame.fft_size, processed_frames=processed_frames,
+        exponential_decay=False, frequencies_hz=frame.frequencies_hz, density=density,
+        probability_scale=1 / processed_frames, count_scale=1,
+        source_id=frame.source_id, config_generation=frame.config_generation,
+        timestamp_quality=frame.timestamp_quality, unit=frame.unit, producer_identity_available=True,
+        receiver_id=frame.receiver_id, acquisition_epoch=frame.acquisition_epoch,
+        clock_domain=frame.clock_domain, accumulation_id=frame.accumulation_id)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
@@ -94,6 +124,10 @@ def main():
     parser.add_argument("--page-seconds", type=float, default=0)
     parser.add_argument("--viewport-seconds", type=float, default=0)
     parser.add_argument("--driver-stop-ms", type=float, default=0)
+    parser.add_argument("--persistence-power-bins", type=int, default=0,
+                        help="0 disables; 16..128 enables fresh synthetic rolling-four-frame histograms")
+    parser.add_argument("--persistence-every", type=int, default=10,
+                        help="Histogram at first spectrum after Start, then every N source publications")
     parser.add_argument("--stop-phase", default="any", choices=("any", "idle",
         "preparation:running", "preparation:done-awaiting-gui",
         "projection:running", "projection:done-awaiting-gui"),
@@ -117,6 +151,10 @@ def main():
         parser.error("memory-seconds must be zero or 0.25..60")
     if args.collect_after_context and not args.memory_seconds:
         parser.error("collect-after-context requires memory sampling")
+    if args.persistence_power_bins != 0 and not 16 <= args.persistence_power_bins <= 128:
+        parser.error("persistence-power-bins must be 0 or 16..128")
+    if not 1 <= args.persistence_every <= 1000 or args.bins * args.persistence_power_bins * 4 > 64 * 1024**2:
+        parser.error("persistence-every 1..1000; histogram must not exceed 64MiB")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -145,6 +183,7 @@ def main():
     failures, stops, driver_entries, driver_returns = [], [], [], []
     gui = threading.get_ident()
     generated = page_changes = viewport_changes = 0
+    persistence_generated = persistence_accepted = last_persistence_accepted = 0
     producer = None
     halt = threading.Event()
     snapshot_lock = threading.RLock()
@@ -202,14 +241,39 @@ def main():
         f.wait = lambda predicate: run_qt_until(predicate, 5)
         f.setUp()
         timers = []
+        def unsubscribe_density():
+            pass
         try:
             f.select_and_apply()
+            persistence_enabled = args.persistence_power_bins != 0
             config = replace(f.live.latest_snapshot().applied.applied, fft_size=args.bins,
-                             persistence_enabled=False, persistence_mode="disabled")
+                             persistence_enabled=persistence_enabled,
+                             persistence_mode="rolling-exact" if persistence_enabled else "disabled",
+                             persistence_power_bins=args.persistence_power_bins or 256,
+                             persistence_window_frames=4)
             f.presenter.apply_configuration(config)
             f.wait(lambda: not f.composition.view_model.state.busy)
             f.shell.resize(1920, 1080)
             scene, waterfall = f.page.visualization.spectrum_scene, f.page.visualization.waterfall_pane
+
+            def observe_density(state):
+                nonlocal persistence_accepted, last_persistence_accepted
+                bundle = state.analyzer_bundle
+                raw = None if bundle is None else bundle.persistence
+                density = state.persistence_frame
+                if raw is None or density is None:
+                    return
+                if (raw.source_frame_sequence > bundle.spectrum.sequence
+                        or density.density.shape != (args.persistence_power_bins, args.bins)
+                        or density.level_unit != bundle.unit or bundle.coherence_issues):
+                    failures.append("incoherent synthetic persistence accepted")
+                    return
+                if raw.update_sequence != last_persistence_accepted:
+                    persistence_accepted += 1
+                    last_persistence_accepted = int(raw.update_sequence)
+
+            if persistence_enabled:
+                unsubscribe_density = f.composition.view_model.subscribe(observe_density)
             frequencies = config.center_hz + (np.arange(args.bins) - args.bins / 2) * config.sample_rate_hz / args.bins
             values = np.full(args.bins, -80, np.float32)
             values[args.bins // 2 + 17] = -20
@@ -224,15 +288,22 @@ def main():
                     f.live._snapshot = snapshot
                 halt.clear()
                 def produce():
-                    nonlocal generated
+                    nonlocal generated, persistence_generated
+                    cycle_frames = 0
+                    density = None
                     try:
                         while not halt.is_set():
                             generated += 1
+                            cycle_frames += 1
                             frame = LiveSpectrumFrame(sequence=generated, timestamp_ns=generated,
                                 source_id="fake-pluto-usb", config_generation=snapshot.generation,
                                 center_frequency_hz=config.center_hz, sample_rate_hz=config.sample_rate_hz,
                                 fft_size=args.bins, hop_size=args.bins, frequencies_hz=frequencies, values=values)
-                            offered = replace(snapshot, sequence=generated, spectrum=frame)
+                            if persistence_enabled and (cycle_frames == 1 or cycle_frames % args.persistence_every == 0):
+                                persistence_generated += 1
+                                density = synthetic_persistence(frame, args.persistence_power_bins,
+                                    persistence_generated, min(cycle_frames, 4))
+                            offered = replace(snapshot, sequence=generated, spectrum=frame, persistence=density)
                             with snapshot_lock:
                                 age.publish(rtbw_key(frame.timestamp_ns, frame.config_generation), perf_counter())
                                 f.live._snapshot = offered
@@ -411,6 +482,8 @@ def main():
                     raise AssertionError(f.events)
             if age.missing or age.changed_during_paint or not all(age.counts.values()):
                 raise AssertionError((age.missing, age.changed_during_paint, age.counts))
+            if persistence_enabled and (not persistence_accepted or not scene._persistence.metrics.image_uploads):
+                raise AssertionError("enabled persistence was not accepted and uploaded")
             report = dict(scope=__doc__, seconds=perf_counter() - began, bins=args.bins,
                 cycles=args.cycles, requested_source_hz=args.source_hz, generated=generated,
                 page_changes=page_changes, viewport_changes=viewport_changes,
@@ -429,6 +502,12 @@ def main():
                 display_metrics=asdict(f.presenter.display_metrics),
                 preparation_superseded=f.presenter.preparation_superseded,
                 preparation_stale=f.presenter.preparation_stale)
+            report["persistence"] = dict(enabled=persistence_enabled,
+                power_bins=args.persistence_power_bins, every_source_frames=args.persistence_every,
+                generated=persistence_generated, accepted=persistence_accepted,
+                last_accepted_update=last_persistence_accepted,
+                overlay_metrics=asdict(scene._persistence.metrics),
+                scope="Synthetic rolling histogram of up to four identical spectra, fresh immutable array per update. Accepted and ImageItem uploads counted, not persistence paint/RF/native DSP FPS.")
             report["requested_stop_phase"] = args.stop_phase
             report["stop_phase_scope"] = "Instantaneous GUI-side Future observation before click; worker may finish before click. Phase wait is in timer_lateness, not intent_to_idle. No worker barrier/driver deadline."
             phase_names = sorted({(s["phase_at_intent"]["preparation"], s["phase_at_intent"]["projection"])
@@ -450,6 +529,7 @@ def main():
                 sample_memory("before-close")
                 census_before_close = qt_wrapper_counts()
         finally:
+            unsubscribe_density()
             for t in timers:
                 t.stop()
                 t.timeout.disconnect()
