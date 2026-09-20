@@ -1,7 +1,7 @@
 """The memory observation harness must expose and bound its own retention."""
 import unittest
 
-from tests.ui_v2.run_app05_memory_inventory import MemorySamples, should_sample
+from tests.ui_v2.run_app05_memory_inventory import MemorySamples, should_sample, workspace_for
 
 
 def sample(index):
@@ -66,6 +66,15 @@ class MemorySamplerTests(unittest.TestCase):
                          [0, 20, 100, 200, 300, 400, 500, 600, 700, 800, 900, 999])
         with self.assertRaises(ValueError):
             should_sample(0, 10, "skip-all")
+
+    def test_visibility_is_explicit_and_default_keeps_original_alternation(self):
+        self.assertEqual([workspace_for(i, "alternate") for i in (0, 1, 19, 20, 21, 40)],
+                         ["analyzer", None, None, "calibration", None, "analyzer"])
+        for page in ("analyzer", "calibration"):
+            self.assertEqual(workspace_for(0, page), page)
+            self.assertTrue(all(workspace_for(i, page) is None for i in range(1, 1000)))
+        with self.assertRaises(ValueError):
+            workspace_for(0, "unknown")
 
     def test_invalid_capacity_rejected_before_starting_any_fixture(self):
         for capacity in (0, -1, True, 1.5, "32"):

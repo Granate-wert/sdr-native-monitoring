@@ -4,7 +4,7 @@ Run as a module from an exact checkout. JSON separates Windows process memory
 from exposed backing-array inventory. Neither is a native allocator proof.
 """
 import argparse
-from collections import deque
+from collections import Counter, deque
 import ctypes
 from ctypes import wintypes
 from dataclasses import asdict, replace
@@ -105,9 +105,25 @@ def should_sample(index, frames, observation):
     return observation != "checkpoints" or index in (0, 20, frames - 1) or index % 100 == 0
 
 
+def workspace_for(index, visibility):
+    if visibility == "alternate":
+        return ("calibration" if (index // 20) % 2 else "analyzer") if index % 20 == 0 else None
+    if visibility not in ("analyzer", "calibration"):
+        raise ValueError("unknown visibility mode")
+    return visibility if index == 0 else None
+
+
+def qt_wrapper_counts():
+    """Diagnostic scalar census, not a Qt/native allocator or ownership proof."""
+    import shiboken6
+    return dict(Counter(type(item).__module__ + "." + type(item).__qualname__
+                        for item in shiboken6.getAllValidWrappers()))
+
+
 def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_allocations=False,
-        collect_endpoints=False, observation="full"):
+        collect_endpoints=False, observation="full", visibility="alternate", qt_census=False):
     should_sample(0, frames, observation)  # reject before constructing any GUI
+    workspace_for(0, visibility)
     recorder = MemorySamples(sample_capacity)
     app = QApplication.instance() or QApplication([])
     fixture = AnalyzerWorkspaceProductTests("runTest")
@@ -117,6 +133,7 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
     traced_first = {}
     traced_result = None
     collection_endpoints = []
+    qt_endpoints = []
     if trace_allocations:
         tracemalloc.start(8)
     try:
@@ -128,8 +145,9 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
         frequencies = spectrum.center_frequency_hz + (np.arange(bins) - bins / 2) * spectrum.sample_rate_hz / bins
         for index in range(frames):
             sequence = index + 1
-            if index % 20 == 0:
-                fixture.shell.select_workspace("calibration" if (index // 20) % 2 else "analyzer")
+            workspace = workspace_for(index, visibility)
+            if workspace is not None:
+                fixture.shell.select_workspace(workspace)
             frame = replace(spectrum, sequence=sequence, fft_size=bins, hop_size=bins,
                             frequencies_hz=frequencies, values=np.full(bins, -65 + index % 7, dtype=np.float32),
                             acquisition_epoch=1, receiver_id="synthetic-rx", clock_domain="unknown")
@@ -154,6 +172,8 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
                              "page": fixture.shell.active_workspace_id, "sample_ms": sample_ms,
                              **process_memory(), "inventory": None if inventory is None else asdict(inventory)})
             page = fixture.shell.active_workspace_id
+            if qt_census and index in (0, 20, frames - 1):
+                qt_endpoints.append({"index": index, "page": page, "counts": qt_wrapper_counts()})
             if collect_endpoints and (index in (0, 20) or index == frames - 1):
                 before = process_memory()
                 collected = gc.collect()
@@ -175,6 +195,7 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
                 "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                 "bins": bins, "power_bins": power_bins, "frames": frames,
                 "observation": observation,
+                "visibility": visibility, "qt_wrapper_census": qt_endpoints,
                 "observation_scope": "Only diagnostic sampling changes; every pipeline frame and visibility transition still runs",
                 "sampling": recorder.summary(), "samples": list(recorder.rows),
                 "allocation_trace": traced_result,
@@ -198,6 +219,9 @@ if __name__ == "__main__":
     parser.add_argument("--collect-endpoints", action="store_true", help="Diagnostic GC at first visibility phases and last frame only")
     parser.add_argument("--observation", choices=("full", "process-only", "checkpoints"), default="full",
                         help="Causal sampling isolation: full inventory+process, process every frame, or process checkpoints only")
+    parser.add_argument("--visibility", choices=("alternate", "analyzer", "calibration"), default="alternate",
+                        help="Causal render isolation; all pipeline frames still admitted")
+    parser.add_argument("--qt-census", action="store_true", help="Scalar Shiboken wrapper counts at three endpoints only")
     args = parser.parse_args()
     if (not 1 <= args.frames <= 10000 or not 2 <= args.bins <= 2_000_000
             or not 1 <= args.power_bins <= 64 or args.bins * args.power_bins > 8_388_608):
@@ -206,7 +230,7 @@ if __name__ == "__main__":
         parser.error("sample capacity must be positive")
     output = run(args.frames, args.bins, args.power_bins, sample_capacity=args.sample_capacity,
                  trace_allocations=args.trace_allocations, collect_endpoints=args.collect_endpoints,
-                 observation=args.observation)
+                 observation=args.observation, visibility=args.visibility, qt_census=args.qt_census)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
     samples = output["samples"]
