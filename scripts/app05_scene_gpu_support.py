@@ -147,7 +147,7 @@ class SceneGpuTarget:
             self._extent = None
             self.releases += 1
 
-    def render(self, extent, panels, background):
+    def render(self, extent, panels, background, *, draw=None):
         from PySide6.QtCore import QSize
         from PySide6.QtGui import QImage
         from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat, QOpenGLPaintDevice
@@ -184,7 +184,10 @@ class SceneGpuTarget:
             functions.glClear(0x4000 | 0x0100 | 0x0400)
             functions.glFinish()
             begin = perf_counter()
-            paint_scenes(self._device, panels)
+            if draw is None:
+                paint_scenes(self._device, panels)
+            else:
+                draw(self._device, functions, extent)
             functions.glFinish()
             elapsed_ms = (perf_counter() - begin) * 1000
             image = self._fbo.toImage().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)

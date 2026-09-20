@@ -29,15 +29,19 @@ def main():
     parser.add_argument("--theme", choices=("dark", "light", "high_contrast"), default="dark")
     parser.add_argument("--persistence", choices=("direct", "visual"), default="direct")
     parser.add_argument("--platform", choices=("windows", "offscreen"), default="windows")
+    parser.add_argument("--scientific", action="store_true", help="Detached image shader/explicit paths ONLY, not all-layer acceptance")
+    parser.add_argument("--images-only", action="store_true", help="With --scientific, isolate exact texture sampling/blending")
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
+    if args.images_only and not args.scientific:
+        parser.error("--images-only requires --scientific")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = args.platform
     import numpy as np
     from PySide6.QtCore import QCoreApplication, QEvent, QRectF, Qt
-    from PySide6.QtGui import QColor
+    from PySide6.QtGui import QColor, QImage
     from PySide6.QtWidgets import QApplication, QWidget
     from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, compare_images, image_target, paint_scenes
     from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
@@ -66,7 +70,8 @@ def main():
     rows = []
     ready = False
     info = dict(scope=__doc__, gpu=target.info, platform=args.platform, logical_size=[args.width, args.height],
-        dpr=args.dpr, theme=args.theme, persistence=args.persistence,
+        dpr=args.dpr, theme=args.theme, persistence=args.persistence, scientific_only=args.scientific,
+        images_only=args.images_only,
         checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     try:
@@ -123,8 +128,17 @@ def main():
                 cpu = image_target(extent, background)
                 paint_scenes(cpu, panels)  # warm existing caches, never a speed sample
                 cpu.fill(background)
+                bundle = None
+                gpu_resources = {}
+                if args.scientific:
+                    from scripts.app05_scientific_layers import detach_layers, layer_metadata, paint_layers
+                    from scripts.app05_scientific_gpu import draw_scientific_gpu
+                    bundle = detach_layers(scene, waterfall, panels)
                 begin = perf_counter()
-                paint_scenes(cpu, panels)
+                if bundle is None:
+                    paint_scenes(cpu, panels)
+                else:
+                    paint_layers(cpu, bundle, curves=not args.images_only)
                 cpu_ms = (perf_counter() - begin) * 1000
                 row = dict(label=label, source=before, physical_size=[extent.pixel_width, extent.pixel_height],
                     nominal_target_bytes=extent.nominal_target_bytes, cpu_paint_ms=cpu_ms,
@@ -132,10 +146,30 @@ def main():
                     panels=[dict(source=view.mapToScene(view.viewport().rect()).boundingRect().getRect(),
                                  target=rect.getRect()) for view, rect in panels],
                     projection_pending_at_capture=f.composition.spectrum_projector._future is not None)
+                if bundle is not None:
+                    row["scientific_layers"] = layer_metadata(bundle)
                 if target.available:
-                    candidate, gpu_ms = target.render(extent, panels, background)
+                    def draw(device, functions, size):
+                        gpu_resources.update(draw_scientific_gpu(device, functions, size, bundle, curves=not args.images_only))
+                    candidate, gpu_ms = target.render(extent, panels, background,
+                        draw=draw if bundle is not None else None)
                     row.update(comparison=compare_images(cpu, candidate), gpu_completed_paint_ms=gpu_ms)
-                    row["candidate_accepted"] = row["comparison"]["equal"]
+                    if args.images_only:
+                        from scripts.app05_scientific_layers import paint_texel_oracle
+                        assert bundle is not None
+                        oracle_peak = extent.nominal_target_bytes + extent.pixel_width * extent.pixel_height * 8 + bundle.retained_bytes
+                        if oracle_peak > extent.target_budget_bytes:
+                            raise MemoryError("scientific diagnostic oracle target budget exceeded")
+                        oracle = cpu.convertToFormat(QImage.Format.Format_RGBA8888_Premultiplied)
+                        oracle.fill(background)
+                        paint_texel_oracle(oracle, bundle)
+                        oracle = oracle.convertToFormat(cpu.format())
+                        row["analytic_image_comparison"] = compare_images(oracle, candidate)
+                        row["qt_vs_analytic_image_comparison"] = compare_images(oracle, cpu)
+                        row["nominal_oracle_peak_bytes"] = oracle_peak
+                        del oracle
+                    row["gpu_resources"] = gpu_resources
+                    row["candidate_accepted"] = row["comparison"]["equal"] and not args.scientific
                     row["reference_selected"] = not row["candidate_accepted"]
                     if not candidate.save(str(output_images / f"{label}-gpu.png")):
                         raise RuntimeError("could not save GPU scene evidence")
