@@ -113,7 +113,7 @@ def synthetic_persistence(frame, power_bins, update_sequence, processed_frames):
         clock_domain=frame.clock_domain, accumulation_id=frame.accumulation_id)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -136,7 +136,7 @@ def main():
                         help="0 disables; 0.25..60 second scalar inventory/process samples (perturbs timing)")
     parser.add_argument("--collect-after-context", action="store_true",
                         help="Diagnostic GC only AFTER normal post-context sample; requires memory mode")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not sys.flags.isolated or not 1 <= args.seconds <= 1200 or not 1 <= args.cycles <= 100:
         parser.error("Python -I, 1..1200 seconds and 1..100 cycles required")
     if not 256 <= args.bins <= 262144 or args.bins & (args.bins - 1):
