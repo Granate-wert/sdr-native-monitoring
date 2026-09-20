@@ -19,6 +19,21 @@ def request(token=1):
 
 
 class StageObserverTests(unittest.TestCase):
+    def test_gui_cpu_totals_survive_eviction_and_do_not_measure_other_threads(self):
+        rows = OBSERVER.GuiIntervals(capacity=1)
+        measured = rows.wrap(lambda value: "paint", lambda value: value)
+        with patch.object(OBSERVER, "monotonic_ns", side_effect=(0, 2_000_000, 3_000_000, 7_000_000)), \
+             patch.object(OBSERVER, "thread_time", side_effect=(0, .001, .002, .005)):
+            self.assertEqual(measured(1), 1)
+            self.assertEqual(measured(2), 2)
+        self.assertEqual(rows.evictions, 1)
+        self.assertEqual(rows.totals["paint"], dict(calls=2, wall_ms=6., cpu_ms=4.))
+        rows.gui_thread = -1
+        with patch.object(OBSERVER, "monotonic_ns") as clock:
+            self.assertEqual(measured(3), 3)
+        clock.assert_not_called()
+        self.assertEqual(rows.totals["paint"]["calls"], 2)
+
     def test_gui_intervals_keep_exact_nested_boundaries_with_bounded_scalar_rows(self):
         rows = OBSERVER.GuiIntervals(capacity=2)
         nested = rows.wrap("nested", lambda value: value)
