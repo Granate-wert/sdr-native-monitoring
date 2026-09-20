@@ -161,6 +161,11 @@ class V2LiveProductComposition:
         self._sweep_projection_backpressure = getattr(analyzer_presenter, "set_projection_in_flight", None)
         if self.spectrum_projector is not None and callable(self._sweep_projection_backpressure):
             self.spectrum_projector.work_active_changed.connect(self._sweep_projection_backpressure)
+        self._sweep_preparation_signal = (
+            getattr(analyzer_presenter, "poll_preparation_active_changed", None)
+            if self.spectrum_projector is not None else None)
+        if self._sweep_preparation_signal is not None and self.spectrum_projector is not None:
+            self._sweep_preparation_signal.connect(self.spectrum_projector.set_preparation_in_flight)
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
         self.calibration_view_model = (
             None if calibration_presenter is None else CalibrationProfileViewModel(calibration_presenter)
@@ -257,6 +262,9 @@ class V2LiveProductComposition:
             self.spectrum_projector.request_commit()
 
     def _disconnect_projection_delivery(self) -> None:
+        if self._sweep_preparation_signal is not None and self.spectrum_projector is not None:
+            self._sweep_preparation_signal.disconnect(self.spectrum_projector.set_preparation_in_flight)
+            self._sweep_preparation_signal = None
         if self._projection_delivery_signal is not None:
             self._projection_delivery_signal.disconnect(self._commit_live_projection)
             self._projection_delivery_signal = None

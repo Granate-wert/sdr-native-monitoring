@@ -46,6 +46,7 @@ class SweepProjectionGateTests(unittest.TestCase):
                 self.assertEqual(submit.call_count, 1)
         finally:
             p._poll_future = None
+            p.poll_preparation_active_changed.emit(False)
             p._timer.stop()
             p._timer.setInterval(interval)
 
@@ -89,6 +90,7 @@ class SweepProjectionGateTests(unittest.TestCase):
                     self.assertEqual(submit.call_count, 1)
             finally:
                 p._poll_future = None
+                p.poll_preparation_active_changed.emit(False)
                 p._timer.stop()
         p._timer.setInterval(interval)
 

@@ -127,6 +127,7 @@ class SpectrumProjector(QObject):
         self._pending: ProjectionRequest | None = None
         self._closed = False
         self._suspended = False
+        self._preparation_in_flight = False
         self._cancel = Event()
         self.superseded = 0
         self.completed = 0
@@ -205,6 +206,24 @@ class SpectrumProjector(QObject):
         if self._future is not None:
             self._future.cancel()  # Removes queued work; running work observes Event.
 
+    def set_preparation_in_flight(self, active: bool) -> None:
+        """Handoff from an existing Sweep poll, without cancelling or new work.
+
+        A resumed/changed viewport retains only the existing latest request.
+        On GUI delivery, replace that request with the newly coherent scene
+        before dispatch. Ordinary deliveries without a waiting request retain
+        timer coalescing; control suspension is independent and still wins.
+        """
+        if self._closed or self._preparation_in_flight == bool(active):
+            return
+        if active:
+            self._preparation_in_flight = True
+            return
+        if self._pending is not None:
+            self.request_commit()
+        self._preparation_in_flight = False
+        self._dispatch()
+
     def dispose(self) -> None:
         self._closed = True
         self._pending = None
@@ -215,7 +234,8 @@ class SpectrumProjector(QObject):
         self._cancel_active()
 
     def _dispatch(self) -> None:
-        if self._closed or self._suspended or self._future is not None or self._pending is None:
+        if (self._closed or self._suspended or self._preparation_in_flight
+                or self._future is not None or self._pending is None):
             return
         request, self._pending = self._pending, None
         self._active_storage, self._pending_storage = self._pending_storage, {}

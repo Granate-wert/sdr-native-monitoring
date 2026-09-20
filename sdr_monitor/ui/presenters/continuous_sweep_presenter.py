@@ -43,6 +43,7 @@ class ContinuousSweepPresenter(QObject):
     running_changed = Signal(bool)
     starting_changed = Signal(bool)
     stopping_changed = Signal(bool)
+    poll_preparation_active_changed = Signal(bool)
     _start_completed = Signal(object)
     _stop_completed = Signal(object)
     _poll_completed = Signal(object)
@@ -305,6 +306,7 @@ class ContinuousSweepPresenter(QObject):
         # behind at most this one finite drain; no parallel service access.
         future = self._stop_executor.submit(self._poll_and_prepare)
         self._poll_future = future
+        self.poll_preparation_active_changed.emit(True)
         future.add_done_callback(self._poll_completed.emit)
 
     @Slot(object)
@@ -322,6 +324,9 @@ class ContinuousSweepPresenter(QObject):
             self.task_failed.emit(str(error))
         finally:
             self._poll_future = None
+            # The coherent packet has reached all synchronous consumers.
+            # A waiting viewport may now take its turn; never wait from Qt.
+            self.poll_preparation_active_changed.emit(False)
 
     def _emit_snapshot(self, publication: ContinuousSweepDisplaySnapshot | _PreparedPublication) -> None:
         # Validate/convert before any consumer sees part of a rejected packet.
