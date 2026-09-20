@@ -102,6 +102,28 @@ class ServiceCosts:
         return invoke
 
 
+class GuiIntervals:
+    """Bounded actual GUI callback intervals; nested rows must not be summed."""
+    def __init__(self, capacity=8192):
+        self.rows: deque[dict[str, Any]] = deque(maxlen=capacity)
+        self.evictions = 0
+        self.gui_thread = threading.get_ident()
+
+    def wrap(self, name, original):
+        @wraps(original)
+        def invoke(*args, **kwargs):
+            if threading.get_ident() != self.gui_thread:
+                return original(*args, **kwargs)
+            begin = monotonic_ns()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                end = monotonic_ns()
+                self.evictions += int(len(self.rows) == self.rows.maxlen)
+                self.rows.append(dict(stage=name, begin_ns=begin, end_ns=end))
+        return invoke
+
+
 class StageRecords:
     def __init__(self, capacity=4096, *, source_stages=None):
         self.capacity = capacity
@@ -303,9 +325,10 @@ def main():
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
-    from pyqtgraph import ImageItem
+    from pyqtgraph import ImageItem, GraphicsLayoutWidget
     from sdr_monitor.ui.v2.state import analyzer_layer_cache, prepared_live, live_view_state
     records = StageRecords()
+    gui_intervals = GuiIntervals()
     service = ServiceCosts(capacity=8192)
     density_bindings = OrderedDict()
 
@@ -617,6 +640,14 @@ def main():
         instrument(PersistenceOverlay, "_schedule_pending", density_scheduling)
         instrument(PersistenceOverlay, "flush_pending", density_flushing)
         instrument(projection, "prepare_persistence_image", density_transferring)
+        for owner, name, label in (
+                (GraphicsLayoutWidget, "paintEvent", "graphics_paint"),
+                (LivePresenter, "_deliver_prepared", "coherent_delivery"),
+                (LivePresenter, "_poll_frames", "poll_callback"),
+                (DisplayScheduler, "_flush", "source_flush"),
+                (SpectrumScene, "_accept_projection", "projection_accept"),
+                (projection.SpectrumProjector, "_finish", "final_ack")):
+            instrument(owner, name, lambda original, label=label: gui_intervals.wrap(label, original))
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
@@ -625,6 +656,8 @@ def main():
         density_timer_events=list(density_timer_events), density_timer_evictions=density_timer_evictions,
         density_renders=list(density_renders), density_render_evictions=density_render_evictions,
         density_render_scope="Actual deferred pyqtgraph QImage preparation after exact image upload, not GPU/DWM presentation. Weak item binding, scalar request only; repeated renders retained separately.",
+        gui_interval_scope=GuiIntervals.__doc__, gui_intervals=list(gui_intervals.rows),
+        gui_interval_evictions=gui_intervals.evictions,
         service_scope=ServiceCosts.__doc__, service_totals=service.totals,
         service_row_evictions=service.evictions,
         service_rows=list(service.rows),
@@ -684,7 +717,7 @@ def main():
     with output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
     print(json.dumps({name: value for name, value in report["stage_profile"].items()
-                      if name not in ("service_rows", "paired_slow_frames", "density_events", "density_timer_events", "density_renders")}))
+                      if name not in ("service_rows", "paired_slow_frames", "density_events", "density_timer_events", "density_renders", "gui_intervals")}))
 
 
 if __name__ == "__main__":

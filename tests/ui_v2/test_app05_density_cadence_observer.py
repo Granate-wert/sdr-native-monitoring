@@ -27,6 +27,9 @@ class DensityCadenceObserverTests(unittest.TestCase):
         self.assertEqual(profile["density_event_evictions"], 0)
         self.assertEqual(profile["density_timer_evictions"], 0)
         self.assertEqual(profile["density_render_evictions"], 0)
+        self.assertEqual(profile["gui_interval_evictions"], 0)
+        self.assertTrue(any(row["stage"] == "graphics_paint" for row in profile["gui_intervals"]))
+        self.assertTrue(any(row["stage"] == "coherent_delivery" for row in profile["gui_intervals"]))
         groups = defaultdict(list)
         for event in profile["density_events"]:
             identity = event["request"]

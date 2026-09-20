@@ -19,6 +19,17 @@ def request(token=1):
 
 
 class StageObserverTests(unittest.TestCase):
+    def test_gui_intervals_keep_exact_nested_boundaries_with_bounded_scalar_rows(self):
+        rows = OBSERVER.GuiIntervals(capacity=2)
+        nested = rows.wrap("nested", lambda value: value)
+        outer = rows.wrap("outer", lambda value: nested(value))
+        with patch.object(OBSERVER, "monotonic_ns", side_effect=(1, 2, 3, 4, 5, 6)):
+            self.assertEqual(outer(17), 17)
+            self.assertEqual(nested(18), 18)
+        self.assertEqual(list(rows.rows), [dict(stage="outer", begin_ns=1, end_ns=4),
+                                         dict(stage="nested", begin_ns=5, end_ns=6)])
+        self.assertEqual(rows.evictions, 1)
+
     def test_service_nested_costs_are_exclusive_and_bounded_without_losing_totals(self):
         costs = OBSERVER.ServiceCosts(capacity=2)
         inner = costs.wrap("inner", lambda value: value, lambda value: value)
