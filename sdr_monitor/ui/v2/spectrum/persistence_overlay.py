@@ -55,6 +55,10 @@ class PersistenceOverlay:
         self._mapping_dirty = False
         self._latest_view: PersistenceDensityView | None = None
         self._pending_view: PersistenceDensityView | None = None
+        self._pending_force = False
+        # Worker-backed scenes admit all layers before committing projection.
+        # Reuse this overlay's single latest slot/timer for optional mapping.
+        self.defer_frame_uploads = False
         self._uploaded_density: np.ndarray | None = None
         self._visual_buffer: np.ndarray | None = None
         self._row_scratch: np.ndarray | None = None
@@ -119,7 +123,10 @@ class PersistenceOverlay:
             self._set_metrics(retained_extra_image_buffers=int(self._visual_buffer is not None))
         elif self._visible and self._latest_view is not None:
             self._discard_pending()
-            self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
+            if self.defer_frame_uploads:
+                self._defer_upload(self._latest_view, now_ns=monotonic_ns(), force=True)
+            else:
+                self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
 
     def set_logarithmic(self, logarithmic: bool) -> None:
         if self._logarithmic == bool(logarithmic):
@@ -154,6 +161,9 @@ class PersistenceOverlay:
             self._discard_pending()
             self._set_metrics(identity_uploads_suppressed=self._metrics.identity_uploads_suppressed + 1)
             return
+        if self.defer_frame_uploads:
+            self._defer_upload(view, now_ns=now)
+            return
         if self._last_upload_ns is not None and now - self._last_upload_ns < self._interval_ns:
             self._pending_view = view
             self._set_metrics(cadence_uploads_deferred=self._metrics.cadence_uploads_deferred + 1)
@@ -167,11 +177,22 @@ class PersistenceOverlay:
         if view is None or not self._visible or not self._presentation_active:
             return
         now = monotonic_ns() if now_ns is None else now_ns
-        if self._last_upload_ns is not None and now - self._last_upload_ns < self._interval_ns:
+        if not self._pending_force and self._last_upload_ns is not None and now - self._last_upload_ns < self._interval_ns:
             self._schedule_pending(now)
             return
+        force, self._pending_force = self._pending_force, False
         self._pending_view = None
-        self._upload(view, now_ns=now)
+        self._upload(view, now_ns=now, force=force)
+
+    def _defer_upload(self, view: PersistenceDensityView, *, now_ns: int, force: bool = False) -> None:
+        self._pending_view = view
+        self._pending_force = self._pending_force or force
+        if (self._pending_force or self._last_upload_ns is None
+                or now_ns - self._last_upload_ns >= self._interval_ns):
+            self._timer.start(0)
+        else:
+            self._set_metrics(cadence_uploads_deferred=self._metrics.cadence_uploads_deferred + 1)
+            self._schedule_pending(now_ns)
 
     def set_level_window(self, lower: float, upper: float) -> None:
         """Change ImageItem levels only; source density is neither recopied nor reset."""
@@ -282,6 +303,7 @@ class PersistenceOverlay:
         """Prevent a stale cadence timer from uploading an older density."""
 
         self._pending_view = None
+        self._pending_force = False
         self._timer.stop()
 
     def _set_metrics(self, **updates: int) -> None:

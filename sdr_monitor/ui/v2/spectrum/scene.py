@@ -185,6 +185,7 @@ class SpectrumScene(QWidget):
         if self._projector is not None or self._latest_view is not None:
             raise RuntimeError("projection port must be injected before spectrum admission")
         self._projector = projector
+        self._persistence.defer_frame_uploads = True
         self._persistence.allocation_budget = projector.allocation_budget
         self._persistence.on_budget_changed = self._refresh_persistence_status
         projector.ready.connect(self._accept_projection)
