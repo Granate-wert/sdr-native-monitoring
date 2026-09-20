@@ -114,13 +114,14 @@ class GuiIntervals:
         def invoke(*args, **kwargs):
             if threading.get_ident() != self.gui_thread:
                 return original(*args, **kwargs)
+            label = name(*args, **kwargs) if callable(name) else name
             begin = monotonic_ns()
             try:
                 return original(*args, **kwargs)
             finally:
                 end = monotonic_ns()
                 self.evictions += int(len(self.rows) == self.rows.maxlen)
-                self.rows.append(dict(stage=name, begin_ns=begin, end_ns=end))
+                self.rows.append(dict(stage=label, begin_ns=begin, end_ns=end))
         return invoke
 
 
@@ -428,6 +429,24 @@ def main():
                 density_renders.append(dict(request=binding[1], begin_ns=begin, end_ns=end))
         return invoke
 
+    def density_painting(original):
+        measured = gui_intervals.wrap("density_image_paint", original)
+        def invoke(item, *args, **kwargs):
+            binding = density_images.get(id(item))
+            if binding is not None and binding[0]() is item:
+                return measured(item, *args, **kwargs)
+            return original(item, *args, **kwargs)
+        return invoke
+
+    def graphics_name(widget, *args, **kwargs):
+        parent = widget.parentWidget()
+        while parent is not None:
+            name = type(parent).__name__
+            if name in ("SpectrumScene", "WaterfallPane"):
+                return "graphics_paint:" + name
+            parent = parent.parentWidget()
+        return "graphics_paint:other"
+
     def density_timer_state(overlay, event, when):
         nonlocal density_timer_evictions
         view = overlay._pending_view
@@ -637,11 +656,12 @@ def main():
         instrument(PersistenceOverlay, "_upload", density_upload_requested)
         instrument(PersistenceOverlay, "accept_worker_image", density_accepting)
         instrument(ImageItem, "render", density_rendering)
+        instrument(ImageItem, "paint", density_painting)
         instrument(PersistenceOverlay, "_schedule_pending", density_scheduling)
         instrument(PersistenceOverlay, "flush_pending", density_flushing)
         instrument(projection, "prepare_persistence_image", density_transferring)
         for owner, name, label in (
-                (GraphicsLayoutWidget, "paintEvent", "graphics_paint"),
+                (GraphicsLayoutWidget, "paintEvent", graphics_name),
                 (LivePresenter, "_deliver_prepared", "coherent_delivery"),
                 (LivePresenter, "_poll_frames", "poll_callback"),
                 (DisplayScheduler, "_flush", "source_flush"),
