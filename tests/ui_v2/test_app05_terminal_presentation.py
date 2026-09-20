@@ -9,6 +9,7 @@ import numpy as np
 
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
+from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
 from sdr_monitor.ui.v2.shell.contracts import ClosePort
 from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
@@ -62,6 +63,10 @@ class TerminalPresentationTests(unittest.TestCase):
         self.assertIsNone(self.composition.view_model.state.snapshot)
         self.assertIsNone(self.composition.analyzer_view_model.state.bundle)
         self.assertEqual(snapshot.allocation_budget.reserved_bytes, 0)
+        scene = self.page.visualization.spectrum_scene
+        for curve in (*scene._curves.values(), scene.sweep_coverage.history):
+            self.assertIsNone(curve.curve.xData)
+            self.assertIsNone(curve.curve.yData)
 
     def test_complete_close_releases_arrays_while_fixture_and_qobjects_stay_alive(self):
         self.measurement()
@@ -70,6 +75,7 @@ class TerminalPresentationTests(unittest.TestCase):
         density = weakref.ref(scene._persistence._latest_view.density)
         ring = weakref.ref(pane._renderer.buffer._data)
         grid = weakref.ref(scene.measurement_grid)
+        curve_x = weakref.ref(scene._curves[TraceKind.CURRENT].curve.xData)
         self.assertGreater(self.composition.memory_snapshot(self.page).unique_array_bytes, 0)
         self.shell.close()
         self.wait(lambda: self.shell._is_closed)
@@ -77,6 +83,7 @@ class TerminalPresentationTests(unittest.TestCase):
         self.assertIsNone(density())
         self.assertIsNone(ring())
         self.assertIsNone(grid())
+        self.assertIsNone(curve_x())
         self.shell.close()  # Repeated close must not resurrect storage or repeat backend work.
         self.assert_payloads_released()
 
