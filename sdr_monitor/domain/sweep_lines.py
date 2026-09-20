@@ -18,6 +18,28 @@ from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, va
 from .sweep_statistics import SweepStatisticsFrame
 
 
+_VALIDATION_BATCH = 65_536
+
+
+def _valid_frequency_grid(frequency: np.ndarray) -> bool:
+    """Every interval, including chunk seams, without a full float diff."""
+    for start in range(0, frequency.size, _VALIDATION_BATCH):
+        batch = frequency[start:start + _VALIDATION_BATCH]
+        if (not np.all(np.isfinite(batch)) or np.any(batch[1:] <= batch[:-1])
+                or start > 0 and batch[0] <= frequency[start - 1]):
+            return False
+    return True
+
+
+def _has_unknown_power(values: np.ndarray) -> bool:
+    """NaN/+inf are unknown; -inf remains measured zero power."""
+    for start in range(0, values.size, _VALIDATION_BATCH):
+        batch = values[start:start + _VALIDATION_BATCH]
+        if np.any(np.isnan(batch) | (batch == np.inf)):
+            return True
+    return False
+
+
 class SweepLineState(StrEnum):
     """Whether a published line is complete or explicitly contains a gap."""
 
@@ -152,7 +174,7 @@ class SweepLineFrame:
             raise ValueError("sweep-line frequency grid must contain 2..2,000,000 bins")
         if any(item.ndim != 1 or item.size != frequency.size for item in (values, quality, sources)):
             raise ValueError("sweep-line arrays must be one-dimensional and equally sized")
-        if not np.all(np.isfinite(frequency)) or not np.all(np.diff(frequency) > 0.0):
+        if not _valid_frequency_grid(frequency):
             raise ValueError("sweep-line frequencies must be finite and strictly increasing")
         missing = tuple(self.missing_segment_indices)
         generations = tuple(self.segment_config_generations)
@@ -166,13 +188,13 @@ class SweepLineFrame:
         ):
             raise ValueError("sweep-line gap or generation metadata is invalid")
         if self.state is SweepLineState.COMPLETE:
-            if missing or reasons or np.any(np.isnan(values) | np.isposinf(values)):
+            if missing or reasons or _has_unknown_power(values):
                 raise ValueError("complete sweep-line must not hide gaps or missing bins")
             missing_mask = (1 << 12) if self.quality_schema is SweepQualitySchema.NATIVE_V5 else int(SweepBinQuality.MISSING_SEGMENT)
             if np.any(quality & np.uint16(missing_mask)):
                 raise ValueError("complete sweep-line must not contain missing-segment flags")
         elif self.state is SweepLineState.GAP:
-            if not missing and not reasons and not np.any(np.isnan(values) | np.isposinf(values)):
+            if not missing and not reasons and not _has_unknown_power(values):
                 raise ValueError("gapped sweep-line requires explicit gap evidence")
         else:
             raise ValueError("unknown sweep-line state")

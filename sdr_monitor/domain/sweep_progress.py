@@ -6,6 +6,44 @@ from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, va
 from .sweep_statistics import SweepStatisticsFrame
 
 
+_VALIDATION_BATCH = 65_536
+
+
+def _validate_progress_arrays(arrays: tuple[np.ndarray, ...], indices: list[int]) -> None:
+    """Check every bin with bounded scratch, preserving error precedence.
+
+    Do not gather full-grid source arrays through boolean masks. Chunk-local
+    masks stay cache-sized, and adjacent comparisons avoid a full float diff.
+    Missing bins remain explicit; -inf is measured zero power, not missing.
+    """
+    grid_ok = values_ok = coverage_ok = owners_ok = True
+    frequencies, values, quality, sources = arrays
+    for start in range(0, frequencies.size, _VALIDATION_BATCH):
+        stop = start + _VALIDATION_BATCH
+        frequency = frequencies[start:stop]
+        value = values[start:stop]
+        flags = quality[start:stop]
+        owner = sources[start:stop]
+        grid_ok = (grid_ok and bool(np.all(np.isfinite(frequency)))
+                   and not bool(np.any(frequency[1:] <= frequency[:-1]))
+                   and (start == 0 or bool(frequency[0] > frequencies[start - 1])))
+        values_ok = values_ok and not bool(np.any(np.isposinf(value)))
+        missing = np.isnan(value)
+        flagged_missing = (flags & np.uint32(1 << 12)) != 0
+        coverage_ok = coverage_ok and np.array_equal(missing, flagged_missing)
+        allowed = owner == indices[0] if len(indices) == 1 else np.isin(owner, indices)
+        owners_ok = (owners_ok and not bool(np.any(missing & (owner != -1)))
+                     and bool(np.all(missing | allowed)))
+    if not grid_ok:
+        raise ValueError("invalid progress frequency grid")
+    if not values_ok:
+        raise ValueError("progress values must be finite, zero power (-inf dB), or explicit NaN gaps")
+    if not coverage_ok:
+        raise ValueError("progress NaN coverage must match native MissingSegment flags")
+    if not owners_ok:
+        raise ValueError("progress bin provenance must refer only to acquired segments")
+
+
 @dataclass(frozen=True, slots=True)
 class SweepProgressFrame:
     source_id: str
@@ -48,16 +86,7 @@ class SweepProgressFrame:
         if (arrays[0].dtype.kind != "f" or arrays[1].dtype.kind != "f"
                 or arrays[2].dtype != np.dtype("uint32") or arrays[3].dtype != np.dtype("int32")):
             raise ValueError("invalid native progress array types")
-        if not np.all(np.isfinite(arrays[0])) or np.any(np.diff(arrays[0]) <= 0):
-            raise ValueError("invalid progress frequency grid")
-        if np.any(np.isposinf(arrays[1])):
-            raise ValueError("progress values must be finite, zero power (-inf dB), or explicit NaN gaps")
-        missing = np.isnan(arrays[1])
-        flagged_missing = (arrays[2] & np.uint32(1 << 12)) != 0
-        if not np.array_equal(missing, flagged_missing):
-            raise ValueError("progress NaN coverage must match native MissingSegment flags")
-        if np.any(arrays[3][missing] != -1) or not np.all(np.isin(arrays[3][~missing], indices)):
-            raise ValueError("progress bin provenance must refer only to acquired segments")
+        _validate_progress_arrays(arrays, indices)
         generation_pairs = tuple((pair[0], pair[1]) for pair in acquired)
         validate_position(self.last_admitted_segment, generation_pairs)
         object.__setattr__(self, "acquired_segment_generations", generation_pairs)
