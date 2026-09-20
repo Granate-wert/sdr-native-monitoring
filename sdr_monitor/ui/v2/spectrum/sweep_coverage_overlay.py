@@ -103,7 +103,7 @@ class SweepCoverageOverlay:
         self._display_previous = None
         self._projection_key = None
         self.strip.runs = []
-        self.history.setData([], [])
+        self.history.clear()
         for item in (self.strip, self.history, self.label):
             item.hide()
 

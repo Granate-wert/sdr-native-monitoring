@@ -254,3 +254,38 @@ class TerminalPresentationTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 owner.release_presentation_after_shutdown()
         self.assertIs(self.page.visualization.spectrum_scene.latest_frame, before)
+
+    def test_inventory_counts_hidden_internal_plot_arrays(self):
+        self.measurement()
+        curve = self.page.visualization.spectrum_scene._curves[TraceKind.CURRENT]
+        # Reproduce pyqtgraph's empty parent dataset with a retained child.
+        curve.setData([], [])
+        self.assertIsNone(curve.xData)
+        self.assertIsNotNone(curve.curve.xData)
+        report = self.composition.memory_snapshot(self.page)
+        sizes = {owner.name: owner.bytes for owner in report.owners}
+        self.assertGreaterEqual(sizes["spectrum.plot-arrays"],
+                                curve.curve.xData.nbytes + curve.curve.yData.nbytes)
+        curve.clear()
+
+    def test_terminal_projection_releases_done_result_before_queued_callback(self):
+        from sdr_monitor.ui.v2.spectrum.projection import SpectrumProjector
+        from tests.ui_v2.test_app05_projection_cancellation import request
+        from tests.ui_v2.test_app05_viewport_projection import ManualWorker
+        from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
+        worker = ManualWorker()
+        budget = PresentationAllocationBudget()
+        port = SpectrumProjector(worker.submit, allocation_budget=budget)
+        self.addCleanup(port.dispose)
+        delivered = []
+        port.ready.connect(delivered.append)
+        port.offer(request())
+        worker.finish()  # joins fake worker, Qt completion is still queued
+        self.assertIsNotNone(port._future)
+        port.dispose()
+        port.release_presentation_after_shutdown()
+        self.assertIsNone(port._future)
+        self.assertEqual(port.retained_bytes, 0)
+        self.assertEqual(budget.snapshot().reserved_bytes, 0)
+        self.app.processEvents()  # queued callback cannot resurrect the detached result
+        self.assertEqual(delivered, [])

@@ -307,7 +307,7 @@ class SpectrumScene(QWidget):
             self._displayed_extent = None
             self._envelopes.clear()
             for curve in self._curves.values():
-                curve.setData([], [])
+                curve.clear()
             for marker_id in self._markers:
                 self._marker_lines[marker_id].hide()
                 self._marker_labels[marker_id].hide()
@@ -391,7 +391,9 @@ class SpectrumScene(QWidget):
         self._invalidate_projection()
         self._envelopes.pop(kind, None)
         self._trace_views.pop(kind, None)
-        self._curves[kind].setData([], [])
+        # Empty setData hides PlotDataItem but can retain its internal curve's
+        # previous x/y arrays. Clear both layers, including their raster data.
+        self._curves[kind].clear()
         if kind is TraceKind.CURRENT:
             self._displayed_view = None
             self._displayed_extent = None

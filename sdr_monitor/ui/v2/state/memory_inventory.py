@@ -119,7 +119,8 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
         add("spectrum.coverage", coverage.state.current, coverage.state.previous,
             coverage._display_previous, coverage.projection)
         add("spectrum.plot-arrays", *(array for curve in (*scene._curves.values(), coverage.history)
-                                      for array in (curve.xData, curve.yData)))
+                                      for layer in (curve, getattr(curve, "curve", None))
+                                      for array in (getattr(layer, "xData", None), getattr(layer, "yData", None))))
         density = scene._persistence
         add("persistence", density._latest_view, density._pending_view, density._uploaded_density,
             density._visual_buffer, density._row_scratch, density.image_item.image)
