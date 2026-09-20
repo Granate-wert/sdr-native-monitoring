@@ -19,13 +19,22 @@ from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from .cancellation import CancelCheck, check_cancelled
 from .retained_bytes import retained_arrays, union_bytes
 from .allocation_budget import AllocationReservation, PresentationAllocationBudget, PresentationBudgetExceeded
+from .persistence_projection import (
+    PersistenceImageRequest, PreparedPersistenceImage,
+    persistence_image_reserve, prepare_persistence_image,
+)
 
 DEFAULT_PROJECTION_BYTES = 256 * 1024 * 1024
 
 
+def _density_policy_key(request: "ProjectionRequest") -> tuple | None:
+    density = request.persistence
+    return None if density is None else (density.policy, density.history_revision)
+
+
 def _request_storage(request: "ProjectionRequest") -> dict[int, int]:
     return retained_arrays(*(view for _, view in request.traces), request.current,
-                           request.previous, request.prepared)
+                           request.previous, request.prepared, request.persistence)
 
 
 def _output_reserve(request: "ProjectionRequest") -> int:
@@ -36,7 +45,8 @@ def _output_reserve(request: "ProjectionRequest") -> int:
     traces = sum(9 * min(width, view.point_count) *
                  (max(8, view.frequencies_hz.dtype.itemsize) + max(8, view.values.dtype.itemsize))
                  for _, view in request.traces)
-    return traces + (2048 * (9 * 16 + 9) + 8 if request.current is not None else 0)
+    density = 0 if request.persistence is None else persistence_image_reserve(request.persistence)
+    return traces + (2048 * (9 * 16 + 9) + 8 if request.current is not None else 0) + density
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +61,7 @@ class ProjectionRequest:
     # Layout/show requests must wait for coherent preparation already in flight.
     # An ordinary new source on accepted geometry can keep the pipeline moving.
     requires_preparation_handoff: bool = True
+    persistence: PersistenceImageRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +70,7 @@ class SpectrumProjection:
     traces: tuple[tuple[TraceKind, EnvelopeTrace], ...]
     coverage: CoverageProjection | None
     finite_extent: tuple[float, float] | None
+    persistence: PreparedPersistenceImage | None = None
 
 
 def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = None) -> SpectrumProjection:
@@ -95,7 +107,9 @@ def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = Non
         state.current, state.previous = request.current, request.previous
         coverage = state.project(left, right, width, cancelled=cancelled)
     check_cancelled(cancelled)
-    return SpectrumProjection(request, tuple(traces), coverage, extent)
+    density = (None if request.persistence is None else
+               prepare_persistence_image(request.persistence, cancelled=cancelled))
+    return SpectrumProjection(request, tuple(traces), coverage, extent, density)
 
 
 class SpectrumProjector(QObject):
@@ -143,7 +157,8 @@ class SpectrumProjector(QObject):
         try:
             if self.allocation_budget is not None:
                 self.allocation_budget.observe(*(view for _, view in request.traces),
-                                               request.current, request.previous, request.prepared)
+                                               request.current, request.previous, request.prepared,
+                                               request.persistence)
             storage, reserve = _request_storage(request), _output_reserve(request)
         except (TypeError, ValueError) as error:
             self.failed.emit(request, str(error))
@@ -168,7 +183,8 @@ class SpectrumProjector(QObject):
         self.peak_retained_bytes = max(self.peak_retained_bytes, self.retained_bytes)
         active = self._active
         if active is not None and (active.owner is not request.owner
-                or active.generation != request.generation or active.viewport != request.viewport):
+                or active.generation != request.generation or active.viewport != request.viewport
+                or _density_policy_key(active) != _density_policy_key(request)):
             self._cancel_active()
         self._dispatch()
 
@@ -270,7 +286,8 @@ class SpectrumProjector(QObject):
                 try:
                     result = project_spectrum(request, cancelled=cancel.is_set)
                     if allocation is not None:
-                        allocation.commit(*(trace for _, trace in result.traces), result.coverage)
+                        allocation.commit(*(trace for _, trace in result.traces), result.coverage,
+                                          None if result.persistence is None else result.persistence.image)
                     return result
                 finally:
                     if allocation is not None:
@@ -290,7 +307,9 @@ class SpectrumProjector(QObject):
                 # roots to die first. Never retain its payload or spin on an
                 # intrinsically oversized / persistently unavailable request.
                 key = (id(request.owner), request.generation, request.viewport,
-                       tuple((kind, id(view.source_frame)) for kind, view in request.traces))
+                       tuple((kind, id(view.source_frame)) for kind, view in request.traces),
+                       _density_policy_key(request),
+                       None if request.persistence is None else id(request.persistence.view))
                 alone = union_bytes(_request_storage(request)) + _output_reserve(request)
                 if alone <= self.allocation_budget.limit_bytes and key != self._shared_retry_key:
                     self._shared_retry_key = key
