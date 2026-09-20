@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import weakref
 from time import perf_counter, thread_time
 from typing import Any
 from unittest.mock import patch
@@ -42,6 +43,53 @@ def instrumented_call(original, before=None, after=None, cpu_samples=None):
             after(value, *args, **kwargs)
         return value
     return invoke
+
+
+class ServiceCosts:
+    """Bounded scalar wall-service attribution; nested intervals are subtracted.
+
+    Includes GIL/OS preemption inside an operation, NOT CPU time. Thread-local
+    stacks prevent concurrent GUI calls from being subtracted from worker work.
+    Only completed rows enter the inventory; total counters survive eviction.
+    """
+    def __init__(self, capacity=4096):
+        self.rows: deque[dict[str, Any]] = deque(maxlen=capacity)
+        self.evictions = 0
+        self.totals: dict[str, dict[str, float]] = {}
+        self.local = threading.local()
+        self.lock = threading.Lock()
+
+    def wrap(self, stage, original, identity=lambda *args, **kwargs: None):
+        @wraps(original)
+        def invoke(*args, **kwargs):
+            source = identity(*args, **kwargs)
+            stack = getattr(self.local, "stack", None)
+            if stack is None:
+                stack = self.local.stack = []
+            state = [perf_counter(), 0.0]
+            stack.append(state)
+            outcome = "ok"
+            try:
+                return original(*args, **kwargs)
+            except BaseException:
+                outcome = "error"
+                raise
+            finally:
+                elapsed = perf_counter() - state[0]
+                stack.pop()
+                if stack:
+                    stack[-1][1] += elapsed
+                exclusive = max(0.0, elapsed - state[1])
+                with self.lock:
+                    self.evictions += int(len(self.rows) == self.rows.maxlen)
+                    self.rows.append(dict(stage=stage, source=source, elapsed_ms=elapsed * 1000,
+                                          exclusive_ms=exclusive * 1000, outcome=outcome))
+                    total = self.totals.setdefault(stage, dict(calls=0, errors=0, elapsed_ms=0, exclusive_ms=0))
+                    total["calls"] += 1
+                    total["errors"] += int(outcome != "ok")
+                    total["elapsed_ms"] += elapsed * 1000
+                    total["exclusive_ms"] += exclusive * 1000
+        return invoke
 
 
 class StageRecords:
@@ -244,7 +292,31 @@ def main():
     from sdr_monitor.ui.display_scheduler import DisplayScheduler
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+    from sdr_monitor.ui.v2.state import analyzer_layer_cache, prepared_live
     records = StageRecords()
+    service = ServiceCosts()
+    density_bindings = OrderedDict()
+
+    def density_key(frame):
+        if frame is None:
+            return None
+        return (str(frame.source_id), int(frame.config_generation),
+                int(frame.update_sequence), int(frame.timestamp_ns))
+
+    def converting_density(original):
+        def invoke(frame):
+            result = original(frame)
+            if result is not None:
+                density_bindings[id(result)] = (weakref.ref(result), density_key(frame))
+                while len(density_bindings) > 4096:
+                    density_bindings.popitem(last=False)
+            return result
+        return service.wrap("density_convert", invoke, density_key)
+
+    def transfer_identity(request, **kwargs):
+        frame = request.view.source_frame
+        pair = density_bindings.get(id(frame))
+        return (pair[1] if pair is not None and pair[0]() is frame else None, request.policy.mode.value)
     cpu: dict[str, deque[float]] = {name: deque(maxlen=4096) for name in ("prepare", "project", "accept")}
     # GUI-only nesting marker, scalar rows only. One final acknowledgement may
     # synchronously submit the next preparation; do not infer that from paints.
@@ -400,9 +472,29 @@ def main():
             before=lambda scene, active: records.visibility(active)))
         instrument(SpectrumScene, "_request_projection", wrap(
             before=lambda scene, *_: records.viewport(scene._viewport())))
+        # Layer over existing instrumentation, without changing submit metadata.
+        # Cache identity is inspected BEFORE the call; converter calls prove
+        # actual numerical misses rather than inferring work from offers.
+        instrument(LivePresenter, "_prepare", lambda original: service.wrap("prepare", original,
+            lambda owner, snapshot, *a, **kw: key(snapshot)))
+        instrument(analyzer_layer_cache.AnalyzerLayerCache, "persistence", lambda original:
+            service.wrap("density_cache", original, lambda owner, frame: (
+                density_key(frame), frame is owner._density_source)))
+        instrument(analyzer_layer_cache, "persistence_density_from_native", converting_density)
+        instrument(analyzer_layer_cache.AnalyzerLayerCache, "waterfall", lambda original:
+            service.wrap("waterfall_cache", original, lambda owner, frame: key(frame)))
+        instrument(prepared_live, "PreparedSpectrumFrame", lambda original:
+            service.wrap("spectrum_prepare", original, lambda frame, **kw: key(frame)))
+        instrument(projection, "project_spectrum", lambda original: service.wrap("projection", original,
+            lambda request, **kw: key(request.traces[0][1].source_frame) if request.traces else None))
+        instrument(projection, "prepare_persistence_image", lambda original:
+            service.wrap("density_transfer", original, transfer_identity))
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
+        service_scope=ServiceCosts.__doc__, service_totals=service.totals,
+        service_row_evictions=service.evictions,
+        service_rows=list(service.rows),
         final_ack_scope="Bounded scalar actual final acknowledgements, after token100; optional completion is NOT early required-ready. Nested preparation submission recorded on the same GUI call stack. Missing submission does not prove a missing cadence ticket.",
         final_ack_counts=dict(Counter(
             ("optional" if row["optional"] else "required") +

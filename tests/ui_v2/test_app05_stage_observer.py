@@ -19,6 +19,31 @@ def request(token=1):
 
 
 class StageObserverTests(unittest.TestCase):
+    def test_service_nested_costs_are_exclusive_and_bounded_without_losing_totals(self):
+        costs = OBSERVER.ServiceCosts(capacity=2)
+        inner = costs.wrap("inner", lambda value: value, lambda value: value)
+        outer = costs.wrap("outer", lambda value: inner(value), lambda value: value)
+        with patch.object(OBSERVER, "perf_counter", side_effect=(0, 1, 3, 5, 10, 11)):
+            self.assertEqual(outer(7), 7)
+            self.assertEqual(inner(8), 8)
+        self.assertEqual(costs.totals["outer"]["elapsed_ms"], 5000)
+        self.assertEqual(costs.totals["outer"]["exclusive_ms"], 3000)
+        self.assertEqual(costs.totals["inner"]["exclusive_ms"], 3000)
+        self.assertEqual(costs.totals["inner"]["calls"], 2)
+        self.assertEqual(costs.evictions, 1)
+        self.assertEqual(len(costs.rows), 2)
+
+    def test_service_failure_keeps_accounting_and_clears_nesting(self):
+        costs = OBSERVER.ServiceCosts()
+        def fail():
+            raise ValueError("expected")
+        with patch.object(OBSERVER, "perf_counter", side_effect=(1, 2)):
+            with self.assertRaisesRegex(ValueError, "expected"):
+                costs.wrap("failed", fail)()
+        self.assertEqual(costs.local.stack, [])
+        self.assertEqual(costs.totals["failed"]["errors"], 1)
+        self.assertEqual(costs.rows[0]["outcome"], "error")
+
     def test_wrapped_bound_operation_is_identifiable_at_actual_submit(self):
         class Owner:
             def _prepare(self, snapshot):
