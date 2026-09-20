@@ -68,6 +68,32 @@ def reference_coverage(current, previous, width):
 
 
 class BatchedEnvelopeTests(unittest.TestCase):
+    def test_dense_buckets_skip_gap_prefix_but_match_scalar_order_ties_and_dtype(self):
+        for dtype in (np.float32, np.float64):
+            for size in (1, 2, 4, 5, 31, 65537):
+                values = np.full((3, size * 2), -70, dtype=dtype)[:, ::2]
+                values[0, size // 2] = -110
+                values[1, size // 2] = -20
+                values[2, 0] = -0.0
+                values[2, -1] = 0.0
+                frequencies = np.arange(values.size * 2, dtype=dtype)[::2].reshape(values.shape)
+                expected = [reference_envelope(x, y, 1) for x, y in zip(frequencies, values)]
+                # Scalar reference bypasses reduction for <=4; use the same
+                # source-order selection explicitly for those tiny buckets.
+                if size <= 4:
+                    expected = []
+                    for x, y in zip(frequencies, values):
+                        indices = sorted({0, int(np.argmin(y)), int(np.argmax(y)), size - 1})
+                        expected.append((x[indices], y[indices]))
+                with self.subTest(dtype=dtype, size=size):
+                    with patch("sdr_monitor.ui.v2.spectrum.envelope_batch.np.cumsum",
+                               side_effect=AssertionError("dense buckets have no gaps")):
+                        x, y = extrema_rows(frequencies, values, np.ones(values.shape, dtype=bool))
+                    np.testing.assert_equal(x, np.concatenate([item[0] for item in expected]))
+                    np.testing.assert_equal(y, np.concatenate([item[1] for item in expected]))
+                    self.assertEqual((x.dtype, y.dtype), (np.dtype("float64"), np.dtype("float64")))
+                    np.testing.assert_equal(np.signbit(y), np.signbit(np.concatenate([item[1] for item in expected])))
+
     def test_scalar_equivalence_for_random_gaps_ties_extrema_and_batch_boundaries(self):
         rng = np.random.default_rng(19471)
         for count in (2, 3, 4, 5, 17, 65, 257, 4099, 65537, 131075):

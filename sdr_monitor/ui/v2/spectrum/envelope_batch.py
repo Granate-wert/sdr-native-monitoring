@@ -34,6 +34,19 @@ def extrema_rows(frequencies: np.ndarray, values: np.ndarray, finite: np.ndarray
         # Each absent bucket contributes only its gap sentinel. Avoid extrema
         # and prefix scans for empty current frames or fully replaced history.
         return np.full(rows, np.nan), np.full(rows, np.nan)
+    if np.all(finite):
+        # Dense buckets have no gap topology to scan. Preserve the same first,
+        # first min/max (including ties), last and SOURCE-order deduplication,
+        # without masked value copies or an absent-prefix array. This also
+        # applies to fully available old history, not just the current trace.
+        indices = np.sort(np.stack((np.zeros(rows, dtype=np.intp),
+            np.argmin(values, axis=1), np.argmax(values, axis=1),
+            np.full(rows, size - 1, dtype=np.intp)), axis=1), axis=1)
+        unique = np.ones((rows, 4), dtype=bool)
+        unique[:, 1:] = indices[:, 1:] != indices[:, :-1]
+        x = np.asarray(np.take_along_axis(frequencies, indices, axis=1), dtype=np.float64)
+        y = np.asarray(np.take_along_axis(values, indices, axis=1), dtype=np.float64)
+        return x[unique], y[unique]
     first = np.argmax(finite, axis=1)
     last = size - 1 - np.argmax(finite[:, ::-1], axis=1)
     minimum = np.argmin(np.where(finite, values, np.inf), axis=1)
