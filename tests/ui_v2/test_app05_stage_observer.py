@@ -73,6 +73,33 @@ class StageObserverTests(unittest.TestCase):
         self.assertEqual(records.reordered, 1)
         self.assertEqual(list(records.rows), [])
 
+    def test_early_required_paint_does_not_wait_for_optional_completion(self):
+        records = OBSERVER.StageRecords()
+        self.frame_stages(records)
+        value = request()
+        with patch.object(OBSERVER, "perf_counter", side_effect=(6, 7, 8, 9, 10, 20)):
+            for name in ("projection_offer", "projection_begin", "required_ready", "required_callback"):
+                records.request(value, name)
+            records.accepted(value, required_only=True)
+            records.request(value, "projection_end")
+        records.painted((1, "rtbw", 1), 11)
+        self.assertEqual((records.missing, records.reordered), (0, 0))
+        self.assertEqual(records.rows[0]["projection_end"], 1000)
+        self.assertEqual(records.details[0]["completion_kind"], "required-stage")
+        self.assertEqual(records.accepted_requests[(1, "rtbw", 1)]["projection_callback"], 9)
+
+    def test_early_missing_ready_cannot_borrow_final_completion(self):
+        records = OBSERVER.StageRecords()
+        self.frame_stages(records)
+        value = request()
+        with patch.object(OBSERVER, "perf_counter", side_effect=(6, 7, 8, 9)):
+            for name in ("projection_offer", "projection_begin", "projection_end"):
+                records.request(value, name)
+            records.accepted(value, required_only=True)
+        records.painted((1, "rtbw", 1), 10)
+        self.assertEqual(records.missing_stages["projection_end"], 1)
+        self.assertFalse(records.rows)
+
     def test_history_is_bounded_and_evicted_identity_is_missing(self):
         records = OBSERVER.StageRecords(2)
         for token in range(10):

@@ -140,7 +140,7 @@ class StageRecords:
             while len(self.deliveries) > self.capacity:
                 self.deliveries.popitem(last=False)
 
-    def accepted(self, request):
+    def accepted(self, request, *, required_only=False):
         identity = key(request.traces[0][1].source_frame) if request.traces else None
         with self.lock:
             if identity in self.frames:
@@ -151,6 +151,17 @@ class StageRecords:
                 row = dict(request_row.get("source_stages", {}))
                 row.update({name: value for name, value in request_row.items()
                             if name != "source_stages"})
+                # A staged spectrum can paint before optional work completes.
+                # Use its exact required-ready boundary, never final completion
+                # from a later callback or another request.
+                if required_only:
+                    row.pop("projection_end", None)
+                    row.pop("projection_callback", None)
+                    if "required_ready" in row:
+                        row["projection_end"] = row["required_ready"]
+                    if "required_callback" in row:
+                        row["projection_callback"] = row["required_callback"]
+                row["completion_kind"] = "required-stage" if required_only else "whole-result"
                 row["applied"] = perf_counter()
                 self.accepted_requests[identity] = row
                 self.accepted_requests.move_to_end(identity)
@@ -189,6 +200,7 @@ class StageRecords:
                 **{name: (b - a) * 1000 for name, a, b in zip(names[1:] + ("paint",), stamps, stamps[1:])}}
             self.rows.append(durations)
             self.details.append(dict(identity=identity, durations=durations.copy(),
+                completion_kind=row.get("completion_kind", "whole-result"),
                 geometry=row.get("geometry"), visible=self.last_visibility,
                 since_show_ms=None if self.last_show is None else (when - self.last_show) * 1000,
                 since_viewport_ms=None if self.viewport_changed_at is None else
@@ -227,18 +239,23 @@ def main():
 
     def accept_projection(original):
         @wraps(original)
-        def invoke(scene, result):
+        def invoke(scene, result, **kwargs):
             current = scene._projection_current(result.request)
+            required_only = kwargs.get("required_only", False)
+            optional_only = (not required_only and
+                             getattr(scene, "_early_projection_request", None) is result.request)
             began = thread_time()
-            value = original(scene, result)
+            value = original(scene, result, **kwargs)
             cpu["accept"].append((thread_time() - began) * 1000)
             with records.lock:
                 records.projection_events["accept_callback"] += 1
                 records.projection_events["accept_current" if current else "accept_obsolete_geometry"] += 1
             # An obsolete viewport can reference the already displayed source.
             # Source equality alone is not evidence that this request applied.
-            if current and result.request.traces and scene.displayed_frame is result.request.traces[0][1].source_frame:
-                records.accepted(result.request)
+                records.projection_events["optional_only_callback" if optional_only else "required_callback"] += 1
+            if (current and not optional_only and result.request.traces
+                    and scene.displayed_frame is result.request.traces[0][1].source_frame):
+                records.accepted(result.request, required_only=required_only)
             return value
         return invoke
 
@@ -266,6 +283,27 @@ def main():
     def projection_callback(port, future):
         if future is port._future and port._active is not None:
             records.request(port._active, "projection_callback")
+
+    def required_callback(port, serial):
+        if serial == port._active_serial and port._active is not None:
+            records.request(port._active, "required_callback")
+
+    def projecting(original):
+        @wraps(original)
+        def invoke(request, **kwargs):
+            records.request(request, "projection_begin")
+            ready = kwargs.get("spectrum_ready")
+            if ready is not None:
+                def required_ready(result):
+                    records.request(request, "required_ready")
+                    return ready(result)
+                kwargs["spectrum_ready"] = required_ready
+            began = thread_time()
+            result = original(request, **kwargs)
+            cpu["project"].append((thread_time() - began) * 1000)
+            records.request(request, "projection_end")
+            return result
+        return invoke
 
     def replacement_taken(snapshot, scheduler, admitted):
         if snapshot is not None:
@@ -300,9 +338,9 @@ def main():
         instrument(projection.SpectrumProjector, "offer", wrap(before=offering))
         instrument(projection.SpectrumProjector, "_dispatch", wrap(before=dispatching))
         instrument(projection.SpectrumProjector, "_finish", wrap(before=projection_callback))
-        instrument(projection, "project_spectrum", wrap(
-            before=lambda request, **kwargs: records.request(request, "projection_begin"),
-            after=lambda result, request, **kwargs: records.request(request, "projection_end"), cpu_name="project"))
+        if hasattr(projection.SpectrumProjector, "_accept_required"):
+            instrument(projection.SpectrumProjector, "_accept_required", wrap(before=required_callback))
+        instrument(projection, "project_spectrum", projecting)
         instrument(SpectrumScene, "_accept_projection", accept_projection)
         instrument(SpectrumScene, "set_presentation_active", wrap(
             before=lambda scene, active: records.visibility(active)))
@@ -311,6 +349,7 @@ def main():
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
+        projection_end_scope="Required-ready for early spectrum admission; whole-result end otherwise. Optional final callback never overwrites an early admission. Not density completion latency.",
         profiler_sha256=hashlib.sha256(Path(__file__).read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
         queue_attribution_scope="Exact scalar identity with both endpoints, including unpainted accepted frames; first 100 tokens excluded; not pooled first-paint ages",
         queue_attribution_ms={name: dict(count=len(values), **dict(zip(("p50", "p95", "p99", "max"), map(float,
