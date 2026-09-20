@@ -74,6 +74,8 @@ class ContinuousSweepPresenter(QObject):
         self._start_future: Future[None] | None = None
         self._stop_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication] | None = None
         self._poll_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication] | None = None
+        self._projection_in_flight = False
+        self._projection_poll_pending = False
         self._stop_failed = False
         self._start_completed.connect(self._finish_start, Qt.ConnectionType.QueuedConnection)
         self._stop_completed.connect(self._finish_stop, Qt.ConnectionType.QueuedConnection)
@@ -150,10 +152,24 @@ class ContinuousSweepPresenter(QObject):
                 and getattr(self._service, "stop_required", False) is not True) or self._stop_future is not None:
             return
         self._timer.stop()
+        self._projection_poll_pending = False
         future = self._stop_executor.submit(self._stop_and_snapshot)
         self._stop_future = future
         self.stopping_changed.emit(True)
         future.add_done_callback(self._stop_completed.emit)
+
+    def set_projection_in_flight(self, active: bool) -> None:
+        """V2 GUI acknowledgement releases at most one cadence-admitted poll.
+
+        The existing worker and native latest slot retain their ownership. Stop
+        bypasses this gate; repeated viewport work cannot accumulate poll jobs.
+        """
+        if self._closing or self._closed:
+            return
+        self._projection_in_flight = bool(active)
+        if not active and self._projection_poll_pending:
+            self._projection_poll_pending = False
+            self._poll()
 
     def _poll_and_prepare(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication:
         snapshot = self._service.poll_latest()
@@ -216,6 +232,7 @@ class ContinuousSweepPresenter(QObject):
             raise RuntimeError("continuous Sweep must acknowledge Stop before close")
         self._closing = True
         self._timer.stop()
+        self._projection_poll_pending = False
 
     def finish_shutdown(self) -> None:
         """Idle, quiesced close; no Qt timer or finish handler on this worker."""
@@ -233,6 +250,7 @@ class ContinuousSweepPresenter(QObject):
         if self._closed:
             return
         self._closing = True
+        self._projection_poll_pending = False
         if self._start_future is not None:
             start_future = self._start_future
             try:
@@ -278,6 +296,10 @@ class ContinuousSweepPresenter(QObject):
         if (self._closed or self._closing or self.is_starting or self.is_stopping
                 or not self._timer.isActive() or self._poll_future is not None):
             return
+        if self._projection_in_flight:
+            self._projection_poll_pending = True
+            return
+        self._projection_poll_pending = False
         # Single-flight until GUI delivery, not merely until worker exit. Timer
         # ticks never accumulate executor jobs or queued snapshots. Stop joins
         # behind at most this one finite drain; no parallel service access.
