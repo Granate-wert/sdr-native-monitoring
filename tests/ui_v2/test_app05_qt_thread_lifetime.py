@@ -56,9 +56,9 @@ class GuiThreadLifetimeTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-I", "-X", "faulthandler", "-c", code],
                                 cwd=root, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        # The inspector lifecycle group now also verifies explicit lazy drawer
-        # construction; retain the exact group-completeness assertion.
-        self.assertIn("Ran 9 tests", result.stderr)
+        # Inventory now also checks active required-stage roots and the optional
+        # reserve. Keep exact completeness, including that additional case.
+        self.assertIn("Ran 10 tests", result.stderr)
 
 
 if __name__ == "__main__":
