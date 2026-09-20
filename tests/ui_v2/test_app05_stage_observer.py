@@ -100,6 +100,38 @@ class StageObserverTests(unittest.TestCase):
         self.assertEqual(records.missing_stages["projection_end"], 1)
         self.assertFalse(records.rows)
 
+    def test_density_only_never_overwrites_required_admission_or_flow(self):
+        records = OBSERVER.StageRecords()
+        self.frame_stages(records)
+        required, density = request(), request()
+        density.required_work = False
+        with patch.object(OBSERVER, "perf_counter", side_effect=(6, 7, 8, 9, 10, 11)):
+            for name in ("projection_offer", "projection_begin", "projection_end"):
+                records.request(required, name)
+            records.accepted(required)
+            records.request(density, "projection_offer")
+            records.request(density, "projection_begin")
+            records.accepted(density)
+        records.painted((1, "rtbw", 1), 12)
+        self.assertEqual(records.accepted_requests[(1, "rtbw", 1)]["applied"], 9)
+        self.assertEqual(records.projection_events["projection_begin:density_only"], 1)
+        only_density = request(2)
+        only_density.required_work = False
+        records.request(only_density, "projection_begin")
+        records.accepted(only_density)
+        self.assertNotIn((2, "rtbw", 1), records.flow)
+
+    def test_flow_is_bounded_and_dispatch_keeps_actual_start_time(self):
+        records = OBSERVER.StageRecords(2)
+        for token in range(4):
+            records.mark((token, "rtbw", 1), "publish", token)
+        self.assertEqual(len(records.flow), 2)
+        self.assertEqual(records.flow_evictions, 2)
+        value = request(3)
+        records.request(value, "projection_dispatch", 123)
+        row = next(iter(records.requests.values()))
+        self.assertEqual(row["projection_dispatch"], 123)
+
     def test_history_is_bounded_and_evicted_identity_is_missing(self):
         records = OBSERVER.StageRecords(2)
         for token in range(10):

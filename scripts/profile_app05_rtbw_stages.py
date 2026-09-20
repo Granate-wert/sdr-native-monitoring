@@ -64,11 +64,24 @@ class StageRecords:
         self.last_viewport = None
         self.viewport_changed_at = None
         self.lock = threading.RLock()
+        self.flow = OrderedDict()
+        self.flow_evictions = 0
+
+    def flow_mark(self, identity, stage):
+        if identity is None:
+            return
+        with self.lock:
+            self.flow.setdefault(identity, set()).add(stage)
+            self.flow.move_to_end(identity)
+            while len(self.flow) > self.capacity:
+                self.flow.popitem(last=False)
+                self.flow_evictions += 1
 
     def mark(self, identity, stage, when=None):
         if identity is None:
             return
         with self.lock:
+            self.flow_mark(identity, stage)
             row = self.frames.setdefault(identity, {})
             if stage == "coalesced":
                 # Same source may be prepared again after show. Never attach
@@ -79,12 +92,18 @@ class StageRecords:
             while len(self.frames) > self.capacity:
                 self.frames.popitem(last=False)
 
-    def request(self, request, stage):
+    def request(self, request, stage, when=None):
         identity = key(request.traces[0][1].source_frame) if request.traces else None
         if identity is None:
             return
         with self.lock:
             self.projection_events[stage] += 1
+            required = getattr(request, "required_work", True)
+            kind = ("density_only" if not required else
+                    "required_density" if getattr(request, "persistence", None) is not None else "required_only")
+            self.projection_events[f"{stage}:{kind}"] += 1
+            if required:
+                self.flow_mark(identity, stage)
             if stage == "projection_offer":
                 signature = (identity, request.generation, request.viewport)
                 previous = self.last_offer
@@ -106,7 +125,7 @@ class StageRecords:
                     self.deliveries.get(identity, self.frames.get(identity, {})).items() if name in
                     self.source_stages}
                 row["geometry"] = (request.generation, request.viewport)
-            row.setdefault(stage, perf_counter())
+            row.setdefault(stage, perf_counter() if when is None else when)
             while len(self.requests) > self.capacity:
                 self.requests.popitem(last=False)
 
@@ -141,8 +160,11 @@ class StageRecords:
                 self.deliveries.popitem(last=False)
 
     def accepted(self, request, *, required_only=False):
+        if not getattr(request, "required_work", True):
+            return  # An image upload cannot replace the spectrum witness.
         identity = key(request.traces[0][1].source_frame) if request.traces else None
         with self.lock:
+            self.flow_mark(identity, "applied")
             if identity in self.frames:
                 request_row = self.requests.get(
                     (id(request), identity, request.generation, request.viewport), {})
@@ -185,6 +207,7 @@ class StageRecords:
 
     def painted(self, identity, when):
         with self.lock:
+            self.flow_mark(identity, "painted")
             row = self.accepted_requests.get(identity, self.frames.get(identity, {}))
             names = ("publish", "offer", "coalesced", "prepare_begin", "prepare_end",
                      "delivered", "projection_offer", "projection_begin", "projection_end", "applied")
@@ -242,8 +265,9 @@ def main():
         def invoke(scene, result, **kwargs):
             current = scene._projection_current(result.request)
             required_only = kwargs.get("required_only", False)
-            optional_only = (not required_only and
-                             getattr(scene, "_early_projection_request", None) is result.request)
+            optional_only = (not getattr(result.request, "required_work", True) or
+                             (not required_only and
+                              getattr(scene, "_early_projection_request", None) is result.request))
             began = thread_time()
             value = original(scene, result, **kwargs)
             cpu["accept"].append((thread_time() - began) * 1000)
@@ -259,10 +283,15 @@ def main():
             return value
         return invoke
 
-    def dispatching(port):
-        if (not port._closed and not port._suspended and port._future is None
-                and port._pending is not None):
-            records.request(port._pending, "projection_dispatch")
+    def dispatching(original):
+        @wraps(original)
+        def invoke(port):
+            before, when = port._future, perf_counter()
+            value = original(port)
+            if before is None and port._future is not None and port._active is not None:
+                records.request(port._active, "projection_dispatch", when)
+            return value
+        return invoke
 
     def offering(port, request):
         records.request(request, "projection_offer")
@@ -336,7 +365,7 @@ def main():
         instrument(LivePresenter, "_deliver_prepared", wrap(
             before=lambda _, delivery: records.delivered(delivery)))
         instrument(projection.SpectrumProjector, "offer", wrap(before=offering))
-        instrument(projection.SpectrumProjector, "_dispatch", wrap(before=dispatching))
+        instrument(projection.SpectrumProjector, "_dispatch", dispatching)
         instrument(projection.SpectrumProjector, "_finish", wrap(before=projection_callback))
         if hasattr(projection.SpectrumProjector, "_accept_required"):
             instrument(projection.SpectrumProjector, "_accept_required", wrap(before=required_callback))
@@ -349,6 +378,15 @@ def main():
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
+        flow_scope="Distinct exact source identities after token100 in bounded scalar history. Required projections only; density-only callbacks cannot imply spectrum admission. Evicted sources are not classified. Not RF loss.",
+        flow_evictions=records.flow_evictions,
+        flow_counts=dict(Counter(stage for identity, stages in records.flow.items()
+                                 if identity[0] > 100 for stage in stages)),
+        flow_gaps=dict(Counter(label for identity, stages in records.flow.items() if identity[0] > 100
+            for label, first, second in (("prepared_not_applied", "prepare_end", "applied"),
+                                         ("applied_not_painted", "applied", "painted"),
+                                         ("delivered_not_projected", "delivered", "projection_begin"))
+            if first in stages and second not in stages)),
         projection_end_scope="Required-ready for early spectrum admission; whole-result end otherwise. Optional final callback never overwrites an early admission. Not density completion latency.",
         profiler_sha256=hashlib.sha256(Path(__file__).read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
         queue_attribution_scope="Exact scalar identity with both endpoints, including unpainted accepted frames; first 100 tokens excluded; not pooled first-paint ages",
