@@ -17,7 +17,7 @@ from pathlib import Path
 import sys
 import threading
 import weakref
-from time import perf_counter, thread_time
+from time import perf_counter, thread_time, monotonic_ns
 from typing import Any
 from unittest.mock import patch
 
@@ -302,6 +302,7 @@ def main():
     from sdr_monitor.ui.display_scheduler import DisplayScheduler
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+    from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
     from sdr_monitor.ui.v2.state import analyzer_layer_cache, prepared_live, live_view_state
     records = StageRecords()
     service = ServiceCosts(capacity=8192)
@@ -327,6 +328,52 @@ def main():
         frame = request.view.source_frame
         pair = density_bindings.get(id(frame.density))
         return (pair[1] if pair is not None and pair[0]() is frame.density else None, request.policy.mode.value)
+
+    density_events: deque[dict[str, Any]] = deque(maxlen=4096)
+    density_event_lock = threading.Lock()
+    density_event_evictions = 0
+
+    def density_event(request, event, when=None, **extra):
+        nonlocal density_event_evictions
+        if request is None:
+            return
+        # Repeated dispatches stay separate events, not blended durations.
+        identity = (id(request), transfer_identity(request), request.policy.revision, request.history_revision)
+        with density_event_lock:
+            density_event_evictions += int(len(density_events) == density_events.maxlen)
+            density_events.append(dict(request=identity, event=event,
+                                       ns=monotonic_ns() if when is None else when, **extra))
+
+    def density_upload_requested(original):
+        def invoke(overlay, view, *, now_ns, force=False):
+            previous = overlay.worker_request
+            due = None if overlay._last_upload_ns is None else overlay._last_upload_ns + overlay._interval_ns
+            result = original(overlay, view, now_ns=now_ns, force=force)
+            request = overlay.worker_request
+            if request is not None and request is not previous:
+                density_event(request, "created", overlay._worker_request_ns, due_ns=due, forced=force)
+            return result
+        return invoke
+
+    def density_transferring(original):
+        def invoke(request, **kwargs):
+            density_event(request, "begin")
+            try:
+                result = original(request, **kwargs)
+            except BaseException as error:
+                density_event(request, "failed", exception=type(error).__name__)
+                raise
+            density_event(request, "end")
+            return result
+        return invoke
+
+    def density_accepting(original):
+        def invoke(overlay, request, result, error):
+            count = overlay.metrics.image_uploads
+            returned = original(overlay, request, result, error)
+            density_event(request, "uploaded" if overlay.metrics.image_uploads > count else "not_uploaded")
+            return returned
+        return invoke
     cpu: dict[str, deque[float]] = {name: deque(maxlen=4096) for name in ("prepare", "project", "accept")}
     # GUI-only nesting marker, scalar rows only. One final acknowledgement may
     # synchronously submit the next preparation; do not infer that from paints.
@@ -374,9 +421,11 @@ def main():
         @wraps(original)
         def invoke(port):
             before, when = port._future, perf_counter()
+            dispatch_ns = monotonic_ns()
             value = original(port)
             if before is None and port._future is not None and port._active is not None:
                 records.request(port._active, "projection_dispatch", when)
+                density_event(port._active.persistence, "dispatch", dispatch_ns)
             return value
         return invoke
 
@@ -505,9 +554,14 @@ def main():
             lambda request, **kw: key(request.traces[0][1].source_frame) if request.traces else None))
         instrument(projection, "prepare_persistence_image", lambda original:
             service.wrap("density_transfer", original, transfer_identity))
+        instrument(PersistenceOverlay, "_upload", density_upload_requested)
+        instrument(PersistenceOverlay, "accept_worker_image", density_accepting)
+        instrument(projection, "prepare_persistence_image", density_transferring)
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
+        density_cadence_scope="Bounded scalar events with exact weak producer binding/request/policy/history. Preserve repeated attempts; pair only unambiguous completed requests. ns uses monotonic clock throughout. No source payload retained.",
+        density_events=list(density_events), density_event_evictions=density_event_evictions,
         service_scope=ServiceCosts.__doc__, service_totals=service.totals,
         service_row_evictions=service.evictions,
         service_rows=list(service.rows),
@@ -567,7 +621,7 @@ def main():
     with output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
     print(json.dumps({name: value for name, value in report["stage_profile"].items()
-                      if name not in ("service_rows", "paired_slow_frames")}))
+                      if name not in ("service_rows", "paired_slow_frames", "density_events")}))
 
 
 if __name__ == "__main__":
