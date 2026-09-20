@@ -89,6 +89,34 @@ class PersistenceWorkerTests(unittest.TestCase):
             scene.deleteLater()
             self.app.processEvents()
 
+    def test_column_major_source_is_mapped_in_bounded_contiguous_tiles(self):
+        source = view(np.asfortranarray(np.full((64, 2048), .25, np.float32)))
+        current = PersistenceImageRequest(source, PersistenceImagePolicy(1, PersistenceRenderMode.DIRECT, True))
+        observed = []
+        original = density_worker.map_density_row_for_display
+
+        def mapped(values, **kwargs):
+            observed.append((values.size, values.flags.f_contiguous,
+                             np.shares_memory(values, source.density)))
+            return original(values, **kwargs)
+
+        with patch.object(density_worker, "map_density_row_for_display", side_effect=mapped):
+            result = prepare_persistence_image(current)
+        self.assertTrue(observed)
+        self.assertTrue(all(size <= 65536 and contiguous and shared for size, contiguous, shared in observed))
+        self.assertEqual(sum(size for size, _, _ in observed), source.density.size)
+        self.assertTrue(result.image.flags.c_contiguous)
+        self.assertTrue(result.image.flags.owndata)
+
+    def test_narrow_rows_use_bounded_tiles_not_one_call_per_row(self):
+        source = view(np.full((65539, 3), .25, np.float32))
+        current = PersistenceImageRequest(source, PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, True))
+        with patch.object(density_worker, "map_density_row_for_display",
+                          wraps=density_worker.map_density_row_for_display) as mapped:
+            result = prepare_persistence_image(current)
+        self.assertLessEqual(mapped.call_count, 4)
+        self.assertEqual(result.image.shape, source.density.shape)
+
     def test_history_has_no_source_or_previous_chain_and_policy_geometry_reset(self):
         policy = PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False)
         current = request(policy=policy)
