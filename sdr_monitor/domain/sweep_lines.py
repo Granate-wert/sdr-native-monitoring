@@ -168,7 +168,10 @@ class SweepLineFrame:
             )
         ):
             raise ValueError("sweep-line quality flags must be unsigned 16-bit integer masks")
-        quality = raw_quality.astype(np.uint16, copy=False)
+        # Narrow directly into the final owned buffer. Even an already-uint16
+        # input must be copied: callers may mutate their arrays after delivery.
+        # Do not copy this result again in the remaining ownership pass below.
+        quality = raw_quality.astype(np.uint16, copy=True)
         sources = np.asarray(self.source_segment_indices, dtype=np.int32)
         if frequency.ndim != 1 or frequency.size < 2 or frequency.size > 2_000_000:
             raise ValueError("sweep-line frequency grid must contain 2..2,000,000 bins")
@@ -201,12 +204,13 @@ class SweepLineFrame:
         for field_name, array in (
             ("frequencies_hz", frequency),
             ("values_db", values),
-            ("quality_flags", quality),
             ("source_segment_indices", sources),
         ):
             immutable = np.array(array, copy=True)
             immutable.setflags(write=False)
             object.__setattr__(self, field_name, immutable)
+        quality.setflags(write=False)
+        object.__setattr__(self, "quality_flags", quality)
         if self.statistics is not None:
             if not isinstance(self.statistics, SweepStatisticsFrame):
                 raise TypeError("Sweep requires an explicit statistics contract")
