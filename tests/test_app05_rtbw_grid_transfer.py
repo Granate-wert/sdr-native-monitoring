@@ -58,6 +58,20 @@ class RtbwGridTransferTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "finite and strictly ascending"):
                 analyzer.bundle_from_live(changed)
 
+    def test_extreme_spacing_retains_generic_special_value_fallback(self):
+        with np.errstate(over="ignore", invalid="ignore"):
+            source = snapshot(1, np.finfo(float).max, 1.)
+            original = np.allclose
+            with patch.object(analyzer.np, "allclose", wraps=original) as compare:
+                self.assertIs(analyzer.bundle_from_live(source).spectrum, source.spectrum)
+                self.assertEqual(compare.call_count, 1)
+            source = snapshot(3, 0., 1e308)
+            grid = np.array([1e308, 1.3e308, 1.6e308])
+            changed = replace(source, spectrum=replace(source.spectrum,
+                center_frequency_hz=np.finfo(float).max, frequencies_hz=grid))
+            with self.assertRaisesRegex(ValueError, "match center"):
+                analyzer.bundle_from_live(changed)
+
 
 if __name__ == "__main__":
     unittest.main()
