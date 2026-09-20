@@ -73,6 +73,26 @@ class StagedPersistenceQueueTests(unittest.TestCase):
         self.assertIsNone(self.scene._persistence.image_item.image)
         self.assertEqual(self.budget.snapshot().reserved_bytes, 0)
 
+    def test_scalar_serial_does_not_overflow_qt_int_during_long_lived_owner(self):
+        self.port._active_serial = 1 << 33
+        self.density()
+        self.drain()
+        self.assertEqual(self.scene.persistence_metrics.image_uploads, 1)
+        self.assertIsNone(self.port.required_result)
+
+    def test_submit_failure_after_inline_stage_does_not_retain_or_publish_it(self):
+        def failed_submit(operation):
+            operation()
+            raise RuntimeError("submit failed after operation")
+
+        self.port._submit = failed_submit
+        self.density()
+        self.pump()
+        self.assertIsNone(self.port.required_result)
+        self.assertIsNone(self.scene._persistence.image_item.image)
+        self.assertIsNone(self.port._future)
+        self.assertEqual(self.budget.snapshot().reserved_bytes, 0)
+
 
 class StagedPersistenceBarrierTests(unittest.TestCase):
     @classmethod

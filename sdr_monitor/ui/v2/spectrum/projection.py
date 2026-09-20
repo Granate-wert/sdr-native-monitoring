@@ -150,7 +150,7 @@ class SpectrumProjector(QObject):
     settled = Signal(object)
     work_active_changed = Signal(bool)
     _done = Signal(object)
-    _required_done = Signal(int)
+    _required_done = Signal(object)  # Python scalar serial, not a 32-bit Qt int
 
     def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
                  *, max_retained_bytes: int = DEFAULT_PROJECTION_BYTES,
@@ -360,6 +360,8 @@ class SpectrumProjector(QObject):
 
             future = self._submit(project)
         except Exception as error:
+            cancel.set()
+            self._clear_required()
             if self._allocation is not None:
                 self._allocation.close()
                 self._allocation = None
@@ -399,7 +401,7 @@ class SpectrumProjector(QObject):
         with self._required_lock:
             return self._required_result
 
-    @Slot(int)
+    @Slot(object)
     def _accept_required(self, serial: int) -> None:
         if serial != self._active_serial:
             return  # A late scalar notification must not consume the next job.
