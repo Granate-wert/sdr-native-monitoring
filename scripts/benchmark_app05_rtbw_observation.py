@@ -153,7 +153,7 @@ def main():
                 if key == current():
                     counts_before = dict(age.counts)
                     age.painted(name, key, ended)
-                    phase = paint_phase(control_phase, f.page.visualization.isVisible(), ended, resumed_until)
+                    phase = paint_phase(control_phase, self.isVisible(), ended, resumed_until)
                     for target in age.counts:
                         if age.counts[target] != counts_before[target]:
                             phase_ages[phase][target].append(age.ages[target][-1])
@@ -387,11 +387,18 @@ def main():
         finally:
             for t in timers:
                 t.stop()
+                t.timeout.disconnect()
+                t.deleteLater()
             halt.set()
             if producer is not None:
                 producer.join(timeout=3)
             f.tearDown()
             f.doCleanups()
+            # PySide can keep the dynamically registered observer subclass
+            # alive. Its paint closure must not root the fixture/scene after
+            # close through callbacks in this observer-owned lookup table.
+            keys.clear()
+            upload_tokens.clear()
     report["post_close_allocation_budget"] = asdict(f.composition.allocation_budget.snapshot())
     if report["post_close_allocation_budget"]["reserved_bytes"]:
         raise AssertionError("presentation reservation survived owner cleanup")

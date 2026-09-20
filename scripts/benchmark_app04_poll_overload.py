@@ -69,6 +69,12 @@ def run_qt_until(predicate, timeout_seconds):
     finally:
         check.stop()
         deadline.stop()
+        # Qt signal ownership is not a Python-only collectable cycle. A
+        # stopped child timer can still retain poll -> predicate -> fixture
+        # through its parent event loop after this helper has returned.
+        check.timeout.disconnect()
+        deadline.timeout.disconnect()
+        loop.deleteLater()
     if failure:
         raise failure[0]
 

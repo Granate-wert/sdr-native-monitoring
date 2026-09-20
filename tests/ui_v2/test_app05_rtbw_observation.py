@@ -50,10 +50,9 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(memory["samples"][-1]["label"], "after-close")
         self.assertIn("workspace not supplied", memory["samples"][-1]["inventory"]["missing"])
         self.assertEqual(memory["after_context_return"]["allocation_budget"]["reserved_bytes"], 0)
-        # Buffer-release acceptance is a separate product gate, not an assumed
-        # property of this diagnostic observer. Report real surviving owners.
         self.assertEqual(memory["diagnostic_after_collection"]["allocation_budget"]["reserved_bytes"], 0)
-        self.assertIn("scene", memory["diagnostic_after_collection"]["weak_owner_alive"])
+        self.assertEqual(memory["diagnostic_after_collection"]["allocation_budget"]["observed_bytes"], 0)
+        self.assertFalse(any(memory["diagnostic_after_collection"]["weak_owner_alive"].values()))
         self.assertGreaterEqual(memory["diagnostic_after_collection"]["collected"], 0)
         self.assertEqual(report["remaining_workers"], [])
         for canvas in ("spectrum", "waterfall", "both"):

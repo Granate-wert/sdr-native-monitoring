@@ -1,11 +1,13 @@
 """The performance observer must not manufacture paints or starve Qt cleanup."""
 import importlib.util
+import gc
 import json
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+import weakref
 
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
@@ -70,6 +72,28 @@ class RealQtObservationTests(unittest.TestCase):
         owner.deleteLater()
         OBSERVER.run_qt_until(lambda: bool(gone), 1)
         self.assertEqual(gone, [True])
+
+    def test_completed_timeout_and_failed_wait_release_predicate_owner(self):
+        class Owner:
+            def __init__(self, mode):
+                self.mode = mode
+
+            def ready(self):
+                if self.mode == "error":
+                    raise ValueError("observer failure")
+                return self.mode == "complete"
+
+        for mode in ("complete", "timeout", "error"):
+            with self.subTest(mode=mode):
+                owner = Owner(mode)
+                reference = weakref.ref(owner)
+                try:
+                    OBSERVER.run_qt_until(owner.ready, .02)
+                except (TimeoutError, ValueError):
+                    pass
+                del owner
+                gc.collect()  # diagnostic reachability, not a product workaround
+                self.assertIsNone(reference(), "stopped observer timer retained its predicate owner")
 
     def test_timeout_and_callback_error_return_outside_qt(self):
         with self.assertRaises(TimeoutError):
