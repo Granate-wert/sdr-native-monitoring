@@ -88,11 +88,16 @@ class PersistenceOverlay:
         return self._latest_view
 
     def set_visible(self, visible: bool) -> None:
+        became_visible = bool(visible) and not self._visible
         self._visible = bool(visible)
         self._image.setVisible(self._visible and self._uploaded_density is not None)
         if not self._visible:
             self._timer.stop()
-        elif self._presentation_active and self._mapping_dirty and self._latest_view is not None:
+        elif (self._presentation_active and self._latest_view is not None
+              and (self._mapping_dirty or (became_visible and self.allocation_limited))):
+            # An explicit off/on action may recover the stopped latest frame
+            # after another owner releases capacity. Repeated True requests
+            # must not become an unbounded budget retry loop.
             self._discard_pending()
             self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
         elif self._visible:
@@ -121,6 +126,7 @@ class PersistenceOverlay:
             return
         self._logarithmic = bool(logarithmic)
         self._visual_buffer = None
+        self._row_scratch = None
         self._mapping_dirty = True
         if self._latest_view is not None:
             self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
@@ -130,6 +136,7 @@ class PersistenceOverlay:
             return
         self._render_mode = mode
         self._visual_buffer = None
+        self._row_scratch = None
         self._mapping_dirty = True
         if self._latest_view is not None:
             self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
@@ -199,6 +206,7 @@ class PersistenceOverlay:
             # Incompatible smoothing history has no meaning on a changed
             # density geometry. Do not pin it across repeated budget refusals.
             self._visual_buffer = None
+            self._row_scratch = None
         reserve = 0 if reuse else int(view.density.size * 4)
         if reuse and (self._row_scratch is None or self._row_scratch.size != view.density.shape[1]):
             reserve += int(view.density.shape[1] * 4)
