@@ -57,6 +57,11 @@ class LivePresenter(QObject):
                  snapshot_preparer: Callable[[LiveSnapshot], object] | None = None,
                  snapshot_admitter: Callable[[LiveSnapshot], LiveSnapshot] | None = None) -> None:
         super().__init__(parent)
+        # Capture affinity without QObject.thread(): PySide 6.11.1 assigns the
+        # borrowed QThread wrapper a binding-level parent of that receiver.
+        # A later presenter deletion can invalidate the shared GUI wrapper.
+        # This presenter and its timers keep their construction-thread affinity.
+        self._presentation_thread = QThread.currentThread()
         self._use_cases = use_cases
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-live")
         self._closed = False
@@ -312,7 +317,7 @@ class LivePresenter(QObject):
             self._control_revision += 1
             revision = self._control_revision
         if self.prepares_snapshots:
-            if QThread.currentThread() == self.thread():
+            if QThread.currentThread() == self._presentation_thread:
                 # Explicit refresh/test seam may run on GUI; never prepare there.
                 # Reuse the bounded presentation slot instead of queuing work.
                 self._offer_preparation(snapshot, revision, render=False)
