@@ -75,6 +75,12 @@ class MemorySamplerTests(unittest.TestCase):
             self.assertTrue(all(workspace_for(i, page) is None for i in range(1, 1000)))
         with self.assertRaises(ValueError):
             workspace_for(0, "unknown")
+        self.assertEqual([workspace_for(i, "alternate", 1) for i in range(4)],
+                         ["analyzer", "calibration", "analyzer", "calibration"])
+        self.assertTrue(should_sample(1, 200, "checkpoints", 1))
+        for invalid in (0, -1, True, 1.5):
+            with self.subTest(cadence=invalid), self.assertRaises(ValueError):
+                workspace_for(0, "alternate", invalid)
 
     def test_invalid_capacity_rejected_before_starting_any_fixture(self):
         for capacity in (0, -1, True, 1.5, "32"):

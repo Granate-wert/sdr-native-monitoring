@@ -99,15 +99,17 @@ class MemorySamples:
                 "timing_distribution_scope": "retained samples only"}
 
 
-def should_sample(index, frames, observation):
+def should_sample(index, frames, observation, first_transition=20):
     if observation not in ("full", "process-only", "checkpoints"):
         raise ValueError("unknown observation mode")
-    return observation != "checkpoints" or index in (0, 20, frames - 1) or index % 100 == 0
+    return observation != "checkpoints" or index in (0, first_transition, frames - 1) or index % 100 == 0
 
 
-def workspace_for(index, visibility):
+def workspace_for(index, visibility, switch_every=20):
+    if isinstance(switch_every, bool) or not isinstance(switch_every, int) or switch_every < 1:
+        raise ValueError("switch cadence must be a positive integer")
     if visibility == "alternate":
-        return ("calibration" if (index // 20) % 2 else "analyzer") if index % 20 == 0 else None
+        return ("calibration" if (index // switch_every) % 2 else "analyzer") if index % switch_every == 0 else None
     if visibility not in ("analyzer", "calibration"):
         raise ValueError("unknown visibility mode")
     return visibility if index == 0 else None
@@ -121,9 +123,9 @@ def qt_wrapper_counts():
 
 
 def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_allocations=False,
-        collect_endpoints=False, observation="full", visibility="alternate", qt_census=False):
+        collect_endpoints=False, observation="full", visibility="alternate", qt_census=False, switch_every=20):
     should_sample(0, frames, observation)  # reject before constructing any GUI
-    workspace_for(0, visibility)
+    workspace_for(0, visibility, switch_every)
     recorder = MemorySamples(sample_capacity)
     app = QApplication.instance() or QApplication([])
     fixture = AnalyzerWorkspaceProductTests("runTest")
@@ -145,7 +147,7 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
         frequencies = spectrum.center_frequency_hz + (np.arange(bins) - bins / 2) * spectrum.sample_rate_hz / bins
         for index in range(frames):
             sequence = index + 1
-            workspace = workspace_for(index, visibility)
+            workspace = workspace_for(index, visibility, switch_every)
             if workspace is not None:
                 fixture.shell.select_workspace(workspace)
             frame = replace(spectrum, sequence=sequence, fft_size=bins, hop_size=bins,
@@ -163,7 +165,7 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
             fixture.wait(lambda: fixture.composition.view_model.state.spectrum is frame
                          and fixture.presenter._preparation_future is None)
             fixture.wait(lambda: fixture.composition.spectrum_projector._future is None)
-            if should_sample(index, frames, observation):
+            if should_sample(index, frames, observation, switch_every):
                 sampled = time.perf_counter()
                 inventory = (fixture.composition.memory_snapshot(fixture.page)
                              if observation == "full" else None)
@@ -172,9 +174,9 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
                              "page": fixture.shell.active_workspace_id, "sample_ms": sample_ms,
                              **process_memory(), "inventory": None if inventory is None else asdict(inventory)})
             page = fixture.shell.active_workspace_id
-            if qt_census and index in (0, 20, frames - 1):
+            if qt_census and index in (0, switch_every, frames - 1):
                 qt_endpoints.append({"index": index, "page": page, "counts": qt_wrapper_counts()})
-            if collect_endpoints and (index in (0, 20) or index == frames - 1):
+            if collect_endpoints and index in (0, switch_every, frames - 1):
                 before = process_memory()
                 collected = gc.collect()
                 collection_endpoints.append({"index": index, "page": page, "collected": collected,
@@ -196,6 +198,7 @@ def run(frames=120, bins=65536, power_bins=64, *, sample_capacity=None, trace_al
                 "bins": bins, "power_bins": power_bins, "frames": frames,
                 "observation": observation,
                 "visibility": visibility, "qt_wrapper_census": qt_endpoints,
+                "switch_every": switch_every,
                 "observation_scope": "Only diagnostic sampling changes; every pipeline frame and visibility transition still runs",
                 "sampling": recorder.summary(), "samples": list(recorder.rows),
                 "allocation_trace": traced_result,
@@ -222,15 +225,19 @@ if __name__ == "__main__":
     parser.add_argument("--visibility", choices=("alternate", "analyzer", "calibration"), default="alternate",
                         help="Causal render isolation; all pipeline frames still admitted")
     parser.add_argument("--qt-census", action="store_true", help="Scalar Shiboken wrapper counts at three endpoints only")
+    parser.add_argument("--switch-every", type=int, default=20, help="Visibility stress cadence in admitted frames")
     args = parser.parse_args()
     if (not 1 <= args.frames <= 10000 or not 2 <= args.bins <= 2_000_000
             or not 1 <= args.power_bins <= 64 or args.bins * args.power_bins > 8_388_608):
         parser.error("bounded synthetic profile dimensions exceeded")
     if args.sample_capacity is not None and args.sample_capacity < 1:
         parser.error("sample capacity must be positive")
+    if args.switch_every < 1:
+        parser.error("switch cadence must be positive")
     output = run(args.frames, args.bins, args.power_bins, sample_capacity=args.sample_capacity,
                  trace_allocations=args.trace_allocations, collect_endpoints=args.collect_endpoints,
-                 observation=args.observation, visibility=args.visibility, qt_census=args.qt_census)
+                 observation=args.observation, visibility=args.visibility, qt_census=args.qt_census,
+                 switch_every=args.switch_every)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
     samples = output["samples"]
