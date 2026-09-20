@@ -16,6 +16,7 @@ from .analyzer_layers import waterfall_line_from_sweep
 from ..spectrum.allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
 from ..spectrum.grid_baseline import MeasurementGridCache
 from .source_admission import PresentationSourceAdmission
+from ..spectrum.cancellation import CancelCheck, check_cancelled
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +72,15 @@ class SweepSnapshotPreparer:
 
     def __call__(self, snapshot: ContinuousSweepDisplaySnapshot,
                  bundle: AnalyzerFrameBundle | None) -> PreparedSweepSnapshot:
+        return self.prepare_cancellable(snapshot, bundle)
+
+    def prepare_cancellable(self, snapshot: ContinuousSweepDisplaySnapshot,
+                            bundle: AnalyzerFrameBundle | None, *,
+                            cancelled: CancelCheck = None) -> PreparedSweepSnapshot:
+        """Cooperative optional preview work; no terminal or device cancellation."""
+        if snapshot.line is not None or snapshot.presentation_omission is not None or snapshot.metrics.has_error:
+            cancelled = None
+        check_cancelled(cancelled)
         if snapshot.presentation_omission is not None:
             self._grid.clear()
             return PreparedSweepSnapshot(snapshot, None, (), "presentation_memory_budget", memory_limited=True)
@@ -78,16 +88,19 @@ class SweepSnapshotPreparer:
         if bundle is None:
             self._grid.clear()
         try:
-            spectrum = None if bundle is None else PreparedSpectrumFrame(bundle, grid_cache=self._grid)
+            spectrum = None if bundle is None else PreparedSpectrumFrame(
+                bundle, grid_cache=self._grid, cancelled=cancelled)
         except PresentationBudgetExceeded:
             self._grid.clear()
             omitted = PresentationSourceAdmission(self.allocation_budget).omit_sweep(snapshot)
             return PreparedSweepSnapshot(omitted, None, (), "presentation_memory_budget", memory_limited=True)
+        check_cancelled(cancelled)
         size = sum(min(2048, frame.values_db.size) * 12 + 8
                    for frame in (snapshot.line, snapshot.progress) if frame is not None)
         try:
             with self.allocation_budget.reserve(int(size)) as allocation:
                 prepared = prepare_sweep_snapshot(snapshot, bundle, spectrum=spectrum, grid_cache=self._grid)
+                check_cancelled(cancelled)
                 allocation.commit(*prepared.waterfall_rows)
                 return prepared
         except PresentationBudgetExceeded as error:

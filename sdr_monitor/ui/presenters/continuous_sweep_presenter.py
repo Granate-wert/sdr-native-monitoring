@@ -8,7 +8,8 @@ keeping completed-line LPS and actual render FPS distinct.
 from __future__ import annotations
 
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
+from threading import Event
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,12 @@ class _PreparedPublication:
     presentation: object
 
 
+@dataclass(frozen=True, slots=True)
+class _CancelledPreview:
+    """A Stop-superseded preview, not an RF loss or a terminal acknowledgement."""
+    snapshot: ContinuousSweepDisplaySnapshot
+
+
 class ContinuousSweepPresenter(QObject):
     """Bounded UI polling and telemetry for a running R10-D coordinator."""
 
@@ -44,6 +51,7 @@ class ContinuousSweepPresenter(QObject):
     starting_changed = Signal(bool)
     stopping_changed = Signal(bool)
     poll_preparation_active_changed = Signal(bool)
+    preview_preparation_cancelled = Signal(object)
     _start_completed = Signal(object)
     _stop_completed = Signal(object)
     _poll_completed = Signal(object)
@@ -73,8 +81,10 @@ class ContinuousSweepPresenter(QObject):
         self._closing = False
         self._stop_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-sweep-stop")
         self._start_future: Future[None] | None = None
-        self._stop_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication] | None = None
-        self._poll_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication] | None = None
+        self._stop_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview] | None = None
+        self._poll_future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview] | None = None
+        self._stop_requested = Event()
+        self.preview_preparations_cancelled = 0
         self._projection_in_flight = False
         self._projection_poll_pending = False
         self._stop_failed = False
@@ -110,6 +120,7 @@ class ContinuousSweepPresenter(QObject):
             return
         if self._stop_failed:
             raise RuntimeError("previous continuous Sweep cleanup is unresolved; retry Stop")
+        self._stop_requested.clear()
         future = self._stop_executor.submit(self._service.start, native_config)
         self._start_future = future
         self.starting_changed.emit(True)
@@ -154,6 +165,7 @@ class ContinuousSweepPresenter(QObject):
             return
         self._timer.stop()
         self._projection_poll_pending = False
+        self._stop_requested.set()
         future = self._stop_executor.submit(self._stop_and_snapshot)
         self._stop_future = future
         self.stopping_changed.emit(True)
@@ -172,7 +184,7 @@ class ContinuousSweepPresenter(QObject):
             self._projection_poll_pending = False
             self._poll()
 
-    def _poll_and_prepare(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication:
+    def _poll_and_prepare(self, *, final: bool = False) -> ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview:
         snapshot = self._service.poll_latest()
         if self._snapshot_admitter is not None:
             snapshot = self._snapshot_admitter(snapshot)
@@ -181,20 +193,34 @@ class ContinuousSweepPresenter(QObject):
         # Build the immutable coherent bundle once, on this same worker. The
         # property validates large arrays; consumers must not reconstruct it
         # repeatedly on the GUI thread merely to obtain the same packet.
-        bundle = snapshot.analyzer_bundle
-        prepared = self._snapshot_preparer(snapshot, bundle)
+        # Never abandon a drained terminal, explicit omission/error, or the
+        # final Stop snapshot. Device drain/conversion is not cancellable.
+        preview_only = (not final and snapshot.line is None and snapshot.progress is not None
+                        and snapshot.presentation_omission is None and not snapshot.metrics.has_error)
+        cancellable = getattr(type(self._snapshot_preparer), "prepare_cancellable", None)
+        try:
+            if preview_only and callable(cancellable) and self._stop_requested.is_set():
+                return _CancelledPreview(snapshot)
+            bundle = snapshot.analyzer_bundle
+            prepared = (cancellable(self._snapshot_preparer, snapshot, bundle,
+                                    cancelled=self._stop_requested.is_set)
+                        if preview_only and callable(cancellable) else self._snapshot_preparer(snapshot, bundle))
+        except CancelledError:
+            if not preview_only or not self._stop_requested.is_set():
+                raise
+            return _CancelledPreview(snapshot)
         projected = getattr(prepared, "snapshot", None)
         if isinstance(projected, ContinuousSweepDisplaySnapshot):
             snapshot = projected
             bundle = getattr(prepared, "analyzer_bundle", bundle)
         return _PreparedPublication(snapshot, bundle, prepared)
 
-    def _stop_and_snapshot(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication:
+    def _stop_and_snapshot(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview:
         self._service.stop()
-        return self._poll_and_prepare()
+        return self._poll_and_prepare(final=True)
 
     @Slot(object)
-    def _finish_stop(self, future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication]) -> None:
+    def _finish_stop(self, future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview]) -> None:
         if future is not self._stop_future:
             return
         # Both jobs use the same executor. Preserve a terminal publication
@@ -251,6 +277,7 @@ class ContinuousSweepPresenter(QObject):
         if self._closed:
             return
         self._closing = True
+        self._stop_requested.set()
         self._projection_poll_pending = False
         if self._start_future is not None:
             start_future = self._start_future
@@ -310,7 +337,7 @@ class ContinuousSweepPresenter(QObject):
         future.add_done_callback(self._poll_completed.emit)
 
     @Slot(object)
-    def _finish_poll(self, future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication]) -> None:
+    def _finish_poll(self, future: Future[ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview]) -> None:
         if future is not self._poll_future or not future.done():
             return
         try:
@@ -328,7 +355,12 @@ class ContinuousSweepPresenter(QObject):
             # A waiting viewport may now take its turn; never wait from Qt.
             self.poll_preparation_active_changed.emit(False)
 
-    def _emit_snapshot(self, publication: ContinuousSweepDisplaySnapshot | _PreparedPublication) -> None:
+    def _emit_snapshot(self, publication: ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview) -> None:
+        if isinstance(publication, _CancelledPreview):
+            self.preview_preparations_cancelled += 1
+            self.metrics_ready.emit(publication.snapshot.metrics)
+            self.preview_preparation_cancelled.emit(publication.snapshot)
+            return  # No fake empty frame, RF drop count, or terminal delivery.
         # Validate/convert before any consumer sees part of a rejected packet.
         # A conversion failure follows the same owned Stop path as poll failure.
         if isinstance(publication, _PreparedPublication):

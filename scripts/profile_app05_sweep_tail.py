@@ -153,13 +153,13 @@ def main():
         return invoke
 
     def preparation(original):
-        def invoke(owner, snapshot, bundle):
+        def invoke(owner, snapshot, bundle, **kwargs):
             identity = key(bundle)
             with records.lock:
                 row = {name: stamp for name, stamp in records.frames.get(identity, {}).items()
                        if name in STAGES[:3]}
             row["prepare_begin"] = perf_counter()
-            value = original(owner, snapshot, bundle)
+            value = original(owner, snapshot, bundle, **kwargs)
             row["prepare_end"] = perf_counter()
             with records.lock:
                 records.prepared_deliveries[(id(value), key(value.analyzer_bundle))] = row
@@ -170,6 +170,8 @@ def main():
 
     def delivery(original):
         def invoke(owner, publication):
+            if not hasattr(publication, "bundle"):
+                return original(owner, publication)  # Explicit cancelled preview, not a delivery witness.
             identity = key(publication.bundle)
             with records.lock:
                 row = dict(records.prepared_deliveries.get((id(publication.presentation), identity), {}))
@@ -201,7 +203,8 @@ def main():
         hook(service, "_to_domain_line", wrap(
             before=lambda n, **kw: mark_selected(records, scoped((n.line_sequence, n.state, 0))),
             after=lambda result, *a, **kw: records.mark(key(result), "domain_end")))
-        hook(SweepSnapshotPreparer, "__call__", preparation)
+        hook(SweepSnapshotPreparer, "prepare_cancellable" if hasattr(SweepSnapshotPreparer, "prepare_cancellable")
+             else "__call__", preparation)
         hook(ContinuousSweepPresenter, "_emit_snapshot", delivery)
         hook(projection.SpectrumProjector, "offer", wrap(before=lambda _, request: records.request(request, "projection_offer")))
         hook(projection, "project_spectrum", wrap(
