@@ -8,12 +8,16 @@ from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.ui.v2.spectrum.projection import SpectrumProjector
+from sdr_monitor.ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
 from tests import test_app02_analyzer_workspace_product as product
+from tests import test_app04_sweep_poll_responsiveness as poll_fixture
 from tests.ui_v2.test_app05_projection_cancellation import request
 
 
 class SweepProjectionHandoffTests(unittest.TestCase):
+    wait = poll_fixture.SweepPollResponsivenessTests.wait
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -58,6 +62,46 @@ class SweepProjectionHandoffTests(unittest.TestCase):
         port.set_preparation_in_flight(False)
         self.assertFalse(commits)
         port.dispose()
+
+    def test_failed_or_cancelled_poll_releases_preparation_gate_after_error_stop(self):
+        for outcome in ("failed", "cancelled"):
+            service = poll_fixture._DelayedDisplay()
+            service.release.set()
+            presenter = ContinuousSweepPresenter(service)
+            changes, errors = [], []
+            presenter.poll_preparation_active_changed.connect(changes.append)
+            presenter.task_failed.connect(errors.append)
+            future = Future()
+            try:
+                presenter._timer.start(100000)
+                with patch.object(presenter._stop_executor, "submit", return_value=future):
+                    presenter._poll()
+                if outcome == "failed":
+                    future.set_exception(RuntimeError("injected poll failure"))
+                else:
+                    future.cancel()
+                self.wait(presenter.can_close)
+                self.assertEqual(changes, [True, False])
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(service.calls.count("stop"), 1)
+            finally:
+                presenter.shutdown()
+
+    def test_submit_failure_never_acquires_preparation_gate(self):
+        service = poll_fixture._DelayedDisplay()
+        presenter = ContinuousSweepPresenter(service)
+        changes = []
+        presenter.poll_preparation_active_changed.connect(changes.append)
+        try:
+            presenter._timer.start(100000)
+            with patch.object(presenter._stop_executor, "submit", side_effect=RuntimeError("executor unavailable")):
+                with self.assertRaisesRegex(RuntimeError, "executor unavailable"):
+                    presenter._poll()
+            self.assertIsNone(presenter._poll_future)
+            self.assertEqual(changes, [])
+        finally:
+            presenter._timer.stop()
+            presenter.shutdown()
 
     def test_actual_hidden_poll_hands_latest_source_to_resumed_projection_then_stop(self):
         self.actual_handoff(stop_while_preparing=False)
