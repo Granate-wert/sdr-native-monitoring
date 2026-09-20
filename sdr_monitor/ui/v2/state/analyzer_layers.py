@@ -13,6 +13,7 @@ from sdr_monitor.domain.sweep_statistics import SweepStatisticsFrame
 from ..spectrum.persistence_contracts import DensityValueMode, PersistenceDensityFrame
 from ..waterfall.contracts import WaterfallLineFrame, SweepWaterfallLine
 from ..waterfall.sweep_rows import SweepRowStamp, SweepRowState
+from ..spectrum.grid_baseline import MeasurementGridCache
 
 
 _MAX_WATERFALL_COLUMNS = 2048
@@ -34,9 +35,10 @@ def _regular_spacing(values: np.ndarray) -> float:
     return step
 
 
-def _regular_edges(centers: np.ndarray) -> np.ndarray:
+def _regular_edges(centers: np.ndarray, *, grid_cache: MeasurementGridCache | None = None) -> np.ndarray:
     values = np.asarray(centers, dtype=np.float64).reshape(-1)
-    spacing = _regular_spacing(values)
+    spacing = (_regular_spacing(values) if grid_cache is None else
+               grid_cache.regular_spacing(values, _regular_spacing))
     edges: np.ndarray = np.empty(values.size + 1, dtype=np.float64)
     edges[:-1] = values - spacing / 2.0
     edges[-1] = values[-1] + spacing / 2.0
@@ -44,13 +46,15 @@ def _regular_edges(centers: np.ndarray) -> np.ndarray:
     return edges
 
 
-def _waterfall_projection(centers: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _waterfall_projection(centers: np.ndarray, values: np.ndarray, *,
+                          grid_cache: MeasurementGridCache | None = None) -> tuple[np.ndarray, np.ndarray]:
     if values.size <= _MAX_WATERFALL_COLUMNS:
-        return values, _regular_edges(centers)
+        return values, _regular_edges(centers, grid_cache=grid_cache)
     # Reduction needs only the endpoints, not N+1 full-resolution edges. Still
     # validate ALL intervals: endpoints alone cannot prove a regular grid.
     centers = np.asarray(centers, dtype=np.float64).reshape(-1)
-    spacing = _regular_spacing(centers)
+    spacing = (_regular_spacing(centers) if grid_cache is None else
+               grid_cache.regular_spacing(centers, _regular_spacing))
     bounds = np.array([centers[0] - spacing / 2, centers[-1] + spacing / 2])
     return _reduce_waterfall_columns(values, bounds)
 
@@ -96,7 +100,8 @@ def persistence_density_from_sweep(frame: SweepStatisticsFrame) -> PersistenceDe
     )
 
 
-def waterfall_line_from_spectrum(frame: LiveSpectrumFrame) -> WaterfallLineFrame:
+def waterfall_line_from_spectrum(frame: LiveSpectrumFrame, *,
+                                 grid_cache: MeasurementGridCache | None = None) -> WaterfallLineFrame:
     """Make a bounded, peak-preserving *presentation* row from a spectrum.
 
     The analytical FFT remains untouched.  Above the existing Waterfall
@@ -107,7 +112,7 @@ def waterfall_line_from_spectrum(frame: LiveSpectrumFrame) -> WaterfallLineFrame
     cell.  A cell containing any unknown sample remains NaN, so display LOD
     cannot bridge an acquisition/analysis gap with a neighbouring peak.
     """
-    reduced_values, reduced_edges = _waterfall_projection(frame.frequencies_hz, frame.values)
+    reduced_values, reduced_edges = _waterfall_projection(frame.frequencies_hz, frame.values, grid_cache=grid_cache)
     return WaterfallLineFrame(
         values=reduced_values, frequency_edges_hz=reduced_edges,
         timestamp_ns=int(frame.timestamp_ns),
@@ -122,14 +127,15 @@ def _known_waterfall_timestamp(frame: LiveSpectrumFrame) -> bool:
     return str(getattr(frame, "clock_domain", "")).casefold() == "unix_ns" and str(quality).casefold() != "unknown"
 
 
-def waterfall_line_from_sweep(frame: SweepLineFrame | SweepProgressFrame) -> SweepWaterfallLine:
+def waterfall_line_from_sweep(frame: SweepLineFrame | SweepProgressFrame, *,
+                              grid_cache: MeasurementGridCache | None = None) -> SweepWaterfallLine:
     """Presentation LOD only; keep the original measurement/provenance untouched.
 
     Reuses the RTBW physical grid and peak/NaN-preserving reduction. No FFT,
     averaging or histogram work is performed here. Sweep time remains unknown
     for the whole row; per-segment acquisition records stay on the domain frame.
     """
-    values, edges = _waterfall_projection(frame.frequencies_hz, frame.values_db)
+    values, edges = _waterfall_projection(frame.frequencies_hz, frame.values_db, grid_cache=grid_cache)
     stamp = SweepRowStamp(
         sequence=frame.sequence, revision=frame.revision if isinstance(frame, SweepProgressFrame) else 0,
         state=SweepRowState.PARTIAL if isinstance(frame, SweepProgressFrame) else SweepRowState(frame.state.value),

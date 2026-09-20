@@ -21,8 +21,8 @@ class LiveSnapshotPreparer:
 
     def __init__(self, allocation_budget: PresentationAllocationBudget | None = None) -> None:
         self.allocation_budget = allocation_budget
-        self._layers = AnalyzerLayerCache(allocation_budget)
         self._grid = None if allocation_budget is None else MeasurementGridCache(allocation_budget)
+        self._layers = AnalyzerLayerCache(allocation_budget, grid_cache=self._grid)
 
     def __call__(self, snapshot: LiveSnapshot) -> LiveViewState:
         if not isinstance(snapshot, LiveSnapshot):

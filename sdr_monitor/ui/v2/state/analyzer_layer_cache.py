@@ -8,6 +8,7 @@ from ..spectrum.persistence_contracts import PersistenceDensityFrame
 from ..waterfall.contracts import WaterfallLineFrame
 from .analyzer_layers import persistence_density_from_native, waterfall_line_from_spectrum
 from ..spectrum.allocation_budget import PresentationAllocationBudget
+from ..spectrum.grid_baseline import MeasurementGridCache
 from sdr_monitor.domain.live import LivePersistenceFrame
 
 
@@ -19,8 +20,10 @@ class AnalyzerLayerCache:
     to one converted density and one display row plus their source references.
     """
 
-    def __init__(self, allocation_budget: PresentationAllocationBudget | None = None) -> None:
+    def __init__(self, allocation_budget: PresentationAllocationBudget | None = None, *,
+                 grid_cache: MeasurementGridCache | None = None) -> None:
         self.allocation_budget = allocation_budget
+        self._grid = grid_cache
         self.clear()
 
     def clear(self) -> None:
@@ -50,9 +53,9 @@ class AnalyzerLayerCache:
             if self.allocation_budget is not None:
                 columns = min(2048, frame.values.size)
                 with self.allocation_budget.reserve(int(columns * 12 + 8), frame) as allocation:
-                    converted = waterfall_line_from_spectrum(frame)
+                    converted = waterfall_line_from_spectrum(frame, grid_cache=self._grid)
                     allocation.commit(converted)
             else:
-                converted = waterfall_line_from_spectrum(frame)
+                converted = waterfall_line_from_spectrum(frame, grid_cache=self._grid)
             self._waterfall_source, self._waterfall = frame, converted
         return self._waterfall

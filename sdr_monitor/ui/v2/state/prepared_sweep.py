@@ -46,13 +46,14 @@ class PreparedSweepSnapshot:
 
 def prepare_sweep_snapshot(snapshot: ContinuousSweepDisplaySnapshot,
                            bundle: AnalyzerFrameBundle | None, *,
-                           spectrum: PreparedSpectrumFrame | None = None) -> PreparedSweepSnapshot:
+                           spectrum: PreparedSpectrumFrame | None = None,
+                           grid_cache: MeasurementGridCache | None = None) -> PreparedSweepSnapshot:
     """Validate/reduce at most two rows off GUI; preserve old fail-closed UX."""
     if not isinstance(snapshot, ContinuousSweepDisplaySnapshot):
         raise TypeError("Sweep preparation requires a domain snapshot")
     spectrum = spectrum if spectrum is not None else None if bundle is None else PreparedSpectrumFrame(bundle)
     try:
-        rows = tuple(waterfall_line_from_sweep(frame)
+        rows = tuple(waterfall_line_from_sweep(frame, grid_cache=grid_cache)
                      for frame in (snapshot.line, snapshot.progress) if frame is not None)
     except (ValueError, TypeError) as error:
         # A malformed display grid clears Waterfall and reports its reason;
@@ -86,7 +87,7 @@ class SweepSnapshotPreparer:
                    for frame in (snapshot.line, snapshot.progress) if frame is not None)
         try:
             with self.allocation_budget.reserve(int(size)) as allocation:
-                prepared = prepare_sweep_snapshot(snapshot, bundle, spectrum=spectrum)
+                prepared = prepare_sweep_snapshot(snapshot, bundle, spectrum=spectrum, grid_cache=self._grid)
                 allocation.commit(*prepared.waterfall_rows)
                 return prepared
         except PresentationBudgetExceeded as error:
