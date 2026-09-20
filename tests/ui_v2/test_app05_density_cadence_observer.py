@@ -26,6 +26,7 @@ class DensityCadenceObserverTests(unittest.TestCase):
         profile = report["stage_profile"]
         self.assertEqual(profile["density_event_evictions"], 0)
         self.assertEqual(profile["density_timer_evictions"], 0)
+        self.assertEqual(profile["density_render_evictions"], 0)
         groups = defaultdict(list)
         for event in profile["density_events"]:
             identity = event["request"]
@@ -45,6 +46,13 @@ class DensityCadenceObserverTests(unittest.TestCase):
                 self.assertEqual([stamps[name] for name in names], sorted(stamps.values()))
                 complete.append(events)
         self.assertGreater(len(complete), 0)
+        self.assertGreater(len(profile["density_renders"]), 0)
+        for render in profile["density_renders"]:
+            self.assertLessEqual(render["begin_ns"], render["end_ns"])
+            matching = groups[json.dumps(render["request"])]
+            uploads = [event for event in matching if event["event"] == "uploaded"]
+            self.assertEqual(len(uploads), 1)
+            self.assertLessEqual(uploads[0]["ns"], render["begin_ns"])
         timers = profile["density_timer_events"]
         self.assertTrue(any(e["event"] == "flush" and e["pending"] for e in timers))
         self.assertTrue(any(e["event"] == "schedule_after" and e["timer_active"] for e in timers))

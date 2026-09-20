@@ -303,6 +303,7 @@ def main():
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
+    from pyqtgraph import ImageItem
     from sdr_monitor.ui.v2.state import analyzer_layer_cache, prepared_live, live_view_state
     records = StageRecords()
     service = ServiceCosts(capacity=8192)
@@ -332,6 +333,9 @@ def main():
     density_events: deque[dict[str, Any]] = deque(maxlen=4096)
     density_timer_events: deque[dict[str, Any]] = deque(maxlen=4096)
     density_timer_evictions = 0
+    density_images = OrderedDict()
+    density_renders: deque[dict[str, Any]] = deque(maxlen=4096)
+    density_render_evictions = 0
     density_event_lock = threading.Lock()
     density_event_evictions = 0
 
@@ -373,8 +377,32 @@ def main():
         def invoke(overlay, request, result, error):
             count = overlay.metrics.image_uploads
             returned = original(overlay, request, result, error)
-            density_event(request, "uploaded" if overlay.metrics.image_uploads > count else "not_uploaded")
+            uploaded = overlay.metrics.image_uploads > count
+            density_event(request, "uploaded" if uploaded else "not_uploaded")
+            if uploaded:
+                item = overlay.image_item
+                density_images[id(item)] = (weakref.ref(item),
+                    (id(request), transfer_identity(request), request.policy.revision, request.history_revision))
+                while len(density_images) > 4096:
+                    density_images.popitem(last=False)
             return returned
+        return invoke
+
+    def density_rendering(original):
+        def invoke(item, *args, **kwargs):
+            nonlocal density_render_evictions
+            binding = density_images.get(id(item))
+            if binding is None or binding[0]() is not item:
+                return original(item, *args, **kwargs)
+            # Actual deferred QImage preparation, not setImage acceptance.
+            # Binding is scalar; never retain the Qt item, density or request.
+            begin = monotonic_ns()
+            try:
+                return original(item, *args, **kwargs)
+            finally:
+                end = monotonic_ns()
+                density_render_evictions += int(len(density_renders) == density_renders.maxlen)
+                density_renders.append(dict(request=binding[1], begin_ns=begin, end_ns=end))
         return invoke
 
     def density_timer_state(overlay, event, when):
@@ -585,6 +613,7 @@ def main():
             service.wrap("density_transfer", original, transfer_identity))
         instrument(PersistenceOverlay, "_upload", density_upload_requested)
         instrument(PersistenceOverlay, "accept_worker_image", density_accepting)
+        instrument(ImageItem, "render", density_rendering)
         instrument(PersistenceOverlay, "_schedule_pending", density_scheduling)
         instrument(PersistenceOverlay, "flush_pending", density_flushing)
         instrument(projection, "prepare_persistence_image", density_transferring)
@@ -594,6 +623,8 @@ def main():
         density_cadence_scope="Bounded scalar events with exact weak producer binding/request/policy/history. Preserve repeated attempts; pair only unambiguous completed requests. ns uses monotonic clock throughout. No source payload retained.",
         density_events=list(density_events), density_event_evictions=density_event_evictions,
         density_timer_events=list(density_timer_events), density_timer_evictions=density_timer_evictions,
+        density_renders=list(density_renders), density_render_evictions=density_render_evictions,
+        density_render_scope="Actual deferred pyqtgraph QImage preparation after exact image upload, not GPU/DWM presentation. Weak item binding, scalar request only; repeated renders retained separately.",
         service_scope=ServiceCosts.__doc__, service_totals=service.totals,
         service_row_evictions=service.evictions,
         service_rows=list(service.rows),
@@ -653,7 +684,7 @@ def main():
     with output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
     print(json.dumps({name: value for name, value in report["stage_profile"].items()
-                      if name not in ("service_rows", "paired_slow_frames", "density_events", "density_timer_events")}))
+                      if name not in ("service_rows", "paired_slow_frames", "density_events", "density_timer_events", "density_renders")}))
 
 
 if __name__ == "__main__":
