@@ -136,6 +136,38 @@ class ViewportProjectionTests(unittest.TestCase):
         self.assertEqual(len(self.worker.jobs), 1)
         self.drain()
 
+    def test_coherent_commit_submits_all_layers_once_without_waiting_for_timer(self):
+        source = line(1, np.full(4096, -70, dtype=np.float32))
+        frame = DisplayFrame(source.frequencies_hz, source.values_db, source.unit)
+        self.scene.set_frame(frame, prepared=PreparedSpectrumFrame(frame))
+        self.scene.set_trace(TraceKind.AVERAGE, frame)
+        self.scene.sweep_coverage.accept(snapshot(source))
+        self.assertEqual(self.worker.jobs, [])
+        self.scene.commit_projection()
+        self.assertEqual(len(self.worker.jobs), 1)
+        request = self.port._active
+        self.assertEqual({kind for kind, _ in request.traces}, {TraceKind.CURRENT, TraceKind.AVERAGE})
+        self.assertIs(request.current, source)
+        self.assertFalse(self.scene._projection_timer.isActive())
+        self.scene.commit_projection()
+        self.assertEqual(len(self.worker.jobs), 1)
+        self.assertIsNone(self.port._pending)
+        self.drain()
+
+    def test_coherent_commit_respects_hidden_and_control_suspension(self):
+        self.scene.set_presentation_active(False)
+        self.admit()
+        self.scene.commit_projection()
+        self.assertEqual(self.worker.jobs, [])
+        self.port.set_suspended(True)
+        self.scene.set_presentation_active(True)
+        self.scene.commit_projection()
+        self.assertEqual(self.worker.jobs, [])
+        self.assertIsNotNone(self.port._pending)
+        self.port.set_suspended(False)
+        self.assertEqual(len(self.worker.jobs), 1)
+        self.drain()
+
     def test_newer_arrival_does_not_starve_paint_and_markers_follow_displayed_source(self):
         first = self.admit(1, -71)
         second = self.admit(2, -32)

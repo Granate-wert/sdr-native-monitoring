@@ -46,6 +46,43 @@ class PreparedLiveTests(unittest.TestCase):
         f.page.primary.click()
         f.wait(lambda: f.live.is_running() and not f.composition.view_model.state.busy)
 
+    def test_coherent_delivery_queues_projection_before_next_preparation(self):
+        from sdr_monitor.ui.v2.spectrum import projection
+        f = self.fixture
+        entered, release = threading.Event(), threading.Event()
+        original_prepare = f.presenter._snapshot_preparer
+        original_project = projection.project_spectrum
+        operations = []
+        first, second = measurement(f, 1), measurement(f, 2)
+
+        def prepare(snapshot):
+            operations.append(("prepare", getattr(snapshot.spectrum, "sequence", None)))
+            if snapshot.spectrum is first.spectrum:
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("test preparation barrier")
+            return original_prepare(snapshot)
+
+        def project(request, **kwargs):
+            source = request.traces[0][1].source_frame.spectrum
+            operations.append(("project", source.sequence))
+            return original_project(request, **kwargs)
+
+        with patch.object(f.presenter, "_snapshot_preparer", side_effect=prepare), \
+             patch.object(projection, "project_spectrum", side_effect=project):
+            try:
+                revision = f.presenter._control_revision
+                f.presenter._offer_preparation(first, revision)
+                f.wait(entered.is_set)
+                f.presenter._offer_preparation(second, revision)
+                release.set()
+                f.wait(lambda: f.page.visualization.spectrum_scene.displayed_frame is not None
+                       and f.page.visualization.spectrum_scene.displayed_frame.spectrum is second.spectrum
+                       and f.composition.spectrum_projector._future is None)
+            finally:
+                release.set()
+        self.assertLess(operations.index(("project", 1)), operations.index(("prepare", 2)))
+
     def test_actual_composition_prepares_once_off_gui_and_reuses_on_busy_labels(self):
         f = self.fixture
         gui = threading.get_ident()

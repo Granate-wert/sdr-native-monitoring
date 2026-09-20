@@ -216,6 +216,17 @@ class SpectrumScene(QWidget):
             self._projection_owner, self._projection_generation, viewport,
             tuple(self._trace_views.items()), state.current, state.previous, self._prepared_spectrum))
 
+    def commit_projection(self) -> None:
+        """Submit one coherent GUI delivery before the next preparation queues.
+
+        Frame/trace/coverage setters still coalesce within the delivery. This
+        only flushes an already requested projection; viewport-only changes
+        retain their existing timer and no numerical work moves onto the GUI.
+        """
+        if self._projection_timer.isActive():
+            self._projection_timer.stop()
+            self._offer_projection()
+
     def _projection_current(self, request: ProjectionRequest) -> bool:
         return (request.owner is self._projection_owner and self._presentation_active
                 and request.generation == self._projection_generation
