@@ -37,7 +37,8 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             result = subprocess.run([sys.executable, "-I", "-X", "faulthandler",
                 str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
                 "--output", str(output), "--seconds", "1", "--cycles", "2", "--bins", "4096",
-                "--page-seconds", ".3", "--viewport-seconds", ".2", "--memory-seconds", ".25"],
+                "--page-seconds", ".3", "--viewport-seconds", ".2", "--memory-seconds", ".25",
+                "--collect-after-context"],
                 cwd=ROOT, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
@@ -49,6 +50,11 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(memory["samples"][-1]["label"], "after-close")
         self.assertIn("workspace not supplied", memory["samples"][-1]["inventory"]["missing"])
         self.assertEqual(memory["after_context_return"]["allocation_budget"]["reserved_bytes"], 0)
+        # Buffer-release acceptance is a separate product gate, not an assumed
+        # property of this diagnostic observer. Report real surviving owners.
+        self.assertEqual(memory["diagnostic_after_collection"]["allocation_budget"]["reserved_bytes"], 0)
+        self.assertIn("scene", memory["diagnostic_after_collection"]["weak_owner_alive"])
+        self.assertGreaterEqual(memory["diagnostic_after_collection"]["collected"], 0)
         self.assertEqual(report["remaining_workers"], [])
         for canvas in ("spectrum", "waterfall", "both"):
             self.assertEqual(sum(p["counts"][canvas] for p in report["paint_return_phases"].values()),

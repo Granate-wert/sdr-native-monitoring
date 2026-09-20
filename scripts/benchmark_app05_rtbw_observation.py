@@ -25,6 +25,7 @@ import platform
 import subprocess
 import sys
 import threading
+import weakref
 from time import perf_counter
 from unittest.mock import patch
 
@@ -68,6 +69,8 @@ def main():
     parser.add_argument("--driver-stop-ms", type=float, default=0)
     parser.add_argument("--memory-seconds", type=float, default=0,
                         help="0 disables; 0.25..60 second scalar inventory/process samples (perturbs timing)")
+    parser.add_argument("--collect-after-context", action="store_true",
+                        help="Diagnostic GC only AFTER normal post-context sample; requires memory mode")
     args = parser.parse_args()
     if not sys.flags.isolated or not 1 <= args.seconds <= 1200 or not 1 <= args.cycles <= 100:
         parser.error("Python -I, 1..1200 seconds and 1..100 cycles required")
@@ -81,6 +84,8 @@ def main():
         parser.error("output must be new")
     if args.memory_seconds != 0 and not .25 <= args.memory_seconds <= 60:
         parser.error("memory-seconds must be zero or 0.25..60")
+    if args.collect_after_context and not args.memory_seconds:
+        parser.error("collect-after-context requires memory sampling")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -393,6 +398,7 @@ def main():
     if args.memory_seconds:
         sample_memory("after-close", workspace=False)
         report["memory"] = dict(interval_seconds=args.memory_seconds, capacity=2048,
+            collect_after_context=args.collect_after_context,
             total_samples=memory_total, samples=list(memory_rows),
             qt_census_before=census_before, qt_census_before_close=census_before_close,
             qt_census_after_close=qt_wrapper_counts(),
@@ -411,11 +417,14 @@ def main():
         remaining_workers=workers)
     # The ledger holds weak roots only. Returning it lets the CLI sample after
     # this function's fixture/scene/producer closure references leave scope.
-    return report, args.output, f.composition.allocation_budget
+    owners = {name: weakref.ref(value) for name, value in (
+        ("fixture", f), ("composition", f.composition), ("presenter", f.presenter),
+        ("scene", scene), ("waterfall", waterfall))}
+    return report, args.output, f.composition.allocation_budget, owners
 
 
 if __name__ == "__main__":
-    result, output, budget = main()
+    result, output, budget, owners = main()
     if "memory" in result:
         from scripts.benchmark_app04_poll_overload import run_qt_until
         from tests.ui_v2.run_app05_memory_inventory import process_memory, qt_wrapper_counts
@@ -423,7 +432,17 @@ if __name__ == "__main__":
         run_qt_until(lambda: perf_counter() >= until, 2)
         result["memory"]["after_context_return"] = dict(
             process=process_memory(), allocation_budget=asdict(budget.snapshot()),
+            weak_owner_alive={name: reference() is not None for name, reference in owners.items()},
             qt_census=qt_wrapper_counts(), scope="After benchmark locals return and 500ms real Qt loop; normal GC, no forced collection or product state clearing")
+        if result["memory"]["collect_after_context"]:
+            import gc
+            collected = gc.collect()
+            until = perf_counter() + .5
+            run_qt_until(lambda: perf_counter() >= until, 2)
+            result["memory"]["diagnostic_after_collection"] = dict(collected=collected,
+                process=process_memory(), allocation_budget=asdict(budget.snapshot()),
+                weak_owner_alive={name: reference() is not None for name, reference in owners.items()},
+                qt_census=qt_wrapper_counts(), scope="Explicit diagnostic GC AFTER unmodified normal samples; not product behavior, release deadline or leak fix")
     with output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
     print(json.dumps(result))
