@@ -132,8 +132,11 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                 finite = chunk[np.isfinite(chunk)]
                 if finite.size:
                     maximum = max(maximum, float(np.max(finite)))
+                # Drop this allocation before evaluating the next selection;
+                # assignment would otherwise overlap old/new finite buffers.
+                del finite
         # Do not keep the last reduction scratch alive during image mapping.
-        del finite, chunk
+        del chunk
     image = np.empty(view.density.shape, dtype=np.float32)
     history = _compatible_history(request)
     scratch = (None if history is None else
