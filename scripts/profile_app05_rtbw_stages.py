@@ -52,6 +52,7 @@ class StageRecords:
         self.rows = deque(maxlen=capacity)
         self.details = deque(maxlen=capacity)
         self.missing = self.reordered = 0
+        self.missing_stages = Counter()
         self.projection_events = Counter()
         self.last_offer = None
         self.last_visibility = None
@@ -145,6 +146,7 @@ class StageRecords:
                      "delivered", "projection_offer", "projection_begin", "projection_end", "applied")
             if not all(name in row for name in names):
                 self.missing += 1
+                self.missing_stages.update(name for name in names if name not in row)
                 return
             stamps = [row[name] for name in names] + [when]
             if any(b < a for a, b in zip(stamps, stamps[1:])):
@@ -286,7 +288,7 @@ def main():
                                       ("dispatch_to_begin", "projection_dispatch", "projection_begin"))
             if (values := [(entry[stop] - entry[start]) * 1000 for entry in records.requests.values()
                            if start in entry and stop in entry and entry[stop] >= entry[start]])},
-        missing=records.missing, reordered=records.reordered,
+        missing=records.missing, missing_stages=dict(records.missing_stages), reordered=records.reordered,
         paired_slow_frames=sorted(records.details, key=lambda row: row["durations"]["total"], reverse=True)[:40],
         navigation_scope="Latest visibility and viewport at paint; source/delivery stages copied per exact request at offer; bounded scalar witnesses only",
         cpu_scope="Windows thread CPU clock is quantized (observed15.625ms); aggregated retained-call totals only, NOT per-call CPU latency percentiles",
