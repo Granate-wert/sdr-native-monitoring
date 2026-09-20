@@ -57,7 +57,7 @@ class OptionalAckHandoffTests(unittest.TestCase):
                 self.assertTrue(f.presenter._projection_in_flight)
                 if admitted:
                     f.presenter._offer_preparation(second, f.presenter._control_revision)
-                scheduler.offer(newest)
+                f.presenter.offer_snapshot_for_render(newest)
                 dispatch_count = len(dispatched)
                 self.assertIsNone(f.presenter._preparation_future)
                 release.set()
@@ -77,7 +77,7 @@ class OptionalAckHandoffTests(unittest.TestCase):
                 self.assertEqual(scheduler.metrics.emitted, emissions)
                 if admitted:
                     self.assertEqual(len(dispatched), dispatch_count + 1)
-                    self.assertIs(dispatched[-1], newest)
+                    self.assertIs(dispatched[-1].spectrum, newest.spectrum)
                     self.assertFalse(scheduler.pending)
                 else:
                     self.assertEqual(len(dispatched), dispatch_count)
@@ -85,7 +85,7 @@ class OptionalAckHandoffTests(unittest.TestCase):
                     self.assertIsNone(f.presenter._preparation_future)
                     scheduler._flush()  # ONLY this explicit cadence boundary admits it
                     self.assertEqual(len(dispatched), dispatch_count + 1)
-                    self.assertIs(dispatched[-1], newest)
+                    self.assertIs(dispatched[-1].spectrum, newest.spectrum)
                 f.wait(lambda: scene.displayed_frame.spectrum is newest.spectrum
                        and port._future is None and f.presenter._preparation_future is None)
                 self.assertEqual(scene.persistence_metrics.image_uploads, 1)
