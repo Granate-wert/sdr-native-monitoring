@@ -292,9 +292,9 @@ def main():
     from sdr_monitor.ui.display_scheduler import DisplayScheduler
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
-    from sdr_monitor.ui.v2.state import analyzer_layer_cache, prepared_live
+    from sdr_monitor.ui.v2.state import analyzer_layer_cache, prepared_live, live_view_state
     records = StageRecords()
-    service = ServiceCosts()
+    service = ServiceCosts(capacity=8192)
     density_bindings = OrderedDict()
 
     def density_key(frame):
@@ -477,6 +477,12 @@ def main():
         # actual numerical misses rather than inferring work from offers.
         instrument(LivePresenter, "_prepare", lambda original: service.wrap("prepare", original,
             lambda owner, snapshot, *a, **kw: key(snapshot)))
+        instrument(LivePresenter, "_admit_snapshot", lambda original: service.wrap("source_admit", original,
+            lambda owner, snapshot: key(snapshot)))
+        instrument(prepared_live, "build_live_view_state", lambda original: service.wrap("build_state", original,
+            lambda snapshot, **kw: key(snapshot)))
+        instrument(live_view_state, "bundle_from_live", lambda original: service.wrap("domain_bundle", original,
+            lambda snapshot: key(snapshot)))
         instrument(analyzer_layer_cache.AnalyzerLayerCache, "persistence", lambda original:
             service.wrap("density_cache", original, lambda owner, frame: (
                 density_key(frame), frame is owner._density_source)))
@@ -550,7 +556,8 @@ def main():
             for name in rows[0] if name != "token"} if rows else {})
     with output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
-    print(json.dumps(report["stage_profile"]))
+    print(json.dumps({name: value for name, value in report["stage_profile"].items()
+                      if name not in ("service_rows", "paired_slow_frames")}))
 
 
 if __name__ == "__main__":
