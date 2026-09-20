@@ -13,6 +13,7 @@ from scripts.benchmark_app04_poll_overload import run_qt_until
 from sdr_monitor.ui.v2.spectrum import persistence_projection as density_worker
 from sdr_monitor.ui.v2.spectrum import projection
 from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
+from sdr_monitor.ui.v2.spectrum.contracts import SpectrumFrameView, TraceKind
 from sdr_monitor.ui.v2.spectrum.persistence_contracts import (
     DensityValueMode, PersistenceRenderMode, adapt_persistence_density,
 )
@@ -187,19 +188,25 @@ class PersistenceWorkerTests(unittest.TestCase):
                 worker = ManualWorker()
                 density = request()
                 budget = PresentationAllocationBudget(1 if outcome == "denied" else
-                                                      600 if outcome == "density-denied" else 1000000)
+                                                      3000 if outcome == "density-denied" else 1000000)
                 port = projection.SpectrumProjector(worker.submit, allocation_budget=budget)
                 delivered = []
                 port.ready.connect(delivered.append)
                 try:
                     offered = spectrum_request(density)
+                    if outcome == "density-denied":
+                        frequencies, values = np.arange(16, dtype=np.float64), np.full(16, -70, np.float32)
+                        frequencies.setflags(write=False)
+                        values.setflags(write=False)
+                        trace = SpectrumFrameView(object(), frequencies, values, "dBm")
+                        offered = replace(offered, viewport=(0, 16, 100), traces=((TraceKind.CURRENT, trace),))
                     port.offer(offered)
                     if outcome == "denied":
                         self.assertEqual(worker.jobs, [])
                     else:
                         # No trace outputs here; density reserve belongs to
                         # worker execution, not to an unbounded GUI image job.
-                        self.assertEqual(budget.snapshot().reserved_bytes, 0)
+                        self.assertEqual(budget.snapshot().reserved_bytes, 2304 if outcome == "density-denied" else 0)
                         if outcome == "cancel":
                             port.cancel_pending(offered.owner)
                         if outcome == "dispose":
@@ -212,6 +219,8 @@ class PersistenceWorkerTests(unittest.TestCase):
                         self.assertIsNone(delivered[0].persistence)
                         self.assertIn("budget exceeded", delivered[0].persistence_error)
                         self.assertIs(delivered[0].request, offered)
+                        self.assertEqual(len(delivered[0].traces), 1)
+                        np.testing.assert_array_equal(delivered[0].traces[0][1].values, -70)
                     elif delivered:
                         self.assertTrue(delivered[0].persistence.matches(density))
                 finally:
