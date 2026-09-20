@@ -330,6 +330,8 @@ def main():
         return (pair[1] if pair is not None and pair[0]() is frame.density else None, request.policy.mode.value)
 
     density_events: deque[dict[str, Any]] = deque(maxlen=4096)
+    density_timer_events: deque[dict[str, Any]] = deque(maxlen=4096)
+    density_timer_evictions = 0
     density_event_lock = threading.Lock()
     density_event_evictions = 0
 
@@ -373,6 +375,33 @@ def main():
             returned = original(overlay, request, result, error)
             density_event(request, "uploaded" if overlay.metrics.image_uploads > count else "not_uploaded")
             return returned
+        return invoke
+
+    def density_timer_state(overlay, event, when):
+        nonlocal density_timer_evictions
+        view = overlay._pending_view
+        binding = None if view is None else density_bindings.get(id(view.density))
+        source = (binding[1] if binding is not None and binding[0]() is view.density else None)
+        density_timer_evictions += int(len(density_timer_events) == density_timer_events.maxlen)
+        density_timer_events.append(dict(event=event, ns=when,
+            due_ns=None if overlay._last_upload_ns is None else overlay._last_upload_ns + overlay._interval_ns,
+            pending_source=source, pending=view is not None,
+            worker_request=None if overlay.worker_request is None else id(overlay.worker_request),
+            timer_active=overlay._timer.isActive(), timer_remaining_ms=overlay._timer.remainingTime(),
+            timer_interval_ms=overlay._timer.interval(), timer_type=overlay._timer.timerType().name))
+
+    def density_scheduling(original):
+        def invoke(overlay, now_ns):
+            density_timer_state(overlay, "schedule_before", now_ns)
+            result = original(overlay, now_ns)
+            density_timer_state(overlay, "schedule_after", monotonic_ns())
+            return result
+        return invoke
+
+    def density_flushing(original):
+        def invoke(overlay, now_ns=None):
+            density_timer_state(overlay, "flush", monotonic_ns() if now_ns is None else now_ns)
+            return original(overlay, now_ns)
         return invoke
     cpu: dict[str, deque[float]] = {name: deque(maxlen=4096) for name in ("prepare", "project", "accept")}
     # GUI-only nesting marker, scalar rows only. One final acknowledgement may
@@ -556,12 +585,15 @@ def main():
             service.wrap("density_transfer", original, transfer_identity))
         instrument(PersistenceOverlay, "_upload", density_upload_requested)
         instrument(PersistenceOverlay, "accept_worker_image", density_accepting)
+        instrument(PersistenceOverlay, "_schedule_pending", density_scheduling)
+        instrument(PersistenceOverlay, "flush_pending", density_flushing)
         instrument(projection, "prepare_persistence_image", density_transferring)
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
         density_cadence_scope="Bounded scalar events with exact weak producer binding/request/policy/history. Preserve repeated attempts; pair only unambiguous completed requests. ns uses monotonic clock throughout. No source payload retained.",
         density_events=list(density_events), density_event_evictions=density_event_evictions,
+        density_timer_events=list(density_timer_events), density_timer_evictions=density_timer_evictions,
         service_scope=ServiceCosts.__doc__, service_totals=service.totals,
         service_row_evictions=service.evictions,
         service_rows=list(service.rows),
@@ -621,7 +653,7 @@ def main():
     with output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
     print(json.dumps({name: value for name, value in report["stage_profile"].items()
-                      if name not in ("service_rows", "paired_slow_frames", "density_events")}))
+                      if name not in ("service_rows", "paired_slow_frames", "density_events", "density_timer_events")}))
 
 
 if __name__ == "__main__":
