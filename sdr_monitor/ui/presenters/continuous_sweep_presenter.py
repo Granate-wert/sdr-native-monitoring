@@ -165,8 +165,8 @@ class ContinuousSweepPresenter(QObject):
             return
         self._timer.stop()
         self._projection_poll_pending = False
-        self._stop_requested.set()
         future = self._stop_executor.submit(self._stop_and_snapshot)
+        self._stop_requested.set()  # Failed submission must not cancel an otherwise valid preview.
         self._stop_future = future
         self.stopping_changed.emit(True)
         future.add_done_callback(self._stop_completed.emit)

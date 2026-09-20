@@ -78,7 +78,8 @@ class SweepSnapshotPreparer:
                             bundle: AnalyzerFrameBundle | None, *,
                             cancelled: CancelCheck = None) -> PreparedSweepSnapshot:
         """Cooperative optional preview work; no terminal or device cancellation."""
-        if snapshot.line is not None or snapshot.presentation_omission is not None or snapshot.metrics.has_error:
+        if (snapshot.line is not None or snapshot.progress is None
+                or snapshot.presentation_omission is not None or snapshot.metrics.has_error):
             cancelled = None
         check_cancelled(cancelled)
         if snapshot.presentation_omission is not None:

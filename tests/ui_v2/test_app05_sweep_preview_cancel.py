@@ -81,6 +81,18 @@ class SweepPreviewCancelTests(unittest.TestCase):
             finally:
                 presenter.shutdown()
 
+    def test_failed_stop_submission_does_not_cancel_preview_preparation(self):
+        service = SimpleNamespace(stop=lambda: None, close=lambda: None)
+        presenter = ContinuousSweepPresenter(service)
+        try:
+            presenter._timer.start(100000)
+            with patch.object(presenter._stop_executor, "submit", side_effect=RuntimeError("submit failed")):
+                with self.assertRaisesRegex(RuntimeError, "submit failed"):
+                    presenter.stop()
+            self.assertFalse(presenter._stop_requested.is_set())
+        finally:
+            presenter.shutdown()
+
     def test_actual_v2_stop_during_preview_preparation_keeps_last_frame_then_final_gap(self):
         f = product.AnalyzerWorkspaceProductTests("runTest")
         f.app = self.app
