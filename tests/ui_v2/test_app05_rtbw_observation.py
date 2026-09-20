@@ -59,6 +59,7 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             report = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(report["product_imports_outside_checkout"], [])
         self.assertEqual(report["remaining_workers"], [])
+        self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
         self.assertEqual(report["event_pump"], "QEventLoop.exec")
         self.assertEqual(report["witness_misses"], 0)
         self.assertEqual(report["changed_during_paint"], 0)

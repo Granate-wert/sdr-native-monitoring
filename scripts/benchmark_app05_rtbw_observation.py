@@ -320,6 +320,9 @@ def main():
                 producer.join(timeout=3)
             f.tearDown()
             f.doCleanups()
+    report["post_close_allocation_budget"] = asdict(f.composition.allocation_budget.snapshot())
+    if report["post_close_allocation_budget"]["reserved_bytes"]:
+        raise AssertionError("presentation reservation survived owner cleanup")
     outside = [n for n, m in tuple(sys.modules.items()) if n.startswith(("sdr_monitor", "tests", "scripts"))
                and getattr(m, "__file__", None) and not Path(m.__file__).resolve().is_relative_to(root)]
     workers = [t.name for t in threading.enumerate() if any(s in t.name.lower() for s in ("sdr", "synthetic"))]
