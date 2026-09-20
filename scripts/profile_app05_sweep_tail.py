@@ -51,6 +51,9 @@ def main():
     gate_poll = "--diagnostic-gate-poll" in sys.argv
     if gate_poll:
         sys.argv.remove("--diagnostic-gate-poll")
+    resume_commit = "--diagnostic-resume-commit" in sys.argv
+    if resume_commit:
+        sys.argv.remove("--diagnostic-resume-commit")
     root = Path(sys.argv[sys.argv.index("--checkout") + 1]).resolve(strict=True)
     output = Path(sys.argv[sys.argv.index("--output") + 1])
     sys.path.insert(0, str(root))
@@ -70,6 +73,18 @@ def main():
     polls = deque(maxlen=4096)
     projecting = Event()
     gated_ticks = 0
+    activation_ms = deque(maxlen=4096)
+
+    def activation(original):
+        def invoke(scene, active):
+            records.visibility(active)
+            began = perf_counter()
+            result = original(scene, active)
+            if active and resume_commit:
+                scene.commit_projection()
+            activation_ms.append((perf_counter() - began) * 1000)
+            return result
+        return invoke
 
     def gate_projection(original):
         def invoke(*args, **kwargs):
@@ -167,8 +182,7 @@ def main():
             before=lambda request, **kw: records.request(request, "projection_begin"),
             after=lambda value, request, **kw: records.request(request, "projection_end")))
         hook(SpectrumScene, "_accept_projection", wrap(after=accepted))
-        hook(SpectrumScene, "set_presentation_active", wrap(
-            before=lambda scene, active: records.visibility(active)))
+        hook(SpectrumScene, "set_presentation_active", activation)
         if gate_poll:
             # Diagnostic scheduling experiment only; not a product feature.
             hook(projection, "project_spectrum", gate_projection)
@@ -194,6 +208,9 @@ def main():
         missing_stages=dict(records.missing_stages),
         navigation_scope="Visibility at first paint, resume first250ms after show, not causal proof; exact accepted request carries copied preparation/delivery stamps",
         diagnostic_gate_poll=gate_poll, gated_ticks=gated_ticks,
+        diagnostic_resume_commit=resume_commit,
+        activation_ms=dict(zip(("p50", "p95", "max"), map(float,
+            (*np.percentile(activation_ms, [50, 95]), max(activation_ms))))) if activation_ms else None,
         overlap_scope="Inclusive overlap with existing Sweep poll+prepare worker; not an additive stage or causal proof",
         projection_poll_overlap={group: dict(count=len(values),
             overlapping=sum(overlap.get(row["identity"], 0.) > 0 for row in values),
