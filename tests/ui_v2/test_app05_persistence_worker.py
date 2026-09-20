@@ -122,6 +122,31 @@ class PersistenceWorkerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 PersistenceImagePolicy(revision, PersistenceRenderMode.DIRECT, False)
 
+    def test_count_reduction_drops_previous_finite_selection_before_next_chunk(self):
+        selections = []
+
+        class TrackedDensity(np.ndarray):
+            def __getitem__(self, index):
+                selected = isinstance(index, np.ndarray) and index.dtype == np.bool_
+                if selected:
+                    # Instrument array allocation lifetime, not timing/RSS.
+                    self_test.assertTrue(all(ref() is None for ref in selections),
+                                         "overlapping full finite-selection chunks")
+                result = super().__getitem__(index)
+                if selected:
+                    selections.append(weakref.ref(result))
+                return result
+
+        self_test = self
+        original = view(np.ones((3, 65539), np.float64), DensityValueMode.COUNT)
+        tracked = original.density.view(TrackedDensity)
+        current = PersistenceImageRequest(replace(original, density=tracked),
+                                         PersistenceImagePolicy(0, PersistenceRenderMode.DIRECT, False))
+        result = prepare_persistence_image(current)
+        self.assertEqual(len(selections), 6)
+        self.assertTrue(all(ref() is None for ref in selections))
+        np.testing.assert_array_equal(result.image, 1)
+
     def test_cancel_at_chunk_boundary_never_mutates_visual_history(self):
         policy = PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False)
         history = prepare_persistence_image(request(np.full((3, 65539), .25, np.float32), policy=policy)).as_history(1)
