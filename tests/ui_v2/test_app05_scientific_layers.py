@@ -196,7 +196,12 @@ class ScientificActualCompositionTests(unittest.TestCase):
         for row in report["cases"]:
             self.assertFalse(row["candidate_accepted"])
             layers = row["scientific_layers"]
-            self.assertIn("coverage", layers["omitted"])
+            self.assertNotIn("coverage", layers["omitted"])
+            self.assertIn("markers", layers["omitted"])
+            if row["label"].startswith("sweep"):
+                coverage = next(layer for layer in layers["layers"] if layer["name"] == "coverage")
+                self.assertGreater(len(coverage["coverage_rects"]), 0)
+                self.assertLess(coverage["z"], next(layer["z"] for layer in layers["layers"] if layer["name"] == "current"))
             self.assertLess(layers["retained_bytes"], layers["limit_bytes"])
             self.assertIn("persistence", [layer["name"] for layer in layers["layers"]])
             self.assertTrue(any(layer["name"].startswith("waterfall-") for layer in layers["layers"]))

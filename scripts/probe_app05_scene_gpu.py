@@ -99,6 +99,11 @@ def main():
                 visible_tiles = [item for item in waterfall.image_items if item.isVisible() and item.image is not None]
                 for number, item in enumerate(visible_tiles):
                     arrays[f"waterfall_{number}"] = item.image
+                for kind, item in list(scene._curves.items()) + [("previous-sweep", scene.sweep_coverage.history)]:
+                    if item.isVisible() and item.curve.isVisible() and item.curve.xData is not None:
+                        key = getattr(kind, "value", kind)
+                        arrays[f"curve_{key}_x"] = item.curve.xData
+                        arrays[f"curve_{key}_y"] = item.curve.yData
                 hashes = {name: hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
                           for name, value in arrays.items() if value is not None}
                 return dict(hashes=hashes, current_finite=int(np.count_nonzero(np.isfinite(arrays["spectrum"]))),
@@ -107,6 +112,7 @@ def main():
                     persistence_z=density.zValue(), current_z=scene._curves[TraceKind.CURRENT].zValue(),
                     waterfall_visible_tiles=len(visible_tiles), waterfall_rows=waterfall.history_rows,
                     markers=len(scene.markers), sweep_coverage_runs=len(scene.sweep_coverage.strip.runs),
+                    coverage_runs_sha256=hashlib.sha256(repr(scene.sweep_coverage.strip.runs).encode()).hexdigest(),
                     publication_kind=f.page._last_bundle.publication_kind.value,
                     publication_identity=dict(source=str(getattr(publication, "source_id", "")),
                         sequence=int(getattr(publication, "sequence", 0)),

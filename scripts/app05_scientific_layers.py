@@ -9,7 +9,15 @@ from math import isfinite
 from typing import Any
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QImage, QPainter, QPainterPath, QPen, QTransform
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QTransform
+
+
+@dataclass(frozen=True)
+class CoverageRect:
+    rect: tuple[float, float, float, float]
+    rgba: tuple[int, int, int, int]
+    style: int
+    state: int
 
 
 @dataclass(frozen=True)
@@ -24,6 +32,7 @@ class ScientificLayer:
     local_rect: tuple[float, float, float, float] | None = None
     path: Any = None
     pen: Any = None
+    coverage: tuple[CoverageRect, ...] = ()
 
     def matrix(self):
         return QTransform(*self.transform)
@@ -42,7 +51,7 @@ class ScientificLayers:
     layers: tuple[ScientificLayer, ...]
     retained_bytes: int
     allocation_limit: int
-    omitted: tuple[str, ...] = ("chrome", "grid", "coverage", "markers", "labels", "band masks")
+    omitted: tuple[str, ...] = ("chrome", "grid", "markers", "labels", "band masks")
 
 
 def _mapping(item, graphics, target):
@@ -122,6 +131,33 @@ def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024):
         retained += required
         layers.append(ScientificLayer(name, 0, item.zValue(), clip, matrix, curve.effectiveOpacity(),
             path=QPainterPath(path), pen=QPen(curve.opts["pen"])))
+    strip = getattr(scene.sweep_coverage, "strip", None)
+    if strip is not None and strip.isVisible() and strip.runs:
+        from sdr_monitor.ui.v2.design import ThemeId, tokens_for_theme
+        from sdr_monitor.ui.v2.spectrum.sweep_coverage import CURRENT, MISSING, PREVIOUS
+        colors = tokens_for_theme(strip.theme).colors
+        rects = []
+        if len(strip.runs) > 2048 or retained + len(strip.runs) * 2 * 128 > limit_bytes:
+            raise MemoryError("coverage descriptor budget exceeded")
+        for left, right, state in strip.runs:
+            color = QColor(colors.success if state == CURRENT else
+                           colors.secondary_text if state == PREVIOUS else colors.warning)
+            style = (Qt.BrushStyle.SolidPattern if state == CURRENT else
+                     Qt.BrushStyle.HorPattern if state == PREVIOUS else
+                     Qt.BrushStyle.BDiagPattern if state == MISSING else Qt.BrushStyle.DiagCrossPattern)
+            r = strip.rect
+            rects.append(CoverageRect((left, r.bottom()-r.height()*.085, right-left, r.height()*.035),
+                                     (color.red(), color.green(), color.blue(), color.alpha()), style.value, state))
+            if state & MISSING:
+                color.setAlpha(45 if strip.theme is not ThemeId.HIGH_CONTRAST else 100)
+                rects.append(CoverageRect((left, r.top(), right-left, r.height()*.90),
+                                         (color.red(), color.green(), color.blue(), color.alpha()), Qt.BrushStyle.BDiagPattern.value, state))
+        matrix, clip = _mapping(strip, *panels[0])
+        local_clip = QTransform(*matrix).mapRect(strip.rect).intersected(QRectF(*clip))
+        clip = local_clip.x(), local_clip.y(), local_clip.width(), local_clip.height()
+        layers.append(ScientificLayer("coverage", 0, strip.zValue(), clip, matrix, strip.effectiveOpacity(),
+                                      coverage=tuple(rects)))
+        retained += len(rects) * 128
     return ScientificLayers(tuple(sorted(layers, key=lambda layer: (layer.panel, layer.z))), retained, limit_bytes)
 
 
@@ -132,7 +168,7 @@ def paint_layers(device, bundle, *, images=True, curves=True):
         raise RuntimeError("scientific painter did not begin")
     try:
         for layer in bundle.layers:
-            if (layer.image is not None and not images) or (layer.path is not None and not curves):
+            if (layer.image is not None and not images) or (layer.image is None and not curves):
                 continue
             painter.save()
             try:
@@ -141,6 +177,11 @@ def paint_layers(device, bundle, *, images=True, curves=True):
                 painter.setTransform(layer.matrix())
                 if layer.image is not None:
                     painter.drawImage(QRectF(*layer.local_rect), layer.image)
+                elif layer.coverage:
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    for rect in layer.coverage:
+                        painter.setBrush(QBrush(QColor(*rect.rgba), Qt.BrushStyle(rect.style)))
+                        painter.drawRect(QRectF(*rect.rect))
                 else:
                     painter.setPen(layer.pen)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -159,7 +200,11 @@ def layer_metadata(bundle):
             image_size=[layer.image.width(), layer.image.height()] if layer.image is not None else None,
             image_sha256=hashlib.sha256(layer.image.constBits()).hexdigest() if layer.image is not None else None,
             target_rect=layer.target_rect() if layer.image is not None else None,
-            path_elements=layer.path.elementCount() if layer.path is not None else 0)
+            path_elements=layer.path.elementCount() if layer.path is not None else 0,
+            coverage_rects=[dict(rect=r.rect, rgba=r.rgba, style=r.style, state=r.state) for r in layer.coverage],
+            pen=dict(width=layer.pen.widthF(), cosmetic=layer.pen.isCosmetic(),
+                     cap=layer.pen.capStyle().value, join=layer.pen.joinStyle().value,
+                     dash=list(layer.pen.dashPattern())) if layer.pen is not None else None)
         for layer in bundle.layers])
 
 

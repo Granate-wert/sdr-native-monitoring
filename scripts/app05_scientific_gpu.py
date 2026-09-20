@@ -1,4 +1,4 @@
-"""Native texture shader for detached scientific images; Qt explicit curve paths.
+"""Native texture shader plus stencil curves/coverage for detached scientific layers.
 
 Experimental, per-capture bounded resources, never wired into product. Not an
 incremental upload implementation or a throughput benchmark. No GL wide lines.
@@ -39,7 +39,12 @@ def image_scissor(layer, extent):
 
 def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True):
     from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram, QOpenGLTexture, QOpenGLFunctions_4_0_Core
-    from scripts.app05_scientific_layers import paint_layers
+    from scripts.app05_vector_gpu import draw_vectors_gpu
+    if curves:
+        for layer in bundle.layers:
+            if layer.image is not None and any(other.image is None and other.panel == layer.panel and other.z <= layer.z
+                                               for other in bundle.layers):
+                raise ValueError("prototype requires images below vector layers within each panel")
     largest_image = max((layer.image.sizeInBytes() for layer in bundle.layers
                          if layer.image is not None), default=0)
     if extent.nominal_target_bytes + bundle.retained_bytes + largest_image * 2 + 64 > extent.target_budget_bytes:
@@ -124,13 +129,12 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True):
         buffer.release()
         program.release()
         functions.glDisable(0x0C11)
-        if curves:
-            paint_layers(device, bundle, images=False)
+        vectors = draw_vectors_gpu(functions, extent, bundle) if curves else None
         error = functions.glGetError()
         if error:
             raise RuntimeError(f"scientific GL error {error}")
         return dict(texture_uploads=uploads, maximum_texture_bytes=max_texture_bytes,
-                    vertex_buffer_bytes=32, live_textures_after=0, all_layers=False)
+                    vertex_buffer_bytes=32, live_textures_after=0, all_layers=False, vectors=vectors)
     finally:
         if texture is not None:
             texture.destroy()
