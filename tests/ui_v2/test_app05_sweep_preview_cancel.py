@@ -106,8 +106,12 @@ class SweepPreviewCancelTests(unittest.TestCase):
         f.page.primary.click()
         f.wait(lambda: scene.displayed_frame is not None and not p.is_starting)
         p._timer.setInterval(100000)
-        f.wait(lambda: p._poll_future is None and f.composition.spectrum_projector._future is None)
-        old_frame = scene.displayed_frame
+        projector = f.composition.spectrum_projector
+        # A free executor is not a drained GUI: a zero-timer offer can still
+        # replace the displayed bundle before the next poll enters its barrier.
+        f.wait(lambda: p._poll_future is None and not p._projection_poll_pending
+               and projector._future is None and projector._pending is None
+               and not scene._projection_timer.isActive())
         entered, release = threading.Event(), threading.Event()
         spectrum_type = prepared_sweep.PreparedSpectrumFrame
         original_poll = p._service.poll_latest
@@ -142,6 +146,12 @@ class SweepPreviewCancelTests(unittest.TestCase):
                  patch.object(prepared_sweep, "PreparedSpectrumFrame", side_effect=spectrum):
                 p._poll()
                 run_qt_until(entered.is_set, 1)
+                self.assertTrue(entered.is_set())
+                self.assertEqual(snapshots, [], "held preview must not be delivered")
+                # The contract starts at Stop intent, not before pumping Qt
+                # to enter the worker barrier. Keep exact object identity.
+                old_frame = scene.displayed_frame
+                self.assertIsNotNone(old_frame)
                 f.page.primary.click()
                 self.assertTrue(p.is_stopping)
                 self.assertIs(scene.displayed_frame, old_frame)
