@@ -6,6 +6,7 @@ or reordered stages are reported, not fabricated or filled from another frame.
 Use steady profile without viewport/page churn for queue attribution.
 """
 from collections import Counter, OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import hashlib
 import json
@@ -149,13 +150,12 @@ def main():
             with records.lock:
                 records.projection_events["new_source_while_previous_queued"] += 1
 
-    def preparation_dispatching(presenter):
-        pending = presenter._pending_preparation
-        if presenter._pending_commands or presenter._preparation_future is not None or pending is None:
-            return
-        snapshot, revision, render = pending
-        if not (render and presenter._projection_in_flight) and revision == presenter._control_revision:
-            records.mark(key(snapshot), "prepare_dispatch")
+    def preparation_submitted(executor, operation, *args, **kwargs):
+        # Observe the actual argument after any latest-slot replacement, not
+        # the old pending candidate at entry to _dispatch_preparation.
+        if (isinstance(getattr(operation, "__self__", None), LivePresenter)
+                and getattr(operation, "__name__", None) == "_prepare" and args):
+            records.mark(key(args[0]), "prepare_dispatch")
 
     def projection_callback(port, future):
         if future is port._future and port._active is not None:
@@ -166,7 +166,6 @@ def main():
             # Fresh publication reuses an already granted cadence slot, not
             # a new timer tick. Record its actual admission/dispatch boundary.
             records.mark(key(snapshot), "coalesced")
-            records.mark(key(snapshot), "prepare_dispatch")
 
     with ExitStack() as stack:
         def instrument(owner, name, wrapper):
@@ -175,7 +174,7 @@ def main():
         instrument(PaintAgeTracker, "painted", first_paint)
         instrument(LivePresenter, "offer_snapshot_for_render", wrap(before=lambda _, snapshot: records.mark(key(snapshot), "offer")))
         instrument(LivePresenter, "_emit_render", wrap(before=lambda _, snapshot: records.mark(key(snapshot), "coalesced")))
-        instrument(LivePresenter, "_dispatch_preparation", wrap(before=preparation_dispatching))
+        instrument(ThreadPoolExecutor, "submit", wrap(before=preparation_submitted))
         if hasattr(DisplayScheduler, "take_pending_replacement"):
             instrument(DisplayScheduler, "take_pending_replacement", wrap(after=replacement_taken))
         instrument(LivePresenter, "_prepare", wrap(
@@ -193,7 +192,7 @@ def main():
         report, output, _, _ = observer.main()
     rows = [row for row in records.rows if row["token"] > 100]
     report["stage_profile"] = dict(scope=__doc__, retained=len(rows), capacity=records.capacity,
-        profiler_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        profiler_sha256=hashlib.sha256(Path(__file__).read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
         queue_attribution_scope="Exact scalar identity with both endpoints, including unpainted accepted frames; first 100 tokens excluded; not pooled first-paint ages",
         queue_attribution_ms={name: dict(count=len(values), **dict(zip(("p50", "p95", "p99", "max"), map(float,
             (*np.percentile(values, [50, 95, 99]), max(values))))))
