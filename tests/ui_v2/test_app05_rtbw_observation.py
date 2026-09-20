@@ -1,0 +1,83 @@
+"""RTBW age observes uploaded/displayed publications, not newer hidden buffers."""
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+import unittest
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location("rtbw_observer", ROOT / "scripts/benchmark_app05_rtbw_observation.py")
+OBSERVER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(OBSERVER)
+
+
+def pane(token=3, uploads=1, visible=True, generation=7):
+    return SimpleNamespace(image_items=[SimpleNamespace(isVisible=lambda: visible)],
+        metrics=SimpleNamespace(image_uploads=uploads),
+        _renderer=SimpleNamespace(timestamps_ns=lambda: np.array([1, token], dtype=np.int64)),
+        grid_signature=SimpleNamespace(configuration_generation=generation))
+
+
+class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_hidden_admission_does_not_replace_previously_uploaded_token(self):
+        previous = OBSERVER.rtbw_key(2, 7)
+        newer_ring = pane(token=300, uploads=4)
+        self.assertEqual(OBSERVER.uploaded_key(newer_ring, 4, previous), previous)
+        self.assertEqual(OBSERVER.uploaded_key(newer_ring, 3, previous), OBSERVER.rtbw_key(300, 7))
+
+    def test_no_visible_image_has_no_paint_key(self):
+        self.assertIsNone(OBSERVER.uploaded_key(pane(visible=False), 0, OBSERVER.rtbw_key(3, 7)))
+
+    def test_uploaded_image_without_matching_metadata_is_an_observer_error(self):
+        empty = pane()
+        empty._renderer.timestamps_ns = lambda: np.empty(0, dtype=np.int64)
+        with self.assertRaisesRegex(AssertionError, "without row/grid"):
+            OBSERVER.uploaded_key(empty, 0, None)
+        empty = pane()
+        empty.grid_signature = None
+        with self.assertRaises(AssertionError):
+            OBSERVER.uploaded_key(empty, 0, None)
+
+    def test_generation_and_unique_token_are_both_part_of_identity(self):
+        self.assertNotEqual(OBSERVER.rtbw_key(2, 7), OBSERVER.rtbw_key(2, 8))
+        self.assertNotEqual(OBSERVER.rtbw_key(2, 7), OBSERVER.rtbw_key(3, 7))
+
+    def test_cli_actual_composition_churn_and_delayed_stop_keeps_source_active(self):
+        with TemporaryDirectory(prefix="app05-rtbw-observer-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", "-X", "faulthandler",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--seconds", "1", "--cycles", "2", "--bins", "4096",
+                "--page-seconds", ".3", "--viewport-seconds", ".2", "--driver-stop-ms", "100"],
+                cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["product_imports_outside_checkout"], [])
+        self.assertEqual(report["remaining_workers"], [])
+        self.assertEqual(report["event_pump"], "QEventLoop.exec")
+        self.assertEqual(report["witness_misses"], 0)
+        self.assertEqual(report["changed_during_paint"], 0)
+        self.assertGreater(report["page_changes"], 0)
+        self.assertGreater(report["viewport_changes"], 0)
+        self.assertGreater(report["waterfall_metrics"]["hidden_uploads_suppressed"], 0)
+        self.assertLessEqual(report["waterfall_rows"], 300)
+        self.assertEqual(len(report["controls"]), 2)
+        for stop in report["controls"]:
+            self.assertTrue(stop["producer_active_at_intent"])
+            self.assertTrue(stop["worker_off_gui"])
+            self.assertGreater(stop["generated_at_idle"], stop["generated_at_intent"])
+            self.assertGreaterEqual(stop["intent_to_idle_ms"], 100)
+            self.assertGreaterEqual(stop["intent_to_worker_ms"], 0)
+            self.assertGreater(stop["heartbeat_ticks_during_driver_delay"], 0)
+        for name in ("spectrum", "waterfall", "both"):
+            self.assertGreater(report["first_paint_publications"][name], 0)
+            self.assertGreaterEqual(report["host_publication_to_first_paint_ms"][name]["p50"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
