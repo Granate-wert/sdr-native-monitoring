@@ -102,6 +102,7 @@ class SpectrumProjector(QObject):
     failed = Signal(object, str)
     retry_ready = Signal()
     commit_requested = Signal()
+    work_active_changed = Signal(bool)
     _done = Signal(object)
 
     def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
@@ -258,6 +259,7 @@ class SpectrumProjector(QObject):
                     QTimer.singleShot(0, lambda key=key: self._retry_shared(key))
             return
         self._future = future
+        self.work_active_changed.emit(True)
         future.add_done_callback(self._done.emit)
 
     def _retry_shared(self, key: tuple) -> None:
@@ -288,6 +290,10 @@ class SpectrumProjector(QObject):
             self._future = self._active = None
             self._active_storage = {}
             self._active_reserve = 0
+            # Release one latest preparation before dispatching a pending
+            # viewport. This acknowledgement is a fairness boundary, not a
+            # promise that every pending viewport has drained.
+            self.work_active_changed.emit(False)
             self._dispatch()
             if self._retry_capacity and not self._closed:
                 self._retry_capacity = False

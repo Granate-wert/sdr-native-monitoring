@@ -77,6 +77,7 @@ class LivePresenter(QObject):
         self._preparation_future: Future[_PreparedDelivery] | None = None
         self._active_preparation_snapshot: LiveSnapshot | None = None
         self._pending_preparation: tuple[LiveSnapshot, int, bool] | None = None
+        self._projection_in_flight = False
         self._preparation_superseded = 0
         self._preparation_stale = 0
         self._pending_commands = 0
@@ -234,6 +235,17 @@ class LivePresenter(QObject):
             raise RuntimeError("Live presentation worker is closing")
         return self._executor.submit(operation)
 
+    def set_projection_in_flight(self, active: bool) -> None:
+        """GUI-only backpressure from this owner's shared viewport worker.
+
+        Keep the newest unprepared render until the preceding projection is
+        acknowledged. Commands and explicit state refreshes bypass this gate.
+        Each acknowledgement releases one preparation even during viewport churn.
+        """
+        self._projection_in_flight = bool(active)
+        if not active and not self._closed and not self._closing:
+            self._dispatch_preparation()
+
     def prepare_shutdown(self) -> None:
         """GUI quiesce only; finish_shutdown owns potentially blocking cleanup."""
         if self._closed:
@@ -362,6 +374,8 @@ class LivePresenter(QObject):
         if self._pending_commands or self._preparation_future is not None or self._pending_preparation is None:
             return
         snapshot, revision, render = self._pending_preparation
+        if render and self._projection_in_flight:
+            return
         self._pending_preparation = None
         with self._publication_lock:
             current = revision == self._control_revision

@@ -155,6 +155,9 @@ class V2LiveProductComposition:
         )
         if self._projection_delivery_signal is not None:
             self._projection_delivery_signal.connect(self._commit_live_projection)
+        self._projection_backpressure = getattr(presenter, "set_projection_in_flight", None)
+        if self.spectrum_projector is not None and callable(self._projection_backpressure):
+            self.spectrum_projector.work_active_changed.connect(self._projection_backpressure)
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
         self.calibration_view_model = (
             None if calibration_presenter is None else CalibrationProfileViewModel(calibration_presenter)
@@ -254,6 +257,9 @@ class V2LiveProductComposition:
         if self._projection_delivery_signal is not None:
             self._projection_delivery_signal.disconnect(self._commit_live_projection)
             self._projection_delivery_signal = None
+        if self.spectrum_projector is not None and callable(self._projection_backpressure):
+            self.spectrum_projector.work_active_changed.disconnect(self._projection_backpressure)
+            self._projection_backpressure = None
 
     def can_close(self) -> bool:
         """Refuse a silent close while presenter work or a Live stream is active."""

@@ -97,6 +97,60 @@ class PreparedLiveTests(unittest.TestCase):
             f.page._render(f.composition.analyzer_view_model.state)
         self.assertEqual(len(seen), count)
 
+    def test_projection_ack_releases_only_latest_unprepared_frame(self):
+        from sdr_monitor.ui.v2.spectrum import projection
+        f = self.fixture
+        entered, release = threading.Event(), threading.Event()
+        original = projection.project_spectrum
+        first = measurement(f, 1)
+        calls = []
+        prepare = f.presenter._snapshot_preparer
+
+        def preparing(snapshot):
+            calls.append(getattr(snapshot.spectrum, "sequence", None))
+            return prepare(snapshot)
+
+        def projecting(request, **kwargs):
+            if request.traces[0][1].source_frame.spectrum is first.spectrum:
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("projection acknowledgement barrier")
+            return original(request, **kwargs)
+
+        with patch.object(projection, "project_spectrum", side_effect=projecting), \
+             patch.object(f.presenter, "_snapshot_preparer", side_effect=preparing):
+            try:
+                revision = f.presenter._control_revision
+                f.presenter._offer_preparation(first, revision)
+                f.wait(entered.is_set)
+                for sequence in range(2, 102):
+                    f.presenter._offer_preparation(measurement(f, sequence), revision)
+                self.assertTrue(f.presenter._projection_in_flight)
+                self.assertIsNone(f.presenter._preparation_future)
+                self.assertEqual(calls, [1])
+                latest = f.presenter._pending_preparation[0]
+                self.assertEqual(latest.spectrum.sequence, 101)
+                release.set()
+                f.wait(lambda: f.page.visualization.spectrum_scene.displayed_frame is not None
+                       and f.page.visualization.spectrum_scene.displayed_frame.spectrum is latest.spectrum)
+                f.wait(lambda: not f.presenter._projection_in_flight)
+                self.assertEqual(calls, [1, 101])
+            finally:
+                release.set()
+
+    def test_projection_backpressure_does_not_block_control_or_refresh(self):
+        f = self.fixture
+        f.presenter.set_projection_in_flight(True)
+        f.presenter._offer_preparation(measurement(f), f.presenter._control_revision)
+        self.assertIsNone(f.presenter._preparation_future)
+        f.presenter.refresh_snapshot()
+        f.wait(lambda: f.presenter._preparation_future is None and f.presenter._pending_preparation is None)
+        config = replace(f.live.latest_snapshot().applied.applied, gain_db=20)
+        f.presenter.apply_configuration(config)
+        f.wait(lambda: not f.composition.view_model.state.busy)
+        self.assertEqual(f.live.latest_snapshot().applied.applied.gain_db, 20)
+        f.presenter.set_projection_in_flight(False)
+
     def test_owner_close_disconnects_late_prepared_commit(self):
         f = self.fixture
         seen = []
