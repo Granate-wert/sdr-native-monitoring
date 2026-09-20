@@ -4,6 +4,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
 from sdr_monitor.ui.v2.spectrum import projection
 from tests.ui_v2.test_app05_prepared_live import measurement
@@ -68,7 +70,10 @@ class OptionalAckHandoffTests(unittest.TestCase):
                 emissions = scheduler.metrics.emitted
                 port._finish(future)  # synchronous final GUI ack, no event-loop tick
                 self.assertEqual(scene.persistence_metrics.image_uploads, 1)
-                self.assertIs(scene._persistence._uploaded_density, first.persistence.density)
+                # Preparation validates/copies domain density into its owned
+                # view; GUI must commit that exact view, not the raw input.
+                self.assertIs(scene._persistence._uploaded_density, active.persistence.view.density)
+                np.testing.assert_array_equal(active.persistence.view.density, first.persistence.density)
                 self.assertEqual(scheduler.metrics.emitted, emissions)
                 if admitted:
                     self.assertEqual(len(dispatched), dispatch_count + 1)
