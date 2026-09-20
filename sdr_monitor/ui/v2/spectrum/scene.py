@@ -135,6 +135,15 @@ class SpectrumScene(QWidget):
         return None if self._latest_view is None else self._latest_view.source_frame
 
     @property
+    def measurement_grid(self) -> np.ndarray | None:
+        """Existing owned read-only baseline, not the producer's borrowed grid.
+
+        Coherent workspace consumers may reuse worker-validated baseline
+        identity. This property neither copies nor retains another grid.
+        """
+        return self._measurement_grid
+
+    @property
     def range_mode(self) -> VerticalRangeMode:
         return self._range_mode
 

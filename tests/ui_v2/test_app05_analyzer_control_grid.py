@@ -99,7 +99,8 @@ class AnalyzerControlGridTests(unittest.TestCase):
             delivered = [s for s in states if s.bundle is not None and s.bundle.spectrum is final.line]
             self.assertEqual([(s.running, s.stopping) for s in delivered],
                              [(True, True), (False, True), (False, False)])
-            self.assertEqual(equal.call_count, 1)  # final data only, not lifecycle acknowledgements
+            # Final preparation already verified the same owned grid off GUI.
+            self.assertEqual(equal.call_count, 0)
             self.assertIs(page.visualization.spectrum_scene.latest_frame.spectrum, final.line)
             self.assertTrue(page.visualization.spectrum_scene.latest_frame.terminal_sweep)
             self.assertEqual(page.visualization.waterfall_pane.history_rows, 2)

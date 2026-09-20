@@ -24,7 +24,7 @@ from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_inspector import AnalyzerInspector
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum import PersistenceDensityFrame
-from ..spectrum.contracts import TraceKind
+from ..spectrum.contracts import PreparedSpectrumFrame, TraceKind
 from ..spectrum.projection import SpectrumProjector
 from ..spectrum.allocation_budget import PresentationBudgetExceeded
 from ..state.live_view_state import LiveAction
@@ -417,16 +417,31 @@ class AnalyzerWorkspaceV2(QWidget):
             self.applied.setAccessibleDescription(detail)
         identity = getattr(state.bundle, "identity", None)
         previous = self._last_identity
+        scene = self.visualization.spectrum_scene
+        prepared_spectrum = (state.prepared_sweep.spectrum if state.prepared_sweep is not None else
+                             state.live.prepared_spectrum if state.mode is AnalyzerMode.RTBW else None)
+        if state.bundle is not None and state.bundle is not self._last_bundle and prepared_spectrum is not None:
+            # Reject foreign preparation before clearing the accepted history.
+            if (not isinstance(prepared_spectrum, PreparedSpectrumFrame)
+                    or prepared_spectrum.view.source_frame is not state.bundle):
+                raise ValueError("prepared spectrum must belong to the exact publication")
+        prepared_grid = None if prepared_spectrum is None else prepared_spectrum.measurement_grid
+        previous_grid = scene.measurement_grid
         fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch", "config_generation",
                   "clock_domain", "accumulation_id", "unit")
         # Lifecycle/error/locale publications can carry the exact bundle already
         # applied below. They are not new measurements: do not re-scan its entire
-        # frequency grid on the GUI thread. Every different bundle still gets
-        # exact content comparison, even if it reuses the same array storage.
+        # frequency grid on the GUI thread. New prepared bundles can share an
+        # owned baseline only after exact worker-side content comparison. Raw
+        # array identity/read-only flags never authorize this fast path. On a
+        # miss compare against the owned old grid, not a mutable producer alias.
         changed_identity = (state.bundle is not self._last_bundle
                             and identity is not None and previous is not None and (
             any(getattr(identity, name) != getattr(previous, name) for name in fields)
-            or not np.array_equal(identity.frequencies_hz, previous.frequencies_hz)
+            or not (prepared_grid is not None and prepared_grid is previous_grid
+                    or np.array_equal(
+                        prepared_grid if prepared_grid is not None else identity.frequencies_hz,
+                        previous_grid if previous_grid is not None else previous.frequencies_hz))
         ))
         if (state.mode is not self._last_mode or changed_identity
                 or state.bundle is None and self._last_bundle is not None):
@@ -442,10 +457,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._last_identity = identity
         bundle = state.bundle
         if bundle is not None and bundle is not self._last_bundle:
-            prepared = state.prepared_sweep
-            self.visualization.spectrum_scene.set_frame(
-                bundle, prepared=(prepared.spectrum if prepared is not None else
-                                  state.live.prepared_spectrum if state.mode is AnalyzerMode.RTBW else None))
+            scene.set_frame(bundle, prepared=prepared_spectrum)
             self._last_bundle = bundle
         if state.mode is AnalyzerMode.SWEEP:
             statistics = bundle.sweep_statistics if bundle is not None else None
