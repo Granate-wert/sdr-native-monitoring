@@ -20,6 +20,10 @@ from .persistence_contracts import (
     map_density_for_display,
     map_density_row_for_display,
 )
+from .persistence_projection import (
+    PersistenceImageHistory, PersistenceImagePolicy, PersistenceImageRequest,
+    PreparedPersistenceImage,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,12 @@ class PersistenceOverlay:
         self.allocation_budget: PresentationAllocationBudget | None = None
         self.allocation_limited = False
         self.on_budget_changed: Callable[[], None] | None = None
+        self.request_projection: Callable[[], None] | None = None
+        self._worker_revision = 0
+        self._worker_generation = 0
+        self._worker_history_revision = 0
+        self._worker_history: PersistenceImageHistory | None = None
+        self._worker_request: PersistenceImageRequest | None = None
         self._timer = QTimer()
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.flush_pending)
@@ -87,14 +97,105 @@ class PersistenceOverlay:
     def latest_view(self) -> PersistenceDensityView | None:
         return self._latest_view
 
+    @property
+    def worker_policy_key(self) -> tuple:
+        return (PersistenceImagePolicy(self._worker_revision, self._render_mode, self._logarithmic),
+                self._worker_generation)
+
+    @property
+    def worker_request(self) -> PersistenceImageRequest | None:
+        return self._worker_request
+
+    def _invalidate_worker(self, *, history: bool = False) -> None:
+        self._worker_generation += 1
+        self._worker_request = None
+        if history:
+            self._worker_revision += 1
+            self._worker_history = None
+            self._visual_buffer = None
+            self._row_scratch = None
+            if self.request_projection is not None:
+                self._uploaded_density = None
+                self._image.clear()
+                self._image.hide()
+        if self.request_projection is not None:
+            self.request_projection()
+
+    def accept_worker_image(self, request: PersistenceImageRequest,
+                            result: PreparedPersistenceImage | None, error: str | None) -> bool:
+        """Commit pixels and Visual history together, only for the exact intent.
+
+        A newer same-policy density may wait in the existing latest slot while
+        this image finishes. It does not invalidate useful in-flight work.
+        Measurement/policy/visibility changes do invalidate that intent.
+        """
+        if (request is not self._worker_request or not self._visible or not self._presentation_active
+                or request.policy != self.worker_policy_key[0]
+                or request.history_revision != (None if self._worker_history is None
+                                                else self._worker_history.revision)):
+            return False
+        if result is not None and not result.matches(request):
+            return False
+        self._worker_request = None
+        if error is not None:
+            self._discard_pending()
+            self._uploaded_density = None
+            self._image.clear()
+            self._image.hide()
+            self._set_metrics(allocation_denials=self._metrics.allocation_denials + 1,
+                              retained_extra_image_buffers=int(self._visual_buffer is not None))
+            self._set_allocation_limited(True)
+            return True
+        if result is None:
+            return False
+        self._image.setImage(result.image, autoLevels=False, levels=(0.0, 1.0))
+        self._image.setRect(QRectF(*result.view.physical_rect))
+        self._image.setVisible(True)
+        if self._render_mode is PersistenceRenderMode.VISUAL:
+            self._worker_history_revision += 1
+            self._worker_history = result.as_history(self._worker_history_revision)
+            self._visual_buffer = result.image
+        self._uploaded_density = result.view.density
+        self._mapping_dirty = False
+        self._last_upload_ns = monotonic_ns()
+        self._set_allocation_limited(False)
+        self._set_metrics(image_uploads=self._metrics.image_uploads + 1, retained_extra_image_buffers=1)
+        latest = self._latest_view
+        if latest is not None and latest.density is not self._uploaded_density:
+            self._pending_view = latest
+            self._schedule_pending(self._last_upload_ns)
+        else:
+            self._discard_pending()
+        return True
+
+    def worker_settled(self, request: PersistenceImageRequest | None) -> None:
+        # Geometry cancellation / stale Qt acknowledgement, not a new RF read.
+        # Accepted or explicitly failed requests were already removed above.
+        if request is not None and request is self._worker_request:
+            self._worker_request = None
+            if self._latest_view is not None:
+                self._upload(self._latest_view, now_ns=monotonic_ns(), force=True)
+
+    def worker_failed(self, request: PersistenceImageRequest | None) -> None:
+        """Whole projection failure is reported by the scene; never retry-spin."""
+        if request is not None and request is self._worker_request:
+            self._worker_request = None
+            self._discard_pending()
+            self._uploaded_density = None
+            self._image.clear()
+            self._image.hide()
+            self._mapping_dirty = True
+
     def set_visible(self, visible: bool) -> None:
         became_visible = bool(visible) and not self._visible
         self._visible = bool(visible)
         self._image.setVisible(self._visible and self._uploaded_density is not None)
         if not self._visible:
             self._timer.stop()
+            self._invalidate_worker()
         elif (self._presentation_active and self._latest_view is not None
-              and (self._mapping_dirty or (became_visible and self.allocation_limited))):
+              and (self._mapping_dirty or (became_visible and
+                   (self.allocation_limited or self.request_projection is not None)))):
             # An explicit off/on action may recover the stopped latest frame
             # after another owner releases capacity. Repeated True requests
             # must not become an unbounded budget retry loop.
@@ -110,6 +211,7 @@ class PersistenceOverlay:
             return
         self._presentation_active = active
         if not active:
+            self._invalidate_worker()
             self._timer.stop()
             self._uploaded_density = None
             self._image.clear()
@@ -125,6 +227,7 @@ class PersistenceOverlay:
         if self._logarithmic == bool(logarithmic):
             return
         self._logarithmic = bool(logarithmic)
+        self._invalidate_worker(history=True)
         self._visual_buffer = None
         self._row_scratch = None
         self._mapping_dirty = True
@@ -135,6 +238,7 @@ class PersistenceOverlay:
         if self._render_mode is mode:
             return
         self._render_mode = mode
+        self._invalidate_worker(history=True)
         self._visual_buffer = None
         self._row_scratch = None
         self._mapping_dirty = True
@@ -144,6 +248,15 @@ class PersistenceOverlay:
     def set_frame(self, view: PersistenceDensityView, *, now_ns: int | None = None) -> None:
         if self.allocation_budget is not None:
             self.allocation_budget.observe(view)
+        previous = self._latest_view
+        if self.request_projection is not None and previous is not None and (
+                previous.density.shape != view.density.shape or previous.physical_rect != view.physical_rect
+                or previous.value_mode is not view.value_mode or previous.level_unit != view.level_unit):
+            self._invalidate_worker(history=True)
+            self._mapping_dirty = True
+            self._uploaded_density = None
+            self._image.clear()
+            self._image.hide()
         self._latest_view = view
         now = monotonic_ns() if now_ns is None else now_ns
         if not self._visible or not self._presentation_active:
@@ -190,6 +303,7 @@ class PersistenceOverlay:
         self._visual_buffer = None
         self._row_scratch = None
         self._mapping_dirty = False
+        self._invalidate_worker(history=True)
         self._image.clear()
         self._image.setVisible(False)
         self._set_metrics(retained_extra_image_buffers=0)
@@ -199,6 +313,14 @@ class PersistenceOverlay:
         if not self._visible or not self._presentation_active:
             return
         if not force and view.density is self._uploaded_density and not self._mapping_dirty:
+            return
+        if self.request_projection is not None:
+            if self._worker_request is None:
+                self._worker_request = PersistenceImageRequest(view, self.worker_policy_key[0],
+                                                               self._worker_history)
+                self.request_projection()
+            else:
+                self._pending_view = view
             return
         reuse = (self._render_mode is PersistenceRenderMode.VISUAL and self._visual_buffer is not None
                  and self._visual_buffer.shape == view.density.shape)
