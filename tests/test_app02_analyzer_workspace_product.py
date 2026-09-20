@@ -35,7 +35,10 @@ class AnalyzerWorkspaceProductTests(unittest.TestCase):
 
     def setUp(self):
         self._qt_errors = []
-        exception_hook = patch("sys.excepthook", side_effect=lambda *args: self._qt_errors.append(
+        # Mock can survive unpatch in a cyclic graph. Retain the error sink,
+        # not the whole fixture/product/source graph, until normal GC runs.
+        qt_errors = self._qt_errors
+        exception_hook = patch("sys.excepthook", side_effect=lambda *args: qt_errors.append(
             "".join(traceback.format_exception(*args))))
         exception_hook.start()
         self.addCleanup(exception_hook.stop)
