@@ -7,11 +7,11 @@ from unittest.mock import patch
 from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
 from sdr_monitor.ui.v2.spectrum import projection
 from tests.ui_v2.test_app05_prepared_live import measurement
-from tests.ui_v2.test_app05_persistence_wiring import PersistenceCompositionTests
+from tests.ui_v2 import test_app05_persistence_wiring as wiring
 
 
 class OptionalAckHandoffTests(unittest.TestCase):
-    setUp = PersistenceCompositionTests.setUp
+    setUp = wiring.PersistenceCompositionTests.setUp
 
     def exercise(self, *, admitted):
         f = self.f
@@ -22,6 +22,10 @@ class OptionalAckHandoffTests(unittest.TestCase):
         scheduler._timer.stop()
         f.presenter._poll_timer.stop()
         first = measurement(f, 1)
+        f.presenter._emit_snapshot(first)
+        f.wait(lambda: scene.displayed_frame is not None
+               and scene.displayed_frame.spectrum is first.spectrum and port._future is None
+               and f.presenter._preparation_future is None)
         first = replace(first, persistence=synthetic_persistence(first.spectrum, 32, 1, 1))
         second, newest = measurement(f, 2), measurement(f, 3)
         entered, release = threading.Event(), threading.Event()
