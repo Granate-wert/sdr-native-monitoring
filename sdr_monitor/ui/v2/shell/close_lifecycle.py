@@ -21,7 +21,7 @@ class CloseLifecycle:
                  *, timeout_s: float = 5.0) -> None:
         if not isfinite(timeout_s) or timeout_s <= 0:
             raise ValueError("close timeout must be positive")
-        self._prepare = prepare
+        self._prepare: Callable[[], tuple[tuple[str, Callable[[], None]], ...]] | None = prepare
         self.timeout_s = timeout_s
         self.state = CloseState()
         self._tasks: tuple[tuple[str, Callable[[], None]], ...] | None = None
@@ -38,6 +38,7 @@ class CloseLifecycle:
             return self.poll()
         try:
             if self._tasks is None:
+                assert self._prepare is not None
                 tasks = self._prepare()  # GUI-only quiesce, no waits.
                 names = [name for name, _ in tasks]
                 if len(set(names)) != len(names):
@@ -45,6 +46,9 @@ class CloseLifecycle:
                 if any(not name or not callable(operation) for name, operation in tasks):
                     raise ValueError("invalid shutdown owner")
                 self._tasks = tasks
+                # A validated plan is reused for retry. Its factory may be a
+                # bound composition method; do not keep that owner alive here.
+                self._prepare = None
         except Exception as error:
             self.state = CloseState("failed", str(error)[:2000])
             return self.state
@@ -65,6 +69,11 @@ class CloseLifecycle:
                 self._errors.append(f"{self._active}: {error}"[:2000])
             else:
                 self._completed.add(self._active)
+                # Keep only operations that still require acknowledgement.
+                # Completed names remain for diagnostics/exactly-once retry,
+                # but their bound callbacks must not retain closed owners.
+                assert self._tasks is not None
+                self._tasks = tuple(task for task in self._tasks if task[0] != self._active)
             self._advance()
         if self._future is not None and monotonic() >= self._deadline:
             self.state = CloseState("timeout", self._active)
