@@ -48,6 +48,9 @@ class ProjectionRequest:
     current: SweepFrame | None = None
     previous: SweepLineFrame | None = None
     prepared: PreparedSpectrumFrame | None = None
+    # Layout/show requests must wait for coherent preparation already in flight.
+    # An ordinary new source on accepted geometry can keep the pipeline moving.
+    requires_preparation_handoff: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,12 +210,15 @@ class SpectrumProjector(QObject):
             self._future.cancel()  # Removes queued work; running work observes Event.
 
     def set_preparation_in_flight(self, active: bool) -> None:
-        """Handoff from an existing Sweep poll, without cancelling or new work.
+        """Layout/show handoff from an existing Sweep poll, without new work.
 
         A resumed/changed viewport retains only the existing latest request.
         On GUI delivery, replace that request with the newly coherent scene
         before dispatch. Ordinary deliveries without a waiting request retain
         timer coalescing; control suspension is independent and still wins.
+        Source-only refreshes on successfully displayed geometry may dispatch
+        during preparation; waiting those would discard already prepared frames
+        whenever the next poll beats the scene's zero-timer offer.
         """
         if self._closed or self._preparation_in_flight == bool(active):
             return
@@ -234,8 +240,10 @@ class SpectrumProjector(QObject):
         self._cancel_active()
 
     def _dispatch(self) -> None:
-        if (self._closed or self._suspended or self._preparation_in_flight
-                or self._future is not None or self._pending is None):
+        if (self._closed or self._suspended or self._future is not None
+                or self._pending is None):
+            return
+        if self._preparation_in_flight and self._pending.requires_preparation_handoff:
             return
         request, self._pending = self._pending, None
         self._active_storage, self._pending_storage = self._pending_storage, {}

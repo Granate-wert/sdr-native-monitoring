@@ -87,6 +87,7 @@ class SpectrumScene(QWidget):
         self._projector: SpectrumProjector | None = None
         self._projection_owner = object()
         self._projection_generation = 0
+        self._displayed_projection_geometry: tuple[int, tuple[float, float, int]] | None = None
         self._projection_key: tuple[object, ...] | None = None
         self._displayed_view: SpectrumFrameView | None = None
         self._displayed_extent: tuple[float, float] | None = None
@@ -190,6 +191,7 @@ class SpectrumScene(QWidget):
 
     def _invalidate_projection(self) -> None:
         self._projection_generation += 1
+        self._displayed_projection_geometry = None
         self._projection_key = None
         self._projection_timer.stop()
         if self._projector is not None:
@@ -215,7 +217,9 @@ class SpectrumScene(QWidget):
         self._projection_key = key
         self._projector.offer(ProjectionRequest(
             self._projection_owner, self._projection_generation, viewport,
-            tuple(self._trace_views.items()), state.current, state.previous, self._prepared_spectrum))
+            tuple(self._trace_views.items()), state.current, state.previous, self._prepared_spectrum,
+            requires_preparation_handoff=(self._displayed_projection_geometry !=
+                                          (self._projection_generation, viewport))))
 
     def commit_projection(self) -> None:
         """Submit one coherent GUI delivery before the next preparation queues.
@@ -260,6 +264,7 @@ class SpectrumScene(QWidget):
         if result.coverage is not None:
             self.sweep_coverage.apply_projection(result.coverage, request.viewport, request.previous)
             self.sweep_coverage.refresh()
+        self._displayed_projection_geometry = (request.generation, request.viewport)
 
     def _projection_failed(self, request: ProjectionRequest, reason: str) -> None:
         if self._projection_current(request):
