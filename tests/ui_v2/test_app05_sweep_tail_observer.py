@@ -12,11 +12,13 @@ class SweepTailObserverTests(unittest.TestCase):
             identity = (sequence, "partial", 1)
             for index, name in enumerate(STAGES):
                 records.mark(identity, name, sequence * 100 + index)
+            # paired_paint consumes the exact accepted request, not generic
+            # frame history (which may already describe another projection).
+            records.accepted_requests[identity] = dict(records.frames[identity])
             paired_paint(records, identity, sequence * 100 + len(STAGES))
         self.assertEqual(len(records.rows), 2)
         for row in records.rows:
-            self.assertEqual(sum(value for name, value in row.items()
-                                 if name not in ("identity", "total", "projection_window")), row["total"])
+            self.assertEqual(sum(row[name] for name in STAGES[1:] + ("paint",)), row["total"])
             self.assertEqual(row["projection_window"][1] - row["projection_window"][0], 1)
         self.assertEqual(records.rows[-1]["identity"], (3, "partial", 1))
         paired_paint(records, (3, "complete", 0), 999)

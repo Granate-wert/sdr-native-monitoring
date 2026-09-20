@@ -66,8 +66,20 @@ def main():
     from sdr_monitor.ui.v2.spectrum import projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
 
+    cycle = 0
+
+    def scoped(identity):
+        return None if identity is None else (cycle, *identity)
+
     def key(frame):
-        return observer.sweep_key(getattr(frame, "spectrum", frame))
+        return scoped(observer.sweep_key(getattr(frame, "spectrum", frame)))
+
+    def tracker_cycle(original):
+        def invoke(*args, **kwargs):
+            nonlocal cycle
+            cycle += 1
+            return original(*args, **kwargs)
+        return invoke
 
     records = shared.StageRecords(source_stages=STAGES[:7])
     polls = deque(maxlen=4096)
@@ -121,7 +133,7 @@ def main():
             count = tracker.counts["spectrum"]
             original(tracker, pane, identity, when)
             if pane == "spectrum" and tracker.counts[pane] > count:
-                paired_paint(records, identity, when)
+                paired_paint(records, scoped(identity), when)
         return invoke
 
     def accepted(value, scene, result):
@@ -166,14 +178,16 @@ def main():
         def hook(owner, name, wrapper):
             stack.enter_context(patch.object(owner, name, wrapper(getattr(owner, name))))
 
-        hook(observer.PaintAgeTracker, "publish", wrap(before=lambda _, identity, when: records.mark(identity, "publish", when)))
+        hook(observer.PaintAgeTracker, "__init__", tracker_cycle)
+        hook(observer.PaintAgeTracker, "publish", wrap(
+            before=lambda _, identity, when: records.mark(scoped(identity), "publish", when)))
         hook(ContinuousSweepPresenter, "_poll_and_prepare", poll_interval)
         hook(observer.PaintAgeTracker, "painted", first_paint)
         hook(service, "_to_domain_progress", wrap(
-            before=lambda n, **kw: mark_selected(records, (n.line_sequence, "partial", n.revision)),
+            before=lambda n, **kw: mark_selected(records, scoped((n.line_sequence, "partial", n.revision))),
             after=lambda result, *a, **kw: records.mark(key(result), "domain_end")))
         hook(service, "_to_domain_line", wrap(
-            before=lambda n, **kw: mark_selected(records, (n.line_sequence, n.state, 0)),
+            before=lambda n, **kw: mark_selected(records, scoped((n.line_sequence, n.state, 0))),
             after=lambda result, *a, **kw: records.mark(key(result), "domain_end")))
         hook(SweepSnapshotPreparer, "__call__", preparation)
         hook(ContinuousSweepPresenter, "_emit_snapshot", delivery)
@@ -204,6 +218,9 @@ def main():
               "steady_visible": [row for row in rows if row["visible"]
                                  and row["since_show_ms"] is not None and row["since_show_ms"] >= 250]}
     report = dict(scope=__doc__, capacity=records.capacity, retained=len(rows),
+        cycles=cycle, identity_scope="benchmark cycle + pass/state/revision; repeated grids cannot borrow earlier cycle timestamps",
+        retained_by_cycle={str(index): sum(row["identity"][0] == index for row in rows)
+                           for index in range(1, cycle + 1)},
         missing=records.missing, reordered=records.reordered,
         missing_stages=dict(records.missing_stages),
         navigation_scope="Visibility at first paint, resume first250ms after show, not causal proof; exact accepted request carries copied preparation/delivery stamps",

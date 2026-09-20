@@ -63,11 +63,13 @@ class SweepStageObserverTests(unittest.TestCase):
         with TemporaryDirectory(prefix="app05-sweep-stages-") as folder:
             output = Path(folder) / "result.json"
             result = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/profile_app05_sweep_tail.py"),
-                "--checkout", str(ROOT), "--output", str(output), "--seconds", "1", "--bins", "65536"],
+                "--checkout", str(ROOT), "--output", str(output), "--seconds", "1", "--bins", "65536", "65536"],
                 capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
             report = json.loads(output.with_suffix(".stages.json").read_text(encoding="utf-8"))
         self.assertGreater(report["retained"], 5)
+        self.assertEqual(report["cycles"], 2)
+        self.assertTrue(all(report["retained_by_cycle"][str(index)] > 5 for index in (1, 2)))
         self.assertEqual(report["reordered"], 0)
         self.assertIn("steady_visible", report["groups"])
         for row in report["slowest"]:
