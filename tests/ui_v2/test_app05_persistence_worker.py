@@ -157,6 +157,7 @@ class PersistenceWorkerTests(unittest.TestCase):
             def preparing(value, **kwargs):
                 threads.append(threading.get_ident())
                 if value is first:
+                    self.assertEqual(budget.snapshot().reserved_bytes, persistence_image_reserve(first))
                     entered.set()
                     if not release.wait(3):
                         raise TimeoutError("density policy barrier")
@@ -181,11 +182,12 @@ class PersistenceWorkerTests(unittest.TestCase):
                 port.dispose()
 
     def test_shared_reservation_denial_cancel_error_and_dispose_release(self):
-        for outcome in ("success", "cancel", "error", "dispose", "denied"):
+        for outcome in ("success", "cancel", "error", "dispose", "denied", "density-denied"):
             with self.subTest(outcome=outcome):
                 worker = ManualWorker()
                 density = request()
-                budget = PresentationAllocationBudget(1 if outcome == "denied" else 1000000)
+                budget = PresentationAllocationBudget(1 if outcome == "denied" else
+                                                      600 if outcome == "density-denied" else 1000000)
                 port = projection.SpectrumProjector(worker.submit, allocation_budget=budget)
                 delivered = []
                 port.ready.connect(delivered.append)
@@ -195,7 +197,9 @@ class PersistenceWorkerTests(unittest.TestCase):
                     if outcome == "denied":
                         self.assertEqual(worker.jobs, [])
                     else:
-                        self.assertEqual(budget.snapshot().reserved_bytes, persistence_image_reserve(density))
+                        # No trace outputs here; density reserve belongs to
+                        # worker execution, not to an unbounded GUI image job.
+                        self.assertEqual(budget.snapshot().reserved_bytes, 0)
                         if outcome == "cancel":
                             port.cancel_pending(offered.owner)
                         if outcome == "dispose":
@@ -203,8 +207,12 @@ class PersistenceWorkerTests(unittest.TestCase):
                         worker.finish(RuntimeError("mapping failed") if outcome == "error" else None)
                         run_qt_until(lambda: port._future is None, 1)
                     self.assertEqual(budget.snapshot().reserved_bytes, 0)
-                    self.assertEqual(len(delivered), int(outcome == "success"))
-                    if delivered:
+                    self.assertEqual(len(delivered), int(outcome in ("success", "density-denied")))
+                    if outcome == "density-denied":
+                        self.assertIsNone(delivered[0].persistence)
+                        self.assertIn("budget exceeded", delivered[0].persistence_error)
+                        self.assertIs(delivered[0].request, offered)
+                    elif delivered:
                         self.assertTrue(delivered[0].persistence.matches(density))
                 finally:
                     port.dispose()

@@ -6,6 +6,7 @@ executor ownership crosses this boundary.
 """
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
+from contextlib import nullcontext
 from dataclasses import dataclass
 from threading import Event
 
@@ -71,9 +72,11 @@ class SpectrumProjection:
     coverage: CoverageProjection | None
     finite_extent: tuple[float, float] | None
     persistence: PreparedPersistenceImage | None = None
+    persistence_error: str | None = None
 
 
-def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = None) -> SpectrumProjection:
+def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = None,
+                     persistence_budget: PresentationAllocationBudget | None = None) -> SpectrumProjection:
     check_cancelled(cancelled)
     left, right, width = request.viewport
     traces = []
@@ -107,9 +110,22 @@ def project_spectrum(request: ProjectionRequest, *, cancelled: CancelCheck = Non
         state.current, state.previous = request.current, request.previous
         coverage = state.project(left, right, width, cancelled=cancelled)
     check_cancelled(cancelled)
-    density = (None if request.persistence is None else
-               prepare_persistence_image(request.persistence, cancelled=cancelled))
-    return SpectrumProjection(request, tuple(traces), coverage, extent, density)
+    density, density_error = None, None
+    if request.persistence is not None:
+        try:
+            reservation = (nullcontext(None) if persistence_budget is None else
+                           persistence_budget.reserve(persistence_image_reserve(request.persistence),
+                                                      request.persistence))
+            with reservation as ticket:
+                density = prepare_persistence_image(request.persistence, cancelled=cancelled)
+                if ticket is not None:
+                    ticket.commit(density.image)
+        except PresentationBudgetExceeded as error:
+            # Optional density must not discard an already prepared spectrum.
+            # The GUI must clear/label this layer, not relabel an older image.
+            density_error = str(error)
+    check_cancelled(cancelled)
+    return SpectrumProjection(request, tuple(traces), coverage, extent, density, density_error)
 
 
 class SpectrumProjector(QObject):
@@ -277,14 +293,20 @@ class SpectrumProjector(QObject):
         self._active = request
         cancel = self._cancel = Event()
         try:
+            # Reserve spectrum outputs here; density separately reserves its
+            # output + bounded scratch on this same worker. A density refusal
+            # is a layer error, not loss of the completed spectrum/coverage.
+            density_bytes = (0 if request.persistence is None else persistence_image_reserve(request.persistence))
             allocation = (None if self.allocation_budget is None else
-                          self.allocation_budget.reserve(self._active_reserve))
+                          self.allocation_budget.reserve(self._active_reserve - density_bytes))
             self._allocation = allocation
+            density_budget = self.allocation_budget
             self._shared_retry_key = None
 
             def project():
                 try:
-                    result = project_spectrum(request, cancelled=cancel.is_set)
+                    result = (project_spectrum(request, cancelled=cancel.is_set) if request.persistence is None else
+                              project_spectrum(request, cancelled=cancel.is_set, persistence_budget=density_budget))
                     if allocation is not None:
                         allocation.commit(*(trace for _, trace in result.traces), result.coverage,
                                           None if result.persistence is None else result.persistence.image)
