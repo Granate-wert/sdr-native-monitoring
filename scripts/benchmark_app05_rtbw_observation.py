@@ -10,6 +10,8 @@ Control callbacks are Qt-timer delivered programmatic clicks, not OS events.
 The optional fake driver delay keeps the producer active until worker Stop.
 Real QEventLoop runs acquisition observation and owner close/deferred deletes.
 Timeouts are GUI observations, not a hard watchdog for a blocked driver.
+Optional memory sampling perturbs timings; such runs are NOT latency baselines.
+Phase labels describe paint-return context, not the cause of a delayed frame.
 """
 import argparse
 from collections import deque
@@ -45,6 +47,14 @@ def uploaded_key(pane, uploads_before, previous):
     return rtbw_key(timestamps[-1], signature.configuration_generation)
 
 
+def paint_phase(control_phase, visible, now, resumed_until):
+    if control_phase != "running":
+        return control_phase
+    if not visible:
+        return "hidden"
+    return "resume" if now < resumed_until else "steady"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
@@ -56,6 +66,8 @@ def main():
     parser.add_argument("--page-seconds", type=float, default=0)
     parser.add_argument("--viewport-seconds", type=float, default=0)
     parser.add_argument("--driver-stop-ms", type=float, default=0)
+    parser.add_argument("--memory-seconds", type=float, default=0,
+                        help="0 disables; 0.25..60 second scalar inventory/process samples (perturbs timing)")
     args = parser.parse_args()
     if not sys.flags.isolated or not 1 <= args.seconds <= 1200 or not 1 <= args.cycles <= 100:
         parser.error("Python -I, 1..1200 seconds and 1..100 cycles required")
@@ -67,6 +79,8 @@ def main():
         parser.error("churn intervals must be zero or 0.1..60 seconds")
     if args.output.exists():
         parser.error("output must be new")
+    if args.memory_seconds != 0 and not .25 <= args.memory_seconds <= 60:
+        parser.error("memory-seconds must be zero or 0.25..60")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -98,6 +112,14 @@ def main():
     original_upload = WaterfallPane._upload_tiles
     original_start_method, original_stop_method = _AtomicFakeLive.start, _AtomicFakeLive.stop
     control = {}
+    control_phase, resumed_until = "idle", 0.0
+    phase_ages = {phase: {name: deque(maxlen=8192) for name in age.ages}
+                  for phase in ("starting", "stopping", "idle", "hidden", "resume", "steady")}
+    phase_counts = {phase: dict.fromkeys(age.ages, 0) for phase in phase_ages}
+    memory_rows = deque(maxlen=2048)
+    memory_total = 0
+    if args.memory_seconds:
+        from tests.ui_v2.run_app05_memory_inventory import process_memory, qt_wrapper_counts
 
     def dispatch_start(service):
         return control["start"]() if "start" in control else original_start_method(service)
@@ -121,7 +143,13 @@ def main():
                 name, current = tracked
                 paints[name].append((ended - began) * 1000)
                 if key == current():
+                    counts_before = dict(age.counts)
                     age.painted(name, key, ended)
+                    phase = paint_phase(control_phase, f.page.visualization.isVisible(), ended, resumed_until)
+                    for target in age.counts:
+                        if age.counts[target] != counts_before[target]:
+                            phase_ages[phase][target].append(age.ages[target][-1])
+                            phase_counts[phase][target] += 1
                 else:
                     age.changed_during_paint += 1
 
@@ -231,11 +259,13 @@ def main():
                 return t
 
             def cycle_page():
-                nonlocal page_changes
+                nonlocal page_changes, resumed_until
                 began = perf_counter()
                 f.shell.select_workspace("calibration" if f.page.visualization.isVisible() else "analyzer")
                 callbacks["page"].append((perf_counter() - began) * 1000)
                 page_changes += 1
+                if f.page.visualization.isVisible():
+                    resumed_until = perf_counter() + .25
 
             def cycle_viewport():
                 nonlocal viewport_changes
@@ -252,19 +282,41 @@ def main():
             view_timer = timer(args.viewport_seconds, cycle_viewport)
             heartbeat.start()
             began = perf_counter()
+
+            def sample_memory(label="timer", *, workspace=True):
+                nonlocal memory_total
+                sampled = perf_counter()
+                inventory = f.composition.memory_snapshot(f.page if workspace else None)
+                row = dict(index=memory_total, seconds=sampled - began, label=label,
+                    page=f.shell.active_workspace_id if workspace else "closed-context-alive",
+                    control_phase=control_phase, **process_memory(), inventory=asdict(inventory))
+                row["sample_ms"] = (perf_counter() - sampled) * 1000
+                memory_rows.append(row)
+                memory_total += 1
+
+            if args.memory_seconds:
+                sample_memory("before-start")
+                census_before = qt_wrapper_counts()
+                memory_timer = timer(args.memory_seconds, sample_memory)
+                memory_timer.start()
             with patch.dict(control, start=start, stop=stop):
                 for cycle in range(args.cycles):
                     f.shell.select_workspace("analyzer")
+                    control_phase = "starting"
                     f.page.primary.click()
                     run_qt_until(lambda: checked(lambda: f.live.is_running()
                         and not f.composition.view_model.state.busy), 5)
+                    control_phase = "running"
+                    resumed_until = perf_counter() + .25
                     count_before = generated
                     due = perf_counter() + args.seconds
                     intent = []
                     def request_stop():
+                        nonlocal control_phase
                         entered = perf_counter()
                         if producer is None or not producer.is_alive() or generated <= count_before:
                             raise AssertionError("Stop was not tested under an active producer")
+                        control_phase = "stopping"
                         f.page.primary.click()
                         intent.extend((entered, perf_counter(), generated))
                     stop_timer = timer(args.seconds, request_stop, once=True)
@@ -276,6 +328,7 @@ def main():
                     run_qt_until(lambda: checked(lambda: bool(intent) and not f.live.is_running()
                         and not f.composition.view_model.state.busy), args.seconds + 5)
                     idle = perf_counter()
+                    control_phase = "idle"
                     page_timer.stop()
                     view_timer.stop()
                     if len(driver_entries) != cycle + 1 or producer.is_alive():
@@ -291,6 +344,8 @@ def main():
                             worker_entry + args.driver_stop_ms / 1000 for beat in beats)))
                     f.shell.select_workspace("analyzer")
                     run_qt_until(lambda: checked(lambda: scene.displayed_frame is not None), 2)
+                    if args.memory_seconds:
+                        sample_memory("cycle-idle")
                 if f.events != [event for _ in range(args.cycles) for event in ("rtbw-start", "rtbw-stop")]:
                     raise AssertionError(f.events)
             if age.missing or age.changed_during_paint or not all(age.counts.values()):
@@ -312,6 +367,14 @@ def main():
                 display_metrics=asdict(f.presenter.display_metrics),
                 preparation_superseded=f.presenter.preparation_superseded,
                 preparation_stale=f.presenter.preparation_stale)
+            report["paint_return_phases"] = {phase: dict(counts=phase_counts[phase],
+                age_ms={name: summary(data) for name, data in samples.items()})
+                for phase, samples in phase_ages.items()}
+            report["phase_scope"] = "Paint-return context; resume is first 250ms after show/Start ack, not causal attribution; last8192 per phase/canvas"
+            if args.memory_seconds:
+                memory_timer.stop()
+                sample_memory("before-close")
+                census_before_close = qt_wrapper_counts()
         finally:
             for t in timers:
                 t.stop()
@@ -323,6 +386,13 @@ def main():
     report["post_close_allocation_budget"] = asdict(f.composition.allocation_budget.snapshot())
     if report["post_close_allocation_budget"]["reserved_bytes"]:
         raise AssertionError("presentation reservation survived owner cleanup")
+    if args.memory_seconds:
+        sample_memory("after-close", workspace=False)
+        report["memory"] = dict(interval_seconds=args.memory_seconds, capacity=2048,
+            total_samples=memory_total, samples=list(memory_rows),
+            qt_census_before=census_before, qt_census_before_close=census_before_close,
+            qt_census_after_close=qt_wrapper_counts(),
+            scope="Instrumented run, NOT timing baseline. Owner bytes overlap. Post-close fixture/scene/source locals still alive; omitted workspace is not freed-memory proof.")
     outside = [n for n, m in tuple(sys.modules.items()) if n.startswith(("sdr_monitor", "tests", "scripts"))
                and getattr(m, "__file__", None) and not Path(m.__file__).resolve().is_relative_to(root)]
     workers = [t.name for t in threading.enumerate() if any(s in t.name.lower() for s in ("sdr", "synthetic"))]
@@ -335,10 +405,21 @@ def main():
         host_platform=platform.platform(), processor=platform.processor(), platform="Qt offscreen",
         logical_size=[1920, 1080], event_pump="QEventLoop.exec", product_imports_outside_checkout=outside,
         remaining_workers=workers)
-    with args.output.open("x", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2)
-    print(json.dumps(report))
+    # The ledger holds weak roots only. Returning it lets the CLI sample after
+    # this function's fixture/scene/producer closure references leave scope.
+    return report, args.output, f.composition.allocation_budget
 
 
 if __name__ == "__main__":
-    main()
+    result, output, budget = main()
+    if "memory" in result:
+        from scripts.benchmark_app04_poll_overload import run_qt_until
+        from tests.ui_v2.run_app05_memory_inventory import process_memory, qt_wrapper_counts
+        until = perf_counter() + .5
+        run_qt_until(lambda: perf_counter() >= until, 2)
+        result["memory"]["after_context_return"] = dict(
+            process=process_memory(), allocation_budget=asdict(budget.snapshot()),
+            qt_census=qt_wrapper_counts(), scope="After benchmark locals return and 500ms real Qt loop; normal GC, no forced collection or product state clearing")
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(result, stream, indent=2)
+    print(json.dumps(result))
