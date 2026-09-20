@@ -18,6 +18,58 @@ OBSERVER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(OBSERVER)
 
 
+class PhaseThroughputTests(unittest.TestCase):
+    def test_exposure_is_split_without_timer_samples_and_stop_is_terminal(self):
+        clock = [0.]
+        phases = OBSERVER.PhaseThroughput(lambda: clock[0])
+        clock[0] = 1.
+        phases.event("delivery")
+        phases.transition("hidden")
+        clock[0] = 2.
+        phases.transition("resume")
+        clock[0] = 2.1
+        phases.event("partial_spectrum")
+        clock[0] = 3.
+        phases.transition("stop")
+        clock[0] = 3.1
+        phases.transition("hidden")
+        clock[0] = 3.2
+        report = phases.report()
+        for name, seconds in dict(startup=.25, hidden=1., resume=.25, steady=1.5, stop=.2).items():
+            self.assertAlmostEqual(report[name]["seconds"], seconds)
+        self.assertEqual(report["resume"]["events"], {"partial_spectrum": 1})
+        self.assertEqual(report["steady"]["events"], {"delivery": 1})
+        self.assertAlmostEqual(report["resume"]["events_per_second"]["partial_spectrum"], 4.)
+
+    def test_events_bounded_and_invalid_input_rejected(self):
+        clock = [0.]
+        phases = OBSERVER.PhaseThroughput(lambda: clock[0])
+        for _ in range(10000):
+            phases.event("poll_return")
+        self.assertEqual(len(phases.counts["startup"]), 1)
+        self.assertEqual(phases.report()["startup"]["events_per_second"], {})
+        with self.assertRaises(ValueError):
+            phases.event("unknown")
+        with self.assertRaises(ValueError):
+            phases.transition("unknown")
+        clock[0] = -1.
+        with self.assertRaises(ValueError):
+            phases.report()
+
+    def test_first_paint_only_and_missing_keys_do_not_inflate_phase_counts(self):
+        phases = OBSERVER.PhaseThroughput(lambda: 0.)
+        tracker = OBSERVER.PaintAgeTracker()
+        tracker.phases = phases
+        key = (1, "partial", 1)
+        tracker.publish(key, 1.)
+        tracker.painted("spectrum", key, 2.)
+        tracker.painted("spectrum", key, 3.)
+        tracker.painted("waterfall", key, 4.)
+        tracker.painted("waterfall", (2, "partial", 1), 5.)
+        self.assertEqual(phases.report()["startup"]["events"], dict(
+            spectrum=1, waterfall=1, both=1, partial_spectrum=1, partial_waterfall=1, partial_both=1))
+
+
 class PaintAgeWitnessTests(unittest.TestCase):
     def test_same_pass_partial_and_terminal_do_not_fake_both_paints(self):
         witness = OBSERVER.PaintAgeTracker()
@@ -119,6 +171,11 @@ class RealQtObservationTests(unittest.TestCase):
         self.assertEqual(row["paint_witness_misses"], 0)
         self.assertEqual(row["terminal_control_gaps"], 1)
         for name in ("spectrum", "waterfall", "both"):
+            phases = row["phase_throughput"]
+            self.assertEqual(sum(p["events"].get(name, 0) for p in phases.values()),
+                             row["first_paint_publications"][name])
+            self.assertEqual(sum(p["events"].get("partial_" + name, 0) for p in phases.values()),
+                             row["first_partial_paint_publications"][name])
             self.assertGreater(row["first_paint_publications"][name], 0)
             self.assertGreaterEqual(row["host_publication_to_first_paint_return_ms"][name]["p50"], 0)
 

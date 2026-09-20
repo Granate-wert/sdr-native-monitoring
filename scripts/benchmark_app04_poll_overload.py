@@ -19,7 +19,7 @@ Waterfall age is for the newest uploaded row; older row corrections are not
 counted. First-paint distributions exclude repeated paints of the same key.
 """
 import argparse
-from collections import deque, OrderedDict
+from collections import Counter, deque, OrderedDict
 import hashlib
 import json
 import os
@@ -79,6 +79,64 @@ def run_qt_until(predicate, timeout_seconds):
         raise failure[0]
 
 
+class PhaseThroughput:
+    """Constant-size event counts and exposure, not retained frames or RF rates.
+
+    Events are classified at observation time under one lock. Transition costs
+    belong to the phase entered before navigation starts. Resume lasts 250 ms;
+    initial display is startup, not a return from another workspace.
+    """
+    PHASES = ("startup", "hidden", "resume", "steady", "stop")
+    EVENTS = ("poll_return", "prepare_return", "projection_return", "delivery",
+              "spectrum", "waterfall", "both", "partial_spectrum",
+              "partial_waterfall", "partial_both")
+
+    def __init__(self, clock=perf_counter):
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.phase = "startup"
+        self.last = clock()
+        self.boundary = self.last + .25
+        self.seconds = dict.fromkeys(self.PHASES, 0.)
+        self.counts = {phase: Counter() for phase in self.PHASES}
+
+    def _advance(self):
+        now = self.clock()
+        if now < self.last:
+            raise ValueError("phase clock moved backwards")
+        if self.phase in ("startup", "resume") and now >= self.boundary:
+            self.seconds[self.phase] += max(0., self.boundary - self.last)
+            self.last = max(self.last, self.boundary)
+            self.phase = "steady"
+        self.seconds[self.phase] += now - self.last
+        self.last = now
+
+    def transition(self, phase):
+        if phase not in ("hidden", "resume", "stop"):
+            raise ValueError("invalid explicit phase")
+        with self.lock:
+            self._advance()
+            if self.phase == "stop":
+                return
+            self.phase = phase
+            self.boundary = self.last + .25
+
+    def event(self, name):
+        if name not in self.EVENTS:
+            raise ValueError("unknown phase event")
+        with self.lock:
+            self._advance()
+            self.counts[self.phase][name] += 1
+
+    def report(self):
+        with self.lock:
+            self._advance()
+            return {phase: dict(seconds=self.seconds[phase], events=dict(self.counts[phase]),
+                events_per_second={name: count / self.seconds[phase]
+                    for name, count in self.counts[phase].items()} if self.seconds[phase] else {})
+                for phase in self.PHASES}
+
+
 class PaintAgeTracker:
     """Bounded scalar-only host publication -> first paint-return witness.
 
@@ -97,6 +155,7 @@ class PaintAgeTracker:
         self.counts = {name: 0 for name in self.ages}
         self.partial_counts = {name: 0 for name in self.ages}
         self.missing = self.repeated = self.evicted = self.changed_during_paint = 0
+        self.phases = None
 
     def publish(self, key, when):
         with self.lock:
@@ -128,9 +187,13 @@ class PaintAgeTracker:
             for target in targets:
                 self.ages[target].append((when - began) * 1000)
                 self.counts[target] += 1
+                if self.phases is not None:
+                    self.phases.event(target)
                 self.partial_counts[target] += key[1] == "partial"
                 if key[1] == "partial":
                     self.partial_ages[target].append((when - began) * 1000)
+                    if self.phases is not None:
+                        self.phases.event("partial_" + target)
 
 
 def sweep_key(frame):
@@ -168,6 +231,8 @@ def main():
     from PySide6.QtCore import QTimer, Qt
     from sdr_monitor.services.native_continuous_sweep import NativeContinuousSweepDisplayService
     from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
+    from sdr_monitor.ui.v2.state.prepared_sweep import SweepSnapshotPreparer
+    from sdr_monitor.ui.v2.spectrum import projection
     from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
     from tests.test_app02_analyzer_workspace_product import AnalyzerWorkspaceProductTests
 
@@ -274,6 +339,8 @@ def main():
                 pass
 
         age_tracker = PaintAgeTracker()
+        phases = PhaseThroughput()
+        age_tracker.phases = phases
         producer = Producer()
         service = NativeContinuousSweepDisplayService(
             SimpleNamespace(NativeContinuousSweepCoordinator=lambda *_: producer), "usb:fake")
@@ -319,13 +386,25 @@ def main():
             began = perf_counter()
             snapshot = service.poll_latest()
             ended = perf_counter()
+            phases.event("poll_return")
             if "service_stopped" in stop_stages:
                 stop_stages["final_poll_end"] = ended
             polls.append(((ended-began)*1000, threading.get_ident() != gui_thread))
             poll_ends[id(snapshot)] = ended
             return snapshot
 
-        with patch.object(_FakeAnalyzerDisplay, "start", start), \
+        def completed(original, event):
+            def invoke(*a, **kw):
+                value = original(*a, **kw)
+                phases.event(event)
+                return value
+            return invoke
+
+        with patch.object(SweepSnapshotPreparer, "__call__", completed(
+                 SweepSnapshotPreparer.__call__, "prepare_return")), \
+             patch.object(projection, "project_spectrum", completed(
+                 projection.project_spectrum, "projection_return")), \
+             patch.object(_FakeAnalyzerDisplay, "start", start), \
              patch.object(_FakeAnalyzerDisplay, "stop", stop), \
              patch.object(_FakeAnalyzerDisplay, "poll_latest", poll), \
              patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics):
@@ -370,6 +449,7 @@ def main():
                 presenter.task_failed.connect(errors.append)
 
                 def delivered(snapshot):
+                    phases.event("delivery")
                     ended = poll_ends.pop(id(snapshot))
                     publications.append((perf_counter()-ended)*1000)
                     if "final_poll_end" in stop_stages and ended == stop_stages["final_poll_end"]:
@@ -378,6 +458,7 @@ def main():
                 presenter.snapshot_ready.connect(delivered)
                 def cycle_page():
                     hidden = page.visualization.isVisible()
+                    phases.transition("hidden" if hidden else "resume")
                     harness.shell.select_workspace("calibration" if hidden else "analyzer")
                     page_switches.append(hidden)
 
@@ -395,9 +476,12 @@ def main():
                     cycle_timer.timeout.connect(cycle_page)
                     cycle_timer.start(round(args.page_cycle_seconds * 1000))
                 heartbeat.start()
+                phases = PhaseThroughput()
+                age_tracker.phases = phases
                 began = perf_counter()
 
                 def request_stop():
+                    phases.transition("stop")
                     entered = perf_counter()
                     page.primary.click()
                     stop_times.extend((entered, perf_counter()))
@@ -430,8 +514,9 @@ def main():
                         for name, values in age_tracker.ages.items()},
                     host_partial_to_first_paint_return_ms={name: summary(values) if values else None
                         for name, values in age_tracker.partial_ages.items()},
-                    first_paint_publications=age_tracker.counts,
-                    first_partial_paint_publications=age_tracker.partial_counts,
+                    first_paint_publications=dict(age_tracker.counts),
+                    first_partial_paint_publications=dict(age_tracker.partial_counts),
+                    phase_throughput=phases.report(),
                     paint_witness_misses=age_tracker.missing,
                     paint_witness_evicted=age_tracker.evicted,
                     repeated_paints=age_tracker.repeated,
@@ -474,6 +559,7 @@ def main():
         platform="Qt offscreen", logical_size=[1920, 1080],
         event_pump="QEventLoop.exec (normal deferred-delete delivery)",
         age_scope="host synthetic publication to first paint return; newest uploaded Waterfall row; same-key both is not atomic/DWM/RF age",
+        phase_scope="event observation time; startup/resume first250ms, hidden, steady, Stop through terminal acknowledgement; counts include successful calls, not distinct RF frames; return counts are not additive pipeline timings",
         timing_window_samples=8192, trace_memory=args.trace_memory,
         page_cycle_seconds=args.page_cycle_seconds,
         product_imports_outside_checkout=outside, results=rows)
