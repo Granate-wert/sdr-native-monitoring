@@ -3,12 +3,12 @@ from dataclasses import replace
 import unittest
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainterPath, QPen, QTransform
 from PySide6.QtWidgets import QApplication
 
-from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget
+from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_target, compare_images
 from scripts.app05_scientific_gpu import draw_scientific_gpu
-from scripts.app05_scientific_layers import CoverageRect, ScientificLayer, ScientificLayers, detach_layers
+from scripts.app05_scientific_layers import CoverageRect, ScientificLayer, ScientificLayers, detach_layers, paint_layers
 from scripts.app05_vector_geometry import pattern_rows, stroke_polygons
 from tests.ui_v2.test_app05_scientific_layers import ScientificGeometryTests
 
@@ -80,13 +80,20 @@ class VectorGeometryTests(unittest.TestCase):
             def restore(self): pass
             def setClipRect(self, rect): pass
             def setPen(self, pen): pass
+            def deviceTransform(self): return QTransform()
+            def resetTransform(self): pass
+            def setWorldTransform(self, transform): pass
+            def setRenderHint(self, *args): pass
+            def setBrushOrigin(self, point): pass
             def setBrush(self, brush): self.brush = brush
             def drawRect(self, rect):
                 reference.append((rect.getRect(), self.brush.color().getRgb(), self.brush.style().value))
         strip.paint(Recorder())
         bundle = detach_layers(scene, waterfall, panels)
         layer = next(value for value in bundle.layers if value.name == "coverage")
-        self.assertEqual([(r.rect, r.rgba, r.style) for r in layer.coverage], reference)
+        from sdr_monitor.ui.v2.spectrum.coverage_pattern import coverage_pixel_rect
+        self.assertEqual([(coverage_pixel_rect(QTransform(), QRectF(*r.rect)).getRect(), r.rgba, r.style)
+                          for r in layer.coverage], reference)
         self.assertEqual([r.state for r in layer.coverage], [1, 2, 4, 4, 5, 5])
         self.assertEqual(layer.z, -5)
         strip.runs.clear()
@@ -112,6 +119,21 @@ class VectorNativeTests(unittest.TestCase):
             metric.update(draw_scientific_gpu(device, functions, size, bundle))
         image, _ = self.target.render(extent, [], QColor("black"), draw=draw)
         return image, metric
+
+    def test_coverage_pattern_matches_cpu_under_dpr_translation_and_inverted_axes(self):
+        for dpr in (1., 1.25, 1.5, 2.):
+            for inverted in (False, True):
+                for style in (Qt.BrushStyle.SolidPattern, Qt.BrushStyle.HorPattern,
+                              Qt.BrushStyle.BDiagPattern, Qt.BrushStyle.DiagCrossPattern):
+                    with self.subTest(dpr=dpr, inverted=inverted, style=style):
+                        matrix = (1.3, 0., 0., -1.1 if inverted else 1.1, 9.3, 49.2 if inverted else 7.4)
+                        rect = CoverageRect((0., 0., 40., 30.), (255, 0, 0, 255), style.value, 4)
+                        layer = ScientificLayer('coverage', 0, -5, (0., 0., 80., 64.), matrix, 1.,
+                                                coverage=(rect,), pattern_rect=rect.rect)
+                        gpu, _ = self.render([layer], dpr)
+                        cpu = image_target(SceneExtent(80, 64, dpr), QColor('black'))
+                        paint_layers(cpu, ScientificLayers((layer,), 128, 1024*1024))
+                        self.assertTrue(compare_images(cpu, gpu)['equal'], compare_images(cpu, gpu))
 
     def test_native_stroke_width_gaps_caps_dash_and_single_alpha_blend(self):
         path = QPainterPath(QPointF(8, 20))

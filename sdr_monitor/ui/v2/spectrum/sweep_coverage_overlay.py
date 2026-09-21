@@ -9,6 +9,7 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from ..design import ThemeId, tokens_for_theme
 from ..i18n import UiLocale, text
 from .sweep_coverage import CURRENT, MISSING, PREVIOUS, CoverageProjection, SweepCoverageState
+from .coverage_pattern import anchor_coverage_pattern, coverage_pixel_rect
 
 
 class _CoverageStrip(pg.GraphicsObject):
@@ -39,6 +40,10 @@ class _CoverageStrip(pg.GraphicsObject):
         colors = tokens_for_theme(self.theme).colors
         painter.save()
         painter.setClipRect(self.rect)
+        transform = anchor_coverage_pattern(painter, self.rect)
+        if transform is None:
+            painter.restore()
+            return
         painter.setPen(Qt.PenStyle.NoPen)
         # Position annotation owns the top 4%; coverage uses the next strip.
         bottom = self.rect.top()
@@ -51,13 +56,13 @@ class _CoverageStrip(pg.GraphicsObject):
                      Qt.BrushStyle.HorPattern if state == PREVIOUS else
                      Qt.BrushStyle.BDiagPattern if state == MISSING else Qt.BrushStyle.DiagCrossPattern)
             painter.setBrush(QBrush(color, style))
-            painter.drawRect(QRectF(left, top - height * .085, right - left, height * .035))
+            painter.drawRect(coverage_pixel_rect(transform, QRectF(left, top - height * .085, right - left, height * .035)))
             if state & MISSING:
                 # At subpixel resolution this is deliberately conservative:
                 # any absent bin marks the column, not fabricated continuity.
                 color.setAlpha(45 if self.theme is not ThemeId.HIGH_CONTRAST else 100)
                 painter.setBrush(QBrush(color, Qt.BrushStyle.BDiagPattern))
-                painter.drawRect(QRectF(left, bottom, right - left, height * .90))
+                painter.drawRect(coverage_pixel_rect(transform, QRectF(left, bottom, right - left, height * .90)))
         painter.restore()
 
 

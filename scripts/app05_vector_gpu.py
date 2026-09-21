@@ -64,8 +64,13 @@ def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
         for layer in bundle.layers:
             if layer.image is not None:
                 continue
+            origin = layer.clip[:2]
+            if layer.pattern_rect is not None:
+                from PySide6.QtCore import QRectF
+                rect = layer.matrix().mapRect(QRectF(*layer.pattern_rect)).normalized()
+                origin = rect.x(), rect.y()
             functions.glUniform2i(program.uniformLocation("patternOrigin"),
-                                 floor(layer.clip[0]*extent.dpr), floor(layer.clip[1]*extent.dpr))
+                                 floor(origin[0]*extent.dpr), floor(origin[1]*extent.dpr))
             if layer.coverage:
                 functions.glDisable(0x0B90)
                 functions.glUniform1i(program.uniformLocation("patterned"), 1)

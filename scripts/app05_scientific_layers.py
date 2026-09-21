@@ -33,6 +33,7 @@ class ScientificLayer:
     path: Any = None
     pen: Any = None
     coverage: tuple[CoverageRect, ...] = ()
+    pattern_rect: tuple[float, float, float, float] | None = None
 
     def matrix(self):
         return QTransform(*self.transform)
@@ -137,7 +138,7 @@ def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024):
         from sdr_monitor.ui.v2.spectrum.sweep_coverage import CURRENT, MISSING, PREVIOUS
         colors = tokens_for_theme(strip.theme).colors
         rects = []
-        if len(strip.runs) > 2048 or retained + len(strip.runs) * 2 * 128 > limit_bytes:
+        if len(strip.runs) > 2048 or retained + len(strip.runs) * 2 * 128 + 32 > limit_bytes:
             raise MemoryError("coverage descriptor budget exceeded")
         for left, right, state in strip.runs:
             color = QColor(colors.success if state == CURRENT else
@@ -156,8 +157,8 @@ def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024):
         local_clip = QTransform(*matrix).mapRect(strip.rect).intersected(QRectF(*clip))
         clip = local_clip.x(), local_clip.y(), local_clip.width(), local_clip.height()
         layers.append(ScientificLayer("coverage", 0, strip.zValue(), clip, matrix, strip.effectiveOpacity(),
-                                      coverage=tuple(rects)))
-        retained += len(rects) * 128
+                                      coverage=tuple(rects), pattern_rect=strip.rect.getRect()))
+        retained += len(rects) * 128 + 32  # detached pattern anchor rectangle
     return ScientificLayers(tuple(sorted(layers, key=lambda layer: (layer.panel, layer.z))), retained, limit_bytes)
 
 
@@ -178,10 +179,15 @@ def paint_layers(device, bundle, *, images=True, curves=True):
                 if layer.image is not None:
                     painter.drawImage(QRectF(*layer.local_rect), layer.image)
                 elif layer.coverage:
+                    from sdr_monitor.ui.v2.spectrum.coverage_pattern import anchor_coverage_pattern, coverage_pixel_rect
+                    transform = None
+                    if layer.pattern_rect is not None:
+                        transform = anchor_coverage_pattern(painter, QRectF(*layer.pattern_rect))
                     painter.setPen(Qt.PenStyle.NoPen)
                     for rect in layer.coverage:
                         painter.setBrush(QBrush(QColor(*rect.rgba), Qt.BrushStyle(rect.style)))
-                        painter.drawRect(QRectF(*rect.rect))
+                        bounds = QRectF(*rect.rect)
+                        painter.drawRect(bounds if transform is None else coverage_pixel_rect(transform, bounds))
                 else:
                     painter.setPen(layer.pen)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -202,6 +208,7 @@ def layer_metadata(bundle):
             target_rect=layer.target_rect() if layer.image is not None else None,
             path_elements=layer.path.elementCount() if layer.path is not None else 0,
             coverage_rects=[dict(rect=r.rect, rgba=r.rgba, style=r.style, state=r.state) for r in layer.coverage],
+            pattern_rect=layer.pattern_rect,
             pen=dict(width=layer.pen.widthF(), cosmetic=layer.pen.isCosmetic(),
                      cap=layer.pen.capStyle().value, join=layer.pen.joinStyle().value,
                      dash=list(layer.pen.dashPattern())) if layer.pen is not None else None)

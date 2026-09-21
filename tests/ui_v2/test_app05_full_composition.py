@@ -259,6 +259,10 @@ class ActualCompositionTests(unittest.TestCase):
             self.assertFalse(isolated["product_accepted"])
             self.assertFalse(isolated["speed_acceptance"])
             self.assertEqual(len(isolated["commands"]), row["plot_plan"]["count"])
+            coverage = [item for item in isolated["commands"] if item["scientific"] == "coverage"]
+            if row["label"].startswith("sweep"):
+                self.assertEqual(len(coverage), 1)
+                self.assertTrue(coverage[0]["comparison"]["equal"], coverage[0]["comparison"])
             curves = [item["curve_support"] for item in isolated["commands"] if "curve_support" in item]
             self.assertTrue(curves)
             for support in curves:
