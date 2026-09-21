@@ -600,7 +600,13 @@ class SpectrumScene(QWidget):
         for line in self._marker_lines.values():
             line.setPen(pg.mkPen(tokens.scientific.marker, width=1.5))
         for label in self._marker_labels.values():
-            label.setColor(tokens.scientific.marker)
+            # Measurement text must remain legible over arbitrary trace/density
+            # colours. Keep marker identity in the line/border, not low-contrast
+            # yellow text on the light theme or a transparent scientific layer.
+            label.setColor(tokens.colors.primary_text)
+            label.fill = pg.mkBrush(tokens.colors.panel)
+            label.border = pg.mkPen(tokens.scientific.marker, width=1)
+            label.update()
         self._persistence_legend.set_theme(theme)
         self._sweep_position.set_theme(theme)
         self.sweep_coverage.set_theme(theme)
@@ -980,13 +986,17 @@ class SpectrumScene(QWidget):
         return curves
 
     def _make_marker_items(self) -> tuple[dict[str, pg.InfiniteLine], dict[str, pg.TextItem]]:
-        color = tokens_for_theme(self._theme).scientific.marker
+        tokens = tokens_for_theme(self._theme)
+        color = tokens.scientific.marker
         lines: dict[str, pg.InfiniteLine] = {}
         labels: dict[str, pg.TextItem] = {}
         for marker_id in ("M1", "M2"):
             line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color, width=1.5))
             line.setVisible(False)
-            label = pg.TextItem(color=color, anchor=(0.0, 1.0))
+            label = pg.TextItem(color=tokens.colors.primary_text, anchor=(0.0, 1.0),
+                                fill=tokens.colors.panel, border=pg.mkPen(color, width=1))
+            label.setZValue(14)  # Above traces and the translucent Sweep position.
+            label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             label.setVisible(False)
             self._plot_item.addItem(line)
             self._plot_item.addItem(label)
