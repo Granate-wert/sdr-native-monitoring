@@ -173,3 +173,93 @@ def plan_metadata(plan):
             clip=clip.boundingRect().getRect(), bounds=item.boundingRect().getRect(),
             text=item.toPlainText() if hasattr(item, "toPlainText") else None))
     return dict(count=len(commands), commands=commands, retained_beyond_capture=False)
+
+
+def curve_support_comparison(reference, candidate, background):
+    """Measurement-geometry witness, NOT an alternative pixel acceptance gate.
+
+    Row-bounded one-device-pixel neighbourhood and per-column extrema detect
+    missing peaks/columns beyond local aliased edge conventions. No resampling.
+    """
+    import sys
+    import numpy as np
+    from PySide6.QtGui import QImage
+    expected = QImage.Format.Format_ARGB32_Premultiplied
+    if (reference.size() != candidate.size() or reference.format() != expected or
+            candidate.format() != expected or background.alpha() != 255):
+        raise ValueError("curve support requires same-size ARGB32 images and opaque background")
+    width, height = reference.width(), reference.height()
+    bg = np.frombuffer(int(background.rgba()).to_bytes(4, sys.byteorder), dtype=np.uint8)
+    arrays = [np.frombuffer(im.constBits(), dtype=np.uint8).reshape(height, im.bytesPerLine())
+              for im in (reference, candidate)]
+    low = [np.full(width, height, dtype=np.int32) for _ in arrays]
+    high = [np.full(width, -1, dtype=np.int32) for _ in arrays]
+    counts = [0, 0]
+    unpaired = [0, 0]
+    def support(index, y):
+        return np.any(arrays[index][y, :width*4].reshape(width, 4) != bg, axis=1)
+    for y in range(height):
+        for index in (0, 1):
+            occupied = support(index, y)
+            counts[index] += int(np.count_nonzero(occupied))
+            low[index][occupied] = np.minimum(low[index][occupied], y)
+            high[index][occupied] = y
+            nearby = np.zeros(width, dtype=bool)
+            for other_y in range(max(0, y-1), min(height, y+2)):
+                row = support(1-index, other_y)
+                nearby |= row
+                nearby[1:] |= row[:-1]
+                nearby[:-1] |= row[1:]
+            unpaired[index] += int(np.count_nonzero(occupied & ~nearby))
+    shared = (high[0] >= 0) & (high[1] >= 0)
+    def bounds(index):
+        columns = np.flatnonzero(high[index] >= 0)
+        return ([int(columns[0]), int(low[index][columns].min()), int(columns[-1]),
+                 int(high[index][columns].max())] if columns.size else None)
+    return dict(reference_pixels=counts[0], candidate_pixels=counts[1],
+        reference_bounds=bounds(0), candidate_bounds=bounds(1),
+        reference_pixels_without_candidate_within_one=unpaired[0],
+        candidate_pixels_without_reference_within_one=unpaired[1],
+        reference_only_columns=int(np.count_nonzero((high[0] >= 0) & (high[1] < 0))),
+        candidate_only_columns=int(np.count_nonzero((high[1] >= 0) & (high[0] < 0))),
+        shared_columns=int(np.count_nonzero(shared)),
+        maximum_top_delta=int(np.max(np.abs(low[0][shared]-low[1][shared]), initial=0)),
+        maximum_bottom_delta=int(np.max(np.abs(high[0][shared]-high[1][shared]), initial=0)),
+        scope="isolated curve foreground; one physical pixel neighbourhood is diagnostic, NOT acceptance tolerance")
+
+
+def review_plot_commands(target, extent, plan, background, bundle):
+    """Isolate actual paint commands, not additive attribution of final pixels.
+
+    Same actual transforms/clips; at most one CPU image and one GPU readback.
+    No event pumping or mutated scene. Diagnostic only, never a speed sample.
+    """
+    from scripts.app05_scene_gpu_support import compare_images, image_target
+    from scripts.app05_scientific_gpu import draw_scientific_gpu
+    from scripts.app05_scientific_layers import ScientificLayers
+    if len(plan) > 1024:
+        raise ValueError("plot review command bound exceeded")
+    row_scratch_bytes = extent.pixel_width * 128
+    if extent.nominal_target_bytes + bundle.retained_bytes + row_scratch_bytes > extent.target_budget_bytes:
+        raise MemoryError("plot review target/payload budget exceeded")
+    rows = []
+    for index, command in enumerate(plan):
+        reference = image_target(extent, background)
+        paint_qt_commands(reference, (command,))
+        def draw(device, functions, size):
+            if command.scientific is None:
+                paint_qt_commands(device, (command,))
+            else:
+                one = ScientificLayers((command.scientific,), bundle.retained_bytes, bundle.allocation_limit)
+                draw_scientific_gpu(device, functions, size, one)
+        candidate, _ = target.render(extent, [], background, draw=draw)
+        row = dict(index=index, role=command.role, type=type(command.item).__name__,
+            scientific=command.scientific.name if command.scientific is not None else None,
+            comparison=compare_images(reference, candidate))
+        if command.scientific is not None and command.scientific.path is not None:
+            row["curve_support"] = curve_support_comparison(reference, candidate, background)
+        rows.append(row)
+        del reference, candidate
+    return dict(commands=rows, scope="isolated actual commands on same opaque background; NOT additive final-pixel attribution",
+                nominal_row_scratch_bytes=row_scratch_bytes,
+                speed_acceptance=False, product_accepted=False)

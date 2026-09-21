@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--scientific", action="store_true", help="Detached image shader/explicit paths ONLY, not all-layer acceptance")
     parser.add_argument("--images-only", action="store_true", help="With --scientific, isolate exact texture sampling/blending")
     parser.add_argument("--composition", action="store_true", help="Actual Qt stacking with scientific replacements; two complete plot viewports")
+    parser.add_argument("--component-review", action="store_true", help="With composition: isolate each actual command on the same opaque background")
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
@@ -39,6 +40,8 @@ def main():
         parser.error("--images-only requires --scientific")
     if args.composition and (not args.scientific or args.images_only):
         parser.error("--composition requires --scientific without --images-only")
+    if args.component_review and not args.composition:
+        parser.error("--component-review requires --composition")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = args.platform
@@ -214,6 +217,13 @@ def main():
                 if before != after:
                     raise AssertionError("render mutated scientific source/layer state")
                 row["source_unchanged"] = True
+                if args.component_review and target.available and traversal_valid:
+                    from scripts.app05_full_composition import review_plot_commands
+                    # Release full-scene images before isolated bounded review.
+                    del cpu
+                    row["component_review"] = review_plot_commands(target, extent, plan, background, bundle)
+                    if before != witness():
+                        raise AssertionError("command review mutated scientific source/layer state")
                 rows.append(row)
 
             f.page.primary.click()

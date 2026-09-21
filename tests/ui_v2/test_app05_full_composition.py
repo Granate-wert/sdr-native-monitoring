@@ -12,16 +12,18 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QPainterPath, QTransform
 from PySide6.QtWidgets import QApplication, QGraphicsBlurEffect, QGraphicsRectItem, QGraphicsScene, QGraphicsView
 
-from scripts.app05_full_composition import PlotCommand, _state, build_plot_plan, paint_qt_commands, plan_metadata
+from scripts.app05_full_composition import PlotCommand, _state, build_plot_plan, curve_support_comparison, paint_qt_commands, plan_metadata, review_plot_commands
 from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_target
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
-def composition_probe(root, *, native=False):
+def composition_probe(root, *, native=False, review=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
                    "--persistence", "visual"] if native else ["--width", "1366", "--height", "768"]
+        if review:
+            options += ["--component-review"]
         process = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
             "--checkout", str(root), "--output", str(output), "--scientific", "--composition",
             "--platform", "windows" if native else "offscreen", *options], cwd=root,
@@ -83,6 +85,62 @@ class PlotCommandTests(unittest.TestCase):
         local_clip = inverse.map(clip)
         self.assertTrue(local_clip.contains(QRectF(9, 9, 1, 1)))
         self.assertFalse(local_clip.contains(QRectF(0, 0, 1, 1)))
+        view.close()
+
+    def test_curve_support_detects_lost_peak_and_gap_not_just_pixel_count(self):
+        background = QColor("black")
+        reference = image_target(SceneExtent(20, 20), background)
+        candidate = image_target(SceneExtent(20, 20), background)
+        for x in range(3, 17):
+            reference.setPixelColor(x, 10, QColor("white"))
+            candidate.setPixelColor(x, 11, QColor("white"))
+        near = curve_support_comparison(reference, candidate, background)
+        self.assertEqual(near["reference_pixels_without_candidate_within_one"], 0)
+        self.assertEqual(near["candidate_pixels_without_reference_within_one"], 0)
+        self.assertEqual(near["maximum_top_delta"], 1)
+        self.assertEqual(near["reference_bounds"], [3, 10, 16, 10])
+        self.assertEqual(near["candidate_bounds"], [3, 11, 16, 11])
+        reference.setPixelColor(8, 2, QColor("white"))
+        lost = curve_support_comparison(reference, candidate, background)
+        self.assertEqual(lost["reference_pixels_without_candidate_within_one"], 1)
+        self.assertEqual(lost["maximum_top_delta"], 9)
+        for x in range(7, 10):
+            candidate.setPixelColor(x, 11, background)
+        gap = curve_support_comparison(reference, candidate, background)
+        self.assertEqual(gap["reference_only_columns"], 3)
+        self.assertGreater(gap["reference_pixels_without_candidate_within_one"], 1)
+        with self.assertRaises(ValueError):
+            curve_support_comparison(reference, candidate, QColor(0, 0, 0, 0))
+
+    def test_native_isolated_command_review_does_not_mutate_scene_or_retain_commands(self):
+        target = SceneGpuTarget()
+        self.addCleanup(target.close)
+        if not target.available:
+            self.skipTest("requires native GL context")
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        view.resize(180, 120)
+        item = QGraphicsRectItem(QRectF(2, 3, 20, 30))
+        item.setBrush(QColor("red"))
+        scene.addItem(item)
+        command = PlotCommand(item, 0, QRectF(0, 0, 180, 120), view)
+        original = item.pos(), item.opacity(), item.isVisible(), item.sceneTransform()
+        bundle = ScientificLayers((), 0, 1024)
+        report = review_plot_commands(target, SceneExtent(180, 120), (command,), QColor("black"), bundle)
+        self.assertEqual(len(report["commands"]), 1)
+        self.assertTrue(report["commands"][0]["comparison"]["equal"])
+        self.assertFalse(report["product_accepted"])
+        self.assertEqual(original, (item.pos(), item.opacity(), item.isVisible(), item.sceneTransform()))
+        weak = weakref.ref(command)
+        del command
+        self.assertIsNone(weak())
+        with self.assertRaisesRegex(ValueError, "bound"):
+            review_plot_commands(target, SceneExtent(180, 120), [None]*1025, QColor("black"), bundle)
+        tight = SceneExtent(180, 120, target_budget_bytes=180*120*20)
+        with self.assertRaisesRegex(MemoryError, "budget"):
+            review_plot_commands(target, tight, (), QColor("black"), bundle)
+        target.close()
+        self.assertEqual(target.snapshot()["live_targets"], 0)
         view.close()
 
     def test_ambiguous_missing_and_unsupported_commands_fail_before_substitution(self):
@@ -160,7 +218,7 @@ class ActualCompositionTests(unittest.TestCase):
         if not available:
             self.skipTest("requires native GL context")
         root = Path(__file__).resolve().parents[2]
-        report = composition_probe(root, native=True)
+        report = composition_probe(root, native=True, review=True)
         self.assert_plan(report)
         for row in report["cases"]:
             self.assertNotIn("gpu_declined", row)
@@ -170,6 +228,19 @@ class ActualCompositionTests(unittest.TestCase):
             self.assertGreater(resources["qt_batches"], 0)
             self.assertCountEqual([item["name"] for item in resources["scientific"]],
                                   [item["name"] for item in row["scientific_layers"]["layers"]])
+            isolated = row["component_review"]
+            self.assertFalse(isolated["product_accepted"])
+            self.assertFalse(isolated["speed_acceptance"])
+            self.assertEqual(len(isolated["commands"]), row["plot_plan"]["count"])
+            curves = [item["curve_support"] for item in isolated["commands"] if "curve_support" in item]
+            self.assertTrue(curves)
+            for support in curves:
+                self.assertGreater(support["reference_pixels"], 0)
+                self.assertGreater(support["candidate_pixels"], 0)
+                self.assertEqual(support["reference_only_columns"], 0)
+                self.assertEqual(support["candidate_only_columns"], 0)
+                self.assertEqual(support["reference_pixels_without_candidate_within_one"], 0)
+                self.assertEqual(support["candidate_pixels_without_reference_within_one"], 0)
         self.assertIsNotNone(app)
 
 
