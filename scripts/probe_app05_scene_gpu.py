@@ -31,11 +31,14 @@ def main():
     parser.add_argument("--platform", choices=("windows", "offscreen"), default="windows")
     parser.add_argument("--scientific", action="store_true", help="Detached image shader/explicit paths ONLY, not all-layer acceptance")
     parser.add_argument("--images-only", action="store_true", help="With --scientific, isolate exact texture sampling/blending")
+    parser.add_argument("--composition", action="store_true", help="Actual Qt stacking with scientific replacements; two complete plot viewports")
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
     if args.images_only and not args.scientific:
         parser.error("--images-only requires --scientific")
+    if args.composition and (not args.scientific or args.images_only):
+        parser.error("--composition requires --scientific without --images-only")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = args.platform
@@ -48,7 +51,7 @@ def main():
     from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
     from sdr_monitor.services.native_continuous_sweep import _to_domain_line, _to_domain_progress
     from sdr_monitor.ui.v2.design import ThemeId, tokens_for_theme
-    from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
+    from sdr_monitor.ui.v2.spectrum.contracts import BandMask, TraceKind
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
     from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
@@ -72,6 +75,7 @@ def main():
     info = dict(scope=__doc__, gpu=target.info, platform=args.platform, logical_size=[args.width, args.height],
         dpr=args.dpr, theme=args.theme, persistence=args.persistence, scientific_only=args.scientific,
         images_only=args.images_only,
+        full_plot_composition=args.composition,
         checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     try:
@@ -113,6 +117,7 @@ def main():
                     waterfall_visible_tiles=len(visible_tiles), waterfall_rows=waterfall.history_rows,
                     markers=len(scene.markers), sweep_coverage_runs=len(scene.sweep_coverage.strip.runs),
                     coverage_runs_sha256=hashlib.sha256(repr(scene.sweep_coverage.strip.runs).encode()).hexdigest(),
+                    band_masks_sha256=hashlib.sha256(repr(scene._band_masks).encode()).hexdigest(),
                     publication_kind=f.page._last_bundle.publication_kind.value,
                     publication_identity=dict(source=str(getattr(publication, "source_id", "")),
                         sequence=int(getattr(publication, "sequence", 0)),
@@ -136,12 +141,16 @@ def main():
                 cpu.fill(background)
                 bundle = None
                 gpu_resources = {}
+                plan = None
                 if args.scientific:
                     from scripts.app05_scientific_layers import detach_layers, layer_metadata, paint_layers
                     from scripts.app05_scientific_gpu import draw_scientific_gpu
                     bundle = detach_layers(scene, waterfall, panels)
+                    if args.composition:
+                        from scripts.app05_full_composition import build_plot_plan, draw_plot_composition, paint_plot_backgrounds, paint_qt_commands, plan_metadata
+                        plan = build_plot_plan(scene, waterfall, panels, bundle)
                 begin = perf_counter()
-                if bundle is None:
+                if bundle is None or plan is not None:
                     paint_scenes(cpu, panels)
                 else:
                     paint_layers(cpu, bundle, curves=not args.images_only)
@@ -154,9 +163,24 @@ def main():
                     projection_pending_at_capture=f.composition.spectrum_projector._future is not None)
                 if bundle is not None:
                     row["scientific_layers"] = layer_metadata(bundle)
-                if target.available:
+                if plan is not None:
+                    assert bundle is not None
+                    if extent.nominal_target_bytes + extent.pixel_width*extent.pixel_height*4 + bundle.retained_bytes > extent.target_budget_bytes:
+                        raise MemoryError("full-composition CPU reference budget exceeded")
+                    explicit_cpu = image_target(extent, background)
+                    paint_plot_backgrounds(explicit_cpu, panels)
+                    paint_qt_commands(explicit_cpu, plan)
+                    row["qt_traversal_comparison"] = compare_images(cpu, explicit_cpu)
+                    row["plot_plan"] = plan_metadata(plan)
+                    explicit_cpu.save(str(output_images / f"{label}-ordered-cpu.png"))
+                    del explicit_cpu
+                traversal_valid = plan is None or row["qt_traversal_comparison"]["equal"]
+                if target.available and traversal_valid:
                     def draw(device, functions, size):
-                        gpu_resources.update(draw_scientific_gpu(device, functions, size, bundle, curves=not args.images_only))
+                        if plan is not None:
+                            gpu_resources.update(draw_plot_composition(device, functions, size, plan, panels, bundle))
+                        else:
+                            gpu_resources.update(draw_scientific_gpu(device, functions, size, bundle, curves=not args.images_only))
                     candidate, gpu_ms = target.render(extent, panels, background,
                         draw=draw if bundle is not None else None)
                     row.update(comparison=compare_images(cpu, candidate), gpu_completed_paint_ms=gpu_ms)
@@ -182,6 +206,8 @@ def main():
                     del candidate
                 else:
                     row.update(fallback="cpu-reference", comparison=None, candidate_accepted=False, reference_selected=True)
+                    if not traversal_valid:
+                        row["gpu_declined"] = "Qt traversal does not match original scene; substitutions not admitted"
                 if not cpu.save(str(output_images / f"{label}-cpu.png")):
                     raise RuntimeError("could not save CPU scene evidence")
                 after = witness()
@@ -218,6 +244,8 @@ def main():
                         qt_errors=f._qt_errors))
                     raise
             scene.place_marker("M1", float(frame.frequencies_hz[700]))
+            if args.composition:
+                scene.set_band_masks((BandMask(float(frame.frequencies_hz[600]), float(frame.frequencies_hz[800]), "composition fixture"),))
             capture("rtbw-live")
             f.page.primary.click()
             f.wait(lambda: not f.live.is_running() and not f.composition.view_model.state.busy)
@@ -236,6 +264,9 @@ def main():
                 f.wait(lambda: scene._persistence._uploaded_density is partial_density)
                 if f.page.visualization.spectrum_scene is not original_scene:
                     raise AssertionError("Sweep did not reuse the RTBW canvas")
+                if args.composition:
+                    scene.set_band_masks((BandMask(float(partial.frequencies_hz[64]), float(partial.frequencies_hz[256]), "composition fixture"),))
+                    scene.place_marker("M1", float(partial.frequencies_hz[128]))
                 capture("sweep-partial")
                 poll.return_value = ContinuousSweepDisplaySnapshot(final, ContinuousSweepDisplayMetrics())
                 f.composition.analyzer_presenter._poll()
@@ -259,7 +290,7 @@ def main():
     info.update(cases=rows, target_lifetime=target.snapshot(),
         remaining_workers=[t.name for t in threading.enumerate() if any(s in t.name.lower() for s in ("sdr", "synthetic"))],
         post_close_reserved_bytes=f.composition.allocation_budget.snapshot().reserved_bytes,
-        all_pixels_equal=target.available and all(row["comparison"]["equal"] for row in rows))
+        all_pixels_equal=target.available and all(row["comparison"] is not None and row["comparison"]["equal"] for row in rows))
     info["outside_imports"] = [name for name, module in tuple(sys.modules.items())
         if name.startswith(("scripts", "tests", "sdr_monitor")) and getattr(module, "__file__", None)
         and not Path(str(module.__file__)).resolve().is_relative_to(root)]
