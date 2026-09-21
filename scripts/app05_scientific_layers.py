@@ -34,6 +34,8 @@ class ScientificLayer:
     pen: Any = None
     coverage: tuple[CoverageRect, ...] = ()
     pattern_rect: tuple[float, float, float, float] | None = None
+    source_format: int | None = None
+    sampling: str = "pixel-centre"
 
     def matrix(self):
         return QTransform(*self.transform)
@@ -82,7 +84,7 @@ def _mapping(item, graphics, target):
     return values, (clip.x(), clip.y(), clip.width(), clip.height())
 
 
-def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024):
+def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024, *, qt_raster_compat=False):
     """Synchronous GUI snapshot only; no references to widgets/source publications.
 
     Budget checked BEFORE each detached payload allocation. QImage format
@@ -90,6 +92,10 @@ def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024):
     Opaque Qt caches and the existing scene are explicitly outside this budget.
     """
     layers = []
+    if qt_raster_compat:
+        from PySide6.QtCore import qVersion
+        if qVersion() != "6.11.1":
+            raise ValueError("Qt raster compatibility verified only for Qt 6.11.1")
     retained = 0
     if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int) or limit_bytes <= 0:
         raise ValueError("layer allocation limit must be positive integer bytes")
@@ -102,6 +108,8 @@ def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024):
             raise RuntimeError("detach only already-rendered accepted images; do not hide preparation work")
         if item.paintMode not in (None, QPainter.CompositionMode.CompositionMode_SourceOver) or item.border is not None:
             raise ValueError("unsupported image composition or border")
+        if qt_raster_compat and (item.qimage.format().value not in (3, 17) or item.effectiveOpacity() != 1.):
+            raise ValueError("Qt raster compatibility requires Indexed8/RGBA8888 at opacity one")
         required = item.qimage.width() * item.qimage.height() * 4
         if retained + 2 * required > limit_bytes:
             raise MemoryError("scientific layer image budget exceeded before copy")
@@ -112,7 +120,9 @@ def detach_layers(scene, waterfall, panels, limit_bytes=64 * 1024 * 1024):
         matrix, clip = _mapping(item, *panels[index])
         rect = item.boundingRect()
         layers.append(ScientificLayer(name, index, item.zValue(), clip, matrix, item.effectiveOpacity(),
-            image=pixels, local_rect=(rect.x(), rect.y(), rect.width(), rect.height())))
+            image=pixels, local_rect=(rect.x(), rect.y(), rect.width(), rect.height()),
+            source_format=item.qimage.format().value,
+            sampling="qt611-nearest" if qt_raster_compat else "pixel-centre"))
     curves = [(kind.value, item) for kind, item in scene._curves.items()]
     curves.append(("previous-sweep", scene.sweep_coverage.history))
     for name, item in curves:
@@ -204,6 +214,8 @@ def layer_metadata(bundle):
         omitted=list(bundle.omitted), layers=[dict(name=layer.name, panel=layer.panel, z=layer.z,
             clip=layer.clip, transform=layer.transform, opacity=layer.opacity,
             image_size=[layer.image.width(), layer.image.height()] if layer.image is not None else None,
+            source_format=layer.source_format,
+            sampling=layer.sampling,
             image_sha256=hashlib.sha256(layer.image.constBits()).hexdigest() if layer.image is not None else None,
             target_rect=layer.target_rect() if layer.image is not None else None,
             path_elements=layer.path.elementCount() if layer.path is not None else 0,

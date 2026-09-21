@@ -17,13 +17,15 @@ from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_t
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
-def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False, fail_upload=False, lifecycle=False):
+def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False, fail_upload=False, lifecycle=False, qt_raster_compat=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
                    "--persistence", "visual"] if native else ["--width", "1366", "--height", "768"]
         if review:
             options += ["--component-review"]
+        if qt_raster_compat:
+            options += ["--qt-raster-compat"]
         if persistent:
             options += ["--persistent-resources"]
         if recreate:

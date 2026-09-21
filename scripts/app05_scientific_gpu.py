@@ -3,7 +3,7 @@
 Experimental bounded resources, ephemeral by default or explicitly context-owned.
 Never wired into product. Full uploads, not a throughput benchmark. No GL wide lines.
 """
-from math import ceil
+from math import ceil, floor, isfinite
 from scripts.app05_gpu_errors import GpuOperationError
 
 
@@ -38,9 +38,76 @@ def image_scissor(layer, extent):
     return x0, extent.pixel_height-y1, x1-x0, y1-y0
 
 
+def sampled_image_scissor(layer, extent):
+    """Explicit Qt raster rectangle rounding; default mathematical rule stays intact."""
+    if layer.sampling == "pixel-centre":
+        return image_scissor(layer, extent)
+    if layer.sampling != "qt611-nearest":
+        raise ValueError("unknown image sampling contract")
+    x, y, w, h = layer.target_rect()
+    def rounded(v):
+        return floor(v + .5) if v >= 0 else ceil(v - .5)
+    left, right = sorted((rounded(x*extent.dpr), rounded((x+w)*extent.dpr)))
+    top, bottom = sorted((rounded(y*extent.dpr), rounded((y+h)*extent.dpr)))
+    cx, cy, cw, ch = layer.clip
+    left = max(0, min(extent.pixel_width, max(left, rounded(cx*extent.dpr))))
+    right = max(left, min(extent.pixel_width, right, rounded((cx+cw)*extent.dpr)))
+    top = max(0, min(extent.pixel_height, max(top, rounded(cy*extent.dpr))))
+    bottom = max(top, min(extent.pixel_height, bottom, rounded((cy+ch)*extent.dpr)))
+    return left, extent.pixel_height-bottom, max(0, right-left), max(0, bottom-top)
+
+
+def qt_sampling_inverse(layer, extent):
+    """Narrow Qt 6.11.1 generic 16.16 path, never an automatic quality fallback.
+
+    Source: Qt v6.11.1 QSpanData::setupMatrix and fetchTransformed_fetcher.
+    Reject paths with different raster rules rather than silently approximating.
+    The detached image is already premultiplied; only sampling changes here.
+    """
+    from PySide6.QtCore import qVersion
+    from PySide6.QtGui import QImage, QTransform
+    if qVersion() != "6.11.1":
+        raise ValueError("Qt raster compatibility verified only for Qt 6.11.1")
+    if layer.sampling != "qt611-nearest" or layer.source_format not in (3, 17) or layer.opacity != 1.:
+        raise ValueError("Qt sampling requires explicit mode, Indexed8/RGBA8888 and opacity one")
+    if layer.image is None or layer.image.isNull() or layer.local_rect is None:
+        raise ValueError("Qt sampling requires a detached image and rectangle")
+    if layer.image.format() != QImage.Format.Format_RGBA8888_Premultiplied:
+        raise ValueError("Qt sampling requires premultiplied RGBA detached pixels")
+    if not all(isfinite(v) for v in (*layer.transform, *layer.local_rect, *layer.clip)):
+        raise ValueError("Qt sampling requires finite geometry")
+    matrix = layer.matrix() * QTransform.fromScale(extent.dpr, extent.dpr)
+    if matrix.type() != QTransform.TransformationType.TxScale or matrix.m11() <= 0 or matrix.m22() == 0:
+        raise ValueError("Qt sampling requires positive X axis-aligned scaling")
+    x, y, w, h = layer.local_rect
+    if w <= 0 or h <= 0 or layer.clip[2] < 0 or layer.clip[3] < 0:
+        raise ValueError("Qt sampling requires positive image extent and nonnegative clip")
+    matrix.translate(x, y)
+    matrix.scale(w/layer.image.width(), h/layer.image.height())
+    # Source-space displacement is part of Qt's rounding, not a tolerance.
+    delta = QTransform.fromTranslate(1./65536, 1./65536)
+    inverse, valid = (delta * matrix).inverted()
+    sx, sy, dx, dy = inverse.m11(), inverse.m22(), inverse.dx(), inverse.dy()
+    if not valid or not (1./65536 < sx*sx < 1e4 and 1./65536 < sy*sy < 1e4
+                         and abs(dx) < 1e4 and abs(dy) < 1e4):
+        raise ValueError("Qt sampling outside fast-matrix contract")
+    # Conservative whole-target bound includes one complete 2048-pixel span.
+    # This rejects overflow / Qt's floating fallback before allocating GL state.
+    if max(abs(sx*.5+dx), abs(sx*(extent.pixel_width+2048.5)+dx),
+           abs(sy*.5+dy), abs(sy*(extent.pixel_height+.5)+dy)) >= 32767:
+        raise ValueError("Qt sampling outside signed 16.16 coordinate range")
+    return sx, sy, dx, dy
+
+
 def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resources=None):
     from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram, QOpenGLTexture, QOpenGLFunctions_4_0_Core
     from scripts.app05_vector_gpu import draw_vectors_gpu
+    for layer in bundle.layers:
+        if layer.image is not None:
+            if layer.sampling == "qt611-nearest":
+                qt_sampling_inverse(layer, extent)
+            elif layer.sampling != "pixel-centre":
+                raise ValueError("unknown image sampling contract")
     if curves:
         for layer in bundle.layers:
             if layer.image is not None and any(other.image is None and other.panel == layer.panel and other.z <= layer.z
@@ -71,10 +138,24 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
         fragment = """#version 400
             uniform sampler2D pixels; uniform float layerOpacity;
             uniform dvec4 pixelRect; uniform double deviceRatio; uniform double targetHeight;
+            uniform int qtNearest; uniform int spanStart;
+            uniform dvec4 qtInverse;
             out vec4 fragmentColor;
             void main(){
                 precise dvec2 point=dvec2(gl_FragCoord.x,targetHeight-double(gl_FragCoord.y))/deviceRatio;
                 precise dvec2 samplePosition=(point-pixelRect.xy)*dvec2(textureSize(pixels,0))/pixelRect.zw;
+                if(qtNearest!=0){
+                    // Explicit Qt 6.11 generic raster compatibility, not the
+                    // default mathematical pixel-centre sampling contract.
+                    int offset=int(floor(gl_FragCoord.x))-spanStart;
+                    int within=offset%2048;
+                    precise double base=qtInverse.x*(double(spanStart+offset-within)+0.5);
+                    base=base+qtInverse.z;
+                    precise double row=qtInverse.y*(targetHeight-double(gl_FragCoord.y));
+                    row=row+qtInverse.w;
+                    samplePosition.x=(trunc(base*65536.0)+double(within)*trunc(qtInverse.x*65536.0))/65536.0;
+                    samplePosition.y=trunc(row*65536.0)/65536.0;
+                }
                 ivec2 index=clamp(ivec2(floor(samplePosition)),ivec2(0),textureSize(pixels,0)-ivec2(1));
                 fragmentColor=texelFetch(pixels,index,0)*layerOpacity;
             }"""
@@ -121,6 +202,11 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
             check("texture")
             functions.glUniform1f(program.uniformLocation("layerOpacity"), float(layer.opacity))
             doubles.glUniform4d(program.uniformLocation("pixelRect"), *layer.target_rect())
+            functions.glUniform1i(program.uniformLocation("qtNearest"), int(layer.sampling == "qt611-nearest"))
+            functions.glUniform1i(program.uniformLocation("spanStart"), sampled_image_scissor(layer, extent)[0])
+            if layer.sampling == "qt611-nearest":
+                doubles.glUniform4d(program.uniformLocation("qtInverse"),
+                                    *qt_sampling_inverse(layer, extent))
             check("texture and opacity")
             data = texture_vertices().tobytes()
             if resources is None:
@@ -129,7 +215,7 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
                 resources.write("image", data)
             program.enableAttributeArray(0)
             program.setAttributeBuffer(0, 0x1406, 0, 2, 8)
-            functions.glScissor(*image_scissor(layer, extent))
+            functions.glScissor(*sampled_image_scissor(layer, extent))
             functions.glDrawArrays(0x0005, 0, 4)
             check("draw")
             uploads += 1

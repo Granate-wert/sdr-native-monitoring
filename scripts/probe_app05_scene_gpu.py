@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--persistence", choices=("direct", "visual"), default="direct")
     parser.add_argument("--platform", choices=("windows", "offscreen"), default="windows")
     parser.add_argument("--scientific", action="store_true", help="Detached image shader/explicit paths ONLY, not all-layer acceptance")
+    parser.add_argument("--qt-raster-compat", action="store_true", help="Explicit Qt 6.11.1 Indexed8/RGBA8888 nearest raster sampling experiment")
     parser.add_argument("--images-only", action="store_true", help="With --scientific, isolate exact texture sampling/blending")
     parser.add_argument("--composition", action="store_true", help="Actual Qt stacking with scientific replacements; two complete plot viewports")
     parser.add_argument("--component-review", action="store_true", help="With composition: isolate each actual command on the same opaque background")
@@ -46,6 +47,8 @@ def main():
         parser.error("--images-only requires --scientific")
     if args.composition and (not args.scientific or args.images_only):
         parser.error("--composition requires --scientific without --images-only")
+    if args.qt_raster_compat and not args.composition:
+        parser.error("--qt-raster-compat requires --composition; not the pixel-centre oracle")
     if args.component_review and not args.composition:
         parser.error("--component-review requires --composition")
     if args.persistent_resources and (not args.composition or args.component_review):
@@ -94,7 +97,7 @@ def main():
     ready = False
     info = dict(scope=__doc__, gpu=target.info, platform=args.platform, logical_size=[args.width, args.height],
         dpr=args.dpr, theme=args.theme, persistence=args.persistence, scientific_only=args.scientific,
-        images_only=args.images_only,
+        images_only=args.images_only, qt_raster_compat=args.qt_raster_compat,
         full_plot_composition=args.composition,
         persistent_resources=args.persistent_resources,
         recreate_context=args.recreate_context,
@@ -178,7 +181,7 @@ def main():
                 if args.scientific:
                     from scripts.app05_scientific_layers import detach_layers, layer_metadata, paint_layers
                     from scripts.app05_scientific_gpu import draw_scientific_gpu
-                    bundle = detach_layers(scene, waterfall, panels)
+                    bundle = detach_layers(scene, waterfall, panels, qt_raster_compat=args.qt_raster_compat)
                     if args.composition:
                         from scripts.app05_full_composition import build_plot_plan, draw_plot_composition, paint_plot_backgrounds, paint_qt_commands, plan_metadata
                         plan = build_plot_plan(scene, waterfall, panels, bundle)
@@ -394,7 +397,7 @@ def main():
                     warm = image_target(size, background)
                     paint_scenes(warm, panels)  # materialize accepted deferred Qt images after Stop/Show
                     del warm
-                    bundle = detach_layers(scene, waterfall, panels)
+                    bundle = detach_layers(scene, waterfall, panels, qt_raster_compat=args.qt_raster_compat)
                     plan = build_plot_plan(scene, waterfall, panels, bundle)
                     def draw(device, functions, extent):
                         draw_plot_composition(device, functions, extent, plan, panels, bundle,
