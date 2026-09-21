@@ -23,6 +23,7 @@ class ScientificGpuResources:
         self._budget = 0
         self.program_builds = self.buffer_allocations = self.texture_allocations = 0
         self.texture_releases = self.uploads = 0
+        self.abandoned_bytes = self.abandoned_textures = 0
 
     def _guard(self):
         if self._closed:
@@ -146,9 +147,31 @@ class ScientificGpuResources:
         self._programs.clear()
         self._closed = True
 
+    def abandon_destroyed_context(self):
+        """Drop wrappers only AFTER the owning QObject destroyed signal.
+
+        No explicit GL delete/release calls and no foreign current context.
+        Native context teardown owns these objects; do not count as close().
+        """
+        from shiboken6 import isValid
+        if self._closed:
+            return
+        if threading.get_ident() != self._thread or isValid(self._context):
+            raise RuntimeError("cannot abandon a live context or from another thread")
+        if QOpenGLContext.currentContext() is not None:
+            raise RuntimeError("cannot abandon with a foreign current context")
+        self.abandoned_bytes = self.live_bytes
+        self.abandoned_textures = len(self._textures)
+        self._textures.clear()
+        self._buffers.clear()
+        self._capacities.clear()
+        self._programs.clear()
+        self._closed = True
+
     def snapshot(self):
         return dict(program_builds=self.program_builds, buffer_allocations=self.buffer_allocations,
             texture_allocations=self.texture_allocations, texture_releases=self.texture_releases,
             uploads=self.uploads, live_bytes=self.live_bytes, live_textures=len(self._textures),
+            abandoned_bytes=self.abandoned_bytes, abandoned_textures=self.abandoned_textures,
             live_programs=len(self._programs), closed=self._closed,
             scope="nominal GL storage, excludes opaque driver/program/Qt allocations; no CPU sources retained")

@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--composition", action="store_true", help="Actual Qt stacking with scientific replacements; two complete plot viewports")
     parser.add_argument("--component-review", action="store_true", help="With composition: isolate each actual command on the same opaque background")
     parser.add_argument("--persistent-resources", action="store_true", help="Experimental composition with context-owned reusable GPU storage")
+    parser.add_argument("--recreate-context", action="store_true", help="With persistent resources: explicitly destroy native context and verify CPU/recreated GPU per capture")
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
@@ -45,6 +46,8 @@ def main():
         parser.error("--component-review requires --composition")
     if args.persistent_resources and (not args.composition or args.component_review):
         parser.error("--persistent-resources requires composition without component-review")
+    if args.recreate_context and not args.persistent_resources:
+        parser.error("--recreate-context requires --persistent-resources")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = args.platform
@@ -83,6 +86,7 @@ def main():
         images_only=args.images_only,
         full_plot_composition=args.composition,
         persistent_resources=args.persistent_resources,
+        recreate_context=args.recreate_context,
         checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     try:
@@ -207,6 +211,32 @@ def main():
                         del fresh
                         if not row["persistent_vs_fresh_gpu"]["equal"]:
                             raise AssertionError("persistent resources changed exact same-scene GPU pixels")
+                    if args.recreate_context:
+                        from shiboken6 import delete
+                        old_generation = target.context_generation
+                        assert target._context is not None
+                        delete(target._context)  # explicit diagnostic destruction, not an SDR/Live restart
+                        destroyed = target.snapshot()
+                        fallback, status = target.render_or_cpu(extent, panels, background)
+                        cpu_parity = compare_images(cpu, fallback)
+                        del fallback
+                        if status["backend"] != "cpu" or not cpu_parity["equal"]:
+                            raise AssertionError("destroyed-context fallback is not the current CPU scene")
+                        target.recreate_context()
+                        reduced = replace(extent, target_budget_bytes=extent.target_budget_bytes
+                            -extent.pixel_width*extent.pixel_height*4)
+                        def renewed_draw(device, functions, size):
+                            draw_plot_composition(device, functions, reduced, plan, panels, bundle,
+                                                  resources=target.scientific_resources())
+                        renewed, _ = target.render(extent, panels, background, draw=renewed_draw,
+                                                   expected_generation=old_generation+1)
+                        gpu_parity = compare_images(candidate, renewed)
+                        del renewed
+                        row["context_recreation"] = dict(old_generation=old_generation,
+                            new_generation=target.context_generation, destroyed=destroyed,
+                            cpu_fallback=cpu_parity, renewed_gpu=gpu_parity)
+                        if not gpu_parity["equal"]:
+                            raise AssertionError("context recreation changed exact same-scene GPU pixels")
                     if args.images_only:
                         from scripts.app05_scientific_layers import paint_texel_oracle
                         assert bundle is not None

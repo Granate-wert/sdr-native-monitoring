@@ -199,6 +199,150 @@ class PersistentGpuTests(unittest.TestCase):
         actual = self.render(replace(bundle, retained_bytes=bundle.retained_bytes))
         self.assertEqual(actual.pixelColor(10, 10), QColor("red"))
 
+    def test_native_qobject_destruction_cleans_resources_and_recreates_new_generation(self):
+        from shiboken6 import delete, isValid
+        bundle = self.bundle("red")
+        expected = self.render(bundle)
+        old_context = self.target._context
+        old_resources = self.target._resources
+        generation = self.target.context_generation
+        delete(old_context)
+        self.assertFalse(isValid(old_context))
+        self.assertIsNone(self.target._context)
+        self.assertFalse(self.target.available)
+        self.assertTrue(old_resources.snapshot()["closed"])
+        self.assertEqual(old_resources.live_bytes, 0)
+        retired = old_resources.snapshot()
+        self.assertEqual(retired["texture_allocations"], retired["texture_releases"]+retired["abandoned_textures"])
+        self.assertEqual(self.target.allocations, self.target.releases+self.target.abandoned_targets)
+        self.assertEqual(self.target.snapshot()["live_targets"], 0)
+        self.assertIsNone(self.target.snapshot()["destruction_cleanup_error"])
+        image, status = self.target.render_or_cpu(SceneExtent(80, 64), [], QColor("blue"))
+        self.assertEqual(status["backend"], "cpu")
+        self.assertEqual(image.pixelColor(10, 10), QColor("blue"))
+        self.assertEqual(self.target.recreate_context(), generation+1)
+        self.assertIsNot(self.target._context, old_context)
+        actual = self.render(bundle)
+        self.assertTrue(compare_images(expected, actual)["equal"])
+        with self.assertRaisesRegex(RuntimeError, "closed"):
+            old_resources.set_budget(1024)
+
+    def test_native_create_replacement_signal_and_repeated_generation_cleanup(self):
+        bundle = self.bundle()
+        expected = self.render(bundle)
+        wrapper = self.target._context
+        # Qt create() really destroys/replaces native GL state, while retaining
+        # this Python/QObject wrapper. The destruction signal must still clean.
+        self.assertTrue(wrapper.create())
+        self.assertEqual(self.target.context_destructions, 1)
+        self.assertEqual(self.target.snapshot()["live_targets"], 0)
+        self.assertFalse(self.target.available)
+        for generation in range(2, 7):
+            self.assertEqual(self.target.recreate_context(), generation)
+            self.assertIs(self.target._context, wrapper)
+            actual = self.render(bundle)
+            self.assertTrue(compare_images(expected, actual)["equal"])
+            self.assertEqual(self.target.snapshot()["scientific_resources"]["program_builds"], 2)
+        self.assertEqual(self.target.context_destructions, 6)
+        self.assertEqual(self.target.allocations-self.target.releases, 1)
+
+    def test_failed_creation_stays_cpu_until_explicit_retry_and_does_not_accept_old_generation(self):
+        self.render(self.bundle())
+        old_generation = self.target.context_generation
+        with patch.object(self.target._context, "create", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "recreation failed"):
+                self.target.recreate_context()
+        self.assertEqual(self.target.context_generation, old_generation)
+        image, status = self.target.render_or_cpu(SceneExtent(80, 64), [], QColor("blue"))
+        self.assertEqual(status["backend"], "cpu")
+        self.assertEqual(image.pixelColor(10, 10), QColor("blue"))
+        self.target.recreate_context()
+        with self.assertRaisesRegex(ValueError, "stale"):
+            self.target.render_or_cpu(SceneExtent(80, 64), [], QColor("black"), expected_generation=old_generation)
+        self.assertEqual(self.render(self.bundle("green")).pixelColor(10, 10), QColor("green"))
+
+    def test_reentrant_lifecycle_rejected_but_external_destruction_during_draw_falls_back(self):
+        from shiboken6 import delete
+        self.render(self.bundle())
+        def protected(device, functions, extent):
+            for operation in (self.target.close, self.target.recreate_context, self.target.recover_context):
+                with self.assertRaisesRegex(RuntimeError, "during a frame"):
+                    operation()
+            with self.assertRaisesRegex(RuntimeError, "reentrant"):
+                self.target.render(extent, [], QColor("black"))
+        self.target.render(SceneExtent(80, 64), [], QColor("black"), draw=protected)
+        def destroyed(device, functions, extent):
+            delete(self.target._context)
+        image, status = self.target.render_or_cpu(SceneExtent(80, 64), [], QColor("blue"), draw=destroyed)
+        self.assertEqual(status["backend"], "cpu")
+        self.assertEqual(image.pixelColor(10, 10), QColor("blue"))
+        self.assertIsNone(self.target.snapshot()["destruction_cleanup_error"])
+        self.target.recreate_context()
+        self.assertEqual(self.render(self.bundle()).pixelColor(10, 10), QColor("red"))
+
+    def test_failed_native_destruction_cleanup_retires_old_ids_before_recreation(self):
+        self.render(self.bundle())
+        old_resources = self.target._resources
+        with patch.object(self.target, "_make_current", return_value=False):
+            self.assertTrue(self.target._context.create())
+        self.assertIsNotNone(self.target.snapshot()["destruction_cleanup_error"])
+        self.assertFalse(old_resources.snapshot()["closed"])
+        self.target.recreate_context()
+        retired = old_resources.snapshot()
+        self.assertTrue(retired["closed"])
+        self.assertGreater(retired["abandoned_bytes"], 0)
+        self.assertEqual(retired["texture_releases"], 0)
+        self.assertIsNone(self.target.snapshot()["destruction_cleanup_error"])
+        self.assertEqual(self.render(self.bundle("green")).pixelColor(10, 10), QColor("green"))
+
+    def test_native_destruction_of_one_target_preserves_other_current_context(self):
+        from PySide6.QtGui import QOpenGLContext
+        from shiboken6 import delete
+        self.render(self.bundle())
+        other = SceneGpuTarget()
+        self.addCleanup(other.close)
+        self.render(self.bundle("blue"), target=other)
+        def replace_other_context(device, functions, extent):
+            self.assertTrue(self.target._context.create())
+            self.assertEqual(QOpenGLContext.currentContext(), other._context)
+        other.render(SceneExtent(80, 64), [], QColor("black"), draw=replace_other_context)
+        self.target.recreate_context()
+        self.render(self.bundle())
+        def delete_other_context(device, functions, extent):
+            delete(self.target._context)
+            self.assertEqual(QOpenGLContext.currentContext(), other._context)
+        other.render(SceneExtent(80, 64), [], QColor("black"), draw=delete_other_context)
+        self.target.recreate_context()
+        self.assertEqual(self.render(self.bundle("blue"), target=other).pixelColor(10, 10), QColor("blue"))
+
+    def test_close_retires_failed_native_generation_without_false_explicit_releases(self):
+        self.render(self.bundle())
+        with patch.object(self.target, "_make_current", return_value=False):
+            self.assertTrue(self.target._context.create())
+        self.target.close()
+        report = self.target.snapshot()
+        self.assertTrue(report["closed"])
+        self.assertFalse(report["available"])
+        self.assertIsNone(report["destruction_cleanup_error"])
+        self.assertIsNotNone(report["last_cleanup_warning"])
+        self.assertEqual(report["live_targets"], 0)
+        self.assertEqual(report["scientific_resources"]["live_bytes"], 0)
+        self.assertGreater(report["scientific_resources"]["abandoned_bytes"], 0)
+
+    def test_foreign_context_switch_during_frame_does_not_return_wrong_readback_or_unbind_foreign(self):
+        from PySide6.QtGui import QOpenGLContext
+        other = SceneGpuTarget()
+        self.addCleanup(other.close)
+        def switched(device, functions, extent):
+            self.assertTrue(other._make_current())
+        actual, status = self.target.render_or_cpu(SceneExtent(80, 64), [], QColor("green"), draw=switched)
+        self.assertEqual(status["backend"], "cpu")
+        self.assertEqual(actual.pixelColor(10, 10), QColor("green"))
+        self.assertEqual(QOpenGLContext.currentContext(), other._context)
+        other._context.doneCurrent()
+        self.target.recover_context()
+        self.assertEqual(self.render(self.bundle()).pixelColor(10, 10), QColor("red"))
+
 
 if __name__ == "__main__":
     unittest.main()

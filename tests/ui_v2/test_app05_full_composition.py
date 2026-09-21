@@ -17,7 +17,7 @@ from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_t
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
-def composition_probe(root, *, native=False, review=False, persistent=False):
+def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
@@ -26,6 +26,8 @@ def composition_probe(root, *, native=False, review=False, persistent=False):
             options += ["--component-review"]
         if persistent:
             options += ["--persistent-resources"]
+        if recreate:
+            options += ["--recreate-context"]
         process = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
             "--checkout", str(root), "--output", str(output), "--scientific", "--composition",
             "--platform", "windows" if native else "offscreen", *options], cwd=root,
@@ -262,6 +264,27 @@ class ActualCompositionTests(unittest.TestCase):
                 self.assertEqual(support["candidate_only_columns"], 0)
                 self.assertEqual(support["reference_pixels_without_candidate_within_one"], 0)
                 self.assertEqual(support["candidate_pixels_without_reference_within_one"], 0)
+        self.assertIsNotNone(app)
+
+    def test_native_context_destruction_current_cpu_and_recreated_full_scene(self):
+        app = QApplication.instance() or QApplication([])
+        target = SceneGpuTarget()
+        available = target.available
+        target.close()
+        if not available:
+            self.skipTest("requires native GL context")
+        report = composition_probe(Path(__file__).resolve().parents[2], native=True, persistent=True, recreate=True)
+        self.assert_plan(report)
+        for row in report["cases"]:
+            renewal = row["context_recreation"]
+            self.assertEqual(renewal["new_generation"], renewal["old_generation"]+1)
+            self.assertTrue(renewal["cpu_fallback"]["equal"])
+            self.assertTrue(renewal["renewed_gpu"]["equal"])
+            self.assertEqual(renewal["destroyed"]["live_targets"], 0)
+            self.assertIsNone(renewal["destroyed"]["destruction_cleanup_error"])
+        lifetime = report["target_lifetime"]
+        self.assertEqual(lifetime["context_generation"], 5)
+        self.assertEqual(lifetime["allocations"], lifetime["releases"]+lifetime["abandoned_targets"])
         self.assertIsNotNone(app)
 
 
