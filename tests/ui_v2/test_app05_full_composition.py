@@ -17,7 +17,7 @@ from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_t
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
-def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False):
+def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False, fail_upload=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
@@ -28,6 +28,8 @@ def composition_probe(root, *, native=False, review=False, persistent=False, rec
             options += ["--persistent-resources"]
         if recreate:
             options += ["--recreate-context"]
+        if fail_upload:
+            options += ["--fail-upload"]
         process = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
             "--checkout", str(root), "--output", str(output), "--scientific", "--composition",
             "--platform", "windows" if native else "offscreen", *options], cwd=root,
@@ -264,6 +266,28 @@ class ActualCompositionTests(unittest.TestCase):
                 self.assertEqual(support["candidate_only_columns"], 0)
                 self.assertEqual(support["reference_pixels_without_candidate_within_one"], 0)
                 self.assertEqual(support["candidate_pixels_without_reference_within_one"], 0)
+        self.assertIsNotNone(app)
+
+    def test_native_upload_failure_current_cpu_and_recovered_full_scene(self):
+        app = QApplication.instance() or QApplication([])
+        target = SceneGpuTarget()
+        available = target.available
+        target.close()
+        if not available:
+            self.skipTest("requires native GL context")
+        report = composition_probe(Path(__file__).resolve().parents[2], native=True, persistent=True, fail_upload=True)
+        self.assert_plan(report)
+        for row in report["cases"]:
+            failure = row["upload_failure"]
+            self.assertTrue(failure["cpu_fallback"]["equal"])
+            self.assertTrue(failure["recovered_gpu"]["equal"])
+            self.assertEqual(failure["failed"]["live_targets"], 0)
+            self.assertEqual(failure["failed"]["scientific_resources"]["live_bytes"], 0)
+            self.assertIsNone(failure["failed"]["destruction_cleanup_error"])
+        lifetime = report["target_lifetime"]
+        self.assertEqual(lifetime["context_generation"], 1)
+        self.assertEqual(lifetime["context_recoveries"], 4)
+        self.assertEqual(lifetime["allocations"], lifetime["releases"])
         self.assertIsNotNone(app)
 
     def test_native_context_destruction_current_cpu_and_recreated_full_scene(self):

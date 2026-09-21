@@ -1,6 +1,7 @@
 """Experimental stencil stroke fill and coverage pattern shader, no wide lines."""
 from dataclasses import replace
 from math import floor
+from scripts.app05_gpu_errors import GpuOperationError
 
 
 def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
@@ -32,10 +33,10 @@ def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
         if resources is None:
             for kind, source in ((QOpenGLShader.ShaderTypeBit.Vertex, vertex), (QOpenGLShader.ShaderTypeBit.Fragment, fragment)):
                 if not program.addShaderFromSourceCode(kind, source):
-                    raise RuntimeError(program.log())
+                    raise GpuOperationError(program.log())
             program.bindAttributeLocation("position", 0)
             if not program.link() or not program.bind() or not buffer.create() or not buffer.bind():
-                raise RuntimeError("vector shader initialization failed: " + program.log())
+                raise GpuOperationError("vector shader initialization failed: " + program.log())
         else:
             program, buffer = resources.program("vector", vertex, fragment)
         program.enableAttributeArray(0)
@@ -113,7 +114,7 @@ def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
             del polygons
         error = functions.glGetError()
         if error:
-            raise RuntimeError(f"scientific vector GL error {error}")
+            raise GpuOperationError(f"scientific vector GL error {error}")
         return dict(strokes=strokes, coverage_rectangles=coverage_count,
                     pattern_anchor="plot-top-left physical pixels; 8x8 cosmetic tile",
                     peak_geometry_bytes=max((s["nominal_geometry_bytes"] for s in strokes), default=0))
@@ -121,10 +122,12 @@ def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
         functions.glColorMask(True, True, True, True)
         functions.glDisable(0x0B90)
         functions.glDisable(0x0C11)
-        program.disableAttributeArray(0)
-        buffer.release()
-        if resources is None:
-            buffer.destroy()
-        program.release()
+        if program.isLinked():
+            program.disableAttributeArray(0)
+            program.release()
+        if buffer.isCreated():
+            buffer.release()
+            if resources is None:
+                buffer.destroy()
         if resources is None:
             program.removeAllShaders()

@@ -4,6 +4,7 @@ Experimental bounded resources, ephemeral by default or explicitly context-owned
 Never wired into product. Full uploads, not a throughput benchmark. No GL wide lines.
 """
 from math import ceil
+from scripts.app05_gpu_errors import GpuOperationError
 
 
 def physical_scissor(clip, extent):
@@ -53,7 +54,7 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
         resources.set_budget(extent.target_budget_bytes-extent.nominal_target_bytes-bundle.retained_bytes)
     doubles = QOpenGLFunctions_4_0_Core()
     if not doubles.initializeOpenGLFunctions():
-        raise RuntimeError("scientific texel prototype requires OpenGL 4.0; select CPU fallback")
+        raise GpuOperationError("scientific texel prototype requires OpenGL 4.0; select CPU fallback")
     program = QOpenGLShaderProgram()
     buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
     texture = None
@@ -62,7 +63,7 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
     def check(stage):
         error = functions.glGetError()
         if error:
-            raise RuntimeError(f"scientific GL error {error} at {stage}")
+            raise GpuOperationError(f"scientific GL error {error} at {stage}")
     try:
         check("entry")
         vertex = """#version 400
@@ -79,12 +80,12 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
             }"""
         if resources is None:
             if not program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, vertex):
-                raise RuntimeError(program.log())
+                raise GpuOperationError(program.log())
             if not program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, fragment):
-                raise RuntimeError(program.log())
+                raise GpuOperationError(program.log())
             program.bindAttributeLocation("position", 0)
             if not program.link() or not program.bind() or not buffer.create() or not buffer.bind():
-                raise RuntimeError("scientific shader/buffer initialization failed: " + program.log())
+                raise GpuOperationError("scientific shader/buffer initialization failed: " + program.log())
         else:
             program, buffer = resources.program("image", vertex, fragment)
         functions.glUniform1i(program.uniformLocation("pixels"), 0)
@@ -144,7 +145,7 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
         vectors = draw_vectors_gpu(functions, extent, bundle, resources=resources) if curves else None
         error = functions.glGetError()
         if error:
-            raise RuntimeError(f"scientific GL error {error}")
+            raise GpuOperationError(f"scientific GL error {error}")
         return dict(texture_uploads=uploads, maximum_texture_bytes=max_texture_bytes,
                     vertex_buffer_bytes=32, live_textures_after=0 if resources is None else resources.snapshot()["live_textures"],
                     all_layers=False, vectors=vectors)
@@ -153,9 +154,11 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resou
             texture.release()
             if resources is None:
                 texture.destroy()
-        buffer.release()
-        if resources is None:
-            buffer.destroy()
-        program.release()
+        if buffer.isCreated():
+            buffer.release()
+            if resources is None:
+                buffer.destroy()
+        if program.isLinked():
+            program.release()
         if resources is None:
             program.removeAllShaders()

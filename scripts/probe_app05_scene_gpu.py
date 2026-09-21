@@ -35,6 +35,7 @@ def main():
     parser.add_argument("--component-review", action="store_true", help="With composition: isolate each actual command on the same opaque background")
     parser.add_argument("--persistent-resources", action="store_true", help="Experimental composition with context-owned reusable GPU storage")
     parser.add_argument("--recreate-context", action="store_true", help="With persistent resources: explicitly destroy native context and verify CPU/recreated GPU per capture")
+    parser.add_argument("--fail-upload", action="store_true", help="Inject texture upload failure, verify current CPU scene and explicit GPU recovery")
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
@@ -48,6 +49,8 @@ def main():
         parser.error("--persistent-resources requires composition without component-review")
     if args.recreate_context and not args.persistent_resources:
         parser.error("--recreate-context requires --persistent-resources")
+    if args.fail_upload and (not args.persistent_resources or args.recreate_context):
+        parser.error("--fail-upload requires persistent resources without recreate-context")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = args.platform
@@ -87,6 +90,7 @@ def main():
         full_plot_composition=args.composition,
         persistent_resources=args.persistent_resources,
         recreate_context=args.recreate_context,
+        fail_upload=args.fail_upload,
         checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     try:
@@ -211,6 +215,30 @@ def main():
                         del fresh
                         if not row["persistent_vs_fresh_gpu"]["equal"]:
                             raise AssertionError("persistent resources changed exact same-scene GPU pixels")
+                    if args.fail_upload:
+                        from PySide6.QtOpenGL import QOpenGLTexture
+                        reduced = replace(extent, target_budget_bytes=extent.target_budget_bytes
+                            -extent.pixel_width*extent.pixel_height*4)
+                        def failed_draw(device, functions, size):
+                            draw_plot_composition(device, functions, reduced, plan, panels, bundle,
+                                                  resources=target.scientific_resources())
+                        with patch.object(QOpenGLTexture, "setData", side_effect=RuntimeError("diagnostic upload failure")):
+                            fallback, status = target.render_or_cpu(extent, panels, background, draw=failed_draw)
+                        cpu_parity = compare_images(cpu, fallback)
+                        del fallback
+                        failed = target.snapshot()
+                        if status["backend"] != "cpu" or not cpu_parity["equal"]:
+                            raise AssertionError("upload failure fallback is not current actual CPU scene")
+                        if failed["live_targets"] or failed["scientific_resources"]["live_bytes"]:
+                            raise AssertionError("failed upload retained partial GPU resources")
+                        target.recover_context()
+                        renewed, _ = target.render(extent, panels, background, draw=failed_draw)
+                        gpu_parity = compare_images(candidate, renewed)
+                        del renewed
+                        row["upload_failure"] = dict(failed=failed, cpu_fallback=cpu_parity,
+                                                     recovered_gpu=gpu_parity)
+                        if not gpu_parity["equal"]:
+                            raise AssertionError("upload recovery changed same-scene GPU pixels")
                     if args.recreate_context:
                         from shiboken6 import delete
                         old_generation = target.context_generation

@@ -4,9 +4,11 @@ Experimental owner under SceneGpuTarget. Programs and storage are reused;
 every draw uploads current bytes, so object reuse never implies data identity.
 """
 import threading
+from contextlib import contextmanager
 
 from PySide6.QtGui import QImage, QOpenGLContext
 from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram, QOpenGLTexture
+from scripts.app05_gpu_errors import GpuOperationError
 
 
 class ScientificGpuResources:
@@ -24,12 +26,32 @@ class ScientificGpuResources:
         self.program_builds = self.buffer_allocations = self.texture_allocations = 0
         self.texture_releases = self.uploads = 0
         self.abandoned_bytes = self.abandoned_textures = 0
+        self.failure = None
 
-    def _guard(self):
+    def _guard(self, *, allow_failed=False):
         if self._closed:
             raise RuntimeError("GPU resources are closed")
         if threading.get_ident() != self._thread or QOpenGLContext.currentContext() != self._context:
             raise RuntimeError("GPU resources require owning thread and current context")
+        if self.failure is not None and not allow_failed:
+            raise GpuOperationError(self.failure)
+
+    def _check_gl(self, stage):
+        if QOpenGLContext.currentContext() != self._context:
+            raise GpuOperationError("GPU context changed during " + stage)
+        error = self._context.functions().glGetError()
+        if error:
+            raise GpuOperationError(f"OpenGL error {error} at {stage}")
+
+    @contextmanager
+    def _operation(self, stage):
+        try:
+            self._check_gl(stage + " entry")
+            yield
+            self._check_gl(stage + " completion")
+        except RuntimeError as error:
+            self.failure = f"{stage}: {error}"[:1024]
+            raise GpuOperationError(self.failure) from error
 
     @property
     def live_bytes(self):
@@ -49,23 +71,30 @@ class ScientificGpuResources:
             program = QOpenGLShaderProgram()
             buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             try:
-                for kind, source in ((QOpenGLShader.ShaderTypeBit.Vertex, vertex),
-                                     (QOpenGLShader.ShaderTypeBit.Fragment, fragment)):
-                    if not program.addShaderFromSourceCode(kind, source):
-                        raise RuntimeError(program.log())
-                program.bindAttributeLocation("position", 0)
-                if not program.link() or not buffer.create():
-                    raise RuntimeError("persistent scientific program initialization failed: " + program.log())
+                with self._operation("program initialization"):
+                    self._initialize_program(program, buffer, vertex, fragment)
             except BaseException:
-                buffer.destroy()
+                if buffer.isCreated():
+                    buffer.destroy()
                 program.removeAllShaders()
                 raise
             self._programs[key], self._buffers[key], self._capacities[key] = program, buffer, 0
             self.program_builds += 1
         program, buffer = self._programs[key], self._buffers[key]
-        if not program.bind() or not buffer.bind():
-            raise RuntimeError("persistent scientific program/buffer bind failed")
+        with self._operation("program bind"):
+            if not program.bind() or not buffer.bind():
+                raise GpuOperationError("persistent scientific program/buffer bind failed")
         return program, buffer
+
+    @staticmethod
+    def _initialize_program(program, buffer, vertex, fragment):
+        for kind, source in ((QOpenGLShader.ShaderTypeBit.Vertex, vertex),
+                             (QOpenGLShader.ShaderTypeBit.Fragment, fragment)):
+            if not program.addShaderFromSourceCode(kind, source):
+                raise RuntimeError(program.log())
+        program.bindAttributeLocation("position", 0)
+        if not program.link() or not buffer.create():
+            raise RuntimeError("persistent scientific program initialization failed: " + program.log())
 
     def write(self, key, data):
         self._guard()
@@ -74,16 +103,16 @@ class ScientificGpuResources:
         if required > 32*1024*1024 or self.live_bytes-capacity+max(capacity, required) > self._budget:
             raise MemoryError("persistent scientific buffer budget exceeded")
         buffer = self._buffers[key]
-        if not buffer.bind():
-            raise RuntimeError("persistent scientific buffer bind failed")
-        if required > capacity:
-            # Reallocate existing object's storage; CPU payload is not retained.
-            buffer.allocate(required)
-            if buffer.size() != required:
-                raise MemoryError("persistent scientific buffer allocation failed")
-            self._capacities[key] = required
-            self.buffer_allocations += 1
-        buffer.write(0, data, required)
+        with self._operation("buffer upload"):
+            if not buffer.bind():
+                raise GpuOperationError("persistent scientific buffer bind failed")
+            if required > capacity:
+                buffer.allocate(required)
+                if buffer.size() != required:
+                    raise GpuOperationError("persistent scientific buffer allocation failed")
+                self._capacities[key] = required
+                self.buffer_allocations += 1
+            buffer.write(0, data, required)
 
     def texture(self, key, image):
         self._guard()
@@ -103,15 +132,8 @@ class ScientificGpuResources:
                 raise MemoryError("persistent scientific texture/upload budget exceeded")
             texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
             try:
-                texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
-                texture.setSize(width, height)
-                texture.setMipLevels(1)
-                texture.setAutoMipMapGenerationEnabled(False)
-                texture.allocateStorage(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8)
-                if not texture.isStorageAllocated():
-                    raise MemoryError("persistent scientific texture allocation failed")
-                texture.setMinMagFilters(QOpenGLTexture.Filter.Nearest, QOpenGLTexture.Filter.Nearest)
-                texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
+                with self._operation("texture allocation"):
+                    self._initialize_texture(texture, width, height)
             except BaseException:
                 texture.destroy()
                 raise
@@ -121,10 +143,23 @@ class ScientificGpuResources:
             texture = previous[0]
             if self.live_bytes + width*height*4 > self._budget:
                 raise MemoryError("persistent scientific texture upload budget exceeded")
-        texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8, image.constBits())
-        texture.bind(0)
+        with self._operation("texture upload"):
+            texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8, image.constBits())
+            texture.bind(0)
         self.uploads += 1
         return texture
+
+    @staticmethod
+    def _initialize_texture(texture, width, height):
+        texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
+        texture.setSize(width, height)
+        texture.setMipLevels(1)
+        texture.setAutoMipMapGenerationEnabled(False)
+        texture.allocateStorage(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8)
+        if not texture.isStorageAllocated():
+            raise GpuOperationError("persistent scientific texture allocation failed")
+        texture.setMinMagFilters(QOpenGLTexture.Filter.Nearest, QOpenGLTexture.Filter.Nearest)
+        texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
 
     def _drop_texture(self, key):
         texture, _, _ = self._textures.pop(key)
@@ -134,7 +169,7 @@ class ScientificGpuResources:
     def close(self):
         if self._closed:
             return
-        self._guard()
+        self._guard(allow_failed=True)
         for key in tuple(self._textures):
             self._drop_texture(key)
         for buffer in self._buffers.values():
@@ -173,5 +208,6 @@ class ScientificGpuResources:
             texture_allocations=self.texture_allocations, texture_releases=self.texture_releases,
             uploads=self.uploads, live_bytes=self.live_bytes, live_textures=len(self._textures),
             abandoned_bytes=self.abandoned_bytes, abandoned_textures=self.abandoned_textures,
+            failure=self.failure,
             live_programs=len(self._programs), closed=self._closed,
             scope="nominal GL storage, excludes opaque driver/program/Qt allocations; no CPU sources retained")

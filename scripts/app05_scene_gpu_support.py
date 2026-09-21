@@ -7,6 +7,7 @@ Explicit logical/device geometry; allocated targets are bounded, not driver RSS.
 from dataclasses import dataclass
 from math import ceil, isfinite
 from typing import Any
+from scripts.app05_gpu_errors import GpuOperationError
 
 
 @dataclass(frozen=True)
@@ -315,7 +316,7 @@ class SceneGpuTarget:
         try:
             image, elapsed = self.render(extent, panels, background, draw=draw, expected_generation=expected_generation)
             return image, dict(backend="gpu", completed_paint_ms=elapsed, reason=None)
-        except GpuContextUnavailable as error:
+        except (GpuContextUnavailable, GpuOperationError) as error:
             retained = (self._extent.pixel_width*self._extent.pixel_height*8 if self._extent else 0)
             retained += self._resources.live_bytes if self._resources is not None else 0
             if retained + extent.pixel_width*extent.pixel_height*4 > extent.target_budget_bytes:
@@ -351,7 +352,7 @@ class SceneGpuTarget:
                 fmt.setInternalTextureFormat(0x8058)
                 fbo = QOpenGLFramebufferObject(QSize(extent.pixel_width, extent.pixel_height), fmt)
                 if not fbo.isValid():
-                    raise MemoryError("GPU scene target allocation failed")
+                    raise GpuOperationError("GPU scene target allocation failed")
                 self._fbo = fbo
                 self._device = QOpenGLPaintDevice(QSize(extent.pixel_width, extent.pixel_height))
                 self._device.setDevicePixelRatio(extent.dpr)
@@ -363,7 +364,7 @@ class SceneGpuTarget:
             if self._fbo is None or self._device is None:
                 raise RuntimeError("GPU scene target not initialized")
             if not self._fbo.bind():
-                raise RuntimeError("GPU scene target bind failed")
+                raise GpuOperationError("GPU scene target bind failed")
             functions = frame_context.functions()
             functions.glViewport(0, 0, extent.pixel_width, extent.pixel_height)
             functions.glDisable(0x0C11)
@@ -375,18 +376,37 @@ class SceneGpuTarget:
                 paint_scenes(self._device, panels)
             else:
                 draw(self._device, functions, extent)
+            if self._resources is not None and self._resources.failure is not None:
+                raise GpuOperationError(self._resources.failure)
             if (self._context is not frame_context or not self.available or self._gpu_failure is not None
                     or QOpenGLContext.currentContext() != frame_context):
                 self._gpu_failure = "context destroyed or no longer current during frame; use CPU fallback"
                 raise GpuContextUnavailable(self._gpu_failure)
             functions.glFinish()
             elapsed_ms = (perf_counter() - begin) * 1000
+            # Qt readback can consume pending GL errors; reject before entering it.
+            error = functions.glGetError()
+            if error:
+                raise GpuOperationError(f"OpenGL error {error} before readback")
             image = self._fbo.toImage().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
             image.setDevicePixelRatio(extent.dpr)
             error = functions.glGetError()
             if error:
-                raise RuntimeError(f"OpenGL error {error}")
+                raise GpuOperationError(f"OpenGL error {error}")
+            if image.isNull():
+                raise GpuOperationError("GPU readback produced a null image")
             return image, elapsed_ms
+        except GpuOperationError as error:
+            self._gpu_failure = str(error)[:1024]
+            try:
+                from shiboken6 import isValid
+                if not isValid(frame_context) or QOpenGLContext.currentContext() != frame_context:
+                    raise RuntimeError("cannot clean failed GPU frame without owning current context")
+                self._release_resources()
+                self._release_target()
+            except Exception as cleanup_error:
+                self._cleanup_error = f"{type(cleanup_error).__name__}: {cleanup_error}"[:1024]
+            raise
         finally:
             from shiboken6 import isValid
             self._rendering = False
