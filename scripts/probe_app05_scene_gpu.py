@@ -36,6 +36,9 @@ def main():
     parser.add_argument("--persistent-resources", action="store_true", help="Experimental composition with context-owned reusable GPU storage")
     parser.add_argument("--recreate-context", action="store_true", help="With persistent resources: explicitly destroy native context and verify CPU/recreated GPU per capture")
     parser.add_argument("--fail-upload", action="store_true", help="Inject texture upload failure, verify current CPU scene and explicit GPU recovery")
+    parser.add_argument("--widget-lifecycle", action="store_true", help="Bind prototype to actual V2 widget hide/show and close")
+    parser.add_argument("--lifetime-seconds", type=int, choices=(0, 10, 60, 120), default=0,
+                        help="Bounded stopped-scene GPU lifetime run; not a live speed benchmark")
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
@@ -51,6 +54,10 @@ def main():
         parser.error("--recreate-context requires --persistent-resources")
     if args.fail_upload and (not args.persistent_resources or args.recreate_context):
         parser.error("--fail-upload requires persistent resources without recreate-context")
+    if args.widget_lifecycle and (not args.persistent_resources or args.fail_upload or args.recreate_context):
+        parser.error("--widget-lifecycle requires persistent resources without fault injection")
+    if args.lifetime_seconds and not args.widget_lifecycle:
+        parser.error("--lifetime-seconds requires --widget-lifecycle")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = args.platform
@@ -82,6 +89,7 @@ def main():
     output_images = args.output.with_suffix("")
     output_images.mkdir(exist_ok=False)
     target = SceneGpuTarget()
+    lifecycle = None
     rows = []
     ready = False
     info = dict(scope=__doc__, gpu=target.info, platform=args.platform, logical_size=[args.width, args.height],
@@ -91,6 +99,7 @@ def main():
         persistent_resources=args.persistent_resources,
         recreate_context=args.recreate_context,
         fail_upload=args.fail_upload,
+        widget_lifecycle=args.widget_lifecycle,
         checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     try:
@@ -101,6 +110,11 @@ def main():
             f.shell.select_workspace("analyzer")
             f.select_and_apply()
             visualization = f.page.visualization
+            if args.widget_lifecycle:
+                from scripts.app05_plot_lifecycle import PlotGpuLifecycle, PresentationInactive
+                target.close()
+                lifecycle = PlotGpuLifecycle(visualization)
+                target = lifecycle.target
             scene, waterfall = visualization.spectrum_scene, visualization.waterfall_pane
             visualization.set_theme(ThemeId(args.theme))
             scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence))
@@ -112,6 +126,8 @@ def main():
                 publication = f.page._last_bundle.spectrum
                 arrays = dict(spectrum=scene.trace_envelope(TraceKind.CURRENT).values,
                     density=density.image)
+                if scene._persistence.latest_view is not None:
+                    arrays["analytical_density"] = scene._persistence.latest_view.density
                 for name in ("values", "values_db", "frequencies_hz", "quality_flags", "source_segment_indices"):
                     if hasattr(publication, name):
                         arrays["source_" + name] = getattr(publication, name)
@@ -143,6 +159,8 @@ def main():
                 # Let legitimate axis relayout settle; no changes to frame cadence.
                 for _ in range(6):
                     app.processEvents()
+                f.wait(lambda: scene.trace_envelope(TraceKind.CURRENT) is not None
+                       and scene.displayed_frame is scene.latest_frame)
                 graphics = [scene._graphics, waterfall._graphics]
                 heights = [view.viewport().height() for view in graphics]
                 width = max(view.viewport().width() for view in graphics)
@@ -199,8 +217,15 @@ def main():
                                 gpu_resources["persistent"] = reusable.snapshot()
                         else:
                             gpu_resources.update(draw_scientific_gpu(device, functions, size, bundle, curves=not args.images_only))
-                    candidate, gpu_ms = target.render(extent, panels, background,
-                        draw=draw if bundle is not None else None)
+                    if lifecycle is None:
+                        candidate, gpu_ms = target.render(extent, panels, background,
+                            draw=draw if bundle is not None else None)
+                    else:
+                        candidate, status = lifecycle.render(extent, panels, background, draw=draw,
+                                                             expected_revision=lifecycle.revision)
+                        if status["backend"] != "gpu":
+                            raise AssertionError("unexpected lifecycle CPU fallback")
+                        gpu_ms = status["completed_paint_ms"]
                     row.update(comparison=compare_images(cpu, candidate), gpu_completed_paint_ms=gpu_ms)
                     if args.persistent_resources:
                         retained_gpu = gpu_resources["persistent"]["live_bytes"]
@@ -304,6 +329,100 @@ def main():
                         raise AssertionError("command review mutated scientific source/layer state")
                 rows.append(row)
 
+            def visibility_cycle(label):
+                if lifecycle is None:
+                    return
+                before = witness()
+                events = f.events.copy()
+                revision = lifecycle.revision
+                visualization.hide()  # actual Qt event, not a manual active flag
+                hidden = target.snapshot()
+                if hidden["live_targets"] or hidden["scientific_resources"]["live_bytes"]:
+                    raise AssertionError("hidden actual plot retained GPU storage")
+                try:
+                    lifecycle.render(SceneExtent(80, 64), [], background, expected_revision=revision)
+                except PresentationInactive:
+                    pass
+                else:
+                    raise AssertionError("hidden actual plot rendered")
+                visualization.show()
+                try:
+                    lifecycle.render(SceneExtent(80, 64), [], background, expected_revision=revision)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("pre-hide render request was accepted after Show")
+                capture(label)
+                after = witness()
+                changed = [key for key in before["hashes"] if before["hashes"].get(key) != after["hashes"].get(key)]
+                if any(key != "density" for key in changed) or f.events != events:
+                    raise AssertionError("visibility change altered source bytes or acquisition events")
+                # Record, do NOT accept or waive, existing Visual rehydration drift.
+                # The same-scene CPU/GPU oracle still runs independently above.
+                rows[-1]["visibility_cycle"] = dict(hidden=hidden, revision=lifecycle.revision,
+                    events_unchanged=True, measurement_hashes_unchanged=True, changed_rendered_layers=changed,
+                    rendered_layers_unchanged=not changed, quality_accepted=not changed)
+
+            def stopped_lifetime():
+                if not args.lifetime_seconds:
+                    return
+                assert lifecycle is not None
+                from scripts.app05_scientific_layers import detach_layers
+                from scripts.app05_full_composition import build_plot_plan, draw_plot_composition
+                for _ in range(6):
+                    app.processEvents()  # settle queued Stop/layout work before lifetime baseline
+                before = witness()
+                events = f.events.copy()
+                baseline = None
+                frames = peak_bytes = hide_cycles = 0
+                started = perf_counter()
+                while perf_counter() - started < args.lifetime_seconds:
+                    app.processEvents()  # no detached plan/payload survives this boundary
+                    if frames and frames % 128 == 0:
+                        visualization.hide()
+                        if target.snapshot()["live_targets"]:
+                            raise AssertionError("lifetime hidden plot retained target")
+                        visualization.show()
+                        f.wait(lambda: scene.trace_envelope(TraceKind.CURRENT) is not None
+                               and scene.displayed_frame is scene.latest_frame)
+                        hide_cycles += 1
+                    graphics = [scene._graphics, waterfall._graphics]
+                    heights = [view.viewport().height() for view in graphics]
+                    width = max(view.viewport().width() for view in graphics)
+                    size = SceneExtent(width, sum(heights), args.dpr)
+                    panels = [(view, QRectF(0, sum(heights[:i]), width, heights[i])) for i, view in enumerate(graphics)]
+                    warm = image_target(size, background)
+                    paint_scenes(warm, panels)  # materialize accepted deferred Qt images after Stop/Show
+                    del warm
+                    bundle = detach_layers(scene, waterfall, panels)
+                    plan = build_plot_plan(scene, waterfall, panels, bundle)
+                    def draw(device, functions, extent):
+                        draw_plot_composition(device, functions, extent, plan, panels, bundle,
+                                              resources=target.scientific_resources())
+                    image, status = lifecycle.render(size, panels, background, draw=draw,
+                                                     expected_revision=lifecycle.revision)
+                    digest = hashlib.sha256(image.constBits()).hexdigest()
+                    if baseline is None:
+                        baseline = digest
+                        image.save(str(output_images / "lifetime-first.png"))
+                    if status["backend"] != "gpu" or digest != baseline:
+                        image.save(str(output_images / "lifetime-changed.png"))
+                        print(dict(lifetime_frame=frames, elapsed=perf_counter()-started, size=[size.width, size.height],
+                                   before=before, after=witness(), events=f.events), flush=True)
+                        raise AssertionError("stopped-scene pixels changed during lifetime run")
+                    stats = target.snapshot()["scientific_resources"]
+                    if stats["program_builds"] != 2 or stats["live_textures"] > 3:
+                        raise AssertionError("GPU object count grew beyond fixed slots")
+                    peak_bytes = max(peak_bytes, stats["live_bytes"])
+                    frames += 1
+                    del draw, image, plan, bundle, panels, graphics
+                if witness() != before or f.events != events:
+                    raise AssertionError("stopped lifetime mutated measurement or restarted acquisition")
+                info["bounded_lifetime"] = dict(seconds=perf_counter()-started, frames=frames,
+                    hide_cycles=hide_cycles, peak_scientific_bytes=peak_bytes, stable_gpu_sha256=baseline,
+                    source_unchanged=True, events_unchanged=True, speed_acceptance=False,
+                    scope="stopped actual V2 scene, sequential native GL; not live/multi-pane throughput or driver memory proof")
+
             f.page.primary.click()
             f.wait(lambda: f.live.is_running() and not f.composition.view_model.state.busy)
             for sequence in range(1, 5):
@@ -335,13 +454,17 @@ def main():
             if args.composition:
                 scene.set_band_masks((BandMask(float(frame.frequencies_hz[600]), float(frame.frequencies_hz[800]), "composition fixture"),))
             capture("rtbw-live")
+            visibility_cycle("rtbw-live-reshown")
             f.page.primary.click()
             f.wait(lambda: not f.live.is_running() and not f.composition.view_model.state.busy)
             capture("rtbw-stopped")
+            visibility_cycle("rtbw-stopped-reshown")
             original_scene = scene
             f.page.mode.setCurrentIndex(f.page.mode.findData(AnalyzerMode.SWEEP))
             if scene.latest_frame is not None or scene.markers:
                 raise AssertionError("mode switch retained stale RTBW presentation")
+            if lifecycle is not None:
+                lifecycle.invalidate()  # explicit presentation boundary, NOT an SDR epoch mutation
             partial, final = importlib.import_module("sdr_monitor._sdr_native")._make_test_sweep_statistics_frames()
             partial, final = _to_domain_progress(partial), _to_domain_line(final)
             assert partial.statistics is not None and final.statistics is not None
@@ -356,12 +479,31 @@ def main():
                     scene.set_band_masks((BandMask(float(partial.frequencies_hz[64]), float(partial.frequencies_hz[256]), "composition fixture"),))
                     scene.place_marker("M1", float(partial.frequencies_hz[128]))
                 capture("sweep-partial")
+                visibility_cycle("sweep-partial-reshown")
                 poll.return_value = ContinuousSweepDisplaySnapshot(final, ContinuousSweepDisplayMetrics())
                 f.composition.analyzer_presenter._poll()
                 f.wait(lambda: scene._persistence._uploaded_density is final_density)
                 capture("sweep-complete")
+                visibility_cycle("sweep-complete-reshown")
+                if lifecycle is not None:
+                    new_epoch = partial.epoch + 1
+                    next_partial = replace(partial, epoch=new_epoch,
+                                           statistics=replace(partial.statistics, epoch=new_epoch))
+                    poll.return_value = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics(), next_partial)
+                    f.composition.analyzer_presenter._poll()
+                    f.wait(lambda: scene.latest_frame is not None and scene.latest_frame.spectrum is next_partial
+                           and scene._persistence._uploaded_density is next_partial.statistics.probability)
+                    if scene.markers or waterfall.history_rows > 1:
+                        raise AssertionError("new Sweep epoch retained markers or prior waterfall history")
+                    lifecycle.invalidate()
+                    scene.set_band_masks((BandMask(float(partial.frequencies_hz[64]), float(partial.frequencies_hz[256]), "composition fixture"),))
+                    scene.place_marker("M1", float(partial.frequencies_hz[128]))
+                    capture("sweep-new-epoch")
+                    rows[-1]["epoch_boundary"] = dict(old=partial.epoch, new=new_epoch, old_history_cleared=True)
+                    visibility_cycle("sweep-new-epoch-reshown")
                 f.page.primary.click()
                 f.wait(lambda: f.composition.analyzer_presenter.can_close())
+                stopped_lifetime()
             info["events"] = f.events.copy()
             info["same_rtbw_sweep_canvas"] = True
     finally:
@@ -372,13 +514,19 @@ def main():
                 finally:
                     f.doCleanups()
         finally:
-            target.close()
+            if lifecycle is not None:
+                lifecycle.close()
+                info["widget_lifetime"] = dict(closed=lifecycle.closed, revision=lifecycle.revision,
+                                               event_error=lifecycle.event_error)
+            else:
+                target.close()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             app.processEvents()
     info.update(cases=rows, target_lifetime=target.snapshot(),
         remaining_workers=[t.name for t in threading.enumerate() if any(s in t.name.lower() for s in ("sdr", "synthetic"))],
         post_close_reserved_bytes=f.composition.allocation_budget.snapshot().reserved_bytes,
         all_pixels_equal=target.available and all(row["comparison"] is not None and row["comparison"]["equal"] for row in rows))
+    info["visibility_quality_accepted"] = all(row.get("visibility_cycle", {}).get("quality_accepted", True) for row in rows)
     info["outside_imports"] = [name for name, module in tuple(sys.modules.items())
         if name.startswith(("scripts", "tests", "sdr_monitor")) and getattr(module, "__file__", None)
         and not Path(str(module.__file__)).resolve().is_relative_to(root)]

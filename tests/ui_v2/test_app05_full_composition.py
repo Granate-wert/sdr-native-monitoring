@@ -17,7 +17,7 @@ from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_t
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
-def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False, fail_upload=False):
+def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False, fail_upload=False, lifecycle=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
@@ -30,6 +30,8 @@ def composition_probe(root, *, native=False, review=False, persistent=False, rec
             options += ["--recreate-context"]
         if fail_upload:
             options += ["--fail-upload"]
+        if lifecycle:
+            options += ["--widget-lifecycle"]
         process = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
             "--checkout", str(root), "--output", str(output), "--scientific", "--composition",
             "--platform", "windows" if native else "offscreen", *options], cwd=root,
@@ -181,9 +183,9 @@ class PlotCommandTests(unittest.TestCase):
 
 
 class ActualCompositionTests(unittest.TestCase):
-    def assert_plan(self, report):
+    def assert_plan(self, report, *, cases=4):
         self.assertTrue(report["full_plot_composition"])
-        self.assertEqual(len(report["cases"]), 4)
+        self.assertEqual(len(report["cases"]), cases)
         for row in report["cases"]:
             self.assertTrue(row["qt_traversal_comparison"]["equal"], row["qt_traversal_comparison"])
             commands = row["plot_plan"]["commands"]
@@ -266,6 +268,31 @@ class ActualCompositionTests(unittest.TestCase):
                 self.assertEqual(support["candidate_only_columns"], 0)
                 self.assertEqual(support["reference_pixels_without_candidate_within_one"], 0)
                 self.assertEqual(support["candidate_pixels_without_reference_within_one"], 0)
+        self.assertIsNotNone(app)
+
+    def test_native_widget_lifecycle_reports_existing_visual_rehydration_defect(self):
+        app = QApplication.instance() or QApplication([])
+        target = SceneGpuTarget()
+        available = target.available
+        target.close()
+        if not available:
+            self.skipTest("requires native GL context")
+        report = composition_probe(Path(__file__).resolve().parents[2], native=True, persistent=True, lifecycle=True)
+        self.assert_plan(report, cases=10)
+        self.assertTrue(report["widget_lifetime"]["closed"])
+        self.assertIsNone(report["widget_lifetime"]["event_error"])
+        for before, after in zip(report["cases"][::2], report["cases"][1::2]):
+            unchanged = after["visibility_cycle"]["rendered_layers_unchanged"]
+            self.assertEqual(before["comparison"]["candidate_sha256"] == after["comparison"]["candidate_sha256"], unchanged)
+            self.assertEqual(after["visibility_cycle"]["hidden"]["live_targets"], 0)
+            self.assertTrue(after["visibility_cycle"]["measurement_hashes_unchanged"])
+        self.assertFalse(report["visibility_quality_accepted"], "known Visual duplicate smoothing is NOT accepted")
+        self.assertEqual(report["cases"][1]["comparison"]["candidate_sha256"],
+                         report["cases"][2]["comparison"]["candidate_sha256"], "Stop retains accepted scene")
+        epoch = report["cases"][8]["epoch_boundary"]
+        self.assertEqual(epoch["new"], epoch["old"]+1)
+        self.assertTrue(epoch["old_history_cleared"])
+        self.assertEqual(report["target_lifetime"]["allocations"], report["target_lifetime"]["releases"])
         self.assertIsNotNone(app)
 
     def test_native_upload_failure_current_cpu_and_recovered_full_scene(self):

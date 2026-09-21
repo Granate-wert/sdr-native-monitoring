@@ -299,6 +299,8 @@ class SceneGpuTarget:
         self._guard()
         if self._rendering:
             raise RuntimeError("cannot recover context during a frame")
+        if self._cleanup_error is not None:
+            raise GpuContextUnavailable("unresolved cleanup requires explicit context recreation")
         context = self._context
         if not self.available or context is None or not context.isValid() or not self._make_current():
             raise GpuContextUnavailable("context recovery unavailable; use CPU fallback")
@@ -309,6 +311,31 @@ class SceneGpuTarget:
             self.context_recoveries += 1
         finally:
             context.doneCurrent()
+
+    def discard_storage(self):
+        """Release hidden/invalidated scene storage without clearing a failure latch."""
+        from PySide6.QtGui import QOpenGLContext
+        self._guard()
+        if self._rendering:
+            raise RuntimeError("cannot discard graphics during a frame")
+        if self._resources is None and self._fbo is None:
+            return
+        previous = QOpenGLContext.currentContext()
+        surface = previous.surface() if previous is not None else None
+        try:
+            if self._cleanup_error is not None or not self._make_current():
+                raise GpuContextUnavailable("cannot discard scene storage without valid owning context")
+            self._release_resources()
+            self._release_target()
+        except Exception as error:
+            self._gpu_failure = f"scene storage cleanup failed: {error}"[:1024]
+            self._cleanup_error = self._gpu_failure
+            raise
+        finally:
+            if self._context is not None and QOpenGLContext.currentContext() == self._context:
+                self._context.doneCurrent()
+            if previous is not None and surface is not None:
+                previous.makeCurrent(surface)
 
     def render_or_cpu(self, extent, panels, background, *, draw=None, expected_generation=None):
         """Fallback draws current actual scene, never returns last GPU pixels."""
