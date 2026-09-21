@@ -357,7 +357,7 @@ def main():
                 changed = [key for key in before["hashes"] if before["hashes"].get(key) != after["hashes"].get(key)]
                 if any(key != "density" for key in changed) or f.events != events:
                     raise AssertionError("visibility change altered source bytes or acquisition events")
-                # Record, do NOT accept or waive, existing Visual rehydration drift.
+                # Record exact rehydration independently of CPU/GPU raster quality.
                 # The same-scene CPU/GPU oracle still runs independently above.
                 rows[-1]["visibility_cycle"] = dict(hidden=hidden, revision=lifecycle.revision,
                     events_unchanged=True, measurement_hashes_unchanged=True, changed_rendered_layers=changed,

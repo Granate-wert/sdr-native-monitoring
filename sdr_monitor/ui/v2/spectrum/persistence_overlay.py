@@ -23,6 +23,8 @@ from .persistence_contracts import (
 from .persistence_projection import (
     PersistenceImageHistory, PersistenceImagePolicy, PersistenceImageRequest,
     PreparedPersistenceImage,
+    PersistenceInputWitness, persistence_input_witness, same_persistence_input,
+    persistence_witness_scratch,
 )
 
 
@@ -61,6 +63,7 @@ class PersistenceOverlay:
         self._pending_view: PersistenceDensityView | None = None
         self._uploaded_density: np.ndarray | None = None
         self._visual_buffer: np.ndarray | None = None
+        self._visual_witness: PersistenceInputWitness | None = None
         self._row_scratch: np.ndarray | None = None
         self._last_upload_ns: int | None = None
         self._metrics = PersistenceOverlayMetrics()
@@ -114,6 +117,7 @@ class PersistenceOverlay:
             self._worker_revision += 1
             self._worker_history = None
             self._visual_buffer = None
+            self._visual_witness = None
             self._row_scratch = None
             if self.request_projection is not None:
                 self._uploaded_density = None
@@ -320,7 +324,7 @@ class PersistenceOverlay:
         if self.request_projection is not None:
             if self._worker_request is None:
                 self._worker_request = PersistenceImageRequest(view, self.worker_policy_key[0],
-                                                               self._worker_history)
+                                                               self._worker_history, rematerialize=force)
                 self._worker_request_ns = now_ns
                 self.request_projection()
             else:
@@ -336,11 +340,13 @@ class PersistenceOverlay:
         reserve = 0 if reuse else int(view.density.size * 4)
         if reuse and (self._row_scratch is None or self._row_scratch.size != view.density.shape[1]):
             reserve += int(view.density.shape[1] * 4)
+        if self._render_mode is PersistenceRenderMode.VISUAL:
+            reserve += persistence_witness_scratch(view)
         try:
             allocation = (nullcontext(None) if self.allocation_budget is None else
                           self.allocation_budget.reserve(reserve, view))
             with allocation as ticket:
-                image = self._render_image(view)
+                image = self._render_image(view, rematerialize=force)
                 if ticket is not None:
                     ticket.commit(image, self._visual_buffer, self._row_scratch)
         except PresentationBudgetExceeded:
@@ -367,12 +373,18 @@ class PersistenceOverlay:
             retained_extra_image_buffers=1,
         )
 
-    def _render_image(self, view: PersistenceDensityView) -> np.ndarray:
+    def _render_image(self, view: PersistenceDensityView, *, rematerialize: bool = False) -> np.ndarray:
         if self._render_mode is PersistenceRenderMode.DIRECT:
             self._visual_buffer = None
+            self._visual_witness = None
             return map_density_for_display(view, logarithmic=self._logarithmic)
+        witness = persistence_input_witness(view)
+        if (rematerialize and self._visual_buffer is not None
+                and same_persistence_input(self._visual_witness, witness)):
+            return self._visual_buffer
         if self._visual_buffer is None or self._visual_buffer.shape != view.density.shape:
             self._visual_buffer = map_density_for_display(view, logarithmic=self._logarithmic)
+            self._visual_witness = witness
             return self._visual_buffer
         attack = 0.65
         release = 0.18
@@ -390,6 +402,7 @@ class PersistenceOverlay:
             delta *= release
             delta[scratch >= self._visual_buffer[index]] *= attack / release
             self._visual_buffer[index] += delta
+        self._visual_witness = witness
         return self._visual_buffer
 
     def _row_scratch_for(self, width: int) -> np.ndarray:

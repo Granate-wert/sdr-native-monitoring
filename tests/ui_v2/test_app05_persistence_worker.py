@@ -47,6 +47,95 @@ class PersistenceWorkerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def visual_pair(self, mode=DensityValueMode.PROBABILITY):
+        policy = PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False)
+        old = prepare_persistence_image(PersistenceImageRequest(
+            view(np.full((4, 16), .2, np.float32), mode), policy)).as_history(1)
+        values = np.full((4, 16), .8, np.float32)
+        values[:, 0] = .05  # Exercise both attack and release, also COUNT normalization.
+        current = PersistenceImageRequest(view(values, mode), policy, old)
+        return current, prepare_persistence_image(current).as_history(2)
+
+    def test_rematerialization_reuses_exact_accepted_image_and_count_labels(self):
+        for mode in DensityValueMode:
+            current, history = self.visual_pair(mode)
+            restore = replace(current, history=history, rematerialize=True)
+            before = history.image.copy()
+            for revision in range(3, 6):
+                result = prepare_persistence_image(restore)
+                self.assertIs(result.image, history.image)
+                np.testing.assert_array_equal(result.image.view(np.uint32), before.view(np.uint32))
+                self.assertEqual(result.count_maximum, history.count_maximum)
+                self.assertTrue(result.matches(restore))
+                self.assertFalse(result.matches(replace(restore, rematerialize=False)))
+                self.assertFalse(result.image.flags.writeable)
+                restore = replace(restore, history=result.as_history(revision))
+
+    def test_new_update_and_new_equal_publication_still_advance_once(self):
+        current, history = self.visual_pair()
+        update = replace(current, history=history)
+        expected = prepare_persistence_image(update)
+        self.assertFalse(np.array_equal(expected.image, history.image))
+        new_view = view(current.view.density.copy())
+        for restore in (False, True):
+            actual = prepare_persistence_image(replace(update, view=new_view, rematerialize=restore))
+            np.testing.assert_array_equal(actual.image, expected.image)
+            self.assertIsNot(actual.image, history.image)
+
+    def test_same_array_mutated_bytes_and_edges_cannot_claim_freshness(self):
+        for target in ("density", "frequency_edges_hz", "level_edges"):
+            current, history = self.visual_pair()
+            array = getattr(current.view, target)
+            # Deliberately violate publication immutability BETWEEN requests:
+            # ndarray identity/read-only flags are not validation certificates.
+            array.setflags(write=True)
+            array.flat[1] += .01 if target == "density" else .001
+            array.setflags(write=False)
+            restore = replace(current, history=history, rematerialize=True)
+            actual = prepare_persistence_image(restore)
+            expected = prepare_persistence_image(replace(restore, rematerialize=False))
+            self.assertIsNot(actual.image, history.image)
+            np.testing.assert_array_equal(actual.image, expected.image)
+
+    def test_visual_fallback_restores_without_advancing_and_new_data_advances(self):
+        scene = SpectrumScene()
+        try:
+            overlay = scene._persistence
+            overlay.set_render_mode(PersistenceRenderMode.VISUAL)
+            overlay.set_logarithmic(False)
+            current, history = self.visual_pair()
+            overlay._render_image(view(np.full((4, 16), .2, np.float32)))
+            accepted = overlay._render_image(current.view).copy()
+            np.testing.assert_array_equal(accepted, history.image)
+            for _ in range(3):
+                np.testing.assert_array_equal(overlay._render_image(current.view, rematerialize=True), accepted)
+            advanced = overlay._render_image(view(current.view.density.copy()), rematerialize=True)
+            self.assertFalse(np.array_equal(advanced, accepted))
+        finally:
+            scene.close()
+            scene.deleteLater()
+            self.app.processEvents()
+
+    def test_witness_hash_is_cancellable_bounded_and_absent_in_direct(self):
+        current = request(np.asfortranarray(np.ones((3, 65539), np.float64)),
+                          policy=PersistenceImagePolicy(0, PersistenceRenderMode.VISUAL, False))
+        checks = []
+
+        def cancelled():
+            checks.append(True)
+            return len(checks) == 3
+
+        with patch.object(density_worker, "map_density_row_for_display", side_effect=AssertionError("mapping before hash")):
+            with self.assertRaises(CancelledError):
+                prepare_persistence_image(current, cancelled=cancelled)
+        self.assertEqual(len(checks), 3)
+        self.assertEqual(density_worker.persistence_witness_scratch(current.view), 65536 * 8)
+        small = request(policy=current.policy)
+        self.assertEqual(density_worker.persistence_witness_scratch(small.view), 17 * 8)
+        self.assertEqual(persistence_image_reserve(small), 4 * 16 * 4 + 16 * 13)
+        with patch.object(density_worker, "persistence_input_witness", side_effect=AssertionError("Direct must not hash")):
+            prepare_persistence_image(request())
+
     def test_bit_exact_direct_visual_against_existing_overlay_with_missing_and_layouts(self):
         scene = SpectrumScene()
         try:

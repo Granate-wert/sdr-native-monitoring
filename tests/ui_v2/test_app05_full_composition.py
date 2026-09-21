@@ -270,7 +270,7 @@ class ActualCompositionTests(unittest.TestCase):
                 self.assertEqual(support["candidate_pixels_without_reference_within_one"], 0)
         self.assertIsNotNone(app)
 
-    def test_native_widget_lifecycle_reports_existing_visual_rehydration_defect(self):
+    def test_native_widget_lifecycle_preserves_accepted_visual_image(self):
         app = QApplication.instance() or QApplication([])
         target = SceneGpuTarget()
         available = target.available
@@ -283,10 +283,12 @@ class ActualCompositionTests(unittest.TestCase):
         self.assertIsNone(report["widget_lifetime"]["event_error"])
         for before, after in zip(report["cases"][::2], report["cases"][1::2]):
             unchanged = after["visibility_cycle"]["rendered_layers_unchanged"]
+            self.assertTrue(unchanged)
+            self.assertEqual(after["visibility_cycle"]["changed_rendered_layers"], [])
             self.assertEqual(before["comparison"]["candidate_sha256"] == after["comparison"]["candidate_sha256"], unchanged)
             self.assertEqual(after["visibility_cycle"]["hidden"]["live_targets"], 0)
             self.assertTrue(after["visibility_cycle"]["measurement_hashes_unchanged"])
-        self.assertFalse(report["visibility_quality_accepted"], "known Visual duplicate smoothing is NOT accepted")
+        self.assertTrue(report["visibility_quality_accepted"], "Show must restore accepted Visual without smoothing")
         self.assertEqual(report["cases"][1]["comparison"]["candidate_sha256"],
                          report["cases"][2]["comparison"]["candidate_sha256"], "Stop retains accepted scene")
         epoch = report["cases"][8]["epoch_boundary"]

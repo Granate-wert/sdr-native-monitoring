@@ -165,6 +165,41 @@ class PersistenceWiringTests(unittest.TestCase):
         self.assertIsNot(overlay._worker_history, history)
         self.assertEqual(overlay.metrics.image_uploads, 2)
 
+    def test_visual_reshow_does_not_advance_accepted_smoothing(self):
+        self.scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
+        self.density(.2)
+        self.drain()
+        overlay = self.scene._persistence
+        overlay._last_upload_ns = 0
+        self.density(.8)
+        self.drain()
+        accepted = overlay.image_item.image.copy()
+        for _ in range(3):
+            self.scene.set_presentation_active(False)
+            self.scene.set_presentation_active(True)
+            self.drain()
+            np.testing.assert_array_equal(overlay.image_item.image, accepted)
+
+    def test_hidden_new_publication_advances_once_then_reshow_is_exact(self):
+        overlay = self.scene._persistence
+        self.scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
+        self.density(.2)
+        self.drain()
+        self.scene.set_presentation_active(False)
+        latest = self.density(.8)
+        self.drain()
+        self.scene.set_presentation_active(True)
+        current = overlay.worker_request
+        self.assertTrue(current.rematerialize)
+        self.assertIs(current.view.density, latest.density)
+        expected = prepare_persistence_image(replace(current, rematerialize=False))
+        self.drain()
+        np.testing.assert_array_equal(overlay.image_item.image, expected.image)
+        self.scene.set_presentation_active(False)
+        self.scene.set_presentation_active(True)
+        self.drain()
+        np.testing.assert_array_equal(overlay.image_item.image, expected.image)
+
     def test_worker_wait_is_inside_existing_start_to_start_density_cadence(self):
         overlay = self.scene._persistence
         first = view(np.full((4, 16), .2, np.float32))

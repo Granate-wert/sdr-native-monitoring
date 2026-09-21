@@ -1,12 +1,15 @@
 """Pure worker-side density display preparation; no Qt, device or executor owner.
 
 The GUI retains the last accepted immutable image. Visual requests borrow that
-image read-only and produce a distinct owned image; cancelled/obsolete work never
+image read-only and produce a distinct owned image for new updates; exact display
+rematerialization may reuse that immutable image. Cancelled/obsolete work never
 mutates the accepted accumulator. Results do not retain a chain of old histories.
 The caller must bump policy revision on measurement/epoch reset as well as mode
 or transfer changes, and reject stale source/policy/history before image upload.
 """
 from dataclasses import dataclass
+import hashlib
+import weakref
 
 import numpy as np
 
@@ -17,6 +20,48 @@ from .persistence_contracts import (
 )
 
 IMAGE_BATCH = 65_536
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceInputWitness:
+    """Weak publication witness plus content digest; never pins input arrays.
+
+    Identity alone is not freshness. Hash all values/edges in bounded chunks;
+    rematerialization requires both the same publication array AND same bytes.
+    """
+    density: weakref.ReferenceType[np.ndarray]
+    digest: bytes
+
+
+def persistence_input_witness(view: PersistenceDensityView, *,
+                              cancelled: CancelCheck = None) -> PersistenceInputWitness:
+    digest = hashlib.sha256()
+    digest.update(repr((view.value_mode.value, view.level_unit)).encode("utf-8"))
+    for array in (view.density, view.frequency_edges_hz, view.level_edges):
+        digest.update(repr((array.shape, array.dtype.str)).encode("ascii"))
+        rows = array if array.ndim == 2 else (array,)
+        for row in rows:
+            for first in range(0, row.size, IMAGE_BATCH):
+                check_cancelled(cancelled)
+                chunk = row[first:first + IMAGE_BATCH]
+                if chunk.flags.c_contiguous:
+                    digest.update(memoryview(chunk).cast("B"))
+                else:
+                    digest.update(chunk.tobytes())  # at most IMAGE_BATCH cells, no retained copy
+    check_cancelled(cancelled)
+    return PersistenceInputWitness(weakref.ref(view.density), digest.digest())
+
+
+def same_persistence_input(left: PersistenceInputWitness | None,
+                           right: PersistenceInputWitness) -> bool:
+    return (left is not None and left.density() is not None
+            and left.density() is right.density() and left.digest == right.digest)
+
+
+def persistence_witness_scratch(view: PersistenceDensityView) -> int:
+    """Maximum transient byte copy for a noncontiguous hashing chunk."""
+    return max(min(IMAGE_BATCH, array.shape[-1]) * array.dtype.itemsize
+               for array in (view.density, view.frequency_edges_hz, view.level_edges))
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +85,8 @@ class PersistenceImageHistory:
     value_mode: DensityValueMode
     level_unit: str
     image: np.ndarray
+    input_witness: PersistenceInputWitness | None = None
+    count_maximum: float = 0.0
 
     def __post_init__(self) -> None:
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
@@ -52,8 +99,11 @@ class PersistenceImageRequest:
     view: PersistenceDensityView
     policy: PersistenceImagePolicy
     history: PersistenceImageHistory | None = None
+    rematerialize: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.rematerialize, bool):
+            raise ValueError("rematerialization intent must be boolean")
         # Validated density publications are immutable across worker handoff.
         # Read-only is not a numerical validation certificate or identity cache.
         if any(array.flags.writeable for array in
@@ -72,6 +122,8 @@ class PreparedPersistenceImage:
     base_history_revision: int | None
     image: np.ndarray
     count_maximum: float = 0.0
+    input_witness: PersistenceInputWitness | None = None
+    rematerialize: bool = False
 
     @property
     def quantitative_labels(self) -> tuple[str, str]:
@@ -87,13 +139,15 @@ class PreparedPersistenceImage:
     def matches(self, request: PersistenceImageRequest) -> bool:
         """Exact request witness for GUI admission, including smoothing base."""
         return (self.view is request.view and self.policy == request.policy
+                and self.rematerialize == request.rematerialize
                 and self.base_history_revision == request.history_revision)
 
     def as_history(self, revision: int) -> PersistenceImageHistory:
         # Only this image/geometry/policy survive. Never retain the prior request
         # or source density in smoothing history across subsequent publications.
         return PersistenceImageHistory(revision, self.policy, self.view.physical_rect,
-                                       self.view.value_mode, self.view.level_unit, self.image)
+                                       self.view.value_mode, self.view.level_unit, self.image,
+                                       self.input_witness, self.count_maximum)
 
 
 def _validate_image(image: np.ndarray) -> None:
@@ -111,7 +165,9 @@ def persistence_image_reserve(request: PersistenceImageRequest) -> int:
     """
     density = request.view.density
     batch = min(IMAGE_BATCH, density.shape[1])
-    return int(density.size * 4 + batch * max(13, density.dtype.itemsize + 1))
+    hash_scratch = (persistence_witness_scratch(request.view)
+                    if request.policy.mode is PersistenceRenderMode.VISUAL else 0)
+    return int(density.size * 4 + max(batch * max(13, density.dtype.itemsize + 1), hash_scratch))
 
 
 def _compatible_history(request: PersistenceImageRequest) -> np.ndarray | None:
@@ -128,6 +184,13 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                               cancelled: CancelCheck = None) -> PreparedPersistenceImage:
     check_cancelled(cancelled)
     view = request.view
+    witness = (persistence_input_witness(view, cancelled=cancelled)
+               if request.policy.mode is PersistenceRenderMode.VISUAL else None)
+    history = _compatible_history(request)
+    if (request.rematerialize and history is not None and request.history is not None and witness is not None
+            and same_persistence_input(request.history.input_witness, witness)):
+        return PreparedPersistenceImage(view, request.policy, request.history_revision, history,
+                                        request.history.count_maximum, witness, True)
     maximum = 0.0
     if view.value_mode is DensityValueMode.COUNT:
         # Same global finite maximum as the GUI transfer without a full-matrix
@@ -145,7 +208,6 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
         # Do not keep the last reduction scratch alive during image mapping.
         del chunk
     image = np.empty(view.density.shape, dtype=np.float32)
-    history = _compatible_history(request)
     scratch = (None if history is None else
                np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.float32))
     for row_index, source_row in enumerate(view.density):
@@ -171,4 +233,5 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                 np.add(old, delta, out=target)
     check_cancelled(cancelled)
     image.setflags(write=False)
-    return PreparedPersistenceImage(view, request.policy, request.history_revision, image, maximum)
+    return PreparedPersistenceImage(view, request.policy, request.history_revision, image, maximum,
+                                    witness, request.rematerialize)
