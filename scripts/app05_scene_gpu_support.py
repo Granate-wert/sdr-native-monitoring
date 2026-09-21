@@ -110,6 +110,10 @@ def compare_images(reference, candidate):
         candidate_sha256=hashlib.sha256(candidate.constBits()).hexdigest())
 
 
+class GpuContextUnavailable(RuntimeError):
+    """Only context availability failures allow the explicit CPU fallback."""
+
+
 class SceneGpuTarget:
     """GUI-thread/context-bound experimental owner with at most ONE FBO."""
     def __init__(self):
@@ -121,6 +125,10 @@ class SceneGpuTarget:
         self._context = QOpenGLContext()
         self._fbo = self._device = self._extent = None
         self._closed = False
+        self._resources = None
+        self._last_resources = None
+        self._gpu_failure = None
+        self.context_recoveries = 0
         self.allocations = self.releases = 0
         self.peak_target_bytes = 0
         created = self._context.create()
@@ -147,14 +155,69 @@ class SceneGpuTarget:
             self._extent = None
             self.releases += 1
 
+    def _make_current(self):
+        return self._context.makeCurrent(self._surface)
+
+    def scientific_resources(self):
+        from PySide6.QtGui import QOpenGLContext
+        from scripts.app05_gpu_resources import ScientificGpuResources
+        self._guard()
+        if QOpenGLContext.currentContext() != self._context:
+            raise RuntimeError("scientific resources require this target's current context")
+        if self._resources is None:
+            self._resources = ScientificGpuResources()
+        self._resources._guard()
+        return self._resources
+
+    def _release_resources(self):
+        if self._resources is not None:
+            self._resources.close()
+            self._last_resources = self._resources.snapshot()
+            self._resources = None
+
+    def recover_context(self):
+        """Explicit recovery, never retry or silently restart on every frame.
+
+        Reuses only a still-valid context; real destroyed-context reconstruction
+        remains outside this prototype. Old graphics data is released first.
+        """
+        self._guard()
+        if not self.available or not self._context.isValid() or not self._make_current():
+            raise GpuContextUnavailable("context recovery unavailable; use CPU fallback")
+        try:
+            self._release_resources()
+            self._release_target()
+            self._gpu_failure = None
+            self.context_recoveries += 1
+        finally:
+            self._context.doneCurrent()
+
+    def render_or_cpu(self, extent, panels, background, *, draw=None):
+        """Fallback draws current actual scene, never returns last GPU pixels."""
+        self._guard()
+        try:
+            image, elapsed = self.render(extent, panels, background, draw=draw)
+            return image, dict(backend="gpu", completed_paint_ms=elapsed, reason=None)
+        except GpuContextUnavailable as error:
+            retained = (self._extent.pixel_width*self._extent.pixel_height*8 if self._extent else 0)
+            retained += self._resources.live_bytes if self._resources is not None else 0
+            if retained + extent.pixel_width*extent.pixel_height*4 > extent.target_budget_bytes:
+                raise MemoryError("CPU fallback plus retained GPU storage exceeds budget") from error
+            image = image_target(extent, background)
+            paint_scenes(image, panels)
+            return image, dict(backend="cpu", completed_paint_ms=None, reason=str(error))
+
     def render(self, extent, panels, background, *, draw=None):
         from PySide6.QtCore import QSize
         from PySide6.QtGui import QImage
         from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat, QOpenGLPaintDevice
         from time import perf_counter
         self._guard()
-        if not self.available or not self._context.makeCurrent(self._surface):
-            raise RuntimeError("GPU context unavailable; caller must select CPU fallback")
+        if self._gpu_failure is not None:
+            raise GpuContextUnavailable(self._gpu_failure)
+        if not self.available or not self._make_current():
+            self._gpu_failure = "GPU context unavailable; caller must select CPU fallback"
+            raise GpuContextUnavailable(self._gpu_failure)
         try:
             if extent != self._extent:
                 # Destroy old before allocating replacement: no double-FBO peak.
@@ -206,6 +269,7 @@ class SceneGpuTarget:
         if self.available and not self._context.makeCurrent(self._surface):
             raise RuntimeError("cannot release GL resources without owning context")
         try:
+            self._release_resources()
             self._release_target()
         finally:
             self._context.doneCurrent()
@@ -214,5 +278,7 @@ class SceneGpuTarget:
 
     def snapshot(self):
         return dict(allocations=self.allocations, releases=self.releases, closed=self._closed,
+            scientific_resources=self._resources.snapshot() if self._resources is not None else self._last_resources,
+            context_failure=self._gpu_failure, context_recoveries=self.context_recoveries,
             live_targets=int(self._fbo is not None), nominal_peak_target_bytes=self.peak_target_bytes,
             scope="Target accounting only; excludes Qt image/texture caches, source data, driver memory and comparison scratch")

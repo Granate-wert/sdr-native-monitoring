@@ -17,13 +17,15 @@ from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_t
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
-def composition_probe(root, *, native=False, review=False):
+def composition_probe(root, *, native=False, review=False, persistent=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
                    "--persistence", "visual"] if native else ["--width", "1366", "--height", "768"]
         if review:
             options += ["--component-review"]
+        if persistent:
+            options += ["--persistent-resources"]
         process = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
             "--checkout", str(root), "--output", str(output), "--scientific", "--composition",
             "--platform", "windows" if native else "offscreen", *options], cwd=root,
@@ -209,6 +211,25 @@ class ActualCompositionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         report = composition_probe(root)
         self.assert_plan(report)
+
+    def test_native_persistent_resources_match_fresh_full_scene_and_release(self):
+        app = QApplication.instance() or QApplication([])
+        target = SceneGpuTarget()
+        available = target.available
+        target.close()
+        if not available:
+            self.skipTest("requires native GL context")
+        report = composition_probe(Path(__file__).resolve().parents[2], native=True, persistent=True)
+        self.assert_plan(report)
+        for row in report["cases"]:
+            self.assertTrue(row["persistent_vs_fresh_gpu"]["equal"])
+            self.assertEqual(row["gpu_resources"]["persistent"]["program_builds"], 2)
+        stats = report["target_lifetime"]["scientific_resources"]
+        self.assertTrue(stats["closed"])
+        self.assertEqual(stats["live_bytes"], 0)
+        self.assertEqual(stats["live_programs"], 0)
+        self.assertEqual(stats["texture_allocations"], stats["texture_releases"])
+        self.assertIsNotNone(app)
 
     def test_native_complete_plot_composition_qhd_dpr150(self):
         app = QApplication.instance() or QApplication([])

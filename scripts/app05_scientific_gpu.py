@@ -1,7 +1,7 @@
 """Native texture shader plus stencil curves/coverage for detached scientific layers.
 
-Experimental, per-capture bounded resources, never wired into product. Not an
-incremental upload implementation or a throughput benchmark. No GL wide lines.
+Experimental bounded resources, ephemeral by default or explicitly context-owned.
+Never wired into product. Full uploads, not a throughput benchmark. No GL wide lines.
 """
 from math import ceil
 
@@ -37,7 +37,7 @@ def image_scissor(layer, extent):
     return x0, extent.pixel_height-y1, x1-x0, y1-y0
 
 
-def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True):
+def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True, resources=None):
     from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram, QOpenGLTexture, QOpenGLFunctions_4_0_Core
     from scripts.app05_vector_gpu import draw_vectors_gpu
     if curves:
@@ -49,6 +49,8 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True):
                          if layer.image is not None), default=0)
     if extent.nominal_target_bytes + bundle.retained_bytes + largest_image * 2 + 64 > extent.target_budget_bytes:
         raise MemoryError("combined scientific target/payload/upload budget exceeded")
+    if resources is not None:
+        resources.set_budget(extent.target_budget_bytes-extent.nominal_target_bytes-bundle.retained_bytes)
     doubles = QOpenGLFunctions_4_0_Core()
     if not doubles.initializeOpenGLFunctions():
         raise RuntimeError("scientific texel prototype requires OpenGL 4.0; select CPU fallback")
@@ -75,13 +77,16 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True):
                 ivec2 index=clamp(ivec2(floor(samplePosition)),ivec2(0),textureSize(pixels,0)-ivec2(1));
                 fragmentColor=texelFetch(pixels,index,0)*layerOpacity;
             }"""
-        if not program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, vertex):
-            raise RuntimeError(program.log())
-        if not program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, fragment):
-            raise RuntimeError(program.log())
-        program.bindAttributeLocation("position", 0)
-        if not program.link() or not program.bind() or not buffer.create() or not buffer.bind():
-            raise RuntimeError("scientific shader/buffer initialization failed: " + program.log())
+        if resources is None:
+            if not program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, vertex):
+                raise RuntimeError(program.log())
+            if not program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, fragment):
+                raise RuntimeError(program.log())
+            program.bindAttributeLocation("position", 0)
+            if not program.link() or not program.bind() or not buffer.create() or not buffer.bind():
+                raise RuntimeError("scientific shader/buffer initialization failed: " + program.log())
+        else:
+            program, buffer = resources.program("image", vertex, fragment)
         functions.glUniform1i(program.uniformLocation("pixels"), 0)
         doubles.glUniform1d(program.uniformLocation("deviceRatio"), extent.dpr)
         doubles.glUniform1d(program.uniformLocation("targetHeight"), float(extent.pixel_height))
@@ -99,22 +104,28 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True):
             if layer.image.width() > 16384 or layer.image.height() > 16384:
                 raise ValueError("scientific texture exceeds prototype dimension bound")
             # One upload texture at a time; no retained history/cache or mipmaps.
-            texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
-            texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
-            texture.setSize(layer.image.width(), layer.image.height())
-            texture.setMipLevels(1)
-            texture.setAutoMipMapGenerationEnabled(False)
-            texture.allocateStorage(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8)
-            texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8, layer.image.constBits())
-            texture.setMinMagFilters(QOpenGLTexture.Filter.Nearest, QOpenGLTexture.Filter.Nearest)
-            texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
-            texture.bind(0)
+            if resources is None:
+                texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
+                texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
+                texture.setSize(layer.image.width(), layer.image.height())
+                texture.setMipLevels(1)
+                texture.setAutoMipMapGenerationEnabled(False)
+                texture.allocateStorage(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8)
+                texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8, layer.image.constBits())
+                texture.setMinMagFilters(QOpenGLTexture.Filter.Nearest, QOpenGLTexture.Filter.Nearest)
+                texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
+                texture.bind(0)
+            else:
+                texture = resources.texture(layer.name, layer.image)
             check("texture")
             functions.glUniform1f(program.uniformLocation("layerOpacity"), float(layer.opacity))
             doubles.glUniform4d(program.uniformLocation("pixelRect"), *layer.target_rect())
             check("texture and opacity")
             data = texture_vertices().tobytes()
-            buffer.allocate(data, len(data))
+            if resources is None:
+                buffer.allocate(data, len(data))
+            else:
+                resources.write("image", data)
             program.enableAttributeArray(0)
             program.setAttributeBuffer(0, 0x1406, 0, 2, 8)
             functions.glScissor(*image_scissor(layer, extent))
@@ -123,21 +134,28 @@ def draw_scientific_gpu(device, functions, extent, bundle, *, curves=True):
             uploads += 1
             max_texture_bytes = max(max_texture_bytes, layer.image.width() * layer.image.height() * 4)
             texture.release()
-            texture.destroy()
+            if resources is None:
+                texture.destroy()
             texture = None
         program.disableAttributeArray(0)
         buffer.release()
         program.release()
         functions.glDisable(0x0C11)
-        vectors = draw_vectors_gpu(functions, extent, bundle) if curves else None
+        vectors = draw_vectors_gpu(functions, extent, bundle, resources=resources) if curves else None
         error = functions.glGetError()
         if error:
             raise RuntimeError(f"scientific GL error {error}")
         return dict(texture_uploads=uploads, maximum_texture_bytes=max_texture_bytes,
-                    vertex_buffer_bytes=32, live_textures_after=0, all_layers=False, vectors=vectors)
+                    vertex_buffer_bytes=32, live_textures_after=0 if resources is None else resources.snapshot()["live_textures"],
+                    all_layers=False, vectors=vectors)
     finally:
         if texture is not None:
-            texture.destroy()
-        buffer.destroy()
+            texture.release()
+            if resources is None:
+                texture.destroy()
+        buffer.release()
+        if resources is None:
+            buffer.destroy()
         program.release()
-        program.removeAllShaders()
+        if resources is None:
+            program.removeAllShaders()

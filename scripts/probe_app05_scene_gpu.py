@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--images-only", action="store_true", help="With --scientific, isolate exact texture sampling/blending")
     parser.add_argument("--composition", action="store_true", help="Actual Qt stacking with scientific replacements; two complete plot viewports")
     parser.add_argument("--component-review", action="store_true", help="With composition: isolate each actual command on the same opaque background")
+    parser.add_argument("--persistent-resources", action="store_true", help="Experimental composition with context-owned reusable GPU storage")
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
@@ -42,6 +43,8 @@ def main():
         parser.error("--composition requires --scientific without --images-only")
     if args.component_review and not args.composition:
         parser.error("--component-review requires --composition")
+    if args.persistent_resources and (not args.composition or args.component_review):
+        parser.error("--persistent-resources requires composition without component-review")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
     os.environ["QT_QPA_PLATFORM"] = args.platform
@@ -79,6 +82,7 @@ def main():
         dpr=args.dpr, theme=args.theme, persistence=args.persistence, scientific_only=args.scientific,
         images_only=args.images_only,
         full_plot_composition=args.composition,
+        persistent_resources=args.persistent_resources,
         checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     try:
@@ -181,12 +185,28 @@ def main():
                 if target.available and traversal_valid:
                     def draw(device, functions, size):
                         if plan is not None:
-                            gpu_resources.update(draw_plot_composition(device, functions, size, plan, panels, bundle))
+                            reusable = target.scientific_resources() if args.persistent_resources else None
+                            gpu_resources.update(draw_plot_composition(device, functions, size, plan, panels, bundle, resources=reusable))
+                            if reusable is not None:
+                                gpu_resources["persistent"] = reusable.snapshot()
                         else:
                             gpu_resources.update(draw_scientific_gpu(device, functions, size, bundle, curves=not args.images_only))
                     candidate, gpu_ms = target.render(extent, panels, background,
                         draw=draw if bundle is not None else None)
                     row.update(comparison=compare_images(cpu, candidate), gpu_completed_paint_ms=gpu_ms)
+                    if args.persistent_resources:
+                        retained_gpu = gpu_resources["persistent"]["live_bytes"]
+                        # Existing candidate readback and retained GL storage
+                        # remain live while drawing the ephemeral same-source oracle.
+                        oracle_extent = replace(extent, target_budget_bytes=extent.target_budget_bytes
+                            -retained_gpu-extent.pixel_width*extent.pixel_height*4)
+                        def fresh_draw(device, functions, size):
+                            draw_plot_composition(device, functions, oracle_extent, plan, panels, bundle)
+                        fresh, _ = target.render(extent, panels, background, draw=fresh_draw)
+                        row["persistent_vs_fresh_gpu"] = compare_images(fresh, candidate)
+                        del fresh
+                        if not row["persistent_vs_fresh_gpu"]["equal"]:
+                            raise AssertionError("persistent resources changed exact same-scene GPU pixels")
                     if args.images_only:
                         from scripts.app05_scientific_layers import paint_texel_oracle
                         assert bundle is not None

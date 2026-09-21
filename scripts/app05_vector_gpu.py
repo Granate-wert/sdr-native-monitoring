@@ -3,7 +3,7 @@ from dataclasses import replace
 from math import floor
 
 
-def draw_vectors_gpu(functions, extent, bundle):
+def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
     from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
     from scripts.app05_scientific_gpu import image_scissor, physical_scissor, texture_vertices
     from scripts.app05_vector_geometry import normalized_polygon, pattern_rows, stroke_polygons
@@ -29,12 +29,15 @@ def draw_vectors_gpu(functions, extent, bundle):
                 }
                 fragmentColor=color;
             }"""
-        for kind, source in ((QOpenGLShader.ShaderTypeBit.Vertex, vertex), (QOpenGLShader.ShaderTypeBit.Fragment, fragment)):
-            if not program.addShaderFromSourceCode(kind, source):
-                raise RuntimeError(program.log())
-        program.bindAttributeLocation("position", 0)
-        if not program.link() or not program.bind() or not buffer.create() or not buffer.bind():
-            raise RuntimeError("vector shader initialization failed: " + program.log())
+        if resources is None:
+            for kind, source in ((QOpenGLShader.ShaderTypeBit.Vertex, vertex), (QOpenGLShader.ShaderTypeBit.Fragment, fragment)):
+                if not program.addShaderFromSourceCode(kind, source):
+                    raise RuntimeError(program.log())
+            program.bindAttributeLocation("position", 0)
+            if not program.link() or not program.bind() or not buffer.create() or not buffer.bind():
+                raise RuntimeError("vector shader initialization failed: " + program.log())
+        else:
+            program, buffer = resources.program("vector", vertex, fragment)
         program.enableAttributeArray(0)
         functions.glUniform1f(program.uniformLocation("targetHeight"), float(extent.pixel_height))
         functions.glDisable(0x0B71)
@@ -45,7 +48,10 @@ def draw_vectors_gpu(functions, extent, bundle):
         functions.glBlendFuncSeparate(1, 0x0303, 1, 0x0303)
 
         def draw(data, primitive, count):
-            buffer.allocate(data, len(data))
+            if resources is None:
+                buffer.allocate(data, len(data))
+            else:
+                resources.write("vector", data)
             program.setAttributeBuffer(0, 0x1406, 0, 2, 8)
             functions.glDrawArrays(primitive, 0, count)
 
@@ -78,7 +84,8 @@ def draw_vectors_gpu(functions, extent, bundle):
             if layer.path is None:
                 raise ValueError("unknown scientific vector layer")
             # One outline's transient geometry at a time, not retained in bundle.
-            geometry_budget = min(32*1024*1024, extent.target_budget_bytes-extent.nominal_target_bytes-bundle.retained_bytes)
+            retained_gpu = resources.live_bytes if resources is not None else 0
+            geometry_budget = min(32*1024*1024, extent.target_budget_bytes-extent.nominal_target_bytes-bundle.retained_bytes-retained_gpu)
             polygons, metric = stroke_polygons(layer, extent, geometry_budget)
             strokes.append(dict(name=layer.name, **metric))
             functions.glScissor(*physical_scissor(layer.clip, extent))
@@ -116,6 +123,8 @@ def draw_vectors_gpu(functions, extent, bundle):
         functions.glDisable(0x0C11)
         program.disableAttributeArray(0)
         buffer.release()
-        buffer.destroy()
+        if resources is None:
+            buffer.destroy()
         program.release()
-        program.removeAllShaders()
+        if resources is None:
+            program.removeAllShaders()

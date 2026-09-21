@@ -137,7 +137,7 @@ def paint_plot_backgrounds(device, panels):
         painter.end()
 
 
-def draw_plot_composition(device, functions, extent, plan, panels, bundle):
+def draw_plot_composition(device, functions, extent, plan, panels, bundle, *, resources=None):
     from scripts.app05_scientific_gpu import draw_scientific_gpu
     from scripts.app05_scientific_layers import ScientificLayers
     paint_plot_backgrounds(device, panels)
@@ -153,7 +153,7 @@ def draw_plot_composition(device, functions, extent, plan, panels, bundle):
             pending.clear()
             qt_batches += 1
         one = ScientificLayers((command.scientific,), bundle.retained_bytes, bundle.allocation_limit)
-        detail = draw_scientific_gpu(device, functions, extent, one)
+        detail = draw_scientific_gpu(device, functions, extent, one, resources=resources)
         science.append(dict(name=command.scientific.name, detail=detail))
     if pending:
         paint_qt_commands(device, pending)
