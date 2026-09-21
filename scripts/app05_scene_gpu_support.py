@@ -117,9 +117,11 @@ class GpuContextUnavailable(RuntimeError):
 
 class SceneGpuTarget:
     """GUI-thread/context-bound experimental owner with at most ONE FBO."""
-    def __init__(self):
+    def __init__(self, *, graphics_budget=None):
         from PySide6.QtGui import QOffscreenSurface, QOpenGLContext
         import threading
+        if graphics_budget is not None:
+            graphics_budget._guard()
         self._thread = threading.get_ident()
         self._surface = QOffscreenSurface()
         self._surface.create()
@@ -138,6 +140,8 @@ class SceneGpuTarget:
         self.context_recoveries = 0
         self.allocations = self.releases = 0
         self.peak_target_bytes = 0
+        self._graphics_budget = graphics_budget
+        self._budget_token = None
         created = self._context.create()
         self.available = bool(created and self._context.makeCurrent(self._surface))
         self.info: dict[str, Any] = dict(context_created=created, available=self.available)
@@ -148,6 +152,22 @@ class SceneGpuTarget:
             self.info.update(renderer=functions.glGetString(0x1F01), vendor=functions.glGetString(0x1F00),
                 version=functions.glGetString(0x1F02))
             self._context.doneCurrent()
+        if graphics_budget is not None:
+            try:
+                self._budget_token = graphics_budget.register()
+            except Exception:
+                self.close()
+                raise
+
+    def _sync_graphics_budget(self):
+        if self._budget_token is not None:
+            retained = self._extent.pixel_width*self._extent.pixel_height*8 if self._extent else 0
+            retained += self._resources.live_bytes if self._resources is not None else 0
+            self._graphics_budget.retain(self._budget_token, retained)
+
+    def _allocation_admitted(self):
+        if self._budget_token is not None and not self._graphics_budget.active(self._budget_token):
+            raise RuntimeError("shared graphics allocation requires an admitted render frame")
 
     def _connect_context(self):
         from PySide6.QtCore import Qt
@@ -209,6 +229,7 @@ class SceneGpuTarget:
             if previous is not None and surface is not None:
                 previous.makeCurrent(surface)
         self._context = None
+        self._sync_graphics_budget()
         self.available = False
         self._gpu_failure = "GPU context object destroyed; select CPU fallback until explicit recreation"
 
@@ -269,6 +290,7 @@ class SceneGpuTarget:
             self._fbo = None
             self._extent = None
             self.releases += 1
+            self._sync_graphics_budget()
 
     def _make_current(self):
         return self._context is not None and self._context.makeCurrent(self._surface)
@@ -277,10 +299,18 @@ class SceneGpuTarget:
         from PySide6.QtGui import QOpenGLContext
         from scripts.app05_gpu_resources import ScientificGpuResources
         self._guard()
+        self._allocation_admitted()
         if QOpenGLContext.currentContext() != self._context:
             raise RuntimeError("scientific resources require this target's current context")
         if self._resources is None:
-            self._resources = ScientificGpuResources()
+            import weakref
+            owner = weakref.ref(self)
+            def admitted():
+                target = owner()
+                if target is None:
+                    raise RuntimeError("graphics target no longer exists")
+                target._allocation_admitted()
+            self._resources = ScientificGpuResources(allocation_guard=admitted)
         self._resources._guard()
         return self._resources
 
@@ -289,6 +319,7 @@ class SceneGpuTarget:
             self._resources.close()
             self._last_resources = self._resources.snapshot()
             self._resources = None
+            self._sync_graphics_budget()
 
     def recover_context(self):
         """Explicit recovery, never retry or silently restart on every frame.
@@ -344,15 +375,35 @@ class SceneGpuTarget:
             image, elapsed = self.render(extent, panels, background, draw=draw, expected_generation=expected_generation)
             return image, dict(backend="gpu", completed_paint_ms=elapsed, reason=None)
         except (GpuContextUnavailable, GpuOperationError) as error:
+            from contextlib import nullcontext
             retained = (self._extent.pixel_width*self._extent.pixel_height*8 if self._extent else 0)
             retained += self._resources.live_bytes if self._resources is not None else 0
             if retained + extent.pixel_width*extent.pixel_height*4 > extent.target_budget_bytes:
                 raise MemoryError("CPU fallback plus retained GPU storage exceeds budget") from error
-            image = image_target(extent, background)
-            paint_scenes(image, panels)
-            return image, dict(backend="cpu", completed_paint_ms=None, reason=str(error))
+            admission = (nullcontext() if self._budget_token is None else
+                         self._graphics_budget.frame(self._budget_token, extent.target_budget_bytes))
+            with admission:
+                image = image_target(extent, background)
+                paint_scenes(image, panels)
+                return image, dict(backend="cpu", completed_paint_ms=None, reason=str(error))
 
     def render(self, extent, panels, background, *, draw=None, expected_generation=None):
+        from contextlib import nullcontext
+        self._guard()
+        if self._rendering:
+            raise RuntimeError("reentrant GPU frame rejected")
+        if expected_generation is not None and expected_generation != self.context_generation:
+            raise ValueError("stale GPU context generation")
+        admission = (nullcontext() if self._budget_token is None else
+                     self._graphics_budget.frame(self._budget_token, extent.target_budget_bytes))
+        with admission:
+            try:
+                return self._render_admitted(extent, panels, background, draw=draw,
+                                             expected_generation=expected_generation)
+            finally:
+                self._sync_graphics_budget()
+
+    def _render_admitted(self, extent, panels, background, *, draw=None, expected_generation=None):
         from PySide6.QtCore import QSize
         from PySide6.QtGui import QImage, QOpenGLContext
         from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat, QOpenGLPaintDevice
@@ -467,9 +518,14 @@ class SceneGpuTarget:
         self._surface.destroy()
         self._closed = True
         self._gpu_failure = None
+        if self._budget_token is not None:
+            self._sync_graphics_budget()
+            self._graphics_budget.unregister(self._budget_token)
+            self._budget_token = None
 
     def snapshot(self):
         return dict(allocations=self.allocations, releases=self.releases, closed=self._closed, available=self.available,
+            graphics_budget=self._graphics_budget.snapshot() if self._graphics_budget is not None else None,
             scientific_resources=self._resources.snapshot() if self._resources is not None else self._last_resources,
             context_failure=self._gpu_failure, context_recoveries=self.context_recoveries,
             context_generation=self.context_generation, context_destructions=self.context_destructions,

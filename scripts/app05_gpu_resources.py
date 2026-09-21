@@ -12,7 +12,7 @@ from scripts.app05_gpu_errors import GpuOperationError
 
 
 class ScientificGpuResources:
-    def __init__(self):
+    def __init__(self, *, allocation_guard=None):
         self._context = QOpenGLContext.currentContext()
         if self._context is None:
             raise RuntimeError("GPU resources require current owning context")
@@ -27,6 +27,7 @@ class ScientificGpuResources:
         self.texture_releases = self.uploads = 0
         self.abandoned_bytes = self.abandoned_textures = 0
         self.failure = None
+        self._allocation_guard = allocation_guard
 
     def _guard(self, *, allow_failed=False):
         if self._closed:
@@ -35,6 +36,8 @@ class ScientificGpuResources:
             raise RuntimeError("GPU resources require owning thread and current context")
         if self.failure is not None and not allow_failed:
             raise GpuOperationError(self.failure)
+        if not allow_failed and self._allocation_guard is not None:
+            self._allocation_guard()
 
     def _check_gl(self, stage):
         if QOpenGLContext.currentContext() != self._context:

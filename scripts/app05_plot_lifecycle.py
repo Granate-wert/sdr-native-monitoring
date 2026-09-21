@@ -17,10 +17,10 @@ class PresentationInactive(RuntimeError):
 
 
 class PlotGpuLifecycle(QObject):
-    def __init__(self, widget):
+    def __init__(self, widget, *, graphics_budget=None):
         super().__init__()
         self._widget = weakref.ref(widget)
-        self.target = SceneGpuTarget()
+        self.target = SceneGpuTarget(graphics_budget=graphics_budget)
         self.revision = 0
         self.closed = False
         self.event_error = None
