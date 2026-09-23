@@ -1,10 +1,10 @@
 """Exact immutable density preparation on the existing spectrum executor."""
-from concurrent.futures import CancelledError, ThreadPoolExecutor
-from dataclasses import replace
 import threading
 import unittest
-from unittest.mock import patch
 import weakref
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+from dataclasses import replace
+from unittest.mock import patch
 
 import numpy as np
 from PySide6.QtWidgets import QApplication
@@ -15,11 +15,15 @@ from sdr_monitor.ui.v2.spectrum import projection
 from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2.spectrum.contracts import SpectrumFrameView, TraceKind
 from sdr_monitor.ui.v2.spectrum.persistence_contracts import (
-    DensityValueMode, PersistenceRenderMode, adapt_persistence_density,
+    DensityValueMode,
+    PersistenceRenderMode,
+    adapt_persistence_density,
 )
 from sdr_monitor.ui.v2.spectrum.persistence_projection import (
-    PersistenceImagePolicy, PersistenceImageRequest, prepare_persistence_image,
+    PersistenceImagePolicy,
+    PersistenceImageRequest,
     persistence_image_reserve,
+    prepare_persistence_image,
 )
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
 from tests.ui_v2.test_app05_viewport_projection import ManualWorker
@@ -119,6 +123,8 @@ class PersistenceWorkerTests(unittest.TestCase):
     def test_witness_hash_is_cancellable_bounded_and_absent_in_direct(self):
         current = request(np.asfortranarray(np.ones((3, 65539), np.float64)),
                           policy=PersistenceImagePolicy(0, PersistenceRenderMode.VISUAL, False))
+        history = prepare_persistence_image(current).as_history(1)
+        restore = replace(current, history=history, rematerialize=True)
         checks = []
 
         def cancelled():
@@ -127,7 +133,7 @@ class PersistenceWorkerTests(unittest.TestCase):
 
         with patch.object(density_worker, "map_density_row_for_display", side_effect=AssertionError("mapping before hash")):
             with self.assertRaises(CancelledError):
-                prepare_persistence_image(current, cancelled=cancelled)
+                prepare_persistence_image(restore, cancelled=cancelled)
         self.assertEqual(len(checks), 3)
         self.assertEqual(density_worker.persistence_witness_scratch(current.view), 65536 * 8)
         small = request(policy=current.policy)
@@ -135,6 +141,20 @@ class PersistenceWorkerTests(unittest.TestCase):
         self.assertEqual(persistence_image_reserve(small), 4 * 16 * 4 + 16 * 13)
         with patch.object(density_worker, "persistence_input_witness", side_effect=AssertionError("Direct must not hash")):
             prepare_persistence_image(request())
+
+    def test_regular_visual_density_hash_matches_reference_without_separate_witness_pass(self):
+        policy = PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False)
+        for mode, values in ((DensityValueMode.PROBABILITY,
+                              np.asfortranarray(np.random.default_rng(21).random((3, 65539)).astype(np.float32))),
+                             (DensityValueMode.COUNT,
+                              np.random.default_rng(22).random((3, 65539)).astype(np.float64) * 50)):
+            with self.subTest(mode=mode):
+                current = PersistenceImageRequest(view(values, mode), policy)
+                with patch.object(density_worker, "persistence_input_witness",
+                                  side_effect=AssertionError("regular Visual work must fuse input hashing")):
+                    actual = prepare_persistence_image(current)
+                expected = density_worker.persistence_input_witness(current.view)
+                self.assertTrue(density_worker.same_persistence_input(actual.input_witness, expected))
 
     def test_bit_exact_direct_visual_against_existing_overlay_with_missing_and_layouts(self):
         scene = SpectrumScene()

@@ -7,15 +7,17 @@ mutates the accepted accumulator. Results do not retain a chain of old histories
 The caller must bump policy revision on measurement/epoch reset as well as mode
 or transfer changes, and reject stale source/policy/history before image upload.
 """
-from dataclasses import dataclass
 import hashlib
 import weakref
+from dataclasses import dataclass
 
 import numpy as np
 
 from .cancellation import CancelCheck, check_cancelled
 from .persistence_contracts import (
-    DensityValueMode, PersistenceDensityView, PersistenceRenderMode,
+    DensityValueMode,
+    PersistenceDensityView,
+    PersistenceRenderMode,
     map_density_row_for_display,
 )
 
@@ -33,21 +35,49 @@ class PersistenceInputWitness:
     digest: bytes
 
 
+def _update_array_header(digest, array: np.ndarray) -> None:
+    digest.update(repr((array.shape, array.dtype.str)).encode("ascii"))
+
+
+def _update_digest_chunk(digest, chunk: np.ndarray) -> None:
+    if chunk.flags.c_contiguous:
+        digest.update(memoryview(chunk).cast("B"))
+    else:
+        digest.update(chunk.tobytes())  # at most IMAGE_BATCH cells, no retained copy
+
+
+def _update_array_digest(digest, array: np.ndarray, *, cancelled: CancelCheck = None) -> None:
+    rows = array if array.ndim == 2 else (array,)
+    for row in rows:
+        for first in range(0, row.size, IMAGE_BATCH):
+            check_cancelled(cancelled)
+            _update_digest_chunk(digest, row[first:first + IMAGE_BATCH])
+
+
 def persistence_input_witness(view: PersistenceDensityView, *,
                               cancelled: CancelCheck = None) -> PersistenceInputWitness:
     digest = hashlib.sha256()
     digest.update(repr((view.value_mode.value, view.level_unit)).encode("utf-8"))
     for array in (view.density, view.frequency_edges_hz, view.level_edges):
-        digest.update(repr((array.shape, array.dtype.str)).encode("ascii"))
-        rows = array if array.ndim == 2 else (array,)
-        for row in rows:
-            for first in range(0, row.size, IMAGE_BATCH):
-                check_cancelled(cancelled)
-                chunk = row[first:first + IMAGE_BATCH]
-                if chunk.flags.c_contiguous:
-                    digest.update(memoryview(chunk).cast("B"))
-                else:
-                    digest.update(chunk.tobytes())  # at most IMAGE_BATCH cells, no retained copy
+        _update_array_header(digest, array)
+        _update_array_digest(digest, array, cancelled=cancelled)
+    check_cancelled(cancelled)
+    return PersistenceInputWitness(weakref.ref(view.density), digest.digest())
+
+
+def _density_digest_prefix(view: PersistenceDensityView):
+    """Start the canonical input digest; density bytes are added alongside work."""
+    digest = hashlib.sha256()
+    digest.update(repr((view.value_mode.value, view.level_unit)).encode("utf-8"))
+    _update_array_header(digest, view.density)
+    return digest
+
+
+def _finish_density_witness(digest, view: PersistenceDensityView, *,
+                            cancelled: CancelCheck = None) -> PersistenceInputWitness:
+    for array in (view.frequency_edges_hz, view.level_edges):
+        _update_array_header(digest, array)
+        _update_array_digest(digest, array, cancelled=cancelled)
     check_cancelled(cancelled)
     return PersistenceInputWitness(weakref.ref(view.density), digest.digest())
 
@@ -184,13 +214,21 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                               cancelled: CancelCheck = None) -> PreparedPersistenceImage:
     check_cancelled(cancelled)
     view = request.view
-    witness = (persistence_input_witness(view, cancelled=cancelled)
-               if request.policy.mode is PersistenceRenderMode.VISUAL else None)
     history = _compatible_history(request)
-    if (request.rematerialize and history is not None and request.history is not None and witness is not None
-            and same_persistence_input(request.history.input_witness, witness)):
-        return PreparedPersistenceImage(view, request.policy, request.history_revision, history,
-                                        request.history.count_maximum, witness, True)
+    witness = None
+    digest = None
+    if request.policy.mode is PersistenceRenderMode.VISUAL:
+        if request.rematerialize and history is not None:
+            # Reuse can skip mapping entirely only after proving exact content.
+            witness = persistence_input_witness(view, cancelled=cancelled)
+            if (request.history is not None
+                    and same_persistence_input(request.history.input_witness, witness)):
+                return PreparedPersistenceImage(view, request.policy, request.history_revision, history,
+                                                request.history.count_maximum, witness, True)
+        else:
+            # For a normal new Visual frame, consume the source bytes at the same
+            # time as count reduction/mapping instead of making another full pass.
+            digest = _density_digest_prefix(view)
     maximum = 0.0
     if view.value_mode is DensityValueMode.COUNT:
         # Same global finite maximum as the GUI transfer without a full-matrix
@@ -199,6 +237,8 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
             for first in range(0, row.size, IMAGE_BATCH):
                 check_cancelled(cancelled)
                 chunk = row[first:first + IMAGE_BATCH]
+                if digest is not None:
+                    _update_digest_chunk(digest, chunk)
                 finite = chunk[np.isfinite(chunk)]
                 if finite.size:
                     maximum = max(maximum, float(np.max(finite)))
@@ -214,6 +254,8 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
         for first in range(0, source_row.size, IMAGE_BATCH):
             check_cancelled(cancelled)
             source = source_row[first:first + IMAGE_BATCH]
+            if digest is not None and view.value_mode is DensityValueMode.PROBABILITY:
+                _update_digest_chunk(digest, source)
             target = image[row_index, first:first + IMAGE_BATCH]
             mapped = target if scratch is None else scratch[:source.size]
             if source.flags.c_contiguous and source[0] == 0.0 and not np.any(source):
@@ -233,5 +275,7 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                 np.add(old, delta, out=target)
     check_cancelled(cancelled)
     image.setflags(write=False)
+    if digest is not None:
+        witness = _finish_density_witness(digest, view, cancelled=cancelled)
     return PreparedPersistenceImage(view, request.policy, request.history_revision, image, maximum,
                                     witness, request.rematerialize)
