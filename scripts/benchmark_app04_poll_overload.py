@@ -744,6 +744,8 @@ def main():
                     paint_witness_evicted=age_tracker.evicted,
                     repeated_paints=age_tracker.repeated,
                     changed_during_paint=age_tracker.changed_during_paint,
+                    stop_intent_host_s=stop_times[0],
+                    idle_observed_host_s=ended,
                     stop_timer_lateness_ms=(stop_times[0]-due)*1000,
                     stop_click_return_ms=(stop_times[1]-stop_times[0])*1000,
                     stop_to_idle_ms=(ended-stop_times[0])*1000,

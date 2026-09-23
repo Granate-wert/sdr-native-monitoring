@@ -283,6 +283,9 @@ class RealQtObservationTests(unittest.TestCase):
         self.assertIsNone(row["fixed_target_progressive_gate_passed"])
         self.assertEqual(row["progressive_painted_pair"]["partial"]["spectrum"]["key"][1], "partial")
         self.assertEqual(row["progressive_painted_pair"]["complete"]["spectrum"]["key"][1], "complete")
+        self.assertTrue(all(row["progressive_painted_pair"]["complete"][pane]["paint_return_s"]
+                            < row["stop_intent_host_s"] for pane in ("spectrum", "waterfall")))
+        self.assertGreaterEqual(row["idle_observed_host_s"], row["stop_intent_host_s"])
         self.assertEqual(row["post_stop"]["terminal_key"][1], "gap")
         self.assertEqual(row["post_stop"]["terminal_gap_painted_on"], ["spectrum", "waterfall"])
         self.assertEqual(report["remaining_workers"], [])
