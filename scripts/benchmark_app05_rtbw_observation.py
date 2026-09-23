@@ -162,7 +162,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--seconds", type=float, default=5)
+    parser.add_argument("--seconds", type=float, default=5,
+                        help="Stop delay for ordinary cycles; per steady block when --persistence-abba is enabled")
     parser.add_argument("--cycles", type=int, default=5)
     parser.add_argument("--bins", type=int, default=65536)
     parser.add_argument("--source-hz", type=float, default=200)
@@ -175,6 +176,12 @@ def main(argv=None):
                         help="Histogram at first spectrum after Start, then every N source publications")
     parser.add_argument("--persistence-display", choices=("direct", "visual"), default="direct",
                         help="Select the actual V2 persistence rendering policy for normal paint profiling")
+    parser.add_argument("--persistence-abba", action="store_true",
+                        help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
+    parser.add_argument("--abba-warmup-updates", type=int, default=8,
+                        help="Fresh accepted AND uploaded persistence updates to wait after Start/mode change")
+    parser.add_argument("--abba-warmup-seconds", type=float, default=1.0,
+                        help="Minimum excluded warm-up duration after Start/mode change")
     parser.add_argument("--qt-platform", choices=("offscreen", "windows"), default="offscreen",
                         help="Explicit windows mode creates a visible desktop Qt window; offscreen remains the default")
     parser.add_argument("--window-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
@@ -204,6 +211,16 @@ def main(argv=None):
         parser.error("window dimensions must be in 640..8192 logical pixels")
     if args.qt_platform == "windows" and sys.platform != "win32":
         parser.error("the visible Windows Qt platform is available only on Windows")
+    if args.persistence_abba and args.qt_platform != "windows":
+        parser.error("--persistence-abba requires --qt-platform windows")
+    if args.persistence_abba and (args.cycles != 1 or not args.persistence_power_bins
+            or args.persistence_display != "direct"
+            or args.page_seconds or args.viewport_seconds or args.driver_stop_ms
+            or args.stop_phase != "any" or args.memory_seconds or args.collect_after_context):
+        parser.error("ABBA requires one cycle starting in Direct, generated persistence, and no churn, delayed Stop, or memory sampling")
+    if args.persistence_abba and (args.seconds > 120 or not 1 <= args.abba_warmup_updates <= 1000
+            or not 0 <= args.abba_warmup_seconds <= 60):
+        parser.error("ABBA steady blocks must be <=120s; warm-up updates 1..1000 and seconds 0..60")
     if args.capture_window and args.qt_platform != "windows":
         parser.error("--capture-window requires --qt-platform windows")
     capture_path = args.output.with_suffix(".png")
@@ -249,6 +266,7 @@ def main(argv=None):
     gui = threading.get_ident()
     generated = page_changes = viewport_changes = 0
     persistence_generated = persistence_accepted = last_persistence_accepted = 0
+    last_persistence_density_identity = None
     producer = None
     halt = threading.Event()
     snapshot_lock = threading.RLock()
@@ -256,6 +274,23 @@ def main(argv=None):
     original_start_method, original_stop_method = _AtomicFakeLive.start, _AtomicFakeLive.stop
     control = {}
     control_phase, resumed_until = "idle", 0.0
+    abba_current_block = None
+    abba_order = ("A1", "B1", "B2", "A2")
+    abba_blocks = {
+        name: dict(started_s=None, ended_s=None, mode=None, overlay_start=None, overlay_end=None,
+            started_perf=None, ended_perf=None,
+            generated_start=None, generated_end=None,
+            waterfall_uploads_start=None, waterfall_uploads_end=None,
+            source_to_first_paint_ms={target: deque(maxlen=timing_capacity)
+                                      for target in age.ages},
+            paint_return_ms={target: deque(maxlen=timing_capacity) for target in paints},
+            boundary_excluded_paints=dict.fromkeys(age.ages, 0),
+            heartbeat_times_s=deque(maxlen=timing_capacity),
+            persistence_update_sequences=deque(maxlen=timing_capacity),
+            first_displayed_sequence=None, last_displayed_sequence=None)
+        for name in abba_order}
+    abba_warmups, abba_transitions = [], []
+    source_session = {}
     phase_ages = {phase: {name: deque(maxlen=timing_capacity) for name in age.ages}
                   for phase in ("starting", "stopping", "idle", "hidden", "resume", "steady")}
     phase_counts = {phase: dict.fromkeys(age.ages, 0) for phase in phase_ages}
@@ -275,6 +310,11 @@ def main(argv=None):
         original_upload(pane)
         upload_tokens[id(pane)] = uploaded_key(pane, before, upload_tokens.get(id(pane)))
 
+    def source_publication_time(key):
+        with age.lock:
+            publication = age.sources.get(key)
+            return None if publication is None else publication[0]
+
     class MeasuredGraphics(pg.GraphicsLayoutWidget):
         def paintEvent(self, event):
             tracked = keys.get(id(self))
@@ -285,6 +325,8 @@ def main(argv=None):
             if tracked is not None:
                 name, current = tracked
                 paints[name].append((ended - began) * 1000)
+                if abba_current_block is not None:
+                    abba_blocks[abba_current_block]["paint_return_ms"][name].append((ended - began) * 1000)
                 if key == current():
                     counts_before = dict(age.counts)
                     age.painted(name, key, ended)
@@ -293,6 +335,19 @@ def main(argv=None):
                         if age.counts[target] != counts_before[target]:
                             phase_ages[phase][target].append(age.ages[target][-1])
                             phase_counts[phase][target] += 1
+                            if abba_current_block is not None:
+                                block = abba_blocks[abba_current_block]
+                                published_at = source_publication_time(key)
+                                if published_at is not None and published_at >= block["started_perf"]:
+                                    block["source_to_first_paint_ms"][target].append(age.ages[target][-1])
+                                    # Synthetic timestamp token equals sequence; the current
+                                    # key is the exact spectrum token or uploaded waterfall row.
+                                    sequence = int(key[0])
+                                    if block["first_displayed_sequence"] is None:
+                                        block["first_displayed_sequence"] = sequence
+                                    block["last_displayed_sequence"] = sequence
+                                else:
+                                    block["boundary_excluded_paints"][target] += 1
                 else:
                     age.changed_during_paint += 1
 
@@ -323,7 +378,7 @@ def main(argv=None):
             scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence_display))
 
             def observe_density(state):
-                nonlocal persistence_accepted, last_persistence_accepted
+                nonlocal persistence_accepted, last_persistence_accepted, last_persistence_density_identity
                 bundle = state.analyzer_bundle
                 raw = None if bundle is None else bundle.persistence
                 density = state.persistence_frame
@@ -337,6 +392,10 @@ def main(argv=None):
                 if raw.update_sequence != last_persistence_accepted:
                     persistence_accepted += 1
                     last_persistence_accepted = int(raw.update_sequence)
+                    last_persistence_density_identity = id(density.density)
+                    if abba_current_block is not None:
+                        abba_blocks[abba_current_block]["persistence_update_sequences"].append(
+                            last_persistence_accepted)
 
             if persistence_enabled:
                 unsubscribe_density = f.composition.view_model.subscribe(observe_density)
@@ -350,6 +409,15 @@ def main(argv=None):
                 nonlocal producer
                 snapshot = original_start_method(f.live)
                 snapshot = replace(snapshot, spectrum=None, persistence=None)
+                start_count = int(source_session.get("start_count", 0)) + 1
+                source_session.update(start_count=int(source_session.get("start_count", 0)) + 1,
+                    config_generation=int(snapshot.generation),
+                    live_snapshot_acquisition_epoch=getattr(snapshot, "acquisition_epoch", None),
+                    receiver_id=getattr(snapshot, "receiver_id", None),
+                    source_id="fake-pluto-usb",
+                    synthetic_frame_receiver_id="synthetic-receiver" if args.persistence_abba else None,
+                    synthetic_frame_acquisition_epoch=start_count if args.persistence_abba else None,
+                    validated_display_frames=0)
                 with snapshot_lock:
                     f.live._snapshot = snapshot
                 halt.clear()
@@ -364,7 +432,9 @@ def main(argv=None):
                             frame = LiveSpectrumFrame(sequence=generated, timestamp_ns=generated,
                                 source_id="fake-pluto-usb", config_generation=snapshot.generation,
                                 center_frequency_hz=config.center_hz, sample_rate_hz=config.sample_rate_hz,
-                                fft_size=args.bins, hop_size=args.bins, frequencies_hz=frequencies, values=values)
+                                fft_size=args.bins, hop_size=args.bins, frequencies_hz=frequencies, values=values,
+                                receiver_id=source_session.get("synthetic_frame_receiver_id"),
+                                acquisition_epoch=source_session.get("synthetic_frame_acquisition_epoch"))
                             if persistence_enabled and (cycle_frames == 1 or cycle_frames % args.persistence_every == 0):
                                 persistence_generated += 1
                                 density = synthetic_persistence(frame, args.persistence_power_bins,
@@ -409,6 +479,16 @@ def main(argv=None):
                 frame = bundle.spectrum
                 if frame.source_id != "fake-pluto-usb":
                     raise AssertionError("unexpected source on measured canvas")
+                if args.persistence_abba:
+                    expected = (source_session.get("config_generation"),
+                                source_session.get("synthetic_frame_receiver_id"),
+                                source_session.get("synthetic_frame_acquisition_epoch"))
+                    actual = (int(frame.config_generation), frame.receiver_id, frame.acquisition_epoch)
+                    if actual != expected:
+                        raise AssertionError(("synthetic source identity changed", actual, expected))
+                    if int(frame.sequence) != int(frame.timestamp_ns):
+                        raise AssertionError("synthetic publication token no longer matches its frame sequence")
+                    source_session["validated_display_frames"] += 1
                 return rtbw_key(frame.timestamp_ns, frame.config_generation)
 
             def waterfall_key():
@@ -462,7 +542,13 @@ def main(argv=None):
                 callbacks["viewport"].append((perf_counter() - began) * 1000)
                 viewport_changes += 1
 
-            heartbeat = timer(.01, lambda: beats.append(perf_counter()))
+            def heartbeat_tick():
+                now = perf_counter()
+                beats.append(now)
+                if abba_current_block is not None:
+                    abba_blocks[abba_current_block]["heartbeat_times_s"].append(now)
+
+            heartbeat = timer(.01, heartbeat_tick)
             page_timer = timer(args.page_seconds, cycle_page)
             view_timer = timer(args.viewport_seconds, cycle_viewport)
             heartbeat.start()
@@ -484,68 +570,242 @@ def main(argv=None):
                 census_before = qt_wrapper_counts()
                 memory_timer = timer(args.memory_seconds, sample_memory)
                 memory_timer.start()
+
+            def persistence_state():
+                overlay = scene._persistence
+                latest = overlay.latest_view
+                persistence_projector = getattr(scene._projector, "persistence_projector", None)
+                return dict(mode=overlay.render_mode.value,
+                    last_viewmodel_update=last_persistence_accepted,
+                    latest_view_is_latest_accepted_density=bool(latest is not None
+                        and id(latest.density) == last_persistence_density_identity),
+                    latest_view_is_uploaded=bool(latest is not None
+                        and overlay._uploaded_density is latest.density),
+                    image_uploads=overlay.metrics.image_uploads,
+                    worker_request_pending=overlay.worker_request is not None,
+                    pending_view=overlay._pending_view is not None,
+                    persistence_projector_active=bool(persistence_projector
+                        and persistence_projector.has_active),
+                    persistence_projector_pending=bool(persistence_projector
+                        and persistence_projector.has_pending),
+                    spectrum_projector_pending=bool(scene._projector and scene._projector.has_pending))
+
+            def wait_for_persistence_warmup(label, mode, baseline_update, baseline_uploads):
+                target_update = baseline_update + args.abba_warmup_updates
+                began_warmup = perf_counter()
+                earliest_ready = began_warmup + args.abba_warmup_seconds
+                gate_snapshot = {}
+
+                def ready():
+                    state = persistence_state()
+                    matched = (state["mode"] == mode.value
+                        and last_persistence_accepted >= target_update
+                        and state["latest_view_is_latest_accepted_density"]
+                        and state["latest_view_is_uploaded"]
+                        and state["image_uploads"] > baseline_uploads
+                        and not state["worker_request_pending"] and not state["pending_view"]
+                        and perf_counter() >= earliest_ready)
+                    if matched:
+                        gate_snapshot.update(state=state, at_s=perf_counter() - began)
+                    return matched
+
+                try:
+                    run_qt_until(lambda: checked(ready), max(15, args.abba_warmup_seconds + 15))
+                except TimeoutError as error:
+                    raise TimeoutError(f"ABBA warm-up did not settle ({label}); "
+                        f"target_update={target_update}, state={persistence_state()}") from error
+                post_gate = persistence_state()
+                gate_state = gate_snapshot.get("state")
+                return dict(label=label, mode=mode.value,
+                    began_s=began_warmup - began,
+                    ended_s=perf_counter() - began,
+                    duration_ms=(perf_counter() - began_warmup) * 1000,
+                    baseline_accepted_update=baseline_update,
+                    target_accepted_update=target_update,
+                    baseline_image_uploads=baseline_uploads,
+                    gate_satisfied_state=gate_state,
+                    gate_satisfied_at_s=gate_snapshot.get("at_s"),
+                    post_gate_state=post_gate,
+                    superseded_after_gate=bool(gate_state
+                        and (not post_gate["latest_view_is_uploaded"] or post_gate["pending_view"])))
+
+            def transition_persistence_mode(mode, label):
+                old_mode = scene._persistence.render_mode
+                before = persistence_state()
+                switch_started = perf_counter()
+                scene.set_persistence_render_mode(mode)
+                switch_returned = perf_counter()
+                after_callback = persistence_state()
+                baseline_update = last_persistence_accepted
+                baseline_uploads = scene._persistence.metrics.image_uploads
+                warmup = wait_for_persistence_warmup(label, mode, baseline_update, baseline_uploads)
+                abba_transitions.append(dict(label=label, from_mode=old_mode.value,
+                    to_mode=mode.value, began_s=switch_started - began,
+                    callback_ms=(switch_returned - switch_started) * 1000,
+                    before=before, after_callback=after_callback, warmup=warmup))
+
+            def measure_abba_block(name, mode):
+                nonlocal abba_current_block
+                block = abba_blocks[name]
+                if scene._persistence.render_mode.value != mode.value:
+                    raise AssertionError((name, scene._persistence.render_mode, mode))
+                block["mode"] = mode.value
+                block["started_s"] = perf_counter() - began
+                block["started_perf"] = perf_counter()
+                block["generated_start"] = generated
+                block["overlay_start"] = persistence_state()
+                block["waterfall_uploads_start"] = waterfall.metrics.image_uploads
+                due = perf_counter() + args.seconds
+                abba_current_block = name
+                run_qt_until(lambda: checked(lambda: perf_counter() >= due), args.seconds + 5)
+                abba_current_block = None
+                block["ended_s"] = perf_counter() - began
+                block["ended_perf"] = perf_counter()
+                block["generated_end"] = generated
+                block["overlay_end"] = persistence_state()
+                block["waterfall_uploads_end"] = waterfall.metrics.image_uploads
+                for target in age.ages:
+                    if len(block["source_to_first_paint_ms"][target]) < 2:
+                        raise AssertionError(f"ABBA {name} block lacks two fresh {target} paint samples; "
+                                             f"boundary_excluded={block['boundary_excluded_paints'][target]}")
+                if len(block["persistence_update_sequences"]) < 2:
+                    raise AssertionError(f"ABBA {name} block lacks fresh accepted persistence updates")
+
+            def run_visible_abba():
+                nonlocal control_phase, resumed_until
+                if scene._persistence.render_mode is not PersistenceRenderMode.DIRECT:
+                    raise AssertionError("ABBA must begin in Direct mode")
+                f.shell.select_workspace("analyzer")
+                control_phase = "starting"
+                f.page.primary.click()
+                run_qt_until(lambda: checked(lambda: f.live.is_running()
+                    and not f.composition.view_model.state.busy), 5)
+                control_phase = "running"
+                resumed_until = perf_counter() + .25
+
+                initial_warmup = wait_for_persistence_warmup("initial-direct", PersistenceRenderMode.DIRECT,
+                    last_persistence_accepted, scene._persistence.metrics.image_uploads)
+                abba_warmups.append(initial_warmup)
+                measure_abba_block("A1", PersistenceRenderMode.DIRECT)
+                transition_persistence_mode(PersistenceRenderMode.VISUAL, "Direct-to-Visual")
+                measure_abba_block("B1", PersistenceRenderMode.VISUAL)
+                # B1 and B2 form one continuous Visual interval; no second mode switch/reset.
+                measure_abba_block("B2", PersistenceRenderMode.VISUAL)
+                transition_persistence_mode(PersistenceRenderMode.DIRECT, "Visual-to-Direct")
+                measure_abba_block("A2", PersistenceRenderMode.DIRECT)
+
+                end_snapshot = f.live.latest_snapshot()
+                end_live_epoch = getattr(end_snapshot, "acquisition_epoch", None)
+                start_live_epoch = source_session.get("live_snapshot_acquisition_epoch")
+                if (end_snapshot.generation != source_session.get("config_generation")
+                        or (start_live_epoch is not None and end_live_epoch != start_live_epoch)):
+                    raise AssertionError("source configuration/epoch changed during single-session ABBA")
+                if producer is None or not producer.is_alive() or generated <= 0:
+                    raise AssertionError("synthetic source did not remain active for the complete ABBA sequence")
+                if (source_session.get("synthetic_frame_acquisition_epoch") is None
+                        or source_session.get("validated_display_frames", 0) == 0):
+                    raise AssertionError("no explicit synthetic frame receiver/epoch was validated on the canvas")
+                source_session.update(end_config_generation=end_snapshot.generation,
+                    end_live_snapshot_acquisition_epoch=end_live_epoch,
+                    live_snapshot_epoch_comparable=start_live_epoch is not None,
+                    final_publication_sequence=generated)
+
+                stop_entered = perf_counter()
+                if producer is None or not producer.is_alive():
+                    raise AssertionError("Stop was not tested under an active producer after ABBA")
+                stop_phase_observed = stop_phase(f.presenter, f.composition.spectrum_projector)
+                control_phase = "stopping"
+                f.page.primary.click()
+                click_returned = perf_counter()
+                run_qt_until(lambda: checked(lambda: not f.live.is_running()
+                    and not f.composition.view_model.state.busy), 5)
+                idle = perf_counter()
+                if len(driver_entries) != 1 or len(driver_returns) != 1 or producer.is_alive():
+                    raise AssertionError("ABBA must stop exactly one active producer exactly once")
+                stops.append(dict(cycle=0, producer_active_at_intent=True,
+                    phase_at_intent=stop_phase_observed, phase_observations=1,
+                    generated_at_intent=generated, generated_at_idle=generated,
+                    timer_lateness_ms=0.0, click_return_ms=(click_returned - stop_entered) * 1000,
+                    intent_to_worker_ms=(driver_entries[-1][0] - stop_entered) * 1000,
+                    driver_elapsed_ms=(driver_returns[-1] - driver_entries[-1][0]) * 1000,
+                    driver_return_to_idle_ms=(idle - driver_returns[-1]) * 1000,
+                    intent_to_idle_ms=(idle - stop_entered) * 1000,
+                    worker_off_gui=driver_entries[-1][1],
+                    heartbeat_ticks_during_driver_delay=sum(driver_entries[-1][0] < beat <
+                        driver_entries[-1][0] + args.driver_stop_ms / 1000 for beat in beats)))
+                control_phase = "idle"
+
             with patch.dict(control, start=start, stop=stop):
-                for cycle in range(args.cycles):
-                    f.shell.select_workspace("analyzer")
-                    control_phase = "starting"
-                    f.page.primary.click()
-                    run_qt_until(lambda: checked(lambda: f.live.is_running()
-                        and not f.composition.view_model.state.busy), 5)
-                    control_phase = "running"
-                    resumed_until = perf_counter() + .25
-                    count_before = generated
-                    due = perf_counter() + args.seconds
-                    intent = []
-                    intent_phase = {}
-                    phase_observations = 0
-                    def request_stop():
-                        nonlocal control_phase, phase_observations
-                        entered = perf_counter()
-                        if producer is None or not producer.is_alive() or generated <= count_before:
-                            raise AssertionError("Stop was not tested under an active producer")
-                        phase = stop_phase(f.presenter, f.composition.spectrum_projector)
-                        phase_observations += 1
-                        if not phase_matches(phase, args.stop_phase):
-                            if entered - due > 2:
-                                raise AssertionError(f"Requested Stop phase not observed: {args.stop_phase}; last={phase}")
-                            stop_timer.start(1)
-                            return
-                        intent_phase.update(phase)
-                        control_phase = "stopping"
+                if args.persistence_abba:
+                    run_visible_abba()
+                    if f.events != ["rtbw-start", "rtbw-stop"]:
+                        raise AssertionError(f"ABBA unexpectedly started/stopped more than once: {f.events}")
+                else:
+                    for cycle in range(args.cycles):
+                        f.shell.select_workspace("analyzer")
+                        control_phase = "starting"
                         f.page.primary.click()
-                        intent.extend((entered, perf_counter(), generated))
-                    stop_timer = timer(args.seconds, request_stop, once=True)
-                    if args.page_seconds:
-                        page_timer.start()
-                    if args.viewport_seconds:
-                        view_timer.start()
-                    stop_timer.start()
-                    run_qt_until(lambda: checked(lambda: bool(intent) and not f.live.is_running()
-                        and not f.composition.view_model.state.busy), args.seconds + 5)
-                    idle = perf_counter()
-                    control_phase = "idle"
-                    page_timer.stop()
-                    view_timer.stop()
-                    if len(driver_entries) != cycle + 1 or len(driver_returns) != cycle + 1 or producer.is_alive():
-                        raise AssertionError("control did not stop exactly one active producer")
-                    worker_entry, off_gui = driver_entries[-1]
-                    stops.append(dict(cycle=cycle, producer_active_at_intent=True,
-                        phase_at_intent=intent_phase, phase_observations=phase_observations,
-                        generated_at_intent=intent[2], generated_at_idle=generated,
-                        timer_lateness_ms=(intent[0] - due) * 1000,
-                        click_return_ms=(intent[1] - intent[0]) * 1000,
-                        intent_to_worker_ms=(worker_entry - intent[0]) * 1000,
-                        driver_elapsed_ms=(driver_returns[-1] - worker_entry) * 1000,
-                        driver_return_to_idle_ms=(idle - driver_returns[-1]) * 1000,
-                        intent_to_idle_ms=(idle - intent[0]) * 1000, worker_off_gui=off_gui,
-                        heartbeat_ticks_during_driver_delay=sum(worker_entry < beat <
-                            worker_entry + args.driver_stop_ms / 1000 for beat in beats)))
-                    f.shell.select_workspace("analyzer")
-                    run_qt_until(lambda: checked(lambda: scene.displayed_frame is not None), 2)
-                    if args.memory_seconds:
-                        sample_memory("cycle-idle")
-                if f.events != [event for _ in range(args.cycles) for event in ("rtbw-start", "rtbw-stop")]:
-                    raise AssertionError(f.events)
+                        run_qt_until(lambda: checked(lambda: f.live.is_running()
+                            and not f.composition.view_model.state.busy), 5)
+                        control_phase = "running"
+                        resumed_until = perf_counter() + .25
+                        count_before = generated
+                        due = perf_counter() + args.seconds
+                        intent = []
+                        intent_phase = {}
+                        phase_observations = 0
+
+                        def request_stop():
+                            nonlocal control_phase, phase_observations
+                            entered = perf_counter()
+                            if producer is None or not producer.is_alive() or generated <= count_before:
+                                raise AssertionError("Stop was not tested under an active producer")
+                            phase = stop_phase(f.presenter, f.composition.spectrum_projector)
+                            phase_observations += 1
+                            if not phase_matches(phase, args.stop_phase):
+                                if entered - due > 2:
+                                    raise AssertionError(
+                                        f"Requested Stop phase not observed: {args.stop_phase}; last={phase}")
+                                stop_timer.start(1)
+                                return
+                            intent_phase.update(phase)
+                            control_phase = "stopping"
+                            f.page.primary.click()
+                            intent.extend((entered, perf_counter(), generated))
+
+                        stop_timer = timer(args.seconds, request_stop, once=True)
+                        if args.page_seconds:
+                            page_timer.start()
+                        if args.viewport_seconds:
+                            view_timer.start()
+                        stop_timer.start()
+                        run_qt_until(lambda: checked(lambda: bool(intent) and not f.live.is_running()
+                            and not f.composition.view_model.state.busy), args.seconds + 5)
+                        idle = perf_counter()
+                        control_phase = "idle"
+                        page_timer.stop()
+                        view_timer.stop()
+                        if (len(driver_entries) != cycle + 1 or len(driver_returns) != cycle + 1
+                                or producer.is_alive()):
+                            raise AssertionError("control did not stop exactly one active producer")
+                        worker_entry, off_gui = driver_entries[-1]
+                        stops.append(dict(cycle=cycle, producer_active_at_intent=True,
+                            phase_at_intent=intent_phase, phase_observations=phase_observations,
+                            generated_at_intent=intent[2], generated_at_idle=generated,
+                            timer_lateness_ms=(intent[0] - due) * 1000,
+                            click_return_ms=(intent[1] - intent[0]) * 1000,
+                            intent_to_worker_ms=(worker_entry - intent[0]) * 1000,
+                            driver_elapsed_ms=(driver_returns[-1] - worker_entry) * 1000,
+                            driver_return_to_idle_ms=(idle - driver_returns[-1]) * 1000,
+                            intent_to_idle_ms=(idle - intent[0]) * 1000, worker_off_gui=off_gui,
+                            heartbeat_ticks_during_driver_delay=sum(worker_entry < beat <
+                                worker_entry + args.driver_stop_ms / 1000 for beat in beats)))
+                        f.shell.select_workspace("analyzer")
+                        run_qt_until(lambda: checked(lambda: scene.displayed_frame is not None), 2)
+                        if args.memory_seconds:
+                            sample_memory("cycle-idle")
+                    if f.events != [event for _ in range(args.cycles) for event in ("rtbw-start", "rtbw-stop")]:
+                        raise AssertionError(f.events)
             if age.missing or age.changed_during_paint or not all(age.counts.values()):
                 raise AssertionError((age.missing, age.changed_during_paint, age.counts))
             if persistence_enabled and (not persistence_accepted or not scene._persistence.metrics.image_uploads):
@@ -578,6 +838,65 @@ def main(argv=None):
                 last_accepted_update=last_persistence_accepted,
                 overlay_metrics=asdict(scene._persistence.metrics),
                 scope="Synthetic rolling histogram of up to four identical spectra, fresh immutable array per update. Accepted and ImageItem uploads counted, not persistence paint/RF/native DSP FPS.")
+            if args.persistence_abba:
+                def abba_block_report(name):
+                    block = abba_blocks[name]
+                    heartbeat_intervals = np.diff(block["heartbeat_times_s"]) * 1000
+                    updates = list(block["persistence_update_sequences"])
+                    elapsed = block["ended_s"] - block["started_s"]
+                    source_publications = block["generated_end"] - block["generated_start"]
+                    persistence_upload_delta = block["overlay_end"]["image_uploads"] - \
+                        block["overlay_start"]["image_uploads"]
+                    waterfall_upload_delta = block["waterfall_uploads_end"] - block["waterfall_uploads_start"]
+                    return dict(mode=block["mode"],
+                        began_s=block["started_s"], ended_s=block["ended_s"],
+                        elapsed_s=elapsed,
+                        first_displayed_source_sequence=block["first_displayed_sequence"],
+                        last_displayed_source_sequence=block["last_displayed_sequence"],
+                        source_publications=dict(count=source_publications,
+                            rate_hz=source_publications / elapsed,
+                            first_sequence=block["generated_start"] + 1,
+                            last_sequence=block["generated_end"]),
+                        boundary_excluded_paint_counts=block["boundary_excluded_paints"],
+                        source_to_first_paint_sample_counts={target: len(values)
+                            for target, values in block["source_to_first_paint_ms"].items()},
+                        source_to_first_paint_ms={target: summary(values) for target, values
+                                                  in block["source_to_first_paint_ms"].items()},
+                        paint_return_ms={target: summary(values) for target, values
+                                         in block["paint_return_ms"].items()},
+                        heartbeat_intervals_ms=summary(heartbeat_intervals),
+                        heartbeat_tick_count=len(block["heartbeat_times_s"]),
+                        accepted_persistence_updates=dict(count=len(updates),
+                            first=None if not updates else updates[0],
+                            last=None if not updates else updates[-1], rate_hz=len(updates) / elapsed),
+                        persistence_image_uploads=dict(delta=persistence_upload_delta,
+                            rate_hz=persistence_upload_delta / elapsed,
+                            latest_density_uploaded=block["overlay_end"]["latest_view_is_uploaded"],
+                            request_pending=block["overlay_end"]["worker_request_pending"],
+                            pending_view=block["overlay_end"]["pending_view"]),
+                        waterfall_image_uploads=dict(delta=waterfall_upload_delta,
+                            rate_hz=waterfall_upload_delta / elapsed),
+                        overlay_start=block["overlay_start"], overlay_end=block["overlay_end"])
+
+                def combined_age(block_names, target):
+                    parts = [np.asarray(abba_blocks[name]["source_to_first_paint_ms"][target])
+                             for name in block_names]
+                    parts = [part for part in parts if len(part)]
+                    return summary(np.concatenate(parts)) if parts else None
+
+                report["persistence_abba"] = dict(
+                    sequence=[dict(block=name, mode=abba_blocks[name]["mode"])
+                              for name in abba_order],
+                    blocks={name: abba_block_report(name) for name in abba_order},
+                    transitions=abba_transitions,
+                    startup_warmup=abba_warmups,
+                    combined_steady_source_to_first_paint_ms={
+                        "direct": {target: combined_age(("A1", "A2"), target) for target in age.ages},
+                        "visual": {target: combined_age(("B1", "B2"), target) for target in age.ages}},
+                    source_session=dict(source_session, events=list(f.events), start_stop_count=len(stops),
+                        frame_identity_scope="Explicit synthetic receiver/epoch labels attached to each observed LiveSpectrumFrame; not physical SDR provenance."),
+                    interpretation="One synthetic Live session, Direct A1 -> Visual B1/B2 -> Direct A2. B1/B2 are contiguous halves of one Visual interval, not independent replications. Mode changes, accepted/uploaded update catch-up and declared warm-up are recorded separately and excluded from steady samples.",
+                    limitations="Visible Windows Qt QWidget paint/heartbeat on one host display. Synthetic constant spectrum and rolling histogram only; not DWM/compositor scanout, SDR/RF/LPS, visual smoothing fidelity, physical FHD/QHD coverage, or a general performance acceptance.")
             report["requested_stop_phase"] = args.stop_phase
             report["stop_phase_scope"] = "Instantaneous GUI-side Future observation before click; worker may finish before click. Phase wait is in timer_lateness, not intent_to_idle. No worker barrier/driver deadline."
             phase_names = sorted({(s["phase_at_intent"]["preparation"], s["phase_at_intent"]["projection"])

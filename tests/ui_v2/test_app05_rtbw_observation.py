@@ -84,6 +84,17 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(report["memory"]["after_context_return"]["allocation_budget"]["reserved_bytes"], 0)
         self.assertNotIn("diagnostic_after_collection", report["memory"])
 
+    def test_persistence_abba_rejects_offscreen_before_qt_startup(self):
+        with TemporaryDirectory(prefix="app05-abba-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--qt-platform", "offscreen", "--persistence-abba",
+                "--persistence-power-bins", "32"], cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--persistence-abba requires --qt-platform windows", result.stderr)
+
     def test_stop_phase_preserves_queued_running_done_and_cancelled_without_mutation(self):
         future = Future()
         self.assertEqual(OBSERVER.future_phase(None), "idle")
