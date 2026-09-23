@@ -104,10 +104,107 @@ def persistence_upload_events_since_counter(events, start_counter, end_counter):
     return [event for event in events if start_counter < event["counter"] <= end_counter]
 
 
+def persistence_rematerialization_settled(state):
+    """Require the visible latest density, accepted identity and work lanes to agree."""
+    return bool(
+        state["presentation_active"]
+        and state["layer_requested_visible"]
+        and state["image_item_visible"]
+        and state["last_viewmodel_update"] == state["latest_density_update_sequence"]
+        and state["latest_density_update_sequence"] == state["uploaded_density_update_sequence"]
+        and state["latest_view_is_latest_accepted_density"]
+        and state["latest_view_is_uploaded"]
+        and not state["worker_request_pending"]
+        and not state["pending_view"]
+        and not state["persistence_projector_active"]
+        and not state["persistence_projector_pending"]
+    )
+
+
+def persistence_show_uploads_current(events, start_counter, end_counter, minimum_sequence):
+    """Require every post-Show commit to be identified and non-regressing."""
+    selected = persistence_upload_events_since_counter(events, start_counter, end_counter)
+    sequences = [event.get("uploaded_update_sequence") for event in selected]
+    return bool(selected
+        and len(selected) == end_counter - start_counter
+        and [event["counter"] for event in selected]
+            == list(range(start_counter + 1, end_counter + 1))
+        and all(isinstance(sequence, int) for sequence in sequences)
+        and (minimum_sequence is None or all(sequence >= minimum_sequence for sequence in sequences))
+        and all(after >= before for before, after in zip(sequences, sequences[1:])))
+
+
+def persistence_page_lifecycle_gate_passed(transitions, *, stable_samples=3, overflow=0):
+    """Accept complete, ordered Hide/Show pairs with fresh visible restoration."""
+    if overflow or len(transitions) < 2:
+        return False
+    shows = 0
+    for index, transition in enumerate(transitions):
+        expected = "hide" if index % 2 == 0 else "show"
+        if transition.get("action") != expected:
+            return False
+        if expected == "hide":
+            before = transition.get("before") or {}
+            after = transition.get("after_visibility_observed") or {}
+            if not (transition.get("visible_state_observed") is True
+                    and before.get("presentation_active") is True
+                    and before.get("layer_requested_visible") is True
+                    and before.get("image_item_visible") is True
+                    and after.get("presentation_active") is False
+                    and after.get("image_item_visible") is False
+                    and after.get("uploaded_density_update_sequence") is None):
+                return False
+            continue
+        before = transition.get("before") or {}
+        after = transition.get("latest_observed_state") or {}
+        if not (transition.get("visible_state_observed") is True
+                and before.get("presentation_active") is False
+                and before.get("image_item_visible") is False
+                and before.get("uploaded_density_update_sequence") is None
+                and transition.get("settled") is True
+                and transition.get("stable_samples", 0) >= stable_samples
+                and transition.get("post_show_request_upload_count", 0) >= 1
+                and transition.get("upload_counter_events_match") is True
+                and transition.get("post_show_uploads_monotonic") is True
+                and after.get("presentation_active") is True
+                and after.get("layer_requested_visible") is True
+                and after.get("image_item_visible") is True
+                and after.get("latest_density_update_sequence")
+                    == after.get("uploaded_density_update_sequence")):
+            return False
+        shows += 1
+    return shows > 0
+
+
 def persistence_catchup_exit_code(result):
-    """Keep a failed catch-up report on disk, but never return success for it."""
+    """Keep failed opt-in gate reports on disk, but never return success for them."""
     catchup = result.get("persistence_catchup")
-    return 0 if catchup is None or catchup.get("freshness_gate_passed") is True else 1
+    if catchup is not None and catchup.get("freshness_gate_passed") is not True:
+        return 1
+    lifecycle = result.get("persistence_page_lifecycle")
+    if lifecycle is not None and lifecycle.get("gate_passed") is not None:
+        if lifecycle.get("gate_passed") is not True:
+            return 1
+    return 0
+
+
+def persistence_page_lifecycle_config_error(*, qt_platform, seconds, page_seconds, cycles,
+        persistence_power_bins, persistence_display, viewport_seconds, driver_stop_ms,
+        stop_phase, persistence_abba, persistence_catchup, memory_seconds,
+        collect_after_context, capture_window):
+    """Reject lifecycle runs whose timer cannot leave the declared settle window."""
+    if qt_platform != "windows":
+        return "page lifecycle requires visible Windows Qt"
+    if (cycles != 1 or not persistence_power_bins or persistence_display != "visual"
+            or not page_seconds or viewport_seconds or driver_stop_ms or stop_phase != "any"
+            or persistence_abba or persistence_catchup or memory_seconds
+            or collect_after_context or capture_window):
+        return "page lifecycle requires one Visual persistence session, a page interval, and no other churn/observer modes"
+    if page_seconds < 1.5:
+        return "page lifecycle interval must be at least 1.5s to leave margin after the 1s Show deadline"
+    if seconds < 2 * page_seconds + 1.5:
+        return "page lifecycle duration must allow a Hide/Show pair, the full Show deadline, and timer-start margin"
+    return None
 
 
 def _rect_xywh(rect):
@@ -232,6 +329,8 @@ def main(argv=None):
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
     parser.add_argument("--persistence-catchup", action="store_true",
                         help="Visible Visual-only burst/freeze/drain freshness pulse; --seconds is each burst")
+    parser.add_argument("--persistence-page-lifecycle", action="store_true",
+                        help="Opt-in visible Windows Hide/Show persistence rematerialization gate; requires --page-seconds")
     parser.add_argument("--catchup-repetitions", type=int, default=3,
                         help="Independent synthetic burst/freeze/drain pulses; default 3")
     parser.add_argument("--catchup-deadline-ms", type=int, default=1000,
@@ -275,6 +374,17 @@ def main(argv=None):
         parser.error("--persistence-catchup requires --qt-platform windows")
     if args.persistence_abba and args.persistence_catchup:
         parser.error("--persistence-abba and --persistence-catchup are separate experiments")
+    if args.persistence_page_lifecycle:
+        config_error = persistence_page_lifecycle_config_error(
+            qt_platform=args.qt_platform, seconds=args.seconds, page_seconds=args.page_seconds,
+            cycles=args.cycles, persistence_power_bins=args.persistence_power_bins,
+            persistence_display=args.persistence_display, viewport_seconds=args.viewport_seconds,
+            driver_stop_ms=args.driver_stop_ms, stop_phase=args.stop_phase,
+            persistence_abba=args.persistence_abba, persistence_catchup=args.persistence_catchup,
+            memory_seconds=args.memory_seconds, collect_after_context=args.collect_after_context,
+            capture_window=args.capture_window)
+        if config_error:
+            parser.error(config_error)
     if args.persistence_abba and (args.cycles != 1 or not args.persistence_power_bins
             or args.persistence_display != "direct"
             or args.page_seconds or args.viewport_seconds or args.driver_stop_ms
@@ -345,6 +455,16 @@ def main(argv=None):
     persistence_generated_at, persistence_accepted_at = {}, {}
     persistence_upload_probe = dict(overlay=None, events=None)
     persistence_generated_order = deque()
+    page_transitions = []
+    page_transition_limit = 256
+    page_transition_overflow = 0
+    pending_page_transition = None
+    last_hidden_transition = None
+    page_transition_sequence = 0
+    page_transition_cutoff = 0.0
+    page_transitions_suppressed_for_deadline = 0
+    page_timer_expected_at = 0.0
+    page_timer_lateness_ms = deque(maxlen=256)
     producer = None
     halt = threading.Event()
     producer_pause_requested, producer_paused = threading.Event(), threading.Event()
@@ -646,9 +766,66 @@ def main(argv=None):
                 return t
 
             def cycle_page():
-                nonlocal page_changes, resumed_until
+                nonlocal page_changes, resumed_until, pending_page_transition
+                nonlocal last_hidden_transition, page_transition_overflow, page_transition_sequence
+                nonlocal page_transitions_suppressed_for_deadline
+                nonlocal page_timer_expected_at
+                if (args.persistence_page_lifecycle
+                        and perf_counter() >= page_transition_cutoff):
+                    page_timer.stop()
+                    page_transitions_suppressed_for_deadline += 1
+                    return
                 began = perf_counter()
-                f.shell.select_workspace("calibration" if f.page.visualization.isVisible() else "analyzer")
+                timer_lateness = (began - page_timer_expected_at) * 1000
+                page_timer_lateness_ms.append(timer_lateness)
+                page_timer_expected_at = began + args.page_seconds
+                was_visible = bool(f.page.visualization.isVisible())
+                action = "hide" if was_visible else "show"
+                if pending_page_transition is not None:
+                    pending_page_transition.update(settled=False, interrupted_by=action,
+                        settle_ms=(began - pending_page_transition["requested_at"]) * 1000)
+                    persistence_upload_probe["events"] = None
+                    pending_page_transition = None
+                before_state = persistence_state()
+                transition = dict(sequence=page_transition_sequence + 1, action=action,
+                    requested_at=began, requested_from_workspace=f.shell.active_workspace_id,
+                    before=before_state, expected_visible=not was_visible,
+                    visibility_observed_at=None, visible_state_observed=False,
+                    after_visibility_observed=None, page_timer_lateness_ms=timer_lateness)
+                page_transition_sequence += 1
+                record_transition = len(page_transitions) < page_transition_limit
+                if record_transition:
+                    page_transitions.append(transition)
+                else:
+                    page_transition_overflow += 1
+                if action == "show" and args.persistence_power_bins and record_transition:
+                    upload_events = []
+                    transition["upload_event_log"] = upload_events
+                    transition["restore_started_at"] = began
+                    transition["show_request_upload_counter"] = before_state["image_uploads"]
+                    transition["minimum_show_density_sequence"] = before_state[
+                        "latest_density_update_sequence"]
+                    if last_hidden_transition is not None:
+                        transition["source_publications_while_hidden"] = max(
+                            0, generated - last_hidden_transition["generated_at_hide"])
+                        transition["persistence_updates_while_hidden"] = max(
+                            0, last_persistence_accepted -
+                            last_hidden_transition["accepted_at_hide"])
+                    persistence_upload_probe["events"] = upload_events
+                    pending_page_transition = transition
+                elif action == "hide" and record_transition:
+                    persistence_upload_probe["events"] = None
+                    last_hidden_transition = dict(generated_at_hide=generated,
+                        accepted_at_hide=last_persistence_accepted)
+                    pending_page_transition = transition
+                f.shell.select_workspace("calibration" if was_visible else "analyzer")
+                transition["callback_returned_at"] = perf_counter()
+                transition["visible_at_callback_return"] = bool(f.page.visualization.isVisible())
+                transition["after_callback"] = persistence_state()
+                if action == "hide" and record_transition:
+                    transition["generated_at_hide"] = generated
+                    transition["accepted_at_hide"] = last_persistence_accepted
+                    last_hidden_transition = transition
                 callbacks["page"].append((perf_counter() - began) * 1000)
                 page_changes += 1
                 if f.page.visualization.isVisible():
@@ -665,10 +842,110 @@ def main(argv=None):
                 viewport_changes += 1
 
             def heartbeat_tick():
+                nonlocal pending_page_transition
                 now = perf_counter()
                 beats.append(now)
                 if abba_current_block is not None:
                     abba_blocks[abba_current_block]["heartbeat_times_s"].append(now)
+                transition = pending_page_transition
+                if transition is None or "settled" in transition:
+                    return
+                actually_visible = bool(f.page.visualization.isVisible())
+                expected_visible = transition["expected_visible"]
+                if actually_visible != expected_visible:
+                    if (now - transition["requested_at"]) * 1000 >= 1000:
+                        transition.update(visible_state_observed=False, settled=False,
+                            timed_out=True, settle_ms=(now - transition["requested_at"]) * 1000,
+                            after_visibility_observed=persistence_state())
+                        persistence_upload_probe["events"] = None
+                        pending_page_transition = None
+                    return
+                if transition["visibility_observed_at"] is None:
+                    transition["visibility_observed_at"] = now
+                    transition["visible_state_observed"] = True
+                    transition["request_to_visibility_ms"] = (
+                        now - transition["requested_at"]) * 1000
+                    transition["callback_return_to_visibility_observation_ms"] = (
+                        now - transition["callback_returned_at"]) * 1000
+                    observed_state = persistence_state()
+                    transition["after_visibility_observed"] = observed_state
+                    if transition["action"] == "hide":
+                        transition.update(settled=True, settlement="presentation-suspended",
+                            settle_ms=(now - transition["requested_at"]) * 1000)
+                        pending_page_transition = None
+                        return
+                    transition["visibility_observation_upload_counter"] = observed_state[
+                        "image_uploads"]
+                    transition["stable_samples"] = 0
+                    transition["stable_sample_offsets_ms"] = []
+                    transition["poll_count"] = 0
+                    transition["settle_deadline_ms"] = 1000
+                state = persistence_state()
+                transition["poll_count"] += 1
+                now_upload_count = state["image_uploads"]
+                events = persistence_upload_events_since_counter(
+                    transition["upload_event_log"], transition["show_request_upload_counter"],
+                    now_upload_count)
+                event_count_matches = (len(events) == now_upload_count
+                    - transition["show_request_upload_counter"])
+                uploads_monotonic = persistence_show_uploads_current(
+                    transition["upload_event_log"], transition["show_request_upload_counter"],
+                    now_upload_count, transition["minimum_show_density_sequence"])
+                exact_state = persistence_rematerialization_settled(state)
+                sample_settled = bool(exact_state and event_count_matches and uploads_monotonic
+                    and len(events) >= 1)
+                sample_offsets = transition["stable_sample_offsets_ms"]
+                if sample_settled:
+                    sample_offsets.append((now - transition["visibility_observed_at"]) * 1000)
+                    del sample_offsets[:-3]
+                else:
+                    sample_offsets.clear()
+                transition["stable_samples"] = len(sample_offsets)
+                transition["latest_observed_state"] = state
+                transition["observed_post_show_request_upload_count"] = len(events)
+                transition["observed_counter_event_match"] = event_count_matches
+                transition["observed_uploads_monotonic"] = uploads_monotonic
+                if transition["stable_samples"] >= 3:
+                    transition.update(settled=True, settled_at=now,
+                        settle_ms=(now - transition["visibility_observed_at"]) * 1000,
+                        visible_to_settled_ms=(now - transition["visibility_observed_at"]) * 1000,
+                        stable_sample_times_ms=list(sample_offsets),
+                        stable_sample_span_ms=(sample_offsets[-1] - sample_offsets[0]),
+                        post_show_request_upload_count=len(events),
+                        upload_counter_events_match=event_count_matches,
+                        post_show_uploads_monotonic=uploads_monotonic)
+                    transition["show_request_upload_events"] = [dict(
+                        since_show_request_ms=(event["perf_time"] - transition["requested_at"]) * 1000,
+                        since_visibility_observation_ms=(event["perf_time"] -
+                            transition["visibility_observed_at"]) * 1000,
+                        counter=event["counter"],
+                        uploaded_update_sequence=event["uploaded_update_sequence"],
+                        latest_update_sequence=event["latest_update_sequence"],
+                        accepted_update_sequence=event["accepted_update_sequence"])
+                        for event in events]
+                    persistence_upload_probe["events"] = None
+                    pending_page_transition = None
+                elif (now - transition["visibility_observed_at"]) * 1000 >= 1000:
+                    transition.update(settled=False, timed_out=True,
+                        settled_at=now, settle_ms=(now - transition["visibility_observed_at"]) * 1000,
+                        visible_to_settled_ms=None,
+                        stable_sample_times_ms=list(sample_offsets),
+                        stable_sample_span_ms=(sample_offsets[-1] - sample_offsets[0]
+                            if len(sample_offsets) >= 2 else None),
+                        post_show_request_upload_count=len(events),
+                        upload_counter_events_match=event_count_matches,
+                        post_show_uploads_monotonic=uploads_monotonic)
+                    transition["show_request_upload_events"] = [dict(
+                        since_show_request_ms=(event["perf_time"] - transition["requested_at"]) * 1000,
+                        since_visibility_observation_ms=(event["perf_time"] -
+                            transition["visibility_observed_at"]) * 1000,
+                        counter=event["counter"],
+                        uploaded_update_sequence=event["uploaded_update_sequence"],
+                        latest_update_sequence=event["latest_update_sequence"],
+                        accepted_update_sequence=event["accepted_update_sequence"])
+                        for event in events]
+                    persistence_upload_probe["events"] = None
+                    pending_page_transition = None
 
             heartbeat = timer(.01, heartbeat_tick)
             page_timer = timer(args.page_seconds, cycle_page)
@@ -702,6 +979,9 @@ def main(argv=None):
                     persistence_density_sequence_by_identity.get(id(overlay._uploaded_density)))
                 persistence_projector = getattr(scene._projector, "persistence_projector", None)
                 return dict(mode=overlay.render_mode.value,
+                    presentation_active=overlay._presentation_active,
+                    layer_requested_visible=overlay._visible,
+                    image_item_visible=overlay.image_item.isVisible(),
                     last_viewmodel_update=last_persistence_accepted,
                     latest_density_update_sequence=latest_sequence,
                     uploaded_density_update_sequence=uploaded_sequence,
@@ -1083,6 +1363,7 @@ def main(argv=None):
                         resumed_until = perf_counter() + .25
                         count_before = generated
                         due = perf_counter() + args.seconds
+                        page_transition_cutoff = due - 1.1
                         intent = []
                         intent_phase = {}
                         phase_observations = 0
@@ -1107,6 +1388,7 @@ def main(argv=None):
 
                         stop_timer = timer(args.seconds, request_stop, once=True)
                         if args.page_seconds:
+                            page_timer_expected_at = perf_counter() + args.page_seconds
                             page_timer.start()
                         if args.viewport_seconds:
                             view_timer.start()
@@ -1140,10 +1422,17 @@ def main(argv=None):
                         raise AssertionError(f.events)
             if age.missing or age.changed_during_paint or not all(age.counts.values()):
                 raise AssertionError((age.missing, age.changed_during_paint, age.counts))
+            if pending_page_transition is not None:
+                pending_page_transition.update(settled=False, incomplete_at_run_end=True,
+                    settle_ms=(perf_counter() - pending_page_transition["requested_at"]) * 1000)
+                persistence_upload_probe["events"] = None
+                pending_page_transition = None
             if persistence_enabled and (not persistence_accepted or not scene._persistence.metrics.image_uploads):
                 raise AssertionError("enabled persistence was not accepted and uploaded")
             display_metadata = qt_display_metadata(f.shell, f.app, scene, waterfall,
                 requested_size=args.window_size, requested_platform=args.qt_platform)
+            for transition in page_transitions:
+                transition.pop("upload_event_log", None)
             report = dict(scope=__doc__, seconds=perf_counter() - began, bins=args.bins,
                 cycles=args.cycles, requested_source_hz=args.source_hz, generated=generated,
                 page_changes=page_changes, viewport_changes=viewport_changes,
@@ -1163,6 +1452,24 @@ def main(argv=None):
                 qt_display_environment=display_metadata,
                 preparation_superseded=f.presenter.preparation_superseded,
                 preparation_stale=f.presenter.preparation_stale)
+            report["persistence_page_lifecycle"] = dict(
+                enabled=bool(args.persistence_page_lifecycle and persistence_enabled),
+                page_interval_seconds=args.page_seconds or None,
+                hide_count=sum(item["action"] == "hide" for item in page_transitions),
+                show_count=sum(item["action"] == "show" for item in page_transitions),
+                observed_hide_show_pair_count=sum(item["action"] == "show" for item in page_transitions),
+                transitions_suppressed_for_settle_deadline=page_transitions_suppressed_for_deadline,
+                transitions=page_transitions,
+                overflow_count=page_transition_overflow,
+                required_consecutive_samples=3,
+                maximum_show_deadline_ms=1000,
+                nominal_heartbeat_interval_ms=10,
+                page_timer_callback_lateness_ms=summary(page_timer_lateness_ms),
+                gate_passed=(persistence_page_lifecycle_gate_passed(
+                    page_transitions, stable_samples=3, overflow=page_transition_overflow)
+                    if args.persistence_page_lifecycle and persistence_enabled else None),
+                boundary_note=("Visibility is sampled by the nominal 10-ms Qt heartbeat, not an event-level show hook. Upload events are captured from the Show request counter; both request-relative and signed visibility-sample-relative timestamps are reported. The request-to-first-visible-sample interval is an attribution uncertainty, not proof of the precise QEvent.Show boundary. request_to_visibility_ms and visible_to_settled_ms are reported separately."),
+                scope="Visible synthetic analyzer/calibration page changes while Live continues. Hide checks observed presentation suspension and cleared ImageItem; Show requires a post-request ImageItem commit, exact latest accepted/view/upload sequence, idle persistence request/view/projector lanes, monotonic commits, and three consecutive heartbeat samples. Actual intervals are recorded. The independent spectrum projector lane is outside this persistence contract. Not DWM/paint, RF/LPS or 50-ms acceptance.")
             report["persistence"] = dict(enabled=persistence_enabled,
                 display_mode=args.persistence_display,
                 power_bins=args.persistence_power_bins, every_source_frames=args.persistence_every,

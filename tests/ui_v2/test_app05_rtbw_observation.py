@@ -78,7 +78,63 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(OBSERVER.persistence_upload_events_since_counter(events, 8, 10),
             events[1:3])
 
-    def test_persistence_catchup_failure_is_nonzero_after_report_can_be_written(self):
+    def test_persistence_show_requires_exact_latest_and_post_show_image_commits(self):
+        settled = dict(presentation_active=True, layer_requested_visible=True,
+            image_item_visible=True, last_viewmodel_update=12,
+            latest_density_update_sequence=12, uploaded_density_update_sequence=12,
+            latest_view_is_latest_accepted_density=True, latest_view_is_uploaded=True,
+            worker_request_pending=False, pending_view=False,
+            persistence_projector_active=False, persistence_projector_pending=False)
+        self.assertTrue(OBSERVER.persistence_rematerialization_settled(settled))
+        for changes in (
+            {"presentation_active": False},
+            {"layer_requested_visible": False},
+            {"image_item_visible": False},
+            {"uploaded_density_update_sequence": 11},
+            {"latest_view_is_latest_accepted_density": False},
+            {"worker_request_pending": True},
+            {"pending_view": True},
+            {"persistence_projector_pending": True},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(OBSERVER.persistence_rematerialization_settled(settled | changes))
+
+        uploads = [dict(counter=5, uploaded_update_sequence=12),
+                   dict(counter=6, uploaded_update_sequence=13)]
+        self.assertTrue(OBSERVER.persistence_show_uploads_current(uploads, 4, 6, 12))
+        self.assertFalse(OBSERVER.persistence_show_uploads_current(uploads[:1], 4, 6, 12))
+        self.assertFalse(OBSERVER.persistence_show_uploads_current(
+            [uploads[0], uploads[0]], 4, 6, 12))
+        self.assertFalse(OBSERVER.persistence_show_uploads_current(
+            [uploads[0], dict(counter=6, uploaded_update_sequence=11)], 4, 6, 12))
+
+    def test_persistence_page_lifecycle_gate_needs_observed_hide_show_and_stable_restore(self):
+        hide = dict(action="hide", visible_state_observed=True,
+            before=dict(presentation_active=True, layer_requested_visible=True,
+                image_item_visible=True),
+            after_visibility_observed=dict(presentation_active=False, image_item_visible=False,
+                uploaded_density_update_sequence=None))
+        show = dict(action="show", visible_state_observed=True, settled=True,
+            before=dict(presentation_active=False, image_item_visible=False,
+                uploaded_density_update_sequence=None),
+            latest_observed_state=dict(presentation_active=True, layer_requested_visible=True,
+                image_item_visible=True, latest_density_update_sequence=12,
+                uploaded_density_update_sequence=12),
+            stable_samples=3, post_show_request_upload_count=1,
+            upload_counter_events_match=True, post_show_uploads_monotonic=True)
+        self.assertTrue(OBSERVER.persistence_page_lifecycle_gate_passed([hide, show]))
+        self.assertTrue(OBSERVER.persistence_page_lifecycle_gate_passed([hide, show, hide]))
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed([hide]))
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed(
+            [hide, show | {"settled": False}]))
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed([show, hide]))
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed([hide, show, show]))
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed(
+            [hide, show | {"latest_observed_state": show["latest_observed_state"] | {
+                "image_item_visible": False}}]))
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed([hide, show], overflow=1))
+
+    def test_opt_in_persistence_gate_failure_is_nonzero_after_report_can_be_written(self):
         self.assertEqual(OBSERVER.persistence_catchup_exit_code({}), 0)
         self.assertEqual(OBSERVER.persistence_catchup_exit_code(
             {"persistence_catchup": {"freshness_gate_passed": True}}), 0)
@@ -86,6 +142,33 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             {"persistence_catchup": {"freshness_gate_passed": False}}), 1)
         self.assertEqual(OBSERVER.persistence_catchup_exit_code(
             {"persistence_catchup": {"freshness_gate_passed": None}}), 1)
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_page_lifecycle": {"gate_passed": None}}), 0)
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_page_lifecycle": {"gate_passed": True}}), 0)
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_page_lifecycle": {"gate_passed": False}}), 1)
+
+    def test_persistence_page_lifecycle_cli_contract_leaves_room_for_show_deadline(self):
+        config = dict(qt_platform="windows", seconds=6.5, page_seconds=2.5,
+            cycles=1, persistence_power_bins=32, persistence_display="visual",
+            viewport_seconds=0, driver_stop_ms=0, stop_phase="any",
+            persistence_abba=False, persistence_catchup=False, memory_seconds=0,
+            collect_after_context=False, capture_window=False)
+        self.assertIsNone(OBSERVER.persistence_page_lifecycle_config_error(**config))
+        for changes in (
+            {"qt_platform": "offscreen"},
+            {"page_seconds": 1.49},
+            {"seconds": 6.49},
+            {"page_seconds": 0},
+            {"cycles": 2},
+            {"persistence_display": "direct"},
+            {"persistence_catchup": True},
+            {"memory_seconds": .25},
+        ):
+            with self.subTest(changes=changes):
+                self.assertIsNotNone(OBSERVER.persistence_page_lifecycle_config_error(
+                    **(config | changes)))
 
     def test_synthetic_persistence_is_coherent_normalized_owned_and_not_future(self):
         from sdr_monitor.domain.live import LiveSpectrumFrame, LiveSnapshot, LiveSessionState
