@@ -13,7 +13,9 @@
 #include "sdr_core/errors.hpp"
 
 #include <cstdint>
+#include <stdexcept>
 
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -61,6 +63,54 @@ PYBIND11_MODULE(_sdr_native, module) {
     });
 
     module.def("available_backends", &sdr_core::available_backends);
+
+    // Private APP-05 display row kernel. Its caller must prove that both input
+    // arrays came from the finite [0, 1] worker display pipeline.
+    module.def("_visual_smooth_row_into", [](py::array mapped, py::array old, py::array target) {
+        const auto validate = [](const py::array& value, const bool writable) {
+            if (value.ndim() != 1 || value.size() == 0 || value.size() > 65'536
+                    || !value.dtype().is(py::dtype::of<float>())
+                    || (value.flags() & py::array::c_style) == 0
+                    || (writable && !value.writeable())) {
+                throw std::invalid_argument("visual smoothing requires bounded C float32 row arrays");
+            }
+        };
+        validate(mapped, false);
+        validate(old, false);
+        validate(target, true);
+        if (mapped.size() != old.size() || mapped.size() != target.size()) {
+            throw std::invalid_argument("visual smoothing rows must have equal lengths");
+        }
+        const auto overlaps = [](const py::array& left, const py::array& right) {
+            const auto left_start = reinterpret_cast<std::uintptr_t>(left.data());
+            const auto right_start = reinterpret_cast<std::uintptr_t>(right.data());
+            return left_start < right_start + static_cast<std::uintptr_t>(right.nbytes())
+                && right_start < left_start + static_cast<std::uintptr_t>(left.nbytes());
+        };
+        if (overlaps(mapped, old) || overlaps(mapped, target) || overlaps(old, target)) {
+            throw std::invalid_argument("visual smoothing rows must not overlap");
+        }
+        const auto* mapped_data = static_cast<const float*>(mapped.data());
+        const auto* old_data = static_cast<const float*>(old.data());
+        auto* target_data = static_cast<float*>(target.mutable_data());
+        const auto count = static_cast<std::size_t>(mapped.size());
+        const float release = static_cast<float>(.18);
+        const float attack_over_release = static_cast<float>(.65 / .18);
+        py::gil_scoped_release release_gil;
+        // The product caller admits only worker-produced, bounded histories;
+        // source mapping has already clipped the current row to finite [0, 1].
+        for (std::size_t index = 0; index < count; ++index) {
+            const float current = mapped_data[index];
+            const float previous = old_data[index];
+            float delta = current - previous;
+            delta *= release;
+            if (current >= previous) {
+                delta *= attack_over_release;
+            }
+            target_data[index] = previous + delta;
+        }
+    }, py::arg("mapped"), py::arg("old"), py::arg("target"),
+       "Private Visual smoothing on trusted finite [0, 1] display rows.");
 
     module.def("_raise_test_error", [](const std::string& error_name) {
         if (error_name == "ConfigurationError") {

@@ -209,6 +209,92 @@ class PersistenceWorkerTests(unittest.TestCase):
             scene.deleteLater()
             self.app.processEvents()
 
+    def test_native_visual_row_kernel_matches_numpy_bits_and_rejects_unsafe_rows(self):
+        kernel = density_worker._visual_smoothing_kernel()
+        if kernel is None:
+            self.skipTest("this active native module predates the optional Visual row kernel")
+        edge_bits = np.array((
+            0x00000000, 0x80000000, 0x00000001,
+            0x007fffff, 0x00800000,
+            0x3effffff, 0x3f000000, 0x3f000001, 0x3f7fffff,
+            0x3f800000,
+        ), dtype=np.uint32).view(np.float32)
+        paired = np.array([(left, right) for left in edge_bits for right in edge_bits],
+                          dtype=np.float32)
+        random_display = np.random.default_rng(20260923).random(
+            (65536, 2), dtype=np.float32)
+        for pairs in (paired, random_display):
+            mapped = np.ascontiguousarray(pairs[:, 0])
+            old = np.ascontiguousarray(pairs[:, 1])
+            old.setflags(write=False)
+            expected, actual = np.empty_like(mapped), np.empty_like(mapped)
+            mask = np.empty(mapped.size, dtype=np.bool_)
+            with np.errstate(all="ignore"):
+                np.subtract(mapped, old, out=expected)
+                np.multiply(expected, .18, out=expected)
+                np.greater_equal(mapped, old, out=mask)
+                np.multiply(expected, .65 / .18, out=expected, where=mask)
+                np.add(old, expected, out=expected)
+                kernel(mapped, old, actual)
+            np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+        with self.assertRaises(ValueError):
+            kernel(mapped[::2], old[::2], actual[::2])
+        with self.assertRaises(ValueError):
+            kernel(mapped, old, mapped)
+        actual.setflags(write=False)
+        with self.assertRaises(ValueError):
+            kernel(mapped, old, actual)
+
+    def test_native_visual_path_keeps_chunk_boundaries_and_immutable_history(self):
+        kernel = density_worker._visual_smoothing_kernel()
+        if kernel is None:
+            self.skipTest("this active native module predates the optional Visual row kernel")
+        policy = PersistenceImagePolicy(3, PersistenceRenderMode.VISUAL, True)
+        prior = view(np.full((3, 65537), .2, np.float32))
+        accepted = prepare_persistence_image(PersistenceImageRequest(prior, policy)).as_history(1)
+        before = accepted.image.view(np.uint32).copy()
+        values = np.random.default_rng(9).random((3, 65537), dtype=np.float32)
+        values[:, ::101] = np.nan
+        current = PersistenceImageRequest(view(values[:, ::-1]), policy, accepted)
+        with patch.object(density_worker, "_visual_smoothing_kernel", return_value=None):
+            expected = prepare_persistence_image(current)
+        calls = []
+
+        def observed(mapped, old, target):
+            calls.append(mapped.size)
+            kernel(mapped, old, target)
+
+        with patch.object(density_worker, "_visual_smoothing_kernel", return_value=observed):
+            actual = prepare_persistence_image(current)
+        self.assertEqual(calls, [65536, 1] * 3)
+        np.testing.assert_array_equal(actual.image.view(np.uint32), expected.image.view(np.uint32))
+        np.testing.assert_array_equal(accepted.image.view(np.uint32), before)
+        self.assertFalse(actual.image.flags.writeable)
+        self.assertTrue(actual.image.flags.owndata)
+
+    def test_native_fastpath_rejects_untrusted_or_replaced_history(self):
+        kernel = density_worker._visual_smoothing_kernel()
+        if kernel is None:
+            self.skipTest("this active native module predates the optional Visual row kernel")
+        policy = PersistenceImagePolicy(3, PersistenceRenderMode.VISUAL, False)
+        prior = view(np.full((2, 64), .2, np.float32))
+        accepted = prepare_persistence_image(PersistenceImageRequest(prior, policy)).as_history(1)
+        invalid = np.full((2, 64), .2, np.float32)
+        invalid[0, 0] = np.nan
+        invalid.setflags(write=False)
+        changed = request(np.full((2, 64), .8, np.float32), policy=policy,
+                          history=replace(accepted, image=invalid))
+        with patch.object(density_worker, "_visual_smoothing_kernel",
+                          side_effect=AssertionError("untrusted history cannot use native")):
+            actual = prepare_persistence_image(changed)
+        self.assertIsNone(actual._worker_image_ref)
+        expected = prepare_persistence_image(changed)
+        np.testing.assert_array_equal(actual.image.view(np.uint32), expected.image.view(np.uint32))
+        continued = replace(changed, history=actual.as_history(2))
+        with patch.object(density_worker, "_visual_smoothing_kernel",
+                          side_effect=AssertionError("untrusted history cannot become native")):
+            prepare_persistence_image(continued)
+
     def test_dense_and_strided_chunks_do_not_add_an_input_zero_scan(self):
         original = np.any
         for values in (np.full((3, 65539), .25, np.float32),

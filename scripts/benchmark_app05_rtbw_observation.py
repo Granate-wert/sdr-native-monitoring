@@ -24,6 +24,7 @@ from contextlib import ExitStack
 from dataclasses import asdict, replace
 from functools import wraps
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -334,6 +335,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--native-module", type=Path,
+                        help="isolated candidate extension loaded only in this observer process")
     parser.add_argument("--seconds", type=float, default=5,
                         help="Stop delay for ordinary cycles; per steady block when --persistence-abba is enabled")
     parser.add_argument("--cycles", type=int, default=5)
@@ -451,6 +454,24 @@ def main(argv=None):
         parser.error("persistence-every 1..1000; histogram must not exceed 64MiB")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
+    candidate_path = None
+    if args.native_module is not None:
+        candidate_path = args.native_module.resolve(strict=True)
+        if not candidate_path.is_relative_to(root) or candidate_path.suffix.lower() != ".pyd":
+            parser.error("candidate extension must be a .pyd inside the checkout")
+        # The DLL handle and module live only for this process. No package
+        # artifact is replaced or copied during the comparison.
+        dll_search = os.add_dll_directory(str(candidate_path.parent.parent))
+        import sdr_monitor
+        identity = "sdr_monitor._sdr_native"
+        spec = importlib.util.spec_from_file_location(identity, candidate_path)
+        if spec is None or spec.loader is None:
+            parser.error("candidate native module could not be loaded")
+        native = importlib.util.module_from_spec(spec)
+        sys.modules[identity] = native
+        spec.loader.exec_module(native)
+        setattr(sdr_monitor, "_sdr_native", native)
+        assert dll_search is not None
     os.environ["QT_QPA_PLATFORM"] = args.qt_platform
     import numpy as np
     import PySide6
@@ -459,6 +480,7 @@ def main(argv=None):
     from sdr_monitor.domain.live import LiveSpectrumFrame
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
+    from sdr_monitor.ui.v2.spectrum import persistence_projection as density_projection
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
     from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
     import sdr_monitor.ui.v2.spectrum.projection as projection_module
@@ -1742,6 +1764,10 @@ def main(argv=None):
     if outside or workers:
         raise AssertionError((outside, workers))
     report.update(checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
+        native_smoothing_module=(None if candidate_path is None else str(candidate_path)),
+        native_smoothing_sha256=(None if candidate_path is None else
+                                 hashlib.sha256(candidate_path.read_bytes()).hexdigest()),
+        native_smoothing_available=density_projection._visual_smoothing_kernel() is not None,
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         shared_observer_sha256=hashlib.sha256((root / "scripts/benchmark_app04_poll_overload.py").read_bytes()).hexdigest(),
         python=sys.version.split()[0], numpy=np.__version__, pyside=PySide6.__version__, pyqtgraph=pg.__version__,

@@ -8,8 +8,11 @@ The caller must bump policy revision on measurement/epoch reset as well as mode
 or transfer changes, and reject stale source/policy/history before image upload.
 """
 import hashlib
+import importlib
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import cache
+from typing import Callable
 
 import numpy as np
 
@@ -22,6 +25,19 @@ from .persistence_contracts import (
 )
 
 IMAGE_BATCH = 65_536
+# An internal provenance hint, not a security boundary: arbitrary Python
+# histories need not contain finite display-domain values for the native path.
+_WORKER_IMAGE_TOKEN = object()
+
+
+@cache
+def _visual_smoothing_kernel() -> Callable[[np.ndarray, np.ndarray, np.ndarray], None] | None:
+    """Use the bounded native row kernel when this release actually includes it."""
+    try:
+        native = importlib.import_module("sdr_monitor._sdr_native")
+    except (ImportError, OSError):
+        return None
+    return getattr(native, "_visual_smooth_row_into", None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +105,9 @@ class PersistenceImageHistory:
     image: np.ndarray
     input_witness: PersistenceInputWitness | None = None
     count_maximum: float = 0.0
+    _worker_image_ref: weakref.ReferenceType[np.ndarray] | None = field(
+        default=None, repr=False, compare=False)
+    _worker_image_token: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
@@ -126,6 +145,9 @@ class PreparedPersistenceImage:
     count_maximum: float = 0.0
     input_witness: PersistenceInputWitness | None = None
     rematerialize: bool = False
+    _worker_image_ref: weakref.ReferenceType[np.ndarray] | None = field(
+        default=None, repr=False, compare=False)
+    _worker_image_token: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def quantitative_labels(self) -> tuple[str, str]:
@@ -149,7 +171,8 @@ class PreparedPersistenceImage:
         # or source density in smoothing history across subsequent publications.
         return PersistenceImageHistory(revision, self.policy, self.view.physical_rect,
                                        self.view.value_mode, self.view.level_unit, self.image,
-                                       self.input_witness, self.count_maximum)
+                                       self.input_witness, self.count_maximum,
+                                       self._worker_image_ref, self._worker_image_token)
 
 
 def _validate_image(image: np.ndarray) -> None:
@@ -182,6 +205,14 @@ def _compatible_history(request: PersistenceImageRequest) -> np.ndarray | None:
     return None
 
 
+def _trusted_worker_history(request: PersistenceImageRequest, image: np.ndarray | None) -> bool:
+    history = request.history
+    return (image is not None and history is not None
+            and history._worker_image_token is _WORKER_IMAGE_TOKEN
+            and history._worker_image_ref is not None
+            and history._worker_image_ref() is image)
+
+
 def prepare_persistence_image(request: PersistenceImageRequest, *,
                               cancelled: CancelCheck = None) -> PreparedPersistenceImage:
     check_cancelled(cancelled)
@@ -189,10 +220,13 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
     witness = (persistence_input_witness(view, cancelled=cancelled)
                if request.policy.mode is PersistenceRenderMode.VISUAL else None)
     history = _compatible_history(request)
+    trusted_history = _trusted_worker_history(request, history)
     if (request.rematerialize and history is not None and request.history is not None and witness is not None
             and same_persistence_input(request.history.input_witness, witness)):
         return PreparedPersistenceImage(view, request.policy, request.history_revision, history,
-                                        request.history.count_maximum, witness, True)
+                                        request.history.count_maximum, witness, True,
+                                        (weakref.ref(history) if trusted_history else None),
+                                        (_WORKER_IMAGE_TOKEN if trusted_history else None))
     maximum = 0.0
     if view.value_mode is DensityValueMode.COUNT:
         # Same global finite maximum as the GUI transfer without a full-matrix
@@ -214,6 +248,7 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.float32))
     mask = (None if history is None else
             np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.bool_))
+    native_smoothing = _visual_smoothing_kernel() if trusted_history else None
     for row_index, source_row in enumerate(view.density):
         for first in range(0, source_row.size, IMAGE_BATCH):
             check_cancelled(cancelled)
@@ -231,14 +266,19 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                     logarithmic=request.policy.logarithmic, count_maximum=maximum, out=mapped)
             if history is not None:
                 old = history[row_index, first:first + IMAGE_BATCH]
-                assert mask is not None
-                row_mask = mask[:source.size]
-                np.subtract(mapped, old, out=target)
-                np.multiply(target, .18, out=target)
-                np.greater_equal(mapped, old, out=row_mask)
-                np.multiply(target, .65 / .18, out=target, where=row_mask)
-                np.add(old, target, out=target)
+                if native_smoothing is not None:
+                    native_smoothing(mapped, old, target)
+                else:
+                    assert mask is not None
+                    row_mask = mask[:source.size]
+                    np.subtract(mapped, old, out=target)
+                    np.multiply(target, .18, out=target)
+                    np.greater_equal(mapped, old, out=row_mask)
+                    np.multiply(target, .65 / .18, out=target, where=row_mask)
+                    np.add(old, target, out=target)
     check_cancelled(cancelled)
     image.setflags(write=False)
     return PreparedPersistenceImage(view, request.policy, request.history_revision, image, maximum,
-                                    witness, request.rematerialize)
+                                    witness, request.rematerialize,
+                                    (weakref.ref(image) if history is None or trusted_history else None),
+                                    (_WORKER_IMAGE_TOKEN if history is None or trusted_history else None))
