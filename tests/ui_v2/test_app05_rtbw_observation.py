@@ -137,6 +137,55 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertFalse(OBSERVER.persistence_show_uploads_current(
             [uploads[0], dict(counter=6, uploaded_update_sequence=11)], 4, 6, 12))
 
+    def test_fixed_show_target_can_arrive_without_moving_latest_settlement(self):
+        state = dict(presentation_active=True, layer_requested_visible=True,
+            image_item_visible=True, image_uploads=5,
+            last_viewmodel_update=14, latest_density_update_sequence=14,
+            uploaded_density_update_sequence=13,
+            latest_view_is_latest_accepted_density=True, latest_view_is_uploaded=False,
+            worker_request_pending=True, pending_view=True,
+            persistence_projector_active=False, persistence_projector_pending=True)
+        uploads = [dict(counter=5, uploaded_update_sequence=13, perf_time=10.25)]
+        self.assertTrue(OBSERVER.persistence_show_fixed_target_validated(
+            state, uploads, 4, 5, 12))
+        self.assertFalse(OBSERVER.persistence_rematerialization_settled(state))
+
+    def test_fixed_show_target_revalidates_complete_post_request_event_log(self):
+        state = dict(presentation_active=True, layer_requested_visible=True,
+            image_item_visible=True, image_uploads=5,
+            uploaded_density_update_sequence=13)
+        first = dict(counter=5, uploaded_update_sequence=13, perf_time=10.25)
+        second = dict(counter=6, uploaded_update_sequence=14, perf_time=10.5)
+
+        def delivered(current_state=state, events=None, end_counter=5, target=12):
+            return OBSERVER.persistence_show_fixed_target_validated(
+                current_state, [first] if events is None else events,
+                4, end_counter, target)
+
+        self.assertTrue(delivered())
+        self.assertTrue(delivered(state | {"image_uploads": 6,
+            "uploaded_density_update_sequence": 14}, [first, second], 6))
+        self.assertFalse(delivered(end_counter=4))  # No post-request commit.
+        self.assertFalse(delivered(target=None))
+        self.assertFalse(delivered(events=[first | {"uploaded_update_sequence": 11}]))
+        self.assertFalse(delivered(events=[first | {"uploaded_update_sequence": None}]))
+        self.assertFalse(delivered(state | {"image_item_visible": False}))
+        self.assertFalse(delivered(state | {"presentation_active": False}))
+        self.assertFalse(delivered(state | {"image_uploads": 6}, [first], 6))
+        self.assertFalse(delivered(state | {"image_uploads": 6}, [first, first], 6))
+        self.assertFalse(delivered(state | {"image_uploads": 6},
+            [first, second | {"counter": 7}], 6))
+        self.assertFalse(delivered(state | {"image_uploads": 6,
+            "uploaded_density_update_sequence": 12},
+            [first, second | {"uploaded_update_sequence": 12}], 6))
+        self.assertFalse(delivered(state | {"image_uploads": 6,
+            "uploaded_density_update_sequence": 13},
+            [first | {"uploaded_update_sequence": 11},
+             second | {"uploaded_update_sequence": 13}], 6))
+        self.assertFalse(delivered(state | {"image_uploads": 6,
+            "uploaded_density_update_sequence": 14},
+            [first, second | {"perf_time": 10.0}], 6))
+
     def test_persistence_page_lifecycle_gate_needs_observed_hide_show_and_stable_restore(self):
         hide = dict(action="hide", visible_state_observed=True,
             before=dict(presentation_active=True, layer_requested_visible=True,
@@ -161,6 +210,9 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed(
             [hide, show | {"latest_observed_state": show["latest_observed_state"] | {
                 "image_item_visible": False}}]))
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed(
+            [hide, show | {"settled": False,
+                "fixed_show_target_validated_at_completion": True}]))
         self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed([hide, show], overflow=1))
 
     def test_opt_in_persistence_gate_failure_is_nonzero_after_report_can_be_written(self):
@@ -177,6 +229,9 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             {"persistence_page_lifecycle": {"gate_passed": True}}), 0)
         self.assertEqual(OBSERVER.persistence_catchup_exit_code(
             {"persistence_page_lifecycle": {"gate_passed": False}}), 1)
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_page_lifecycle": {"gate_passed": False,
+                "fixed_show_target_validated_at_completion_count": 2}}), 1)
 
     def test_persistence_page_lifecycle_cli_contract_leaves_room_for_show_deadline(self):
         config = dict(qt_platform="windows", seconds=6.5, page_seconds=2.5,

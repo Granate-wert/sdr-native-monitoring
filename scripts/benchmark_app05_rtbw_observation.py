@@ -26,6 +26,7 @@ from functools import wraps
 import hashlib
 import importlib.util
 import json
+from math import isfinite
 import os
 from pathlib import Path
 import platform
@@ -156,6 +157,31 @@ def persistence_show_uploads_current(events, start_counter, end_counter, minimum
         and all(isinstance(sequence, int) for sequence in sequences)
         and (minimum_sequence is None or all(sequence >= minimum_sequence for sequence in sequences))
         and all(after >= before for before, after in zip(sequences, sequences[1:])))
+
+
+def persistence_show_fixed_target_validated(state, events, start_counter, end_counter,
+        target_sequence):
+    """Observe visible post-request upload at least as fresh as the Show-time target.
+
+    This is independent of whether the moving latest density and worker lanes
+    settle. Revalidate the entire post-request log on every sample so a later
+    missing/regressing commit invalidates an earlier positive observation.
+    """
+    if (type(target_sequence) is not int or type(start_counter) is not int
+            or type(end_counter) is not int or end_counter <= start_counter
+            or not state.get("presentation_active")
+            or not state.get("layer_requested_visible")
+            or not state.get("image_item_visible")
+            or state.get("image_uploads") != end_counter
+            or not persistence_show_uploads_current(
+                events, start_counter, end_counter, target_sequence)):
+        return False
+    selected = persistence_upload_events_since_counter(events, start_counter, end_counter)
+    times = [event.get("perf_time") for event in selected]
+    return bool(state.get("uploaded_density_update_sequence") ==
+            selected[-1]["uploaded_update_sequence"]
+        and all(isinstance(value, (int, float)) and isfinite(value) for value in times)
+        and all(after >= before for before, after in zip(times, times[1:])))
 
 
 def persistence_page_lifecycle_gate_passed(transitions, *, stable_samples=3, overflow=0):
@@ -921,7 +947,8 @@ def main(argv=None):
                 action = "hide" if was_visible else "show"
                 if pending_page_transition is not None:
                     pending_page_transition.update(settled=False, interrupted_by=action,
-                        settle_ms=(began - pending_page_transition["requested_at"]) * 1000)
+                        settle_ms=(began - pending_page_transition["requested_at"]) * 1000,
+                        fixed_show_target_validated_at_completion=None)
                     persistence_upload_probe["events"] = None
                     pending_page_transition = None
                 before_state = persistence_state()
@@ -943,6 +970,10 @@ def main(argv=None):
                     transition["show_request_upload_counter"] = before_state["image_uploads"]
                     transition["minimum_show_density_sequence"] = before_state[
                         "latest_density_update_sequence"]
+                    transition["fixed_show_target_first_validated_upload_since_request_ms"] = None
+                    transition["fixed_show_target_first_validated_upload_since_visibility_ms"] = None
+                    transition["fixed_show_target_first_observed_since_request_ms"] = None
+                    transition["fixed_show_target_validated_at_completion"] = None
                     if last_hidden_transition is not None:
                         transition["source_publications_while_hidden"] = max(
                             0, generated - last_hidden_transition["generated_at_hide"])
@@ -994,7 +1025,8 @@ def main(argv=None):
                     if (now - transition["requested_at"]) * 1000 >= 1000:
                         transition.update(visible_state_observed=False, settled=False,
                             timed_out=True, settle_ms=(now - transition["requested_at"]) * 1000,
-                            after_visibility_observed=persistence_state())
+                            after_visibility_observed=persistence_state(),
+                            fixed_show_target_validated_at_completion=False)
                         persistence_upload_probe["events"] = None
                         pending_page_transition = None
                     return
@@ -1029,6 +1061,20 @@ def main(argv=None):
                 uploads_monotonic = persistence_show_uploads_current(
                     transition["upload_event_log"], transition["show_request_upload_counter"],
                     now_upload_count, transition["minimum_show_density_sequence"])
+                fixed_target_validated = persistence_show_fixed_target_validated(
+                    state, transition["upload_event_log"],
+                    transition["show_request_upload_counter"], now_upload_count,
+                    transition["minimum_show_density_sequence"])
+                transition["fixed_show_target_valid_at_last_observation"] = fixed_target_validated
+                if (fixed_target_validated and transition[
+                        "fixed_show_target_first_observed_since_request_ms"] is None):
+                    first_upload = events[0]
+                    transition["fixed_show_target_first_validated_upload_since_request_ms"] = (
+                        first_upload["perf_time"] - transition["requested_at"]) * 1000
+                    transition["fixed_show_target_first_validated_upload_since_visibility_ms"] = (
+                        first_upload["perf_time"] - transition["visibility_observed_at"]) * 1000
+                    transition["fixed_show_target_first_observed_since_request_ms"] = (
+                        now - transition["requested_at"]) * 1000
                 exact_state = persistence_rematerialization_settled(state)
                 sample_settled = bool(exact_state and event_count_matches and uploads_monotonic
                     and len(events) >= 1)
@@ -1045,6 +1091,7 @@ def main(argv=None):
                 transition["observed_uploads_monotonic"] = uploads_monotonic
                 if transition["stable_samples"] >= 3:
                     transition.update(settled=True, settled_at=now,
+                        fixed_show_target_validated_at_completion=fixed_target_validated,
                         settle_ms=(now - transition["visibility_observed_at"]) * 1000,
                         visible_to_settled_ms=(now - transition["visibility_observed_at"]) * 1000,
                         stable_sample_times_ms=list(sample_offsets),
@@ -1065,6 +1112,7 @@ def main(argv=None):
                     pending_page_transition = None
                 elif (now - transition["visibility_observed_at"]) * 1000 >= 1000:
                     transition.update(settled=False, timed_out=True,
+                        fixed_show_target_validated_at_completion=fixed_target_validated,
                         settled_at=now, settle_ms=(now - transition["visibility_observed_at"]) * 1000,
                         visible_to_settled_ms=None,
                         stable_sample_times_ms=list(sample_offsets),
@@ -1606,11 +1654,20 @@ def main(argv=None):
                 required_consecutive_samples=3,
                 maximum_show_deadline_ms=1000,
                 nominal_heartbeat_interval_ms=10,
+                fixed_show_target_validated_at_completion_count=sum(
+                    item.get("fixed_show_target_validated_at_completion") is True
+                    for item in page_transitions if item["action"] == "show"),
+                fixed_show_target_not_validated_at_completion_count=sum(
+                    item.get("fixed_show_target_validated_at_completion") is False
+                    for item in page_transitions if item["action"] == "show"),
+                fixed_show_target_inconclusive_count=sum(
+                    item.get("fixed_show_target_validated_at_completion") is None
+                    for item in page_transitions if item["action"] == "show"),
                 page_timer_callback_lateness_ms=summary(page_timer_lateness_ms),
                 gate_passed=(persistence_page_lifecycle_gate_passed(
                     page_transitions, stable_samples=3, overflow=page_transition_overflow)
                     if args.persistence_page_lifecycle and persistence_enabled else None),
-                boundary_note=("Visibility is sampled by the nominal 10-ms Qt heartbeat, not an event-level show hook. Upload events are captured from the Show request counter; both request-relative and signed visibility-sample-relative timestamps are reported. The request-to-first-visible-sample interval is an attribution uncertainty, not proof of the precise QEvent.Show boundary. request_to_visibility_ms and visible_to_settled_ms are reported separately."),
+                boundary_note=("Visibility is sampled by the nominal 10-ms Qt heartbeat, not an event-level show hook. Upload events are captured from the Show request counter; both request-relative and signed visibility-sample-relative timestamps are reported. The request-to-first-visible-sample interval is an attribution uncertainty, not proof of the precise QEvent.Show boundary. request_to_visibility_ms and visible_to_settled_ms are reported separately. The independent fixed Show-time diagnostic validates a visible ImageItem upload at least as fresh as the density known at the Show request AND no stale/missing/regressing post-request upload through completion. False means this conservative observation was not validated, not proof that no fresh image ever appeared. It is not exact target-frame delivery or a painted/DWM frame."),
                 scope="Visible synthetic analyzer/calibration page changes while Live continues. Hide checks observed presentation suspension and cleared ImageItem; Show requires a post-request ImageItem commit, exact latest accepted/view/upload sequence, idle persistence request/view/projector lanes, monotonic commits, and three consecutive heartbeat samples. Actual intervals are recorded. The independent spectrum projector lane is outside this persistence contract. Not DWM/paint, RF/LPS or 50-ms acceptance.")
             report["persistence"] = dict(enabled=persistence_enabled,
                 display_mode=args.persistence_display,
