@@ -26,6 +26,38 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_first_paint_cadence_exposes_stall_hidden_by_painted_frame_age(self):
+        cadence = OBSERVER.FirstPaintCadence(8)
+        for when in (.1, .2, 2.2, 2.3):
+            cadence.painted(when)
+        report = cadence.report(0, 2.5, lambda values: {"p95": max(values)})
+        self.assertEqual(report["unique_first_paint_count"], 4)
+        self.assertAlmostEqual(report["start_boundary_gap_ms"], 100)
+        self.assertAlmostEqual(report["end_boundary_gap_ms"], 200)
+        self.assertAlmostEqual(report["maximum_no_paint_gap_ms"], 2000)
+        complete_blocks = {name: {"first_paint_cadence": {
+            "spectrum": report, "waterfall": report}} for name in ("A1", "B1", "B2", "A2")}
+        self.assertFalse(OBSERVER.first_paint_cadence_gate_passes(
+            complete_blocks, 500))
+        self.assertTrue(OBSERVER.first_paint_cadence_gate_passes(
+            complete_blocks, 2500))
+
+        bounded = OBSERVER.FirstPaintCadence(2)
+        for when in (.1, .2, .3, .4):
+            bounded.painted(when)
+        truncated = bounded.report(0, .5, lambda values: {"p95": max(values)})
+        self.assertIsNone(truncated["interpaint_gap_ms"])
+        self.assertEqual(truncated["interpaint_sample_accounting"]["dropped"], 1)
+        self.assertFalse(OBSERVER.first_paint_cadence_gate_passes(
+            complete_blocks | {"A1": {"first_paint_cadence": {
+                "spectrum": truncated, "waterfall": report}}}, 2500))
+        self.assertFalse(OBSERVER.first_paint_cadence_gate_passes(
+            complete_blocks | {"A1": {"first_paint_cadence": {"spectrum": report}}}, 2500))
+        self.assertFalse(OBSERVER.first_paint_cadence_gate_passes(
+            {"A1": complete_blocks["A1"]}, 2500))
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_abba": {"first_paint_cadence_gate_passed": False}}), 1)
+
     def test_abba_bounded_samples_never_report_truncated_tail_as_whole_block(self):
         samples = OBSERVER.BoundedSamples(2)
         for value in range(5):
@@ -373,6 +405,16 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("--projection-stage-timing requires --persistence-abba", result.stderr)
+
+    def test_cadence_threshold_requires_explicit_matched_run(self):
+        with TemporaryDirectory(prefix="app05-cadence-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--max-unique-paint-gap-ms", "500"], cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--max-unique-paint-gap-ms requires ABBA", result.stderr)
 
     def test_persistence_catchup_rejects_offscreen_before_qt_startup(self):
         with TemporaryDirectory(prefix="app05-catchup-validation-") as temporary:

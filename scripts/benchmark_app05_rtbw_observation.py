@@ -119,6 +119,52 @@ def accepted_update_report(samples, elapsed_seconds):
                 rate_hz=samples.total_count / elapsed_seconds)
 
 
+class FirstPaintCadence:
+    """Unique fresh-source Qt paint returns, including block-edge silence."""
+
+    def __init__(self, capacity):
+        self.gaps_ms = BoundedSamples(capacity)
+        self.first_s = self.last_s = None
+        self.paint_count = 0
+        self.maximum_interior_gap_ms = 0.0
+
+    def painted(self, when_s):
+        if self.last_s is None:
+            self.first_s = when_s
+        else:
+            gap_ms = (when_s - self.last_s) * 1000
+            if gap_ms < 0:
+                raise ValueError("paint returns must be monotonic")
+            self.gaps_ms.append(gap_ms)
+            self.maximum_interior_gap_ms = max(self.maximum_interior_gap_ms, gap_ms)
+        self.last_s = when_s
+        self.paint_count += 1
+
+    def report(self, started_s, ended_s, summarize):
+        if (self.paint_count < 1 or self.first_s is None or self.last_s is None
+                or not started_s <= self.first_s <= self.last_s <= ended_s):
+            raise ValueError("cadence requires paints inside a valid block")
+        start_gap_ms = (self.first_s - started_s) * 1000
+        end_gap_ms = (ended_s - self.last_s) * 1000
+        return dict(unique_first_paint_count=self.paint_count,
+            start_boundary_gap_ms=start_gap_ms, end_boundary_gap_ms=end_gap_ms,
+            maximum_interior_gap_ms=self.maximum_interior_gap_ms,
+            maximum_no_paint_gap_ms=max(start_gap_ms, self.maximum_interior_gap_ms, end_gap_ms),
+            interpaint_gap_ms=complete_bounded_summary(self.gaps_ms, summarize),
+            interpaint_sample_accounting=bounded_sample_accounting(self.gaps_ms))
+
+
+def first_paint_cadence_gate_passes(block_reports, maximum_gap_ms):
+    """An explicit threshold cannot pass a missing canvas or truncated gap series."""
+    return bool(set(block_reports) == {"A1", "A2", "B1", "B2"} and all(
+        set(block["first_paint_cadence"]) == {"spectrum", "waterfall"}
+        and all(canvas["unique_first_paint_count"] >= 2
+            and canvas["interpaint_sample_accounting"]["dropped"] == 0
+            and canvas["maximum_no_paint_gap_ms"] <= maximum_gap_ms
+            for canvas in block["first_paint_cadence"].values())
+        for block in block_reports.values()))
+
+
 def uploaded_key(pane, uploads_before, previous):
     """Observe successful upload metadata; a hidden newer ring is NOT a paint."""
     if not any(item.isVisible() for item in pane.image_items):
@@ -307,7 +353,8 @@ def persistence_page_lifecycle_gate_passed(transitions, *, stable_samples=3, ove
 def persistence_catchup_exit_code(result):
     """Keep failed opt-in gate reports on disk, but never return success for them."""
     abba = result.get("persistence_abba")
-    if abba is not None and abba.get("sample_integrity_gate_passed") is False:
+    if abba is not None and (abba.get("sample_integrity_gate_passed") is False
+                             or abba.get("first_paint_cadence_gate_passed") is False):
         return 1
     catchup = result.get("persistence_catchup")
     if catchup is not None and catchup.get("freshness_gate_passed") is not True:
@@ -464,6 +511,8 @@ def main(argv=None):
                         help="With --persistence-abba start Visual and measure Visual→Direct→Direct→Visual")
     parser.add_argument("--projection-stage-timing", action="store_true",
                         help="Instrument shared worker stages in matched blocks; diagnostic, not a latency baseline")
+    parser.add_argument("--max-unique-paint-gap-ms", type=float,
+                        help="Opt-in ABBA gate for longest first-paint silence, including block edges; Qt only")
     parser.add_argument("--persistence-catchup", action="store_true",
                         help="Visible Visual-only burst/freeze/drain freshness pulse; --seconds is each burst")
     parser.add_argument("--persistence-page-lifecycle", action="store_true",
@@ -519,6 +568,9 @@ def main(argv=None):
         parser.error("--abba-reverse-order requires --persistence-abba")
     if args.projection_stage_timing and not args.persistence_abba:
         parser.error("--projection-stage-timing requires --persistence-abba")
+    if args.max_unique_paint_gap_ms is not None and (not args.persistence_abba
+            or not 1 <= args.max_unique_paint_gap_ms <= 120000):
+        parser.error("--max-unique-paint-gap-ms requires ABBA and a threshold in 1..120000 ms")
     if args.show_projection_timeline and not args.persistence_page_lifecycle:
         parser.error("--show-projection-timeline requires --persistence-page-lifecycle")
     if args.show_eager_projection_prototype and not args.show_projection_timeline:
@@ -824,6 +876,7 @@ def main(argv=None):
             source_to_first_paint_ms={target: BoundedSamples(timing_capacity)
                                       for target in age.ages},
             paint_return_ms={target: BoundedSamples(timing_capacity) for target in paints},
+            first_paint_cadence={target: FirstPaintCadence(timing_capacity) for target in paints},
             boundary_excluded_paints=dict.fromkeys(age.ages, 0),
             heartbeat_times_s=BoundedSamples(timing_capacity),
             persistence_update_sequences=BoundedSamples(timing_capacity),
@@ -909,6 +962,8 @@ def main(argv=None):
                                 published_at = source_publication_time(key)
                                 if published_at is not None and published_at >= block["started_perf"]:
                                     block["source_to_first_paint_ms"][target].append(age.ages[target][-1])
+                                    if target == name:
+                                        block["first_paint_cadence"][name].painted(ended)
                                     # Synthetic timestamp token equals sequence; the current
                                     # key is the exact spectrum token or uploaded waterfall row.
                                     sequence = int(key[0])
@@ -1934,6 +1989,9 @@ def main(argv=None):
                                                   in block["source_to_first_paint_ms"].items()},
                         paint_return_ms={target: complete_bounded_summary(values, summary) for target, values
                                          in block["paint_return_ms"].items()},
+                        first_paint_cadence={target: cadence.report(block["started_perf"],
+                            block["ended_perf"], summary)
+                            for target, cadence in block["first_paint_cadence"].items()},
                         sample_accounting=dict(
                             source_to_first_paint_ms={target: bounded_sample_accounting(values)
                                 for target, values in block["source_to_first_paint_ms"].items()},
@@ -1969,17 +2027,19 @@ def main(argv=None):
                     for block in abba_blocks.values()
                     for samples in (*block["source_to_first_paint_ms"].values(),
                                     *block["paint_return_ms"].values(),
+                                    *(cadence.gaps_ms for cadence in block["first_paint_cadence"].values()),
                                     block["heartbeat_times_s"], block["persistence_update_sequences"]))
                 if args.projection_stage_timing:
                     sample_integrity = sample_integrity and all(
                         not dropped for stages in stage_overflow.values() for dropped in stages.values())
-                report["persistence_abba"] = dict(
+                abba_report = dict(
                     order="BAAB" if args.abba_reverse_order else "ABBA",
                     sequence=[dict(block=name, mode=abba_blocks[name]["mode"])
                               for name in abba_order],
                     blocks={name: abba_block_report(name) for name in abba_order},
                     sample_integrity_gate_passed=sample_integrity,
                     sample_capacity_per_series=timing_capacity,
+                    requested_max_unique_paint_gap_ms=args.max_unique_paint_gap_ms,
                     transitions=abba_transitions,
                     startup_warmup=abba_warmups,
                     combined_steady_source_to_first_paint_ms={
@@ -1990,6 +2050,16 @@ def main(argv=None):
                     interpretation=("One synthetic Live session, "+" -> ".join(abba_order)
                         + ". The two middle blocks are contiguous halves of one mode interval, not independent replications. Mode changes, accepted/uploaded update catch-up and declared warm-up are recorded separately and excluded from steady samples."),
                     limitations="Visible Windows Qt QWidget paint/heartbeat on one host display. Synthetic constant spectrum and rolling histogram only; not DWM/compositor scanout, SDR/RF/LPS, visual smoothing fidelity, physical FHD/QHD coverage, or a general performance acceptance.")
+                abba_report["first_paint_cadence_gate_passed"] = (
+                    None if args.max_unique_paint_gap_ms is None else
+                    bool(sample_integrity and first_paint_cadence_gate_passes(
+                        abba_report["blocks"], args.max_unique_paint_gap_ms)))
+                abba_report["first_paint_cadence_scope"] = (
+                    "Only first paint returns of unique fresh-source Spectrum/Waterfall keys "
+                    "within each steady block. Maximum silence includes start/end boundaries; "
+                    "an opt-in threshold is diagnostic, not the global 50-ms/DWM/RF target. "
+                    "A truncated gap ring invalidates its percentiles and the gate.")
+                report["persistence_abba"] = abba_report
                 if args.projection_stage_timing:
                     report["persistence_abba"]["stage_timing_scope"] = (
                         "Instrumented observer only: completed worker/GUI intervals wholly within each steady "
