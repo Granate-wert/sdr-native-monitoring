@@ -1,7 +1,7 @@
 """Synthetic fast source -> real Sweep domain adapter/presenter -> actual V2.
 
 Includes worker drain/conversion, Qt delivery, canvas and queued Stop under load.
-Not native FFT throughput, RF, EXE, DWM, OS input, persistence or Windows DPI.
+Not native FFT throughput, RF, EXE, DWM, OS input, persistence or desktop DPI.
 The fake coordinator owns one preview and four terminals; immutable array
 templates are reused (producer allocation and DSP costs are NOT measured).
 Optional page cycling exercises hidden delivery/history without stopping the
@@ -13,6 +13,8 @@ and ends after earlier synchronous V2 snapshot subscribers have run. It includes
 optional worker presentation preparation, Qt queueing and GUI delivery/render
 preparation; it is not pure worker-to-GUI scheduling latency.
 The measured interval uses QEventLoop.exec, not a processEvents-only loop.
+Optional visible Windows-QPA stage tracing is observer-only and changes timing.
+An optional post-Stop QWidget.grab is an application surface, not DWM evidence.
 Age witnesses use the synthetic publisher's host monotonic clock and exact
 pass/state/revision. They exclude RF/transport/DSP age and DWM presentation.
 Waterfall age is for the newest uploaded row; older row corrections are not
@@ -224,6 +226,86 @@ def sweep_phase_matches(phase, requested):
     raise ValueError("unknown Sweep Stop phase")
 
 
+def paired_progressive_paints(events):
+    """Return the first same-pass partial/complete painted by BOTH canvases.
+
+    The two canvases need not paint atomically. A complete from another pass
+    must never be borrowed to claim that the partial made progress to final.
+    """
+    by_pass = {}
+    for event in events:
+        key = event["key"]
+        if key[1] not in ("partial", "complete"):
+            continue
+        entry = by_pass.setdefault(key[0], {})
+        entry.setdefault((key[1], key[2]), {}).setdefault(event["pane"], event)
+    for sequence, stages in by_pass.items():
+        complete = stages.get(("complete", 0), {})
+        for (state, revision), partial in stages.items():
+            if (state == "partial" and revision > 0
+                    and set(partial) == {"spectrum", "waterfall"}
+                    and set(complete) == {"spectrum", "waterfall"}
+                    and all(partial[pane]["paint_return_s"] < complete[pane]["paint_return_s"]
+                            for pane in partial)
+                    and partial["spectrum"]["coverage_runs"] > 0):
+                return dict(sequence=sequence, partial=partial, complete=complete)
+    return None
+
+
+def progressive_pair_precedes_stop(pair, stop_intent_s):
+    """A final first painted after Stop cannot prove partial→final→Stop."""
+    return bool(pair is not None and all(
+        pair["complete"][pane]["paint_return_s"] < stop_intent_s
+        for pane in ("spectrum", "waterfall")))
+
+
+class ProgressivePaintWitness:
+    """Latch one exact pair independently of the bounded diagnostic event log."""
+    def __init__(self, max_passes=64, max_events_per_pass=16):
+        self.max_passes = max_passes
+        self.max_events_per_pass = max_events_per_pass
+        self.candidates = OrderedDict()
+        self.pair = None
+
+    def accept(self, event):
+        key = event["key"]
+        if self.pair is not None or key[1] not in ("partial", "complete"):
+            return
+        candidates = self.candidates.setdefault(key[0], deque(maxlen=self.max_events_per_pass))
+        candidates.append(event)
+        if len(self.candidates) > self.max_passes:
+            self.candidates.popitem(last=False)
+        if key[1] == "complete":
+            self.pair = paired_progressive_paints(candidates)
+            if self.pair is not None:
+                self.candidates.clear()
+
+
+def fixed_visible_target_matches(metadata, requested_size, expected_dpr):
+    """Separate Qt geometry/DPR gate from the Sweep lifecycle witness."""
+    actual = metadata["actual_window_geometry_logical"][2:]
+    return bool(metadata["actual_platform"] == "windows"
+        and metadata["visible_native_window"]
+        and actual == list(requested_size)
+        and metadata["screen_device_pixel_ratio"] == expected_dpr
+        and metadata["spectrum_canvas_dpr"] == expected_dpr
+        and metadata["waterfall_canvas_dpr"] == expected_dpr)
+
+
+def requested_gate_failures(report, *, progressive_stage_gate, expected_dpr):
+    """A written JSON is not a successful CLI gate when a predicate is false."""
+    failed = []
+    if report["post_close_reserved_bytes"] or report["remaining_workers"]:
+        failed.append("cleanup")
+    if progressive_stage_gate and any(row["progressive_paint_gate_passed"] is not True
+                                      for row in report["results"]):
+        failed.append("progressive-paint")
+    if expected_dpr is not None and any(
+            row["fixed_visible_target_match"] is not True for row in report["results"]):
+        failed.append("fixed-visible-target")
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", required=True, type=Path)
@@ -235,6 +317,16 @@ def main():
     parser.add_argument("--terminal-every", type=int, default=1,
                         help="Synthetic terminal relay thinning; omitted completions count as source superseded, not RF loss")
     parser.add_argument("--stop-phase", choices=("any", "idle", "poll-only", "projection-only"), default="any")
+    parser.add_argument("--qt-platform", choices=("offscreen", "windows"), default="offscreen")
+    parser.add_argument("--window-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"), default=(1920, 1080))
+    parser.add_argument("--expected-dpr", type=float,
+                        help="Expected actual Windows Qt DPR for a fixed-target gate")
+    parser.add_argument("--producer-phase-ms", type=float, default=2,
+                        help="Synthetic partial and terminal dwell each; default 2ms preserves prior workload")
+    parser.add_argument("--progressive-stage-gate", action="store_true",
+                        help="Opt-in per-paint partial/complete/Stop witness; instrumentation perturbs timing")
+    parser.add_argument("--capture-window", action="store_true",
+                        help="Post-measurement QWidget surface PNG; visible Windows and one grid only")
     args = parser.parse_args()
     if not sys.flags.isolated or not 1 <= args.seconds <= 1200:
         parser.error("use Python -I and 1..1200 seconds per grid")
@@ -246,9 +338,21 @@ def main():
         parser.error("output exists")
     if not 1 <= args.terminal_every <= 1000:
         parser.error("synthetic terminal relay interval must be in 1..1000")
+    if not 2 <= args.producer_phase_ms <= 1000:
+        parser.error("producer-phase-ms must be 2..1000")
+    if any(value < 640 or value > 8192 for value in args.window_size):
+        parser.error("window dimensions must be 640..8192 logical pixels")
+    if args.qt_platform == "windows" and sys.platform != "win32":
+        parser.error("visible Windows Qt requires Windows")
+    if args.expected_dpr is not None and (args.qt_platform != "windows"
+                                          or not .5 <= args.expected_dpr <= 4):
+        parser.error("expected-dpr requires visible Windows Qt and DPR 0.5..4")
+    if args.capture_window and (args.qt_platform != "windows" or len(args.bins) != 1
+                                or args.output.with_suffix(".png").exists()):
+        parser.error("post-measurement capture requires visible Windows, one grid and a new PNG path")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
-    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    os.environ["QT_QPA_PLATFORM"] = args.qt_platform
     import numpy as np
     import PySide6
     import pyqtgraph as pg
@@ -259,6 +363,7 @@ def main():
     from sdr_monitor.ui.v2.spectrum import projection
     from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
     from tests.test_app02_analyzer_workspace_product import AnalyzerWorkspaceProductTests
+    from scripts.benchmark_app05_rtbw_observation import qt_display_metadata
 
     def summary(values):
         if not values:
@@ -317,12 +422,12 @@ def main():
 
             def start(self):
                 def produce():
-                    while not self.done.wait(.002):
+                    while not self.done.wait(args.producer_phase_ms / 1000):
                         with self.lock:
                             self.seq += 1
                             self.preview_dropped += self.preview is not None
                             self.preview = self.frame(True)
-                        if self.done.wait(.002):
+                        if self.done.wait(args.producer_phase_ms / 1000):
                             break
                         with self.lock:
                             if self.seq % args.terminal_every == 0:
@@ -384,9 +489,14 @@ def main():
         gui_thread = threading.get_ident()
         canvas_keys = {}
         canvas_paints = {name: deque(maxlen=8192) for name in ("spectrum", "waterfall")}
+        stage_paints = deque(maxlen=8192)
+        stage_paint_overflow = 0
+        stage_witness = ProgressivePaintWitness()
+        scene = None
 
         class MeasuredGraphics(pg.GraphicsLayoutWidget):
             def paintEvent(self, event):
+                nonlocal stage_paint_overflow
                 tracked = canvas_keys.get(id(self))
                 key = None if tracked is None else tracked[1]()
                 began = perf_counter()
@@ -397,7 +507,21 @@ def main():
                     pane, current_key = tracked
                     canvas_paints[pane].append((ended - began) * 1000)
                     if key == current_key():
+                        prior = age_tracker.counts[pane] if args.progressive_stage_gate else 0
                         age_tracker.painted(pane, key, ended)
+                        if (args.progressive_stage_gate and key is not None
+                                and age_tracker.counts[pane] > prior):
+                            if len(stage_paints) == stage_paints.maxlen:
+                                stage_paint_overflow += 1
+                            stage = dict(pane=pane, key=list(key), source_epoch=count,
+                                paint_return_s=ended,
+                                coverage_runs=len(scene.sweep_coverage.strip.runs),
+                                displayed_key=list(sweep_key(scene.displayed_frame.spectrum))
+                                if scene.displayed_frame is not None else None,
+                                latest_key=list(sweep_key(scene.latest_frame.spectrum))
+                                if scene.latest_frame is not None else None)
+                            stage_paints.append(stage)
+                            stage_witness.accept(stage)
                     else:
                         age_tracker.changed_during_paint += 1
 
@@ -453,12 +577,20 @@ def main():
             memory_timer = QTimer()
             try:
                 harness.select_and_apply()
-                harness.shell.resize(1920, 1080)
+                harness.shell.resize(*args.window_size)
                 page = harness.page
                 page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.SWEEP))
                 presenter = harness.composition.analyzer_presenter
                 scene = page.visualization.spectrum_scene
                 waterfall = page.visualization.waterfall_pane
+                display_metadata = qt_display_metadata(harness.shell, harness.app, scene, waterfall,
+                    requested_size=args.window_size, requested_platform=args.qt_platform)
+                if args.qt_platform == "windows" and (display_metadata["actual_platform"] != "windows"
+                        or not display_metadata["visible_native_window"]):
+                    raise AssertionError("visible Windows Qt window was not observed")
+                fixed_target_match = (fixed_visible_target_matches(
+                    display_metadata, args.window_size, args.expected_dpr)
+                    if args.expected_dpr is not None else None)
 
                 def spectrum_key():
                     bundle = scene.displayed_frame
@@ -543,6 +675,52 @@ def main():
                     raise AssertionError("terminal gap missing from V2 canvas")
                 if poll_ends or producer.high_water > 4:
                     raise AssertionError("undelivered snapshot or unbounded queue")
+                progressive_pair = post_stop = None
+                if args.progressive_stage_gate:
+                    progressive_pair = stage_witness.pair
+                    terminal_frame = scene.latest_frame
+                    terminal_key = sweep_key(terminal_frame.spectrum)
+                    def gap_paints():
+                        return {item["pane"]: item for item in stage_paints
+                                if terminal_key is not None and item["key"] == list(terminal_key)}
+
+                    terminal_paint_timed_out = False
+                    try:
+                        run_qt_until(lambda: scene.displayed_frame is scene.latest_frame
+                            and set(gap_paints()) == {"spectrum", "waterfall"}, 1)
+                    except TimeoutError:
+                        terminal_paint_timed_out = True
+                    terminal_painted = gap_paints()
+                    post_stop = dict(terminal_key=list(terminal_key) if terminal_key is not None else None,
+                        terminal_sweep=bool(terminal_frame.terminal_sweep),
+                        presenter_can_close=bool(presenter.can_close()),
+                        producer_thread_alive=bool(producer.thread and producer.thread.is_alive()),
+                        terminal_paint_timed_out=terminal_paint_timed_out,
+                        terminal_gap_painted_on=sorted(terminal_painted),
+                        stop_intent_to_terminal_gap_first_paint_ms={pane:
+                            (item["paint_return_s"] - stop_times[0]) * 1000
+                            for pane, item in terminal_painted.items()},
+                        displayed_terminal_key=(list(sweep_key(scene.displayed_frame.spectrum))
+                            if scene.displayed_frame is not None else None))
+                progressive_passed = (bool(progressive_pair_precedes_stop(progressive_pair, stop_times[0])
+                    and post_stop["terminal_key"] is not None
+                    and post_stop["terminal_key"][1] == "gap"
+                    and post_stop["terminal_sweep"] and post_stop["presenter_can_close"]
+                    and not post_stop["producer_thread_alive"]
+                    and not post_stop["terminal_paint_timed_out"]
+                    and post_stop["terminal_gap_painted_on"] == ["spectrum", "waterfall"]
+                    and post_stop["displayed_terminal_key"] == post_stop["terminal_key"])
+                    if args.progressive_stage_gate else None)
+                window_capture = None
+                if args.capture_window:
+                    image = harness.shell.grab()
+                    capture_path = args.output.with_suffix(".png")
+                    if image.isNull() or not image.save(str(capture_path), "PNG"):
+                        raise AssertionError("post-measurement Qt surface capture failed")
+                    window_capture = dict(path=str(capture_path.resolve()),
+                        sha256=hashlib.sha256(capture_path.read_bytes()).hexdigest(),
+                        size_px=[image.width(), image.height()],
+                        scope="After Stop/terminal observation; QWidget surface only, not desktop/DWM/UIA")
                 rows.append(dict(bins=count, seconds=ended-began,
                     generated_complete_lines=producer.completed,
                     source_queue_high_water=producer.high_water, source_superseded=producer.dropped,
@@ -578,10 +756,19 @@ def main():
                         final_prepare_and_gui_delivery=(stop_stages["final_delivered"]-stop_stages["final_poll_end"])*1000,
                         delivery_to_idle_observation=(ended-stop_stages["final_delivered"])*1000),
                     terminal_control_gaps=producer.control_gaps,
+                    stage_paint_events=list(stage_paints), stage_paint_overflow=stage_paint_overflow,
+                    progressive_painted_pair=progressive_pair, post_stop=post_stop,
+                    window_capture=window_capture,
+                    progressive_paint_gate_passed=progressive_passed,
+                    fixed_visible_target_match=fixed_target_match,
+                    fixed_target_progressive_gate_passed=(bool(progressive_passed and fixed_target_match)
+                        if progressive_passed is not None and fixed_target_match is not None else None),
+                    post_close_reserved_bytes=None,
                     page_switches=len(page_switches),
                     waterfall_rows=page.visualization.waterfall_pane.history_rows,
                     memory_samples=memory_samples,
-                    device_pixel_ratio=harness.shell.devicePixelRatioF()))
+                    device_pixel_ratio=harness.shell.devicePixelRatioF(),
+                    qt_display_environment=display_metadata))
             finally:
                 cycle_timer.stop()
                 memory_timer.stop()
@@ -590,6 +777,9 @@ def main():
                 harness.tearDown()
                 harness.doCleanups()
                 service.close()
+                post_close_reserved_bytes = harness.composition.allocation_budget.snapshot().reserved_bytes
+                if rows and rows[-1]["bins"] == count:
+                    rows[-1]["post_close_reserved_bytes"] = post_close_reserved_bytes
                 if args.trace_memory:
                     tracemalloc.stop()
         print(json.dumps(rows[-1]))
@@ -603,18 +793,29 @@ def main():
         benchmark_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         python=sys.version.split()[0], numpy=np.__version__, pyside=PySide6.__version__,
         pyqtgraph=pg.__version__, host_platform=platform.platform(), processor=platform.processor(),
-        platform="Qt offscreen", logical_size=[1920, 1080],
+        platform=f"Qt {args.qt_platform}", logical_size=list(args.window_size),
         event_pump="QEventLoop.exec (normal deferred-delete delivery)",
         age_scope="host synthetic publication to first paint return; newest uploaded Waterfall row; same-key both is not atomic/DWM/RF age",
         phase_scope="event observation time; startup/resume first250ms, hidden, steady, Stop through terminal acknowledgement; counts include successful calls, not distinct RF frames; return counts are not additive pipeline timings",
         requested_stop_phase=args.stop_phase,
         terminal_every=args.terminal_every,
+        producer_phase_ms=args.producer_phase_ms,
+        progressive_stage_gate=args.progressive_stage_gate,
+        requested_expected_dpr=args.expected_dpr,
+        progressive_paint_scope="First paint returns with exact pass/state/revision on each canvas; same-pass partial then complete is not atomic screen presentation. Stop-to-idle and stop-to-terminal-gap-paint are separate; Qt heartbeat deadline is not a hard watchdog or DWM scanout.",
         stop_phase_scope="Instantaneous GUI-side Future state immediately before click, not a worker barrier. Poll includes domain conversion and preparation. Phase wait is timer lateness, excluded from intent-to-idle; unmatched phase fails after cleanup.",
         timing_window_samples=8192, trace_memory=args.trace_memory,
         page_cycle_seconds=args.page_cycle_seconds,
-        product_imports_outside_checkout=outside, results=rows)
+        product_imports_outside_checkout=outside, results=rows,
+        post_close_reserved_bytes=max(row["post_close_reserved_bytes"] for row in rows),
+        remaining_workers=[thread.name for thread in threading.enumerate()
+                           if any(part in thread.name.lower() for part in ("sdr", "synthetic"))])
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
+    failures = requested_gate_failures(report, progressive_stage_gate=args.progressive_stage_gate,
+        expected_dpr=args.expected_dpr)
+    if failures:
+        raise SystemExit(f"Sweep observer gate failed ({', '.join(failures)}); inspect written JSON")
 
 
 if __name__ == "__main__":

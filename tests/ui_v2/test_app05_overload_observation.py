@@ -85,6 +85,84 @@ class PhaseThroughputTests(unittest.TestCase):
 
 
 class PaintAgeWitnessTests(unittest.TestCase):
+    def test_fixed_visible_target_does_not_borrow_a_lifecycle_pass(self):
+        metadata = dict(actual_platform="windows", visible_native_window=True,
+                        actual_window_geometry_logical=[7, 30, 1400, 850],
+                        screen_device_pixel_ratio=1.75, spectrum_canvas_dpr=1.75,
+                        waterfall_canvas_dpr=1.75)
+        self.assertTrue(OBSERVER.fixed_visible_target_matches(metadata, (1400, 850), 1.75))
+        self.assertFalse(OBSERVER.fixed_visible_target_matches(metadata, (1920, 1080), 1.75))
+        self.assertFalse(OBSERVER.fixed_visible_target_matches(metadata, (1400, 850), 1.5))
+        self.assertFalse(OBSERVER.fixed_visible_target_matches(
+            dict(metadata, actual_platform="offscreen"), (1400, 850), 1.75))
+
+    def test_requested_gate_failure_is_not_a_successful_json_exit(self):
+        report = dict(post_close_reserved_bytes=0, remaining_workers=[], results=[
+            dict(progressive_paint_gate_passed=False, fixed_target_progressive_gate_passed=False,
+                 fixed_visible_target_match=False)])
+        self.assertEqual(OBSERVER.requested_gate_failures(report,
+            progressive_stage_gate=True, expected_dpr=1.75),
+            ["progressive-paint", "fixed-visible-target"])
+        self.assertEqual(OBSERVER.requested_gate_failures(report,
+            progressive_stage_gate=False, expected_dpr=None), [])
+        self.assertEqual(OBSERVER.requested_gate_failures(report,
+            progressive_stage_gate=False, expected_dpr=1.75), ["fixed-visible-target"])
+        report["post_close_reserved_bytes"] = 1
+        self.assertEqual(OBSERVER.requested_gate_failures(report,
+            progressive_stage_gate=False, expected_dpr=None), ["cleanup"])
+
+    def test_progressive_pair_requires_both_canvases_same_pass_and_order(self):
+        def paint(pane, sequence, state, revision, at, coverage=1):
+            return dict(pane=pane, key=[sequence, state, revision],
+                        paint_return_s=at, coverage_runs=coverage)
+
+        events = [paint("waterfall", 4, "partial", 1, 1),
+                  paint("spectrum", 4, "partial", 1, 2),
+                  paint("waterfall", 5, "complete", 0, 3),
+                  paint("spectrum", 5, "complete", 0, 4)]
+        self.assertIsNone(OBSERVER.paired_progressive_paints(events))
+        events.extend((paint("waterfall", 4, "complete", 0, 5),
+                       paint("spectrum", 4, "complete", 0, 6)))
+        paired = OBSERVER.paired_progressive_paints(events)
+        self.assertEqual(paired["sequence"], 4)
+        self.assertEqual(set(paired["partial"]), {"spectrum", "waterfall"})
+        self.assertEqual(set(paired["complete"]), {"spectrum", "waterfall"})
+        self.assertTrue(OBSERVER.progressive_pair_precedes_stop(paired, 7))
+        self.assertFalse(OBSERVER.progressive_pair_precedes_stop(paired, 6))
+        self.assertFalse(OBSERVER.progressive_pair_precedes_stop(None, 7))
+        self.assertIsNone(OBSERVER.paired_progressive_paints(
+            [paint("waterfall", 4, "partial", 1, 1), paint("spectrum", 4, "partial", 1, 2),
+             paint("waterfall", 4, "complete", 0, 3), paint("spectrum", 4, "complete", 0, 1)]))
+        self.assertIsNone(OBSERVER.paired_progressive_paints(
+            [paint("waterfall", 4, "partial", 1, 1), paint("spectrum", 4, "partial", 1, 2, 0),
+             paint("waterfall", 4, "complete", 0, 3), paint("spectrum", 4, "complete", 0, 4)]))
+        self.assertIsNone(OBSERVER.paired_progressive_paints(
+            [paint("waterfall", 4, "partial", 1, 1), paint("spectrum", 4, "partial", 2, 2),
+             paint("waterfall", 4, "complete", 0, 3), paint("spectrum", 4, "complete", 0, 4)]))
+
+    def test_progressive_pair_latch_survives_raw_trace_eviction(self):
+        def paint(pane, sequence, state, revision, at):
+            return dict(pane=pane, key=[sequence, state, revision], paint_return_s=at,
+                        coverage_runs=1)
+
+        witness = OBSERVER.ProgressivePaintWitness()
+        for event in (paint("waterfall", 1, "partial", 1, 1),
+                      paint("spectrum", 1, "partial", 1, 2),
+                      paint("waterfall", 1, "complete", 0, 3),
+                      paint("spectrum", 1, "complete", 0, 4)):
+            witness.accept(event)
+        self.assertEqual(witness.pair["sequence"], 1)
+        for sequence in range(2, 10002):
+            witness.accept(paint("spectrum", sequence, "partial", 1, sequence + 4))
+        self.assertEqual(witness.pair["sequence"], 1)
+        self.assertEqual(len(witness.candidates), 0)
+        unmatched = OBSERVER.ProgressivePaintWitness()
+        for sequence in range(10000):
+            unmatched.accept(paint("spectrum", sequence, "partial", 1, sequence))
+        self.assertIsNone(unmatched.pair)
+        self.assertLessEqual(len(unmatched.candidates), 64)
+        self.assertTrue(all(len(events) <= 16 for events in unmatched.candidates.values()))
+
     def test_same_pass_partial_and_terminal_do_not_fake_both_paints(self):
         witness = OBSERVER.PaintAgeTracker()
         partial, complete = (1, "partial", 1), (1, "complete", 0)
@@ -176,6 +254,40 @@ class RealQtObservationTests(unittest.TestCase):
     def test_sparse_terminal_cli_preserves_domain_identity_and_final_gap(self):
         self.check_cli(terminal_every=100)
 
+    def test_each_grid_reports_post_close_budget(self):
+        with TemporaryDirectory(prefix="app05-multigrid-observer-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/benchmark_app04_poll_overload.py"),
+                                     "--checkout", str(ROOT), "--output", str(output), "--seconds", "1",
+                                     "--bins", "256", "512"],
+                                    cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual([row["bins"] for row in report["results"]], [256, 512])
+        self.assertEqual([row["post_close_reserved_bytes"] for row in report["results"]], [0, 0])
+        self.assertEqual(report["post_close_reserved_bytes"], 0)
+
+    def test_slow_synthetic_sweep_paints_partial_then_complete_before_stop(self):
+        with TemporaryDirectory(prefix="app05-progressive-observer-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/benchmark_app04_poll_overload.py"),
+                                     "--checkout", str(ROOT), "--output", str(output), "--seconds", "1",
+                                     "--bins", "256", "--producer-phase-ms", "50",
+                                     "--progressive-stage-gate"],
+                                    cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        row = report["results"][0]
+        self.assertEqual(report["platform"], "Qt offscreen")
+        self.assertTrue(row["progressive_paint_gate_passed"])
+        self.assertIsNone(row["fixed_target_progressive_gate_passed"])
+        self.assertEqual(row["progressive_painted_pair"]["partial"]["spectrum"]["key"][1], "partial")
+        self.assertEqual(row["progressive_painted_pair"]["complete"]["spectrum"]["key"][1], "complete")
+        self.assertEqual(row["post_stop"]["terminal_key"][1], "gap")
+        self.assertEqual(row["post_stop"]["terminal_gap_painted_on"], ["spectrum", "waterfall"])
+        self.assertEqual(report["remaining_workers"], [])
+        self.assertEqual(report["post_close_reserved_bytes"], 0)
+
     def check_cli(self, terminal_every=1):
         with TemporaryDirectory(prefix="app05-observer-") as temporary:
             output = Path(temporary) / "result.json"
@@ -188,6 +300,10 @@ class RealQtObservationTests(unittest.TestCase):
         self.assertEqual(report["product_imports_outside_checkout"], [])
         self.assertIn("QEventLoop.exec", report["event_pump"])
         row = report["results"][0]
+        self.assertFalse(report["progressive_stage_gate"])
+        self.assertIsNone(row["progressive_paint_gate_passed"])
+        self.assertIsNone(row["fixed_target_progressive_gate_passed"])
+        self.assertEqual(row["stage_paint_events"], [])
         self.assertEqual(report["terminal_every"], terminal_every)
         if terminal_every > 1:
             self.assertGreater(row["source_superseded"], 0)
