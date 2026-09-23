@@ -7,9 +7,11 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import pyqtgraph as pg
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, QSettings
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
@@ -174,6 +176,130 @@ class SweepWaterfallPaneTests(unittest.TestCase):
         self.pane.set_direction(WaterfallDirection.NEWEST_AT_BOTTOM)
         rows = self.pane.config.history_seconds * self.pane.config.rows_per_second
         self.assertEqual(self.pane._time_axis.tickStrings([rows-2., rows-1.], 1., 1.), ["#1 C", "#2 P"])
+
+    def test_sweep_axis_culls_only_painted_overlaps_with_newest_priority(self):
+        for sequence in range(1, 22):
+            self.offer(terminal(sequence, gap=sequence % 7 == 0))
+        axis = self.pane._time_axis
+        axis.setWidth(100)
+        stamps_before = self.pane._renderer.sweep_stamps()
+        for direction in WaterfallDirection:
+            self.pane.set_direction(direction)
+            capacity = self.pane.config.history_seconds * self.pane.config.rows_per_second
+            origin = 0 if direction is WaterfallDirection.NEWEST_AT_TOP else capacity - 21
+            ticks = [float(origin + row) for row in range(21)]
+            labels = axis.tickStrings(ticks, 1.0, 1.0)
+            self.assertEqual(len(labels), 21)
+            self.assertEqual(set(labels), {f"#{sequence} {'G' if sequence % 7 == 0 else 'C'}"
+                                           for sequence in range(1, 22)})
+            axis.setTicks([list(zip(ticks, labels))])
+            for height in (260, 420):
+                with self.subTest(direction=direction, height=height):
+                    self.pane.setFixedSize(960, height)
+                    self.pane.show()
+                    self.app.processEvents()
+                    image = QImage(960, height, QImage.Format.Format_ARGB32)
+                    painter = QPainter(image)
+                    try:
+                        raw = pg.AxisItem.generateDrawSpecs(axis, painter)
+                        culled = axis.generateDrawSpecs(painter)
+                    finally:
+                        painter.end()
+                    self.assertIsNotNone(raw)
+                    self.assertIsNotNone(culled)
+                    raw_text = raw[2]
+                    drawn_text = culled[2]
+                    self.assertGreater(len(raw_text), len(drawn_text))
+                    self.assertGreater(len(drawn_text), 0)
+                    newest_first = sorted(
+                        raw_text, key=lambda item: item[0].center().y(),
+                        reverse=direction is WaterfallDirection.NEWEST_AT_BOTTOM,
+                    )
+                    self.assertIn(newest_first[0], drawn_text)
+                    for left_index, (left_rect, _, _) in enumerate(drawn_text):
+                        for right_rect, _, _ in drawn_text[left_index + 1:]:
+                            self.assertFalse(left_rect.adjusted(0.0, -2.0, 0.0, 2.0).intersects(
+                                right_rect.adjusted(0.0, -2.0, 0.0, 2.0)))
+            axis.setTicks(None)
+        self.assertEqual(self.pane._renderer.sweep_stamps(), stamps_before)
+
+    def test_non_sweep_axis_does_not_cull_labels(self):
+        axis = self.pane._time_axis
+        axis.setWidth(100)
+        self.pane.setFixedSize(960, 260)
+        self.pane.show()
+        self.pane.plot_item.setYRange(0.0, 300.0, padding=0.0)
+        axis.set_presentation_timebase(
+            direction=WaterfallDirection.NEWEST_AT_TOP,
+            rows_per_second=30, display_rows=21, capacity_rows=300,
+            timestamps_ns=np.arange(21, dtype=np.int64) * 33_000_000,
+            timestamps_known=True,
+        )
+        axis.setTicks([[(float(row), f"{row * 33} ms") for row in range(21)]])
+        self.app.processEvents()
+        image = QImage(960, 260, QImage.Format.Format_ARGB32)
+        painter = QPainter(image)
+        try:
+            raw = pg.AxisItem.generateDrawSpecs(axis, painter)
+            unchanged = axis.generateDrawSpecs(painter)
+        finally:
+            painter.end()
+        self.assertIsNotNone(raw)
+        self.assertIsNotNone(unchanged)
+        self.assertGreater(len(raw[2]), 1)
+        self.assertEqual(raw[2], unchanged[2])
+
+    def test_sweep_auto_ticks_default_axis_width_keep_terminal_without_overlap(self):
+        harness = product_fixture.AnalyzerWorkspaceProductTests("runTest")
+        harness.app = self.app
+        setup_complete = False
+        try:
+            harness.setUp()
+            setup_complete = True
+            harness.shell.resize(1400, 850)
+            self.app.processEvents()
+            pane = harness.page.visualization.waterfall_pane
+            for sequence in range(1, 21):
+                pane.set_sweep_line(waterfall_line_from_sweep(terminal(sequence)))
+            pane.set_sweep_line(waterfall_line_from_sweep(terminal(21, gap=True)))
+            self.app.processEvents()
+            axis = pane._time_axis
+            for direction in WaterfallDirection:
+                with self.subTest(direction=direction):
+                    pane.set_direction(direction)
+                    self.app.processEvents()
+                    image = QImage(1400, 850, QImage.Format.Format_ARGB32)
+                    painter = QPainter(image)
+                    try:
+                        raw = pg.AxisItem.generateDrawSpecs(axis, painter)
+                        drawn = axis.generateDrawSpecs(painter)
+                    finally:
+                        painter.end()
+                    self.assertIsNotNone(raw)
+                    self.assertIsNotNone(drawn)
+                    self.assertIsNone(axis._tickLevels)
+                    self.assertGreater(len(raw[2]), len(drawn[2]),
+                                       (axis.range, axis.geometry(), axis.boundingRect()))
+                    newest_row = (0.0 if direction is WaterfallDirection.NEWEST_AT_TOP
+                                  else float(pane.config.history_seconds * pane.config.rows_per_second - 1))
+                    self.assertEqual(axis.tickStrings([newest_row], 1.0, 1.0), ["#21 G"])
+                    newest_available = sorted(
+                        raw[2], key=lambda item: item[0].center().y(),
+                        reverse=direction is WaterfallDirection.NEWEST_AT_BOTTOM,
+                    )[0]
+                    self.assertIn(newest_available, drawn[2])
+                    if direction is WaterfallDirection.NEWEST_AT_TOP:
+                        self.assertIn("#21 G", [label for _, _, label in drawn[2]])
+                    for left_index, (left_rect, _, _) in enumerate(drawn[2]):
+                        for right_rect, _, _ in drawn[2][left_index + 1:]:
+                            self.assertFalse(left_rect.adjusted(0.0, -2.0, 0.0, 2.0).intersects(
+                                right_rect.adjusted(0.0, -2.0, 0.0, 2.0)))
+        finally:
+            try:
+                if setup_complete:
+                    harness.tearDown()
+            finally:
+                harness.doCleanups()
 
     def test_in_place_update_invalidates_image_nan_transparency(self):
         self.offer(progress(revision=3))

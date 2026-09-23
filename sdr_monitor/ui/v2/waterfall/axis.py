@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pyqtgraph as pg
 import numpy as np
+from PySide6.QtCore import QRectF
 
 from ..i18n import UiLocale, text
 from .contracts import WaterfallDirection
@@ -24,6 +25,7 @@ class WaterfallTimeAxis(pg.AxisItem):
         self._timestamps_ns: np.ndarray = np.empty(0, dtype=np.int64)
         self._gap_rows: frozenset[int] = frozenset()
         self._sweep_stamps: tuple[SweepRowStamp | None, ...] = ()
+        self._has_sweep_stamps = False
 
     def set_locale(self, locale: UiLocale) -> None:
         self._locale = UiLocale(locale)
@@ -46,6 +48,10 @@ class WaterfallTimeAxis(pg.AxisItem):
         self._display_rows = max(0, int(display_rows))
         self._capacity_rows = max(self._display_rows, int(capacity_rows))
         self._sweep_stamps = sweep_stamps
+        self._has_sweep_stamps = (
+            len(sweep_stamps) == self._display_rows
+            and any(stamp is not None for stamp in sweep_stamps)
+        )
         self._row_origin = (
             0 if self._direction is WaterfallDirection.NEWEST_AT_TOP
             else self._capacity_rows - self._display_rows
@@ -62,6 +68,34 @@ class WaterfallTimeAxis(pg.AxisItem):
         )
         self.picture = None
         self.update()
+
+    def generateDrawSpecs(self, painter):
+        """Cull only overlapping Sweep labels after Qt resolves font and DPI.
+
+        The newest label offered by pyqtgraph keeps priority. All row stamps
+        and raw tick strings remain available; this limits only the text
+        actually painted on a crowded axis, independently of tick levels.
+        """
+        specs = super().generateDrawSpecs(painter)
+        if specs is None or not self._has_sweep_stamps or self.orientation not in ("left", "right"):
+            return specs
+        axis_spec, tick_specs, text_specs = specs
+        newest_at_top = self._direction is WaterfallDirection.NEWEST_AT_TOP
+        ordered = sorted(text_specs, key=lambda item: item[0].center().y(), reverse=not newest_at_top)
+        retained = []
+        previous: QRectF | None = None
+        for spec in ordered:
+            rect, _, label = spec
+            if not label:
+                continue
+            padded = rect.adjusted(0.0, -2.0, 0.0, 2.0)
+            # Every left/right-axis label shares an aligned x edge. Sorted by
+            # y, the last accepted rectangle is the only possible collision.
+            if previous is not None and padded.intersects(previous):
+                continue
+            retained.append(spec)
+            previous = padded
+        return axis_spec, tick_specs, retained
 
     def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:
         del scale, spacing
