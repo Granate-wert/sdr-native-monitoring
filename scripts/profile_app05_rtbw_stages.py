@@ -331,6 +331,7 @@ def main():
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
     from sdr_monitor.ui.display_scheduler import DisplayScheduler
     from sdr_monitor.ui.v2.spectrum import projection
+    from sdr_monitor.ui.v2.spectrum import persistence_projection
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
     from pyqtgraph import ImageItem, GraphicsLayoutWidget, PlotCurveItem, AxisItem
@@ -654,6 +655,9 @@ def main():
         instrument(analyzer_layer_cache, "persistence_density_from_native", converting_density)
         instrument(analyzer_layer_cache.AnalyzerLayerCache, "waterfall", lambda original:
             service.wrap("waterfall_cache", original, lambda owner, frame: key(frame)))
+        instrument(persistence_projection, "persistence_input_witness", lambda original:
+            service.wrap("density_witness", original,
+                lambda view, **kw: (view.density.shape, view.density.dtype.str)))
         instrument(prepared_live, "PreparedSpectrumFrame", lambda original:
             service.wrap("spectrum_prepare", original, lambda frame, **kw: key(frame)))
         instrument(projection, "project_spectrum", lambda original: service.wrap("projection", original,
