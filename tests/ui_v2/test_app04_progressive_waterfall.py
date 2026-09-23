@@ -249,6 +249,42 @@ class SweepWaterfallPaneTests(unittest.TestCase):
         self.assertGreater(len(raw[2]), 1)
         self.assertEqual(raw[2], unchanged[2])
 
+    def test_auto_ticks_promote_latest_sweep_once_without_off_view_or_rtbw_ticks(self):
+        axis = self.pane._time_axis
+        stamps = tuple(SweepRowStamp(sequence, 0, SweepRowState.GAP if sequence == 21
+                                     else SweepRowState.COMPLETE) for sequence in range(1, 22))
+        for direction, latest in ((WaterfallDirection.NEWEST_AT_TOP, 0.0),
+                                  (WaterfallDirection.NEWEST_AT_BOTTOM, 299.0)):
+            with self.subTest(direction=direction):
+                axis.set_presentation_timebase(
+                    direction=direction, rows_per_second=30,
+                    display_rows=21, capacity_rows=300,
+                    timestamps_ns=np.empty(0, dtype=np.int64), timestamps_known=False,
+                    sweep_stamps=stamps,
+                )
+                levels = axis.tickValues(300.0, 0.0, 270.0)
+                self.assertIn(latest, levels[0][1])
+                self.assertEqual(sum(value == latest for _, values in levels for value in values), 1)
+                self.assertEqual(axis.tickStrings([latest], 1.0, 1.0), ["#21 G"])
+                if direction is WaterfallDirection.NEWEST_AT_BOTTOM:
+                    self.assertEqual(axis.tickValues(200.0, 0.0, 270.0),
+                                     pg.AxisItem.tickValues(axis, 200.0, 0.0, 270.0))
+                    axis.set_presentation_timebase(
+                        direction=direction, rows_per_second=30,
+                        display_rows=21, capacity_rows=300,
+                        timestamps_ns=np.empty(0, dtype=np.int64), timestamps_known=False,
+                        sweep_stamps=stamps[:-1] + (None,),
+                    )
+                    self.assertEqual(axis.tickValues(300.0, 0.0, 270.0),
+                                     pg.AxisItem.tickValues(axis, 300.0, 0.0, 270.0))
+                axis.set_presentation_timebase(
+                    direction=direction, rows_per_second=30,
+                    display_rows=21, capacity_rows=300,
+                    timestamps_ns=np.arange(21, dtype=np.int64), timestamps_known=True,
+                )
+                self.assertEqual(axis.tickValues(300.0, 0.0, 270.0),
+                                 pg.AxisItem.tickValues(axis, 300.0, 0.0, 270.0))
+
     def test_sweep_auto_ticks_default_axis_width_keep_terminal_without_overlap(self):
         harness = product_fixture.AnalyzerWorkspaceProductTests("runTest")
         harness.app = self.app
@@ -259,11 +295,29 @@ class SweepWaterfallPaneTests(unittest.TestCase):
             harness.shell.resize(1400, 850)
             self.app.processEvents()
             pane = harness.page.visualization.waterfall_pane
+            axis = pane._time_axis
+
+            def rendered_labels():
+                image = QImage(1400, 850, QImage.Format.Format_ARGB32)
+                painter = QPainter(image)
+                try:
+                    specs = axis.generateDrawSpecs(painter)
+                finally:
+                    painter.end()
+                self.assertIsNotNone(specs)
+                return [label for _, _, label in specs[2]]
+
             for sequence in range(1, 21):
                 pane.set_sweep_line(waterfall_line_from_sweep(terminal(sequence)))
-            pane.set_sweep_line(waterfall_line_from_sweep(terminal(21, gap=True)))
+            pane.set_sweep_line(waterfall_line_from_sweep(progress(21)))
+            self.assertEqual(pane.history_rows, 21)
+            self.assertEqual(pane._time_axis.tickStrings([0.0], 1.0, 1.0), ["#21 P"])
+            pane.set_direction(WaterfallDirection.NEWEST_AT_BOTTOM)
             self.app.processEvents()
-            axis = pane._time_axis
+            self.assertEqual(rendered_labels().count("#21 P"), 1)
+            pane.set_sweep_line(waterfall_line_from_sweep(terminal(21, gap=True)))
+            self.assertEqual(pane.history_rows, 21)
+            self.app.processEvents()
             for direction in WaterfallDirection:
                 with self.subTest(direction=direction):
                     pane.set_direction(direction)
@@ -288,12 +342,33 @@ class SweepWaterfallPaneTests(unittest.TestCase):
                         reverse=direction is WaterfallDirection.NEWEST_AT_BOTTOM,
                     )[0]
                     self.assertIn(newest_available, drawn[2])
-                    if direction is WaterfallDirection.NEWEST_AT_TOP:
-                        self.assertIn("#21 G", [label for _, _, label in drawn[2]])
+                    self.assertEqual([label for _, _, label in drawn[2]].count("#21 G"), 1)
                     for left_index, (left_rect, _, _) in enumerate(drawn[2]):
                         for right_rect, _, _ in drawn[2][left_index + 1:]:
                             self.assertFalse(left_rect.adjusted(0.0, -2.0, 0.0, 2.0).intersects(
                                 right_rect.adjusted(0.0, -2.0, 0.0, 2.0)))
+            retained_stamps = pane._renderer.sweep_stamps()
+            pane.hide()
+            self.app.processEvents()
+            pane.show()
+            self.app.processEvents()
+            self.assertEqual(pane._renderer.sweep_stamps(), retained_stamps)
+            self.assertEqual(pane.history_rows, 21)
+            image = QImage(1400, 850, QImage.Format.Format_ARGB32)
+            painter = QPainter(image)
+            try:
+                resumed = axis.generateDrawSpecs(painter)
+            finally:
+                painter.end()
+            self.assertIsNotNone(resumed)
+            self.assertIn("#21 G", [label for _, _, label in resumed[2]])
+            pane.set_sweep_line(waterfall_line_from_sweep(progress(22)))
+            self.app.processEvents()
+            self.assertEqual(rendered_labels().count("#22 P"), 1)
+            pane.set_sweep_line(waterfall_line_from_sweep(terminal(22)))
+            self.app.processEvents()
+            self.assertEqual(pane.history_rows, 22)
+            self.assertEqual(rendered_labels().count("#22 C"), 1)
         finally:
             try:
                 if setup_complete:

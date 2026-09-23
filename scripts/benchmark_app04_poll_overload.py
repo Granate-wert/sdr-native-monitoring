@@ -370,6 +370,8 @@ def main():
     parser.add_argument("--stop-phase", choices=("any", "idle", "poll-only", "projection-only"), default="any")
     parser.add_argument("--qt-platform", choices=("offscreen", "windows"), default="offscreen")
     parser.add_argument("--window-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"), default=(1920, 1080))
+    parser.add_argument("--waterfall-direction", choices=("top", "bottom"), default="top",
+                        help="Presentation-only newest-row position; default preserves prior top-direction runs")
     parser.add_argument("--expected-dpr", type=float,
                         help="Expected actual Windows Qt DPR for a fixed-target gate")
     parser.add_argument("--producer-phase-ms", type=float, default=2,
@@ -414,6 +416,7 @@ def main():
     from PySide6.QtCore import QTimer, Qt
     from sdr_monitor.services.native_continuous_sweep import NativeContinuousSweepDisplayService
     from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
+    from sdr_monitor.ui.v2.waterfall import WaterfallDirection
     from sdr_monitor.ui.v2.state.prepared_sweep import SweepSnapshotPreparer
     from sdr_monitor.ui.v2.spectrum import projection
     from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
@@ -660,6 +663,13 @@ def main():
                 presenter = harness.composition.analyzer_presenter
                 scene = page.visualization.spectrum_scene
                 waterfall = page.visualization.waterfall_pane
+                requested_direction = (WaterfallDirection.NEWEST_AT_BOTTOM
+                                       if args.waterfall_direction == "bottom"
+                                       else WaterfallDirection.NEWEST_AT_TOP)
+                if args.waterfall_direction == "bottom":
+                    waterfall.set_direction(requested_direction)
+                if waterfall.config.direction is not requested_direction:
+                    raise AssertionError("requested Waterfall direction was not applied")
                 display_metadata = qt_display_metadata(harness.shell, harness.app, scene, waterfall,
                     requested_size=args.window_size, requested_platform=args.qt_platform)
                 if args.qt_platform == "windows" and (display_metadata["actual_platform"] != "windows"
@@ -870,6 +880,7 @@ def main():
                     post_close_reserved_bytes=None,
                     page_switches=len(page_switches),
                     waterfall_rows=page.visualization.waterfall_pane.history_rows,
+                    waterfall_direction=waterfall.config.direction.value,
                     memory_samples=memory_samples,
                     device_pixel_ratio=harness.shell.devicePixelRatioF(),
                     qt_display_environment=display_metadata))
@@ -902,6 +913,7 @@ def main():
         age_scope="host synthetic publication to first paint return; newest uploaded Waterfall row; same-key both is not atomic/DWM/RF age",
         phase_scope="event observation time; startup/resume first250ms, hidden, steady, Stop through terminal acknowledgement; counts include successful calls, not distinct RF frames; return counts are not additive pipeline timings",
         requested_stop_phase=args.stop_phase,
+        requested_waterfall_direction=args.waterfall_direction,
         terminal_every=args.terminal_every,
         producer_phase_ms=args.producer_phase_ms,
         progressive_stage_gate=args.progressive_stage_gate,

@@ -97,6 +97,34 @@ class WaterfallTimeAxis(pg.AxisItem):
             previous = padded
         return axis_spec, tick_specs, retained
 
+    def tickValues(self, minVal: float, maxVal: float, size: float):
+        """Offer the actual latest Sweep row at the highest text level.
+
+        Automatic nice-number ticks can omit the last row, especially when
+        new rows are anchored at the bottom. Promotion changes only the axis
+        proposal; overlap culling still decides what can be painted.
+        """
+        levels = super().tickValues(minVal, maxVal, size)
+        if (not self._has_sweep_stamps or not self._display_rows
+                or self._sweep_stamps[-1] is None
+                or self.orientation not in ("left", "right") or self.logMode):
+            return levels
+        latest = float(
+            self._row_origin if self._direction is WaterfallDirection.NEWEST_AT_TOP
+            else self._row_origin + self._display_rows - 1
+        )
+        if not min(minVal, maxVal) <= latest <= max(minVal, maxVal):
+            return levels
+        if not levels:
+            return [(1.0, [latest])]
+        spacing, major = levels[0]
+        if latest in major:
+            return levels
+        promoted = [(spacing, sorted([*major, latest]))]
+        promoted.extend((step, [value for value in values if value != latest])
+                        for step, values in levels[1:])
+        return promoted
+
     def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:
         del scale, spacing
         if self._display_rows == 0 or self._capacity_rows == 0:
