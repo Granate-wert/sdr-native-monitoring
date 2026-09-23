@@ -1,10 +1,10 @@
 """Exact immutable density preparation on the existing spectrum executor."""
-from concurrent.futures import CancelledError, ThreadPoolExecutor
-from dataclasses import replace
 import threading
 import unittest
-from unittest.mock import patch
 import weakref
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+from dataclasses import replace
+from unittest.mock import patch
 
 import numpy as np
 from PySide6.QtWidgets import QApplication
@@ -15,11 +15,15 @@ from sdr_monitor.ui.v2.spectrum import projection
 from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2.spectrum.contracts import SpectrumFrameView, TraceKind
 from sdr_monitor.ui.v2.spectrum.persistence_contracts import (
-    DensityValueMode, PersistenceRenderMode, adapt_persistence_density,
+    DensityValueMode,
+    PersistenceRenderMode,
+    adapt_persistence_density,
 )
 from sdr_monitor.ui.v2.spectrum.persistence_projection import (
-    PersistenceImagePolicy, PersistenceImageRequest, prepare_persistence_image,
+    PersistenceImagePolicy,
+    PersistenceImageRequest,
     persistence_image_reserve,
+    prepare_persistence_image,
 )
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
 from tests.ui_v2.test_app05_viewport_projection import ManualWorker
@@ -132,7 +136,7 @@ class PersistenceWorkerTests(unittest.TestCase):
         self.assertEqual(density_worker.persistence_witness_scratch(current.view), 65536 * 8)
         small = request(policy=current.policy)
         self.assertEqual(density_worker.persistence_witness_scratch(small.view), 17 * 8)
-        self.assertEqual(persistence_image_reserve(small), 4 * 16 * 4 + 16 * 13)
+        self.assertEqual(persistence_image_reserve(small), 4 * 16 * 4 + 17 * 8)
         with patch.object(density_worker, "persistence_input_witness", side_effect=AssertionError("Direct must not hash")):
             prepare_persistence_image(request())
 

@@ -7,15 +7,17 @@ mutates the accepted accumulator. Results do not retain a chain of old histories
 The caller must bump policy revision on measurement/epoch reset as well as mode
 or transfer changes, and reject stale source/policy/history before image upload.
 """
-from dataclasses import dataclass
 import hashlib
 import weakref
+from dataclasses import dataclass
 
 import numpy as np
 
 from .cancellation import CancelCheck, check_cancelled
 from .persistence_contracts import (
-    DensityValueMode, PersistenceDensityView, PersistenceRenderMode,
+    DensityValueMode,
+    PersistenceDensityView,
+    PersistenceRenderMode,
     map_density_row_for_display,
 )
 
@@ -160,14 +162,14 @@ def persistence_image_reserve(request: PersistenceImageRequest) -> int:
     """Output plus bounded NumPy mapping/reduction scratch, not Qt/native RSS.
 
     Inputs/accepted history are accounted separately by the shared root ledger.
-    Scratch: finite selection (input itemsize+bool), or Visual mapped/delta/mask/
-    indexed multiplication (13 bytes/cell), each at most IMAGE_BATCH cells.
+    Scratch: finite selection (input itemsize+bool), or Visual mapped image and
+    reusable delta mask (5 bytes/cell), each at most IMAGE_BATCH cells.
     """
     density = request.view.density
     batch = min(IMAGE_BATCH, density.shape[1])
     hash_scratch = (persistence_witness_scratch(request.view)
                     if request.policy.mode is PersistenceRenderMode.VISUAL else 0)
-    return int(density.size * 4 + max(batch * max(13, density.dtype.itemsize + 1), hash_scratch))
+    return int(density.size * 4 + max(batch * max(5, density.dtype.itemsize + 1), hash_scratch))
 
 
 def _compatible_history(request: PersistenceImageRequest) -> np.ndarray | None:
@@ -210,6 +212,8 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
     image = np.empty(view.density.shape, dtype=np.float32)
     scratch = (None if history is None else
                np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.float32))
+    mask = (None if history is None else
+            np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.bool_))
     for row_index, source_row in enumerate(view.density):
         for first in range(0, source_row.size, IMAGE_BATCH):
             check_cancelled(cancelled)
@@ -227,10 +231,13 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                     logarithmic=request.policy.logarithmic, count_maximum=maximum, out=mapped)
             if history is not None:
                 old = history[row_index, first:first + IMAGE_BATCH]
-                delta = mapped - old
-                delta *= .18
-                delta[mapped >= old] *= .65 / .18
-                np.add(old, delta, out=target)
+                assert mask is not None
+                row_mask = mask[:source.size]
+                np.subtract(mapped, old, out=target)
+                np.multiply(target, .18, out=target)
+                np.greater_equal(mapped, old, out=row_mask)
+                np.multiply(target, .65 / .18, out=target, where=row_mask)
+                np.add(old, target, out=target)
     check_cancelled(cancelled)
     image.setflags(write=False)
     return PreparedPersistenceImage(view, request.policy, request.history_revision, image, maximum,
