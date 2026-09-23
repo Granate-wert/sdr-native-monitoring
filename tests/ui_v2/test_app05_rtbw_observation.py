@@ -26,6 +26,67 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_persistence_catchup_requires_exact_uploaded_latest_and_quiescence(self):
+        settled = dict(last_viewmodel_update=12, latest_density_update_sequence=12,
+            uploaded_density_update_sequence=12, latest_view_is_latest_accepted_density=True,
+            latest_view_is_uploaded=True, worker_request_pending=False, pending_view=False)
+        self.assertTrue(OBSERVER.persistence_caught_up(settled, 12))
+        for changes in (
+            {"last_viewmodel_update": 11},
+            {"latest_density_update_sequence": 11},
+            {"uploaded_density_update_sequence": 11},
+            {"latest_view_is_latest_accepted_density": False},
+            {"latest_view_is_uploaded": False},
+            {"worker_request_pending": True},
+            {"pending_view": True},
+        ):
+            with self.subTest(changes=changes):
+                state = settled | changes
+                self.assertFalse(OBSERVER.persistence_caught_up(state, 12))
+
+    def test_persistence_catchup_gate_rejects_missing_or_stale_pulse_evidence(self):
+        pulse = dict(deadline_met=True, no_stale_upload_observed=True,
+            source_publications_during_drain=0, persistence_updates_during_drain=0,
+            target_update_sequence=12, accepted_update_sequence_at_end=12,
+            latest_view_update_sequence_at_end=12, uploaded_update_sequence_at_end=12,
+            final_worker_request_pending=False, final_pending_view=False)
+        self.assertTrue(OBSERVER.persistence_catchup_gate_passed([pulse], 1))
+        for changes in (
+            {"deadline_met": False},
+            {"no_stale_upload_observed": None},
+            {"source_publications_during_drain": 1},
+            {"persistence_updates_during_drain": 1},
+            {"uploaded_update_sequence_at_end": 11},
+            {"final_worker_request_pending": True},
+            {"final_pending_view": True},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(OBSERVER.persistence_catchup_gate_passed([pulse | changes], 1))
+        self.assertFalse(OBSERVER.persistence_catchup_gate_passed([], 1))
+
+    def test_persistence_upload_monotonicity_uses_every_commit_and_counter_delta(self):
+        uploads = [dict(uploaded_update_sequence=11), dict(uploaded_update_sequence=12)]
+        self.assertTrue(OBSERVER.persistence_uploads_monotonic(10, uploads, 12, 2))
+        self.assertFalse(OBSERVER.persistence_uploads_monotonic(10,
+            [dict(uploaded_update_sequence=12), dict(uploaded_update_sequence=11)], 12, 2))
+        self.assertFalse(OBSERVER.persistence_uploads_monotonic(10,
+            [dict(uploaded_update_sequence=None)], 12, 1))
+        self.assertFalse(OBSERVER.persistence_uploads_monotonic(10, uploads, 12, 1))
+
+    def test_persistence_upload_event_boundary_uses_counter_snapshots(self):
+        events = [dict(counter=8), dict(counter=9), dict(counter=10), dict(counter=11)]
+        self.assertEqual(OBSERVER.persistence_upload_events_since_counter(events, 8, 10),
+            events[1:3])
+
+    def test_persistence_catchup_failure_is_nonzero_after_report_can_be_written(self):
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code({}), 0)
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_catchup": {"freshness_gate_passed": True}}), 0)
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_catchup": {"freshness_gate_passed": False}}), 1)
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_catchup": {"freshness_gate_passed": None}}), 1)
+
     def test_synthetic_persistence_is_coherent_normalized_owned_and_not_future(self):
         from sdr_monitor.domain.live import LiveSpectrumFrame, LiveSnapshot, LiveSessionState
         from sdr_monitor.domain.analyzer import bundle_from_live
@@ -94,6 +155,17 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("--persistence-abba requires --qt-platform windows", result.stderr)
+
+    def test_persistence_catchup_rejects_offscreen_before_qt_startup(self):
+        with TemporaryDirectory(prefix="app05-catchup-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--qt-platform", "offscreen", "--persistence-catchup",
+                "--persistence-power-bins", "32", "--persistence-display", "visual"], cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--persistence-catchup requires --qt-platform windows", result.stderr)
 
     def test_stop_phase_preserves_queued_running_done_and_cancelled_without_mutation(self):
         future = Future()

@@ -10,6 +10,9 @@ only after an actual image upload, never from a newer hidden ring admission.
 Two paints of the same token count once; both is same-token, not atomic display.
 Control callbacks are Qt-timer delivered programmatic clicks, not OS events.
 The optional fake driver delay keeps the producer active until worker Stop.
+The optional persistence catch-up pulse pauses only synthetic publications while
+the Live owner and Qt event loop remain active; its bounded drain is not a Live
+stop, per-update delivery guarantee, native persistence rate or RF evidence.
 Real QEventLoop runs acquisition observation and owner close/deferred deletes.
 Timeouts are GUI observations, not a hard watchdog for a blocked driver.
 Optional memory sampling perturbs timings; such runs are NOT latency baselines.
@@ -56,6 +59,55 @@ def paint_phase(control_phase, visible, now, resumed_until):
     if not visible:
         return "hidden"
     return "resume" if now < resumed_until else "steady"
+
+
+def persistence_caught_up(state, target_update_sequence):
+    """Require exact latest accepted density to be the uploaded image and idle."""
+    return bool(
+        state["last_viewmodel_update"] == target_update_sequence
+        and state["latest_density_update_sequence"] == target_update_sequence
+        and state["uploaded_density_update_sequence"] == target_update_sequence
+        and state["latest_view_is_latest_accepted_density"]
+        and state["latest_view_is_uploaded"]
+        and not state["worker_request_pending"]
+        and not state["pending_view"]
+    )
+
+
+def persistence_catchup_gate_passed(pulses, requested_repetitions):
+    """Require every frozen pulse to settle exactly, monotonically and on time."""
+    return bool(len(pulses) == requested_repetitions and all(
+        pulse["deadline_met"]
+        and pulse["no_stale_upload_observed"] is True
+        and pulse["source_publications_during_drain"] == 0
+        and pulse["persistence_updates_during_drain"] == 0
+        and pulse["accepted_update_sequence_at_end"] == pulse["target_update_sequence"]
+        and pulse["latest_view_update_sequence_at_end"] == pulse["target_update_sequence"]
+        and pulse["uploaded_update_sequence_at_end"] == pulse["target_update_sequence"]
+        and not pulse["final_worker_request_pending"]
+        and not pulse["final_pending_view"]
+        for pulse in pulses))
+
+
+def persistence_uploads_monotonic(start_sequence, events, end_sequence, expected_uploads):
+    """Validate every successful ImageItem commit, not sampled timer snapshots."""
+    sequences = [start_sequence]
+    sequences.extend(event.get("uploaded_update_sequence") for event in events)
+    sequences.append(end_sequence)
+    return bool(len(events) == expected_uploads
+        and all(isinstance(sequence, int) for sequence in sequences)
+        and all(after >= before for before, after in zip(sequences, sequences[1:])))
+
+
+def persistence_upload_events_since_counter(events, start_counter, end_counter):
+    """Use the GUI-observed counter snapshot as the exact event-log boundary."""
+    return [event for event in events if start_counter < event["counter"] <= end_counter]
+
+
+def persistence_catchup_exit_code(result):
+    """Keep a failed catch-up report on disk, but never return success for it."""
+    catchup = result.get("persistence_catchup")
+    return 0 if catchup is None or catchup.get("freshness_gate_passed") is True else 1
 
 
 def _rect_xywh(rect):
@@ -178,6 +230,12 @@ def main(argv=None):
                         help="Select the actual V2 persistence rendering policy for normal paint profiling")
     parser.add_argument("--persistence-abba", action="store_true",
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
+    parser.add_argument("--persistence-catchup", action="store_true",
+                        help="Visible Visual-only burst/freeze/drain freshness pulse; --seconds is each burst")
+    parser.add_argument("--catchup-repetitions", type=int, default=3,
+                        help="Independent synthetic burst/freeze/drain pulses; default 3")
+    parser.add_argument("--catchup-deadline-ms", type=int, default=1000,
+                        help="Predeclared maximum Qt-observed quiescent drain time per pulse; default 1000ms")
     parser.add_argument("--abba-warmup-updates", type=int, default=8,
                         help="Fresh accepted AND uploaded persistence updates to wait after Start/mode change")
     parser.add_argument("--abba-warmup-seconds", type=float, default=1.0,
@@ -213,6 +271,10 @@ def main(argv=None):
         parser.error("the visible Windows Qt platform is available only on Windows")
     if args.persistence_abba and args.qt_platform != "windows":
         parser.error("--persistence-abba requires --qt-platform windows")
+    if args.persistence_catchup and args.qt_platform != "windows":
+        parser.error("--persistence-catchup requires --qt-platform windows")
+    if args.persistence_abba and args.persistence_catchup:
+        parser.error("--persistence-abba and --persistence-catchup are separate experiments")
     if args.persistence_abba and (args.cycles != 1 or not args.persistence_power_bins
             or args.persistence_display != "direct"
             or args.page_seconds or args.viewport_seconds or args.driver_stop_ms
@@ -221,6 +283,16 @@ def main(argv=None):
     if args.persistence_abba and (args.seconds > 120 or not 1 <= args.abba_warmup_updates <= 1000
             or not 0 <= args.abba_warmup_seconds <= 60):
         parser.error("ABBA steady blocks must be <=120s; warm-up updates 1..1000 and seconds 0..60")
+    if args.persistence_catchup and (args.cycles != 1 or not args.persistence_power_bins
+            or args.persistence_display != "visual" or args.page_seconds or args.viewport_seconds
+            or args.driver_stop_ms or args.stop_phase != "any" or args.memory_seconds
+            or args.collect_after_context):
+        parser.error("persistence catch-up requires one Visual session with generated persistence and no churn, delayed Stop, or memory sampling")
+    if args.persistence_catchup and (args.seconds > 30 or not 1 <= args.catchup_repetitions <= 10
+            or not 50 <= args.catchup_deadline_ms <= 10000
+            or not 1 <= args.abba_warmup_updates <= 1000
+            or not 0 <= args.abba_warmup_seconds <= 60):
+        parser.error("catch-up requires bursts <=30s, repetitions 1..10, deadline 50..10000ms, and warm-up updates 1..1000 / seconds 0..60")
     if args.capture_window and args.qt_platform != "windows":
         parser.error("--capture-window requires --qt-platform windows")
     capture_path = args.output.with_suffix(".png")
@@ -245,6 +317,7 @@ def main(argv=None):
     from PySide6.QtCore import QTimer, Qt
     from sdr_monitor.domain.live import LiveSpectrumFrame
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
+    from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
     from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
     from scripts.benchmark_app04_poll_overload import PaintAgeTracker, run_qt_until
     from tests.test_app01_product_analyzer import _AtomicFakeLive
@@ -267,10 +340,17 @@ def main(argv=None):
     generated = page_changes = viewport_changes = 0
     persistence_generated = persistence_accepted = last_persistence_accepted = 0
     last_persistence_density_identity = None
+    persistence_density_sequence_by_identity = {}
+    persistence_identity_order = deque()
+    persistence_generated_at, persistence_accepted_at = {}, {}
+    persistence_upload_probe = dict(overlay=None, events=None)
+    persistence_generated_order = deque()
     producer = None
     halt = threading.Event()
+    producer_pause_requested, producer_paused = threading.Event(), threading.Event()
     snapshot_lock = threading.RLock()
     original_upload = WaterfallPane._upload_tiles
+    original_accept_persistence_image = PersistenceOverlay.accept_worker_image
     original_start_method, original_stop_method = _AtomicFakeLive.start, _AtomicFakeLive.stop
     control = {}
     control_phase, resumed_until = "idle", 0.0
@@ -291,6 +371,7 @@ def main(argv=None):
         for name in abba_order}
     abba_warmups, abba_transitions = [], []
     source_session = {}
+    persistence_catchup = None
     phase_ages = {phase: {name: deque(maxlen=timing_capacity) for name in age.ages}
                   for phase in ("starting", "stopping", "idle", "hidden", "resume", "steady")}
     phase_counts = {phase: dict.fromkeys(age.ages, 0) for phase in phase_ages}
@@ -309,6 +390,23 @@ def main(argv=None):
         before = pane.metrics.image_uploads
         original_upload(pane)
         upload_tokens[id(pane)] = uploaded_key(pane, before, upload_tokens.get(id(pane)))
+
+    def accept_persistence_image(overlay, request, result, error):
+        before = overlay.metrics.image_uploads
+        accepted = original_accept_persistence_image(overlay, request, result, error)
+        events = persistence_upload_probe["events"]
+        if (overlay is persistence_upload_probe["overlay"] and events is not None
+                and overlay.metrics.image_uploads > before):
+            latest = overlay.latest_view
+            events.append(dict(perf_time=perf_counter(), counter=overlay.metrics.image_uploads,
+                uploaded_update_sequence=persistence_density_sequence_by_identity.get(
+                    id(overlay._uploaded_density)),
+                latest_update_sequence=(None if latest is None else
+                    persistence_density_sequence_by_identity.get(id(latest.density))),
+                accepted_update_sequence=last_persistence_accepted,
+                worker_request_pending=overlay.worker_request is not None,
+                pending_view=overlay._pending_view is not None))
+        return accepted
 
     def source_publication_time(key):
         with age.lock:
@@ -353,6 +451,7 @@ def main(argv=None):
 
     with patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), \
          patch.object(WaterfallPane, "_upload_tiles", upload), \
+         patch.object(PersistenceOverlay, "accept_worker_image", accept_persistence_image), \
          patch.object(_AtomicFakeLive, "start", dispatch_start), \
          patch.object(_AtomicFakeLive, "stop", dispatch_stop):
         f = AnalyzerWorkspaceProductTests("runTest")
@@ -376,6 +475,7 @@ def main(argv=None):
             f.shell.resize(*args.window_size)
             scene, waterfall = f.page.visualization.spectrum_scene, f.page.visualization.waterfall_pane
             scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence_display))
+            persistence_upload_probe["overlay"] = scene._persistence
 
             def observe_density(state):
                 nonlocal persistence_accepted, last_persistence_accepted, last_persistence_density_identity
@@ -393,6 +493,15 @@ def main(argv=None):
                     persistence_accepted += 1
                     last_persistence_accepted = int(raw.update_sequence)
                     last_persistence_density_identity = id(density.density)
+                    persistence_accepted_at[last_persistence_accepted] = perf_counter()
+                    persistence_density_sequence_by_identity[last_persistence_density_identity] = last_persistence_accepted
+                    persistence_identity_order.append((last_persistence_density_identity, last_persistence_accepted))
+                    while len(persistence_identity_order) > 2048:
+                        old_identity, old_sequence = persistence_identity_order.popleft()
+                        if persistence_density_sequence_by_identity.get(old_identity) == old_sequence:
+                            del persistence_density_sequence_by_identity[old_identity]
+                        persistence_generated_at.pop(old_sequence, None)
+                        persistence_accepted_at.pop(old_sequence, None)
                     if abba_current_block is not None:
                         abba_blocks[abba_current_block]["persistence_update_sequences"].append(
                             last_persistence_accepted)
@@ -415,18 +524,27 @@ def main(argv=None):
                     live_snapshot_acquisition_epoch=getattr(snapshot, "acquisition_epoch", None),
                     receiver_id=getattr(snapshot, "receiver_id", None),
                     source_id="fake-pluto-usb",
-                    synthetic_frame_receiver_id="synthetic-receiver" if args.persistence_abba else None,
-                    synthetic_frame_acquisition_epoch=start_count if args.persistence_abba else None,
+                    synthetic_frame_receiver_id="synthetic-receiver"
+                        if args.persistence_abba or args.persistence_catchup else None,
+                    synthetic_frame_acquisition_epoch=start_count
+                        if args.persistence_abba or args.persistence_catchup else None,
                     validated_display_frames=0)
                 with snapshot_lock:
                     f.live._snapshot = snapshot
                 halt.clear()
+                producer_pause_requested.clear()
+                producer_paused.clear()
                 def produce():
                     nonlocal generated, persistence_generated
                     cycle_frames = 0
                     density = None
                     try:
                         while not halt.is_set():
+                            if producer_pause_requested.is_set():
+                                producer_paused.set()
+                                halt.wait(.005)
+                                continue
+                            producer_paused.clear()
                             generated += 1
                             cycle_frames += 1
                             frame = LiveSpectrumFrame(sequence=generated, timestamp_ns=generated,
@@ -439,6 +557,10 @@ def main(argv=None):
                                 persistence_generated += 1
                                 density = synthetic_persistence(frame, args.persistence_power_bins,
                                     persistence_generated, min(cycle_frames, 4))
+                                persistence_generated_at[persistence_generated] = perf_counter()
+                                persistence_generated_order.append(persistence_generated)
+                                if len(persistence_generated_order) > 4096:
+                                    persistence_generated_at.pop(persistence_generated_order.popleft(), None)
                             offered = replace(snapshot, sequence=generated, spectrum=frame, persistence=density)
                             with snapshot_lock:
                                 age.publish(rtbw_key(frame.timestamp_ns, frame.config_generation), perf_counter())
@@ -479,7 +601,7 @@ def main(argv=None):
                 frame = bundle.spectrum
                 if frame.source_id != "fake-pluto-usb":
                     raise AssertionError("unexpected source on measured canvas")
-                if args.persistence_abba:
+                if args.persistence_abba or args.persistence_catchup:
                     expected = (source_session.get("config_generation"),
                                 source_session.get("synthetic_frame_receiver_id"),
                                 source_session.get("synthetic_frame_acquisition_epoch"))
@@ -574,9 +696,15 @@ def main(argv=None):
             def persistence_state():
                 overlay = scene._persistence
                 latest = overlay.latest_view
+                latest_sequence = (None if latest is None else
+                    persistence_density_sequence_by_identity.get(id(latest.density)))
+                uploaded_sequence = (None if overlay._uploaded_density is None else
+                    persistence_density_sequence_by_identity.get(id(overlay._uploaded_density)))
                 persistence_projector = getattr(scene._projector, "persistence_projector", None)
                 return dict(mode=overlay.render_mode.value,
                     last_viewmodel_update=last_persistence_accepted,
+                    latest_density_update_sequence=latest_sequence,
+                    uploaded_density_update_sequence=uploaded_sequence,
                     latest_view_is_latest_accepted_density=bool(latest is not None
                         and id(latest.density) == last_persistence_density_identity),
                     latest_view_is_uploaded=bool(latest is not None
@@ -735,8 +863,212 @@ def main(argv=None):
                         driver_entries[-1][0] + args.driver_stop_ms / 1000 for beat in beats)))
                 control_phase = "idle"
 
+            def run_visible_persistence_catchup():
+                nonlocal control_phase, resumed_until
+                mode = PersistenceRenderMode.VISUAL
+                if scene._persistence.render_mode is not mode:
+                    raise AssertionError("persistence catch-up pulse requires Visual mode")
+                f.shell.select_workspace("analyzer")
+                control_phase = "starting"
+                f.page.primary.click()
+                run_qt_until(lambda: checked(lambda: f.live.is_running()
+                    and not f.composition.view_model.state.busy), 5)
+                control_phase = "running"
+                resumed_until = perf_counter() + .25
+                warmups = [wait_for_persistence_warmup("catchup-start", mode,
+                    last_persistence_accepted, scene._persistence.metrics.image_uploads)]
+                pulses = []
+
+                for pulse_index in range(args.catchup_repetitions):
+                    burst_started = perf_counter()
+                    generated_start = generated
+                    accepted_start = last_persistence_accepted
+                    uploads_start = scene._persistence.metrics.image_uploads
+                    due = burst_started + args.seconds
+                    run_qt_until(lambda: checked(lambda: perf_counter() >= due), args.seconds + 5)
+
+                    upload_event_log = []
+                    persistence_upload_probe["events"] = upload_event_log
+                    pause_requested_at = perf_counter()
+                    producer_pause_requested.set()
+                    run_qt_until(lambda: checked(producer_paused.is_set), 2)
+                    pause_acknowledged_at = perf_counter()
+                    generated_at_pause = generated
+                    persistence_generated_at_pause = persistence_generated
+                    with snapshot_lock:
+                        frozen_snapshot = f.live.latest_snapshot()
+                    frozen_frame = frozen_snapshot.persistence
+                    if frozen_frame is None:
+                        raise AssertionError("producer freeze has no synthetic persistence frame")
+                    target_update = int(frozen_frame.update_sequence)
+                    if target_update != persistence_generated_at_pause:
+                        raise AssertionError(("frozen persistence sequence mismatch",
+                            target_update, persistence_generated_at_pause))
+
+                    state_at_pause = persistence_state()
+                    drain_started_at = perf_counter()
+                    uploads_at_pause = state_at_pause["image_uploads"]
+                    poll_count = 0
+
+                    def catchup_poll():
+                        nonlocal poll_count
+                        state = persistence_state()
+                        poll_count += 1
+                        return persistence_caught_up(state, target_update)
+
+                    settled = False
+                    try:
+                        run_qt_until(lambda: checked(catchup_poll), args.catchup_deadline_ms / 1000)
+                        settled = True
+                    except TimeoutError:
+                        # A censored observation is valid evidence; do not turn it into
+                        # a successful run or silently extend the preregistered bound.
+                        catchup_poll()
+                    settled_at = perf_counter()
+                    state_at_end = persistence_state()
+                    generated_during_drain = generated - generated_at_pause
+                    persistence_generated_during_drain = persistence_generated - persistence_generated_at_pause
+                    exact_drain_events = persistence_upload_events_since_counter(upload_event_log,
+                        uploads_at_pause, state_at_end["image_uploads"])
+                    upload_observations = [dict(
+                        at_ms=(event["perf_time"] - drain_started_at) * 1000,
+                        counter=event["counter"],
+                        uploaded_update_sequence=event["uploaded_update_sequence"],
+                        latest_update_sequence=event["latest_update_sequence"],
+                        accepted_update_sequence=event["accepted_update_sequence"],
+                        worker_request_pending=event["worker_request_pending"],
+                        pending_view=event["pending_view"])
+                        for event in exact_drain_events]
+                    persistence_upload_probe["events"] = None
+                    if generated_during_drain or persistence_generated_during_drain:
+                        raise AssertionError(("synthetic source advanced after pause acknowledgement",
+                            generated_during_drain, persistence_generated_during_drain))
+
+                    upload_count_during_drain = max(0,
+                        state_at_end["image_uploads"] - uploads_at_pause)
+                    no_stale_upload_observed = persistence_uploads_monotonic(
+                        state_at_pause["uploaded_density_update_sequence"], upload_observations,
+                        state_at_end["uploaded_density_update_sequence"], upload_count_during_drain)
+                    accepted_at_target = persistence_accepted_at.get(target_update)
+                    generated_at_target = persistence_generated_at.get(target_update)
+                    pulses.append(dict(
+                        repetition=pulse_index + 1,
+                        mode=mode.value,
+                        burst_duration_ms=(pause_acknowledged_at - burst_started) * 1000,
+                        source_publications=dict(count=generated_at_pause - generated_start,
+                            rate_hz=(generated_at_pause - generated_start) /
+                                max(.001, pause_acknowledged_at - burst_started)),
+                        accepted_updates_during_burst=max(0, state_at_pause["last_viewmodel_update"] - accepted_start),
+                        image_uploads_during_burst=max(0, uploads_at_pause - uploads_start),
+                        pause_request_to_ack_ms=(pause_acknowledged_at - pause_requested_at) * 1000,
+                        target_update_sequence=target_update,
+                        accepted_update_sequence_at_freeze=state_at_pause["last_viewmodel_update"],
+                        latest_view_update_sequence_at_freeze=state_at_pause["latest_density_update_sequence"],
+                        uploaded_update_sequence_at_freeze=state_at_pause["uploaded_density_update_sequence"],
+                        sequence_lag_at_freeze=(None if state_at_pause["uploaded_density_update_sequence"] is None
+                            else target_update - state_at_pause["uploaded_density_update_sequence"]),
+                        pause_ack_to_state_ms=(drain_started_at - pause_acknowledged_at) * 1000,
+                        freeze_to_settled_ms=(settled_at - drain_started_at) * 1000,
+                        pause_ack_to_settled_ms=(settled_at - pause_acknowledged_at) * 1000,
+                        generated_to_settled_ms=(None if generated_at_target is None else
+                            (settled_at - generated_at_target) * 1000),
+                        accepted_to_settled_ms=(None if accepted_at_target is None else
+                            (settled_at - accepted_at_target) * 1000),
+                        deadline_ms=args.catchup_deadline_ms,
+                        deadline_met=settled,
+                        poll_count=poll_count,
+                        poll_interval_ms=5,
+                        upload_count_during_drain=upload_count_during_drain,
+                        exact_upload_event_count=len(upload_observations),
+                        upload_event_count_matches_counter=(len(upload_observations)
+                            == upload_count_during_drain),
+                        accepted_updates_during_drain=max(0,
+                            state_at_end["last_viewmodel_update"] -
+                            state_at_pause["last_viewmodel_update"]),
+                        upload_observations=upload_observations,
+                        accepted_update_sequence_at_end=state_at_end["last_viewmodel_update"],
+                        latest_view_update_sequence_at_end=state_at_end["latest_density_update_sequence"],
+                        uploaded_update_sequence_at_end=state_at_end["uploaded_density_update_sequence"],
+                        sequence_lag_at_end=(None if state_at_end["uploaded_density_update_sequence"] is None
+                            else target_update - state_at_end["uploaded_density_update_sequence"]),
+                        no_stale_upload_observed=no_stale_upload_observed,
+                        source_publications_during_drain=generated_during_drain,
+                        persistence_updates_during_drain=persistence_generated_during_drain,
+                        final_latest_is_uploaded=state_at_end["latest_view_is_uploaded"],
+                        final_worker_request_pending=state_at_end["worker_request_pending"],
+                        final_pending_view=state_at_end["pending_view"],
+                        final_state=state_at_end))
+
+                    if not settled:
+                        break
+                    if pulse_index + 1 < args.catchup_repetitions:
+                        pause_baseline_update = last_persistence_accepted
+                        pause_baseline_uploads = scene._persistence.metrics.image_uploads
+                        producer_pause_requested.clear()
+                        warmups.append(wait_for_persistence_warmup(
+                            f"catchup-resume-{pulse_index + 1}", mode,
+                            pause_baseline_update, pause_baseline_uploads))
+
+                if producer is None or not producer.is_alive():
+                    raise AssertionError("producer ended before catch-up Stop")
+                if producer_pause_requested.is_set():
+                    resume_baseline = generated
+                    producer_pause_requested.clear()
+                    run_qt_until(lambda: checked(lambda: generated > resume_baseline), 2)
+
+                end_snapshot = f.live.latest_snapshot()
+                end_live_epoch = getattr(end_snapshot, "acquisition_epoch", None)
+                start_live_epoch = source_session.get("live_snapshot_acquisition_epoch")
+                if (end_snapshot.generation != source_session.get("config_generation")
+                        or (start_live_epoch is not None and end_live_epoch != start_live_epoch)):
+                    raise AssertionError("source configuration/epoch changed during catch-up pulses")
+                if (source_session.get("synthetic_frame_acquisition_epoch") is None
+                        or source_session.get("validated_display_frames", 0) == 0):
+                    raise AssertionError("no explicit synthetic frame receiver/epoch was validated")
+                source_session.update(end_config_generation=end_snapshot.generation,
+                    end_live_snapshot_acquisition_epoch=end_live_epoch,
+                    live_snapshot_epoch_comparable=start_live_epoch is not None,
+                    final_publication_sequence=generated)
+
+                stop_entered = perf_counter()
+                stop_phase_observed = stop_phase(f.presenter, f.composition.spectrum_projector)
+                control_phase = "stopping"
+                f.page.primary.click()
+                click_returned = perf_counter()
+                run_qt_until(lambda: checked(lambda: not f.live.is_running()
+                    and not f.composition.view_model.state.busy), 5)
+                idle = perf_counter()
+                if len(driver_entries) != 1 or len(driver_returns) != 1 or producer.is_alive():
+                    raise AssertionError("catch-up must stop exactly one synthetic Live producer once")
+                stops.append(dict(cycle=0, producer_active_at_intent=True,
+                    phase_at_intent=stop_phase_observed, phase_observations=1,
+                    generated_at_intent=generated, generated_at_idle=generated,
+                    timer_lateness_ms=0.0, click_return_ms=(click_returned - stop_entered) * 1000,
+                    intent_to_worker_ms=(driver_entries[-1][0] - stop_entered) * 1000,
+                    driver_elapsed_ms=(driver_returns[-1] - driver_entries[-1][0]) * 1000,
+                    driver_return_to_idle_ms=(idle - driver_returns[-1]) * 1000,
+                    intent_to_idle_ms=(idle - stop_entered) * 1000,
+                    worker_off_gui=driver_entries[-1][1],
+                    heartbeat_ticks_during_driver_delay=sum(driver_entries[-1][0] < beat <
+                        driver_entries[-1][0] + args.driver_stop_ms / 1000 for beat in beats)))
+                control_phase = "idle"
+                freshness_gate_passed = persistence_catchup_gate_passed(
+                    pulses, args.catchup_repetitions)
+                return dict(mode=mode.value, requested_repetitions=args.catchup_repetitions,
+                    completed_repetitions=len(pulses), burst_seconds=args.seconds,
+                    deadline_ms=args.catchup_deadline_ms, warmups=warmups, pulses=pulses,
+                    all_repetitions_settled=(len(pulses) == args.catchup_repetitions
+                        and all(pulse["deadline_met"] for pulse in pulses)),
+                    freshness_gate_passed=freshness_gate_passed,
+                    source_session=dict(source_session, events=list(f.events), start_stop_count=len(stops)),
+                    observation_scope="Visual-only synthetic publication freeze; Live owner/Qt loop remain active. Deadline is polled by a 5ms Qt timer and is not a hard watchdog. ImageItem upload identity is verified, not actual paint/DWM scanout. Intermediate persistence updates may be coalesced; no RF/DSP/LPS claim.")
+
             with patch.dict(control, start=start, stop=stop):
-                if args.persistence_abba:
+                if args.persistence_catchup:
+                    persistence_catchup = run_visible_persistence_catchup()
+                    if f.events != ["rtbw-start", "rtbw-stop"]:
+                        raise AssertionError(f"catch-up unexpectedly started/stopped more than once: {f.events}")
+                elif args.persistence_abba:
                     run_visible_abba()
                     if f.events != ["rtbw-start", "rtbw-stop"]:
                         raise AssertionError(f"ABBA unexpectedly started/stopped more than once: {f.events}")
@@ -897,6 +1229,8 @@ def main(argv=None):
                         frame_identity_scope="Explicit synthetic receiver/epoch labels attached to each observed LiveSpectrumFrame; not physical SDR provenance."),
                     interpretation="One synthetic Live session, Direct A1 -> Visual B1/B2 -> Direct A2. B1/B2 are contiguous halves of one Visual interval, not independent replications. Mode changes, accepted/uploaded update catch-up and declared warm-up are recorded separately and excluded from steady samples.",
                     limitations="Visible Windows Qt QWidget paint/heartbeat on one host display. Synthetic constant spectrum and rolling histogram only; not DWM/compositor scanout, SDR/RF/LPS, visual smoothing fidelity, physical FHD/QHD coverage, or a general performance acceptance.")
+            if args.persistence_catchup:
+                report["persistence_catchup"] = persistence_catchup
             report["requested_stop_phase"] = args.stop_phase
             report["stop_phase_scope"] = "Instantaneous GUI-side Future observation before click; worker may finish before click. Phase wait is in timer_lateness, not intent_to_idle. No worker barrier/driver deadline."
             phase_names = sorted({(s["phase_at_intent"]["preparation"], s["phase_at_intent"]["projection"])
@@ -996,3 +1330,5 @@ if __name__ == "__main__":
     with output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
     print(json.dumps(result))
+    if persistence_catchup_exit_code(result):
+        raise SystemExit(1)
