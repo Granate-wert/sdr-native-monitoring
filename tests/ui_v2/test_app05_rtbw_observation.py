@@ -26,6 +26,38 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_fixed_qt_target_detects_mid_block_drift_even_after_restore(self):
+        target = dict(actual_platform="windows", qt_widget_visible=True,
+            actual_window_geometry_logical=[0, 0, 1400, 850], screen_name="monitor-1",
+            screen_geometry_logical=[0, 0, 1440, 960], screen_device_pixel_ratio=1.75,
+            screen_logical_dpi=168.0, spectrum_canvas_logical_size=[1390, 360],
+            spectrum_canvas_dpr=1.75, spectrum_plot_scene_rect=[0, 0, 1300, 320],
+            waterfall_canvas_logical_size=[1390, 360], waterfall_canvas_dpr=1.75,
+            waterfall_plot_scene_rect=[0, 0, 1300, 320])
+        self.assertTrue(OBSERVER.fixed_qt_target_matches(target, (1400, 850), 1.75))
+        for change in (
+            {"actual_window_geometry_logical": [0, 0, 1399, 850]},
+            {"screen_device_pixel_ratio": 1.5},
+            {"waterfall_canvas_dpr": 1.5},
+            {"spectrum_plot_scene_rect": [0, 0, 1300, 0]},
+            {"qt_widget_visible": False},
+        ):
+            with self.subTest(change=change):
+                self.assertFalse(OBSERVER.fixed_qt_target_matches(
+                    target | change, (1400, 850), 1.75))
+        witness = OBSERVER.QtTargetWitness((1400, 850), 1.75)
+        witness.observe(target, 0.0)
+        witness.observe(target | {"waterfall_plot_scene_rect": [0, 0, 1299, 320]}, 1.0)
+        witness.observe(target, 2.0)
+        report = witness.report()
+        self.assertFalse(report["gate_passed"])
+        self.assertEqual(report["samples"], 3)
+        self.assertEqual(report["drift_samples"], 1)
+        self.assertEqual(report["invalid_samples"], 0)
+        self.assertEqual(report["first"], report["last"])
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_abba": {"fixed_qt_target_gate_passed": False}}), 1)
+
     def test_first_paint_cadence_exposes_stall_hidden_by_painted_frame_age(self):
         cadence = OBSERVER.FirstPaintCadence(8)
         for when in (.1, .2, 2.2, 2.3):
@@ -415,6 +447,16 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("--max-unique-paint-gap-ms requires ABBA", result.stderr)
+
+    def test_fixed_qt_target_requires_explicit_matched_visible_run(self):
+        with TemporaryDirectory(prefix="app05-qt-target-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--expected-dpr", "1.75"], cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--expected-dpr requires visible Windows ABBA", result.stderr)
 
     def test_persistence_catchup_rejects_offscreen_before_qt_startup(self):
         with TemporaryDirectory(prefix="app05-catchup-validation-") as temporary:

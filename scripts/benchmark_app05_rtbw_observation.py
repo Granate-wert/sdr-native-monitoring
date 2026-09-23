@@ -354,7 +354,8 @@ def persistence_catchup_exit_code(result):
     """Keep failed opt-in gate reports on disk, but never return success for them."""
     abba = result.get("persistence_abba")
     if abba is not None and (abba.get("sample_integrity_gate_passed") is False
-                             or abba.get("first_paint_cadence_gate_passed") is False):
+                             or abba.get("first_paint_cadence_gate_passed") is False
+                             or abba.get("fixed_qt_target_gate_passed") is False):
         return 1
     catchup = result.get("persistence_catchup")
     if catchup is not None and catchup.get("freshness_gate_passed") is not True:
@@ -428,6 +429,61 @@ def qt_display_metadata(shell, app, scene, waterfall, *, requested_size, request
         waterfall_plot_estimated_physical_size=[round(water_rect.width() * water.devicePixelRatioF()),
                                                 round(water_rect.height() * water.devicePixelRatioF())],
         scope="Qt widget/window paint target only; not DWM/compositor scanout or SDR cadence")
+
+
+_QT_TARGET_FIELDS = (
+    "actual_platform", "qt_widget_visible", "actual_window_geometry_logical",
+    "screen_name", "screen_geometry_logical", "screen_device_pixel_ratio",
+    "screen_logical_dpi", "spectrum_canvas_logical_size", "spectrum_canvas_dpr",
+    "spectrum_plot_scene_rect", "waterfall_canvas_logical_size", "waterfall_canvas_dpr",
+    "waterfall_plot_scene_rect")
+
+
+def qt_target_signature(metadata):
+    """Retain only actual Qt target facts that must remain fixed during ABBA."""
+    return {field: metadata[field] for field in _QT_TARGET_FIELDS}
+
+
+def fixed_qt_target_matches(signature, requested_size, expected_dpr):
+    return bool(signature["actual_platform"] == "windows"
+        and signature["qt_widget_visible"]
+        and signature["actual_window_geometry_logical"][2:] == list(requested_size)
+        and all(signature[field] == expected_dpr for field in (
+            "screen_device_pixel_ratio", "spectrum_canvas_dpr", "waterfall_canvas_dpr"))
+        and all(all(size > 0 for size in signature[field]) for field in (
+            "spectrum_canvas_logical_size", "waterfall_canvas_logical_size"))
+        and all(all(size > 0 for size in signature[field][2:]) for field in (
+            "spectrum_plot_scene_rect", "waterfall_plot_scene_rect")))
+
+
+class QtTargetWitness:
+    """Bounded sampled target drift; restored geometry does not erase a change."""
+
+    def __init__(self, requested_size, expected_dpr):
+        self.requested_size = requested_size
+        self.expected_dpr = expected_dpr
+        self.first = self.last = None
+        self.sample_count = self.drift_count = self.invalid_count = 0
+        self.changes = []
+
+    def observe(self, signature, when_s):
+        if self.first is None:
+            self.first = signature
+        elif signature != self.first:
+            self.drift_count += 1
+            if len(self.changes) < 16:
+                self.changes.append(dict(at_s=when_s, actual=signature))
+        if not fixed_qt_target_matches(signature, self.requested_size, self.expected_dpr):
+            self.invalid_count += 1
+        self.last = signature
+        self.sample_count += 1
+
+    def report(self):
+        return dict(first=self.first, last=self.last, samples=self.sample_count,
+            drift_samples=self.drift_count, invalid_samples=self.invalid_count,
+            first_16_drift_samples=self.changes,
+            gate_passed=(self.sample_count >= 2 and self.drift_count == 0
+                         and self.invalid_count == 0))
 
 
 def future_phase(future):
@@ -533,6 +589,8 @@ def main(argv=None):
                         help="Explicit windows mode creates a visible desktop Qt window; offscreen remains the default")
     parser.add_argument("--window-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
                         default=(1920, 1080), help="Requested logical client size for this benchmark run")
+    parser.add_argument("--expected-dpr", type=float,
+                        help="Opt-in ABBA gate: actual fixed window/plot target and screen/canvas DPR")
     parser.add_argument("--capture-window", action="store_true",
                         help="Save a post-measurement QWidget capture beside the JSON; requires visible Windows Qt")
     parser.add_argument("--stop-phase", default="any", choices=("any", "idle",
@@ -571,6 +629,9 @@ def main(argv=None):
     if args.max_unique_paint_gap_ms is not None and (not args.persistence_abba
             or not 1 <= args.max_unique_paint_gap_ms <= 120000):
         parser.error("--max-unique-paint-gap-ms requires ABBA and a threshold in 1..120000 ms")
+    if args.expected_dpr is not None and (not args.persistence_abba
+            or args.qt_platform != "windows" or not .5 <= args.expected_dpr <= 4):
+        parser.error("--expected-dpr requires visible Windows ABBA and DPR 0.5..4")
     if args.show_projection_timeline and not args.persistence_page_lifecycle:
         parser.error("--show-projection-timeline requires --persistence-page-lifecycle")
     if args.show_eager_projection_prototype and not args.show_projection_timeline:
@@ -877,6 +938,7 @@ def main(argv=None):
                                       for target in age.ages},
             paint_return_ms={target: BoundedSamples(timing_capacity) for target in paints},
             first_paint_cadence={target: FirstPaintCadence(timing_capacity) for target in paints},
+            qt_target_witness=None,
             boundary_excluded_paints=dict.fromkeys(age.ages, 0),
             heartbeat_times_s=BoundedSamples(timing_capacity),
             persistence_update_sequences=BoundedSamples(timing_capacity),
@@ -1025,6 +1087,10 @@ def main(argv=None):
             scene, waterfall = f.page.visualization.spectrum_scene, f.page.visualization.waterfall_pane
             scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence_display))
             persistence_upload_probe["overlay"] = scene._persistence
+
+            def current_qt_target():
+                return qt_target_signature(qt_display_metadata(f.shell, f.app, scene, waterfall,
+                    requested_size=args.window_size, requested_platform=args.qt_platform))
 
             def observe_density(state):
                 nonlocal persistence_accepted, last_persistence_accepted, last_persistence_density_identity
@@ -1291,7 +1357,10 @@ def main(argv=None):
                 now = perf_counter()
                 beats.append(now)
                 if abba_current_block is not None:
-                    abba_blocks[abba_current_block]["heartbeat_times_s"].append(now)
+                    block = abba_blocks[abba_current_block]
+                    block["heartbeat_times_s"].append(now)
+                    if block["qt_target_witness"] is not None:
+                        block["qt_target_witness"].observe(current_qt_target(), now)
                 transition = pending_page_transition
                 if transition is None or "settled" in transition:
                     return
@@ -1522,6 +1591,9 @@ def main(argv=None):
                 block["mode"] = mode.value
                 block["started_s"] = perf_counter() - began
                 block["started_perf"] = perf_counter()
+                if args.expected_dpr is not None:
+                    block["qt_target_witness"] = QtTargetWitness(args.window_size, args.expected_dpr)
+                    block["qt_target_witness"].observe(current_qt_target(), perf_counter())
                 block["generated_start"] = generated
                 block["overlay_start"] = persistence_state()
                 block["waterfall_uploads_start"] = waterfall.metrics.image_uploads
@@ -1531,6 +1603,8 @@ def main(argv=None):
                 abba_current_block = None
                 block["ended_s"] = perf_counter() - began
                 block["ended_perf"] = perf_counter()
+                if block["qt_target_witness"] is not None:
+                    block["qt_target_witness"].observe(current_qt_target(), perf_counter())
                 block["generated_end"] = generated
                 block["overlay_end"] = persistence_state()
                 block["waterfall_uploads_end"] = waterfall.metrics.image_uploads
@@ -1992,6 +2066,8 @@ def main(argv=None):
                         first_paint_cadence={target: cadence.report(block["started_perf"],
                             block["ended_perf"], summary)
                             for target, cadence in block["first_paint_cadence"].items()},
+                        qt_target_witness=(None if block["qt_target_witness"] is None else
+                            block["qt_target_witness"].report()),
                         sample_accounting=dict(
                             source_to_first_paint_ms={target: bounded_sample_accounting(values)
                                 for target, values in block["source_to_first_paint_ms"].items()},
@@ -2040,6 +2116,7 @@ def main(argv=None):
                     sample_integrity_gate_passed=sample_integrity,
                     sample_capacity_per_series=timing_capacity,
                     requested_max_unique_paint_gap_ms=args.max_unique_paint_gap_ms,
+                    requested_expected_dpr=args.expected_dpr,
                     transitions=abba_transitions,
                     startup_warmup=abba_warmups,
                     combined_steady_source_to_first_paint_ms={
@@ -2059,6 +2136,18 @@ def main(argv=None):
                     "within each steady block. Maximum silence includes start/end boundaries; "
                     "an opt-in threshold is diagnostic, not the global 50-ms/DWM/RF target. "
                     "A truncated gap ring invalidates its percentiles and the gate.")
+                abba_report["fixed_qt_target_gate_passed"] = (
+                    None if args.expected_dpr is None else
+                    set(abba_report["blocks"]) == {"A1", "A2", "B1", "B2"} and all(
+                        block["qt_target_witness"]["gate_passed"] is True
+                        for block in abba_report["blocks"].values()))
+                abba_report["fixed_qt_target_scope"] = (
+                    "Opt-in actual Qt window, screen/DPR, canvas size/DPR and plot scene rect sampled "
+                    "at each block boundary and nominal 10-ms heartbeat. A detected drift remains a "
+                    "failure even if geometry returns to baseline. Transient changes between samples "
+                    "may be missed. Metadata queries on the GUI heartbeat instrument and may perturb "
+                    "timing; do not compare these tails to uninstrumented baselines without a matched "
+                    "control. Qt target is not desktop/DWM scanout or a different physical monitor mode.")
                 report["persistence_abba"] = abba_report
                 if args.projection_stage_timing:
                     report["persistence_abba"]["stage_timing_scope"] = (
