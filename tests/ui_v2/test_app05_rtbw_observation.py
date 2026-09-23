@@ -26,6 +26,14 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_matched_persistence_reverse_keeps_mode_identity_and_contiguous_middle(self):
+        forward = OBSERVER.matched_persistence_order(False)
+        reverse = OBSERVER.matched_persistence_order(True)
+        self.assertEqual(forward, ("A1", "B1", "B2", "A2"))
+        self.assertEqual(reverse, ("B1", "A1", "A2", "B2"))
+        self.assertEqual(sorted(forward), sorted(reverse))
+        self.assertEqual(tuple(name[0] for name in reverse), ("B", "A", "A", "B"))
+
     def test_persistence_catchup_requires_exact_uploaded_latest_and_quiescence(self):
         settled = dict(last_viewmodel_update=12, latest_density_update_sequence=12,
             uploaded_density_update_sequence=12, latest_view_is_latest_accepted_density=True,
@@ -238,6 +246,16 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("--persistence-abba requires --qt-platform windows", result.stderr)
+
+    def test_reverse_order_requires_explicit_matched_run(self):
+        with TemporaryDirectory(prefix="app05-baab-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--abba-reverse-order"], cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--abba-reverse-order requires --persistence-abba", result.stderr)
 
     def test_persistence_catchup_rejects_offscreen_before_qt_startup(self):
         with TemporaryDirectory(prefix="app05-catchup-validation-") as temporary:

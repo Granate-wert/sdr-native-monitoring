@@ -40,6 +40,11 @@ def rtbw_key(timestamp_token, generation):
     return (int(timestamp_token), "rtbw", int(generation))
 
 
+def matched_persistence_order(reverse):
+    """Name blocks by render mode; reverse order keeps the same two modes."""
+    return ("B1", "A1", "A2", "B2") if reverse else ("A1", "B1", "B2", "A2")
+
+
 def uploaded_key(pane, uploads_before, previous):
     """Observe successful upload metadata; a hidden newer ring is NOT a paint."""
     if not any(item.isVisible() for item in pane.image_items):
@@ -327,6 +332,8 @@ def main(argv=None):
                         help="Select the actual V2 persistence rendering policy for normal paint profiling")
     parser.add_argument("--persistence-abba", action="store_true",
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
+    parser.add_argument("--abba-reverse-order", action="store_true",
+                        help="With --persistence-abba start Visual and measure Visual→Direct→Direct→Visual")
     parser.add_argument("--persistence-catchup", action="store_true",
                         help="Visible Visual-only burst/freeze/drain freshness pulse; --seconds is each burst")
     parser.add_argument("--persistence-page-lifecycle", action="store_true",
@@ -374,6 +381,8 @@ def main(argv=None):
         parser.error("--persistence-catchup requires --qt-platform windows")
     if args.persistence_abba and args.persistence_catchup:
         parser.error("--persistence-abba and --persistence-catchup are separate experiments")
+    if args.abba_reverse_order and not args.persistence_abba:
+        parser.error("--abba-reverse-order requires --persistence-abba")
     if args.persistence_page_lifecycle:
         config_error = persistence_page_lifecycle_config_error(
             qt_platform=args.qt_platform, seconds=args.seconds, page_seconds=args.page_seconds,
@@ -386,10 +395,10 @@ def main(argv=None):
         if config_error:
             parser.error(config_error)
     if args.persistence_abba and (args.cycles != 1 or not args.persistence_power_bins
-            or args.persistence_display != "direct"
+            or args.persistence_display != ("visual" if args.abba_reverse_order else "direct")
             or args.page_seconds or args.viewport_seconds or args.driver_stop_ms
             or args.stop_phase != "any" or args.memory_seconds or args.collect_after_context):
-        parser.error("ABBA requires one cycle starting in Direct, generated persistence, and no churn, delayed Stop, or memory sampling")
+        parser.error("matched persistence blocks require one cycle in the declared starting mode, generated persistence, and no churn, delayed Stop, or memory sampling")
     if args.persistence_abba and (args.seconds > 120 or not 1 <= args.abba_warmup_updates <= 1000
             or not 0 <= args.abba_warmup_seconds <= 60):
         parser.error("ABBA steady blocks must be <=120s; warm-up updates 1..1000 and seconds 0..60")
@@ -475,7 +484,7 @@ def main(argv=None):
     control = {}
     control_phase, resumed_until = "idle", 0.0
     abba_current_block = None
-    abba_order = ("A1", "B1", "B2", "A2")
+    abba_order = matched_persistence_order(args.abba_reverse_order)
     abba_blocks = {
         name: dict(started_s=None, ended_s=None, mode=None, overlay_start=None, overlay_end=None,
             started_perf=None, ended_perf=None,
@@ -1084,8 +1093,10 @@ def main(argv=None):
 
             def run_visible_abba():
                 nonlocal control_phase, resumed_until
-                if scene._persistence.render_mode is not PersistenceRenderMode.DIRECT:
-                    raise AssertionError("ABBA must begin in Direct mode")
+                initial_mode = (PersistenceRenderMode.VISUAL if args.abba_reverse_order
+                                else PersistenceRenderMode.DIRECT)
+                if scene._persistence.render_mode is not initial_mode:
+                    raise AssertionError("matched blocks must begin in the declared mode")
                 f.shell.select_workspace("analyzer")
                 control_phase = "starting"
                 f.page.primary.click()
@@ -1094,16 +1105,18 @@ def main(argv=None):
                 control_phase = "running"
                 resumed_until = perf_counter() + .25
 
-                initial_warmup = wait_for_persistence_warmup("initial-direct", PersistenceRenderMode.DIRECT,
+                initial_warmup = wait_for_persistence_warmup(f"initial-{initial_mode.value}", initial_mode,
                     last_persistence_accepted, scene._persistence.metrics.image_uploads)
                 abba_warmups.append(initial_warmup)
-                measure_abba_block("A1", PersistenceRenderMode.DIRECT)
-                transition_persistence_mode(PersistenceRenderMode.VISUAL, "Direct-to-Visual")
-                measure_abba_block("B1", PersistenceRenderMode.VISUAL)
-                # B1 and B2 form one continuous Visual interval; no second mode switch/reset.
-                measure_abba_block("B2", PersistenceRenderMode.VISUAL)
-                transition_persistence_mode(PersistenceRenderMode.DIRECT, "Visual-to-Direct")
-                measure_abba_block("A2", PersistenceRenderMode.DIRECT)
+                current_mode = initial_mode
+                for name in abba_order:
+                    mode = (PersistenceRenderMode.DIRECT if name.startswith("A")
+                            else PersistenceRenderMode.VISUAL)
+                    if mode is not current_mode:
+                        transition_persistence_mode(mode,
+                            f"{current_mode.value}-to-{mode.value}")
+                        current_mode = mode
+                    measure_abba_block(name, mode)
 
                 end_snapshot = f.live.latest_snapshot()
                 end_live_epoch = getattr(end_snapshot, "acquisition_epoch", None)
@@ -1527,6 +1540,7 @@ def main(argv=None):
                     return summary(np.concatenate(parts)) if parts else None
 
                 report["persistence_abba"] = dict(
+                    order="BAAB" if args.abba_reverse_order else "ABBA",
                     sequence=[dict(block=name, mode=abba_blocks[name]["mode"])
                               for name in abba_order],
                     blocks={name: abba_block_report(name) for name in abba_order},
@@ -1537,7 +1551,8 @@ def main(argv=None):
                         "visual": {target: combined_age(("B1", "B2"), target) for target in age.ages}},
                     source_session=dict(source_session, events=list(f.events), start_stop_count=len(stops),
                         frame_identity_scope="Explicit synthetic receiver/epoch labels attached to each observed LiveSpectrumFrame; not physical SDR provenance."),
-                    interpretation="One synthetic Live session, Direct A1 -> Visual B1/B2 -> Direct A2. B1/B2 are contiguous halves of one Visual interval, not independent replications. Mode changes, accepted/uploaded update catch-up and declared warm-up are recorded separately and excluded from steady samples.",
+                    interpretation=("One synthetic Live session, "+" -> ".join(abba_order)
+                        + ". The two middle blocks are contiguous halves of one mode interval, not independent replications. Mode changes, accepted/uploaded update catch-up and declared warm-up are recorded separately and excluded from steady samples."),
                     limitations="Visible Windows Qt QWidget paint/heartbeat on one host display. Synthetic constant spectrum and rolling histogram only; not DWM/compositor scanout, SDR/RF/LPS, visual smoothing fidelity, physical FHD/QHD coverage, or a general performance acceptance.")
             if args.persistence_catchup:
                 report["persistence_catchup"] = persistence_catchup
