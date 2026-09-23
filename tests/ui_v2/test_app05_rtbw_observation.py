@@ -26,6 +26,37 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_abba_bounded_samples_never_report_truncated_tail_as_whole_block(self):
+        samples = OBSERVER.BoundedSamples(2)
+        for value in range(5):
+            samples.append(value)
+        self.assertEqual(tuple(samples), (3, 4))
+        self.assertEqual(OBSERVER.bounded_sample_accounting(samples),
+            {"total_count": 5, "retained_count": 2, "dropped": 3})
+        self.assertEqual((samples.first, samples.last), (0, 4))
+        self.assertIsNone(OBSERVER.complete_bounded_summary(
+            samples, lambda values: {"p95": max(values)}))
+        self.assertEqual(OBSERVER.accepted_update_report(samples, 2),
+            {"count": 5, "first": 0, "last": 4, "rate_hz": 2.5})
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_abba": {"sample_integrity_gate_passed": False}}), 1)
+
+        complete = OBSERVER.BoundedSamples(2)
+        complete.append(7)
+        complete.append(8)
+        self.assertEqual(OBSERVER.complete_bounded_summary(
+            complete, lambda values: {"p95": max(values)}), {"p95": 8})
+        self.assertEqual(OBSERVER.persistence_catchup_exit_code(
+            {"persistence_abba": {"sample_integrity_gate_passed": True}}), 0)
+
+        actual_capacity = OBSERVER.BoundedSamples(8192)
+        for value in range(8200):
+            actual_capacity.append(value)
+        self.assertEqual(OBSERVER.bounded_sample_accounting(actual_capacity),
+            {"total_count": 8200, "retained_count": 8192, "dropped": 8})
+        self.assertIsNone(OBSERVER.complete_bounded_summary(actual_capacity, max))
+        self.assertEqual(OBSERVER.accepted_update_report(actual_capacity, 100)["rate_hz"], 82)
+
     def test_matched_persistence_reverse_keeps_mode_identity_and_contiguous_middle(self):
         forward = OBSERVER.matched_persistence_order(False)
         reverse = OBSERVER.matched_persistence_order(True)

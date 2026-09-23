@@ -33,6 +33,7 @@ import platform
 import subprocess
 import sys
 import threading
+from typing import Any
 import weakref
 from time import perf_counter
 from unittest.mock import patch
@@ -63,6 +64,59 @@ def bounded_stage_report(samples, overflow, summarize):
     return {stage: dict(count=len(values), dropped=overflow[stage],
                         duration_ms=None if overflow[stage] else summarize(values))
             for stage, values in samples.items()}
+
+
+class BoundedSamples:
+    """Keep exact event totals and endpoints when a bounded timing ring wraps.
+
+    A retained tail is never silently presented as a full-block distribution.
+    The scalar endpoints also preserve exact accepted-update provenance.
+    """
+
+    def __init__(self, capacity):
+        if capacity < 1:
+            raise ValueError("positive sample capacity required")
+        self.samples: deque[Any] = deque(maxlen=capacity)
+        self.total_count = 0
+        self.first = self.last = None
+
+    def append(self, value):
+        if self.total_count == 0:
+            self.first = value
+        self.last = value
+        self.total_count += 1
+        self.samples.append(value)
+
+    @property
+    def dropped(self):
+        return self.total_count - len(self.samples)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __iter__(self):
+        return iter(self.samples)
+
+    def __getitem__(self, index):
+        return self.samples[index]
+
+
+def bounded_sample_accounting(samples):
+    return dict(total_count=samples.total_count, retained_count=len(samples),
+                dropped=samples.dropped)
+
+
+def complete_bounded_summary(samples, summarize):
+    """Whole-block percentiles are unknown if their source ring wrapped."""
+    return None if samples.dropped else summarize(tuple(samples))
+
+
+def accepted_update_report(samples, elapsed_seconds):
+    """Rates and endpoints use exact events, never the retained sample tail."""
+    if elapsed_seconds <= 0:
+        raise ValueError("positive measurement duration required")
+    return dict(count=samples.total_count, first=samples.first, last=samples.last,
+                rate_hz=samples.total_count / elapsed_seconds)
 
 
 def uploaded_key(pane, uploads_before, previous):
@@ -252,6 +306,9 @@ def persistence_page_lifecycle_gate_passed(transitions, *, stable_samples=3, ove
 
 def persistence_catchup_exit_code(result):
     """Keep failed opt-in gate reports on disk, but never return success for them."""
+    abba = result.get("persistence_abba")
+    if abba is not None and abba.get("sample_integrity_gate_passed") is False:
+        return 1
     catchup = result.get("persistence_catchup")
     if catchup is not None and catchup.get("freshness_gate_passed") is not True:
         return 1
@@ -759,17 +816,17 @@ def main(argv=None):
     stage_samples = {block: {name: deque(maxlen=8192) for name in stage_names}
                      for block in abba_order}
     stage_overflow = {block: dict.fromkeys(stage_names, 0) for block in abba_order}
-    abba_blocks = {
+    abba_blocks: dict[str, dict[str, Any]] = {
         name: dict(started_s=None, ended_s=None, mode=None, overlay_start=None, overlay_end=None,
             started_perf=None, ended_perf=None,
             generated_start=None, generated_end=None,
             waterfall_uploads_start=None, waterfall_uploads_end=None,
-            source_to_first_paint_ms={target: deque(maxlen=timing_capacity)
+            source_to_first_paint_ms={target: BoundedSamples(timing_capacity)
                                       for target in age.ages},
-            paint_return_ms={target: deque(maxlen=timing_capacity) for target in paints},
+            paint_return_ms={target: BoundedSamples(timing_capacity) for target in paints},
             boundary_excluded_paints=dict.fromkeys(age.ages, 0),
-            heartbeat_times_s=deque(maxlen=timing_capacity),
-            persistence_update_sequences=deque(maxlen=timing_capacity),
+            heartbeat_times_s=BoundedSamples(timing_capacity),
+            persistence_update_sequences=BoundedSamples(timing_capacity),
             first_displayed_sequence=None, last_displayed_sequence=None)
         for name in abba_order}
     abba_warmups, abba_transitions = [], []
@@ -1423,10 +1480,10 @@ def main(argv=None):
                 block["overlay_end"] = persistence_state()
                 block["waterfall_uploads_end"] = waterfall.metrics.image_uploads
                 for target in age.ages:
-                    if len(block["source_to_first_paint_ms"][target]) < 2:
+                    if block["source_to_first_paint_ms"][target].total_count < 2:
                         raise AssertionError(f"ABBA {name} block lacks two fresh {target} paint samples; "
                                              f"boundary_excluded={block['boundary_excluded_paints'][target]}")
-                if len(block["persistence_update_sequences"]) < 2:
+                if block["persistence_update_sequences"].total_count < 2:
                     raise AssertionError(f"ABBA {name} block lacks fresh accepted persistence updates")
 
             def run_visible_abba():
@@ -1849,8 +1906,9 @@ def main(argv=None):
             if args.persistence_abba:
                 def abba_block_report(name):
                     block = abba_blocks[name]
-                    heartbeat_intervals = np.diff(block["heartbeat_times_s"]) * 1000
-                    updates = list(block["persistence_update_sequences"])
+                    heartbeats = block["heartbeat_times_s"]
+                    heartbeat_intervals = np.diff(tuple(heartbeats)) * 1000
+                    updates = block["persistence_update_sequences"]
                     elapsed = block["ended_s"] - block["started_s"]
                     source_publications = block["generated_end"] - block["generated_start"]
                     persistence_upload_delta = block["overlay_end"]["image_uploads"] - \
@@ -1870,19 +1928,24 @@ def main(argv=None):
                             first_sequence=block["generated_start"] + 1,
                             last_sequence=block["generated_end"]),
                         boundary_excluded_paint_counts=block["boundary_excluded_paints"],
-                        source_to_first_paint_sample_counts={target: len(values)
+                        source_to_first_paint_sample_counts={target: values.total_count
                             for target, values in block["source_to_first_paint_ms"].items()},
-                        source_to_first_paint_ms={target: summary(values) for target, values
+                        source_to_first_paint_ms={target: complete_bounded_summary(values, summary) for target, values
                                                   in block["source_to_first_paint_ms"].items()},
-                        paint_return_ms={target: summary(values) for target, values
+                        paint_return_ms={target: complete_bounded_summary(values, summary) for target, values
                                          in block["paint_return_ms"].items()},
+                        sample_accounting=dict(
+                            source_to_first_paint_ms={target: bounded_sample_accounting(values)
+                                for target, values in block["source_to_first_paint_ms"].items()},
+                            paint_return_ms={target: bounded_sample_accounting(values)
+                                for target, values in block["paint_return_ms"].items()},
+                            heartbeat_times_s=bounded_sample_accounting(heartbeats),
+                            persistence_update_sequences=bounded_sample_accounting(updates)),
                         projection_stages=(None if not args.projection_stage_timing else
                             bounded_stage_report(stage_snapshot, stage_dropped, summary)),
-                        heartbeat_intervals_ms=summary(heartbeat_intervals),
-                        heartbeat_tick_count=len(block["heartbeat_times_s"]),
-                        accepted_persistence_updates=dict(count=len(updates),
-                            first=None if not updates else updates[0],
-                            last=None if not updates else updates[-1], rate_hz=len(updates) / elapsed),
+                        heartbeat_intervals_ms=(None if heartbeats.dropped else summary(heartbeat_intervals)),
+                        heartbeat_tick_count=heartbeats.total_count,
+                        accepted_persistence_updates=accepted_update_report(updates, elapsed),
                         persistence_image_uploads=dict(delta=persistence_upload_delta,
                             rate_hz=persistence_upload_delta / elapsed,
                             latest_density_uploaded=block["overlay_end"]["latest_view_is_uploaded"],
@@ -1893,16 +1956,30 @@ def main(argv=None):
                         overlay_start=block["overlay_start"], overlay_end=block["overlay_end"])
 
                 def combined_age(block_names, target):
-                    parts = [np.asarray(abba_blocks[name]["source_to_first_paint_ms"][target])
-                             for name in block_names]
+                    series = [abba_blocks[name]["source_to_first_paint_ms"][target]
+                              for name in block_names]
+                    if any(values.dropped for values in series):
+                        return None
+                    parts = [np.asarray(tuple(values)) for values in series]
                     parts = [part for part in parts if len(part)]
                     return summary(np.concatenate(parts)) if parts else None
 
+                sample_integrity = all(
+                    not samples.dropped
+                    for block in abba_blocks.values()
+                    for samples in (*block["source_to_first_paint_ms"].values(),
+                                    *block["paint_return_ms"].values(),
+                                    block["heartbeat_times_s"], block["persistence_update_sequences"]))
+                if args.projection_stage_timing:
+                    sample_integrity = sample_integrity and all(
+                        not dropped for stages in stage_overflow.values() for dropped in stages.values())
                 report["persistence_abba"] = dict(
                     order="BAAB" if args.abba_reverse_order else "ABBA",
                     sequence=[dict(block=name, mode=abba_blocks[name]["mode"])
                               for name in abba_order],
                     blocks={name: abba_block_report(name) for name in abba_order},
+                    sample_integrity_gate_passed=sample_integrity,
+                    sample_capacity_per_series=timing_capacity,
                     transitions=abba_transitions,
                     startup_warmup=abba_warmups,
                     combined_steady_source_to_first_paint_ms={
