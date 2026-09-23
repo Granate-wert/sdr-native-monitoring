@@ -778,7 +778,10 @@ def main(argv=None):
                 began = perf_counter()
                 timer_lateness = (began - page_timer_expected_at) * 1000
                 page_timer_lateness_ms.append(timer_lateness)
-                page_timer_expected_at = began + args.page_seconds
+                # Keep the nominal cadence phase-locked to the start deadline;
+                # anchoring each interval to a late callback invents negative
+                # lateness on the next periodic QTimer tick.
+                page_timer_expected_at += args.page_seconds
                 was_visible = bool(f.page.visualization.isVisible())
                 action = "hide" if was_visible else "show"
                 if pending_page_transition is not None:
