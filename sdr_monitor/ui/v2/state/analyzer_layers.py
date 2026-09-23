@@ -72,16 +72,23 @@ def persistence_density_from_native(
     if frame.power_max_db <= frame.power_min_db:
         return None
     density = np.multiply(frame.density, scale, dtype=np.float32)
-    if density_range_error(density, value_mode) is not None:
-        return None
     density.setflags(write=False)
     levels = np.linspace(frame.power_min_db, frame.power_max_db, frame.power_bins + 1)
     levels.setflags(write=False)
-    return PersistenceDensityFrame(
-        density=density, frequency_edges_hz=_regular_edges(frame.frequencies_hz),
-        level_edges=levels, value_mode=value_mode,
-        level_unit=frame.unit or "",
-    )
+    try:
+        # The public frame constructor checks every cell. On valid frames do
+        # not repeat that full-matrix scan in this adapter. On malformed
+        # geometry/metadata, preserve the existing density-first rejection:
+        # invalid density is still a missing layer, not a geometry exception.
+        return PersistenceDensityFrame(
+            density=density, frequency_edges_hz=_regular_edges(frame.frequencies_hz),
+            level_edges=levels, value_mode=value_mode,
+            level_unit=frame.unit or "",
+        )
+    except ValueError:
+        if density_range_error(density, value_mode) is not None:
+            return None
+        raise
 
 
 def persistence_density_from_sweep(frame: SweepStatisticsFrame) -> PersistenceDensityFrame:

@@ -50,8 +50,10 @@ class PersistenceValidationTests(unittest.TestCase):
 
     def test_native_conversion_density_masks_are_bounded_and_result_owned(self):
         source = raw(np.full((64, 65536), 2, np.float32))
-        with self.bounded_finite():
+        with self.bounded_finite(), patch.object(contracts, "density_range_error",
+                                                 wraps=contracts.density_range_error) as validate:
             result = persistence_density_from_native(source)
+        self.assertEqual(validate.call_count, 1)  # Successful conversion scans once.
         self.assertIsNotNone(result)
         self.assertFalse(np.shares_memory(result.density, source.density))
         self.assertFalse(result.density.flags.writeable)
