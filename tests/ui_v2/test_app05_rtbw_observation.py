@@ -67,6 +67,13 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
         density = report["persistence"]
+        display = report["qt_display_environment"]
+        self.assertEqual(display["requested_platform"], "offscreen")
+        self.assertEqual(display["actual_platform"], "offscreen")
+        self.assertFalse(display["visible_native_window"])
+        self.assertEqual(display["requested_window_size_logical"], [1920, 1080])
+        self.assertEqual(len(display["spectrum_plot_estimated_physical_size"]), 2)
+        self.assertIn("not DWM/compositor scanout", display["scope"])
         self.assertTrue(density["enabled"])
         self.assertGreater(density["accepted"], 2)
         self.assertGreaterEqual(density["generated"], density["accepted"])

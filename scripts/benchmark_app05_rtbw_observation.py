@@ -58,6 +58,51 @@ def paint_phase(control_phase, visible, now, resumed_until):
     return "resume" if now < resumed_until else "steady"
 
 
+def _rect_xywh(rect):
+    return [round(float(rect.x()), 3), round(float(rect.y()), 3),
+            round(float(rect.width()), 3), round(float(rect.height()), 3)]
+
+
+def qt_display_metadata(shell, app, scene, waterfall, *, requested_size, requested_platform):
+    """Describe the actual Qt target; never equate QWidget paint with DWM scanout."""
+    window = shell.windowHandle()
+    screen = window.screen() if window is not None else app.primaryScreen()
+    if screen is None:
+        raise AssertionError("Qt did not expose a screen for the benchmark window")
+    screen_dpr = float(screen.devicePixelRatio())
+    logical_dpi = float(screen.logicalDotsPerInch())
+    spectrum = scene._graphics
+    water = waterfall._graphics
+    spectrum_rect = scene.view_box.sceneBoundingRect()
+    water_rect = waterfall.view_box.sceneBoundingRect()
+    return dict(
+        requested_platform=requested_platform,
+        actual_platform=str(app.platformName()),
+        qt_widget_visible=bool(shell.isVisible()),
+        visible_native_window=bool(str(app.platformName()).casefold() == "windows" and shell.isVisible()),
+        window_maximized=bool(shell.isMaximized()),
+        requested_window_size_logical=list(requested_size),
+        actual_window_geometry_logical=_rect_xywh(shell.geometry()),
+        screen_name=str(screen.name()),
+        screen_geometry_logical=_rect_xywh(screen.geometry()),
+        screen_available_geometry_logical=_rect_xywh(screen.availableGeometry()),
+        screen_device_pixel_ratio=screen_dpr,
+        screen_logical_dpi=logical_dpi,
+        screen_physical_dpi=float(screen.physicalDotsPerInch()),
+        windows_scale_estimate_percent=round(logical_dpi / 96 * 100, 1),
+        spectrum_canvas_logical_size=[int(spectrum.width()), int(spectrum.height())],
+        spectrum_canvas_dpr=float(spectrum.devicePixelRatioF()),
+        spectrum_plot_scene_rect=_rect_xywh(spectrum_rect),
+        spectrum_plot_estimated_physical_size=[round(spectrum_rect.width() * spectrum.devicePixelRatioF()),
+                                               round(spectrum_rect.height() * spectrum.devicePixelRatioF())],
+        waterfall_canvas_logical_size=[int(water.width()), int(water.height())],
+        waterfall_canvas_dpr=float(water.devicePixelRatioF()),
+        waterfall_plot_scene_rect=_rect_xywh(water_rect),
+        waterfall_plot_estimated_physical_size=[round(water_rect.width() * water.devicePixelRatioF()),
+                                                round(water_rect.height() * water.devicePixelRatioF())],
+        scope="Qt widget/window paint target only; not DWM/compositor scanout or SDR cadence")
+
+
 def future_phase(future):
     """Read-only instantaneous public Future state, not a worker lock/barrier."""
     if future is None:
@@ -130,6 +175,12 @@ def main(argv=None):
                         help="Histogram at first spectrum after Start, then every N source publications")
     parser.add_argument("--persistence-display", choices=("direct", "visual"), default="direct",
                         help="Select the actual V2 persistence rendering policy for normal paint profiling")
+    parser.add_argument("--qt-platform", choices=("offscreen", "windows"), default="offscreen",
+                        help="Explicit windows mode creates a visible desktop Qt window; offscreen remains the default")
+    parser.add_argument("--window-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
+                        default=(1920, 1080), help="Requested logical client size for this benchmark run")
+    parser.add_argument("--capture-window", action="store_true",
+                        help="Save a post-measurement QWidget capture beside the JSON; requires visible Windows Qt")
     parser.add_argument("--stop-phase", default="any", choices=("any", "idle",
         "preparation:running", "preparation:done-awaiting-gui",
         "projection:running", "projection:done-awaiting-gui"),
@@ -149,6 +200,15 @@ def main(argv=None):
         parser.error("churn intervals must be zero or 0.1..60 seconds")
     if args.output.exists():
         parser.error("output must be new")
+    if any(value < 640 or value > 8192 for value in args.window_size):
+        parser.error("window dimensions must be in 640..8192 logical pixels")
+    if args.qt_platform == "windows" and sys.platform != "win32":
+        parser.error("the visible Windows Qt platform is available only on Windows")
+    if args.capture_window and args.qt_platform != "windows":
+        parser.error("--capture-window requires --qt-platform windows")
+    capture_path = args.output.with_suffix(".png")
+    if args.capture_window and capture_path.exists():
+        parser.error("window capture path must be new")
     if args.persistence_display == "visual" and not args.persistence_power_bins:
         parser.error("Visual persistence profiling requires a generated histogram")
     if args.memory_seconds != 0 and not .25 <= args.memory_seconds <= 60:
@@ -161,7 +221,7 @@ def main(argv=None):
         parser.error("persistence-every 1..1000; histogram must not exceed 64MiB")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
-    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    os.environ["QT_QPA_PLATFORM"] = args.qt_platform
     import numpy as np
     import PySide6
     import pyqtgraph as pg
@@ -258,7 +318,7 @@ def main(argv=None):
                              persistence_window_frames=4)
             f.presenter.apply_configuration(config)
             f.wait(lambda: not f.composition.view_model.state.busy)
-            f.shell.resize(1920, 1080)
+            f.shell.resize(*args.window_size)
             scene, waterfall = f.page.visualization.spectrum_scene, f.page.visualization.waterfall_pane
             scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence_display))
 
@@ -490,6 +550,8 @@ def main(argv=None):
                 raise AssertionError((age.missing, age.changed_during_paint, age.counts))
             if persistence_enabled and (not persistence_accepted or not scene._persistence.metrics.image_uploads):
                 raise AssertionError("enabled persistence was not accepted and uploaded")
+            display_metadata = qt_display_metadata(f.shell, f.app, scene, waterfall,
+                requested_size=args.window_size, requested_platform=args.qt_platform)
             report = dict(scope=__doc__, seconds=perf_counter() - began, bins=args.bins,
                 cycles=args.cycles, requested_source_hz=args.source_hz, generated=generated,
                 page_changes=page_changes, viewport_changes=viewport_changes,
@@ -506,6 +568,7 @@ def main(argv=None):
                 waterfall_rows=waterfall.history_rows, waterfall_metrics=asdict(waterfall.metrics),
                 allocation_budget=asdict(f.composition.allocation_budget.snapshot()),
                 display_metrics=asdict(f.presenter.display_metrics),
+                qt_display_environment=display_metadata,
                 preparation_superseded=f.presenter.preparation_superseded,
                 preparation_stale=f.presenter.preparation_stale)
             report["persistence"] = dict(enabled=persistence_enabled,
@@ -531,6 +594,14 @@ def main(argv=None):
                 for phase, samples in phase_ages.items()}
             report["timing_sample_capacity"] = timing_capacity
             report["phase_scope"] = "Paint-return context; resume is first 250ms after show/Start ack, not causal attribution; bounded last samples per phase/canvas"
+            if args.capture_window:
+                image = f.shell.grab()
+                if image.isNull() or not image.save(str(capture_path), "PNG"):
+                    raise AssertionError("could not save the post-measurement Qt window capture")
+                report["window_capture"] = dict(path=str(capture_path.resolve()),
+                    sha256=hashlib.sha256(capture_path.read_bytes()).hexdigest(),
+                    size_px=[image.width(), image.height()],
+                    scope="Post-measurement QWidget.grab after RTBW Stop; app surface, not desktop/compositor screenshot")
             if args.memory_seconds:
                 memory_timer.stop()
                 sample_memory("before-close")
@@ -571,8 +642,9 @@ def main(argv=None):
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         shared_observer_sha256=hashlib.sha256((root / "scripts/benchmark_app04_poll_overload.py").read_bytes()).hexdigest(),
         python=sys.version.split()[0], numpy=np.__version__, pyside=PySide6.__version__, pyqtgraph=pg.__version__,
-        host_platform=platform.platform(), processor=platform.processor(), platform="Qt offscreen",
-        logical_size=[1920, 1080], event_pump="QEventLoop.exec", product_imports_outside_checkout=outside,
+        host_platform=platform.platform(), processor=platform.processor(),
+        platform=f"Qt {args.qt_platform}", logical_size=list(args.window_size),
+        event_pump="QEventLoop.exec", product_imports_outside_checkout=outside,
         remaining_workers=workers)
     # The ledger holds weak roots only. Returning it lets the CLI sample after
     # this function's fixture/scene/producer closure references leave scope.
