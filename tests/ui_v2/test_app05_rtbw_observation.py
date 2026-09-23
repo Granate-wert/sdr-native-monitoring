@@ -381,6 +381,31 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(OBSERVER.paint_phase("running", True, 1, 2), "resume")
         self.assertEqual(OBSERVER.paint_phase("running", True, 2, 2), "steady")
 
+    def test_show_first_paint_separates_hidden_source_age_from_post_show_latency(self):
+        hidden = OBSERVER.show_first_paint_sample(
+            OBSERVER.rtbw_key(10, 7), 9.9, 10.0, 10.03, 10.04)
+        fresh = OBSERVER.show_first_paint_sample(
+            OBSERVER.rtbw_key(11, 7), 10.01, 10.0, 10.05, 10.06)
+        self.assertTrue(hidden["published_before_show"])
+        self.assertAlmostEqual(hidden["source_age_at_show_ms"], 100)
+        self.assertAlmostEqual(hidden["source_to_paint_return_ms"], 140)
+        self.assertAlmostEqual(hidden["show_request_to_paint_return_ms"], 40)
+        self.assertIsNone(hidden["post_show_source_to_paint_ms"])
+        self.assertFalse(fresh["published_before_show"])
+        self.assertEqual(fresh["source_age_at_show_ms"], 0)
+        self.assertAlmostEqual(fresh["show_request_to_paint_return_ms"], 60)
+        self.assertAlmostEqual(fresh["post_show_source_to_paint_ms"], 50)
+        self.assertIsNone(OBSERVER.show_first_paint_sample(
+            OBSERVER.rtbw_key(12, 7), 10.0, 10.0, 9.99, 10.01))
+
+    def test_show_timeline_source_token_uses_nested_spectrum_publication(self):
+        direct = SimpleNamespace(source_frame=SimpleNamespace(timestamp_ns=11))
+        bundled = SimpleNamespace(source_frame=SimpleNamespace(
+            spectrum=SimpleNamespace(timestamp_ns=12)))
+        self.assertEqual(OBSERVER.view_source_token(direct), 11)
+        self.assertEqual(OBSERVER.view_source_token(bundled), 12)
+        self.assertIsNone(OBSERVER.view_source_token(SimpleNamespace(source_frame=object())))
+
     def test_memory_cli_retains_scalar_phases_and_post_context_observation(self):
         with TemporaryDirectory(prefix="app05-rtbw-memory-") as temporary:
             output = Path(temporary) / "result.json"

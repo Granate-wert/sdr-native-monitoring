@@ -168,6 +168,43 @@ class ViewportProjectionTests(unittest.TestCase):
         self.assertEqual(len(self.worker.jobs), 1)
         self.drain()
 
+    def test_show_flushes_once_only_on_hidden_to_visible_transition(self):
+        frame = self.admit(1)
+        self.drain()
+        self.scene.set_presentation_active(False)
+        self.assertIsNone(self.scene.displayed_frame)
+        with patch.object(self.scene, "commit_projection", wraps=self.scene.commit_projection) as commit:
+            self.scene.set_presentation_active(True)
+            self.assertEqual(commit.call_count, 1)
+            self.assertEqual(len(self.worker.jobs), 1)
+            self.assertFalse(self.scene._projection_timer.isActive())
+            self.scene.set_presentation_active(True)
+            self.assertEqual(commit.call_count, 1)
+            self.assertEqual(len(self.worker.jobs), 1)
+        self.drain()
+        self.assertIs(self.scene.displayed_frame, frame)
+
+    def test_early_show_offer_rejects_late_viewport_change_and_restores_latest(self):
+        frame = self.admit(1)
+        self.drain()
+        self.scene.set_presentation_active(False)
+        self.scene.resize(800, 600)
+        self.pump()
+        self.scene.set_presentation_active(True)
+        self.assertEqual(len(self.worker.jobs), 1)
+        offered_viewport = self.port._active.viewport
+        self.scene.plot_item.setXRange(110e6, 120e6, padding=0)
+        self.pump()
+        self.worker.finish()
+        self.pump()
+        self.assertNotEqual(self.scene._viewport(), offered_viewport)
+        self.assertIsNone(self.scene.displayed_frame)
+        self.assertGreater(self.scene.projection_stale + self.port.cancelled, 0)
+        self.drain()
+        self.assertIs(self.scene.displayed_frame, frame)
+        self.assertLessEqual(np.nanmax(
+            self.scene.trace_envelope(TraceKind.CURRENT).frequencies_hz), 120.002e6)
+
     def test_newer_arrival_does_not_starve_paint_and_markers_follow_displayed_source(self):
         first = self.admit(1, -71)
         second = self.admit(2, -32)

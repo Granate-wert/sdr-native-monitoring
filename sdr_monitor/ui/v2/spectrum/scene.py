@@ -404,6 +404,12 @@ class SpectrumScene(QWidget):
             self._apply_vertical_range()
             if self._projector is None:
                 self._update_markers_for_new_frame()
+            else:
+                # Show has a known latest source and a bounded projection slot.
+                # Flush its coalesced request before the busy GUI event loop can
+                # defer the zero-timer; a later viewport change still rejects
+                # this generation and reoffers the exact latest source.
+                self.commit_projection()
             # Worker path restores markers only with the exact displayed
             # source acknowledgement, not before its first resumed paint.
 

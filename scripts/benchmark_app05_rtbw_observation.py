@@ -86,6 +86,30 @@ def paint_phase(control_phase, visible, now, resumed_until):
     return "resume" if now < resumed_until else "steady"
 
 
+def show_first_paint_sample(key, published_at, requested_at, paint_started, paint_ended):
+    """Separate a pre-Show source's hidden age from post-Show paint latency."""
+    if (key is None or published_at is None or paint_started < requested_at
+            or paint_ended < paint_started or paint_ended < published_at):
+        return None
+    published_before_show = published_at < requested_at
+    return dict(sequence=int(key[0]), published_before_show=published_before_show,
+        source_age_at_show_ms=(requested_at - published_at) * 1000
+            if published_before_show else 0.0,
+        show_request_to_paint_return_ms=(paint_ended - requested_at) * 1000,
+        source_to_paint_return_ms=(paint_ended - published_at) * 1000,
+        post_show_source_to_paint_ms=(paint_ended - published_at) * 1000
+            if not published_before_show else None,
+        paint_return_ms=(paint_ended - paint_started) * 1000)
+
+
+def view_source_token(view):
+    """Read only the synthetic source token through a bundled analyzer view."""
+    source = view.source_frame
+    spectrum = getattr(source, "spectrum", source)
+    value = getattr(spectrum, "timestamp_ns", None)
+    return None if value is None else int(value)
+
+
 def persistence_caught_up(state, target_update_sequence):
     """Require exact latest accepted density to be the uploaded image and idle."""
     return bool(
@@ -387,6 +411,10 @@ def main(argv=None):
                         help="Visible Visual-only burst/freeze/drain freshness pulse; --seconds is each burst")
     parser.add_argument("--persistence-page-lifecycle", action="store_true",
                         help="Opt-in visible Windows Hide/Show persistence rematerialization gate; requires --page-seconds")
+    parser.add_argument("--show-projection-timeline", action="store_true",
+                        help="Instrument bounded Spectrum projection stages after Show; diagnostic, not a latency baseline")
+    parser.add_argument("--show-eager-projection-prototype", action="store_true",
+                        help="Observer-only Show commit_projection experiment; requires --show-projection-timeline")
     parser.add_argument("--catchup-repetitions", type=int, default=3,
                         help="Independent synthetic burst/freeze/drain pulses; default 3")
     parser.add_argument("--catchup-deadline-ms", type=int, default=1000,
@@ -434,6 +462,10 @@ def main(argv=None):
         parser.error("--abba-reverse-order requires --persistence-abba")
     if args.projection_stage_timing and not args.persistence_abba:
         parser.error("--projection-stage-timing requires --persistence-abba")
+    if args.show_projection_timeline and not args.persistence_page_lifecycle:
+        parser.error("--show-projection-timeline requires --persistence-page-lifecycle")
+    if args.show_eager_projection_prototype and not args.show_projection_timeline:
+        parser.error("--show-eager-projection-prototype requires --show-projection-timeline")
     if args.persistence_page_lifecycle:
         config_error = persistence_page_lifecycle_config_error(
             qt_platform=args.qt_platform, seconds=args.seconds, page_seconds=args.page_seconds,
@@ -506,6 +538,7 @@ def main(argv=None):
     from sdr_monitor.domain.live import LiveSpectrumFrame
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
+    from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     from sdr_monitor.ui.v2.spectrum import persistence_projection as density_projection
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
     from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
@@ -541,6 +574,7 @@ def main(argv=None):
     page_transition_limit = 256
     page_transition_overflow = 0
     pending_page_transition = None
+    show_paint_transition = None
     last_hidden_transition = None
     page_transition_sequence = 0
     page_transition_cutoff = 0.0
@@ -557,6 +591,12 @@ def main(argv=None):
     original_submit_display = LivePresenter.submit_display_task
     original_live_preparation = LiveSnapshotPreparer.prepare_cancellable
     original_project_spectrum = projection_module.project_spectrum
+    original_projector_offer = projection_module.SpectrumProjector.offer
+    original_scene_presentation = SpectrumScene.set_presentation_active
+    original_scene_schedule = SpectrumScene._schedule_projection
+    original_scene_offer = SpectrumScene._offer_projection
+    original_scene_accept = SpectrumScene._accept_projection
+    original_scene_paint_trace = SpectrumScene._paint_trace
     original_prepare_density = projection_module.prepare_persistence_image
     stage_lock = threading.Lock()
     stage_names = (
@@ -570,6 +610,99 @@ def main(argv=None):
             if block_name is not None:
                 record_bounded_stage_interval(stage_samples[block_name], stage_overflow[block_name],
                     name, abba_blocks[block_name]["started_perf"], begin, end)
+
+    def show_event(name, *, request=None, token=None, when=None, stale=None):
+        if not args.show_projection_timeline:
+            return
+        now = perf_counter() if when is None else when
+        with stage_lock:
+            transition = show_paint_transition
+            if transition is None:
+                return
+            offset_ms = (now - transition["requested_at"]) * 1000
+            if not 0 <= offset_ms <= 250:
+                return
+            events = transition["projection_timeline_events"]
+            if len(events) >= 256:
+                transition["projection_timeline_overflow"] += 1
+                return
+            row = dict(event=name, since_show_request_ms=offset_ms,
+                thread="gui" if threading.get_ident() == gui else "worker")
+            if request is not None:
+                row.update(request_id=id(request), generation=int(request.generation),
+                    viewport_width=int(request.viewport[2]), required_work=bool(request.required_work),
+                    source_sequences=[view_source_token(view)
+                                      for _, view in request.traces])
+            if token is not None:
+                row["source_sequence"] = int(token)
+            if stale is not None:
+                row["scene_projection_stale"] = int(stale)
+            events.append(row)
+
+    def show_scene_presentation(scene, active):
+        show_event("scene_resume_enter" if active else "scene_hide_enter")
+        was_active = scene._presentation_active
+        try:
+            result = original_scene_presentation(scene, active)
+            if active and not was_active and args.show_eager_projection_prototype:
+                show_event("prototype_commit_enter")
+                scene.commit_projection()
+                show_event("prototype_commit_return")
+            return result
+        finally:
+            show_event("scene_resume_return" if active else "scene_hide_return")
+
+    def show_scene_schedule(scene):
+        show_event("scene_schedule_enter")
+        try:
+            return original_scene_schedule(scene)
+        finally:
+            show_event("scene_schedule_return")
+
+    def show_scene_offer(scene):
+        show_event("scene_offer_enter")
+        try:
+            return original_scene_offer(scene)
+        finally:
+            show_event("scene_offer_return")
+
+    def show_projector_offer(projector, request):
+        show_event("projector_offer_enter", request=request)
+        try:
+            return original_projector_offer(projector, request)
+        finally:
+            show_event("projector_offer_return", request=request)
+
+    def show_project_spectrum(request, *, cancelled=None, persistence_budget=None,
+                              spectrum_ready=None):
+        show_event("worker_project_enter", request=request)
+
+        def required_ready(result):
+            show_event("worker_required_ready", request=request)
+            spectrum_ready(result)
+
+        try:
+            return original_project_spectrum(request, cancelled=cancelled,
+                persistence_budget=persistence_budget,
+                spectrum_ready=required_ready if spectrum_ready is not None else None)
+        finally:
+            show_event("worker_project_return", request=request)
+
+    def show_scene_accept(scene, result, *, required_only=False):
+        request = result.request
+        show_event("scene_accept_enter", request=request, stale=scene.projection_stale)
+        try:
+            return original_scene_accept(scene, result, required_only=required_only)
+        finally:
+            show_event("scene_accept_return", request=request, stale=scene.projection_stale)
+
+    def show_scene_paint_trace(scene, kind, view, envelope):
+        token = view_source_token(view)
+        show_event("trace_setdata_enter", token=token)
+        try:
+            return original_scene_paint_trace(scene, kind, view, envelope)
+        finally:
+            show_event("trace_setdata_return", token=token)
 
     def timed_submit_display(presenter, operation):
         submitted = perf_counter()
@@ -703,6 +836,17 @@ def main(argv=None):
                         if age.counts[target] != counts_before[target]:
                             phase_ages[phase][target].append(age.ages[target][-1])
                             phase_counts[phase][target] += 1
+                            if (target == name and show_paint_transition is not None
+                                    and self.isVisible() and
+                                    ended - show_paint_transition["requested_at"] <= 1.0):
+                                samples = show_paint_transition["first_painted_sources"][name]
+                                if len(samples) < 3:
+                                    sample = show_first_paint_sample(key,
+                                        source_publication_time(key),
+                                        show_paint_transition["requested_at"], began, ended)
+                                    if sample is not None:
+                                        samples.append(sample)
+                                        show_event(f"{name}_first_paint_return", token=key[0], when=ended)
                             if abba_current_block is not None:
                                 block = abba_blocks[abba_current_block]
                                 published_at = source_publication_time(key)
@@ -733,6 +877,18 @@ def main(argv=None):
                                                   timed_project_spectrum))
             observer_patches.enter_context(patch.object(projection_module, "prepare_persistence_image",
                                                   timed_prepare_density))
+        if args.show_projection_timeline:
+            observer_patches.enter_context(patch.object(SpectrumScene, "set_presentation_active",
+                                                  show_scene_presentation))
+            observer_patches.enter_context(patch.object(SpectrumScene, "_schedule_projection",
+                                                  show_scene_schedule))
+            observer_patches.enter_context(patch.object(SpectrumScene, "_offer_projection", show_scene_offer))
+            observer_patches.enter_context(patch.object(SpectrumScene, "_accept_projection", show_scene_accept))
+            observer_patches.enter_context(patch.object(SpectrumScene, "_paint_trace", show_scene_paint_trace))
+            observer_patches.enter_context(patch.object(projection_module.SpectrumProjector,
+                                                  "offer", show_projector_offer))
+            observer_patches.enter_context(patch.object(projection_module, "project_spectrum",
+                                                  show_project_spectrum))
         f = AnalyzerWorkspaceProductTests("runTest")
         f.setUpClass()
         # Use real nested loops also for fixture lifecycle, not manual pumping.
@@ -928,6 +1084,7 @@ def main(argv=None):
 
             def cycle_page():
                 nonlocal page_changes, resumed_until, pending_page_transition
+                nonlocal show_paint_transition
                 nonlocal last_hidden_transition, page_transition_overflow, page_transition_sequence
                 nonlocal page_transitions_suppressed_for_deadline
                 nonlocal page_timer_expected_at
@@ -963,6 +1120,13 @@ def main(argv=None):
                     page_transitions.append(transition)
                 else:
                     page_transition_overflow += 1
+                show_paint_transition = transition if action == "show" and record_transition else None
+                if show_paint_transition is not None:
+                    transition["first_painted_sources"] = {"spectrum": [], "waterfall": []}
+                    if args.show_projection_timeline:
+                        transition["projection_timeline_events"] = []
+                        transition["projection_timeline_overflow"] = 0
+                        show_event("show_request", when=began)
                 if action == "show" and args.persistence_power_bins and record_transition:
                     upload_events = []
                     transition["upload_event_log"] = upload_events
@@ -1654,6 +1818,12 @@ def main(argv=None):
                 required_consecutive_samples=3,
                 maximum_show_deadline_ms=1000,
                 nominal_heartbeat_interval_ms=10,
+                show_first_paint_window_ms=1000,
+                show_first_paint_limit_per_canvas=3,
+                show_projection_timeline_enabled=args.show_projection_timeline,
+                show_projection_timeline_window_ms=250 if args.show_projection_timeline else None,
+                show_projection_timeline_limit=256 if args.show_projection_timeline else None,
+                show_eager_projection_prototype=args.show_eager_projection_prototype,
                 fixed_show_target_validated_at_completion_count=sum(
                     item.get("fixed_show_target_validated_at_completion") is True
                     for item in page_transitions if item["action"] == "show"),
@@ -1667,7 +1837,7 @@ def main(argv=None):
                 gate_passed=(persistence_page_lifecycle_gate_passed(
                     page_transitions, stable_samples=3, overflow=page_transition_overflow)
                     if args.persistence_page_lifecycle and persistence_enabled else None),
-                boundary_note=("Visibility is sampled by the nominal 10-ms Qt heartbeat, not an event-level show hook. Upload events are captured from the Show request counter; both request-relative and signed visibility-sample-relative timestamps are reported. The request-to-first-visible-sample interval is an attribution uncertainty, not proof of the precise QEvent.Show boundary. request_to_visibility_ms and visible_to_settled_ms are reported separately. The independent fixed Show-time diagnostic validates a visible ImageItem upload at least as fresh as the density known at the Show request AND no stale/missing/regressing post-request upload through completion. False means this conservative observation was not validated, not proof that no fresh image ever appeared. It is not exact target-frame delivery or a painted/DWM frame."),
+                boundary_note=("Visibility is sampled by the nominal 10-ms Qt heartbeat, not an event-level show hook. Upload events are captured from the Show request counter; both request-relative and signed visibility-sample-relative timestamps are reported. The request-to-first-visible-sample interval is an attribution uncertainty, not proof of the precise QEvent.Show boundary. First unique visible paint-return samples are separately tagged for sources published before versus after the Show request; pre-Show source age is not a post-Show latency. These samples are QWidget paint returns, not DWM/scanout. request_to_visibility_ms and visible_to_settled_ms are reported separately. The independent fixed Show-time diagnostic validates a visible ImageItem upload at least as fresh as the density known at the Show request AND no stale/missing/regressing post-request upload through completion. False means this conservative observation was not validated, not proof that no fresh image ever appeared. It is not exact target-frame delivery or a painted/DWM frame."),
                 scope="Visible synthetic analyzer/calibration page changes while Live continues. Hide checks observed presentation suspension and cleared ImageItem; Show requires a post-request ImageItem commit, exact latest accepted/view/upload sequence, idle persistence request/view/projector lanes, monotonic commits, and three consecutive heartbeat samples. Actual intervals are recorded. The independent spectrum projector lane is outside this persistence contract. Not DWM/paint, RF/LPS or 50-ms acceptance.")
             report["persistence"] = dict(enabled=persistence_enabled,
                 display_mode=args.persistence_display,

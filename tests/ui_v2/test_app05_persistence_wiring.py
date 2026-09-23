@@ -200,6 +200,40 @@ class PersistenceWiringTests(unittest.TestCase):
         self.drain()
         np.testing.assert_array_equal(overlay.image_item.image, expected.image)
 
+    def test_early_show_with_visual_density_rejects_late_hidden_ack(self):
+        overlay = self.scene._persistence
+        self.scene.set_persistence_render_mode(PersistenceRenderMode.VISUAL)
+        self.density(.2)
+        self.drain()
+        previous_history = overlay._worker_history
+        previous_uploads = overlay.metrics.image_uploads
+        self.scene.set_presentation_active(False)
+        fresh = self.spectrum(-33)
+        latest = self.density(.8)
+        self.assertEqual(self.worker.jobs, [])
+        self.scene.set_presentation_active(True)
+        first = self.port._active
+        self.assertTrue(first.required_work)
+        self.assertIs(first.traces[0][1].source_frame, fresh)
+        self.assertIs(first.persistence.view.density, latest.density)
+        self.assertEqual(len(self.worker.jobs), 1)
+        self.scene.set_presentation_active(False)
+        self.worker.finish()
+        self.pump()
+        self.assertIsNone(overlay.image_item.image)
+        self.assertIs(overlay._worker_history, previous_history)
+        self.assertEqual(overlay.metrics.image_uploads, previous_uploads)
+        self.scene.set_presentation_active(True)
+        resumed = self.port._active
+        self.assertIs(resumed.traces[0][1].source_frame, fresh)
+        self.assertIs(resumed.persistence.view.density, latest.density)
+        expected = prepare_persistence_image(resumed.persistence)
+        self.drain()
+        self.assertIs(self.scene.displayed_frame, fresh)
+        np.testing.assert_array_equal(overlay.image_item.image, expected.image)
+        self.assertEqual(overlay.metrics.image_uploads, previous_uploads + 1)
+        self.assertEqual(self.budget.snapshot().reserved_bytes, 0)
+
     def test_worker_wait_is_inside_existing_start_to_start_density_cadence(self):
         overlay = self.scene._persistence
         first = view(np.full((4, 16), .2, np.float32))
