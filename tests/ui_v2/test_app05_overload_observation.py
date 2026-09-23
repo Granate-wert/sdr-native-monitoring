@@ -1,4 +1,5 @@
 """The performance observer must not manufacture paints or starve Qt cleanup."""
+import copy
 import importlib.util
 import gc
 import json
@@ -103,6 +104,10 @@ class PaintAgeWitnessTests(unittest.TestCase):
         self.assertEqual(OBSERVER.requested_gate_failures(report,
             progressive_stage_gate=True, expected_dpr=1.75),
             ["progressive-paint", "fixed-visible-target"])
+        report["results"][0]["partial_stop_gate_passed"] = False
+        self.assertEqual(OBSERVER.requested_gate_failures(report,
+            progressive_stage_gate=True, stop_during_partial=True, expected_dpr=1.75),
+            ["partial-stop-paint", "fixed-visible-target"])
         self.assertEqual(OBSERVER.requested_gate_failures(report,
             progressive_stage_gate=False, expected_dpr=None), [])
         self.assertEqual(OBSERVER.requested_gate_failures(report,
@@ -162,6 +167,59 @@ class PaintAgeWitnessTests(unittest.TestCase):
         self.assertIsNone(unmatched.pair)
         self.assertLessEqual(len(unmatched.candidates), 64)
         self.assertTrue(all(len(events) <= 16 for events in unmatched.candidates.values()))
+
+    def test_latest_partial_pair_remains_current_after_completed_pair_latch(self):
+        def paint(pane, sequence, state, revision, at):
+            return dict(pane=pane, key=[sequence, state, revision], paint_return_s=at,
+                        coverage_runs=1)
+
+        witness = OBSERVER.ProgressivePaintWitness(track_latest_partial=True)
+        for sequence in range(1, 100):
+            for event in (paint("waterfall", sequence, "partial", 1, sequence),
+                          paint("spectrum", sequence, "partial", 1, sequence + .1),
+                          paint("waterfall", sequence, "complete", 0, sequence + .2),
+                          paint("spectrum", sequence, "complete", 0, sequence + .3)):
+                witness.accept(event)
+        self.assertEqual(witness.pair["sequence"], 1)
+        self.assertEqual(witness.latest_partial_pair["sequence"], 99)
+        self.assertLessEqual(len(witness.candidates), 64)
+
+    def test_partial_stop_rejects_completed_stale_or_unpainted_pass(self):
+        partial = {pane: dict(pane=pane, key=[7, "partial", 1], paint_return_s=4.,
+                              coverage_runs=1) for pane in ("spectrum", "waterfall")}
+        pair = dict(sequence=7, revision=1, partial=partial)
+        intent = dict(sequence=7, in_progress=True, last_completed_sequence=6)
+        stopped = dict(sequence=7, in_progress=True, last_completed_sequence=6,
+                       gap_sequence=7)
+        post = dict(terminal_key=[7, "gap", 0], terminal_sweep=True,
+                    presenter_can_close=True, producer_thread_alive=False,
+                    terminal_paint_timed_out=False,
+                    terminal_gap_painted_on=["spectrum", "waterfall"],
+                    terminal_gap_first_paint_host_s={"spectrum": 6., "waterfall": 6.1},
+                    displayed_terminal_key=[7, "gap", 0])
+        self.assertTrue(OBSERVER.partial_stop_paint_passes(pair, intent, stopped, post, 5.))
+        self.assertFalse(OBSERVER.partial_stop_paint_passes(
+            pair, intent, stopped, post, 5., target_unavailable=True))
+        for label, bucket, key, value in (
+            ("completed", "stopped", "last_completed_sequence", 7),
+            ("stale source", "intent", "sequence", 8),
+            ("different gap", "stopped", "gap_sequence", 8),
+            ("late partial", "pair", "partial", dict(partial,
+                spectrum=dict(partial["spectrum"], paint_return_s=5.1))),
+            ("missing gap paint", "post", "terminal_gap_first_paint_host_s",
+                {"spectrum": 6.}),
+            ("gap before Stop", "post", "terminal_gap_first_paint_host_s",
+                {"spectrum": 4.9, "waterfall": 6.1}),
+            ("no coverage", "pair", "partial", dict(partial,
+                spectrum=dict(partial["spectrum"], coverage_runs=0))),
+        ):
+            with self.subTest(label=label):
+                arguments = dict(pair=copy.deepcopy(pair), intent=copy.deepcopy(intent),
+                                 stopped=copy.deepcopy(stopped), post=copy.deepcopy(post))
+                arguments[bucket][key] = value
+                self.assertFalse(OBSERVER.partial_stop_paint_passes(
+                    arguments["pair"], arguments["intent"], arguments["stopped"],
+                    arguments["post"], 5.))
 
     def test_same_pass_partial_and_terminal_do_not_fake_both_paints(self):
         witness = OBSERVER.PaintAgeTracker()
@@ -290,6 +348,28 @@ class RealQtObservationTests(unittest.TestCase):
         self.assertEqual(row["post_stop"]["terminal_gap_painted_on"], ["spectrum", "waterfall"])
         self.assertEqual(report["remaining_workers"], [])
         self.assertEqual(report["post_close_reserved_bytes"], 0)
+
+    def test_stop_cancels_the_current_first_painted_partial_pass(self):
+        with TemporaryDirectory(prefix="app05-partial-stop-observer-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/benchmark_app04_poll_overload.py"),
+                                     "--checkout", str(ROOT), "--output", str(output), "--seconds", "1",
+                                     "--bins", "256", "--producer-phase-ms", "100",
+                                     "--progressive-stage-gate", "--stop-during-partial"],
+                                    cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        row = report["results"][0]
+        self.assertTrue(row["partial_stop_gate_passed"])
+        self.assertIsNone(row["progressive_paint_gate_passed"])
+        self.assertEqual(row["source_at_stop_intent"]["sequence"],
+                         row["source_at_coordinator_stop"]["gap_sequence"])
+        self.assertEqual(row["post_stop"]["terminal_key"],
+                         [row["stop_intent_partial_pair"]["sequence"], "gap", 0])
+        self.assertEqual(row["post_stop"]["terminal_gap_painted_on"],
+                         ["spectrum", "waterfall"])
+        self.assertEqual(row["post_close_reserved_bytes"], 0)
+        self.assertEqual(report["remaining_workers"], [])
 
     def check_cli(self, terminal_every=1):
         with TemporaryDirectory(prefix="app05-observer-") as temporary:

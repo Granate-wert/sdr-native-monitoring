@@ -259,23 +259,71 @@ def progressive_pair_precedes_stop(pair, stop_intent_s):
         for pane in ("spectrum", "waterfall")))
 
 
+def terminal_gap_paint_passes(post_stop, stop_intent_s):
+    """Both first paint returns must belong to the displayed post-Stop gap."""
+    if post_stop is None:
+        return False
+    paints = post_stop["terminal_gap_first_paint_host_s"]
+    return bool(post_stop["terminal_key"] is not None
+        and post_stop["terminal_key"][1] == "gap"
+        and post_stop["terminal_sweep"] and post_stop["presenter_can_close"]
+        and not post_stop["producer_thread_alive"]
+        and not post_stop["terminal_paint_timed_out"]
+        and post_stop["terminal_gap_painted_on"] == ["spectrum", "waterfall"]
+        and set(paints) == {"spectrum", "waterfall"}
+        and all(value > stop_intent_s for value in paints.values())
+        and post_stop["displayed_terminal_key"] == post_stop["terminal_key"])
+
+
+def partial_stop_paint_passes(pair, source_at_intent, source_at_stop,
+                              post_stop, stop_intent_s, *, target_unavailable=False):
+    """A painted partial is cancelled as a gap for that exact open source pass."""
+    if (target_unavailable or pair is None or source_at_intent is None
+            or source_at_stop is None or post_stop is None):
+        return False
+    sequence, revision = pair["sequence"], pair["revision"]
+    partial = pair["partial"]
+    return bool(revision > 0 and set(partial) == {"spectrum", "waterfall"}
+        and all(item["key"] == [sequence, "partial", revision]
+                and item["paint_return_s"] < stop_intent_s for item in partial.values())
+        and partial["spectrum"]["coverage_runs"] > 0
+        and source_at_intent["in_progress"] and source_at_stop["in_progress"]
+        and source_at_intent["sequence"] == sequence
+        and source_at_stop["sequence"] == sequence
+        and source_at_intent["last_completed_sequence"] < sequence
+        and source_at_stop["last_completed_sequence"] < sequence
+        and source_at_stop["gap_sequence"] == sequence
+        and post_stop["terminal_key"] == [sequence, "gap", 0]
+        and terminal_gap_paint_passes(post_stop, stop_intent_s))
+
+
 class ProgressivePaintWitness:
     """Latch one exact pair independently of the bounded diagnostic event log."""
-    def __init__(self, max_passes=64, max_events_per_pass=16):
+    def __init__(self, max_passes=64, max_events_per_pass=16, *, track_latest_partial=False):
         self.max_passes = max_passes
         self.max_events_per_pass = max_events_per_pass
+        self.track_latest_partial = track_latest_partial
         self.candidates = OrderedDict()
         self.pair = None
+        self.latest_partial_pair = None
 
     def accept(self, event):
         key = event["key"]
-        if self.pair is not None or key[1] not in ("partial", "complete"):
+        if ((self.pair is not None and not self.track_latest_partial)
+                or key[1] not in ("partial", "complete")):
             return
         candidates = self.candidates.setdefault(key[0], deque(maxlen=self.max_events_per_pass))
         candidates.append(event)
         if len(self.candidates) > self.max_passes:
             self.candidates.popitem(last=False)
-        if key[1] == "complete":
+        if key[1] == "partial" and self.track_latest_partial:
+            partial = {item["pane"]: item for item in candidates
+                       if item["key"] == key}
+            if (set(partial) == {"spectrum", "waterfall"}
+                    and partial["spectrum"]["coverage_runs"] > 0):
+                self.latest_partial_pair = dict(sequence=key[0], revision=key[2],
+                                                partial=partial)
+        if key[1] == "complete" and self.pair is None:
             self.pair = paired_progressive_paints(candidates)
             if self.pair is not None:
                 self.candidates.clear()
@@ -292,14 +340,17 @@ def fixed_visible_target_matches(metadata, requested_size, expected_dpr):
         and metadata["waterfall_canvas_dpr"] == expected_dpr)
 
 
-def requested_gate_failures(report, *, progressive_stage_gate, expected_dpr):
+def requested_gate_failures(report, *, progressive_stage_gate, stop_during_partial=False,
+                            expected_dpr):
     """A written JSON is not a successful CLI gate when a predicate is false."""
     failed = []
     if report["post_close_reserved_bytes"] or report["remaining_workers"]:
         failed.append("cleanup")
-    if progressive_stage_gate and any(row["progressive_paint_gate_passed"] is not True
-                                      for row in report["results"]):
-        failed.append("progressive-paint")
+    if progressive_stage_gate:
+        field = ("partial_stop_gate_passed" if stop_during_partial
+                 else "progressive_paint_gate_passed")
+        if any(row[field] is not True for row in report["results"]):
+            failed.append("partial-stop-paint" if stop_during_partial else "progressive-paint")
     if expected_dpr is not None and any(
             row["fixed_visible_target_match"] is not True for row in report["results"]):
         failed.append("fixed-visible-target")
@@ -325,6 +376,8 @@ def main():
                         help="Synthetic partial and terminal dwell each; default 2ms preserves prior workload")
     parser.add_argument("--progressive-stage-gate", action="store_true",
                         help="Opt-in per-paint partial/complete/Stop witness; instrumentation perturbs timing")
+    parser.add_argument("--stop-during-partial", action="store_true",
+                        help="Stop while the current pass has painted partial on both canvases, before its terminal")
     parser.add_argument("--capture-window", action="store_true",
                         help="Post-measurement QWidget surface PNG; visible Windows and one grid only")
     args = parser.parse_args()
@@ -340,6 +393,8 @@ def main():
         parser.error("synthetic terminal relay interval must be in 1..1000")
     if not 2 <= args.producer_phase_ms <= 1000:
         parser.error("producer-phase-ms must be 2..1000")
+    if args.stop_during_partial and not args.progressive_stage_gate:
+        parser.error("stop-during-partial requires progressive-stage-gate")
     if any(value < 640 or value > 8192 for value in args.window_size):
         parser.error("window dimensions must be 640..8192 logical pixels")
     if args.qt_platform == "windows" and sys.platform != "win32":
@@ -396,6 +451,9 @@ def main():
                 self.lines = deque(maxlen=4)
                 self.seq = self.completed = self.dropped = self.preview_dropped = 0
                 self.high_water = self.control_gaps = 0
+                self.in_progress = False
+                self.last_completed_sequence = 0
+                self.stop_capture = None
                 self.thread = None
 
             def frame(self, partial, *, gap=False):
@@ -424,17 +482,24 @@ def main():
                 def produce():
                     while not self.done.wait(args.producer_phase_ms / 1000):
                         with self.lock:
+                            if self.done.is_set():
+                                break
                             self.seq += 1
                             self.preview_dropped += self.preview is not None
                             self.preview = self.frame(True)
+                            self.in_progress = True
                         if self.done.wait(args.producer_phase_ms / 1000):
                             break
                         with self.lock:
+                            if self.done.is_set():
+                                break
                             if self.seq % args.terminal_every == 0:
                                 self.append(self.frame(False))
                             else:
                                 self.dropped += 1
                             self.completed += 1
+                            self.last_completed_sequence = self.seq
+                            self.in_progress = False
                 self.thread = threading.Thread(target=produce, name="synthetic-sweep-publications")
                 self.thread.start()
 
@@ -456,15 +521,24 @@ def main():
                         output_queue=SimpleNamespace(depth=len(self.lines), capacity=4))
 
             def stop(self):
-                self.done.set()
+                with self.lock:
+                    self.stop_capture = dict(sequence=self.seq,
+                        in_progress=self.in_progress,
+                        last_completed_sequence=self.last_completed_sequence)
+                    self.done.set()
                 if self.thread is not None:
                     self.thread.join(timeout=2)
                     if self.thread.is_alive():
                         raise RuntimeError("synthetic producer failed to stop")
                 with self.lock:
-                    self.seq += 1
+                    # In the opt-in cancellation case, the gap terminates the
+                    # painted, still-open pass rather than a fabricated next pass.
+                    if not (args.stop_during_partial and self.stop_capture["in_progress"]):
+                        self.seq += 1
+                    self.stop_capture["gap_sequence"] = self.seq
                     self.append(self.frame(True, gap=True))
                     self.preview = None
+                    self.in_progress = False
                     self.control_gaps += 1
 
             def disconnect(self):
@@ -482,6 +556,9 @@ def main():
         stop_times = []
         stop_stages = {}
         stop_intent_phase = {}
+        stop_intent_partial = None
+        stop_intent_source = None
+        stop_target_unavailable = False
         stop_phase_observations = 0
         memory_samples = []
         page_switches = []
@@ -491,7 +568,7 @@ def main():
         canvas_paints = {name: deque(maxlen=8192) for name in ("spectrum", "waterfall")}
         stage_paints = deque(maxlen=8192)
         stage_paint_overflow = 0
-        stage_witness = ProgressivePaintWitness()
+        stage_witness = ProgressivePaintWitness(track_latest_partial=args.stop_during_partial)
         scene = None
 
         class MeasuredGraphics(pg.GraphicsLayoutWidget):
@@ -647,15 +724,32 @@ def main():
                 began = perf_counter()
 
                 def request_stop():
-                    nonlocal stop_phase_observations
+                    nonlocal stop_phase_observations, stop_intent_partial
+                    nonlocal stop_intent_source, stop_target_unavailable
                     phase = sweep_stop_phase(presenter, harness.composition.spectrum_projector)
                     stop_phase_observations += 1
-                    if not sweep_phase_matches(phase, args.stop_phase):
+                    partial = stage_witness.latest_partial_pair if args.stop_during_partial else None
+                    source = None
+                    if args.stop_during_partial:
+                        with producer.lock:
+                            source = dict(sequence=producer.seq,
+                                in_progress=producer.in_progress,
+                                last_completed_sequence=producer.last_completed_sequence)
+                    target_ready = (not args.stop_during_partial or bool(partial is not None
+                        and source["in_progress"] and source["sequence"] == partial["sequence"]
+                        and source["last_completed_sequence"] < partial["sequence"]))
+                    phase_ready = sweep_phase_matches(phase, args.stop_phase)
+                    if not (phase_ready and target_ready):
                         if perf_counter() > due + 3:
-                            errors.append(f"Stop phase unavailable: {args.stop_phase}; last={phase}")
+                            if not phase_ready:
+                                errors.append(f"Stop phase unavailable: {args.stop_phase}; last={phase}")
+                            if not target_ready:
+                                stop_target_unavailable = True
                         else:
                             stop_timer.start(2)
                             return
+                    stop_intent_partial = partial
+                    stop_intent_source = source
                     stop_intent_phase.update(phase)
                     phases.transition("stop")
                     entered = perf_counter()
@@ -697,20 +791,21 @@ def main():
                         producer_thread_alive=bool(producer.thread and producer.thread.is_alive()),
                         terminal_paint_timed_out=terminal_paint_timed_out,
                         terminal_gap_painted_on=sorted(terminal_painted),
+                        terminal_gap_first_paint_host_s={pane: item["paint_return_s"]
+                            for pane, item in terminal_painted.items()},
                         stop_intent_to_terminal_gap_first_paint_ms={pane:
                             (item["paint_return_s"] - stop_times[0]) * 1000
                             for pane, item in terminal_painted.items()},
                         displayed_terminal_key=(list(sweep_key(scene.displayed_frame.spectrum))
                             if scene.displayed_frame is not None else None))
+                terminal_paint_passed = terminal_gap_paint_passes(post_stop, stop_times[0])
                 progressive_passed = (bool(progressive_pair_precedes_stop(progressive_pair, stop_times[0])
-                    and post_stop["terminal_key"] is not None
-                    and post_stop["terminal_key"][1] == "gap"
-                    and post_stop["terminal_sweep"] and post_stop["presenter_can_close"]
-                    and not post_stop["producer_thread_alive"]
-                    and not post_stop["terminal_paint_timed_out"]
-                    and post_stop["terminal_gap_painted_on"] == ["spectrum", "waterfall"]
-                    and post_stop["displayed_terminal_key"] == post_stop["terminal_key"])
-                    if args.progressive_stage_gate else None)
+                    and terminal_paint_passed) if args.progressive_stage_gate
+                    and not args.stop_during_partial else None)
+                partial_stop_passed = (partial_stop_paint_passes(stop_intent_partial,
+                    stop_intent_source, producer.stop_capture, post_stop, stop_times[0],
+                    target_unavailable=stop_target_unavailable)
+                    if args.stop_during_partial else None)
                 window_capture = None
                 if args.capture_window:
                     image = harness.shell.grab()
@@ -760,11 +855,18 @@ def main():
                     terminal_control_gaps=producer.control_gaps,
                     stage_paint_events=list(stage_paints), stage_paint_overflow=stage_paint_overflow,
                     progressive_painted_pair=progressive_pair, post_stop=post_stop,
+                    stop_intent_partial_pair=stop_intent_partial,
+                    source_at_stop_intent=stop_intent_source,
+                    source_at_coordinator_stop=producer.stop_capture,
+                    stop_target_unavailable=stop_target_unavailable,
                     window_capture=window_capture,
                     progressive_paint_gate_passed=progressive_passed,
+                    partial_stop_gate_passed=partial_stop_passed,
                     fixed_visible_target_match=fixed_target_match,
                     fixed_target_progressive_gate_passed=(bool(progressive_passed and fixed_target_match)
                         if progressive_passed is not None and fixed_target_match is not None else None),
+                    fixed_target_partial_stop_gate_passed=(bool(partial_stop_passed and fixed_target_match)
+                        if partial_stop_passed is not None and fixed_target_match is not None else None),
                     post_close_reserved_bytes=None,
                     page_switches=len(page_switches),
                     waterfall_rows=page.visualization.waterfall_pane.history_rows,
@@ -803,8 +905,9 @@ def main():
         terminal_every=args.terminal_every,
         producer_phase_ms=args.producer_phase_ms,
         progressive_stage_gate=args.progressive_stage_gate,
+        stop_during_partial=args.stop_during_partial,
         requested_expected_dpr=args.expected_dpr,
-        progressive_paint_scope="First paint returns with exact pass/state/revision on each canvas; same-pass partial then complete is not atomic screen presentation. Stop-to-idle and stop-to-terminal-gap-paint are separate; Qt heartbeat deadline is not a hard watchdog or DWM scanout.",
+        progressive_paint_scope="First paint returns with exact pass/state/revision on each canvas; same-pass partial then complete is not atomic screen presentation. Optional Stop-during-partial requires both partial paints before intent and same-pass cancellation gap paints after. Stop-to-idle and stop-to-terminal-gap-paint are separate; Qt heartbeat deadline is not a hard watchdog or DWM scanout.",
         stop_phase_scope="Instantaneous GUI-side Future state immediately before click, not a worker barrier. Poll includes domain conversion and preparation. Phase wait is timer lateness, excluded from intent-to-idle; unmatched phase fails after cleanup.",
         timing_window_samples=8192, trace_memory=args.trace_memory,
         page_cycle_seconds=args.page_cycle_seconds,
@@ -815,6 +918,7 @@ def main():
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
     failures = requested_gate_failures(report, progressive_stage_gate=args.progressive_stage_gate,
+        stop_during_partial=args.stop_during_partial,
         expected_dpr=args.expected_dpr)
     if failures:
         raise SystemExit(f"Sweep observer gate failed ({', '.join(failures)}); inspect written JSON")
