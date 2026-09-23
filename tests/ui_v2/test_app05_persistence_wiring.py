@@ -1,7 +1,7 @@
 """Actual Scene/ImageItem admission on the existing projection owner."""
-from dataclasses import replace
 import threading
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import numpy as np
@@ -257,6 +257,7 @@ class PersistenceCompositionTests(unittest.TestCase):
         self.addCleanup(self.f.doCleanups)
         self.addCleanup(self.f.tearDown)
         self.f.select_and_apply()
+        self.assertIsNone(self.f.composition.spectrum_projector.persistence_projector)
 
     def test_stopped_rtbw_policy_change_while_existing_worker_is_mapping(self):
         from scripts.benchmark_app05_rtbw_observation import synthetic_persistence
@@ -303,8 +304,9 @@ class PersistenceCompositionTests(unittest.TestCase):
 
     def test_compiled_sweep_statistics_use_worker_and_stop_keeps_latest_then_mode_clears(self):
         import importlib
+
         from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
-        from sdr_monitor.services.native_continuous_sweep import _to_domain_progress, _to_domain_line
+        from sdr_monitor.services.native_continuous_sweep import _to_domain_line, _to_domain_progress
         from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
         from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
         partial, final = importlib.import_module("sdr_monitor._sdr_native")._make_test_sweep_statistics_frames()

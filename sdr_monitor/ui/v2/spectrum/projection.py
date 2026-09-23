@@ -7,23 +7,27 @@ executor ownership crosses this boundary.
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Event, Lock
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 
+from sdr_monitor.domain.sweep_lines import SweepLineFrame
+
+from .allocation_budget import AllocationReservation, PresentationAllocationBudget, PresentationBudgetExceeded
+from .cancellation import CancelCheck, check_cancelled
 from .contracts import EnvelopeTrace, PreparedSpectrumFrame, SpectrumFrameView, TraceKind, finite_value_extent
 from .envelope import peak_preserving_envelope
-from .sweep_coverage import CoverageProjection, SweepCoverageState, SweepFrame
-from sdr_monitor.domain.sweep_lines import SweepLineFrame
-from .cancellation import CancelCheck, check_cancelled
-from .retained_bytes import retained_arrays, union_bytes
-from .allocation_budget import AllocationReservation, PresentationAllocationBudget, PresentationBudgetExceeded
 from .persistence_projection import (
-    PersistenceImageRequest, PreparedPersistenceImage,
-    persistence_image_reserve, prepare_persistence_image,
+    PersistenceImageRequest,
+    PreparedPersistenceImage,
+    persistence_image_reserve,
+    prepare_persistence_image,
 )
+from .persistence_projector import PersistenceProjector
+from .retained_bytes import retained_arrays, union_bytes
+from .sweep_coverage import CoverageProjection, SweepCoverageState, SweepFrame
 
 DEFAULT_PROJECTION_BYTES = 256 * 1024 * 1024
 
@@ -35,12 +39,13 @@ def _density_policy_key(request: "ProjectionRequest") -> tuple | None:
     return None if density is None else (density.policy, density.history_revision)
 
 
-def _request_storage(request: "ProjectionRequest") -> dict[int, int]:
+def _request_storage(request: "ProjectionRequest", *, include_persistence: bool = True) -> dict[int, int]:
     return retained_arrays(*(view for _, view in request.traces), request.current,
-                           request.previous, request.prepared, request.persistence)
+                           request.previous, request.prepared,
+                           request.persistence if include_persistence else None)
 
 
-def _output_reserve(request: "ProjectionRequest") -> int:
+def _output_reserve(request: "ProjectionRequest", *, include_persistence: bool = True) -> int:
     # At most nine points per viewport column per envelope, with float64
     # coordinates and values. Coverage uses at most 2048 columns + edges.
     # This reserves final result arrays, NOT reducer scratch or Qt paint data.
@@ -48,7 +53,8 @@ def _output_reserve(request: "ProjectionRequest") -> int:
     traces = sum(9 * min(width, view.point_count) *
                  (max(8, view.frequencies_hz.dtype.itemsize) + max(8, view.values.dtype.itemsize))
                  for _, view in request.traces)
-    density = 0 if request.persistence is None else persistence_image_reserve(request.persistence)
+    density = (0 if not include_persistence or request.persistence is None
+               else persistence_image_reserve(request.persistence))
     if not request.required_work:
         return density
     return traces + (2048 * (9 * 16 + 9) + 8 if request.current is not None else 0) + density
@@ -153,13 +159,16 @@ class SpectrumProjector(QObject):
     retry_ready = Signal()
     commit_requested = Signal()
     settled = Signal(object)
+    persistence_ready = Signal(object)
+    persistence_settled = Signal(object)
     work_active_changed = Signal(bool)
     _done = Signal(object)
     _required_done = Signal(object)  # Python scalar serial, not a 32-bit Qt int
 
     def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
                  *, max_retained_bytes: int = DEFAULT_PROJECTION_BYTES,
-                 allocation_budget: PresentationAllocationBudget | None = None) -> None:
+                 allocation_budget: PresentationAllocationBudget | None = None,
+                 persistence_submit: Callable[[Callable[[], object]], Future] | None = None) -> None:
         super().__init__()
         self.allocation_budget = allocation_budget
         self._allocation: AllocationReservation | None = None
@@ -174,6 +183,13 @@ class SpectrumProjector(QObject):
         self.byte_rejections = 0
         self.peak_retained_bytes = 0
         self._submit = submit
+        self.persistence_projector = (None if persistence_submit is None else
+                                      PersistenceProjector(persistence_submit,
+                                                           allocation_budget=allocation_budget,
+                                                           max_retained_bytes=max_retained_bytes))
+        if self.persistence_projector is not None:
+            self.persistence_projector.ready.connect(self.persistence_ready.emit)
+            self.persistence_projector.settled.connect(self.persistence_settled.emit)
         self._future: Future | None = None
         self._active: ProjectionRequest | None = None
         self._pending: ProjectionRequest | None = None
@@ -182,7 +198,8 @@ class SpectrumProjector(QObject):
         self._preparation_in_flight = False
         self._cancel = Event()
         # One notification for this active job, no payload-bearing Qt backlog.
-        # The Future remains active through OPTIONAL work and final GUI ack.
+        # In compatibility mode the Future remains active through optional
+        # work; product composition can route density to its separate lane.
         self._required_lock = Lock()
         self._required_result: SpectrumProjection | None = None
         self._required_delivered = False
@@ -198,11 +215,18 @@ class SpectrumProjector(QObject):
         if self._closed:
             return
         try:
+            if self.persistence_projector is not None and request.persistence is not None:
+                self.persistence_projector.offer(request.owner, request.persistence)
+                self.peak_retained_bytes = max(self.peak_retained_bytes, self.retained_bytes)
             if self.allocation_budget is not None:
                 self.allocation_budget.observe(*(view for _, view in request.traces),
                                                request.current, request.previous, request.prepared,
                                                request.persistence)
-            storage, reserve = _request_storage(request), _output_reserve(request)
+            split_persistence = self.persistence_projector is not None
+            if split_persistence and not request.required_work:
+                return
+            storage = _request_storage(request, include_persistence=not split_persistence)
+            reserve = _output_reserve(request, include_persistence=not split_persistence)
         except (TypeError, ValueError) as error:
             self.failed.emit(request, str(error))
             return
@@ -251,6 +275,8 @@ class SpectrumProjector(QObject):
         self.discard_pending(owner)
         if self._active is not None and self._active.owner is owner:
             self._cancel_active()
+        if self.persistence_projector is not None:
+            self.persistence_projector.cancel(owner)
 
     def set_suspended(self, suspended: bool) -> None:
         """Let accepted RF/control operations precede optional paint work.
@@ -268,7 +294,11 @@ class SpectrumProjector(QObject):
                 # No second result is reserved until the cancelled job acks.
                 self._pending_reserve = 0
             self._cancel_active()
+            if self.persistence_projector is not None:
+                self.persistence_projector.set_suspended(True)
         else:
+            if self.persistence_projector is not None:
+                self.persistence_projector.set_suspended(False)
             self._dispatch()
 
     def _cancel_active(self) -> None:
@@ -320,6 +350,8 @@ class SpectrumProjector(QObject):
         self._retry_capacity = False
         # Never join a worker from Qt. Its application owner performs cleanup.
         self._cancel_active()
+        if self.persistence_projector is not None:
+            self.persistence_projector.dispose()
 
     def release_presentation_after_shutdown(self) -> None:
         """Release a joined worker result even when its Qt callback is queued."""
@@ -330,6 +362,8 @@ class SpectrumProjector(QObject):
             if not future.done():
                 raise RuntimeError("Projection worker has not acknowledged shutdown")
             self._finish(future)  # closed: no result emission or new work
+        if self.persistence_projector is not None:
+            self.persistence_projector.release_after_shutdown()
 
     def _dispatch(self) -> None:
         if (self._closed or self._suspended or self._future is not None
@@ -340,17 +374,22 @@ class SpectrumProjector(QObject):
         if self._live_preparation_in_flight and not self._pending.required_work:
             return
         request, self._pending = self._pending, None
+        split_persistence = self.persistence_projector is not None
+        work_request = (replace(request, persistence=None) if split_persistence
+                        and request.persistence is not None else request)
         self._active_storage, self._pending_storage = self._pending_storage, {}
-        self._active_reserve, self._pending_reserve = _output_reserve(request), 0
-        self._active = request
+        self._active_reserve, self._pending_reserve = _output_reserve(
+            request, include_persistence=not split_persistence), 0
+        self._active = work_request
         self._active_serial += 1
         serial = self._active_serial
         cancel = self._cancel = Event()
         try:
-            # Reserve spectrum outputs here; density separately reserves its
-            # output + bounded scratch on this same worker. A density refusal
-            # is a layer error, not loss of the completed spectrum/coverage.
-            density_bytes = (0 if request.persistence is None else persistence_image_reserve(request.persistence))
+            # Required spectrum and optional density reserve independently on
+            # the same composition budget. The split product lane never makes
+            # a spectrum reserve wait for its density output.
+            density_bytes = (0 if split_persistence or request.persistence is None
+                             else persistence_image_reserve(request.persistence))
             allocation = (None if self.allocation_budget is None else
                           self.allocation_budget.reserve(self._active_reserve - density_bytes))
             self._allocation = allocation
@@ -373,8 +412,10 @@ class SpectrumProjector(QObject):
                     self._required_done.emit(serial)
 
                 try:
-                    result = (project_spectrum(request, cancelled=cancel.is_set) if request.persistence is None else
-                              project_spectrum(request, cancelled=cancel.is_set, persistence_budget=density_budget,
+                    result = (project_spectrum(work_request, cancelled=cancel.is_set)
+                              if work_request.persistence is None else
+                              project_spectrum(work_request, cancelled=cancel.is_set,
+                                               persistence_budget=density_budget,
                                                spectrum_ready=required_ready))
                     if allocation is not None and not committed:
                         allocation.commit(*(trace for _, trace in result.traces), result.coverage,
@@ -403,7 +444,8 @@ class SpectrumProjector(QObject):
                        tuple((kind, id(view.source_frame)) for kind, view in request.traces),
                        _density_policy_key(request),
                        None if request.persistence is None else id(request.persistence.view))
-                alone = union_bytes(_request_storage(request)) + _output_reserve(request)
+                alone = (union_bytes(_request_storage(request, include_persistence=not split_persistence))
+                         + _output_reserve(request, include_persistence=not split_persistence))
                 if alone <= self.allocation_budget.limit_bytes and key != self._shared_retry_key:
                     self._shared_retry_key = key
                     QTimer.singleShot(0, lambda key=key: self._retry_shared(key))
@@ -491,5 +533,6 @@ class SpectrumProjector(QObject):
     @property
     def retained_bytes(self) -> int:
         """Exposed backing arrays + reserved results until GUI acknowledgement."""
+        optional = 0 if self.persistence_projector is None else self.persistence_projector.retained_bytes
         return (union_bytes(self._active_storage, self._pending_storage)
-                + self._active_reserve + self._pending_reserve)
+                + self._active_reserve + self._pending_reserve + optional)

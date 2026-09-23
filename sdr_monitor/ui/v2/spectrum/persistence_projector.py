@@ -1,0 +1,241 @@
+"""Bounded optional persistence-image worker, separate from spectrum projection."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from concurrent.futures import CancelledError, Future
+from dataclasses import dataclass
+from threading import Event
+
+from PySide6.QtCore import QObject, Qt, Signal
+
+from .allocation_budget import AllocationReservation, PresentationAllocationBudget
+from .persistence_projection import (
+    PersistenceImageRequest,
+    PreparedPersistenceImage,
+    persistence_image_reserve,
+    prepare_persistence_image,
+)
+from .retained_bytes import retained_arrays, union_bytes
+
+DEFAULT_PERSISTENCE_BYTES = 256 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceWork:
+    owner: object
+    request: PersistenceImageRequest
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceDelivery:
+    owner: object
+    request: PersistenceImageRequest
+    result: PreparedPersistenceImage | None = None
+    error: str | None = None
+
+
+class PersistenceProjector(QObject):
+    """Run one optional density transform plus one replaceable latest request.
+
+    The caller owns the executor and its shutdown. This port keeps at most one
+    submitted Future and one pending request; it never waits on the GUI thread.
+    """
+
+    ready = Signal(object)
+    settled = Signal(object)
+    _done = Signal(object)
+
+    def __init__(
+        self,
+        submit: Callable[[Callable[[], PreparedPersistenceImage]], Future],
+        *,
+        allocation_budget: PresentationAllocationBudget | None = None,
+        max_retained_bytes: int = DEFAULT_PERSISTENCE_BYTES,
+    ) -> None:
+        super().__init__()
+        if isinstance(max_retained_bytes, bool) or not isinstance(max_retained_bytes, int) or max_retained_bytes < 1:
+            raise ValueError("persistence projection budget must be a positive integer")
+        self._submit = submit
+        self.allocation_budget = allocation_budget
+        self.max_retained_bytes = max_retained_bytes
+        self._active: PersistenceWork | None = None
+        self._pending: PersistenceWork | None = None
+        self._active_storage: dict[int, int] = {}
+        self._pending_storage: dict[int, int] = {}
+        self._active_reserve = self._pending_reserve = 0
+        self._future: Future | None = None
+        self._cancel = Event()
+        self._reservation: AllocationReservation | None = None
+        self._closed = False
+        self._suspended = False
+        self.superseded = 0
+        self.cancelled = 0
+        self.completed = 0
+        self.byte_rejections = 0
+        self.peak_retained_bytes = 0
+        self._done.connect(self._finish, Qt.ConnectionType.QueuedConnection)
+
+    @property
+    def has_active(self) -> bool:
+        return self._future is not None
+
+    @property
+    def has_pending(self) -> bool:
+        return self._pending is not None
+
+    @property
+    def retained_bytes(self) -> int:
+        return (union_bytes(self._active_storage, self._pending_storage)
+                + self._active_reserve + self._pending_reserve)
+
+    def offer(self, owner: object, request: PersistenceImageRequest) -> None:
+        if self._closed or self._suspended:
+            return
+        work = PersistenceWork(owner, request)
+        if self._active is not None and self._active.owner is owner and self._active.request is request:
+            return
+        if self._pending is not None:
+            self.superseded += 1
+        self._pending = work
+        self._pending_storage = retained_arrays(request)
+        self._pending_reserve = persistence_image_reserve(request)
+        active_storage = self._active_storage
+        proposed = (union_bytes(active_storage, self._pending_storage)
+                    + self._active_reserve + self._pending_reserve)
+        if proposed > self.max_retained_bytes:
+            self._pending = None
+            self._pending_storage = {}
+            self._pending_reserve = 0
+            self.byte_rejections += 1
+            self.ready.emit(PersistenceDelivery(owner, request,
+                error="Persistence projection retained-byte budget exceeded"))
+            return
+        active = self._active
+        if active is not None and (active.owner is not owner
+                or active.request.policy != request.policy
+                or active.request.history_revision != request.history_revision):
+            self._cancel_active()
+        self.peak_retained_bytes = max(self.peak_retained_bytes, self.retained_bytes)
+        self._dispatch()
+
+    def cancel(self, owner: object) -> None:
+        pending = self._pending
+        if pending is not None and pending.owner is owner:
+            self._pending = None
+            self._pending_storage = {}
+            self._pending_reserve = 0
+            self.settled.emit(pending)
+        if self._active is not None and self._active.owner is owner:
+            self._cancel_active()
+
+    def set_suspended(self, suspended: bool) -> None:
+        if self._closed or self._suspended == bool(suspended):
+            return
+        self._suspended = bool(suspended)
+        if self._suspended:
+            active = self._active
+            if active is not None:
+                if self._pending is None:
+                    self._pending = active
+                    self._pending_storage = self._active_storage
+                    self._pending_reserve = 0
+                self._cancel_active()
+        else:
+            self._dispatch()
+
+    def dispose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._pending = None
+        self._pending_storage = {}
+        self._pending_reserve = 0
+        self._cancel_active()
+
+    def release_after_shutdown(self) -> None:
+        if not self._closed:
+            raise RuntimeError("Persistence projection must be disposed before terminal release")
+        future = self._future
+        if future is not None:
+            if not future.done():
+                raise RuntimeError("Persistence projection worker has not acknowledged shutdown")
+            self._finish(future)
+        if self._future is not None:
+            raise RuntimeError("Persistence projection release requires a joined worker")
+        self._active = self._pending = None
+        self._active_storage = self._pending_storage = {}
+        self._active_reserve = self._pending_reserve = 0
+
+    def _cancel_active(self) -> None:
+        self._cancel.set()
+        if self._future is not None:
+            self._future.cancel()
+
+    def _dispatch(self) -> None:
+        if self._closed or self._suspended or self._future is not None or self._pending is None:
+            return
+        work, self._pending = self._pending, None
+        self._active = work
+        self._active_storage, self._pending_storage = self._pending_storage, {}
+        self._active_reserve, self._pending_reserve = self._pending_reserve, 0
+        self._cancel = Event()
+        try:
+            if self.allocation_budget is not None:
+                self._reservation = self.allocation_budget.reserve(self._active_reserve, work.request)
+            reservation = self._reservation
+            cancel = self._cancel
+
+            def run() -> PreparedPersistenceImage:
+                try:
+                    result = prepare_persistence_image(work.request, cancelled=cancel.is_set)
+                    if reservation is not None:
+                        reservation.commit(result.image)
+                    return result
+                finally:
+                    if reservation is not None:
+                        reservation.close()
+
+            future = self._submit(run)
+        except Exception as error:
+            if self._reservation is not None:
+                self._reservation.close()
+            self._reservation = None
+            self._active = None
+            self._active_storage = {}
+            self._active_reserve = 0
+            self.ready.emit(PersistenceDelivery(work.owner, work.request, error=str(error)))
+            self.settled.emit(work)
+            self._dispatch()
+            return
+        self._future = future
+        future.add_done_callback(self._done.emit)
+
+    def _finish(self, future: Future) -> None:
+        if future is not self._future:
+            return
+        work = self._active
+        try:
+            if self._cancel.is_set() or future.cancelled():
+                self.cancelled += 1
+            elif not self._closed and work is not None:
+                try:
+                    result = future.result()
+                except CancelledError:
+                    self.cancelled += 1
+                except Exception as error:
+                    self.ready.emit(PersistenceDelivery(work.owner, work.request, error=str(error)))
+                else:
+                    self.completed += 1
+                    self.ready.emit(PersistenceDelivery(work.owner, work.request, result=result))
+        finally:
+            if self._reservation is not None:
+                self._reservation.close()
+                self._reservation = None
+            self._future = None
+            self._active = None
+            self._active_storage = {}
+            self._active_reserve = 0
+            if work is not None and not self._closed:
+                self.settled.emit(work)
+            self._dispatch()

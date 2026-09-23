@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import Future
 from time import time_ns
 from typing import Protocol
-from concurrent.futures import Future
 
-from .spectrum.projection import SpectrumProjection, SpectrumProjector
-from .spectrum.allocation_budget import PresentationAllocationBudget
-
-from .view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState, SweepPresentationPort
-from .workspaces.analyzer import analyzer_workspace_definition
-
-from .shell.contracts import ClosePort, V2ShellContext
 from .shell.close_lifecycle import CloseLifecycle, CloseState
+from .shell.contracts import ClosePort, V2ShellContext
 from .shell.placeholders import default_workspace_definitions
+from .spectrum.allocation_budget import PresentationAllocationBudget
+from .spectrum.projection import SpectrumProjection, SpectrumProjector
 from .state.live_view_state import LiveAction
+from .view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState, SweepPresentationPort
 from .view_models.calibration_view_model import CalibrationProfilePresenterPort, CalibrationProfileViewModel
 from .view_models.diagnostics_view_model import (
     DeferredDiagnosticsViewModel,
@@ -42,6 +39,7 @@ from .workspaces import (
     tinysa_activation_workspace_definition,
     tinysa_analyzer_workspace_definition,
 )
+from .workspaces.analyzer import analyzer_workspace_definition
 
 
 class LivePresenterLifecyclePort(LivePresenterPort, Protocol):
@@ -119,6 +117,7 @@ class V2LiveProductComposition:
         sweep_presenter: SweepPresenterLifecyclePort | None = None,
         analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
         projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
+        persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
         allocation_budget: PresentationAllocationBudget | None = None,
         async_shutdown: bool = False,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
@@ -133,7 +132,8 @@ class V2LiveProductComposition:
         self.analyzer_presenter = analyzer_presenter
         self.allocation_budget = allocation_budget or PresentationAllocationBudget()
         self.spectrum_projector = (None if projection_submit is None else SpectrumProjector(
-            projection_submit, allocation_budget=self.allocation_budget))
+            projection_submit, allocation_budget=self.allocation_budget,
+            persistence_submit=persistence_submit))
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.analyzer_view_model = (
@@ -441,6 +441,7 @@ def compose_v2_live_product(
     sweep_presenter: SweepPresenterLifecyclePort | None = None,
     analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
     projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
+    persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
     allocation_budget: PresentationAllocationBudget | None = None,
     async_shutdown: bool = False,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
@@ -457,6 +458,7 @@ def compose_v2_live_product(
         sweep_presenter=sweep_presenter,
         analyzer_presenter=analyzer_presenter,
         projection_submit=projection_submit,
+        persistence_submit=persistence_submit,
         allocation_budget=allocation_budget,
         async_shutdown=async_shutdown,
         calibration_presenter=calibration_presenter,

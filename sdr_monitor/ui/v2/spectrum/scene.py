@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import sys
+from collections.abc import Mapping
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, QTimer, Qt, Signal
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QDoubleSpinBox,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -25,8 +25,6 @@ from ..components import ContextPopover, EmptyChartOverlay, HeatLegend
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
 from ..i18n import UiLocale, text
 from .axis import FrequencyAxis
-from .sweep_position import SweepPositionOverlay
-from .sweep_coverage_overlay import SweepCoverageOverlay
 from .contracts import (
     BandMask,
     EnvelopeTrace,
@@ -40,12 +38,16 @@ from .contracts import (
     format_frequency_hz,
 )
 from .envelope import peak_preserving_envelope
-from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
 from .persistence_contracts import (
     PersistenceRenderMode,
     adapt_persistence_density,
 )
 from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
+from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
+from .persistence_projector import PersistenceDelivery, PersistenceWork
+from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
+from .sweep_coverage_overlay import SweepCoverageOverlay
+from .sweep_position import SweepPositionOverlay
 
 _TRACE_LABEL_KEYS: Mapping[TraceKind, str] = {
     TraceKind.CURRENT: "spectrum.trace.current",
@@ -196,6 +198,8 @@ class SpectrumScene(QWidget):
         projector.retry_ready.connect(self._retry_projection_capacity)
         projector.commit_requested.connect(self.commit_projection)
         projector.settled.connect(self._projection_settled)
+        projector.persistence_ready.connect(self._persistence_projection_ready)
+        projector.persistence_settled.connect(self._persistence_projection_settled)
         self.sweep_coverage.request_projection = self._request_projection
         self._view_box.sigResized.connect(self._request_projection)
 
@@ -333,13 +337,25 @@ class SpectrumScene(QWidget):
 
     def _accept_density_projection(self, result: SpectrumProjection) -> None:
         request = result.request
-        if request.persistence is not None and self._persistence.accept_worker_image(
-                request.persistence, result.persistence, result.persistence_error):
-            if result.persistence is not None:
-                self._persistence_legend.set_labels(*result.persistence.quantitative_labels)
+        if request.persistence is not None:
+            self._accept_persistence_image(request.persistence, result.persistence, result.persistence_error)
+
+    def _persistence_projection_ready(self, delivery: PersistenceDelivery) -> None:
+        if delivery.owner is self._projection_owner:
+            self._accept_persistence_image(delivery.request, delivery.result, delivery.error)
+
+    def _persistence_projection_settled(self, work: PersistenceWork) -> None:
+        if work.owner is self._projection_owner:
+            self._persistence.worker_settled(work.request)
+
+    def _accept_persistence_image(self, request: PersistenceImageRequest,
+                                  result: PreparedPersistenceImage | None, error: str | None) -> None:
+        if self._persistence.accept_worker_image(request, result, error):
+            if result is not None:
+                self._persistence_legend.set_labels(*result.quantitative_labels)
             else:
                 self._persistence_legend.set_labels(text("spectrum.persistence.no_data", self._locale),
-                                                  text("spectrum.persistence.no_data", self._locale))
+                                                    text("spectrum.persistence.no_data", self._locale))
             self._refresh_persistence_status()
 
     def _projection_failed(self, request: ProjectionRequest, reason: str) -> None:

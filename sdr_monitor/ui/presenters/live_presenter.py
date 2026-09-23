@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
-import threading
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 
 from ...application import LiveSessionUseCases
 from ...domain import LiveConfiguration, LiveSnapshot
-from ...domain.live_configuration_patch import LiveConfigurationPatch
 from ...domain.analyzer_resources import AnalyzerGeometryPreflight
 from ...domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ...domain.live_configuration_patch import LiveConfigurationPatch
 from ..display_scheduler import DisplayScheduler, DisplaySchedulerMetrics
 
 
@@ -65,10 +65,15 @@ class LivePresenter(QObject):
         self._presentation_thread = QThread.currentThread()
         self._use_cases = use_cases
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-live")
+        # Optional density mapping must not occupy the required spectrum /
+        # snapshot / command lane. Its owner still submits at most one active
+        # plus one replaceable latest task through SpectrumProjector.
+        self._persistence_executor: ThreadPoolExecutor | None = None
         self._closed = False
         self._closing = False
         self._shutdown_use_cases_complete = False
         self._shutdown_executor_complete = False
+        self._shutdown_persistence_executor_complete = False
         self._shutdown_presentation_complete = False
         self._publication_lock = threading.Lock()
         self._control_revision = 0
@@ -236,6 +241,14 @@ class LivePresenter(QObject):
             raise RuntimeError("Live presentation worker is closing")
         return self._executor.submit(operation)
 
+    def submit_persistence_task(self, operation: Callable[[], Any]) -> Future:
+        """Submit optional density preparation outside control/spectrum work."""
+        if self._closing or self._closed:
+            raise RuntimeError("Live persistence worker is closing")
+        if self._persistence_executor is None:
+            self._persistence_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-persistence")
+        return self._persistence_executor.submit(operation)
+
     def set_projection_in_flight(self, active: bool) -> None:
         """GUI-only backpressure from this owner's shared viewport worker.
 
@@ -279,9 +292,16 @@ class LivePresenter(QObject):
         finally:
             # Even a service cleanup error must not leave queued presenter
             # commands alive. The service cleanup itself remains retryable.
-            if not self._shutdown_executor_complete:
-                self._executor.shutdown(wait=True, cancel_futures=True)
-                self._shutdown_executor_complete = True
+            try:
+                if not self._shutdown_executor_complete:
+                    self._executor.shutdown(wait=True, cancel_futures=True)
+                    self._shutdown_executor_complete = True
+            finally:
+                if not self._shutdown_persistence_executor_complete:
+                    executor = self._persistence_executor
+                    if executor is not None:
+                        executor.shutdown(wait=True, cancel_futures=True)
+                    self._shutdown_persistence_executor_complete = True
         self._closed = True
 
     def release_presentation_after_shutdown(self) -> None:
@@ -291,7 +311,8 @@ class LivePresenter(QObject):
         see a detached Future and cannot republish data into a closed product.
         This releases UI holders, not snapshots owned by an external service.
         """
-        if not self._closed or not self._shutdown_executor_complete:
+        if (not self._closed or not self._shutdown_executor_complete
+                or not self._shutdown_persistence_executor_complete):
             raise RuntimeError("Live presentation release requires completed shutdown")
         if self._preparation_future is not None and not self._preparation_future.done():
             raise RuntimeError("Live preparation still active after shutdown")
