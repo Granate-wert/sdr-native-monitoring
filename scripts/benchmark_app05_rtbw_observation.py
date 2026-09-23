@@ -128,6 +128,8 @@ def main(argv=None):
                         help="0 disables; 16..128 enables fresh synthetic rolling-four-frame histograms")
     parser.add_argument("--persistence-every", type=int, default=10,
                         help="Histogram at first spectrum after Start, then every N source publications")
+    parser.add_argument("--persistence-display", choices=("direct", "visual"), default="direct",
+                        help="Select the actual V2 persistence rendering policy for normal paint profiling")
     parser.add_argument("--stop-phase", default="any", choices=("any", "idle",
         "preparation:running", "preparation:done-awaiting-gui",
         "projection:running", "projection:done-awaiting-gui"),
@@ -147,6 +149,8 @@ def main(argv=None):
         parser.error("churn intervals must be zero or 0.1..60 seconds")
     if args.output.exists():
         parser.error("output must be new")
+    if args.persistence_display == "visual" and not args.persistence_power_bins:
+        parser.error("Visual persistence profiling requires a generated histogram")
     if args.memory_seconds != 0 and not .25 <= args.memory_seconds <= 60:
         parser.error("memory-seconds must be zero or 0.25..60")
     if args.collect_after_context and not args.memory_seconds:
@@ -163,6 +167,7 @@ def main(argv=None):
     import pyqtgraph as pg
     from PySide6.QtCore import QTimer, Qt
     from sdr_monitor.domain.live import LiveSpectrumFrame
+    from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
     from scripts.benchmark_app04_poll_overload import PaintAgeTracker, run_qt_until
     from tests.test_app01_product_analyzer import _AtomicFakeLive
@@ -255,6 +260,7 @@ def main(argv=None):
             f.wait(lambda: not f.composition.view_model.state.busy)
             f.shell.resize(1920, 1080)
             scene, waterfall = f.page.visualization.spectrum_scene, f.page.visualization.waterfall_pane
+            scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence_display))
 
             def observe_density(state):
                 nonlocal persistence_accepted, last_persistence_accepted
@@ -503,6 +509,7 @@ def main(argv=None):
                 preparation_superseded=f.presenter.preparation_superseded,
                 preparation_stale=f.presenter.preparation_stale)
             report["persistence"] = dict(enabled=persistence_enabled,
+                display_mode=args.persistence_display,
                 power_bins=args.persistence_power_bins, every_source_frames=args.persistence_every,
                 generated=persistence_generated, accepted=persistence_accepted,
                 last_accepted_update=last_persistence_accepted,
