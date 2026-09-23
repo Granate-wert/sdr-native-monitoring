@@ -5,6 +5,7 @@ First verify CPU traversal against QGraphicsScene.render; then substitute only
 identified scientific paint items. Shell/toolbars are outside this plot target.
 """
 from dataclasses import dataclass
+from time import perf_counter
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QPainter, QPainterPath, QTransform
@@ -137,28 +138,39 @@ def paint_plot_backgrounds(device, panels):
         painter.end()
 
 
-def draw_plot_composition(device, functions, extent, plan, panels, bundle, *, resources=None):
+def draw_plot_composition(device, functions, extent, plan, panels, bundle, *, resources=None, qt_curves=False):
     from scripts.app05_scientific_gpu import draw_scientific_gpu
     from scripts.app05_scientific_layers import ScientificLayers
     paint_plot_backgrounds(device, panels)
     pending = []
     science = []
     qt_batches = 0
+    qt_wall_ms = 0.
+    scientific_wall_ms = 0.
     for command in plan:
-        if command.scientific is None:
+        if command.scientific is None or (qt_curves and command.scientific.path is not None):
             pending.append(command)
             continue
         if pending:
+            started = perf_counter()
             paint_qt_commands(device, pending)
+            qt_wall_ms += (perf_counter() - started) * 1000
             pending.clear()
             qt_batches += 1
         one = ScientificLayers((command.scientific,), bundle.retained_bytes, bundle.allocation_limit)
+        started = perf_counter()
         detail = draw_scientific_gpu(device, functions, extent, one, resources=resources)
-        science.append(dict(name=command.scientific.name, detail=detail))
+        elapsed = (perf_counter() - started) * 1000
+        scientific_wall_ms += elapsed
+        science.append(dict(name=command.scientific.name, detail=detail, wall_ms=elapsed))
     if pending:
+        started = perf_counter()
         paint_qt_commands(device, pending)
+        qt_wall_ms += (perf_counter() - started) * 1000
         qt_batches += 1
     return dict(all_plot_layers=True, all_layers=True, qt_batches=qt_batches, scientific=science,
+                experimental_qt_curves=qt_curves,
+                diagnostic_cpu_wall_ms=dict(qt_batches=qt_wall_ms, scientific_calls=scientific_wall_ms),
                 product_accepted=False, scope="two plot viewports, not shell/toolbars or interactive widget integration")
 
 

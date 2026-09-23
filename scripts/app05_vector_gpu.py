@@ -1,6 +1,7 @@
 """Experimental stencil stroke fill and coverage pattern shader, no wide lines."""
 from dataclasses import replace
 from math import floor
+from time import perf_counter
 from scripts.app05_gpu_errors import GpuOperationError
 
 
@@ -92,8 +93,10 @@ def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
             # One outline's transient geometry at a time, not retained in bundle.
             retained_gpu = resources.live_bytes if resources is not None else 0
             geometry_budget = min(32*1024*1024, extent.target_budget_bytes-extent.nominal_target_bytes-bundle.retained_bytes-retained_gpu)
+            geometry_started = perf_counter()
             polygons, metric = stroke_polygons(layer, extent, geometry_budget)
-            strokes.append(dict(name=layer.name, **metric))
+            geometry_ms = (perf_counter() - geometry_started) * 1000
+            submit_started = perf_counter()
             functions.glScissor(*physical_scissor(layer.clip, extent))
             functions.glUniform1i(program.uniformLocation("patterned"), 0)
             functions.glEnable(0x0B90)
@@ -116,6 +119,8 @@ def draw_vectors_gpu(functions, extent, bundle, *, resources=None):
             color(layer.pen.color().getRgb(), layer.opacity)
             draw(quad, 0x0005, 4)
             functions.glDisable(0x0B90)
+            strokes.append(dict(name=layer.name, **metric, geometry_wall_ms=geometry_ms,
+                                gl_submission_wall_ms=(perf_counter() - submit_started) * 1000))
             del polygons
         error = functions.glGetError()
         if error:

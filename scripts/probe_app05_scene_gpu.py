@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--platform", choices=("windows", "offscreen"), default="windows")
     parser.add_argument("--scientific", action="store_true", help="Detached image shader/explicit paths ONLY, not all-layer acceptance")
     parser.add_argument("--qt-raster-compat", action="store_true", help="Explicit Qt 6.11.1 Indexed8/RGBA8888 nearest raster sampling experiment")
+    parser.add_argument("--qt-curves", action="store_true", help="Experimental QPainter curves on GL target, with GPU images/coverage")
     parser.add_argument("--images-only", action="store_true", help="With --scientific, isolate exact texture sampling/blending")
     parser.add_argument("--composition", action="store_true", help="Actual Qt stacking with scientific replacements; two complete plot viewports")
     parser.add_argument("--component-review", action="store_true", help="With composition: isolate each actual command on the same opaque background")
@@ -49,6 +50,9 @@ def main():
         parser.error("--composition requires --scientific without --images-only")
     if args.qt_raster_compat and not args.composition:
         parser.error("--qt-raster-compat requires --composition; not the pixel-centre oracle")
+    if args.qt_curves and (not args.composition or args.component_review or not args.persistent_resources
+                           or args.recreate_context or args.fail_upload or args.widget_lifecycle):
+        parser.error("--qt-curves requires persistent composition without component-review")
     if args.component_review and not args.composition:
         parser.error("--component-review requires --composition")
     if args.persistent_resources and (not args.composition or args.component_review):
@@ -97,7 +101,7 @@ def main():
     ready = False
     info = dict(scope=__doc__, gpu=target.info, platform=args.platform, logical_size=[args.width, args.height],
         dpr=args.dpr, theme=args.theme, persistence=args.persistence, scientific_only=args.scientific,
-        images_only=args.images_only, qt_raster_compat=args.qt_raster_compat,
+        images_only=args.images_only, qt_raster_compat=args.qt_raster_compat, qt_curves=args.qt_curves,
         full_plot_composition=args.composition,
         persistent_resources=args.persistent_resources,
         recreate_context=args.recreate_context,
@@ -215,7 +219,8 @@ def main():
                     def draw(device, functions, size):
                         if plan is not None:
                             reusable = target.scientific_resources() if args.persistent_resources else None
-                            gpu_resources.update(draw_plot_composition(device, functions, size, plan, panels, bundle, resources=reusable))
+                            gpu_resources.update(draw_plot_composition(device, functions, size, plan, panels, bundle,
+                                                                       resources=reusable, qt_curves=args.qt_curves))
                             if reusable is not None:
                                 gpu_resources["persistent"] = reusable.snapshot()
                         else:
@@ -237,7 +242,8 @@ def main():
                         oracle_extent = replace(extent, target_budget_bytes=extent.target_budget_bytes
                             -retained_gpu-extent.pixel_width*extent.pixel_height*4)
                         def fresh_draw(device, functions, size):
-                            draw_plot_composition(device, functions, oracle_extent, plan, panels, bundle)
+                            draw_plot_composition(device, functions, oracle_extent, plan, panels, bundle,
+                                                  qt_curves=args.qt_curves)
                         fresh, _ = target.render(extent, panels, background, draw=fresh_draw)
                         row["persistent_vs_fresh_gpu"] = compare_images(fresh, candidate)
                         del fresh

@@ -17,7 +17,8 @@ from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_t
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
-def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False, fail_upload=False, lifecycle=False, qt_raster_compat=False):
+def composition_probe(root, *, native=False, review=False, persistent=False, recreate=False, fail_upload=False,
+                      lifecycle=False, qt_raster_compat=False, qt_curves=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
@@ -26,6 +27,8 @@ def composition_probe(root, *, native=False, review=False, persistent=False, rec
             options += ["--component-review"]
         if qt_raster_compat:
             options += ["--qt-raster-compat"]
+        if qt_curves:
+            options += ["--qt-curves"]
         if persistent:
             options += ["--persistent-resources"]
         if recreate:
@@ -237,6 +240,30 @@ class ActualCompositionTests(unittest.TestCase):
         self.assertEqual(stats["live_bytes"], 0)
         self.assertEqual(stats["live_programs"], 0)
         self.assertEqual(stats["texture_allocations"], stats["texture_releases"])
+        self.assertIsNotNone(app)
+
+    def test_native_qt_curve_experiment_preserves_current_scene_and_resources(self):
+        app = QApplication.instance() or QApplication([])
+        target = SceneGpuTarget()
+        available = target.available
+        target.close()
+        if not available:
+            self.skipTest("requires native GL context")
+        report = composition_probe(Path(__file__).resolve().parents[2], native=True,
+                                   persistent=True, qt_raster_compat=True, qt_curves=True)
+        self.assert_plan(report)
+        self.assertTrue(report["qt_curves"])
+        for row in report["cases"]:
+            self.assertTrue(row["gpu_resources"]["experimental_qt_curves"])
+            self.assertTrue(row["persistent_vs_fresh_gpu"]["equal"])
+            self.assertTrue(row["source_unchanged"])
+            self.assertFalse(row["candidate_accepted"])
+            self.assertFalse(row["speed_acceptance"])
+            self.assertFalse(any(part["name"] in ("current", "average")
+                                 for part in row["gpu_resources"]["scientific"]))
+        stats = report["target_lifetime"]["scientific_resources"]
+        self.assertTrue(stats["closed"])
+        self.assertEqual(stats["live_bytes"], 0)
         self.assertIsNotNone(app)
 
     def test_native_complete_plot_composition_qhd_dpr150(self):
