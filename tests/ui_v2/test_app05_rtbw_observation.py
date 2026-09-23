@@ -34,6 +34,27 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(sorted(forward), sorted(reverse))
         self.assertEqual(tuple(name[0] for name in reverse), ("B", "A", "A", "B"))
 
+    def test_stage_timing_excludes_work_crossing_steady_boundaries(self):
+        from collections import deque
+        samples = {"density": deque(maxlen=2)}
+        overflow = {"density": 0}
+        self.assertFalse(OBSERVER.record_bounded_stage_interval(
+            samples, overflow, "density", 1.0, 0.8, 1.1))
+        self.assertTrue(OBSERVER.record_bounded_stage_interval(
+            samples, overflow, "density", 1.0, 1.0, 1.2))
+        self.assertTrue(OBSERVER.record_bounded_stage_interval(
+            samples, overflow, "density", 1.0, 1.4, 1.8))
+        durations = list(samples["density"])
+        self.assertEqual(len(durations), 2)
+        self.assertAlmostEqual(durations[0], 200)
+        self.assertAlmostEqual(durations[1], 400)
+        self.assertTrue(OBSERVER.record_bounded_stage_interval(
+            samples, overflow, "density", 1.0, 1.8, 1.9))
+        self.assertEqual(overflow["density"], 1)
+        self.assertEqual(len(samples["density"]), 2)
+        report = OBSERVER.bounded_stage_report(samples, overflow, lambda values: {"p95": max(values)})
+        self.assertEqual(report["density"], {"count": 2, "dropped": 1, "duration_ms": None})
+
     def test_persistence_catchup_requires_exact_uploaded_latest_and_quiescence(self):
         settled = dict(last_viewmodel_update=12, latest_density_update_sequence=12,
             uploaded_density_update_sequence=12, latest_view_is_latest_accepted_density=True,
@@ -256,6 +277,16 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("--abba-reverse-order requires --persistence-abba", result.stderr)
+
+    def test_stage_timing_requires_explicit_matched_run(self):
+        with TemporaryDirectory(prefix="app05-stage-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--projection-stage-timing"], cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--projection-stage-timing requires --persistence-abba", result.stderr)
 
     def test_persistence_catchup_rejects_offscreen_before_qt_startup(self):
         with TemporaryDirectory(prefix="app05-catchup-validation-") as temporary:

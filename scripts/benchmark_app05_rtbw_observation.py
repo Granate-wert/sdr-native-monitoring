@@ -20,6 +20,7 @@ Phase labels describe paint-return context, not the cause of a delayed frame.
 """
 import argparse
 from collections import deque
+from contextlib import ExitStack
 from dataclasses import asdict, replace
 from functools import wraps
 import hashlib
@@ -43,6 +44,23 @@ def rtbw_key(timestamp_token, generation):
 def matched_persistence_order(reverse):
     """Name blocks by render mode; reverse order keeps the same two modes."""
     return ("B1", "A1", "A2", "B2") if reverse else ("A1", "B1", "B2", "A2")
+
+
+def record_bounded_stage_interval(samples, overflow, stage, block_started, begin, finish):
+    """Keep one block only; flag truncation instead of reporting biased percentiles."""
+    if block_started is None or begin < block_started:
+        return False
+    bucket = samples[stage]
+    if len(bucket) == bucket.maxlen:
+        overflow[stage] += 1
+    bucket.append((finish - begin) * 1000)
+    return True
+
+
+def bounded_stage_report(samples, overflow, summarize):
+    return {stage: dict(count=len(values), dropped=overflow[stage],
+                        duration_ms=None if overflow[stage] else summarize(values))
+            for stage, values in samples.items()}
 
 
 def uploaded_key(pane, uploads_before, previous):
@@ -334,6 +352,8 @@ def main(argv=None):
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
     parser.add_argument("--abba-reverse-order", action="store_true",
                         help="With --persistence-abba start Visual and measure Visual→Direct→Direct→Visual")
+    parser.add_argument("--projection-stage-timing", action="store_true",
+                        help="Instrument shared worker stages in matched blocks; diagnostic, not a latency baseline")
     parser.add_argument("--persistence-catchup", action="store_true",
                         help="Visible Visual-only burst/freeze/drain freshness pulse; --seconds is each burst")
     parser.add_argument("--persistence-page-lifecycle", action="store_true",
@@ -383,6 +403,8 @@ def main(argv=None):
         parser.error("--persistence-abba and --persistence-catchup are separate experiments")
     if args.abba_reverse_order and not args.persistence_abba:
         parser.error("--abba-reverse-order requires --persistence-abba")
+    if args.projection_stage_timing and not args.persistence_abba:
+        parser.error("--projection-stage-timing requires --persistence-abba")
     if args.persistence_page_lifecycle:
         config_error = persistence_page_lifecycle_config_error(
             qt_platform=args.qt_platform, seconds=args.seconds, page_seconds=args.page_seconds,
@@ -437,6 +459,9 @@ def main(argv=None):
     from sdr_monitor.domain.live import LiveSpectrumFrame
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
+    from sdr_monitor.ui.presenters.live_presenter import LivePresenter
+    from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
+    import sdr_monitor.ui.v2.spectrum.projection as projection_module
     from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
     from scripts.benchmark_app04_poll_overload import PaintAgeTracker, run_qt_until
     from tests.test_app01_product_analyzer import _AtomicFakeLive
@@ -481,10 +506,78 @@ def main(argv=None):
     original_upload = WaterfallPane._upload_tiles
     original_accept_persistence_image = PersistenceOverlay.accept_worker_image
     original_start_method, original_stop_method = _AtomicFakeLive.start, _AtomicFakeLive.stop
+    original_submit_display = LivePresenter.submit_display_task
+    original_live_preparation = LiveSnapshotPreparer.prepare_cancellable
+    original_project_spectrum = projection_module.project_spectrum
+    original_prepare_density = projection_module.prepare_persistence_image
+    stage_lock = threading.Lock()
+    stage_names = (
+        "display_worker_queue", "live_preparation", "project_required", "density_preparation",
+        "project_total", "projection_slot")
+    slot_started = None
+
+    def record_stage(name, begin, end):
+        with stage_lock:
+            block_name = abba_current_block
+            if block_name is not None:
+                record_bounded_stage_interval(stage_samples[block_name], stage_overflow[block_name],
+                    name, abba_blocks[block_name]["started_perf"], begin, end)
+
+    def timed_submit_display(presenter, operation):
+        submitted = perf_counter()
+
+        @wraps(operation)
+        def timed_operation():
+            record_stage("display_worker_queue", submitted, perf_counter())
+            return operation()
+
+        return original_submit_display(presenter, timed_operation)
+
+    def timed_live_preparation(preparer, snapshot, *, cancelled=None):
+        began = perf_counter()
+        try:
+            return original_live_preparation(preparer, snapshot, cancelled=cancelled)
+        finally:
+            record_stage("live_preparation", began, perf_counter())
+
+    def timed_prepare_density(request, *, cancelled=None):
+        began = perf_counter()
+        try:
+            return original_prepare_density(request, cancelled=cancelled)
+        finally:
+            record_stage("density_preparation", began, perf_counter())
+
+    def timed_project_spectrum(request, *, cancelled=None, persistence_budget=None,
+                               spectrum_ready=None):
+        began = perf_counter()
+
+        def required_ready(result):
+            record_stage("project_required", began, perf_counter())
+            spectrum_ready(result)
+
+        try:
+            return original_project_spectrum(request, cancelled=cancelled,
+                persistence_budget=persistence_budget,
+                spectrum_ready=required_ready if spectrum_ready is not None else None)
+        finally:
+            record_stage("project_total", began, perf_counter())
+
+    def observe_projection_slot(active):
+        nonlocal slot_started
+        now = perf_counter()
+        if active:
+            if slot_started is None:
+                slot_started = now
+        elif slot_started is not None:
+            record_stage("projection_slot", slot_started, now)
+            slot_started = None
     control = {}
     control_phase, resumed_until = "idle", 0.0
     abba_current_block = None
     abba_order = matched_persistence_order(args.abba_reverse_order)
+    stage_samples = {block: {name: deque(maxlen=8192) for name in stage_names}
+                     for block in abba_order}
+    stage_overflow = {block: dict.fromkeys(stage_names, 0) for block in abba_order}
     abba_blocks = {
         name: dict(started_s=None, ended_s=None, mode=None, overlay_start=None, overlay_end=None,
             started_perf=None, ended_perf=None,
@@ -578,16 +671,27 @@ def main(argv=None):
                 else:
                     age.changed_during_paint += 1
 
-    with patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), \
-         patch.object(WaterfallPane, "_upload_tiles", upload), \
-         patch.object(PersistenceOverlay, "accept_worker_image", accept_persistence_image), \
-         patch.object(_AtomicFakeLive, "start", dispatch_start), \
-         patch.object(_AtomicFakeLive, "stop", dispatch_stop):
+    with ExitStack() as observer_patches:
+        observer_patches.enter_context(patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics))
+        observer_patches.enter_context(patch.object(WaterfallPane, "_upload_tiles", upload))
+        observer_patches.enter_context(patch.object(PersistenceOverlay, "accept_worker_image", accept_persistence_image))
+        observer_patches.enter_context(patch.object(_AtomicFakeLive, "start", dispatch_start))
+        observer_patches.enter_context(patch.object(_AtomicFakeLive, "stop", dispatch_stop))
+        if args.projection_stage_timing:
+            observer_patches.enter_context(patch.object(LivePresenter, "submit_display_task", timed_submit_display))
+            observer_patches.enter_context(patch.object(LiveSnapshotPreparer, "prepare_cancellable",
+                                                  timed_live_preparation))
+            observer_patches.enter_context(patch.object(projection_module, "project_spectrum",
+                                                  timed_project_spectrum))
+            observer_patches.enter_context(patch.object(projection_module, "prepare_persistence_image",
+                                                  timed_prepare_density))
         f = AnalyzerWorkspaceProductTests("runTest")
         f.setUpClass()
         # Use real nested loops also for fixture lifecycle, not manual pumping.
         f.wait = lambda predicate: run_qt_until(predicate, 5)
         f.setUp()
+        if args.projection_stage_timing:
+            f.composition.spectrum_projector.work_active_changed.connect(observe_projection_slot)
         timers = []
         def unsubscribe_density():
             pass
@@ -1503,6 +1607,10 @@ def main(argv=None):
                     persistence_upload_delta = block["overlay_end"]["image_uploads"] - \
                         block["overlay_start"]["image_uploads"]
                     waterfall_upload_delta = block["waterfall_uploads_end"] - block["waterfall_uploads_start"]
+                    with stage_lock:
+                        stage_snapshot = {stage: tuple(values)
+                            for stage, values in stage_samples[name].items()}
+                        stage_dropped = dict(stage_overflow[name])
                     return dict(mode=block["mode"],
                         began_s=block["started_s"], ended_s=block["ended_s"],
                         elapsed_s=elapsed,
@@ -1519,6 +1627,8 @@ def main(argv=None):
                                                   in block["source_to_first_paint_ms"].items()},
                         paint_return_ms={target: summary(values) for target, values
                                          in block["paint_return_ms"].items()},
+                        projection_stages=(None if not args.projection_stage_timing else
+                            bounded_stage_report(stage_snapshot, stage_dropped, summary)),
                         heartbeat_intervals_ms=summary(heartbeat_intervals),
                         heartbeat_tick_count=len(block["heartbeat_times_s"]),
                         accepted_persistence_updates=dict(count=len(updates),
@@ -1554,6 +1664,21 @@ def main(argv=None):
                     interpretation=("One synthetic Live session, "+" -> ".join(abba_order)
                         + ". The two middle blocks are contiguous halves of one mode interval, not independent replications. Mode changes, accepted/uploaded update catch-up and declared warm-up are recorded separately and excluded from steady samples."),
                     limitations="Visible Windows Qt QWidget paint/heartbeat on one host display. Synthetic constant spectrum and rolling histogram only; not DWM/compositor scanout, SDR/RF/LPS, visual smoothing fidelity, physical FHD/QHD coverage, or a general performance acceptance.")
+                if args.projection_stage_timing:
+                    report["persistence_abba"]["stage_timing_scope"] = (
+                        "Instrumented observer only: completed worker/GUI intervals wholly within each steady "
+                        "block; crossed boundaries excluded. project_required is emitted only for jobs with "
+                        "optional density; project_total includes density only for those jobs, so its "
+                        "distribution also contains required-only jobs. projection_slot spans GUI "
+                        "acknowledgement. Queue samples exclude tasks cancelled before execution. "
+                        "A completion just before a block closes may be conservatively excluded if its "
+                        "recording lock is acquired after the boundary. "
+                        "Any stage with dropped samples has null percentiles, not a biased tail. "
+                        "This run is not an uninstrumented latency baseline.")
+                    report["persistence_abba"]["stage_sample_capacity_per_kind"] = 8192
+                    with stage_lock:
+                        report["persistence_abba"]["stage_sample_overflow"] = {
+                            block: dict(values) for block, values in stage_overflow.items()}
             if args.persistence_catchup:
                 report["persistence_catchup"] = persistence_catchup
             report["requested_stop_phase"] = args.stop_phase
