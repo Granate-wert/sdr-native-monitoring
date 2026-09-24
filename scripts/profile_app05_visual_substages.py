@@ -1,23 +1,25 @@
-"""Opt-in scalar timings inside the normal UI V2 persistence worker.
+"""Opt-in scalar timings and required-slot overlap in normal UI V2.
 
 This observer wraps, rather than changes, the product implementation. Timings
 include Python wrappers and must not be used as an uninstrumented speed baseline.
 No ndarray, request, prepared image, widget or worker is retained in records.
+Required offers observed during optional execution are a lower bound on
+worker contention, not a causal allocation of first-paint latency. The
+offer-to-optional-end span does not assert that a latest slot stayed occupied.
 """
 
 import argparse
+import hashlib
+import json
+import sys
 from collections import defaultdict, deque
 from concurrent.futures import CancelledError
 from contextlib import ExitStack, contextmanager
 from functools import wraps
-import hashlib
-import json
 from pathlib import Path
-import sys
 from threading import Lock, local
 from time import perf_counter_ns
 from unittest.mock import patch
-
 
 _TIMED_FIELDS = ("total_ms", "witness_ms", "mapping_ms", "native_smoothing_ms", "other_ms")
 
@@ -32,6 +34,8 @@ class SubstageRecorder:
         self._records: deque[dict] = deque(maxlen=capacity)
         self._local = local()
         self._lock = Lock()
+        self._active_optional: dict | None = None
+        self.concurrent_optional = 0
         self.total = 0
         self.dropped = 0
 
@@ -43,12 +47,18 @@ class SubstageRecorder:
             self._records.append(sample)
 
     @contextmanager
-    def instrument(self, density_module, projection_module):
+    def instrument(self, density_module, projection_module, *, live_presenter_class=None):
         """Patch only the selected process, preserving the normal worker owner."""
+        if live_presenter_class is None:
+            from sdr_monitor.ui.presenters.live_presenter import LivePresenter
+
+            live_presenter_class = LivePresenter
         original_prepare = projection_module.prepare_persistence_image
         original_witness = density_module.persistence_input_witness
         original_mapping = density_module.map_density_row_for_display
         original_kernel = density_module._visual_smoothing_kernel
+        original_offer = projection_module.SpectrumProjector.offer
+        original_live_offer = live_presenter_class._offer_preparation
 
         def timed_call(field: str, count_field: str, function, *args, **kwargs):
             sample = getattr(self._local, "sample", None)
@@ -93,9 +103,17 @@ class SubstageRecorder:
                           outcome="error", total_ms=0.0, witness_ms=0.0,
                           mapping_ms=0.0, native_smoothing_ms=0.0,
                           other_ms=0.0, witness_calls=0, mapping_calls=0,
-                          native_smoothing_calls=0)
+                          native_smoothing_calls=0, required_pending_offers=0,
+                          required_offer_to_optional_end_ms=0.0,
+                          live_pending_offers=0, live_offer_to_optional_end_ms=0.0,
+                          _first_required_offer_ns=None, _first_live_offer_ns=None)
             self._local.sample = sample
             began = perf_counter_ns()
+            with self._lock:
+                if self._active_optional is None:
+                    self._active_optional = sample
+                else:
+                    self.concurrent_optional += 1
             try:
                 result = original_prepare(request, *args, **kwargs)
                 sample["outcome"] = "completed"
@@ -104,17 +122,61 @@ class SubstageRecorder:
                 sample["outcome"] = "cancelled"
                 raise
             finally:
-                sample["total_ms"] = (perf_counter_ns() - began) / 1_000_000
+                ended = perf_counter_ns()
+                sample["total_ms"] = (ended - began) / 1_000_000
                 sample["other_ms"] = (sample["total_ms"] - sample["witness_ms"]
                                       - sample["mapping_ms"] - sample["native_smoothing_ms"])
+                with self._lock:
+                    first = sample.pop("_first_required_offer_ns")
+                    if first is not None:
+                        sample["required_offer_to_optional_end_ms"] = (ended - first) / 1_000_000
+                    first = sample.pop("_first_live_offer_ns")
+                    if first is not None:
+                        sample["live_offer_to_optional_end_ms"] = (ended - first) / 1_000_000
+                    if self._active_optional is sample:
+                        self._active_optional = None
                 self._local.sample = previous
                 self._observe(sample)
+
+        @wraps(original_offer)
+        def offered(projector, request):
+            result = original_offer(projector, request)
+            # This is a lower-bound overlap witness: the GUI has admitted a
+            # required request to the latest slot while optional density is
+            # still executing on the shared worker. Never retain the request.
+            if request.required_work and projector._pending is request:
+                with self._lock:
+                    sample = self._active_optional
+                    if sample is not None:
+                        sample["required_pending_offers"] += 1
+                        if sample["_first_required_offer_ns"] is None:
+                            sample["_first_required_offer_ns"] = perf_counter_ns()
+            return result
+
+        @wraps(original_live_offer)
+        def live_offered(presenter, snapshot, revision, *, render=True):
+            result = original_live_offer(presenter, snapshot, revision, render=render)
+            # Presenter backpressure can keep a newer required frame upstream
+            # of SpectrumProjector. Count only an admitted render latest-slot.
+            if (render and presenter._projection_in_flight
+                    and presenter._pending_preparation is not None
+                    and presenter._pending_commands == 0
+                    and presenter._preparation_future is None):
+                with self._lock:
+                    sample = self._active_optional
+                    if sample is not None:
+                        sample["live_pending_offers"] += 1
+                        if sample["_first_live_offer_ns"] is None:
+                            sample["_first_live_offer_ns"] = perf_counter_ns()
+            return result
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(density_module, "persistence_input_witness", witnessed))
             stack.enter_context(patch.object(density_module, "map_density_row_for_display", mapped))
             stack.enter_context(patch.object(density_module, "_visual_smoothing_kernel", kernel))
             stack.enter_context(patch.object(projection_module, "prepare_persistence_image", prepared))
+            stack.enter_context(patch.object(projection_module.SpectrumProjector, "offer", offered))
+            stack.enter_context(patch.object(live_presenter_class, "_offer_preparation", live_offered))
             yield
 
     def report(self) -> dict:
@@ -140,13 +202,25 @@ class SubstageRecorder:
                     completed=len(completed),
                     cancelled=sum(row["outcome"] == "cancelled" for row in records),
                     errors=errors,
-                    complete=bool(completed) and dropped == 0 and errors == 0,
+                    concurrent_optional=self.concurrent_optional,
+                    complete=bool(completed) and dropped == 0 and errors == 0
+                    and self.concurrent_optional == 0,
                     stages={mode: dict(count=len(rows),
                         completed=sum(row["outcome"] == "completed" for row in rows),
                         cancelled=sum(row["outcome"] == "cancelled" for row in rows),
                         errors=sum(row["outcome"] == "error" for row in rows),
                         with_history=sum(row["has_history"] for row in rows),
                         rematerialized=sum(row["rematerialize"] for row in rows),
+                        jobs_with_required_pending=sum(row["required_pending_offers"] > 0 for row in rows),
+                        required_pending_offers=sum(row["required_pending_offers"] for row in rows),
+                        required_offer_to_optional_end_ms=distribution([
+                            row["required_offer_to_optional_end_ms"] for row in rows
+                            if row["required_pending_offers"] > 0 and row["outcome"] == "completed"]),
+                        jobs_with_live_pending=sum(row["live_pending_offers"] > 0 for row in rows),
+                        live_pending_offers=sum(row["live_pending_offers"] for row in rows),
+                        live_offer_to_optional_end_ms=distribution([
+                            row["live_offer_to_optional_end_ms"] for row in rows
+                            if row["live_pending_offers"] > 0 and row["outcome"] == "completed"]),
                         calls={name: sum(row[name] for row in rows) for name in
                                ("witness_calls", "mapping_calls", "native_smoothing_calls")},
                         distributions={name: distribution([row[name] for row in rows

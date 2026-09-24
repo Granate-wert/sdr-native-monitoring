@@ -2,7 +2,9 @@
 
 import unittest
 import weakref
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+from threading import Event
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -18,6 +20,81 @@ from tests.ui_v2.test_app05_persistence_worker import view
 
 
 class SubstageRecorderTests(unittest.TestCase):
+    def test_required_pending_overlap_counts_only_admitted_scalar_offers(self):
+        entered, release = Event(), Event()
+        request = PersistenceImageRequest(view(np.full((4, 16), .4, np.float32)),
+                                          PersistenceImagePolicy(1, PersistenceRenderMode.DIRECT, False))
+
+        def held_prepare(work, *args, **kwargs):
+            entered.set()
+            if not release.wait(2):
+                raise TimeoutError("observer fixture was not released")
+            return projection.prepare_persistence_image(work, *args, **kwargs)
+
+        class FakeProjector:
+            def __init__(self):
+                self._pending = None
+
+            def offer(self, work):
+                if work.accepted:
+                    self._pending = work
+
+        class FakeLivePresenter:
+            def __init__(self):
+                self._projection_in_flight = True
+                self._pending_preparation = None
+                self._pending_commands = 0
+                self._preparation_future = None
+
+            def _offer_preparation(self, snapshot, revision, *, render=True):
+                if render:
+                    self._pending_preparation = (snapshot, revision, render)
+
+        fake_module = SimpleNamespace(prepare_persistence_image=held_prepare,
+                                      SpectrumProjector=FakeProjector)
+        original_offer = FakeProjector.offer
+        recorder = SubstageRecorder()
+        with recorder.instrument(persistence_projection, fake_module,
+                                 live_presenter_class=FakeLivePresenter):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(fake_module.prepare_persistence_image, request)
+                try:
+                    self.assertTrue(entered.wait(2))
+                    projector = FakeProjector()
+                    projector.offer(SimpleNamespace(required_work=True, accepted=False))
+                    projector.offer(SimpleNamespace(required_work=True, accepted=True))
+                    projector.offer(SimpleNamespace(required_work=False, accepted=True))
+                    commanded = FakeLivePresenter()
+                    commanded._pending_commands = 1
+                    commanded._offer_preparation(object(), 1)
+                    preparing = FakeLivePresenter()
+                    preparing._preparation_future = object()
+                    preparing._offer_preparation(object(), 1)
+                    inactive = FakeLivePresenter()
+                    inactive._projection_in_flight = False
+                    inactive._offer_preparation(object(), 1)
+                    FakeLivePresenter()._offer_preparation(object(), 1, render=False)
+                    live = FakeLivePresenter()
+                    live._offer_preparation(object(), 1)
+                    # A later clear does not turn offer-to-end into queue
+                    # residence time; the observer must label it honestly.
+                    live._pending_preparation = None
+                finally:
+                    release.set()
+                self.assertEqual(future.result(timeout=2).image.shape, (4, 16))
+        self.assertIs(FakeProjector.offer, original_offer)
+        report = recorder.report()
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["concurrent_optional"], 0)
+        self.assertEqual(report["stages"]["direct"]["jobs_with_required_pending"], 1)
+        self.assertEqual(report["stages"]["direct"]["required_pending_offers"], 1)
+        self.assertEqual(report["stages"]["direct"]["jobs_with_live_pending"], 1)
+        self.assertEqual(report["stages"]["direct"]["live_pending_offers"], 1)
+        self.assertGreater(report["records"][0]["required_offer_to_optional_end_ms"], 0)
+        self.assertGreater(report["records"][0]["live_offer_to_optional_end_ms"], 0)
+        self.assertFalse(any(isinstance(value, np.ndarray)
+                             for row in report["records"] for value in row.values()))
+
     def test_real_direct_and_visual_calls_are_scalar_only(self):
         direct = PersistenceImageRequest(view(np.full((4, 16), .4, np.float32)),
                                          PersistenceImagePolicy(1, PersistenceRenderMode.DIRECT, False))
