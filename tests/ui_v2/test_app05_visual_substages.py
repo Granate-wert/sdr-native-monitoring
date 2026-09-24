@@ -2,6 +2,7 @@
 
 import unittest
 import weakref
+from concurrent.futures import CancelledError
 from unittest.mock import patch
 
 import numpy as np
@@ -38,6 +39,7 @@ class SubstageRecorderTests(unittest.TestCase):
         self.assertEqual(result["stages"]["direct"]["calls"]["witness_calls"], 0)
         self.assertEqual(result["stages"]["visual"]["calls"]["witness_calls"], 1)
         self.assertGreater(result["stages"]["visual"]["calls"]["mapping_calls"], 0)
+        self.assertEqual((result["completed"], result["cancelled"], result["errors"]), (2, 0, 0))
         self.assertTrue(all(row["other_ms"] >= 0 for row in result["records"]))
         self.assertFalse(any(isinstance(value, np.ndarray)
                              for row in result["records"] for value in row.values()))
@@ -79,6 +81,31 @@ class SubstageRecorderTests(unittest.TestCase):
         self.assertIs(persistence_projection._visual_smoothing_kernel, prior_kernel)
         self.assertEqual(recorder.report()["total"], 1)
         self.assertFalse(recorder.report()["complete"])
+        self.assertEqual(recorder.report()["errors"], 1)
+
+    def test_expected_cancellation_is_counted_not_timed_as_completed(self):
+        request = PersistenceImageRequest(view(np.full((4, 16), .4, np.float32)),
+                                          PersistenceImagePolicy(1, PersistenceRenderMode.DIRECT, False))
+        original_prepare = projection.prepare_persistence_image
+        calls = 0
+
+        def sometimes_cancel(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise CancelledError("obsolete spectrum presentation")
+            return original_prepare(*args, **kwargs)
+
+        recorder = SubstageRecorder()
+        with patch.object(projection, "prepare_persistence_image", side_effect=sometimes_cancel):
+            with recorder.instrument(persistence_projection, projection):
+                with self.assertRaises(CancelledError):
+                    projection.prepare_persistence_image(request)
+                projection.prepare_persistence_image(request)
+        report = recorder.report()
+        self.assertTrue(report["complete"])
+        self.assertEqual((report["completed"], report["cancelled"], report["errors"]), (1, 1, 0))
+        self.assertEqual(report["stages"]["direct"]["distributions"]["total_ms"]["count"], 1)
 
     def test_composes_with_outer_stage_wrapper(self):
         request = PersistenceImageRequest(view(np.full((4, 16), .4, np.float32)),

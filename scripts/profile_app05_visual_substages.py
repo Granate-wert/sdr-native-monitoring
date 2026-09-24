@@ -7,6 +7,7 @@ No ndarray, request, prepared image, widget or worker is retained in records.
 
 import argparse
 from collections import defaultdict, deque
+from concurrent.futures import CancelledError
 from contextlib import ExitStack, contextmanager
 from functools import wraps
 import hashlib
@@ -89,7 +90,7 @@ class SubstageRecorder:
                           dtype=request.view.density.dtype.str,
                           has_history=request.history is not None,
                           rematerialize=request.rematerialize,
-                          completed=False, total_ms=0.0, witness_ms=0.0,
+                          outcome="error", total_ms=0.0, witness_ms=0.0,
                           mapping_ms=0.0, native_smoothing_ms=0.0,
                           other_ms=0.0, witness_calls=0, mapping_calls=0,
                           native_smoothing_calls=0)
@@ -97,8 +98,11 @@ class SubstageRecorder:
             began = perf_counter_ns()
             try:
                 result = original_prepare(request, *args, **kwargs)
-                sample["completed"] = True
+                sample["outcome"] = "completed"
                 return result
+            except CancelledError:
+                sample["outcome"] = "cancelled"
+                raise
             finally:
                 sample["total_ms"] = (perf_counter_ns() - began) / 1_000_000
                 sample["other_ms"] = (sample["total_ms"] - sample["witness_ms"]
@@ -129,16 +133,24 @@ class SubstageRecorder:
             return dict(count=len(values), p50=float(p50), p95=float(p95),
                         p99=float(p99), max=float(max(values)))
 
+        completed = [row for row in records if row["outcome"] == "completed"]
+        errors = sum(row["outcome"] == "error" for row in records)
         return dict(scope=__doc__, capacity=self.capacity, total=total,
                     retained=len(records), dropped=dropped,
-                    complete=total > 0 and dropped == 0 and all(r["completed"] for r in records),
+                    completed=len(completed),
+                    cancelled=sum(row["outcome"] == "cancelled" for row in records),
+                    errors=errors,
+                    complete=bool(completed) and dropped == 0 and errors == 0,
                     stages={mode: dict(count=len(rows),
-                        completed=sum(row["completed"] for row in rows),
+                        completed=sum(row["outcome"] == "completed" for row in rows),
+                        cancelled=sum(row["outcome"] == "cancelled" for row in rows),
+                        errors=sum(row["outcome"] == "error" for row in rows),
                         with_history=sum(row["has_history"] for row in rows),
                         rematerialized=sum(row["rematerialize"] for row in rows),
                         calls={name: sum(row[name] for row in rows) for name in
                                ("witness_calls", "mapping_calls", "native_smoothing_calls")},
-                        distributions={name: distribution([row[name] for row in rows])
+                        distributions={name: distribution([row[name] for row in rows
+                                                           if row["outcome"] == "completed"])
                                        for name in _TIMED_FIELDS})
                             for mode, rows in groups.items()},
                     records=records)
