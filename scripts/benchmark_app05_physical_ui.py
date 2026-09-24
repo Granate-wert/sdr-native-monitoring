@@ -1,9 +1,10 @@
 """Opt-in physical Pluto RTBW -> visible product UI V2 timing observer.
 
 RX only. This uses the normal V2 shell, source drawer and Start/Stop controls.
-The observer subclasses only the two pyqtgraph viewport widgets and records
-scalar identities; it never changes the backend, FFT, presentation scheduler or
-renderer. Native timestamps are host-wall estimates, not hardware capture time.
+The observer subclasses the two pyqtgraph viewport widgets and patches scalar
+stage methods; default behavior never changes the backend, FFT, scheduler or
+renderer. Explicit diagnostic display flags can change only V2 presentation.
+Native timestamps are host-wall estimates, not hardware capture time.
 Qt paint-return is not DWM presentation or monitor scanout. Run on Windows with
 an explicit URI and a unique output path; no device is opened at import time.
 """
@@ -53,6 +54,13 @@ def projector_counters(projector: object | None) -> dict[str, int] | None:
     return result
 
 
+def required_projection_acceptance(scene: object, request: object, *, required_only: bool) -> bool:
+    """Predict the successful required branch, including same-source reprojection."""
+    return bool(getattr(request, "required_work") and request.owner is scene._projection_owner
+                and scene._projection_current(request)
+                and (required_only or scene._early_projection_request is not request))
+
+
 def distribution(values: deque[float], dropped: int) -> dict[str, float] | None:
     """Never report a bounded tail as a whole-run percentile."""
     if dropped or not values:
@@ -72,10 +80,10 @@ class ScalarSeries:
         self.count += 1
         self.values.append(float(value))
 
-    def report(self) -> dict[str, object]:
+    def report(self, *, unit: str = "ms") -> dict[str, object]:
         dropped = self.count - len(self.values)
         return dict(count=self.count, retained=len(self.values), dropped=dropped,
-                    ms=distribution(self.values, dropped))
+                    **{unit: distribution(self.values, dropped)})
 
 
 class WorkerSeries:
@@ -94,6 +102,109 @@ class WorkerSeries:
             return self._samples.report()
 
 
+class FrameTimeline:
+    """Bounded scalar stage correlations; ambiguous source keys are excluded."""
+
+    EDGES = (
+        ("offer_return", "scheduler_emit"),
+        ("scheduler_emit", "prepare_begin"),
+        ("prepare_begin", "prepare_end"),
+        ("prepare_end", "model_snapshot"),
+        ("model_bundle", "required_ready"),
+        ("required_ready", "scene_accept"),
+        ("scene_accept", "paint_return"),
+        ("model_bundle", "paint_return"),
+    )
+
+    def __init__(self, capacity: int = 8192) -> None:
+        if capacity < 1:
+            raise ValueError("timeline capacity must be positive")
+        self._lock = threading.Lock()
+        self._capacity = capacity
+        self._frames: OrderedDict[tuple[int, int, int], dict[str, tuple[int, int]]] = OrderedDict()
+        self._ambiguous: set[tuple[int, int, int]] = set()
+        self.evicted = 0
+        self.first_paints = 0
+        self.duplicate_stages: Counter[str] = Counter()
+
+    def _stages_locked(self, key: tuple[int, int, int]) -> dict[str, tuple[int, int]]:
+        stages = self._frames.get(key)
+        if stages is None:
+            stages = {}
+            self._frames[key] = stages
+            if len(self._frames) > self._capacity:
+                old_key, _ = self._frames.popitem(last=False)
+                self._ambiguous.discard(old_key)
+                self.evicted += 1
+        return stages
+
+    def mark(self, key: tuple[int, int, int] | None, stage: str, when_ns: int | None = None,
+             *, instance: int | None) -> None:
+        if key is None:
+            return
+        with self._lock:
+            stages = self._stages_locked(key)
+            if stage in stages:
+                self.duplicate_stages[stage] += 1
+                self._ambiguous.add(key)
+            elif instance is not None:
+                stages[stage] = (perf_counter_ns() if when_ns is None else when_ns, instance)
+
+    def paint(self, key: tuple[int, int, int] | None, when_ns: int, *, instance: int | None) -> None:
+        if key is None:
+            return
+        with self._lock:
+            stages = self._stages_locked(key)
+            if "paint_return" in stages:
+                return  # A repeat paint is not another first-paint latency sample.
+            if instance is None:
+                return
+            stages["paint_return"] = (when_ns, instance)
+            self.first_paints += 1
+
+    def report(self) -> dict[str, object]:
+        with self._lock:
+            edges = {f"{start}_to_{end}": ScalarSeries(self._capacity)
+                     for start, end in self.EDGES}
+            missing: Counter[str] = Counter()
+            identity_mismatch: Counter[str] = Counter()
+            out_of_order: Counter[str] = Counter()
+            ambiguous_paints = 0
+            for key, stages in self._frames.items():
+                if "paint_return" not in stages:
+                    continue
+                if key in self._ambiguous:
+                    ambiguous_paints += 1
+                    continue
+                for start, end in self.EDGES:
+                    name = f"{start}_to_{end}"
+                    if start not in stages or end not in stages:
+                        missing[name] += 1
+                        continue
+                    start_ns, start_instance = stages[start]
+                    end_ns, end_instance = stages[end]
+                    if start_instance != end_instance:
+                        identity_mismatch[name] += 1
+                    elif end_ns < start_ns:
+                        out_of_order[name] += 1
+                    else:
+                        edges[name].add((end_ns - start_ns) / 1e6)
+            edge_reports = {name: series.report() for name, series in edges.items()}
+            if self.evicted:
+                # An evicted early stage biases whole-run latency distributions.
+                for series in edge_reports.values():
+                    series["ms"] = None
+            return dict(first_paints=self.first_paints, retained_keys=len(self._frames),
+                        evicted_keys=self.evicted, ambiguous_paints=ambiguous_paints,
+                        duplicate_stages=dict(self.duplicate_stages), missing=dict(missing),
+                        identity_mismatch=dict(identity_mismatch), out_of_order=dict(out_of_order),
+                        edges_ms=edge_reports,
+                        scope="Each edge uses equal scalar object identity and only non-duplicate source keys; "
+                              "offer_return is after LivePresenter._poll_frames offered its snapshot, not "
+                              "RX publication or poll entry. Edge percentiles are conditional, not additive "
+                              "or a full causal pipeline.")
+
+
 class PaintObserver:
     """Bounded GUI-only sequence/time witness; no frame or ndarray retention."""
 
@@ -110,6 +221,7 @@ class PaintObserver:
         self.wall_clock_invalid = 0
         self.first_key = self.last_key = None
         self.last_unique_paint_ns: int | None = None
+        self.last_spectrum_paint_ns: int | None = None
         self.paint_duration = ScalarSeries()
         self.model_to_paint = ScalarSeries()
         self.estimated_source_to_paint = ScalarSeries()
@@ -121,6 +233,24 @@ class PaintObserver:
         self.worker_projection_optional_only = WorkerSeries()
         self.worker_projection_total = WorkerSeries()
         self.worker_density_image = WorkerSeries()
+        self.timeline = FrameTimeline()
+        self.required_curve_admissions = 0
+        self.scene_source_changes = 0
+        self.density_uploads = 0
+        self.waterfall_rows_admitted = 0
+        self.spectrum_x_range_changes = 0
+        self._last_paint_curve_admissions = 0
+        self._last_paint_density_uploads = 0
+        self._last_paint_model_events = 0
+        self._last_paint_waterfall_rows = 0
+        self._last_paint_x_range_changes = 0
+        self.repeat_causes: Counter[str] = Counter()
+        self.repeat_precursors: Counter[str] = Counter()
+        self.repeat_gaps = {name: ScalarSeries() for name in (
+            "curve_only", "density_only", "curve_and_density", "no_required_or_density_admission")}
+        self.repeat_regions = {name: ScalarSeries() for name in self.repeat_gaps}
+        self.spectrum_paint_bounding_rect_fraction = ScalarSeries()
+        self.repeat_paint_bounding_rect_fraction = ScalarSeries()
         self.timestamp_qualities: Counter[str] = Counter()
         self.loss_reasons_seen: set[str] = set()
 
@@ -141,6 +271,10 @@ class PaintObserver:
         if key is None:
             return
         self.model_events += 1
+        now = perf_counter_ns()
+        self.timeline.mark(key, "model_snapshot", now,
+                           instance=id(getattr(getattr(state, "live", None), "snapshot", None)))
+        self.timeline.mark(key, "model_bundle", now, instance=id(state.bundle))
         if key not in self.model_first:
             self.model_first[key] = perf_counter_ns()
             if len(self.model_first) > 8192:
@@ -148,7 +282,7 @@ class PaintObserver:
                 self.model_keys_evicted += 1
 
     def painted(self, widget: object, begin_ns: int, end_ns: int,
-                before: object, after: object) -> None:
+                before: object, after: object, bounding_rect_fraction: float) -> None:
         if not self.measuring or self.workspace is None:
             return
         pane = self.workspace.visualization.waterfall_pane
@@ -159,6 +293,7 @@ class PaintObserver:
         if widget is not scene._graphics:
             return
         self.paint_duration.add((end_ns - begin_ns) / 1e6)
+        self.spectrum_paint_bounding_rect_fraction.add(bounding_rect_fraction)
         if before is not after:
             self.changed_during_paint += 1
             return
@@ -168,11 +303,42 @@ class PaintObserver:
             return
         if key == self.last_key:
             self.repeat_paints += 1
+            self.repeat_paint_bounding_rect_fraction.add(bounding_rect_fraction)
+            curve = self.required_curve_admissions != self._last_paint_curve_admissions
+            density = self.density_uploads != self._last_paint_density_uploads
+            category = ("curve_and_density" if curve and density else "curve_only" if curve else
+                        "density_only" if density else "no_required_or_density_admission")
+            self.repeat_causes[category] += 1
+            self.repeat_regions[category].add(bounding_rect_fraction)
+            if self.last_spectrum_paint_ns is not None:
+                self.repeat_gaps[category].add((end_ns - self.last_spectrum_paint_ns) / 1e6)
+            self.last_spectrum_paint_ns = end_ns
+            if category == "no_required_or_density_admission":
+                precursors = []
+                if self.model_events != self._last_paint_model_events:
+                    precursors.append("model")
+                if self.waterfall_rows_admitted != self._last_paint_waterfall_rows:
+                    precursors.append("waterfall")
+                if self.spectrum_x_range_changes != self._last_paint_x_range_changes:
+                    precursors.append("x_range")
+                self.repeat_precursors["+".join(precursors) or "none"] += 1
+            self._last_paint_curve_admissions = self.required_curve_admissions
+            self._last_paint_density_uploads = self.density_uploads
+            self._last_paint_model_events = self.model_events
+            self._last_paint_waterfall_rows = self.waterfall_rows_admitted
+            self._last_paint_x_range_changes = self.spectrum_x_range_changes
             return
         self.unique_paints += 1
         if self.first_key is None:
             self.first_key = key
         self.last_key = key
+        self.last_spectrum_paint_ns = end_ns
+        self._last_paint_curve_admissions = self.required_curve_admissions
+        self._last_paint_density_uploads = self.density_uploads
+        self._last_paint_model_events = self.model_events
+        self._last_paint_waterfall_rows = self.waterfall_rows_admitted
+        self._last_paint_x_range_changes = self.spectrum_x_range_changes
+        self.timeline.paint(key, end_ns, instance=id(after))
         if self.last_unique_paint_ns is not None:
             self.unique_paint_gap.add((end_ns - self.last_unique_paint_ns) / 1e6)
         self.last_unique_paint_ns = end_ns
@@ -211,6 +377,21 @@ class PaintObserver:
                     worker_projection_optional_only_ms=self.worker_projection_optional_only.report(),
                     worker_projection_total_ms=self.worker_projection_total.report(),
                     worker_density_image_ms=self.worker_density_image.report(),
+                    frame_timeline=self.timeline.report(),
+                    required_curve_admissions=self.required_curve_admissions,
+                    scene_source_changes=self.scene_source_changes,
+                    density_uploads=self.density_uploads,
+                    waterfall_rows_admitted=self.waterfall_rows_admitted,
+                    spectrum_x_range_changes=self.spectrum_x_range_changes,
+                    repeated_paints_by_tracked_change=dict(self.repeat_causes),
+                    no_required_or_density_repeat_precursors=dict(self.repeat_precursors),
+                    repeat_paint_gap_ms={name: series.report() for name, series in self.repeat_gaps.items()},
+                    repeat_paint_bounding_rect_by_change={name: series.report(unit="fraction")
+                                                          for name, series in self.repeat_regions.items()},
+                    spectrum_paint_bounding_rect_fraction=(
+                        self.spectrum_paint_bounding_rect_fraction.report(unit="fraction")),
+                    repeat_paint_bounding_rect_fraction=(
+                        self.repeat_paint_bounding_rect_fraction.report(unit="fraction")),
                     timestamp_qualities=dict(self.timestamp_qualities),
                     loss_reasons_seen=sorted(self.loss_reasons_seen))
 
@@ -228,6 +409,8 @@ def parser() -> argparse.ArgumentParser:
                         help="native RX refill geometry; 262144 is the product default")
     result.add_argument("--hide-persistence", action="store_true",
                         help="normal V2 display toggle; native histogram still runs")
+    result.add_argument("--lock-vertical-range", action="store_true",
+                        help="diagnostic: freeze Auto Y after warmup, without changing RX")
     result.add_argument("--split-persistence", action="store_true",
                         help="opt-in existing second worker seam; not product wiring")
     result.add_argument("--render-mode", choices=("direct", "visual"), default="direct")
@@ -260,10 +443,20 @@ def main() -> int:
     else:
         source_commit = revision.stdout.strip() if revision.returncode == 0 else None
     script_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    scene_sha256 = hashlib.sha256((ROOT / "sdr_monitor/ui/v2/spectrum/scene.py").read_bytes()).hexdigest()
     projection_sha256 = hashlib.sha256((ROOT / "sdr_monitor/ui/v2/spectrum/persistence_projection.py")
                                         .read_bytes()).hexdigest()
+    try:
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT,
+                                capture_output=True, text=True, timeout=2, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        tracked_dirty_paths = None
+    else:
+        tracked_dirty_paths = ([line[3:] for line in status.stdout.splitlines()]
+                               if status.returncode == 0 else None)
 
     import pyqtgraph as pg
+    import PySide6
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
     from sdr_monitor.domain.live import BackendKind
@@ -271,19 +464,79 @@ def main() -> int:
     from sdr_monitor.services.native_live import NativeLiveSessionService
     from sdr_monitor.services.native_recording import NativeLiveRecordingService
     from sdr_monitor.services.native_sweep import NativeLiveSweepService
+    from sdr_monitor.ui.presenters.live_presenter import LivePresenter
     from sdr_monitor.ui.v2.workspaces.analyzer import AnalyzerWorkspaceV2
     from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
+    from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+    from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
+    from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     import sdr_monitor.ui.v2.spectrum.projection as projection_module
     import sdr_monitor.ui.v2.spectrum.persistence_projector as persistence_projector_module
     import sdr_monitor.ui.v2.product_live as product_live_module
     from sdr_monitor.ui.v2_composition import build_v2_shell
 
+    try:
+        import sdr_monitor._sdr_native as native_module
+        native_path = Path(native_module.__file__).resolve()
+        native_binary = dict(path=str(native_path), sha256=hashlib.sha256(native_path.read_bytes()).hexdigest())
+    except (ImportError, OSError, TypeError):
+        native_binary = None
+
     observer = PaintObserver()
     original_render = AnalyzerWorkspaceV2._render
     original_prepare = LiveSnapshotPreparer.prepare_cancellable
     original_project = projection_module.project_spectrum
     original_density_image = projection_module.prepare_persistence_image
+    original_poll = LivePresenter._poll_frames
+    original_emit = LivePresenter._emit_render
+    original_accept = SpectrumScene._accept_projection
+    original_image_accept = PersistenceOverlay.accept_worker_image
+    original_waterfall_set_line = WaterfallPane.set_line
+
+    def observed_poll(presenter):
+        previous = presenter._last_poll_key
+        result = original_poll(presenter)
+        if observer.measuring and presenter._last_poll_key != previous:
+            snapshot = presenter._last_polled
+            observer.timeline.mark(observer.key(snapshot), "offer_return", instance=id(snapshot))
+        return result
+
+    def observed_emit(presenter, snapshot):
+        if observer.measuring:
+            observer.timeline.mark(observer.key(snapshot), "scheduler_emit", instance=id(snapshot))
+        return original_emit(presenter, snapshot)
+
+    def observed_accept(scene, result, *, required_only=False):
+        before = scene.displayed_frame
+        request = result.request
+        required_admission = required_projection_acceptance(scene, request, required_only=required_only)
+        accepted = original_accept(scene, result, required_only=required_only)
+        if (observer.measuring and observer.workspace is not None
+                and scene is observer.workspace.visualization.spectrum_scene):
+            if required_admission:
+                observer.required_curve_admissions += 1
+                frame = scene.displayed_frame
+                observer.timeline.mark(observer.key(frame), "scene_accept", instance=id(frame))
+            if scene.displayed_frame is not before:
+                observer.scene_source_changes += 1
+        return accepted
+
+    def observed_image_accept(overlay, request, result, error):
+        before = overlay.metrics.image_uploads
+        accepted = original_image_accept(overlay, request, result, error)
+        if (observer.measuring and observer.workspace is not None
+                and overlay is observer.workspace.visualization.spectrum_scene._persistence):
+            observer.density_uploads += overlay.metrics.image_uploads - before
+        return accepted
+
+    def observed_waterfall_set_line(pane, frame):
+        before = pane.metrics.rows_admitted
+        result = original_waterfall_set_line(pane, frame)
+        if (observer.measuring and observer.workspace is not None
+                and pane is observer.workspace.visualization.waterfall_pane):
+            observer.waterfall_rows_admitted += pane.metrics.rows_admitted - before
+        return result
 
     def observed_render(workspace, state):
         began = perf_counter_ns()
@@ -296,23 +549,33 @@ def main() -> int:
 
     def observed_prepare(preparer, snapshot, *, cancelled=None):
         began = perf_counter_ns()
+        key = observer.key(snapshot) if observer.measuring else None
+        observer.timeline.mark(key, "prepare_begin", began, instance=id(snapshot))
         try:
             return original_prepare(preparer, snapshot, cancelled=cancelled)
         finally:
             if observer.measuring:
-                observer.worker_preparation.add((perf_counter_ns() - began) / 1e6)
+                ended = perf_counter_ns()
+                observer.worker_preparation.add((ended - began) / 1e6)
+                observer.timeline.mark(key, "prepare_end", ended, instance=id(snapshot))
 
     def observed_project(*args, **kwargs):
         began = perf_counter_ns()
         ready = kwargs.get("spectrum_ready")
         required_work = bool(getattr(args[0], "required_work", False))
+        current_bundle = next((view.source_frame for kind, view in getattr(args[0], "traces", ())
+                               if getattr(kind, "value", None) == "current"), None)
+        key = observer.key(current_bundle) if observer.measuring else None
         emitted_required = False
         if ready is not None:
             def required_ready(result):
                 nonlocal emitted_required
                 emitted_required = True
                 if observer.measuring:
-                    observer.worker_projection_required.add((perf_counter_ns() - began) / 1e6)
+                    ended = perf_counter_ns()
+                    observer.worker_projection_required.add((ended - began) / 1e6)
+                    observer.timeline.mark(key, "required_ready", ended,
+                                           instance=None if current_bundle is None else id(current_bundle))
                 return ready(result)
 
             kwargs["spectrum_ready"] = required_ready
@@ -326,6 +589,8 @@ def main() -> int:
                     observer.worker_projection_optional_only.add(elapsed)
                 elif not emitted_required:
                     observer.worker_projection_required.add(elapsed)
+                    observer.timeline.mark(key, "required_ready",
+                                           instance=None if current_bundle is None else id(current_bundle))
 
     def observed_density_image(*args, **kwargs):
         began = perf_counter_ns()
@@ -344,7 +609,10 @@ def main() -> int:
             super().paintEvent(event)
             ended = perf_counter_ns()
             after = None if scene is None or self is not scene._graphics else scene.displayed_frame
-            observer.painted(self, began, ended, before, after)
+            area = max(1, self.width() * self.height())
+            rect = event.rect()
+            region_fraction = min(1.0, max(0.0, rect.width() * rect.height() / area))
+            observer.painted(self, began, ended, before, after, region_fraction)
 
     original_compose = product_live_module.compose_v2_live_product
 
@@ -356,6 +624,11 @@ def main() -> int:
     split_patch = (patch.object(product_live_module, "compose_v2_live_product", observed_compose)
                    if args.split_persistence else nullcontext())
     with patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
+            LivePresenter, "_poll_frames", observed_poll), patch.object(
+            LivePresenter, "_emit_render", observed_emit), patch.object(
+            SpectrumScene, "_accept_projection", observed_accept), patch.object(
+            PersistenceOverlay, "accept_worker_image", observed_image_accept), patch.object(
+            WaterfallPane, "set_line", observed_waterfall_set_line), patch.object(
             AnalyzerWorkspaceV2, "_render", observed_render), patch.object(
             LiveSnapshotPreparer, "prepare_cancellable", observed_prepare), patch.object(
             projection_module, "project_spectrum", observed_project), patch.object(
@@ -387,6 +660,9 @@ def main() -> int:
         shell.show()
         workspace = shell._workspace_pages["analyzer"]
         observer.workspace = workspace
+        workspace.visualization.spectrum_scene.view_box.sigXRangeChanged.connect(
+            lambda *_: setattr(observer, "spectrum_x_range_changes",
+                               observer.spectrum_x_range_changes + int(observer.measuring)))
         composition = shell._context.close_ports[0].shutdown.__self__
         composition._presenter.set_display_fps(args.display_fps)
         workspace.visualization.spectrum_scene.set_persistence_render_mode(
@@ -465,6 +741,8 @@ def main() -> int:
                         phase = "warmup"
                 elif phase == "warmup":
                     if measure_end_ns is not None and now >= measure_end_ns - int(args.duration * 1e9):
+                        if args.lock_vertical_range:
+                            workspace.visualization.spectrum_scene.set_vertical_lock(True)
                         snapshot = services.live_sdr.latest_snapshot()
                         native_at_start = snapshot.performance
                         initial_sequence = int(snapshot.sequence)
@@ -560,16 +838,21 @@ def main() -> int:
                                      if key != "computed_fft_per_s")
                              and initial_sequence is not None and final_sequence is not None
                              and final_sequence > initial_sequence)
-        report = dict(schema="app05-physical-visible-v2-v3", result="pass" if phase == "done" and
+        report = dict(schema="app05-physical-visible-v2-v5", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
                       failure=failure, phase=phase, source="physical-pluto-rx", uri=args.uri,
                       source_commit=source_commit, script_sha256=script_sha256,
+                      scene_sha256=scene_sha256, tracked_dirty_paths=tracked_dirty_paths,
                       persistence_projection_sha256=projection_sha256,
+                      runtime=dict(python=sys.version, executable=sys.executable,
+                                   pyqtgraph=pg.__version__, pyside=PySide6.__version__,
+                                   native_binary=native_binary),
                       settings_namespace=settings_namespace,
                       requested=dict(center_mhz=args.center_mhz, sample_rate_msps=args.sample_rate_msps,
                                      fft=args.fft, buffer_samples=args.buffer_samples,
                                      persistence_visible=not args.hide_persistence,
+                                     vertical_range_locked=args.lock_vertical_range,
                                      split_persistence=args.split_persistence,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
                                      backend="cpu", warmup_s=args.warmup,
@@ -611,7 +894,10 @@ def main() -> int:
                       scope="Successful run means bounded RX/UI lifecycle evidence, not performance acceptance. "
                             "Visible Qt paint-return only; Pluto timestamp estimates sample start from refill "
                             "completion and nominal block duration. No hardware capture, DWM/scanout/FPS claim. "
-                            "Observer subclasses viewport widgets and perturbs timings.")
+                            "Observer patches viewport paint and scalar stage methods; timings are perturbed. "
+                            "Repeated paint categories name tracked admissions, not proven Qt invalidation causes. "
+                            "Qt event.rect() is only a bounding rectangle, not painted-pixel/scanout area. "
+                            "Commit and hashes do not bind external DLLs, device firmware or desktop compositor.")
     with output.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
