@@ -134,6 +134,7 @@ class PhysicalUiObserverTests(unittest.TestCase):
         self.assertEqual(args.render_mode, "direct")
         self.assertEqual(args.display_fps, 120)
         self.assertEqual(args.buffer_samples, 262144)
+        self.assertFalse(args.teardown_timing)
 
     def test_visual_substage_profile_requires_an_explicit_flag(self):
         args = observer.parser().parse_args([

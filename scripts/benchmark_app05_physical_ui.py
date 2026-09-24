@@ -528,6 +528,8 @@ def parser() -> argparse.ArgumentParser:
                         help="opt-in scalar Visual worker substage timings (perturbs timing)")
     result.add_argument("--hide-show", action="store_true",
                         help="one timed Live -> calibration -> analyzer -> Stop lifecycle gate")
+    result.add_argument("--teardown-timing", action="store_true",
+                        help="diagnostic-only flushed stderr markers around Stop, close and process return")
     result.add_argument("--render-mode", choices=("direct", "visual"), default="direct")
     result.add_argument("--display-fps", type=int, choices=(15, 30, 60, 120, 144, 240), default=120)
     result.add_argument("--window-width", type=int, default=1400)
@@ -871,6 +873,14 @@ def main() -> int:
         initial_sequence = final_sequence = None
         applied = None
         measurement_started_ns = measurement_finished_ns = None
+        teardown_stage_events: list[dict[str, object]] = []
+
+        def mark_teardown(stage: str) -> None:
+            if not args.teardown_timing:
+                return
+            when_ns = perf_counter_ns()
+            teardown_stage_events.append(dict(stage=stage, when_ns=when_ns))
+            print(f"APP05_STAGE {when_ns} {stage}", file=sys.stderr, flush=True)
 
         def lifecycle_snapshot() -> dict[str, object]:
             scene = workspace.visualization.spectrum_scene
@@ -1000,18 +1010,24 @@ def main() -> int:
                         deadline_ns = now + 15_000_000_000
                 elif phase == "stop":
                     if state.live.primary_action.value == "stop" and not state.live.busy:
+                        mark_teardown("stop_click_before")
                         workspace.primary.click()
+                        mark_teardown("stop_click_after")
                         phase = "wait_stopped"
                     elif state.live.primary_action.value != "stop" and not state.live.busy:
                         phase = "wait_stopped"
                 elif phase == "wait_stopped":
                     if state.live.primary_action.value != "stop" and not state.live.busy and not state.stopping:
+                        mark_teardown("stop_acknowledged")
                         if args.hide_show:
                             lifecycle["after_stop"] = lifecycle_snapshot()
+                        mark_teardown("shell_close_before")
                         shell.close()
+                        mark_teardown("shell_close_after")
                         phase = "wait_closed"
                 elif phase == "wait_closed":
                     if shell._is_closed:
+                        mark_teardown("shell_closed_acknowledged")
                         phase = "done"
                         timer.stop()
                         app.quit()
@@ -1028,8 +1044,11 @@ def main() -> int:
         timer.timeout.connect(tick)
         timer.start()
         app.exec()
+        timer.stop()
+        mark_teardown("qt_event_loop_returned")
         # Last-window-closed can exit the Qt loop before the next timer tick.
         if shell._is_closed and phase == "wait_closed":
+            mark_teardown("shell_closed_after_loop")
             phase = "done"
         if phase != "done":
             try:
@@ -1152,6 +1171,12 @@ def main() -> int:
                       projector_measurement_deltas=projector_interval,
                       observer=observer.report(),
                       hide_show=hide_show_result,
+                      teardown_stage_events=teardown_stage_events if args.teardown_timing else None,
+                      teardown_stage_events_scope=(
+                          "JSON includes markers through report_write_before; "
+                          "main_returning is stderr-only. Flushed GUI-thread stderr "
+                          "markers perturb timing and are not a Stop/close latency benchmark"
+                          if args.teardown_timing else None),
                       persistence_substage_profile=visual_profile_result,
                       persistence_substage_profile_complete=visual_profile_complete,
                       allocation_budget=asdict(budget), workers_after_close=workers,
@@ -1162,12 +1187,14 @@ def main() -> int:
                             "Repeated paint categories name tracked admissions, not proven Qt invalidation causes. "
                             "Qt event.rect() is only a bounding rectangle, not painted-pixel/scanout area. "
                             "Commit and hashes do not bind external DLLs, device firmware or desktop compositor.")
+    mark_teardown("report_write_before")
     with output.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     print(json.dumps(dict(result=report["result"], output=str(output),
                           observer=report["observer"], native_performance=report["native_performance"]),
                      ensure_ascii=False))
+    mark_teardown("main_returning")
     return 0 if report["result"] == "pass" else 1
 
 
