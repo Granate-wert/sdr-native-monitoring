@@ -33,6 +33,7 @@ class AnalyzerFrequencyBar(QWidget):
         self.span = self._frequency(100.0)
         self.span.setDecimals(6)
         self.span.setRange(0.000001, 100_000.0)
+        self.span.setSpecialValueText("—")
         self.span.setMaximumWidth(112)
         self.span.valueChanged.connect(lambda value: self.viewport_span_requested.emit(value * 1e6))
         self.start = self._frequency(100.0)
@@ -97,9 +98,17 @@ class AnalyzerFrequencyBar(QWidget):
         # RF editor enabled/dirty state is owned by the drawer. Viewport zoom
         # remains available during RX and never changes that draft.
         self.span.setEnabled(has_frame)
+        if not has_frame:
+            # A mode/source change can leave the previous plot's X range in
+            # ViewBox until the next frame. Never present it as this mode's
+            # current viewport while the scene is empty.
+            with QSignalBlocker(self.span):
+                self.span.setValue(self.span.minimum())
         self.apply.setEnabled(self._drawer.can_apply)
         self.cancel.setEnabled(self._drawer.can_cancel)
 
     def set_viewport_span(self, span_hz: float) -> None:
+        if not self._has_frame:
+            return
         with QSignalBlocker(self.span):
             self.span.setValue(span_hz / 1e6)

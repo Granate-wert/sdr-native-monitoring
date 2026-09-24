@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.ui.v2.i18n import UiLocale, text
+from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
 import tests.test_app02_analyzer_workspace_product as product_fixture
 
 
@@ -105,6 +106,20 @@ class FrequencyBarProductTests(unittest.TestCase):
             apply.assert_called_once()
             self.assertFalse(bar.apply.isEnabled())
             self.assertFalse(bar.cancel.isEnabled())
+        self.assertEqual(f.events, [])
+
+    def test_empty_mode_switch_does_not_show_stale_sweep_span_as_rtbw_view(self):
+        f = self.fixture
+        bar = f.page.frequency_bar
+        self.assertEqual(bar.span.text(), "—")
+        self.assertFalse(bar.span.isEnabled())
+        f.page.mode.setCurrentIndex(1)
+        f.wait(lambda: f.page.model.state.mode is AnalyzerMode.SWEEP)
+        bar.span.setValue(900)
+        f.page.mode.setCurrentIndex(0)
+        f.wait(lambda: f.page.model.state.mode is AnalyzerMode.RTBW)
+        self.assertEqual(bar.span.text(), "—")
+        self.assertFalse(bar.span.isEnabled())
         self.assertEqual(f.events, [])
 
     def test_live_span_and_pan_change_only_viewport_and_survive_locale(self):
