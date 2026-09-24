@@ -122,6 +122,42 @@ class FrequencyBarProductTests(unittest.TestCase):
         self.assertFalse(bar.span.isEnabled())
         self.assertEqual(f.events, [])
 
+    def test_first_frame_restores_view_even_if_x_range_does_not_change(self):
+        f = self.fixture
+        f.page.primary.click()
+        f.wait(lambda: f.live.is_running() and not f.composition.view_model.state.busy)
+        snapshot = f.live.latest_snapshot()
+        config = snapshot.applied.applied
+        frame = LiveSpectrumFrame(
+            sequence=1, timestamp_ns=1, source_id="fake-pluto-usb",
+            config_generation=snapshot.generation, center_frequency_hz=config.center_hz,
+            sample_rate_hz=config.sample_rate_hz, fft_size=config.fft_size,
+            hop_size=config.fft_size,
+            frequencies_hz=config.center_hz + (np.arange(config.fft_size) - config.fft_size / 2)
+            * config.sample_rate_hz / config.fft_size,
+            values=np.full(config.fft_size, -80, dtype=np.float32), unit="dBFS/bin",
+        )
+        view = f.page.visualization.spectrum_scene.view_box
+        view.setXRange(float(frame.frequencies_hz[0]), float(frame.frequencies_hz[-1]), padding=0)
+        bar = f.page.frequency_bar
+        self.assertEqual(bar.span.text(), "—")
+        delivered = replace(snapshot, spectrum=frame)
+        f.live._snapshot = delivered
+        f.presenter.offer_snapshot_for_render(delivered)
+        f.wait(lambda: f.page._last_bundle is not None)
+        self.assertTrue(bar.span.isEnabled())
+        self.assertNotEqual(bar.span.text(), "—")
+        lower, upper = view.viewRange()[0]
+        self.assertAlmostEqual(bar.span.value(), (upper - lower) / 1e6, places=6)
+
+    def test_one_hertz_live_view_is_numeric_not_empty_placeholder(self):
+        f = self.fixture
+        bar = f.page.frequency_bar
+        bar.apply_view_state(f.page.model.state, has_frame=True)
+        bar.set_viewport_span(1.0)
+        self.assertEqual(bar.span.value(), 0.000001)
+        self.assertNotEqual(bar.span.text(), "—")
+
     def test_live_span_and_pan_change_only_viewport_and_survive_locale(self):
         f = self.fixture
         f.page.primary.click()

@@ -492,6 +492,11 @@ class AnalyzerWorkspaceV2(QWidget):
         if bundle is not None and bundle is not self._last_bundle:
             scene.set_frame(bundle, prepared=prepared_spectrum)
             self._last_bundle = bundle
+            # The new frame may have exactly the old ViewBox X range, in
+            # which case Qt emits no sigXRangeChanged. The field must still
+            # leave its no-frame placeholder on the first publication.
+            lower, upper = scene.view_box.viewRange()[0]
+            self.frequency_bar.set_viewport_span(float(upper - lower))
         if state.mode is AnalyzerMode.SWEEP:
             statistics = bundle.sweep_statistics if bundle is not None else None
             statistics_key = ((statistics.source_id, statistics.epoch, statistics.update_sequence)
