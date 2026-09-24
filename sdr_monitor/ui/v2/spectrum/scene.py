@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Mapping
 
 import numpy as np
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 from ..components import ContextPopover, EmptyChartOverlay, HeatLegend
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
 from ..i18n import UiLocale, text
+from .auto_range import AutoVerticalRange
 from .axis import FrequencyAxis
 from .contracts import (
     BandMask,
@@ -111,6 +113,7 @@ class SpectrumScene(QWidget):
         self._range_mode = VerticalRangeMode.AUTO
         self._reference_level = 0.0
         self._db_per_division = 10.0
+        self._auto_vertical_range = AutoVerticalRange()
         self._shortcut_popover: ContextPopover | None = None
         self._measurement_available: bool | None = None
         self._build_ui()
@@ -385,6 +388,7 @@ class SpectrumScene(QWidget):
         self._presentation_active = active
         if not active:
             self._invalidate_projection()
+            self._auto_vertical_range.reset()
             # Hidden pixels need not pin a previous coherent bundle (including
             # its potentially large native density). Preserve latest sources,
             # viewport and marker frequency intent, not stale painted values.
@@ -498,6 +502,7 @@ class SpectrumScene(QWidget):
         Ordinary Stop deliberately retains the last measurement instead.
         """
         self._latest_view = None
+        self._auto_vertical_range.reset()
         self._displayed_view = None
         self._prepared_spectrum = None
         self._sweep_position.clear()
@@ -670,6 +675,7 @@ class SpectrumScene(QWidget):
 
         if self._range_mode is VerticalRangeMode.LOCKED:
             return
+        self._auto_vertical_range.reset()
         self._reference_level = float(value)
         self._reference_spin.blockSignals(True)
         self._reference_spin.setValue(self._reference_level)
@@ -682,6 +688,7 @@ class SpectrumScene(QWidget):
 
         if self._range_mode is VerticalRangeMode.LOCKED:
             return
+        self._auto_vertical_range.reset()
         self._db_per_division = max(0.1, float(value))
         self._division_spin.blockSignals(True)
         self._division_spin.setValue(self._db_per_division)
@@ -693,6 +700,7 @@ class SpectrumScene(QWidget):
         """Derive a vertical display range from finite measured values only."""
 
         self._range_mode = VerticalRangeMode.AUTO
+        self._auto_vertical_range.reset()
         self._lock_button.blockSignals(True)
         self._lock_button.setChecked(False)
         self._lock_button.blockSignals(False)
@@ -705,6 +713,7 @@ class SpectrumScene(QWidget):
         """Freeze or re-enable presentation range controls; no device setting changes."""
 
         self._range_mode = VerticalRangeMode.LOCKED if locked else VerticalRangeMode.MANUAL
+        self._auto_vertical_range.reset()
         self._reference_spin.setEnabled(not locked)
         self._division_spin.setEnabled(not locked)
         self._auto_button.setEnabled(not locked)
@@ -1056,13 +1065,11 @@ class SpectrumScene(QWidget):
             prepared = self._prepared_spectrum
             extent = (self._displayed_extent if self._projector is not None else
                       prepared.finite_extent if prepared is not None else finite_value_extent(view.values))
-            if extent is not None:
-                minimum, maximum = extent
-                data_span = maximum - minimum
-                margin = max(3.0, data_span * 0.08)
-                total_span = max(20.0, data_span + 2.0 * margin)
-                self._reference_level = maximum + (total_span - data_span) / 2.0
-                self._db_per_division = total_span / 8.0
+            previous_bounds = self._auto_vertical_range.bounds
+            bounds = self._auto_vertical_range.update(extent, now_ns=time.monotonic_ns())
+            if bounds is not None and bounds != previous_bounds:
+                self._reference_level = bounds[1]
+                self._db_per_division = (bounds[1] - bounds[0]) / 8.0
                 self._reference_spin.blockSignals(True)
                 self._reference_spin.setValue(self._reference_level)
                 self._reference_spin.blockSignals(False)
@@ -1070,8 +1077,14 @@ class SpectrumScene(QWidget):
                 self._division_spin.setValue(self._db_per_division)
                 self._division_spin.blockSignals(False)
         lower = self._reference_level - self._db_per_division * 8.0
-        self._plot_item.setYRange(lower, self._reference_level, padding=0.0)
         unit = "" if view is None else view.unit_label
+        current_lower, current_upper = self._view_box.viewRange()[1]
+        if (abs(current_lower - lower) > 1e-9 or
+                abs(current_upper - self._reference_level) > 1e-9):
+            self._plot_item.setYRange(lower, self._reference_level, padding=0.0)
+        # Subscribers may enable linked waterfall levels between publications.
+        # Keep the existing per-publication signal contract; its receiver is
+        # already idempotent when the level proposal is unchanged.
         self.vertical_range_changed.emit(lower, self._reference_level, unit)
         self._update_range_summary()
 
@@ -1081,15 +1094,15 @@ class SpectrumScene(QWidget):
             VerticalRangeMode.MANUAL: text("spectrum.range.manual", self._locale),
             VerticalRangeMode.LOCKED: text("spectrum.range.locked", self._locale),
         }[self._range_mode]
-        self._range_readout.setText(
-            text(
-                "spectrum.range.summary",
-                self._locale,
-                mode=mode_label,
-                reference=self._reference_level,
-                division=self._db_per_division,
-            )
+        summary = text(
+            "spectrum.range.summary",
+            self._locale,
+            mode=mode_label,
+            reference=self._reference_level,
+            division=self._db_per_division,
         )
+        if self._range_readout.text() != summary:
+            self._range_readout.setText(summary)
 
     def _update_markers_for_new_frame(self) -> None:
         if not self._presentation_active:
