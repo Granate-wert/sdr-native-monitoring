@@ -126,6 +126,19 @@ def visible_density_freshness_sample(now, *, visible, uploaded_density,
     return "mapped", ((now - accepted) * 1000, latest_sequence - sequence)
 
 
+def persistence_freshness_block_integrity(block):
+    """Require complete scalar rings and exactly one status per GUI heartbeat."""
+    samples = (block["persistence_upload_ages"], block["persistence_upload_sequence_gaps"],
+               block["visible_density_ages"], block["visible_density_sequence_gaps"])
+    return (all(not values.dropped for values in samples)
+            and len(block["persistence_upload_ages"]) == len(block["persistence_upload_sequence_gaps"])
+            and len(block["visible_density_ages"]) == len(block["visible_density_sequence_gaps"])
+            and block["heartbeat_times_s"].total_count == (
+                block["visible_density_ages"].total_count
+                + block["visible_density_unmapped"] + block["visible_density_empty"]
+                + block["visible_density_hidden"]))
+
+
 def accepted_update_report(samples, elapsed_seconds):
     """Rates and endpoints use exact events, never the retained sample tail."""
     if elapsed_seconds <= 0:
@@ -2219,6 +2232,10 @@ def main(argv=None):
                 if args.projection_stage_timing:
                     sample_integrity = sample_integrity and all(
                         not dropped for stages in stage_overflow.values() for dropped in stages.values())
+                if args.persistence_upload_age:
+                    sample_integrity = sample_integrity and all(
+                        persistence_freshness_block_integrity(block)
+                        for block in abba_blocks.values())
                 abba_report = dict(
                     order="BAAB" if args.abba_reverse_order else "ABBA",
                     sequence=[dict(block=name, mode=abba_blocks[name]["mode"])

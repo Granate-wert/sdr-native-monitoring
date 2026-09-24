@@ -471,6 +471,27 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             self.assertEqual(OBSERVER.visible_density_freshness_sample(
                 1.125, **(kwargs | invalid)), ("unmapped", None))
 
+    def test_freshness_integrity_rejects_wrapped_or_unaccounted_heartbeats(self):
+        names = ("persistence_upload_ages", "persistence_upload_sequence_gaps",
+                 "visible_density_ages", "visible_density_sequence_gaps", "heartbeat_times_s")
+        block = {name: OBSERVER.BoundedSamples(2) for name in names}
+        block.update(visible_density_unmapped=0, visible_density_empty=0,
+                     visible_density_hidden=0)
+        block["heartbeat_times_s"].append(1.0)
+        self.assertFalse(OBSERVER.persistence_freshness_block_integrity(block))
+        block["visible_density_ages"].append(12.0)
+        block["visible_density_sequence_gaps"].append(0)
+        self.assertTrue(OBSERVER.persistence_freshness_block_integrity(block))
+        block["visible_density_ages"].append(13.0)
+        self.assertFalse(OBSERVER.persistence_freshness_block_integrity(block))
+        block["visible_density_sequence_gaps"].append(1)
+        block["heartbeat_times_s"].append(1.01)
+        self.assertTrue(OBSERVER.persistence_freshness_block_integrity(block))
+        block["visible_density_ages"].append(14.0)
+        block["visible_density_sequence_gaps"].append(1)
+        block["heartbeat_times_s"].append(1.02)
+        self.assertFalse(OBSERVER.persistence_freshness_block_integrity(block))
+
     def test_upload_age_requires_generated_persistence(self):
         with TemporaryDirectory(prefix="app05-upload-age-validation-") as temporary:
             output = Path(temporary) / "result.json"
