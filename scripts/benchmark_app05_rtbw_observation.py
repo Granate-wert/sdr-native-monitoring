@@ -592,7 +592,8 @@ def main(argv=None):
     parser.add_argument("--observer-image-cadence-hz", type=float,
                         help="Observer-only ImageItem cadence override; product stays at its default 15 Hz")
     parser.add_argument("--persistence-upload-age", action="store_true",
-                        help="Opt-in accepted-density to ImageItem-commit age; scalar observer, not paint or DWM")
+                        help="Opt-in ImageItem commit age and ABBA visible-heartbeat freshness; "
+                             "scalar GUI observer, not paint or DWM")
     parser.add_argument("--persistence-abba", action="store_true",
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
     parser.add_argument("--abba-reverse-order", action="store_true",
