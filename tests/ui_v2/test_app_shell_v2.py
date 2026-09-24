@@ -114,12 +114,14 @@ class AppShellV2Tests(unittest.TestCase):
         for _ in range(3):
             events.clear()
             shell.select_workspace("analyzer")
+            self.app.processEvents()
             self.assertEqual(events[:2], [("hide", "home"),
                 ("show", "analyzer", "analyzer", "analyzer", True, True, True)])
             events.clear()
             shell.select_workspace("home")
+            self.app.processEvents()
             self.assertEqual(events[:2], [("hide", "analyzer"),
-                ("show", "home", "home", "home", True, False, False)])
+                ("show", "home", "home", "home", True, False, shell.width() < 1600)])
 
     def test_close_ports_are_once_only_and_blockers_fail_closed(self) -> None:
         calls: list[str] = []
@@ -194,8 +196,10 @@ class AppShellV2Tests(unittest.TestCase):
         self.assertFalse(shell._inspector.isVisible())
         shell.resize(1600, 900)
         self.app.processEvents()
-        self.assertFalse(shell.inspector_hidden_for_narrow_width)
-        self.assertTrue(shell._inspector.isVisible())
+        # A visible top-level window can be clamped by the real Windows work
+        # area. Responsive state follows actual logical width, not resize intent.
+        self.assertEqual(shell.inspector_hidden_for_narrow_width, shell.width() < 1600)
+        self.assertEqual(shell._inspector.isVisible(), shell.width() >= 1600)
 
     def test_versioned_settings_restore_without_reusing_legacy_keys(self) -> None:
         settings = self._settings()
@@ -203,12 +207,27 @@ class AppShellV2Tests(unittest.TestCase):
         first.resize(1600, 900)
         first.show()
         self.app.processEvents()
+        if self.app.platformName() == "offscreen":
+            # Keep a definite wide/pinned-preference branch in the portable
+            # suite even when the native desktop cannot show 1600 logical px.
+            self.assertGreaterEqual(first.width(), 1600)
+            self.assertFalse(first.inspector_hidden_for_narrow_width)
+        initial_inspector_preference = first._inspector_requested
         first.toggle_navigation()
         first.toggle_inspector()
+        expected_inspector_preference = (initial_inspector_preference
+                                         if first.inspector_hidden_for_narrow_width
+                                         else not initial_inspector_preference)
+        self.assertEqual(first._inspector_requested, expected_inspector_preference)
+        self.assertEqual(first._narrow_inspector_drawer_open,
+                         first.inspector_hidden_for_narrow_width)
         first.closeEvent(QCloseEvent())
         restored = self._make_shell(settings=settings)
         self.assertTrue(restored.navigation_expanded)
-        self.assertFalse(restored._inspector_requested)
+        self.assertEqual(restored._inspector_requested, expected_inspector_preference)
+        if self.app.platformName() == "offscreen":
+            self.assertFalse(restored._inspector_requested)
+        self.assertFalse(restored._narrow_inspector_drawer_open)
         self.assertEqual(str(settings.value("ui_v2/shell/v1/version")), "1")
 
     def test_discovery_policy_is_displayed_without_a_navigation_action(self) -> None:
