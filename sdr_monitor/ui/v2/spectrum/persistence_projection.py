@@ -282,3 +282,183 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                                     witness, request.rematerialize,
                                     (weakref.ref(image) if history is None or trusted_history else None),
                                     (_WORKER_IMAGE_TOKEN if history is None or trusted_history else None))
+
+
+class PersistenceImageSteps:
+    """Experimental bounded continuation of the exact optional image work.
+
+    ``advance`` does at most ``max_chunks`` 64K-cell hash/reduction/mapping
+    chunks and returns only a complete image. It owns no executor or Qt
+    callback. A future scheduler must hold one instance and its existing
+    ``persistence_image_reserve`` reservation until completion or cancellation.
+    Stop/Hide/policy change must signal cooperative cancellation; ``close()``
+    may run only after the active worker acknowledges, never concurrently with
+    ``advance()``. The normal product path above is deliberately unchanged
+    while that ownership is evaluated.
+    """
+
+    def __init__(self, request: PersistenceImageRequest) -> None:
+        self.request = request
+        self._history = _compatible_history(request)
+        self._trusted_history = _trusted_worker_history(request, self._history)
+        self._witness: PersistenceInputWitness | None = None
+        self._digest = hashlib.sha256() if request.policy.mode is PersistenceRenderMode.VISUAL else None
+        if self._digest is not None:
+            self._digest.update(repr((request.view.value_mode.value, request.view.level_unit)).encode("utf-8"))
+        self._hash_array = self._hash_row = self._hash_offset = 0
+        self._hash_meta_pending = True
+        self._count_row = self._count_offset = 0
+        self._map_row = self._map_offset = 0
+        self._maximum = 0.0
+        self._image: np.ndarray | None = None
+        self._scratch: np.ndarray | None = None
+        self._mask: np.ndarray | None = None
+        self._native_smoothing: Callable[[np.ndarray, np.ndarray, np.ndarray], None] | None = None
+        self._stage = ("witness" if self._digest is not None else
+                       "count" if request.view.value_mode is DensityValueMode.COUNT else "map")
+
+    def advance(self, *, max_chunks: int = 8, cancelled: CancelCheck = None) -> PreparedPersistenceImage | None:
+        """Continue without publishing a partially hashed or mapped image."""
+        if isinstance(max_chunks, bool) or not isinstance(max_chunks, int) or max_chunks < 1:
+            raise ValueError("max_chunks must be a positive integer")
+        if self._stage in ("complete", "aborted"):
+            raise RuntimeError("terminal persistence continuation cannot publish twice")
+        try:
+            return self._advance(max_chunks=max_chunks, cancelled=cancelled)
+        except BaseException:
+            # A failed chunk may have already advanced a cursor or allocated
+            # only part of its scratch. Retrying that state is never safe.
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Discard partial work after worker acknowledgement, not concurrently."""
+        if self._stage not in ("complete", "aborted"):
+            self._stage = "aborted"
+        self._discard_payload()
+
+    def _discard_payload(self) -> None:
+        # The caller receives the completed image separately. Do not let a
+        # paused or terminal stepper pin old history/source arrays.
+        if hasattr(self, "request"):
+            del self.request
+        self._history = self._witness = self._digest = self._image = None
+        self._scratch = self._mask = self._native_smoothing = None
+
+    def _complete(self, result: PreparedPersistenceImage) -> PreparedPersistenceImage:
+        self._stage = "complete"
+        self._discard_payload()
+        return result
+
+    def _advance(self, *, max_chunks: int, cancelled: CancelCheck) -> PreparedPersistenceImage | None:
+        check_cancelled(cancelled)
+        remaining = max_chunks
+        while remaining:
+            if self._stage == "witness":
+                self._hash_chunk()
+                remaining -= 1
+                if self._hash_array == 3:
+                    assert self._digest is not None
+                    self._witness = PersistenceInputWitness(
+                        weakref.ref(self.request.view.density), self._digest.digest())
+                    self._digest = None
+                    history = self._history
+                    if (self.request.rematerialize and history is not None
+                            and self.request.history is not None
+                            and same_persistence_input(self.request.history.input_witness, self._witness)):
+                        check_cancelled(cancelled)
+                        return self._complete(PreparedPersistenceImage(
+                            self.request.view, self.request.policy, self.request.history_revision,
+                            history, self.request.history.count_maximum, self._witness, True,
+                            (weakref.ref(history) if self._trusted_history else None),
+                            (_WORKER_IMAGE_TOKEN if self._trusted_history else None)))
+                    self._stage = ("count" if self.request.view.value_mode is DensityValueMode.COUNT
+                                   else "map")
+            elif self._stage == "count":
+                self._count_chunk()
+                remaining -= 1
+                if self._count_row == self.request.view.density.shape[0]:
+                    self._stage = "map"
+            else:
+                self._map_chunk()
+                remaining -= 1
+                if self._map_row == self.request.view.density.shape[0]:
+                    check_cancelled(cancelled)
+                    assert self._image is not None
+                    self._image.setflags(write=False)
+                    return self._complete(PreparedPersistenceImage(
+                        self.request.view, self.request.policy, self.request.history_revision,
+                        self._image, self._maximum, self._witness, self.request.rematerialize,
+                        (weakref.ref(self._image) if self._history is None or self._trusted_history else None),
+                        (_WORKER_IMAGE_TOKEN if self._history is None or self._trusted_history else None)))
+            check_cancelled(cancelled)
+        return None
+
+    def _hash_chunk(self) -> None:
+        assert self._digest is not None
+        arrays = (self.request.view.density, self.request.view.frequency_edges_hz,
+                  self.request.view.level_edges)
+        array = arrays[self._hash_array]
+        if self._hash_meta_pending:
+            self._digest.update(repr((array.shape, array.dtype.str)).encode("ascii"))
+            self._hash_meta_pending = False
+        row = array[self._hash_row] if array.ndim == 2 else array
+        chunk = row[self._hash_offset:self._hash_offset + IMAGE_BATCH]
+        if chunk.flags.c_contiguous:
+            self._digest.update(memoryview(chunk).cast("B"))
+        else:
+            self._digest.update(chunk.tobytes())
+        self._hash_offset += chunk.size
+        if self._hash_offset == row.size:
+            self._hash_offset = 0
+            self._hash_row += 1
+            if self._hash_row == (array.shape[0] if array.ndim == 2 else 1):
+                self._hash_row = 0
+                self._hash_array += 1
+                self._hash_meta_pending = True
+
+    def _count_chunk(self) -> None:
+        rows = self.request.view.density
+        row = rows[self._count_row]
+        chunk = row[self._count_offset:self._count_offset + IMAGE_BATCH]
+        finite = chunk[np.isfinite(chunk)]
+        if finite.size:
+            self._maximum = max(self._maximum, float(np.max(finite)))
+        self._count_offset += chunk.size
+        if self._count_offset == row.size:
+            self._count_offset = 0
+            self._count_row += 1
+
+    def _map_chunk(self) -> None:
+        if self._image is None:
+            self._image = np.empty(self.request.view.density.shape, dtype=np.float32)
+            if self._history is not None:
+                batch = min(IMAGE_BATCH, self._image.shape[1])
+                self._scratch = np.empty(batch, dtype=np.float32)
+                self._mask = np.empty(batch, dtype=np.bool_)
+                self._native_smoothing = _visual_smoothing_kernel() if self._trusted_history else None
+        row = self.request.view.density[self._map_row]
+        source = row[self._map_offset:self._map_offset + IMAGE_BATCH]
+        target = self._image[self._map_row, self._map_offset:self._map_offset + IMAGE_BATCH]
+        mapped = target if self._scratch is None else self._scratch[:source.size]
+        if source.flags.c_contiguous and source[0] == 0.0 and not np.any(source):
+            np.copyto(mapped, source)
+        else:
+            map_density_row_for_display(source, value_mode=self.request.view.value_mode,
+                logarithmic=self.request.policy.logarithmic, count_maximum=self._maximum, out=mapped)
+        if self._history is not None:
+            old = self._history[self._map_row, self._map_offset:self._map_offset + IMAGE_BATCH]
+            if self._native_smoothing is not None:
+                self._native_smoothing(mapped, old, target)
+            else:
+                assert self._mask is not None
+                row_mask = self._mask[:source.size]
+                np.subtract(mapped, old, out=target)
+                np.multiply(target, .18, out=target)
+                np.greater_equal(mapped, old, out=row_mask)
+                np.multiply(target, .65 / .18, out=target, where=row_mask)
+                np.add(old, target, out=target)
+        self._map_offset += source.size
+        if self._map_offset == row.size:
+            self._map_offset = 0
+            self._map_row += 1
