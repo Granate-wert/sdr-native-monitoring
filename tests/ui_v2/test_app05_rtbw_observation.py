@@ -295,6 +295,38 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             state, uploads, 4, 5, 12))
         self.assertFalse(OBSERVER.persistence_rematerialization_settled(state))
 
+    def test_show_lag_diagnostic_keeps_strict_three_sample_gate(self):
+        transition = {}
+        for gap, exact in ((None, False), (2, False), (1, False), (0, True),
+                           (0, True), (1, False), (0, True)):
+            latest = 20 if gap is not None else None
+            uploaded = None if gap is None else latest - gap
+            OBSERVER.observe_moving_latest_restore(transition,
+                dict(latest_density_update_sequence=latest,
+                     uploaded_density_update_sequence=uploaded),
+                sample_settled=exact)
+        OBSERVER.observe_moving_latest_restore(transition,
+            dict(latest_density_update_sequence=-1,
+                 uploaded_density_update_sequence=-2), sample_settled=False)
+        OBSERVER.observe_moving_latest_restore(transition,
+            dict(latest_density_update_sequence=True,
+                 uploaded_density_update_sequence=0), sample_settled=False)
+        self.assertEqual(transition["moving_latest_gap_heartbeat_counts"],
+            {"0": 3, "1": 2, "2": 1, "3+": 0, "unknown": 3})
+        self.assertEqual(transition["moving_latest_exact_heartbeat_count"], 3)
+        self.assertEqual(transition["moving_latest_exact_longest_streak"], 2)
+        self.assertEqual(transition["moving_latest_exact_current_streak"], 0)
+        self.assertIsNone(transition["moving_latest_gap_at_last_heartbeat"])
+        self.assertFalse(OBSERVER.persistence_page_lifecycle_gate_passed([
+            dict(action="hide", visible_state_observed=True,
+                 before=dict(presentation_active=True, layer_requested_visible=True,
+                             image_item_visible=True),
+                 after_visibility_observed=dict(presentation_active=False,
+                     image_item_visible=False, uploaded_density_update_sequence=None)),
+            dict(action="show", visible_state_observed=True, settled=False,
+                 fixed_show_target_validated_at_completion=True,
+                 stable_samples=transition["moving_latest_exact_current_streak"])]))
+
     def test_fixed_show_target_revalidates_complete_post_request_event_log(self):
         state = dict(presentation_active=True, layer_requested_visible=True,
             image_item_visible=True, image_uploads=5,

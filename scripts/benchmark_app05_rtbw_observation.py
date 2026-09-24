@@ -376,6 +376,29 @@ def persistence_rematerialization_settled(state):
     )
 
 
+def observe_moving_latest_restore(transition, state, *, sample_settled):
+    """Count bounded Show heartbeat lag without weakening the strict gate."""
+    latest = state.get("latest_density_update_sequence")
+    uploaded = state.get("uploaded_density_update_sequence")
+    gap = (latest - uploaded if type(latest) is int and type(uploaded) is int
+           and latest >= uploaded >= 0 else None)
+    counts = transition.setdefault("moving_latest_gap_heartbeat_counts",
+        {"0": 0, "1": 0, "2": 0, "3+": 0, "unknown": 0})
+    bucket = ("unknown" if gap is None else str(gap) if gap < 3 else "3+")
+    counts[bucket] += 1
+    transition["moving_latest_gap_at_last_heartbeat"] = gap
+    streak = transition.get("moving_latest_exact_current_streak", 0)
+    if sample_settled:
+        streak += 1
+        transition["moving_latest_exact_heartbeat_count"] = (
+            transition.get("moving_latest_exact_heartbeat_count", 0) + 1)
+    else:
+        streak = 0
+    transition["moving_latest_exact_current_streak"] = streak
+    transition["moving_latest_exact_longest_streak"] = max(
+        transition.get("moving_latest_exact_longest_streak", 0), streak)
+
+
 def persistence_show_uploads_current(events, start_counter, end_counter, minimum_sequence):
     """Require every post-Show commit to be identified and non-regressing."""
     selected = persistence_upload_events_since_counter(events, start_counter, end_counter)
@@ -1641,6 +1664,7 @@ def main(argv=None):
                 exact_state = persistence_rematerialization_settled(state)
                 sample_settled = bool(exact_state and event_count_matches and uploads_monotonic
                     and len(events) >= 1)
+                observe_moving_latest_restore(transition, state, sample_settled=sample_settled)
                 sample_offsets = transition["stable_sample_offsets_ms"]
                 if sample_settled:
                     sample_offsets.append((now - transition["visibility_observed_at"]) * 1000)
@@ -2244,7 +2268,7 @@ def main(argv=None):
                     page_transitions, stable_samples=3, overflow=page_transition_overflow)
                     if args.persistence_page_lifecycle and persistence_enabled else None),
                 boundary_note=("Visibility is sampled by the nominal 10-ms Qt heartbeat, not an event-level show hook. Upload events are captured from the Show request counter; both request-relative and signed visibility-sample-relative timestamps are reported. The request-to-first-visible-sample interval is an attribution uncertainty, not proof of the precise QEvent.Show boundary. First unique visible paint-return samples are separately tagged for sources published before versus after the Show request; pre-Show source age is not a post-Show latency. These samples are QWidget paint returns, not DWM/scanout. request_to_visibility_ms and visible_to_settled_ms are reported separately. The independent fixed Show-time diagnostic validates a visible ImageItem upload at least as fresh as the density known at the Show request AND no stale/missing/regressing post-request upload through completion. False means this conservative observation was not validated, not proof that no fresh image ever appeared. It is not exact target-frame delivery or a painted/DWM frame."),
-                scope="Visible synthetic analyzer/calibration page changes while Live continues. Hide checks observed presentation suspension and cleared ImageItem; Show requires a post-request ImageItem commit, exact latest accepted/view/upload sequence, idle persistence request/view/projector lanes, monotonic commits, and three consecutive heartbeat samples. Actual intervals are recorded. The independent spectrum projector lane is outside this persistence contract. Not DWM/paint, RF/LPS or 50-ms acceptance.")
+                scope="Visible synthetic analyzer/calibration page changes while Live continues. Hide checks observed presentation suspension and cleared ImageItem; Show requires a post-request ImageItem commit, exact latest accepted/view/upload sequence, idle persistence request/view/projector lanes, monotonic commits, and three consecutive heartbeat samples. Moving-latest gap histogram and longest exact streak are diagnostic 10-ms heartbeat samples and do not relax this gate. Actual intervals are recorded. The independent spectrum projector lane is outside this persistence contract. Not DWM/paint, RF/LPS or 50-ms acceptance.")
             report["persistence"] = dict(enabled=persistence_enabled,
                 display_mode=args.persistence_display,
                 power_bins=args.persistence_power_bins, every_source_frames=args.persistence_every,
