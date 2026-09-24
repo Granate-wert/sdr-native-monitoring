@@ -62,7 +62,7 @@ class DesignSystemTests(unittest.TestCase):
         roles = tuple(item.name for item in fields(dark))
         self.assertEqual(
             roles,
-            ("current_spectrum", "average", "max_hold", "min_hold", "marker"),
+            ("current_spectrum", "average", "max_hold", "min_hold", "previous_sweep", "marker"),
         )
         for role in roles:
             self.assertGreaterEqual(
@@ -71,6 +71,10 @@ class DesignSystemTests(unittest.TestCase):
             )
         self.assertNotEqual(light_tokens.scientific, dark)
         self.assertEqual(len({getattr(high_contrast, role) for role in roles}), len(roles))
+        self.assertGreaterEqual(
+            contrast_ratio(high_contrast.previous_sweep, tokens_for_theme(ThemeId.HIGH_CONTRAST).colors.panel),
+            7.0,
+        )
 
     def test_qss_has_real_semantic_selectors_and_focus_ring(self) -> None:
         stylesheet = stylesheet_for_theme(ThemeId.DARK)

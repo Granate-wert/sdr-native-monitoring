@@ -4,10 +4,12 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QImage, QPainter
 
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from sdr_monitor.services.native_continuous_sweep import _to_domain_line, _to_domain_progress
-from sdr_monitor.ui.v2.design import ThemeId
+from sdr_monitor.ui.v2.design import ThemeId, tokens_for_theme
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.spectrum.sweep_coverage import CURRENT, MISSING, PREVIOUS
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
@@ -119,3 +121,48 @@ class SweepCoverageOverlayTests(unittest.TestCase):
         self.scene.clear_measurement()
         self.assertIsNone(self.layer.state.previous)
         self.assertEqual(self.layer.strip.runs, [])
+
+    def test_previous_pass_is_opaque_distinct_segmented_contour_without_data_change(self):
+        self.publish(self.previous, self.early)
+        original = self.layer.projection.history
+        for theme in ThemeId:
+            self.layer.set_theme(theme)
+            token = tokens_for_theme(theme).scientific
+            pen = self.layer.history.curve.opts["pen"]
+            self.assertEqual(pen.style(), Qt.PenStyle.SolidLine)
+            self.assertEqual(pen.color().name().lower(), token.previous_sweep.lower())
+            self.assertEqual(pen.color().alpha(), 255)
+            self.assertEqual(self.layer.history.curve.opts["segmentedLineMode"], "on")
+            self.assertFalse(self.layer.history.curve.opts["antialias"])
+            self.assertEqual(self.layer.history.curve.opts["connect"], "finite")
+            self.assertNotIn(token.previous_sweep.lower(), {
+                token.current_spectrum.lower(), token.average.lower(), token.max_hold.lower(),
+                token.min_hold.lower(),
+            })
+            x, y = self.layer.history.getData()
+            np.testing.assert_array_equal(x, original.frequencies_hz)
+            np.testing.assert_array_equal(y, original.values)
+            self.assertTrue(np.isnan(y[4:]).all())
+            for locale in UiLocale:
+                self.layer.set_locale(locale)
+                scope = text("analyzer.coverage.scope", locale)
+                self.assertIn(scope, self.layer.history.toolTip())
+                self.assertNotIn("Пунктирная", scope)
+                self.assertNotIn("Dashed", scope)
+
+    def test_segmented_history_does_not_bridge_nonfinite_samples_in_raster(self):
+        curve = self.layer.history.curve
+        curve.setData(np.array([5., 15., 25., 35., 45., 55., 65., 75.]),
+                      np.array([10., 10., np.nan, np.nan, 10., 10., np.inf, 10.]),
+                      connect="finite")
+        image = QImage(81, 21, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(QColor("#000000"))
+        painter = QPainter(image)
+        try:
+            curve.paint(painter, None, None)
+        finally:
+            painter.end()
+        self.assertNotEqual(image.pixelColor(10, 10), QColor("#000000"))
+        self.assertNotEqual(image.pixelColor(50, 10), QColor("#000000"))
+        self.assertEqual(image.pixelColor(30, 10), QColor("#000000"))
+        self.assertEqual(image.pixelColor(70, 10), QColor("#000000"))

@@ -90,6 +90,7 @@ class ScientificColors:
     average: str = "#4DA3FF"
     max_hold: str = "#FFB454"
     min_hold: str = "#A78BFA"
+    previous_sweep: str = "#9EABB8"
     marker: str = "#FFD166"
 
 
@@ -164,11 +165,11 @@ _SCIENTIFIC = {
     ThemeId.DARK: ScientificColors(),
     ThemeId.LIGHT: ScientificColors(
         current_spectrum="#006B5F", average="#005FCC", max_hold="#8A4B00",
-        min_hold="#6B3FA0", marker="#7A5500",
+        min_hold="#6B3FA0", previous_sweep="#425466", marker="#7A5500",
     ),
     ThemeId.HIGH_CONTRAST: ScientificColors(
         current_spectrum="#00FFFF", average="#FFFFFF", max_hold="#FFFF00",
-        min_hold="#FF66FF", marker="#FF9900",
+        min_hold="#FF66FF", previous_sweep="#9DADFF", marker="#FF9900",
     ),
 }
 

@@ -56,7 +56,8 @@ class _CoverageStrip(pg.GraphicsObject):
                      Qt.BrushStyle.HorPattern if state == PREVIOUS else
                      Qt.BrushStyle.BDiagPattern if state == MISSING else Qt.BrushStyle.DiagCrossPattern)
             painter.setBrush(QBrush(color, style))
-            painter.drawRect(coverage_pixel_rect(transform, QRectF(left, top - height * .085, right - left, height * .035)))
+            painter.drawRect(coverage_pixel_rect(
+                transform, QRectF(left, top - height * .085, right - left, height * .035)))
             if state & MISSING:
                 # At subpixel resolution this is deliberately conservative:
                 # any absent bin marks the column, not fabricated continuity.
@@ -79,7 +80,11 @@ class SweepCoverageOverlay:
         self._display_previous = None
         self.strip = _CoverageStrip()
         self.strip.setZValue(-5)
-        self.history = pg.PlotDataItem(connect="finite")
+        self.history = pg.PlotDataItem(connect="finite", antialias=False)
+        # An opaque solid previous-pass contour preserves the separate history
+        # identity while Qt draws bounded segments instead of a very costly
+        # multi-thousand-point dashed QPainterPath. Finite gaps remain gaps.
+        self.history.curve.setSegmentedLineMode("on")
         self.history.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.history.setZValue(-1)
         self.label = pg.TextItem(anchor=(0, 1))
@@ -160,8 +165,10 @@ class SweepCoverageOverlay:
             item.setToolTip(detail)
 
     def set_theme(self, theme: ThemeId) -> None:
-        colors = tokens_for_theme(theme).colors
+        tokens = tokens_for_theme(theme)
+        colors = tokens.colors
         self.strip.theme = theme
         self.strip.update()
-        self.history.setPen(pg.mkPen(colors.secondary_text, width=1.2, style=Qt.PenStyle.DashLine))
+        self.history.setPen(pg.mkPen(tokens.scientific.previous_sweep,
+                                     width=1.2, style=Qt.PenStyle.SolidLine))
         self.label.setColor(colors.secondary_text)
