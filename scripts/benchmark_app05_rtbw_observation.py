@@ -2080,6 +2080,8 @@ def main(argv=None):
                         persistence_upload_sequence_gaps, summary),
                     sample_accounting=bounded_sample_accounting(persistence_upload_ages),
                     scope="ViewModel acceptance to worker ImageItem commit-return; not paint/DWM. "
+                          "Only committed updates enter the age distribution: pair it with accepted/upload "
+                          "counts and latest-sequence gap, because superseded updates have no measured age. "
                           "ABBA samples belong to the commit window, not necessarily the acceptance cohort.")),
                 generated=persistence_generated, accepted=persistence_accepted,
                 last_accepted_update=last_persistence_accepted,
