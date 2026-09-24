@@ -111,6 +111,21 @@ def complete_bounded_summary(samples, summarize):
     return None if samples.dropped else summarize(tuple(samples))
 
 
+def visible_density_freshness_sample(now, *, visible, uploaded_density,
+                                     latest_sequence, sequence_by_identity, accepted_at):
+    """Scalar GUI-heartbeat age of the currently shown density, not paint age."""
+    if not visible:
+        return "hidden", None
+    if uploaded_density is None:
+        return "empty", None
+    sequence = sequence_by_identity.get(id(uploaded_density))
+    accepted = accepted_at.get(sequence)
+    if (sequence is None or accepted is None or accepted > now
+            or sequence > latest_sequence):
+        return "unmapped", None
+    return "mapped", ((now - accepted) * 1000, latest_sequence - sequence)
+
+
 def accepted_update_report(samples, elapsed_seconds):
     """Rates and endpoints use exact events, never the retained sample tail."""
     if elapsed_seconds <= 0:
@@ -957,6 +972,11 @@ def main(argv=None):
             persistence_upload_ages=BoundedSamples(timing_capacity),
             persistence_upload_sequence_gaps=BoundedSamples(timing_capacity),
             persistence_upload_age_unmapped=0,
+            visible_density_ages=BoundedSamples(timing_capacity),
+            visible_density_sequence_gaps=BoundedSamples(timing_capacity),
+            visible_density_unmapped=0,
+            visible_density_empty=0,
+            visible_density_hidden=0,
             first_displayed_sequence=None, last_displayed_sequence=None)
         for name in abba_order}
     abba_warmups, abba_transitions = [], []
@@ -1403,6 +1423,20 @@ def main(argv=None):
                     block["heartbeat_times_s"].append(now)
                     if block["qt_target_witness"] is not None:
                         block["qt_target_witness"].observe(current_qt_target(), now)
+                    if args.persistence_upload_age:
+                        overlay = scene._persistence
+                        status, sample = visible_density_freshness_sample(now,
+                            visible=bool(f.page.visualization.isVisible()
+                                         and overlay.image_item.isVisible()),
+                            uploaded_density=overlay._uploaded_density,
+                            latest_sequence=last_persistence_accepted,
+                            sequence_by_identity=persistence_density_sequence_by_identity,
+                            accepted_at=persistence_accepted_at)
+                        if status == "mapped":
+                            block["visible_density_ages"].append(sample[0])
+                            block["visible_density_sequence_gaps"].append(sample[1])
+                        else:
+                            block[f"visible_density_{status}"] += 1
                 transition = pending_page_transition
                 if transition is None or "settled" in transition:
                     return
@@ -2150,6 +2184,18 @@ def main(argv=None):
                                 block["persistence_upload_age_unmapped"]),
                             age_scope=(None if not args.persistence_upload_age else
                                 "Commit callback occurred in this block; accepted update may precede it.")),
+                        visible_density_freshness=(None if not args.persistence_upload_age else dict(
+                            accepted_to_heartbeat_ms=complete_bounded_summary(
+                                block["visible_density_ages"], summary),
+                            latest_sequence_gap_at_heartbeat=complete_bounded_summary(
+                                block["visible_density_sequence_gaps"], summary),
+                            mapped_samples=bounded_sample_accounting(block["visible_density_ages"]),
+                            unmapped_samples=block["visible_density_unmapped"],
+                            empty_samples=block["visible_density_empty"],
+                            hidden_samples=block["visible_density_hidden"],
+                            scope="Nominal 10-ms GUI heartbeat samples the current visible ImageItem "
+                                  "during this block, including intervals between commits. This is "
+                                  "sampled GUI state, not a new paint or DWM/scanout frame.")),
                         waterfall_image_uploads=dict(delta=waterfall_upload_delta,
                             rate_hz=waterfall_upload_delta / elapsed),
                         overlay_start=block["overlay_start"], overlay_end=block["overlay_end"])

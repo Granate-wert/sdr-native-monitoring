@@ -454,6 +454,23 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(report["remaining_workers"], [])
         self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
 
+    def test_visible_density_freshness_samples_between_commits_without_guessing(self):
+        density = object()
+        kwargs = dict(visible=True, uploaded_density=density, latest_sequence=8,
+                      sequence_by_identity={id(density): 7}, accepted_at={7: 1.0})
+        status, sample = OBSERVER.visible_density_freshness_sample(1.125, **kwargs)
+        self.assertEqual(status, "mapped")
+        self.assertAlmostEqual(sample[0], 125)
+        self.assertEqual(sample[1], 1)
+        self.assertEqual(OBSERVER.visible_density_freshness_sample(
+            1.125, **(kwargs | {"visible": False})), ("hidden", None))
+        self.assertEqual(OBSERVER.visible_density_freshness_sample(
+            1.125, **(kwargs | {"uploaded_density": None})), ("empty", None))
+        for invalid in ({"sequence_by_identity": {}}, {"accepted_at": {}},
+                        {"accepted_at": {7: 2.0}}, {"latest_sequence": 6}):
+            self.assertEqual(OBSERVER.visible_density_freshness_sample(
+                1.125, **(kwargs | invalid)), ("unmapped", None))
+
     def test_upload_age_requires_generated_persistence(self):
         with TemporaryDirectory(prefix="app05-upload-age-validation-") as temporary:
             output = Path(temporary) / "result.json"
