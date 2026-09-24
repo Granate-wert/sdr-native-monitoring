@@ -235,11 +235,17 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
             for first in range(0, row.size, IMAGE_BATCH):
                 check_cancelled(cancelled)
                 chunk = row[first:first + IMAGE_BATCH]
-                finite = chunk[np.isfinite(chunk)]
-                if finite.size:
-                    maximum = max(maximum, float(np.max(finite)))
+                if chunk.flags.c_contiguous:
+                    # The common native C-row path needs only the finite mask,
+                    # not a second gathered copy of every finite input cell.
+                    finite = np.isfinite(chunk)
+                    maximum = max(maximum, float(np.max(chunk, where=finite, initial=0.0)))
+                else:
+                    finite = chunk[np.isfinite(chunk)]
+                    if finite.size:
+                        maximum = max(maximum, float(np.max(finite)))
                 # Drop this allocation before evaluating the next selection;
-                # assignment would otherwise overlap old/new finite buffers.
+                # assignment would otherwise overlap old/new mask/copy buffers.
                 del finite
         # Do not keep the last reduction scratch alive during image mapping.
         del chunk
