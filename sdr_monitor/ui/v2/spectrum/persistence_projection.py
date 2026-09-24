@@ -44,9 +44,8 @@ def _visual_smoothing_kernel() -> Callable[[np.ndarray, np.ndarray, np.ndarray],
 class PersistenceInputWitness:
     """Weak publication witness plus content digest; never pins input arrays.
 
-    Identity alone is not freshness. Witness all values/edges in bounded chunks;
-    a byte-zero density row may use an unambiguous tag instead of raw bytes.
-    Rematerialization requires both the same publication array AND same bytes.
+    Identity alone is not freshness. Hash all values/edges in bounded chunks;
+    rematerialization requires both the same publication array AND same bytes.
     """
     density: weakref.ReferenceType[np.ndarray]
     digest: bytes
@@ -55,42 +54,11 @@ class PersistenceInputWitness:
 def persistence_input_witness(view: PersistenceDensityView, *,
                               cancelled: CancelCheck = None) -> PersistenceInputWitness:
     digest = hashlib.sha256()
-    # Row tags make a byte-zero row unambiguous without hashing its entire
-    # payload. This is still a full-content witness: signed zero, NaN payloads
-    # and every other nonzero byte take the ordinary raw-byte path.
-    digest.update(b"persistence-input-witness-v2\0")
     digest.update(repr((view.value_mode.value, view.level_unit)).encode("utf-8"))
-    density = view.density
-    zero_sample: tuple[bool, ...] = ()
-    if (density.flags.c_contiguous and density.shape[0] >= 16
-            and density.shape[1] <= IMAGE_BATCH):
-        sampled = []
-        for row in density[:8]:
-            check_cancelled(cancelled)
-            sampled.append(not bool(np.any(row.view(np.uint8))))
-        zero_sample = tuple(sampled)
-    tag_rows = sum(zero_sample) >= 4
-    zero_check = tag_rows
-    digest.update(b"S" if tag_rows else b"R")
-    active_rows = 0
-    for array_index, array in enumerate((density, view.frequency_edges_hz, view.level_edges)):
+    for array in (view.density, view.frequency_edges_hz, view.level_edges):
         digest.update(repr((array.shape, array.dtype.str)).encode("ascii"))
         rows = array if array.ndim == 2 else (array,)
-        for row_index, row in enumerate(rows):
-            if array_index == 0 and tag_rows:
-                check_cancelled(cancelled)
-                if zero_check:
-                    byte_zero = (zero_sample[row_index] if row_index < len(zero_sample)
-                                 else not bool(np.any(row.view(np.uint8))))
-                    if byte_zero:
-                        digest.update(b"Z")
-                        continue
-                    active_rows += 1
-                    # A dense tail must not pay both a zero scan and SHA for
-                    # every subsequent row. Every row still has a tag.
-                    if active_rows >= 8:
-                        zero_check = False
-                digest.update(b"D")
+        for row in rows:
             for first in range(0, row.size, IMAGE_BATCH):
                 check_cancelled(cancelled)
                 chunk = row[first:first + IMAGE_BATCH]

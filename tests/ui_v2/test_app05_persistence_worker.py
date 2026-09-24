@@ -140,67 +140,6 @@ class PersistenceWorkerTests(unittest.TestCase):
         with patch.object(density_worker, "persistence_input_witness", side_effect=AssertionError("Direct must not hash")):
             prepare_persistence_image(request())
 
-    def test_sparse_witness_distinguishes_signed_zero_and_nan_payload_bytes(self):
-        values = np.zeros((64, 4096), dtype=np.float32)
-        values[30, 17] = .5
-        source = view(values)
-        original = density_worker.persistence_input_witness(source)
-        self.assertEqual(original.digest, density_worker.persistence_input_witness(source).digest)
-        source.density.setflags(write=True)
-        source.density[20, 17] = -0.0
-        source.density.setflags(write=False)
-        signed_zero = density_worker.persistence_input_witness(source)
-        self.assertNotEqual(original.digest, signed_zero.digest)
-        source.density.setflags(write=True)
-        source.density.view(np.uint32)[20, 17] = 0x7FC00001
-        source.density.setflags(write=False)
-        first_nan = density_worker.persistence_input_witness(source)
-        source.density.setflags(write=True)
-        source.density.view(np.uint32)[20, 17] = 0x7FC00002
-        source.density.setflags(write=False)
-        second_nan = density_worker.persistence_input_witness(source)
-        self.assertNotEqual(signed_zero.digest, first_nan.digest)
-        self.assertNotEqual(first_nan.digest, second_nan.digest)
-        self.assertEqual(second_nan.digest, density_worker.persistence_input_witness(source).digest)
-
-    def test_sparse_witness_cancels_during_bounded_zero_sample(self):
-        source = view(np.zeros((64, 65536), dtype=np.float32))
-        checks = []
-
-        def cancelled():
-            checks.append(True)
-            return len(checks) == 3
-
-        with self.assertRaises(CancelledError):
-            density_worker.persistence_input_witness(source, cancelled=cancelled)
-        self.assertEqual(len(checks), 3)
-
-    def test_sparse_witness_tags_rows_after_dense_tail_cutoff(self):
-        values = np.zeros((64, 4096), dtype=np.float32)
-        values[8:16, 17] = .5  # Sparse admission, then eight active rows.
-        source = view(values)
-        original = density_worker.persistence_input_witness(source)
-        source.density.setflags(write=True)
-        source.density[50, 19] = -0.0  # Changed after zero testing is disabled.
-        source.density.setflags(write=False)
-        self.assertNotEqual(original.digest, density_worker.persistence_input_witness(source).digest)
-
-    def test_sparse_witness_restore_is_exact_and_changed_input_advances(self):
-        values = np.zeros((64, 4096), dtype=np.float32)
-        values[30, 17] = .5
-        policy = PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False)
-        current = PersistenceImageRequest(view(values), policy)
-        history = prepare_persistence_image(current).as_history(1)
-        restore = replace(current, history=history, rematerialize=True)
-        self.assertIs(prepare_persistence_image(restore).image, history.image)
-        current.view.density.setflags(write=True)
-        current.view.density[40, 19] = .25
-        current.view.density.setflags(write=False)
-        changed = prepare_persistence_image(restore)
-        expected = prepare_persistence_image(replace(restore, rematerialize=False))
-        self.assertIsNot(changed.image, history.image)
-        np.testing.assert_array_equal(changed.image.view(np.uint32), expected.image.view(np.uint32))
-
     def test_bit_exact_direct_visual_against_existing_overlay_with_missing_and_layouts(self):
         scene = SpectrumScene()
         try:
