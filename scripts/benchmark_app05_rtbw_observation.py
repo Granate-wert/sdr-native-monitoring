@@ -563,6 +563,8 @@ def main(argv=None):
                         help="Select the actual V2 persistence rendering policy for normal paint profiling")
     parser.add_argument("--observer-image-cadence-hz", type=float,
                         help="Observer-only ImageItem cadence override; product stays at its default 15 Hz")
+    parser.add_argument("--persistence-upload-age", action="store_true",
+                        help="Opt-in accepted-density to ImageItem-commit age; scalar observer, not paint or DWM")
     parser.add_argument("--persistence-abba", action="store_true",
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
     parser.add_argument("--abba-reverse-order", action="store_true",
@@ -677,6 +679,8 @@ def main(argv=None):
     if args.observer_image_cadence_hz is not None and (
             not args.persistence_power_bins or not 1 <= args.observer_image_cadence_hz <= 120):
         parser.error("observer image cadence requires persistence and a rate in 1..120 Hz")
+    if args.persistence_upload_age and not args.persistence_power_bins:
+        parser.error("persistence upload age requires generated persistence")
     if args.memory_seconds != 0 and not .25 <= args.memory_seconds <= 60:
         parser.error("memory-seconds must be zero or 0.25..60")
     if args.collect_after_context and not args.memory_seconds:
@@ -743,6 +747,9 @@ def main(argv=None):
     persistence_density_sequence_by_identity = {}
     persistence_identity_order = deque()
     persistence_generated_at, persistence_accepted_at = {}, {}
+    persistence_upload_ages = BoundedSamples(timing_capacity)
+    persistence_upload_sequence_gaps = BoundedSamples(timing_capacity)
+    persistence_upload_age_observed = persistence_upload_age_unmapped = 0
     persistence_upload_probe = dict(overlay=None, events=None)
     persistence_generated_order = deque()
     page_transitions = []
@@ -947,6 +954,9 @@ def main(argv=None):
             boundary_excluded_paints=dict.fromkeys(age.ages, 0),
             heartbeat_times_s=BoundedSamples(timing_capacity),
             persistence_update_sequences=BoundedSamples(timing_capacity),
+            persistence_upload_ages=BoundedSamples(timing_capacity),
+            persistence_upload_sequence_gaps=BoundedSamples(timing_capacity),
+            persistence_upload_age_unmapped=0,
             first_displayed_sequence=None, last_displayed_sequence=None)
         for name in abba_order}
     abba_warmups, abba_transitions = [], []
@@ -972,13 +982,32 @@ def main(argv=None):
         upload_tokens[id(pane)] = uploaded_key(pane, before, upload_tokens.get(id(pane)))
 
     def accept_persistence_image(overlay, request, result, error):
+        nonlocal persistence_upload_age_observed, persistence_upload_age_unmapped
         before = overlay.metrics.image_uploads
         accepted = original_accept_persistence_image(overlay, request, result, error)
         events = persistence_upload_probe["events"]
+        if overlay is persistence_upload_probe["overlay"] and overlay.metrics.image_uploads > before:
+            now = perf_counter()
+            uploaded_sequence = persistence_density_sequence_by_identity.get(id(overlay._uploaded_density))
+            if args.persistence_upload_age:
+                persistence_upload_age_observed += 1
+                accepted_at = persistence_accepted_at.get(uploaded_sequence)
+                if accepted_at is None or now < accepted_at or uploaded_sequence > last_persistence_accepted:
+                    persistence_upload_age_unmapped += 1
+                    if abba_current_block is not None:
+                        abba_blocks[abba_current_block]["persistence_upload_age_unmapped"] += 1
+                else:
+                    age_ms = (now - accepted_at) * 1000
+                    sequence_gap = last_persistence_accepted - uploaded_sequence
+                    persistence_upload_ages.append(age_ms)
+                    persistence_upload_sequence_gaps.append(sequence_gap)
+                    if abba_current_block is not None:
+                        abba_blocks[abba_current_block]["persistence_upload_ages"].append(age_ms)
+                        abba_blocks[abba_current_block]["persistence_upload_sequence_gaps"].append(sequence_gap)
         if (overlay is persistence_upload_probe["overlay"] and events is not None
                 and overlay.metrics.image_uploads > before):
             latest = overlay.latest_view
-            events.append(dict(perf_time=perf_counter(), counter=overlay.metrics.image_uploads,
+            events.append(dict(perf_time=now, counter=overlay.metrics.image_uploads,
                 uploaded_update_sequence=persistence_density_sequence_by_identity.get(
                     id(overlay._uploaded_density)),
                 latest_update_sequence=(None if latest is None else
@@ -2043,6 +2072,15 @@ def main(argv=None):
                 power_bins=args.persistence_power_bins, every_source_frames=args.persistence_every,
                 observer_image_cadence_hz=args.observer_image_cadence_hz,
                 actual_image_cadence_hz=1_000_000_000 / scene._persistence._interval_ns,
+                upload_age=(None if not args.persistence_upload_age else dict(
+                    observed_image_commits=persistence_upload_age_observed,
+                    unmapped_commits=persistence_upload_age_unmapped,
+                    accepted_to_image_commit_ms=complete_bounded_summary(persistence_upload_ages, summary),
+                    latest_sequence_gap_at_commit=complete_bounded_summary(
+                        persistence_upload_sequence_gaps, summary),
+                    sample_accounting=bounded_sample_accounting(persistence_upload_ages),
+                    scope="ViewModel acceptance to worker ImageItem commit-return; not paint/DWM. "
+                          "ABBA samples belong to the commit window, not necessarily the acceptance cohort.")),
                 generated=persistence_generated, accepted=persistence_accepted,
                 last_accepted_update=last_persistence_accepted,
                 overlay_metrics=asdict(scene._persistence.metrics),
@@ -2099,7 +2137,17 @@ def main(argv=None):
                             rate_hz=persistence_upload_delta / elapsed,
                             latest_density_uploaded=block["overlay_end"]["latest_view_is_uploaded"],
                             request_pending=block["overlay_end"]["worker_request_pending"],
-                            pending_view=block["overlay_end"]["pending_view"]),
+                            pending_view=block["overlay_end"]["pending_view"],
+                            accepted_to_image_commit_ms=(None if not args.persistence_upload_age else
+                                complete_bounded_summary(block["persistence_upload_ages"], summary)),
+                            latest_sequence_gap_at_commit=(None if not args.persistence_upload_age else
+                                complete_bounded_summary(block["persistence_upload_sequence_gaps"], summary)),
+                            age_sample_accounting=(None if not args.persistence_upload_age else
+                                bounded_sample_accounting(block["persistence_upload_ages"])),
+                            age_unmapped_commits=(None if not args.persistence_upload_age else
+                                block["persistence_upload_age_unmapped"]),
+                            age_scope=(None if not args.persistence_upload_age else
+                                "Commit callback occurred in this block; accepted update may precede it.")),
                         waterfall_image_uploads=dict(delta=waterfall_upload_delta,
                             rate_hz=waterfall_upload_delta / elapsed),
                         overlay_start=block["overlay_start"], overlay_end=block["overlay_end"])

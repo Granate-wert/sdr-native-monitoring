@@ -433,6 +433,37 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("observer image cadence requires persistence", result.stderr)
 
+    def test_opt_in_upload_age_reports_only_scalar_commit_provenance(self):
+        with TemporaryDirectory(prefix="app05-upload-age-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", "-X", "faulthandler",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--seconds", "1", "--cycles", "1", "--bins", "4096",
+                "--persistence-power-bins", "32", "--persistence-every", "10",
+                "--persistence-upload-age"],
+                cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        age = report["persistence"]["upload_age"]
+        self.assertGreater(age["observed_image_commits"], 0)
+        self.assertEqual(age["sample_accounting"]["total_count"] + age["unmapped_commits"],
+                         age["observed_image_commits"])
+        self.assertEqual(age["sample_accounting"]["dropped"], 0)
+        self.assertGreaterEqual(age["accepted_to_image_commit_ms"]["p50"], 0)
+        self.assertGreaterEqual(age["latest_sequence_gap_at_commit"]["p50"], 0)
+        self.assertEqual(report["remaining_workers"], [])
+        self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
+
+    def test_upload_age_requires_generated_persistence(self):
+        with TemporaryDirectory(prefix="app05-upload-age-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--persistence-upload-age"],
+                cwd=ROOT, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("persistence upload age requires generated persistence", result.stderr)
+
     def test_persistence_abba_rejects_offscreen_before_qt_startup(self):
         with TemporaryDirectory(prefix="app05-abba-validation-") as temporary:
             output = Path(temporary) / "result.json"
