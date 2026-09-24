@@ -19,6 +19,7 @@ from functools import wraps
 from pathlib import Path
 from threading import Lock, local
 from time import perf_counter_ns
+from typing import Callable
 from unittest.mock import patch
 
 _TIMED_FIELDS = ("total_ms", "witness_ms", "mapping_ms", "native_smoothing_ms", "other_ms")
@@ -47,7 +48,8 @@ class SubstageRecorder:
             self._records.append(sample)
 
     @contextmanager
-    def instrument(self, density_module, projection_module, *, live_presenter_class=None):
+    def instrument(self, density_module, projection_module, *, live_presenter_class=None,
+                   record_when: Callable[[], bool] | None = None):
         """Patch only the selected process, preserving the normal worker owner."""
         if live_presenter_class is None:
             from sdr_monitor.ui.presenters.live_presenter import LivePresenter
@@ -94,6 +96,8 @@ class SubstageRecorder:
 
         @wraps(original_prepare)
         def prepared(request, *args, **kwargs):
+            if record_when is not None and not record_when():
+                return original_prepare(request, *args, **kwargs)
             previous = getattr(self._local, "sample", None)
             sample = dict(mode=request.policy.mode.value,
                           shape=list(request.view.density.shape),

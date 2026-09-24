@@ -135,6 +135,24 @@ class SubstageRecorderTests(unittest.TestCase):
         self.assertFalse(report["complete"])
         self.assertIsNone(report["stages"]["direct"]["distributions"]["total_ms"])
 
+    def test_record_when_excludes_warmup_without_skipping_worker_result(self):
+        request = PersistenceImageRequest(view(np.full((4, 16), .4, np.float32)),
+                                          PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False))
+        measured = False
+        recorder = SubstageRecorder()
+        with recorder.instrument(persistence_projection, projection,
+                                 record_when=lambda: measured):
+            warmup = projection.prepare_persistence_image(request)
+            measured = True
+            observed = projection.prepare_persistence_image(request)
+            measured = False
+            after = projection.prepare_persistence_image(request)
+        self.assertTrue(np.array_equal(warmup.image, observed.image))
+        self.assertTrue(np.array_equal(observed.image, after.image))
+        report = recorder.report()
+        self.assertEqual((report["total"], report["completed"], report["errors"]), (1, 1, 0))
+        self.assertTrue(report["complete"])
+
     def test_invalid_capacity_is_rejected(self):
         for value in (0, True, 8193):
             with self.assertRaises(ValueError):

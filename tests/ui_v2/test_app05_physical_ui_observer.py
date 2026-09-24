@@ -122,11 +122,26 @@ class PhysicalUiObserverTests(unittest.TestCase):
     def test_parser_defaults_do_not_enable_opt_in_split_lane(self):
         args = observer.parser().parse_args(["--uri", "usb:3.12.5", "--output", "unused.json"])
         self.assertFalse(args.split_persistence)
+        self.assertFalse(args.visual_substages)
         self.assertFalse(args.hide_persistence)
         self.assertFalse(args.lock_vertical_range)
         self.assertEqual(args.render_mode, "direct")
         self.assertEqual(args.display_fps, 120)
         self.assertEqual(args.buffer_samples, 262144)
+
+    def test_visual_substage_profile_requires_an_explicit_flag(self):
+        args = observer.parser().parse_args([
+            "--uri", "usb:3.12.5", "--output", "unused.json", "--visual-substages",
+        ])
+        self.assertTrue(args.visual_substages)
+
+    def test_visual_substages_reject_nonvisual_and_split_lane_before_device_open(self):
+        for options in ([], ["--render-mode", "visual", "--split-persistence"]):
+            argv = ["observer", "--uri", "usb:3.12.5", "--output", "unused.json",
+                    "--visual-substages", *options]
+            with self.subTest(options=options), patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    observer.main()
 
     def test_interval_counters_are_differences_not_lifetime_values(self):
         before = SimpleNamespace(fft_frames_computed=100, fft_frames_dropped=2)

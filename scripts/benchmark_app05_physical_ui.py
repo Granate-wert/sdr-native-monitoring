@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, OrderedDict, deque
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, replace
 import hashlib
 import json
@@ -419,6 +419,8 @@ def parser() -> argparse.ArgumentParser:
                         help="diagnostic: freeze Auto Y after warmup, without changing RX")
     result.add_argument("--split-persistence", action="store_true",
                         help="opt-in existing second worker seam; not product wiring")
+    result.add_argument("--visual-substages", action="store_true",
+                        help="opt-in scalar Visual worker substage timings (perturbs timing)")
     result.add_argument("--render-mode", choices=("direct", "visual"), default="direct")
     result.add_argument("--display-fps", type=int, choices=(15, 30, 60, 120, 144, 240), default=120)
     result.add_argument("--window-width", type=int, default=1400)
@@ -436,6 +438,10 @@ def main() -> int:
         raise SystemExit("positive Fs and a power-of-two FFT >=256 are required")
     if args.buffer_samples < 4096 or args.buffer_samples > 262144 or args.buffer_samples & (args.buffer_samples - 1):
         raise SystemExit("buffer-samples must be a power of two in 4096..262144")
+    if args.split_persistence and args.visual_substages:
+        raise SystemExit("Visual substage contention profile requires the combined product worker")
+    if args.visual_substages and args.render_mode != "visual":
+        raise SystemExit("Visual substage profile requires --render-mode visual")
     output = args.output.resolve()
     if output.exists():
         raise SystemExit("output already exists; choose a new evidence path")
@@ -478,6 +484,7 @@ def main() -> int:
     from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     import sdr_monitor.ui.v2.spectrum.projection as projection_module
+    import sdr_monitor.ui.v2.spectrum.persistence_projection as persistence_projection_module
     import sdr_monitor.ui.v2.spectrum.persistence_projector as persistence_projector_module
     import sdr_monitor.ui.v2.product_live as product_live_module
     from sdr_monitor.ui.v2_composition import build_v2_shell
@@ -627,9 +634,29 @@ def main() -> int:
         return original_compose(presenter, **kwargs)
 
     report: dict[str, object] = {}
+    visual_recorder = None
+    visual_profiler_sha256 = None
+    if args.visual_substages:
+        from scripts import profile_app05_visual_substages as visual_profile_module
+
+        visual_recorder = visual_profile_module.SubstageRecorder()
+        visual_profiler_sha256 = hashlib.sha256(Path(visual_profile_module.__file__).read_bytes()).hexdigest()
+
+    @contextmanager
+    def visual_profile():
+        nonlocal original_density_image
+        assert visual_recorder is not None
+        with visual_recorder.instrument(persistence_projection_module, projection_module,
+                                        live_presenter_class=LivePresenter,
+                                        record_when=lambda: observer.measuring):
+            # The physical observer wraps the profiler, not its pre-patch target.
+            original_density_image = projection_module.prepare_persistence_image
+            yield
+
+    visual_patch = nullcontext() if visual_recorder is None else visual_profile()
     split_patch = (patch.object(product_live_module, "compose_v2_live_product", observed_compose)
                    if args.split_persistence else nullcontext())
-    with patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
+    with visual_patch, patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
             LivePresenter, "_poll_frames", observed_poll), patch.object(
             LivePresenter, "_emit_render", observed_emit), patch.object(
             SpectrumScene, "_accept_projection", observed_accept), patch.object(
@@ -844,6 +871,19 @@ def main() -> int:
                                      if key != "computed_fft_per_s")
                              and initial_sequence is not None and final_sequence is not None
                              and final_sequence > initial_sequence)
+        visual_profile_result = None if visual_recorder is None else visual_recorder.report()
+        if visual_profile_result is not None:
+            visual_profile_result["profiler_sha256"] = visual_profiler_sha256
+            visual_profile_result["physical_run_scope"] = (
+                "Only optional-worker calls that began while observer.measuring was true "
+                "are recorded. A call may finish just after the measured interval; "
+                "instruments perturb timing. These are neither an uninstrumented "
+                "performance baseline nor DWM/scanout observations."
+            )
+        visual_profile_complete = (None if visual_profile_result is None
+                                   else bool(visual_profile_result["complete"]))
+        if visual_profile_complete is False:
+            failure = ((failure + "; ") if failure else "") + "Visual substage profile incomplete"
         report = dict(schema="app05-physical-visible-v2-v6", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
@@ -860,6 +900,7 @@ def main() -> int:
                                      persistence_visible=not args.hide_persistence,
                                      vertical_range_locked=args.lock_vertical_range,
                                      split_persistence=args.split_persistence,
+                                     visual_substages=args.visual_substages,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
                                      backend="cpu", warmup_s=args.warmup,
                                      measurement_s=args.duration),
@@ -896,6 +937,8 @@ def main() -> int:
                       persistence_overlay_measurement_deltas=persistence_interval,
                       projector_measurement_deltas=projector_interval,
                       observer=observer.report(),
+                      persistence_substage_profile=visual_profile_result,
+                      persistence_substage_profile_complete=visual_profile_complete,
                       allocation_budget=asdict(budget), workers_after_close=workers,
                       scope="Successful run means bounded RX/UI lifecycle evidence, not performance acceptance. "
                             "Visible Qt paint-return only; Pluto timestamp estimates sample start from refill "
