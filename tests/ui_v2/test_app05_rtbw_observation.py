@@ -26,6 +26,56 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_executor_queue_probe_distinguishes_wait_service_and_never_started(self):
+        probe = OBSERVER.ExecutorQueueResidencyProbe(capacity=2)
+        pending = []
+
+        def submit(operation, *args):
+            pending.append((operation, args))
+            return object()
+
+        def summarize(values):
+            return None if not values else {"p50": min(values), "max": max(values)}
+        probe.submit(submit, lambda value: value + 1, "live_preparation", 4)
+        before = probe.report(summarize)["by_kind"]["live_preparation"]
+        self.assertEqual((before["attempted"], before["started"], before["not_started_after_close"]),
+                         (1, 0, 1))
+        self.assertEqual(pending.pop()[0](4), 5)
+        after = probe.report(summarize)["by_kind"]["live_preparation"]
+        self.assertEqual((after["started"], after["finished"], after["not_started_after_close"]),
+                         (1, 1, 0))
+        self.assertGreaterEqual(after["queue_ms"]["p50"], 0)
+        self.assertGreaterEqual(after["service_ms"]["p50"], 0)
+
+        probe.submit(submit, lambda: None, "viewport_density_only")  # cancelled before execution
+        never_started = probe.report(summarize)["by_kind"]["viewport_density_only"]
+        self.assertEqual(never_started["not_started_after_close"], 1)
+        self.assertIsNone(never_started["queue_ms"])
+
+        probe.submit(submit, lambda: 1 / 0, "viewport_required")
+        with self.assertRaises(ZeroDivisionError):
+            pending.pop()[0]()
+        failed = probe.report(summarize)["by_kind"]["viewport_required"]
+        self.assertEqual((failed["started"], failed["finished"], failed["raised"],
+                          failed["returned_without_exception"]), (1, 1, 1, 0))
+
+        def reject(_operation):
+            raise RuntimeError("executor closing")
+
+        with self.assertRaisesRegex(RuntimeError, "executor closing"):
+            probe.submit(reject, lambda: None, "unclassified")
+        rejected = probe.report(summarize)["by_kind"]["other"]
+        self.assertEqual((rejected["attempted"], rejected["submit_failures"],
+                          rejected["not_started_after_close"]), (1, 1, 0))
+
+        overflow = OBSERVER.ExecutorQueueResidencyProbe(capacity=1)
+        for _ in range(2):
+            overflow.submit(lambda operation: operation(), lambda: None, "live_preparation")
+        truncated = overflow.report(summarize)["by_kind"]["live_preparation"]
+        self.assertEqual((truncated["queue_dropped"], truncated["service_dropped"]), (1, 1))
+        self.assertIsNone(truncated["queue_ms"])
+        self.assertIsNone(truncated["service_ms"])
+
     def test_fixed_qt_target_detects_mid_block_drift_even_after_restore(self):
         target = dict(actual_platform="windows", qt_widget_visible=True,
             actual_window_geometry_logical=[0, 0, 1400, 850], screen_name="monitor-1",
@@ -463,6 +513,29 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 cwd=ROOT, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("observer split persistence requires a generated histogram", result.stderr)
+
+    def test_executor_queue_residency_observer_reports_actual_task_kinds(self):
+        with TemporaryDirectory(prefix="app05-executor-queue-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", "-X", "faulthandler",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--seconds", "1", "--cycles", "1", "--bins", "4096",
+                "--persistence-power-bins", "32", "--persistence-every", "10",
+                "--persistence-display", "visual", "--executor-queue-residency"],
+                cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        queue = report["executor_queue_residency"]["by_kind"]
+        self.assertGreater(queue["live_preparation"]["finished"], 0)
+        self.assertGreater(sum(queue[kind]["finished"] for kind in (
+            "viewport_required_with_density", "viewport_required", "viewport_density_only")), 0)
+        self.assertTrue(all(row["not_started_after_close"] == 0 for row in queue.values()))
+        self.assertTrue(all(row["queue_dropped"] == row["service_dropped"] == 0
+                            for row in queue.values()))
+        self.assertTrue(all(row["finished"] == row["raised"] + row["returned_without_exception"]
+                            for row in queue.values()))
+        self.assertEqual(report["remaining_workers"], [])
+        self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
 
     def test_opt_in_upload_age_reports_only_scalar_commit_provenance(self):
         with TemporaryDirectory(prefix="app05-upload-age-") as temporary:

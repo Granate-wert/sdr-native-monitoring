@@ -106,6 +106,84 @@ def bounded_sample_accounting(samples):
                 dropped=samples.dropped)
 
 
+class ExecutorQueueResidencyProbe:
+    """Observer-only scalar submit→start and start→finish timings.
+
+    The wrapper retains an operation only while its original executor task
+    would retain it. The probe stores no task, Future, snapshot or Qt owner.
+    """
+
+    KINDS = ("live_preparation", "viewport_required_with_density",
+             "viewport_required", "viewport_density_only", "other")
+
+    def __init__(self, capacity=8192):
+        self.capacity = capacity
+        self._lock = threading.Lock()
+        self._rows = {kind: dict(attempted=0, submit_failures=0, started=0, finished=0, raised=0,
+                                queue_ms=BoundedSamples(capacity),
+                                service_ms=BoundedSamples(capacity)) for kind in self.KINDS}
+
+    def submit(self, submit, operation, kind, *args, **kwargs):
+        kind = kind if kind in self._rows else "other"
+        submitted = perf_counter()
+        with self._lock:
+            self._rows[kind]["attempted"] += 1
+
+        def observed_operation(*run_args, **run_kwargs):
+            started = perf_counter()
+            with self._lock:
+                row = self._rows[kind]
+                row["started"] += 1
+                row["queue_ms"].append((started - submitted) * 1000)
+            try:
+                return operation(*run_args, **run_kwargs)
+            except BaseException:
+                with self._lock:
+                    self._rows[kind]["raised"] += 1
+                raise
+            finally:
+                finished = perf_counter()
+                with self._lock:
+                    row = self._rows[kind]
+                    row["finished"] += 1
+                    row["service_ms"].append((finished - started) * 1000)
+
+        try:
+            return submit(observed_operation, *args, **kwargs)
+        except Exception:
+            with self._lock:
+                self._rows[kind]["submit_failures"] += 1
+            raise
+
+    def report(self, summarize):
+        with self._lock:
+            rows = {kind: dict(attempted=row["attempted"],
+                               submit_failures=row["submit_failures"],
+                               started=row["started"], finished=row["finished"],
+                               raised=row["raised"],
+                               queue=tuple(row["queue_ms"]), service=tuple(row["service_ms"]),
+                               queue_dropped=row["queue_ms"].dropped,
+                               service_dropped=row["service_ms"].dropped)
+                    for kind, row in self._rows.items()}
+        return dict(capacity_per_kind=self.capacity, by_kind={kind: dict(
+            attempted=row["attempted"], submit_failures=row["submit_failures"],
+            started=row["started"], finished=row["finished"], raised=row["raised"],
+            returned_without_exception=row["finished"] - row["raised"],
+            not_started_after_close=max(0, row["attempted"] - row["submit_failures"] - row["started"]),
+            queue_dropped=row["queue_dropped"], service_dropped=row["service_dropped"],
+            queue_ms=None if row["queue_dropped"] else summarize(row["queue"]),
+            service_ms=None if row["service_dropped"] else summarize(row["service"]))
+            for kind, row in rows.items()},
+            scope="Instrumented executor submit-to-worker-start and worker-start-to-finish, "
+                  "not upstream latest-slot wait, GUI acknowledgement, paint or DWM. "
+                  "Viewport kinds are classified from the projector active request at submit; "
+                  "live_preparation is separately submitted render preparation, while other includes "
+                  "command closures. Finished counts all started task exits, including raised exceptions; "
+                  "returned_without_exception does not prove GUI acceptance or non-stale results. "
+                  "Never-started tasks include cancellation before execution. "
+                  "This observer perturbs timing and is not an uninstrumented speed baseline.")
+
+
 def complete_bounded_summary(samples, summarize):
     """Whole-block percentiles are unknown if their source ring wrapped."""
     return None if samples.dropped else summarize(tuple(samples))
@@ -593,6 +671,8 @@ def main(argv=None):
                         help="Observer-only ImageItem cadence override; product stays at its default 15 Hz")
     parser.add_argument("--observer-split-persistence", action="store_true",
                         help="Observer-only existing separate density worker; product composition stays combined")
+    parser.add_argument("--executor-queue-residency", action="store_true",
+                        help="Observer-only actual single-executor queue wait/service by task kind")
     parser.add_argument("--persistence-upload-age", action="store_true",
                         help="Opt-in ImageItem commit age and ABBA visible-heartbeat freshness; "
                              "scalar GUI observer, not paint or DWM")
@@ -709,6 +789,10 @@ def main(argv=None):
         parser.error("Visual persistence profiling requires a generated histogram")
     if args.observer_split_persistence and not args.persistence_power_bins:
         parser.error("observer split persistence requires a generated histogram")
+    if args.executor_queue_residency and (args.observer_split_persistence or args.projection_stage_timing
+            or args.memory_seconds or args.cycles != 1 or not args.persistence_power_bins
+            or args.persistence_display != "visual" or args.page_seconds or args.viewport_seconds):
+        parser.error("executor queue residency requires one unsplit Visual persistence cycle without churn, memory or stage timing")
     if args.observer_image_cadence_hz is not None and (
             not args.persistence_power_bins or not 1 <= args.observer_image_cadence_hz <= 120):
         parser.error("observer image cadence requires persistence and a rate in 1..120 Hz")
@@ -815,6 +899,7 @@ def main(argv=None):
     original_scene_paint_trace = SpectrumScene._paint_trace
     original_prepare_density = projection_module.prepare_persistence_image
     original_product_init = V2LiveProductComposition.__init__
+    queue_probe = ExecutorQueueResidencyProbe() if args.executor_queue_residency else None
 
     def observer_product_init(composition, presenter, *init_args, **init_kwargs):
         if init_kwargs.get("persistence_submit") is not None:
@@ -1167,6 +1252,30 @@ def main(argv=None):
             observed_split_lane = f.composition.spectrum_projector.persistence_projector is not None
             if observed_split_lane != args.observer_split_persistence:
                 raise AssertionError("observer split-lane composition does not match the requested mode")
+            if queue_probe is not None:
+                executor = f.presenter._executor
+                original_executor_submit = executor.submit
+
+                def observed_executor_submit(operation, *task_args, **task_kwargs):
+                    name = getattr(operation, "__name__", None)
+                    if name == "_prepare" and getattr(operation, "__self__", None) is f.presenter:
+                        kind = "live_preparation"
+                    elif name == "project":
+                        request = f.composition.spectrum_projector._active
+                        if request is None:
+                            kind = "other"
+                        elif not request.required_work:
+                            kind = "viewport_density_only"
+                        elif request.persistence is not None:
+                            kind = "viewport_required_with_density"
+                        else:
+                            kind = "viewport_required"
+                    else:
+                        kind = "other"
+                    return queue_probe.submit(original_executor_submit, operation, kind,
+                                              *task_args, **task_kwargs)
+
+                observer_patches.enter_context(patch.object(executor, "submit", observed_executor_submit))
             if args.projection_stage_timing:
                 f.composition.spectrum_projector.work_active_changed.connect(observe_projection_slot)
             f.select_and_apply()
@@ -2371,6 +2480,8 @@ def main(argv=None):
     report["post_close_allocation_budget"] = asdict(f.composition.allocation_budget.snapshot())
     if report["post_close_allocation_budget"]["reserved_bytes"]:
         raise AssertionError("presentation reservation survived owner cleanup")
+    if queue_probe is not None:
+        report["executor_queue_residency"] = queue_probe.report(summary)
     if args.memory_seconds:
         sample_memory("after-close", workspace=False)
         report["memory"] = dict(interval_seconds=args.memory_seconds, capacity=2048,
