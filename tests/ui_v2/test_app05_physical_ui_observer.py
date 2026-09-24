@@ -60,6 +60,7 @@ class PhysicalUiObserverTests(unittest.TestCase):
         reused = (1, 1, 1)
         timeline.mark(reused, "offer_return", 1_000_000, instance=10)
         timeline.mark(reused, "offer_return", 2_000_000, instance=11)
+        timeline.mark(reused, "model_bundle", 3_000_000, instance=20)
         timeline.paint(reused, 4_000_000, instance=20)
         replaced = (1, 1, 2)
         timeline.mark(replaced, "scheduler_emit", 5_000_000, instance=30)
@@ -68,6 +69,8 @@ class PhysicalUiObserverTests(unittest.TestCase):
         report = timeline.report()
         self.assertEqual(report["ambiguous_paints"], 1)
         self.assertEqual(report["duplicate_stages"]["offer_return"], 1)
+        self.assertEqual(report["ambiguous_edges"]["offer_return_to_scheduler_emit"], 1)
+        self.assertEqual(report["edges_ms"]["model_bundle_to_paint_return"]["count"], 1)
         self.assertEqual(report["identity_mismatch"]["scheduler_emit_to_prepare_begin"], 1)
         self.assertEqual(report["edges_ms"]["scheduler_emit_to_prepare_begin"]["count"], 0)
 

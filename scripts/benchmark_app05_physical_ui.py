@@ -122,7 +122,7 @@ class FrameTimeline:
         self._lock = threading.Lock()
         self._capacity = capacity
         self._frames: OrderedDict[tuple[int, int, int], dict[str, tuple[int, int]]] = OrderedDict()
-        self._ambiguous: set[tuple[int, int, int]] = set()
+        self._ambiguous: dict[tuple[int, int, int], set[str]] = {}
         self.evicted = 0
         self.first_paints = 0
         self.duplicate_stages: Counter[str] = Counter()
@@ -134,7 +134,7 @@ class FrameTimeline:
             self._frames[key] = stages
             if len(self._frames) > self._capacity:
                 old_key, _ = self._frames.popitem(last=False)
-                self._ambiguous.discard(old_key)
+                self._ambiguous.pop(old_key, None)
                 self.evicted += 1
         return stages
 
@@ -146,7 +146,7 @@ class FrameTimeline:
             stages = self._stages_locked(key)
             if stage in stages:
                 self.duplicate_stages[stage] += 1
-                self._ambiguous.add(key)
+                self._ambiguous.setdefault(key, set()).add(stage)
             elif instance is not None:
                 stages[stage] = (perf_counter_ns() if when_ns is None else when_ns, instance)
 
@@ -169,15 +169,19 @@ class FrameTimeline:
             missing: Counter[str] = Counter()
             identity_mismatch: Counter[str] = Counter()
             out_of_order: Counter[str] = Counter()
+            ambiguous_edges: Counter[str] = Counter()
             ambiguous_paints = 0
             for key, stages in self._frames.items():
                 if "paint_return" not in stages:
                     continue
                 if key in self._ambiguous:
                     ambiguous_paints += 1
-                    continue
+                duplicate_stages = self._ambiguous.get(key, set())
                 for start, end in self.EDGES:
                     name = f"{start}_to_{end}"
+                    if start in duplicate_stages or end in duplicate_stages:
+                        ambiguous_edges[name] += 1
+                        continue
                     if start not in stages or end not in stages:
                         missing[name] += 1
                         continue
@@ -196,12 +200,14 @@ class FrameTimeline:
                     series["ms"] = None
             return dict(first_paints=self.first_paints, retained_keys=len(self._frames),
                         evicted_keys=self.evicted, ambiguous_paints=ambiguous_paints,
-                        duplicate_stages=dict(self.duplicate_stages), missing=dict(missing),
+                        duplicate_stages=dict(self.duplicate_stages), ambiguous_edges=dict(ambiguous_edges),
+                        missing=dict(missing),
                         identity_mismatch=dict(identity_mismatch), out_of_order=dict(out_of_order),
                         edges_ms=edge_reports,
-                        scope="Each edge uses equal scalar object identity and only non-duplicate source keys; "
+                        scope="Each edge uses equal scalar object identity and non-duplicate endpoint stages; "
                               "offer_return is after LivePresenter._poll_frames offered its snapshot, not "
-                              "RX publication or poll entry. Edge percentiles are conditional, not additive "
+                              "RX publication or poll entry. Edges have different eligible key sets and their "
+                              "percentiles are conditional, not additive "
                               "or a full causal pipeline.")
 
 
@@ -838,7 +844,7 @@ def main() -> int:
                                      if key != "computed_fft_per_s")
                              and initial_sequence is not None and final_sequence is not None
                              and final_sequence > initial_sequence)
-        report = dict(schema="app05-physical-visible-v2-v5", result="pass" if phase == "done" and
+        report = dict(schema="app05-physical-visible-v2-v6", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
                       failure=failure, phase=phase, source="physical-pluto-rx", uri=args.uri,
