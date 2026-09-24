@@ -75,6 +75,62 @@ class SweepPreviewTests(unittest.TestCase):
         self.page.start_frequency.setValue(100)
         self.assertTrue(self.page.sweep_preview.resolve())
 
+    def test_explicit_window_and_rf_bandwidth_are_independent_start_inputs(self):
+        device = self.harness.live._devices[0]
+        self.harness.live._devices = (replace(device, capabilities=replace(
+            device.capabilities, analog_bandwidths_hz=(20e6, 40e6))),)
+        self.harness.select_and_apply()
+        self.sweep()
+        bandwidth = self.page.drawer._rf_bandwidth
+        bandwidth.setCurrentIndex(bandwidth.findData(20e6))
+        self.page.drawer.apply_draft()
+        self.harness.wait(lambda: not self.page.drawer.pending)
+        self.assertEqual(self.harness.live.latest_snapshot().applied.applied.analog_bandwidth_hz, 20e6)
+        self.assertFalse(self.page.sweep_preview.resolve())  # Default W36 is not silently reduced.
+        self.assertFalse(self.page.primary.isEnabled())
+        self.assertIn("window", self.page.primary.toolTip())
+        self.page.mode.setCurrentIndex(self.page.mode.findData(AnalyzerMode.RTBW))
+        self.assertTrue(self.page.primary.isEnabled())
+        self.sweep()
+        self.assertFalse(self.page.sweep_preview.resolve())
+        geometry = self.page.drawer.sweep_profile
+        geometry.usable_window.setValue(18)
+        self.assertTrue(self.page.sweep_preview.resolve())
+        self.assertTrue(self.page.primary.isEnabled())
+        self.assertEqual(self.page._sweep_request().usable_window_hz, 18e6)
+        self.assertEqual(self.page._sweep_request().overlap_hz, 2e6)
+        self.assertEqual(self.page.sweep_preview.result.segment_count, 57)
+        geometry.overlap.setValue(18)
+        self.assertFalse(self.page.sweep_preview.resolve())
+        self.assertFalse(self.page.primary.isEnabled())
+        self.assertIn("overlap", self.page.sweep_preview.summary.text())
+        geometry.overlap.setValue(2)
+        geometry.usable_window.setValue(36)
+        self.assertFalse(self.page.sweep_preview.resolve())
+        self.assertFalse(self.page.primary.isEnabled())
+        bandwidth.setCurrentIndex(bandwidth.findData(40e6))
+        self.assertTrue(self.page.drawer.dirty)
+        self.assertTrue(self.page.sweep_preview.resolve())  # Only a local draft plan.
+        self.page.primary.click()
+        self.assertEqual(self.harness.events, [])
+        self.page.drawer.apply_draft()
+        self.harness.wait(lambda: not self.page.drawer.pending)
+        self.assertEqual(self.harness.live.latest_snapshot().applied.applied.analog_bandwidth_hz, 40e6)
+        self.assertTrue(self.page.sweep_preview.resolve())
+        self.assertTrue(self.page.primary.isEnabled())
+        self.assertEqual(self.harness.events, [])
+
+    def test_geometry_controls_retranslate_without_mutating_request(self):
+        geometry = self.page.drawer.sweep_profile
+        request = self.page._sweep_request()
+        for locale in UiLocale:
+            set_active_locale(locale)
+            geometry.set_locale()
+            self.assertEqual(geometry.usable_window.accessibleName(), text("analyzer.sweep.window"))
+            self.assertEqual(geometry.overlap.accessibleName(), text("analyzer.sweep.overlap"))
+            self.assertEqual(geometry.usable_window.accessibleDescription(), text("analyzer.sweep.geometry_help"))
+            self.assertEqual(self.page._sweep_request(), request)
+
     def test_explicit_start_flushes_latest_profile_without_waiting_for_debounce(self):
         self.harness.select_and_apply()
         self.sweep()

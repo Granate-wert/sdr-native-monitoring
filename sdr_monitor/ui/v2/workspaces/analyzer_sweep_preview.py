@@ -2,7 +2,7 @@
 from collections.abc import Callable
 from math import ceil
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sdr_monitor.domain import LiveConfiguration
@@ -12,6 +12,8 @@ from ..i18n import text
 
 
 class AnalyzerSweepPreview(QWidget):
+    status_changed = Signal()
+
     def __init__(self, calculate: Callable[
         [LiveConfiguration, ContinuousSweepPlanRequest], AnalyzerGeometryPreflight,
     ], parent: QWidget | None = None) -> None:
@@ -52,6 +54,10 @@ class AnalyzerSweepPreview(QWidget):
         self.details_button.toggled.connect(self.details.setVisible)
         self.set_locale()
 
+    @property
+    def has_error(self) -> bool:
+        return self._error is not None
+
     def set_inputs(self, configuration: LiveConfiguration,
                    request: ContinuousSweepPlanRequest) -> None:
         inputs = (configuration, request)
@@ -61,17 +67,26 @@ class AnalyzerSweepPreview(QWidget):
         self.result, self._error = None, None
         self._timer.start()
         self.set_locale()
+        self.status_changed.emit()
 
     def invalidate(self, reason: str) -> None:
+        if (self._inputs is None and self.result is None and self._error == reason
+                and not self._timer.isActive()):
+            return
         self._timer.stop()
         self._inputs = None
         self.result, self._error = None, reason
         self.set_locale()
+        self.status_changed.emit()
 
     def cancel(self) -> None:
+        if (self._inputs is None and self.result is None and self._error is None
+                and not self._timer.isActive()):
+            return
         self._timer.stop()
         self._inputs = None
         self.result, self._error = None, None
+        self.status_changed.emit()
 
     def resolve(self) -> bool:
         """Also used immediately before explicit Start, bypassing debounce."""
@@ -87,6 +102,7 @@ class AnalyzerSweepPreview(QWidget):
             except Exception as error:
                 self.result, self._error = None, str(error)
         self.set_locale()
+        self.status_changed.emit()
         return self.result is not None
 
     def set_locale(self) -> None:

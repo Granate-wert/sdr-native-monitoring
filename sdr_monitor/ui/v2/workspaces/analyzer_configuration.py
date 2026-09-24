@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from math import isfinite
 from typing import Callable, TypedDict
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
@@ -16,7 +17,7 @@ from sdr_monitor.domain.live_configuration_patch import LiveConfigurationPatch
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import text
-from ..state.configuration_readouts import configuration_prefix
+from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_summary
 from ..view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState, AnalyzerMode
 from .analyzer_sweep_profile import AnalyzerSweepProfileControl
 
@@ -24,6 +25,7 @@ from .analyzer_sweep_profile import AnalyzerSweepProfileControl
 class _DraftChanges(TypedDict, total=False):
     center_hz: float
     sample_rate_hz: float
+    analog_bandwidth_hz: float | None
     gain_db: float
     fft_size: int
     backend: BackendKind
@@ -46,6 +48,9 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._has_applied = False
         self._backend_selectable = False
         self._published_backends: tuple[BackendKind, ...] = ()
+        self._bandwidth_selectable = False
+        self._published_bandwidths: tuple[float, ...] = ()
+        self._bandwidth_choices: tuple[float | None, ...] = ()
         # Before the first immutable applied snapshot, an explicit Apply may
         # submit only a normal LiveConfiguration built from public defaults.
         self._base = LiveConfiguration()
@@ -93,8 +98,9 @@ class AnalyzerConfigurationDrawer(QFrame):
             if self._measurement_form.labelForField(field) is not None:
                 row = self._measurement_form.takeRow(field)
                 label = row.labelItem.widget()
-                label.setParent(self)
-                label.hide()
+                if label is not None:
+                    label.setParent(self)
+                    label.hide()
                 field.setParent(None)
         return self._center, self._fft, self._gain
 
@@ -123,6 +129,10 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._uri.setPlaceholderText(text("live.uri.placeholder"))
         self._uri.setAccessibleName(text("live.uri.label"))
         self.sweep_profile.set_locale()
+        self._translate_bandwidth_options()
+        self._rf_bandwidth.setAccessibleName(text("analyzer.rf_bandwidth"))
+        self._rf_bandwidth.setAccessibleDescription(text("analyzer.rf_bandwidth.help"))
+        self._rf_bandwidth.setToolTip(text("analyzer.rf_bandwidth.help"))
         if self._uri_error.isVisible():
             self._uri_error.setText(text("live.uri.error.transport"))
         self._render_status()
@@ -184,6 +194,9 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._measurement_form = form
         self._center = self._float(0.001, 10_000.0, 3)
         self._sample_rate = self._float(0.001, 100.0, 3)
+        self._rf_bandwidth = QComboBox(self)
+        self._rf_bandwidth.setProperty("ui2Role", "utility-select")
+        self._rf_bandwidth.currentIndexChanged.connect(self._edited)
         self._gain = self._float(-100.0, 100.0, 1)
         self._fft = QSpinBox(self)
         self._fft.setProperty("ui2Role", "range-control")
@@ -193,7 +206,9 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._backend = QComboBox(self)
         self._backend.setProperty("ui2Role", "utility-select")
         self._backend.currentIndexChanged.connect(self._edited)
-        for key, field in (("analyzer.center", self._center), ("analyzer.sample_rate", self._sample_rate), ("analyzer.gain", self._gain), ("analyzer.fft", self._fft), ("live.backend.name", self._backend)):
+        for key, field in (("analyzer.center", self._center), ("analyzer.sample_rate", self._sample_rate),
+                           ("analyzer.rf_bandwidth", self._rf_bandwidth), ("analyzer.gain", self._gain),
+                           ("analyzer.fft", self._fft), ("live.backend.name", self._backend)):
             label = QLabel(self)
             label.setProperty("ui2Role", "secondary")
             label.setBuddy(field)
@@ -264,6 +279,7 @@ class AnalyzerConfigurationDrawer(QFrame):
             self.draft_changed.emit()
             return
         try:
+            payload: LiveConfiguration | LiveConfigurationPatch
             if not self._has_applied:
                 payload = replace(self._base, **changes)
             else:
@@ -310,9 +326,10 @@ class AnalyzerConfigurationDrawer(QFrame):
         snapshot = state.live.snapshot
         configuration = getattr(getattr(snapshot, "applied", None), "applied", None)
         identity = _identity(snapshot)
-        self._sync_backend_options(snapshot, configuration)
         state_changed = False
-        if identity is not None and self._base_identity is not None and not _same_owner(identity, self._base_identity):
+        new_owner = identity is not None and self._base_identity is not None and not _same_owner(
+            identity, self._base_identity)
+        if new_owner:
             # A different source/session is a new configuration authority.
             # Never carry a patch base or an in-flight request across it.
             self._base = configuration if isinstance(configuration, LiveConfiguration) else LiveConfiguration()
@@ -321,8 +338,13 @@ class AnalyzerConfigurationDrawer(QFrame):
             self._pending = None
             self._resolve_model_pending()
             self._dirty = self._conflicted = False
-            self._load(self._base)
             state_changed = True
+        # Rebuild source-scoped choices only after discarding the previous
+        # owner's base. Otherwise its applied RF value leaks into a new source.
+        self._sync_backend_options(snapshot, configuration)
+        self._sync_bandwidth_options(snapshot, configuration)
+        if new_owner:
+            self._load(self._base)
         if isinstance(configuration, LiveConfiguration):
             self._has_applied = True
             if (
@@ -366,6 +388,7 @@ class AnalyzerConfigurationDrawer(QFrame):
         for field in (self._uri, self._use_uri, self._center, self._sample_rate, self._gain, self._fft):
             field.setEnabled(not editing_locked)
         self._backend.setEnabled(not editing_locked and self._backend_selectable)
+        self._rf_bandwidth.setEnabled(not editing_locked and self._bandwidth_selectable)
         self._apply.setEnabled(self._can_submit())
         self._cancel.setEnabled(not locked and self._dirty)
         self._applied.setText(text("live.configuration.no_applied") if configuration is None else
@@ -386,6 +409,10 @@ class AnalyzerConfigurationDrawer(QFrame):
                 field.setValue(value)
         with QSignalBlocker(self._fft):
             self._fft.setValue(configuration.fft_size)
+        bandwidth_index = self._rf_bandwidth.findData(configuration.analog_bandwidth_hz)
+        if bandwidth_index >= 0:
+            with QSignalBlocker(self._rf_bandwidth):
+                self._rf_bandwidth.setCurrentIndex(bandwidth_index)
         backend_index = self._backend.findData(configuration.backend.value)
         if backend_index >= 0:
             with QSignalBlocker(self._backend):
@@ -402,6 +429,8 @@ class AnalyzerConfigurationDrawer(QFrame):
             changes["center_hz"] = center
         if abs(rate - self._base.sample_rate_hz) > 500.0:
             changes["sample_rate_hz"] = rate
+        if self._rf_bandwidth.count() and self._rf_bandwidth.currentData() != self._base.analog_bandwidth_hz:
+            changes["analog_bandwidth_hz"] = self._rf_bandwidth.currentData()
         if abs(gain - self._base.gain_db) > 0.05:
             changes["gain_db"] = gain
         if self._fft.value() != self._base.fft_size:
@@ -439,6 +468,43 @@ class AnalyzerConfigurationDrawer(QFrame):
             for backend in choices:
                 self._backend.addItem(backend.value.upper(), backend.value)
         self._backend_selectable = bool(published) and not retain_unpublished
+
+    def _sync_bandwidth_options(self, snapshot: object | None, configuration: object | None) -> None:
+        """Offer adapter presets, retaining unknown applied readback without inventing choices."""
+        capabilities = getattr(getattr(snapshot, "device", None), "capabilities", None)
+        published = tuple(sorted({float(value) for value in getattr(capabilities, "analog_bandwidths_hz", ())
+                                  if not isinstance(value, bool) and isinstance(value, (int, float))
+                                  and isfinite(value) and value > 0.0}))
+        current = (configuration.analog_bandwidth_hz if isinstance(configuration, LiveConfiguration)
+                   else self._base.analog_bandwidth_hz)
+        choices: tuple[float | None, ...] = ((None, current) if current is not None and current not in published
+                                             else (None,)) + published
+        self._bandwidth_selectable = bool(published)
+        if choices == self._bandwidth_choices and self._rf_bandwidth.count() == len(choices):
+            return
+        selected = self._rf_bandwidth.currentData() if self._rf_bandwidth.count() else current
+        if self._dirty and selected not in choices and selected != current:
+            self._conflicted = True
+        self._published_bandwidths = published
+        self._bandwidth_choices = choices
+        with QSignalBlocker(self._rf_bandwidth):
+            self._rf_bandwidth.clear()
+            for value in choices:
+                self._rf_bandwidth.addItem("", value)
+            index = self._rf_bandwidth.findData(selected)
+            self._rf_bandwidth.setCurrentIndex(index if index >= 0 else self._rf_bandwidth.findData(current))
+        self._translate_bandwidth_options()
+
+    def _translate_bandwidth_options(self) -> None:
+        with QSignalBlocker(self._rf_bandwidth):
+            for index, value in enumerate(self._bandwidth_choices):
+                if value is None:
+                    label = text("analyzer.rf_bandwidth.auto")
+                elif value not in self._published_bandwidths:
+                    label = text("analyzer.rf_bandwidth.current", value=f"{value / 1e6:g}")
+                else:
+                    label = f"{value / 1e6:g} MHz"
+                self._rf_bandwidth.setItemText(index, label)
 
     def _can_submit(self) -> bool:
         identity = _identity(self._model.state.live.snapshot)
@@ -482,4 +548,6 @@ def _same_owner(
 
 
 def _configuration_summary(value: LiveConfiguration) -> str:
-    return f"{value.center_hz / 1e6:g} MHz · {value.sample_rate_hz / 1e6:g} MS/s · FFT {value.fft_size} · {value.gain_db:g} dB"
+    return (f"{value.center_hz / 1e6:g} MHz · Fs {value.sample_rate_hz / 1e6:g} MS/s · "
+            f"{rf_bandwidth_summary(value.analog_bandwidth_hz)} · FFT {value.fft_size} · "
+            f"{value.gain_db:g} dB")

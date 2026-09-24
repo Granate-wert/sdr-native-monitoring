@@ -81,6 +81,15 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.stop_frequency": MappingProxyType({UiLocale.RU: "Конец, MHz", UiLocale.EN: "Stop, MHz"}),
         "analyzer.center": MappingProxyType({UiLocale.RU: "Центр, MHz", UiLocale.EN: "Center, MHz"}),
         "analyzer.sample_rate": MappingProxyType({UiLocale.RU: "Дискретизация, MS/s", UiLocale.EN: "Sample rate, MS/s"}),
+        "analyzer.rf_bandwidth": MappingProxyType({UiLocale.RU: "RF-полоса фильтра, MHz", UiLocale.EN: "RF filter bandwidth, MHz"}),
+        "analyzer.rf_bandwidth.auto": MappingProxyType({UiLocale.RU: "Следовать Fs при применении", UiLocale.EN: "Follow Fs on Apply"}),
+        "analyzer.rf_bandwidth.current": MappingProxyType({UiLocale.RU: "Применено {value} MHz (вне пресетов)", UiLocale.EN: "Applied {value} MHz (outside presets)"}),
+        "analyzer.rf_bandwidth.help": MappingProxyType({
+            UiLocale.RU: "RF-полоса независима от Fs. Пресеты адаптера не доказывают плоскую АЧХ или поддержку точного значения: применённое считывание и проверка сканирования имеют приоритет.",
+            UiLocale.EN: "RF bandwidth is independent of Fs. Adapter presets do not prove a flat passband or exact support; applied readback and Sweep preflight are authoritative.",
+        }),
+        "analyzer.rf_bandwidth.value": MappingProxyType({UiLocale.RU: "RF BW {value} MHz", UiLocale.EN: "RF BW {value} MHz"}),
+        "analyzer.rf_bandwidth.unknown": MappingProxyType({UiLocale.RU: "RF BW неизвестна", UiLocale.EN: "RF BW unknown"}),
         "analyzer.gain": MappingProxyType({UiLocale.RU: "Усиление, dB", UiLocale.EN: "Gain, dB"}),
         "analyzer.fft": MappingProxyType({UiLocale.RU: "Физический FFT", UiLocale.EN: "Physical FFT"}),
         "analyzer.unavailable": MappingProxyType({UiLocale.RU: "Нет опубликованного кадра", UiLocale.EN: "No published frame"}),
@@ -93,6 +102,12 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.speed.help": MappingProxyType({
             UiLocale.RU: "Для следующего запуска сканирования; нажимать «Применить» не требуется. Больше FFT — сильнее усреднение, реже новый спектр. Fs, размер FFT, буферы и отбрасывание после перестройки не меняются. LPS не гарантируется; RTBW сохраняет свои настройки.",
             UiLocale.EN: "For the next Sweep Start only; no Apply needed. More FFTs means more averaging and fewer new spectra. Fs, FFT size, buffers and post-retune discard stay unchanged. No guaranteed LPS; RTBW retains its settings.",
+        }),
+        "analyzer.sweep.window": MappingProxyType({UiLocale.RU: "Полезное окно, MHz", UiLocale.EN: "Usable window, MHz"}),
+        "analyzer.sweep.overlap": MappingProxyType({UiLocale.RU: "Перекрытие, MHz", UiLocale.EN: "Overlap, MHz"}),
+        "analyzer.sweep.geometry_help": MappingProxyType({
+            UiLocale.RU: "Параметры только следующего запуска сканирования; нажимать «Применить» не требуется. Окно должно помещаться и в применённую Fs, и в RF-полосу; перекрытие меньше окна. План не уменьшает их автоматически. RTBW не меняется.",
+            UiLocale.EN: "For the next Sweep Start only; no Apply required. The window must fit both applied Fs and RF bandwidth; overlap must be smaller than the window. The plan never shrinks them automatically. RTBW is unchanged.",
         }),
         "analyzer.sweep_statistics": MappingProxyType({
             UiLocale.RU: "Статистика: {passes} проходов, до #{sequence}, отставание {lag}; density {columns} ячеек — доля наблюдений bin; внутри прохода возможна задержка",

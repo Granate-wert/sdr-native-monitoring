@@ -31,7 +31,7 @@ from ..state.live_view_state import LiveAction
 from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout
 from ..state.analyzer_status_cadence import AnalyzerStatusCadence
 from ..state.analyzer_layers import waterfall_line_from_sweep, persistence_density_from_sweep
-from ..state.configuration_readouts import configuration_prefix
+from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_summary
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
 
@@ -103,10 +103,13 @@ class AnalyzerWorkspaceV2(QWidget):
         self.applied.setWordWrap(True)
         layout.addWidget(self.applied)
         self.sweep_preview = AnalyzerSweepPreview(model.live.preview_sweep, self)
+        self.sweep_preview.status_changed.connect(self._update_primary_availability)
         layout.addWidget(self.sweep_preview)
         for field in (self.start_frequency, self.stop_frequency):
             field.valueChanged.connect(self._refresh_preview)
         self.drawer.sweep_profile.choice.currentIndexChanged.connect(self._refresh_preview)
+        self.drawer.sweep_profile.usable_window.valueChanged.connect(self._refresh_preview)
+        self.drawer.sweep_profile.overlap.valueChanged.connect(self._refresh_preview)
         self.error = QLabel(self)
         self.error.setProperty("ui2Role", "secondary")
         self.error.setProperty("ui2Tone", "error")
@@ -349,6 +352,8 @@ class AnalyzerWorkspaceV2(QWidget):
         """One immutable draft for preview and Start; no divergent UI planner."""
         return ContinuousSweepPlanRequest(
             self.start_frequency.value() * 1e6, self.stop_frequency.value() * 1e6,
+            usable_window_hz=self.drawer.sweep_profile.usable_window.value() * 1e6,
+            overlap_hz=self.drawer.sweep_profile.overlap.value() * 1e6,
             statistics=SweepStatisticsSettings(),
             speed_profile=self.drawer.sweep_profile.profile,
         )
@@ -375,6 +380,22 @@ class AnalyzerWorkspaceV2(QWidget):
               and not self.drawer.dirty and not self.drawer.pending):
             self._execute()
 
+    def _update_primary_availability(self) -> None:
+        """Known-invalid Sweep plans disable Start; pending drafts can still resolve on click."""
+        state = self.model.state
+        ready = (state.live.has_applied_configuration and not self.drawer.dirty
+                 and not self.drawer.pending and state.live.primary_action is LiveAction.START
+                 and state.live.primary_action_enabled)
+        invalid_sweep = ready and state.mode is AnalyzerMode.SWEEP and self.sweep_preview.has_error
+        enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
+                   and (state.running or state.stop_required or (ready and not invalid_sweep)))
+        self.primary.setEnabled(enabled)
+        hint = (self.sweep_preview.summary.text() if invalid_sweep
+                else "" if ready or state.running or state.stop_required
+                else text("analyzer.start_requires_configuration"))
+        if self.primary.toolTip() != hint:
+            self.primary.setToolTip(hint)
+
     def _render(self, state: AnalyzerViewState) -> None:
         if self._terminal_released:
             return
@@ -392,14 +413,7 @@ class AnalyzerWorkspaceV2(QWidget):
         _set_text_if_changed(self.primary, text(key))
         if self.primary.accessibleName() != text(key):
             self.primary.setAccessibleName(text(key))
-        ready = (state.live.has_applied_configuration and not self.drawer.dirty
-                 and not self.drawer.pending and state.live.primary_action is LiveAction.START
-                 and state.live.primary_action_enabled)
-        self.primary.setEnabled(not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
-                                and (state.running or state.stop_required or ready))
-        hint = "" if ready or state.running or state.stop_required else text("analyzer.start_requires_configuration")
-        if self.primary.toolTip() != hint:
-            self.primary.setToolTip(hint)
+        self._update_primary_availability()
         _set_text_if_changed(self.error, state.error or "")
         self.error.setVisible(bool(state.error))
         configuration = getattr(getattr(state.live.snapshot, "applied", None), "applied", None)
@@ -419,6 +433,7 @@ class AnalyzerWorkspaceV2(QWidget):
             text("live.configuration.no_applied") if configuration is None else
             configuration_prefix(getattr(state.live.snapshot, "applied", None)) + " " +
             f"{configuration.center_hz / 1e6:g} MHz · Fs {configuration.sample_rate_hz / 1e6:g} MS/s · "
+            f"{rf_bandwidth_summary(configuration.analog_bandwidth_hz)} · "
             f"FFT {configuration.fft_size} · {configuration.gain_db:g} dB"
         )
         if configuration is not None:

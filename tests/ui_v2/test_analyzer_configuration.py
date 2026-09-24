@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain import BackendKind, LiveConfiguration
 from sdr_monitor.domain.live_configuration_patch import LiveConfigurationPatch
-from sdr_monitor.ui.v2.i18n import text
+from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerViewModel
 from sdr_monitor.ui.v2.workspaces.analyzer_configuration import AnalyzerConfigurationDrawer
 from tests.ui_v2.test_app02_analyzer_view_model import Live, Sweep
@@ -132,6 +132,81 @@ class AnalyzerConfigurationDrawerTests(unittest.TestCase):
         self.assertEqual(self.drawer._base, normalized)
         self.assertFalse(self.model.state.configuration_pending)
 
+    def test_sample_rate_only_patch_preserves_independent_rf_bandwidth(self) -> None:
+        device = self._device("source-a", bandwidths=(20e6, 40e6))
+        applied = LiveConfiguration(sample_rate_hz=20e6, analog_bandwidth_hz=20e6)
+        self._publish_snapshot(self._snapshot(device, 3, applied))
+        self.assertEqual(self.drawer._rf_bandwidth.currentData(), 20e6)
+        self.drawer._sample_rate.setValue(61.44)
+        self.drawer.apply_draft()
+        patch = self.live.calls[-1][1]
+        self.assertIsInstance(patch, LiveConfigurationPatch)
+        self.assertEqual(dict(patch.changes), {"sample_rate_hz": 61.44e6})
+        self._publish_snapshot(self._snapshot(device, 4, replace(applied, sample_rate_hz=61.44e6)))
+        self.assertFalse(self.drawer.pending)
+        self.assertEqual(self.drawer.preview_configuration().analog_bandwidth_hz, 20e6)
+        self.assertIn("RF BW 20 MHz", self.drawer._applied.text())
+
+    def test_rf_bandwidth_patch_waits_for_authoritative_normalized_readback(self) -> None:
+        device = self._device("source-a", bandwidths=(20e6, 40e6, 56e6))
+        applied = LiveConfiguration(analog_bandwidth_hz=20e6)
+        self._publish_snapshot(self._snapshot(device, 3, applied))
+        control = self.drawer._rf_bandwidth
+        self.assertTrue(control.isEnabled())
+        control.setCurrentIndex(control.findData(40e6))
+        self.drawer.apply_draft()
+        patch = self.live.calls[-1][1]
+        self.assertIsInstance(patch, LiveConfigurationPatch)
+        self.assertEqual(dict(patch.changes), {"analog_bandwidth_hz": 40e6})
+        self.assertTrue(self.drawer.pending)
+        self.assertFalse(control.isEnabled())
+        # Native RF-filter readback can differ from an adapter preset.
+        normalized = replace(applied, analog_bandwidth_hz=39.5e6)
+        self._publish_snapshot(self._snapshot(device, 4, normalized))
+        self.assertFalse(self.drawer.pending)
+        self.assertFalse(self.drawer.dirty)
+        self.assertEqual(self.drawer.preview_configuration().analog_bandwidth_hz, 39.5e6)
+        self.assertIn("39.5", control.currentText())
+
+    def test_unpublished_rf_bandwidth_is_retained_read_only(self) -> None:
+        device = self._device("source-a")
+        applied = LiveConfiguration(analog_bandwidth_hz=19.8e6)
+        self._publish_snapshot(self._snapshot(device, 3, applied))
+        control = self.drawer._rf_bandwidth
+        self.assertFalse(control.isEnabled())
+        self.assertEqual(control.currentData(), 19.8e6)
+        self.assertEqual(control.count(), 2)  # Follow-Fs and applied readback only.
+        self.assertEqual(self.drawer._draft_changes(), {})
+
+    def test_rf_bandwidth_source_switch_and_cancel_do_not_carry_old_draft(self) -> None:
+        source_a = self._device("source-a", bandwidths=(20e6, 40e6))
+        source_b = self._device("source-b", bandwidths=(10e6, 20e6))
+        self._publish_snapshot(self._snapshot(source_a, 3, LiveConfiguration(analog_bandwidth_hz=40e6)))
+        self.drawer._rf_bandwidth.setCurrentIndex(self.drawer._rf_bandwidth.findData(20e6))
+        self.assertTrue(self.drawer.dirty)
+        self.drawer.cancel_draft()
+        self.assertEqual(self.drawer._rf_bandwidth.currentData(), 40e6)
+        self.drawer._rf_bandwidth.setCurrentIndex(self.drawer._rf_bandwidth.findData(20e6))
+        self._publish_snapshot(SimpleNamespace(
+            session_id="session-b", generation=0, device=source_b, applied=None,
+        ))
+        self.assertFalse(self.drawer.dirty)
+        self.assertEqual(self.drawer._rf_bandwidth.currentData(), None)
+        self.assertEqual(self.drawer._rf_bandwidth.findData(40e6), -1)
+
+    def test_rf_bandwidth_labels_retranslate_without_changing_selection(self) -> None:
+        original = current_locale()
+        self.addCleanup(set_active_locale, original)
+        device = self._device("source-a", bandwidths=(20e6, 40e6))
+        self._publish_snapshot(self._snapshot(device, 3, LiveConfiguration(analog_bandwidth_hz=20e6)))
+        for locale in UiLocale:
+            set_active_locale(locale)
+            self.drawer.set_locale()
+            self.assertEqual(self.drawer._rf_bandwidth.accessibleName(), text("analyzer.rf_bandwidth"))
+            self.assertEqual(self.drawer._rf_bandwidth.accessibleDescription(), text("analyzer.rf_bandwidth.help"))
+            self.assertEqual(self.drawer._rf_bandwidth.itemText(0), text("analyzer.rf_bandwidth.auto"))
+            self.assertEqual(self.drawer._rf_bandwidth.currentData(), 20e6)
+
     def test_same_generation_error_releases_pending_and_preserves_draft(self) -> None:
         device = self._device("source-a")
         self._publish_snapshot(self._snapshot(device, 3, LiveConfiguration()))
@@ -205,14 +280,16 @@ class AnalyzerConfigurationDrawerTests(unittest.TestCase):
         self.drawer._apply.click()
         self.assertTrue(self.drawer.pending)
         self.assertFalse(self.drawer._gain.isEnabled())
+        self.assertFalse(self.drawer._rf_bandwidth.isEnabled())
         self.assertFalse(self.drawer._uri.isEnabled())
         self.assertTrue(self.model.state.configuration_pending)
 
     @staticmethod
-    def _device(identifier: str) -> SimpleNamespace:
+    def _device(identifier: str, *, bandwidths: tuple[float, ...] = ()) -> SimpleNamespace:
         return SimpleNamespace(
             device_id=identifier,
-            capabilities=SimpleNamespace(supported_backends=(BackendKind.AUTO, BackendKind.CPU)),
+            capabilities=SimpleNamespace(supported_backends=(BackendKind.AUTO, BackendKind.CPU),
+                                         analog_bandwidths_hz=bandwidths),
         )
 
     @staticmethod
