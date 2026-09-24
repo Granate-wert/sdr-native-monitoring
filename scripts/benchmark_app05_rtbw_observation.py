@@ -561,6 +561,8 @@ def main(argv=None):
                         help="Histogram at first spectrum after Start, then every N source publications")
     parser.add_argument("--persistence-display", choices=("direct", "visual"), default="direct",
                         help="Select the actual V2 persistence rendering policy for normal paint profiling")
+    parser.add_argument("--observer-image-cadence-hz", type=float,
+                        help="Observer-only ImageItem cadence override; product stays at its default 15 Hz")
     parser.add_argument("--persistence-abba", action="store_true",
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
     parser.add_argument("--abba-reverse-order", action="store_true",
@@ -672,6 +674,9 @@ def main(argv=None):
         parser.error("window capture path must be new")
     if args.persistence_display == "visual" and not args.persistence_power_bins:
         parser.error("Visual persistence profiling requires a generated histogram")
+    if args.observer_image_cadence_hz is not None and (
+            not args.persistence_power_bins or not 1 <= args.observer_image_cadence_hz <= 120):
+        parser.error("observer image cadence requires persistence and a rate in 1..120 Hz")
     if args.memory_seconds != 0 and not .25 <= args.memory_seconds <= 60:
         parser.error("memory-seconds must be zero or 0.25..60")
     if args.collect_after_context and not args.memory_seconds:
@@ -1038,6 +1043,14 @@ def main(argv=None):
                     age.changed_during_paint += 1
 
     with ExitStack() as observer_patches:
+        if args.observer_image_cadence_hz is not None:
+            original_overlay_init = PersistenceOverlay.__init__
+
+            def observer_overlay_init(overlay, *init_args, **init_kwargs):
+                init_kwargs["image_cadence_hz"] = args.observer_image_cadence_hz
+                return original_overlay_init(overlay, *init_args, **init_kwargs)
+
+            observer_patches.enter_context(patch.object(PersistenceOverlay, "__init__", observer_overlay_init))
         observer_patches.enter_context(patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics))
         observer_patches.enter_context(patch.object(WaterfallPane, "_upload_tiles", upload))
         observer_patches.enter_context(patch.object(PersistenceOverlay, "accept_worker_image", accept_persistence_image))
@@ -2028,6 +2041,8 @@ def main(argv=None):
             report["persistence"] = dict(enabled=persistence_enabled,
                 display_mode=args.persistence_display,
                 power_bins=args.persistence_power_bins, every_source_frames=args.persistence_every,
+                observer_image_cadence_hz=args.observer_image_cadence_hz,
+                actual_image_cadence_hz=1_000_000_000 / scene._persistence._interval_ns,
                 generated=persistence_generated, accepted=persistence_accepted,
                 last_accepted_update=last_persistence_accepted,
                 overlay_metrics=asdict(scene._persistence.metrics),

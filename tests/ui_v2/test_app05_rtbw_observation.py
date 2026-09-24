@@ -407,6 +407,32 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(report["memory"]["after_context_return"]["allocation_budget"]["reserved_bytes"], 0)
         self.assertNotIn("diagnostic_after_collection", report["memory"])
 
+    def test_observer_only_image_cadence_override_is_reported(self):
+        with TemporaryDirectory(prefix="app05-cadence-override-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I", "-X", "faulthandler",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--seconds", "1", "--cycles", "1", "--bins", "4096",
+                "--persistence-power-bins", "32", "--persistence-every", "10",
+                "--observer-image-cadence-hz", "30"],
+                cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["persistence"]["observer_image_cadence_hz"], 30)
+        self.assertAlmostEqual(report["persistence"]["actual_image_cadence_hz"], 30, places=5)
+        self.assertEqual(report["remaining_workers"], [])
+        self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
+
+    def test_observer_image_cadence_requires_persistence(self):
+        with TemporaryDirectory(prefix="app05-cadence-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--observer-image-cadence-hz", "30"],
+                cwd=ROOT, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("observer image cadence requires persistence", result.stderr)
+
     def test_persistence_abba_rejects_offscreen_before_qt_startup(self):
         with TemporaryDirectory(prefix="app05-abba-validation-") as temporary:
             output = Path(temporary) / "result.json"
