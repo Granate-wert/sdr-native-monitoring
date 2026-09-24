@@ -1,10 +1,15 @@
 """No-device checks for the opt-in visible physical UI observer."""
 
+import gc
 import sys
 import unittest
+import weakref
 from types import SimpleNamespace
 from time import time_ns
 from unittest.mock import patch
+import numpy as np
+from PySide6.QtCore import QPoint, QRect
+from PySide6.QtGui import QPolygon
 
 from scripts import benchmark_app05_physical_ui as observer
 
@@ -125,6 +130,7 @@ class PhysicalUiObserverTests(unittest.TestCase):
         self.assertFalse(args.visual_substages)
         self.assertFalse(args.hide_persistence)
         self.assertFalse(args.lock_vertical_range)
+        self.assertFalse(args.hide_show)
         self.assertEqual(args.render_mode, "direct")
         self.assertEqual(args.display_fps, 120)
         self.assertEqual(args.buffer_samples, 262144)
@@ -142,6 +148,81 @@ class PhysicalUiObserverTests(unittest.TestCase):
             with self.subTest(options=options), patch.object(sys, "argv", argv):
                 with self.assertRaises(SystemExit):
                     observer.main()
+
+    def test_hide_show_rejects_confounded_or_too_short_run_before_device_open(self):
+        for options in ([], ["--render-mode", "visual", "--duration", "5"],
+                        ["--render-mode", "visual", "--hide-persistence"],
+                        ["--render-mode", "visual", "--split-persistence"]):
+            argv = ["observer", "--uri", "usb:3.12.5", "--output", "unused.json",
+                    "--hide-show", *options]
+            with self.subTest(options=options), patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    observer.main()
+
+    def test_density_identity_witness_is_bounded_and_does_not_retain_array(self):
+        witness = observer.DensitySequenceWitness(capacity=1)
+        first = np.zeros((2, 2), dtype=np.float32)
+        state = SimpleNamespace(bundle=SimpleNamespace(persistence=SimpleNamespace(update_sequence=7)),
+                                live=SimpleNamespace(persistence_frame=SimpleNamespace(density=first)))
+        witness.observe(state)
+        self.assertEqual(witness.sequence(first), 7)
+        second = np.ones((2, 2), dtype=np.float32)
+        state.live.persistence_frame.density = second
+        state.bundle.persistence.update_sequence = 8
+        witness.observe(state)
+        self.assertIsNone(witness.sequence(first))
+        self.assertEqual(witness.sequence(second), 8)
+        second_ref = weakref.ref(second)
+        state.live.persistence_frame.density = None
+        del second
+        gc.collect()
+        self.assertIsNone(second_ref())
+
+    def test_paint_intersection_requires_visible_item_and_matching_dirty_region(self):
+        widget = SimpleNamespace(mapFromScene=lambda _: QPolygon([
+            QPoint(10, 10), QPoint(30, 10), QPoint(30, 30), QPoint(10, 30)]))
+        item = SimpleNamespace(isVisible=lambda: True, sceneBoundingRect=lambda: QRect(10, 10, 20, 20))
+        event = SimpleNamespace(rect=lambda: QRect(20, 20, 5, 5))
+        self.assertTrue(observer.paint_intersects_item(widget, event, item))
+        event.rect = lambda: QRect(40, 40, 5, 5)
+        self.assertFalse(observer.paint_intersects_item(widget, event, item))
+        item.isVisible = lambda: False
+        self.assertFalse(observer.paint_intersects_item(widget, event, item))
+
+    def test_hide_show_gate_rejects_stale_upload_and_missing_paint(self):
+        base = dict(running=True, epoch=4)
+        trace = dict(before_hide=dict(**base, workspace="analyzer", native_sequence=100,
+                                      latest_sequence=10),
+                     after_hide=dict(**base, workspace="calibration", analyzer_visible=False,
+                                     presentation_active=False, image_visible=False,
+                                     image_present=False, uploaded_sequence=None, image_uploads=5),
+                     before_show=dict(**base, native_sequence=110, latest_sequence=13, image_uploads=5),
+                     after_show=dict(**base, workspace="analyzer", analyzer_visible=True,
+                                     presentation_active=True),
+                     at_end=dict(**base, presentation_active=True, image_visible=True,
+                                 uploaded_sequence=14, displayed_frame_key=(4, 1, 100)),
+                     after_stop=dict(running=False, workspace="analyzer", image_visible=True,
+                                     uploaded_sequence=14, displayed_frame_key=(4, 1, 101)),
+                     show_target_sequence=13, fresh_paint_ms=250,
+                     new_spectrum_paint_ms=210, uploads_total=1, uploads_not_retained=0,
+                     hidden_uploads=0, shown_stale_uploads=0, shown_unmapped_uploads=0,
+                     first_fresh_visible_upload_ns=123,
+                     uploads=[dict(phase="shown", sequence=13, visible=True)])
+        self.assertTrue(all(observer.hide_show_checks(trace).values()))
+        trace["uploads"] = [dict(phase="shown", sequence=12, visible=True)]
+        trace["shown_stale_uploads"] = 1
+        trace["first_fresh_visible_upload_ns"] = None
+        trace["fresh_paint_ms"] = None
+        checks = observer.hide_show_checks(trace)
+        self.assertFalse(checks["no_stale_show_upload"])
+        self.assertFalse(checks["fresh_visible_upload"])
+        self.assertFalse(checks["fresh_qt_paint_within_1s"])
+        trace["shown_stale_uploads"] = 0
+        trace["first_fresh_visible_upload_ns"] = 123
+        trace["fresh_paint_ms"] = 250
+        trace["uploads_total"] = 1000
+        trace["uploads_not_retained"] = 999
+        self.assertTrue(all(observer.hide_show_checks(trace).values()))
 
     def test_interval_counters_are_differences_not_lifetime_values(self):
         before = SimpleNamespace(fft_frames_computed=100, fft_frames_dropped=2)

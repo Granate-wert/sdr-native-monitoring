@@ -22,7 +22,9 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import weakref
 from time import perf_counter_ns, time_ns
+from typing import Any
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +61,109 @@ def required_projection_acceptance(scene: object, request: object, *, required_o
     return bool(getattr(request, "required_work") and request.owner is scene._projection_owner
                 and scene._projection_current(request)
                 and (required_only or scene._early_projection_request is not request))
+
+
+class DensitySequenceWitness:
+    """Bounded weak identity bridge from a prepared density to its native update."""
+
+    def __init__(self, capacity: int = 512) -> None:
+        self._sources: OrderedDict[int, tuple[weakref.ReferenceType, int]] = OrderedDict()
+        self.capacity = capacity
+
+    def observe(self, state: object) -> None:
+        raw = getattr(getattr(state, "bundle", None), "persistence", None)
+        prepared = getattr(getattr(state, "live", None), "persistence_frame", None)
+        density = getattr(prepared, "density", None)
+        if raw is None or density is None:
+            return
+        key = id(density)
+        self._sources[key] = (weakref.ref(density), int(raw.update_sequence))
+        self._sources.move_to_end(key)
+        while len(self._sources) > self.capacity:
+            self._sources.popitem(last=False)
+
+    def sequence(self, density: object | None) -> int | None:
+        if density is None:
+            return None
+        pair = self._sources.get(id(density))
+        return pair[1] if pair is not None and pair[0]() is density else None
+
+
+def hide_show_checks(trace: dict[str, Any]) -> dict[str, bool]:
+    """Fail closed on missing or stale scalar witnesses; no DWM/scanout claim."""
+    before = trace.get("before_hide") or {}
+    hidden = trace.get("after_hide") or {}
+    before_show = trace.get("before_show") or {}
+    after_show = trace.get("after_show") or {}
+    at_end = trace.get("at_end") or {}
+    after_stop = trace.get("after_stop") or {}
+    target = trace.get("show_target_sequence")
+    return {
+        "live_continued": bool(before.get("running") and hidden.get("running")
+                               and before_show.get("running") and after_show.get("running")
+                               and at_end.get("running")),
+        "epoch_unchanged": bool(before.get("epoch") is not None
+                                and all(row.get("epoch") == before["epoch"]
+                                        for row in (hidden, before_show, after_show, at_end))),
+        "native_advanced_hidden": bool(before.get("native_sequence") is not None
+                                        and before_show.get("native_sequence") is not None
+                                        and before_show["native_sequence"] > before["native_sequence"]),
+        "density_advanced_hidden": bool(before.get("latest_sequence") is not None
+                                         and before_show.get("latest_sequence") is not None
+                                         and before_show["latest_sequence"] > before["latest_sequence"]),
+        "navigation_effective": bool(before.get("workspace") == "analyzer"
+                                     and hidden.get("workspace") == "calibration"
+                                     and hidden.get("analyzer_visible") is False
+                                     and after_show.get("workspace") == "analyzer"
+                                     and after_show.get("analyzer_visible") is True),
+        "hide_cleared_image": bool(hidden.get("presentation_active") is False
+                                   and hidden.get("image_visible") is False
+                                   and hidden.get("image_present") is False
+                                   and hidden.get("uploaded_sequence") is None),
+        "no_hidden_upload": bool(hidden.get("image_uploads") is not None
+                                  and before_show.get("image_uploads") == hidden["image_uploads"]
+                                  and trace.get("hidden_uploads") == 0),
+        "show_target_known": target is not None,
+        "show_restored_presentation": bool(after_show.get("presentation_active") is True
+                                           and at_end.get("presentation_active") is True),
+        "fresh_visible_upload": bool(trace.get("first_fresh_visible_upload_ns") is not None),
+        "no_stale_show_upload": bool(target is not None and trace.get("shown_stale_uploads") == 0
+                                     and trace.get("shown_unmapped_uploads") == 0),
+        "fresh_qt_paint_within_1s": bool(trace.get("fresh_paint_ms") is not None
+                                         and 0 <= trace["fresh_paint_ms"] <= 1000),
+        "new_spectrum_qt_paint_within_1s": bool(trace.get("new_spectrum_paint_ms") is not None
+                                               and 0 <= trace["new_spectrum_paint_ms"] <= 1000),
+        "final_image_visible": bool(at_end.get("image_visible") is True
+                                    and at_end.get("uploaded_sequence") is not None
+                                    and target is not None
+                                    and at_end["uploaded_sequence"] >= target),
+        "upload_observation_accounted": bool(trace.get("uploads_total") ==
+                                             len(trace.get("uploads") or [])
+                                             + trace.get("uploads_not_retained", -1)),
+        "stop_completed": bool(after_stop.get("running") is False
+                               and after_stop.get("workspace") == "analyzer"),
+        "stop_retained_last_frame": bool(at_end.get("displayed_frame_key") is not None
+                                         and after_stop.get("displayed_frame_key") is not None
+                                         and after_stop["displayed_frame_key"][:2]
+                                             == at_end["displayed_frame_key"][:2]
+                                         and after_stop["displayed_frame_key"][2]
+                                             >= at_end["displayed_frame_key"][2]),
+        "stop_retained_density": bool(at_end.get("uploaded_sequence") is not None
+                                      and after_stop.get("uploaded_sequence") is not None
+                                      and after_stop["uploaded_sequence"] >= at_end["uploaded_sequence"]
+                                      and after_stop.get("image_visible") is True),
+    }
+
+
+def paint_intersects_item(widget: object, event: object, item: object) -> bool:
+    """Observe an actual dirty-region intersection, not any viewport paint."""
+    try:
+        if not item.isVisible():
+            return False
+        mapped = widget.mapFromScene(item.sceneBoundingRect()).boundingRect()
+        return not mapped.isEmpty() and event.rect().intersects(mapped)
+    except (AttributeError, RuntimeError, TypeError):
+        return False
 
 
 def distribution(values: deque[float], dropped: int) -> dict[str, float] | None:
@@ -421,6 +526,8 @@ def parser() -> argparse.ArgumentParser:
                         help="opt-in existing second worker seam; not product wiring")
     result.add_argument("--visual-substages", action="store_true",
                         help="opt-in scalar Visual worker substage timings (perturbs timing)")
+    result.add_argument("--hide-show", action="store_true",
+                        help="one timed Live -> calibration -> analyzer -> Stop lifecycle gate")
     result.add_argument("--render-mode", choices=("direct", "visual"), default="direct")
     result.add_argument("--display-fps", type=int, choices=(15, 30, 60, 120, 144, 240), default=120)
     result.add_argument("--window-width", type=int, default=1400)
@@ -442,6 +549,9 @@ def main() -> int:
         raise SystemExit("Visual substage contention profile requires the combined product worker")
     if args.visual_substages and args.render_mode != "visual":
         raise SystemExit("Visual substage profile requires --render-mode visual")
+    if args.hide_show and (args.duration < 6 or args.render_mode != "visual"
+                           or args.hide_persistence or args.split_persistence or args.visual_substages):
+        raise SystemExit("Hide/Show requires >=6 s Visual with persistence visible and no split/profile")
     output = args.output.resolve()
     if output.exists():
         raise SystemExit("output already exists; choose a new evidence path")
@@ -479,6 +589,7 @@ def main() -> int:
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
     from sdr_monitor.ui.v2.workspaces.analyzer import AnalyzerWorkspaceV2
     from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
+    from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
     from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
@@ -497,6 +608,10 @@ def main() -> int:
         native_binary = None
 
     observer = PaintObserver()
+    density_witness = DensitySequenceWitness()
+    lifecycle: dict[str, Any] = dict(phase="idle", uploads=[], uploads_total=0,
+                                     uploads_not_retained=0, hidden_uploads=0,
+                                     shown_stale_uploads=0, shown_unmapped_uploads=0)
     original_render = AnalyzerWorkspaceV2._render
     original_prepare = LiveSnapshotPreparer.prepare_cancellable
     original_project = projection_module.project_spectrum
@@ -540,7 +655,29 @@ def main() -> int:
         accepted = original_image_accept(overlay, request, result, error)
         if (observer.measuring and observer.workspace is not None
                 and overlay is observer.workspace.visualization.spectrum_scene._persistence):
-            observer.density_uploads += overlay.metrics.image_uploads - before
+            admitted = overlay.metrics.image_uploads - before
+            observer.density_uploads += admitted
+            if args.hide_show and admitted:
+                sequence = density_witness.sequence(overlay._uploaded_density)
+                upload_phase = lifecycle["phase"]
+                lifecycle["uploads_total"] += 1
+                if upload_phase == "hidden":
+                    lifecycle["hidden_uploads"] += admitted
+                elif upload_phase == "shown":
+                    target = lifecycle.get("show_target_sequence")
+                    if sequence is None or target is None:
+                        lifecycle["shown_unmapped_uploads"] += admitted
+                    elif sequence < target:
+                        lifecycle["shown_stale_uploads"] += admitted
+                    elif overlay.image_item.isVisible():
+                        lifecycle.setdefault("first_fresh_visible_upload_ns", perf_counter_ns())
+                events = lifecycle["uploads"]
+                if len(events) < 128:
+                    events.append(dict(phase=upload_phase, when_ns=perf_counter_ns(),
+                                       sequence=sequence,
+                                       visible=overlay.image_item.isVisible()))
+                else:
+                    lifecycle["uploads_not_retained"] += 1
         return accepted
 
     def observed_waterfall_set_line(pane, frame):
@@ -554,6 +691,8 @@ def main() -> int:
     def observed_render(workspace, state):
         began = perf_counter_ns()
         observer.model_enter(workspace, state)
+        if args.hide_show and observer.measuring and workspace is observer.workspace:
+            density_witness.observe(state)
         try:
             return original_render(workspace, state)
         finally:
@@ -626,6 +765,22 @@ def main() -> int:
             rect = event.rect()
             region_fraction = min(1.0, max(0.0, rect.width() * rect.height() / area))
             observer.painted(self, began, ended, before, after, region_fraction)
+            if (args.hide_show and observer.measuring and scene is not None and self is scene._graphics
+                    and lifecycle["phase"] == "shown"):
+                target = lifecycle.get("show_target_sequence")
+                overlay = scene._persistence
+                uploaded = density_witness.sequence(overlay._uploaded_density)
+                if (target is not None and uploaded is not None and uploaded >= target
+                        and paint_intersects_item(self, event, overlay.image_item)):
+                    lifecycle.setdefault("first_fresh_paint_ns", ended)
+                before_hide_key = lifecycle.get("before_hide_frame_key")
+                painted_key = observer.key(after)
+                if (before_hide_key is not None and painted_key is not None
+                        and painted_key[:2] == before_hide_key[:2]
+                        and painted_key[2] > before_hide_key[2]
+                        and paint_intersects_item(self, event, scene._curves[TraceKind.CURRENT].curve)):
+                    lifecycle.setdefault("first_new_spectrum_paint_ns", ended)
+                    lifecycle.setdefault("first_new_spectrum_key", painted_key)
 
     original_compose = product_live_module.compose_v2_live_product
 
@@ -717,6 +872,23 @@ def main() -> int:
         applied = None
         measurement_started_ns = measurement_finished_ns = None
 
+        def lifecycle_snapshot() -> dict[str, object]:
+            scene = workspace.visualization.spectrum_scene
+            overlay = scene._persistence
+            snapshot = services.live_sdr.latest_snapshot()
+            latest = overlay.latest_view
+            return dict(when_ns=perf_counter_ns(), workspace=shell.active_workspace_id,
+                        analyzer_visible=workspace.isVisible(),
+                        presentation_active=overlay._presentation_active,
+                        image_visible=overlay.image_item.isVisible(),
+                        image_present=overlay.image_item.image is not None,
+                        image_uploads=overlay.metrics.image_uploads,
+                        latest_sequence=density_witness.sequence(None if latest is None else latest.density),
+                        uploaded_sequence=density_witness.sequence(overlay._uploaded_density),
+                        displayed_frame_key=observer.key(scene.displayed_frame),
+                        native_sequence=int(snapshot.sequence),
+                        epoch=snapshot.acquisition_epoch, running=services.live_sdr.is_running())
+
         def fail(message: str) -> None:
             nonlocal failure, phase, deadline_ns
             failure = message
@@ -790,9 +962,30 @@ def main() -> int:
                         observer.measuring = False
                         fail("physical RX left RUNNING during measurement")
                         return
+                    if args.hide_show and measurement_started_ns is not None:
+                        if lifecycle["phase"] == "idle" and now >= measurement_started_ns + 2_000_000_000:
+                            if "calibration" not in shell._definitions:
+                                fail("calibration workspace unavailable; Hide/Show not exercised")
+                                return
+                            lifecycle["before_hide"] = lifecycle_snapshot()
+                            lifecycle["before_hide_frame_key"] = lifecycle["before_hide"]["displayed_frame_key"]
+                            lifecycle["phase"] = "hiding"
+                            shell.select_workspace("calibration")
+                            lifecycle["after_hide"] = lifecycle_snapshot()
+                            lifecycle["phase"] = "hidden"
+                        elif (lifecycle["phase"] == "hidden" and
+                              now >= lifecycle["after_hide"]["when_ns"] + 1_000_000_000):
+                            lifecycle["before_show"] = lifecycle_snapshot()
+                            lifecycle["show_target_sequence"] = lifecycle["before_show"]["latest_sequence"]
+                            lifecycle["show_intent_ns"] = perf_counter_ns()
+                            lifecycle["phase"] = "shown"
+                            shell.select_workspace("analyzer")
+                            lifecycle["after_show"] = lifecycle_snapshot()
                     if measure_end_ns is not None and now >= measure_end_ns:
                         observer.measuring = False
                         measurement_finished_ns = now
+                        if args.hide_show:
+                            lifecycle["at_end"] = lifecycle_snapshot()
                         snapshot = services.live_sdr.latest_snapshot()
                         native_before_stop = snapshot.performance
                         final_sequence = int(snapshot.sequence)
@@ -813,6 +1006,8 @@ def main() -> int:
                         phase = "wait_stopped"
                 elif phase == "wait_stopped":
                     if state.live.primary_action.value != "stop" and not state.live.busy and not state.stopping:
+                        if args.hide_show:
+                            lifecycle["after_stop"] = lifecycle_snapshot()
                         shell.close()
                         phase = "wait_closed"
                 elif phase == "wait_closed":
@@ -884,7 +1079,25 @@ def main() -> int:
                                    else bool(visual_profile_result["complete"]))
         if visual_profile_complete is False:
             failure = ((failure + "; ") if failure else "") + "Visual substage profile incomplete"
-        report = dict(schema="app05-physical-visible-v2-v6", result="pass" if phase == "done" and
+        hide_show_result = None
+        if args.hide_show:
+            shown_ns = lifecycle.get("show_intent_ns")
+            for source, result_key in (("first_fresh_paint_ns", "fresh_paint_ms"),
+                                       ("first_new_spectrum_paint_ns", "new_spectrum_paint_ms")):
+                painted_ns = lifecycle.get(source)
+                lifecycle[result_key] = (None if shown_ns is None or painted_ns is None
+                                         else (painted_ns - shown_ns) / 1e6)
+            checks = hide_show_checks(lifecycle)
+            hide_show_result = dict(passed=all(checks.values()), checks=checks, trace=lifecycle,
+                                    scope="One physical Live navigation cycle. Fresh means a mapped native "
+                                          "persistence update and a newer displayed spectrum source at Qt "
+                                          "paint-return whose dirty region intersects the corresponding "
+                                          "GraphicsItem bounds. It does not prove exact changed pixels, "
+                                          "DWM/scanout, a 50-ms goal, moving-latest freshness or repeated stability.")
+            if not hide_show_result["passed"]:
+                failed_checks = ", ".join(name for name, accepted in checks.items() if not accepted)
+                failure = ((failure + "; ") if failure else "") + f"Hide/Show gate: {failed_checks}"
+        report = dict(schema="app05-physical-visible-v2-v7", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
                       failure=failure, phase=phase, source="physical-pluto-rx", uri=args.uri,
@@ -901,6 +1114,7 @@ def main() -> int:
                                      vertical_range_locked=args.lock_vertical_range,
                                      split_persistence=args.split_persistence,
                                      visual_substages=args.visual_substages,
+                                     hide_show=args.hide_show,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
                                      backend="cpu", warmup_s=args.warmup,
                                      measurement_s=args.duration),
@@ -937,6 +1151,7 @@ def main() -> int:
                       persistence_overlay_measurement_deltas=persistence_interval,
                       projector_measurement_deltas=projector_interval,
                       observer=observer.report(),
+                      hide_show=hide_show_result,
                       persistence_substage_profile=visual_profile_result,
                       persistence_substage_profile_complete=visual_profile_complete,
                       allocation_budget=asdict(budget), workers_after_close=workers,
