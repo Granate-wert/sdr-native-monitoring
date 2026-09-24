@@ -168,8 +168,12 @@ class SpectrumProjector(QObject):
     def __init__(self, submit: Callable[[Callable[[], SpectrumProjection]], Future],
                  *, max_retained_bytes: int = DEFAULT_PROJECTION_BYTES,
                  allocation_budget: PresentationAllocationBudget | None = None,
-                 persistence_submit: Callable[[Callable[[], object]], Future] | None = None) -> None:
+                 persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
+                 resumable_persistence: bool = False,
+                 persistence_max_chunks: int = 8) -> None:
         super().__init__()
+        if resumable_persistence and persistence_submit is None:
+            raise ValueError("resumable persistence requires an explicit submit lane")
         self.allocation_budget = allocation_budget
         self._allocation: AllocationReservation | None = None
         self._shared_retry_key: tuple | None = None
@@ -186,7 +190,9 @@ class SpectrumProjector(QObject):
         self.persistence_projector = (None if persistence_submit is None else
                                       PersistenceProjector(persistence_submit,
                                                            allocation_budget=allocation_budget,
-                                                           max_retained_bytes=max_retained_bytes))
+                                                           max_retained_bytes=max_retained_bytes,
+                                                           resumable=resumable_persistence,
+                                                           max_chunks=persistence_max_chunks))
         if self.persistence_projector is not None:
             self.persistence_projector.ready.connect(self.persistence_ready.emit)
             self.persistence_projector.settled.connect(self.persistence_settled.emit)

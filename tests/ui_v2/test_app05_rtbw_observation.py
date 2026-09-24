@@ -514,6 +514,41 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("observer split persistence requires a generated histogram", result.stderr)
 
+    def test_observer_resumable_persistence_uses_existing_executor_and_closes(self):
+        with TemporaryDirectory(prefix="app05-resumable-observer-") as temporary:
+            output = Path(temporary) / "resumable.json"
+            result = subprocess.run([sys.executable, "-I", "-X", "faulthandler",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"),
+                "--checkout", str(ROOT), "--output", str(output), "--seconds", "1",
+                "--cycles", "1", "--bins", "4096", "--persistence-power-bins", "32",
+                "--persistence-display", "visual", "--observer-resumable-persistence",
+                "--observer-density-chunks", "2", "--executor-queue-residency"],
+                cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(report["observer_resumable_persistence"])
+            self.assertFalse(report["observer_split_persistence"])
+            self.assertTrue(report["observed_split_persistence"])
+            self.assertGreater(report["persistence"]["accepted"], 0)
+            self.assertGreater(report["persistence"]["overlay_metrics"]["image_uploads"], 0)
+            self.assertGreater(report["executor_queue_residency"]["by_kind"][
+                "viewport_optional_density_chunk"]["started"], 0)
+            self.assertEqual(report["remaining_workers"], [])
+            self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
+
+    def test_resumable_observer_rejects_split_or_missing_density(self):
+        with TemporaryDirectory(prefix="app05-resumable-validation-") as temporary:
+            for extra in ((), ("--observer-split-persistence",)):
+                with self.subTest(extra=extra):
+                    output = Path(temporary) / ("split.json" if extra else "missing.json")
+                    result = subprocess.run([sys.executable, "-I",
+                        str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"),
+                        "--checkout", str(ROOT), "--output", str(output),
+                        "--observer-resumable-persistence", *extra],
+                        cwd=ROOT, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("resumable observer requires", result.stderr)
+
     def test_executor_queue_residency_observer_reports_actual_task_kinds(self):
         with TemporaryDirectory(prefix="app05-executor-queue-") as temporary:
             output = Path(temporary) / "result.json"

@@ -114,7 +114,7 @@ class ExecutorQueueResidencyProbe:
     """
 
     KINDS = ("live_preparation", "viewport_required_with_density",
-             "viewport_required", "viewport_density_only", "other")
+             "viewport_required", "viewport_density_only", "viewport_optional_density_chunk", "other")
 
     def __init__(self, capacity=8192):
         self.capacity = capacity
@@ -671,6 +671,10 @@ def main(argv=None):
                         help="Observer-only ImageItem cadence override; product stays at its default 15 Hz")
     parser.add_argument("--observer-split-persistence", action="store_true",
                         help="Observer-only existing separate density worker; product composition stays combined")
+    parser.add_argument("--observer-resumable-persistence", action="store_true",
+                        help="Observer-only density slices on the existing display executor; product stays combined")
+    parser.add_argument("--observer-density-chunks", type=int, default=8,
+                        help="Max 64K-cell density chunks per executor turn in resumable observer mode")
     parser.add_argument("--executor-queue-residency", action="store_true",
                         help="Observer-only actual single-executor queue wait/service by task kind")
     parser.add_argument("--persistence-upload-age", action="store_true",
@@ -787,6 +791,9 @@ def main(argv=None):
         parser.error("window capture path must be new")
     if args.persistence_display == "visual" and not args.persistence_power_bins:
         parser.error("Visual persistence profiling requires a generated histogram")
+    if args.observer_resumable_persistence and (not args.persistence_power_bins
+            or args.observer_split_persistence or not 1 <= args.observer_density_chunks <= 64):
+        parser.error("resumable observer requires generated persistence, no split worker, and 1..64 chunks")
     if args.observer_split_persistence and not args.persistence_power_bins:
         parser.error("observer split persistence requires a generated histogram")
     if args.executor_queue_residency and (args.observer_split_persistence or args.projection_stage_timing
@@ -903,8 +910,13 @@ def main(argv=None):
 
     def observer_product_init(composition, presenter, *init_args, **init_kwargs):
         if init_kwargs.get("persistence_submit") is not None:
-            raise AssertionError("observer split lane requires the unsplit product root")
-        init_kwargs["persistence_submit"] = presenter.submit_persistence_task
+            raise AssertionError("observer density lane requires the unsplit product root")
+        if args.observer_split_persistence:
+            init_kwargs["persistence_submit"] = presenter.submit_persistence_task
+        else:
+            init_kwargs["persistence_submit"] = presenter.submit_display_task
+            init_kwargs["resumable_persistence"] = True
+            init_kwargs["persistence_max_chunks"] = args.observer_density_chunks
         return original_product_init(composition, presenter, *init_args, **init_kwargs)
 
     stage_lock = threading.Lock()
@@ -1204,7 +1216,7 @@ def main(argv=None):
                     age.changed_during_paint += 1
 
     with ExitStack() as observer_patches:
-        if args.observer_split_persistence:
+        if args.observer_split_persistence or args.observer_resumable_persistence:
             observer_patches.enter_context(patch.object(
                 V2LiveProductComposition, "__init__", observer_product_init))
         if args.observer_image_cadence_hz is not None:
@@ -1250,8 +1262,8 @@ def main(argv=None):
             pass
         try:
             observed_split_lane = f.composition.spectrum_projector.persistence_projector is not None
-            if observed_split_lane != args.observer_split_persistence:
-                raise AssertionError("observer split-lane composition does not match the requested mode")
+            if observed_split_lane != (args.observer_split_persistence or args.observer_resumable_persistence):
+                raise AssertionError("observer density-lane composition does not match the requested mode")
             if queue_probe is not None:
                 executor = f.presenter._executor
                 original_executor_submit = executor.submit
@@ -1270,6 +1282,8 @@ def main(argv=None):
                             kind = "viewport_required_with_density"
                         else:
                             kind = "viewport_required"
+                    elif name == "run" and args.observer_resumable_persistence:
+                        kind = "viewport_optional_density_chunk"
                     else:
                         kind = "other"
                     return queue_probe.submit(original_executor_submit, operation, kind,
@@ -2194,6 +2208,8 @@ def main(argv=None):
             report = dict(scope=__doc__, seconds=perf_counter() - began, bins=args.bins,
                 cycles=args.cycles, requested_source_hz=args.source_hz, generated=generated,
                 observer_split_persistence=args.observer_split_persistence,
+                observer_resumable_persistence=args.observer_resumable_persistence,
+                observer_density_chunks=(args.observer_density_chunks if args.observer_resumable_persistence else None),
                 observed_split_persistence=observed_split_lane,
                 page_changes=page_changes, viewport_changes=viewport_changes,
                 driver_stop_ms=args.driver_stop_ms, heartbeat_ms=summary(np.diff(beats) * 1000),

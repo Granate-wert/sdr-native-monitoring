@@ -118,6 +118,8 @@ class V2LiveProductComposition:
         analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
         projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
         persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
+        resumable_persistence: bool = False,
+        persistence_max_chunks: int = 8,
         allocation_budget: PresentationAllocationBudget | None = None,
         async_shutdown: bool = False,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
@@ -133,7 +135,9 @@ class V2LiveProductComposition:
         self.allocation_budget = allocation_budget or PresentationAllocationBudget()
         self.spectrum_projector = (None if projection_submit is None else SpectrumProjector(
             projection_submit, allocation_budget=self.allocation_budget,
-            persistence_submit=persistence_submit))
+            persistence_submit=persistence_submit,
+            resumable_persistence=resumable_persistence,
+            persistence_max_chunks=persistence_max_chunks))
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.analyzer_view_model = (
@@ -442,6 +446,8 @@ def compose_v2_live_product(
     analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
     projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
     persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
+    resumable_persistence: bool = False,
+    persistence_max_chunks: int = 8,
     allocation_budget: PresentationAllocationBudget | None = None,
     async_shutdown: bool = False,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
@@ -459,6 +465,8 @@ def compose_v2_live_product(
         analyzer_presenter=analyzer_presenter,
         projection_submit=projection_submit,
         persistence_submit=persistence_submit,
+        resumable_persistence=resumable_persistence,
+        persistence_max_chunks=persistence_max_chunks,
         allocation_budget=allocation_budget,
         async_shutdown=async_shutdown,
         calibration_presenter=calibration_presenter,
