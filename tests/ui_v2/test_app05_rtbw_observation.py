@@ -433,6 +433,37 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("observer image cadence requires persistence", result.stderr)
 
+    def test_observer_split_persistence_is_opt_in_and_closes_workers(self):
+        with TemporaryDirectory(prefix="app05-split-observer-") as temporary:
+            for split in (False, True):
+                with self.subTest(split=split):
+                    output = Path(temporary) / ("split.json" if split else "combined.json")
+                    command = [sys.executable, "-I", "-X", "faulthandler",
+                        str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"),
+                        "--checkout", str(ROOT), "--output", str(output), "--seconds", "1",
+                        "--cycles", "1", "--bins", "4096", "--persistence-power-bins", "32",
+                        "--persistence-every", "10", "--persistence-display", "visual"]
+                    if split:
+                        command.append("--observer-split-persistence")
+                    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    report = json.loads(output.read_text(encoding="utf-8"))
+                    self.assertIs(report["observer_split_persistence"], split)
+                    self.assertIs(report["observed_split_persistence"], split)
+                    self.assertGreater(report["persistence"]["accepted"], 0)
+                    self.assertEqual(report["remaining_workers"], [])
+                    self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
+
+    def test_observer_split_persistence_requires_density(self):
+        with TemporaryDirectory(prefix="app05-split-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--observer-split-persistence"],
+                cwd=ROOT, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("observer split persistence requires a generated histogram", result.stderr)
+
     def test_opt_in_upload_age_reports_only_scalar_commit_provenance(self):
         with TemporaryDirectory(prefix="app05-upload-age-") as temporary:
             output = Path(temporary) / "result.json"

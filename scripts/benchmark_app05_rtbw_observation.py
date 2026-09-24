@@ -591,6 +591,8 @@ def main(argv=None):
                         help="Select the actual V2 persistence rendering policy for normal paint profiling")
     parser.add_argument("--observer-image-cadence-hz", type=float,
                         help="Observer-only ImageItem cadence override; product stays at its default 15 Hz")
+    parser.add_argument("--observer-split-persistence", action="store_true",
+                        help="Observer-only existing separate density worker; product composition stays combined")
     parser.add_argument("--persistence-upload-age", action="store_true",
                         help="Opt-in ImageItem commit age and ABBA visible-heartbeat freshness; "
                              "scalar GUI observer, not paint or DWM")
@@ -705,6 +707,8 @@ def main(argv=None):
         parser.error("window capture path must be new")
     if args.persistence_display == "visual" and not args.persistence_power_bins:
         parser.error("Visual persistence profiling requires a generated histogram")
+    if args.observer_split_persistence and not args.persistence_power_bins:
+        parser.error("observer split persistence requires a generated histogram")
     if args.observer_image_cadence_hz is not None and (
             not args.persistence_power_bins or not 1 <= args.observer_image_cadence_hz <= 120):
         parser.error("observer image cadence requires persistence and a rate in 1..120 Hz")
@@ -747,6 +751,7 @@ def main(argv=None):
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+    from sdr_monitor.ui.v2.product_live import V2LiveProductComposition
     from sdr_monitor.ui.v2.spectrum import persistence_projection as density_projection
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
     from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
@@ -809,6 +814,14 @@ def main(argv=None):
     original_scene_accept = SpectrumScene._accept_projection
     original_scene_paint_trace = SpectrumScene._paint_trace
     original_prepare_density = projection_module.prepare_persistence_image
+    original_product_init = V2LiveProductComposition.__init__
+
+    def observer_product_init(composition, presenter, *init_args, **init_kwargs):
+        if init_kwargs.get("persistence_submit") is not None:
+            raise AssertionError("observer split lane requires the unsplit product root")
+        init_kwargs["persistence_submit"] = presenter.submit_persistence_task
+        return original_product_init(composition, presenter, *init_args, **init_kwargs)
+
     stage_lock = threading.Lock()
     stage_names = (
         "display_worker_queue", "live_preparation", "project_required", "density_preparation",
@@ -1106,6 +1119,9 @@ def main(argv=None):
                     age.changed_during_paint += 1
 
     with ExitStack() as observer_patches:
+        if args.observer_split_persistence:
+            observer_patches.enter_context(patch.object(
+                V2LiveProductComposition, "__init__", observer_product_init))
         if args.observer_image_cadence_hz is not None:
             original_overlay_init = PersistenceOverlay.__init__
 
@@ -1144,12 +1160,15 @@ def main(argv=None):
         # Use real nested loops also for fixture lifecycle, not manual pumping.
         f.wait = lambda predicate: run_qt_until(predicate, 5)
         f.setUp()
-        if args.projection_stage_timing:
-            f.composition.spectrum_projector.work_active_changed.connect(observe_projection_slot)
         timers = []
         def unsubscribe_density():
             pass
         try:
+            observed_split_lane = f.composition.spectrum_projector.persistence_projector is not None
+            if observed_split_lane != args.observer_split_persistence:
+                raise AssertionError("observer split-lane composition does not match the requested mode")
+            if args.projection_stage_timing:
+                f.composition.spectrum_projector.work_active_changed.connect(observe_projection_slot)
             f.select_and_apply()
             persistence_enabled = args.persistence_power_bins != 0
             config = replace(f.live.latest_snapshot().applied.applied, fft_size=args.bins,
@@ -2065,6 +2084,8 @@ def main(argv=None):
                 transition.pop("upload_event_log", None)
             report = dict(scope=__doc__, seconds=perf_counter() - began, bins=args.bins,
                 cycles=args.cycles, requested_source_hz=args.source_hz, generated=generated,
+                observer_split_persistence=args.observer_split_persistence,
+                observed_split_persistence=observed_split_lane,
                 page_changes=page_changes, viewport_changes=viewport_changes,
                 driver_stop_ms=args.driver_stop_ms, heartbeat_ms=summary(np.diff(beats) * 1000),
                 cpu_paint_ms={name: summary(data) for name, data in paints.items()},
@@ -2279,14 +2300,22 @@ def main(argv=None):
                     "control. Qt target is not desktop/DWM scanout or a different physical monitor mode.")
                 report["persistence_abba"] = abba_report
                 if args.projection_stage_timing:
+                    if observed_split_lane:
+                        stage_contract = (
+                            "Split lane: project_required is absent because required-only project_spectrum "
+                            "has no early callback; project_total and projection_slot cover required "
+                            "Spectrum only. density_preparation times the optional computation, but "
+                            "display_worker_queue does not time its separate persistence submission or wait.")
+                    else:
+                        stage_contract = (
+                            "Combined lane: project_required is emitted only for jobs with optional "
+                            "density; project_total includes density for those jobs and required-only "
+                            "jobs. projection_slot spans GUI acknowledgement.")
                     report["persistence_abba"]["stage_timing_scope"] = (
                         "Instrumented observer only: completed worker/GUI intervals wholly within each steady "
-                        "block; crossed boundaries excluded. project_required is emitted only for jobs with "
-                        "optional density; project_total includes density only for those jobs, so its "
-                        "distribution also contains required-only jobs. projection_slot spans GUI "
-                        "acknowledgement. Queue samples exclude tasks cancelled before execution. "
-                        "A completion just before a block closes may be conservatively excluded if its "
-                        "recording lock is acquired after the boundary. "
+                        "block; crossed boundaries excluded. " + stage_contract + " Queue samples exclude "
+                        "tasks cancelled before execution. A completion just before a block closes may be "
+                        "conservatively excluded if its recording lock is acquired after the boundary. "
                         "Any stage with dropped samples has null percentiles, not a biased tail. "
                         "This run is not an uninstrumented latency baseline.")
                     report["persistence_abba"]["stage_sample_capacity_per_kind"] = 8192
