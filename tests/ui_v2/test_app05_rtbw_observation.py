@@ -141,6 +141,51 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual(OBSERVER.persistence_catchup_exit_code(
             {"persistence_abba": {"first_paint_cadence_gate_passed": False}}), 1)
 
+    def test_causal_gap_windows_include_boundaries_and_only_scalar_events(self):
+        probe = OBSERVER.CausalTimelineProbe(gui_thread=__import__("threading").get_ident(), capacity=8)
+        for when, event, canvas, sequence in (
+            (1.01, "source_publish", None, 10),
+            (1.06, "worker_project_enter", None, 10),
+            (1.08, "paint_fresh", "spectrum", 10),
+            (1.11, "source_publish", None, 11),
+            (1.12, "paint_fresh", "waterfall", 10),
+            (1.15, "scene_accept_return", None, 11),
+            (1.27, "paint_fresh", "spectrum", 11),
+        ):
+            probe.record(event, when=when, canvas=canvas, sequence=sequence)
+        events, dropped = probe.snapshot()
+        self.assertEqual(dropped, 0)
+        self.assertEqual({row["thread"] for row in events}, {"gui"})
+        windows = OBSERVER.causal_gap_windows(events, 1.0, 1.3, "spectrum", limit=3)
+        self.assertEqual([row["kind"] for row in windows], ["interior", "start", "end"])
+        self.assertAlmostEqual(windows[0]["gap_ms"], 190)
+        self.assertTrue(any(row["event"] == "scene_accept_return"
+                            for row in windows[0]["events"]))
+        self.assertFalse(any(row["event"] == "paint_fresh" and row.get("canvas") == "waterfall"
+                             for row in windows[1]["events"]))
+        self.assertTrue(all(not any(key in row for key in ("payload", "owner", "snapshot"))
+                            for window in windows for row in window["events"]))
+        bounded = OBSERVER.causal_gap_windows(events, 1.0, 1.3, "spectrum",
+                                              limit=1, max_events_per_gap=4)[0]
+        self.assertEqual((bounded["event_count"], len(bounded["events"]),
+                          bounded["dropped_event_count"]), (5, 4, 1))
+        probe.record("source_publish", when=1.31, sequence=12)
+        probe.record("source_publish", when=1.32, sequence=13)
+        self.assertEqual(probe.snapshot()[1], 1)
+        task_probe = OBSERVER.CausalTimelineProbe(gui_thread=__import__("threading").get_ident())
+        task = task_probe.next_task_id()
+        task_probe.record("display_submit", when=2.0, task_id=task)
+        task_probe.record("display_worker_enter", when=2.1, task_id=task)
+        task_probe.record("scene_accept_enter", when=2.2, sequence=13,
+                          required_work=True, accept_phase="final")
+        task_events, task_dropped = task_probe.snapshot()
+        self.assertEqual(task_dropped, 0)
+        self.assertEqual([row["task_id"] for row in task_events[:2]], [task, task])
+        self.assertEqual((task_events[2]["required_work"], task_events[2]["accept_phase"]),
+                         (True, "final"))
+        with self.assertRaisesRegex(ValueError, "fresh paint"):
+            OBSERVER.causal_gap_windows(events, 1.0, 1.3, "missing")
+
     def test_abba_bounded_samples_never_report_truncated_tail_as_whole_block(self):
         samples = OBSERVER.BoundedSamples(2)
         for value in range(5):

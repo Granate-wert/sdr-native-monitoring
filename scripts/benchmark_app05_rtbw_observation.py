@@ -272,6 +272,78 @@ def first_paint_cadence_gate_passes(block_reports, maximum_gap_ms):
         for block in block_reports.values()))
 
 
+class CausalTimelineProbe:
+    """Bounded scalar events for locating a Qt paint gap, never frame owners."""
+
+    def __init__(self, gui_thread, capacity=32768):
+        if capacity < 1:
+            raise ValueError("positive causal event capacity required")
+        self.gui_thread = gui_thread
+        self.capacity = capacity
+        self._lock = threading.Lock()
+        self._events = deque(maxlen=capacity)
+        self._total = 0
+        self._next_task_id = 0
+
+    def next_task_id(self):
+        with self._lock:
+            self._next_task_id += 1
+            return self._next_task_id
+
+    def record(self, event, *, when=None, sequence=None, canvas=None,
+               required_work=None, accept_phase=None, task_id=None):
+        row = dict(time_s=perf_counter() if when is None else when, event=event,
+                   thread="gui" if threading.get_ident() == self.gui_thread else "worker")
+        if sequence is not None:
+            row["sequence"] = int(sequence)
+        if canvas is not None:
+            row["canvas"] = canvas
+        if required_work is not None:
+            row["required_work"] = bool(required_work)
+        if accept_phase is not None:
+            row["accept_phase"] = accept_phase
+        if task_id is not None:
+            row["task_id"] = int(task_id)
+        with self._lock:
+            self._total += 1
+            self._events.append(row)
+
+    def snapshot(self):
+        with self._lock:
+            return tuple(self._events), self._total - len(self._events)
+
+
+def causal_gap_windows(events, started, ended, canvas, *, limit=3, padding_ms=15,
+                       max_events_per_gap=256):
+    """Return the longest fresh-paint silences, including both block edges."""
+    if not started < ended or limit < 1 or padding_ms < 0 or max_events_per_gap < 2:
+        raise ValueError("invalid causal gap window bounds")
+    paints = [row for row in events if row["event"] == "paint_fresh"
+              and row.get("canvas") == canvas and started <= row["time_s"] <= ended]
+    if not paints:
+        raise ValueError("causal timeline requires a fresh paint in each canvas/block")
+    times = [started, *(row["time_s"] for row in paints), ended]
+    gaps = []
+    for index, (left, right) in enumerate(zip(times, times[1:])):
+        gaps.append((right - left, index, left, right))
+    windows = []
+    for gap_s, index, left, right in sorted(gaps, key=lambda item: (-item[0], item[1]))[:limit]:
+        nearby = [row for row in events if left - padding_ms / 1000 <= row["time_s"]
+                  <= right + padding_ms / 1000]
+        event_count = len(nearby)
+        if event_count > max_events_per_gap:
+            head = max_events_per_gap // 2
+            nearby = nearby[:head] + nearby[-(max_events_per_gap - head):]
+        windows.append(dict(kind=("start" if index == 0 else
+                                  "end" if index == len(times) - 2 else "interior"),
+            gap_ms=gap_s * 1000, begin_ms=(left - started) * 1000,
+            end_ms=(right - started) * 1000,
+            event_count=event_count, dropped_event_count=event_count - len(nearby),
+            events=[dict(row, since_block_start_ms=(row["time_s"] - started) * 1000)
+                    for row in nearby]))
+    return windows
+
+
 def uploaded_key(pane, uploads_before, previous):
     """Observe successful upload metadata; a hidden newer ring is NOT a paint."""
     if not any(item.isVisible() for item in pane.image_items):
@@ -748,6 +820,8 @@ def main(argv=None):
                         help="With --persistence-abba start Visual and measure Visual→Direct→Direct→Visual")
     parser.add_argument("--projection-stage-timing", action="store_true",
                         help="Instrument shared worker stages in matched blocks; diagnostic, not a latency baseline")
+    parser.add_argument("--cadence-causal-timeline", action="store_true",
+                        help="Bounded source/worker/GUI/paint events around longest ABBA gaps; diagnostic only")
     parser.add_argument("--max-unique-paint-gap-ms", type=float,
                         help="Opt-in ABBA gate for longest first-paint silence, including block edges; Qt only")
     parser.add_argument("--persistence-catchup", action="store_true",
@@ -816,6 +890,11 @@ def main(argv=None):
         parser.error("--abba-reverse-order requires --persistence-abba")
     if args.projection_stage_timing and not args.persistence_abba:
         parser.error("--projection-stage-timing requires --persistence-abba")
+    if args.cadence_causal_timeline and (not args.persistence_abba
+            or args.projection_stage_timing or args.show_projection_timeline
+            or args.executor_queue_residency or args.observer_split_persistence
+            or args.observer_image_cadence_hz is not None):
+        parser.error("causal timeline requires unsplit default-cadence ABBA and excludes other stage/queue timelines")
     if args.max_unique_paint_gap_ms is not None and (not args.persistence_abba
             or not 1 <= args.max_unique_paint_gap_ms <= 120000):
         parser.error("--max-unique-paint-gap-ms requires ABBA and a threshold in 1..120000 ms")
@@ -913,7 +992,7 @@ def main(argv=None):
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
-    from sdr_monitor.ui.v2.spectrum.contracts import adapt_spectrum_frame
+    from sdr_monitor.ui.v2.spectrum.contracts import TraceKind, adapt_spectrum_frame
     from sdr_monitor.ui.v2.spectrum.envelope import peak_preserving_envelope
     from sdr_monitor.ui.v2.spectrum.screen_dash import ScreenDashCurveItem, ScreenDashPlotDataItem
     from sdr_monitor.ui.v2.design.tokens import ThemeId, tokens_for_theme
@@ -941,6 +1020,21 @@ def main(argv=None):
     keys, upload_tokens = {}, {}
     failures, stops, driver_entries, driver_returns = [], [], [], []
     gui = threading.get_ident()
+    causal_probe = CausalTimelineProbe(gui) if args.cadence_causal_timeline else None
+
+    def causal(event, *, when=None, sequence=None, canvas=None,
+               required_work=None, accept_phase=None, task_id=None):
+        if causal_probe is not None:
+            causal_probe.record(event, when=when, sequence=sequence,
+                                canvas=canvas, required_work=required_work,
+                                accept_phase=accept_phase, task_id=task_id)
+
+    def request_sequence(request):
+        for kind, view in request.traces:
+            if kind is TraceKind.CURRENT:
+                return view_source_token(view)
+        return None
+
     generated = page_changes = viewport_changes = 0
     persistence_generated = persistence_accepted = last_persistence_accepted = 0
     last_persistence_density_identity = None
@@ -1059,17 +1153,23 @@ def main(argv=None):
 
     def show_projector_offer(projector, request):
         show_event("projector_offer_enter", request=request)
+        sequence = request_sequence(request)
+        causal("projector_offer_enter", sequence=sequence, required_work=request.required_work)
         try:
             return original_projector_offer(projector, request)
         finally:
+            causal("projector_offer_return", sequence=sequence, required_work=request.required_work)
             show_event("projector_offer_return", request=request)
 
     def show_project_spectrum(request, *, cancelled=None, persistence_budget=None,
                               spectrum_ready=None):
         show_event("worker_project_enter", request=request)
+        sequence = request_sequence(request)
+        causal("worker_project_enter", sequence=sequence, required_work=request.required_work)
 
         def required_ready(result):
             show_event("worker_required_ready", request=request)
+            causal("worker_required_ready", sequence=sequence, required_work=request.required_work)
             spectrum_ready(result)
 
         try:
@@ -1077,40 +1177,62 @@ def main(argv=None):
                 persistence_budget=persistence_budget,
                 spectrum_ready=required_ready if spectrum_ready is not None else None)
         finally:
+            causal("worker_project_return", sequence=sequence, required_work=request.required_work)
             show_event("worker_project_return", request=request)
 
     def show_scene_accept(scene, result, *, required_only=False):
         request = result.request
         show_event("scene_accept_enter", request=request, stale=scene.projection_stale)
+        sequence = request_sequence(request)
+        phase = "early_required" if required_only else "final"
+        causal("scene_accept_enter", sequence=sequence,
+               required_work=request.required_work, accept_phase=phase)
         try:
             return original_scene_accept(scene, result, required_only=required_only)
         finally:
+            causal("scene_accept_return", sequence=sequence,
+                   required_work=request.required_work, accept_phase=phase)
             show_event("scene_accept_return", request=request, stale=scene.projection_stale)
 
     def show_scene_paint_trace(scene, kind, view, envelope):
         token = view_source_token(view)
         show_event("trace_setdata_enter", token=token)
+        causal("trace_setdata_enter", sequence=token)
         try:
             return original_scene_paint_trace(scene, kind, view, envelope)
         finally:
+            causal("trace_setdata_return", sequence=token)
             show_event("trace_setdata_return", token=token)
 
     def timed_submit_display(presenter, operation):
         submitted = perf_counter()
+        task_id = None if causal_probe is None else causal_probe.next_task_id()
+        causal("display_submit", when=submitted, task_id=task_id)
 
         @wraps(operation)
         def timed_operation():
-            record_stage("display_worker_queue", submitted, perf_counter())
-            return operation()
+            started = perf_counter()
+            if args.projection_stage_timing:
+                record_stage("display_worker_queue", submitted, started)
+            causal("display_worker_enter", when=started, task_id=task_id)
+            try:
+                return operation()
+            finally:
+                causal("display_worker_return", task_id=task_id)
 
         return original_submit_display(presenter, timed_operation)
 
     def timed_live_preparation(preparer, snapshot, *, cancelled=None):
         began = perf_counter()
+        sequence = None if snapshot.spectrum is None else int(snapshot.spectrum.sequence)
+        causal("live_preparation_enter", when=began, sequence=sequence)
         try:
             return original_live_preparation(preparer, snapshot, cancelled=cancelled)
         finally:
-            record_stage("live_preparation", began, perf_counter())
+            finished = perf_counter()
+            if args.projection_stage_timing:
+                record_stage("live_preparation", began, finished)
+            causal("live_preparation_return", when=finished, sequence=sequence)
 
     def timed_prepare_density(request, *, cancelled=None):
         began = perf_counter()
@@ -1204,6 +1326,9 @@ def main(argv=None):
         before = pane.metrics.image_uploads
         original_upload(pane)
         upload_tokens[id(pane)] = uploaded_key(pane, before, upload_tokens.get(id(pane)))
+        if pane.metrics.image_uploads > before:
+            token = upload_tokens.get(id(pane))
+            causal("waterfall_upload", sequence=None if token is None else token[0])
 
     def accept_persistence_image(overlay, request, result, error):
         nonlocal persistence_upload_age_observed, persistence_upload_age_unmapped
@@ -1213,6 +1338,7 @@ def main(argv=None):
         if overlay is persistence_upload_probe["overlay"] and overlay.metrics.image_uploads > before:
             now = perf_counter()
             uploaded_sequence = persistence_density_sequence_by_identity.get(id(overlay._uploaded_density))
+            causal("density_upload", when=now, sequence=uploaded_sequence)
             if args.persistence_upload_age:
                 persistence_upload_age_observed += 1
                 accepted_at = persistence_accepted_at.get(uploaded_sequence)
@@ -1251,10 +1377,15 @@ def main(argv=None):
             tracked = keys.get(id(self))
             key = None if tracked is None else tracked[1]()
             began = perf_counter()
+            if tracked is not None:
+                causal("paint_enter", when=began, sequence=None if key is None else key[0],
+                       canvas=tracked[0])
             super().paintEvent(event)
             ended = perf_counter()
             if tracked is not None:
                 name, current = tracked
+                causal("paint_return", when=ended, sequence=None if key is None else key[0],
+                       canvas=name)
                 paints[name].append((ended - began) * 1000)
                 if abba_current_block is not None:
                     abba_blocks[abba_current_block]["paint_return_ms"][name].append((ended - began) * 1000)
@@ -1284,6 +1415,7 @@ def main(argv=None):
                                     block["source_to_first_paint_ms"][target].append(age.ages[target][-1])
                                     if target == name:
                                         block["first_paint_cadence"][name].painted(ended)
+                                        causal("paint_fresh", when=ended, sequence=key[0], canvas=name)
                                     # Synthetic timestamp token equals sequence; the current
                                     # key is the exact spectrum token or uploaded waterfall row.
                                     sequence = int(key[0])
@@ -1328,10 +1460,11 @@ def main(argv=None):
         observer_patches.enter_context(patch.object(PersistenceOverlay, "accept_worker_image", accept_persistence_image))
         observer_patches.enter_context(patch.object(_AtomicFakeLive, "start", dispatch_start))
         observer_patches.enter_context(patch.object(_AtomicFakeLive, "stop", dispatch_stop))
-        if args.projection_stage_timing:
+        if args.projection_stage_timing or args.cadence_causal_timeline:
             observer_patches.enter_context(patch.object(LivePresenter, "submit_display_task", timed_submit_display))
             observer_patches.enter_context(patch.object(LiveSnapshotPreparer, "prepare_cancellable",
                                                   timed_live_preparation))
+        if args.projection_stage_timing:
             observer_patches.enter_context(patch.object(projection_module, "project_spectrum",
                                                   timed_project_spectrum))
             observer_patches.enter_context(patch.object(projection_module, "prepare_persistence_image",
@@ -1342,6 +1475,7 @@ def main(argv=None):
             observer_patches.enter_context(patch.object(SpectrumScene, "_schedule_projection",
                                                   show_scene_schedule))
             observer_patches.enter_context(patch.object(SpectrumScene, "_offer_projection", show_scene_offer))
+        if args.show_projection_timeline or args.cadence_causal_timeline:
             observer_patches.enter_context(patch.object(SpectrumScene, "_accept_projection", show_scene_accept))
             observer_patches.enter_context(patch.object(SpectrumScene, "_paint_trace", show_scene_paint_trace))
             observer_patches.enter_context(patch.object(projection_module.SpectrumProjector,
@@ -1588,8 +1722,10 @@ def main(argv=None):
                                     persistence_generated_at.pop(persistence_generated_order.popleft(), None)
                             offered = replace(snapshot, sequence=generated, spectrum=frame, persistence=density)
                             with snapshot_lock:
-                                age.publish(rtbw_key(frame.timestamp_ns, frame.config_generation), perf_counter())
+                                published = perf_counter()
+                                age.publish(rtbw_key(frame.timestamp_ns, frame.config_generation), published)
                                 f.live._snapshot = offered
+                            causal("source_publish", when=published, sequence=generated)
                             halt.wait(1 / args.source_hz)
                     except Exception as error:
                         failures.append(repr(error))
@@ -1766,6 +1902,7 @@ def main(argv=None):
                 nonlocal pending_page_transition
                 now = perf_counter()
                 beats.append(now)
+                causal("gui_heartbeat", when=now)
                 if abba_current_block is not None:
                     block = abba_blocks[abba_current_block]
                     block["heartbeat_times_s"].append(now)
@@ -2592,6 +2729,34 @@ def main(argv=None):
                                     *block["paint_return_ms"].values(),
                                     *(cadence.gaps_ms for cadence in block["first_paint_cadence"].values()),
                                     block["heartbeat_times_s"], block["persistence_update_sequences"]))
+                causal_events, causal_dropped = (
+                    causal_probe.snapshot() if causal_probe is not None else ((), 0))
+                causal_blocks = None
+                if causal_probe is not None:
+                    causal_blocks = {}
+                    for block_name, block in abba_blocks.items():
+                        started, ended = block["started_perf"], block["ended_perf"]
+                        block_events = tuple(row for row in causal_events
+                                             if started <= row["time_s"] <= ended)
+                        observed_paints = {canvas: sum(
+                            row["event"] == "paint_fresh" and row.get("canvas") == canvas
+                            for row in block_events) for canvas in ("spectrum", "waterfall")}
+                        expected_paints = {canvas: cadence.paint_count for canvas, cadence
+                                           in block["first_paint_cadence"].items()}
+                        causal_blocks[block_name] = dict(
+                            event_count=len(block_events), observed_fresh_paints=observed_paints,
+                            exact_paint_accounting=observed_paints == expected_paints,
+                            top_gaps=(None if causal_dropped else {
+                                canvas: causal_gap_windows(causal_events, started, ended, canvas)
+                                for canvas in ("spectrum", "waterfall")}))
+                    sample_integrity = sample_integrity and causal_dropped == 0 and all(
+                        block["exact_paint_accounting"] for block in causal_blocks.values())
+                    if not causal_dropped:
+                        sample_integrity = sample_integrity and all(
+                            window["dropped_event_count"] == 0
+                            for block in causal_blocks.values()
+                            for windows in block["top_gaps"].values()
+                            for window in windows)
                 if args.projection_stage_timing:
                     sample_integrity = sample_integrity and all(
                         not dropped for stages in stage_overflow.values() for dropped in stages.values())
@@ -2660,6 +2825,18 @@ def main(argv=None):
                     "may be missed. Metadata queries on the GUI heartbeat instrument and may perturb "
                     "timing; do not compare these tails to uninstrumented baselines without a matched "
                     "control. Qt target is not desktop/DWM scanout or a different physical monitor mode.")
+                if causal_probe is not None:
+                    abba_report["causal_timeline"] = dict(
+                        event_capacity=causal_probe.capacity,
+                        retained_event_count=len(causal_events), dropped_event_count=causal_dropped,
+                        blocks=causal_blocks,
+                        scope="Opt-in scalar source/worker/GUI/Qt event ordering around the three longest "
+                              "fresh-paint silences per canvas/block. Events can perturb scheduling; "
+                              "clock is one host perf_counter. No payload/Qt owner retained. A dropped "
+                              "ring/window invalidates top-gap attribution. A gap can include paints "
+                              "of sources published before the block; those are listed but excluded "
+                              "from the declared fresh-source cadence. This is not an uninstrumented "
+                              "cadence, DWM, SDR or FFT-LPS proof.")
                 if args.static_history_overlays:
                     abba_report["static_history_overlays"]["gate_passed"] = bool(
                         sample_integrity and history_overlay_removed
@@ -2802,6 +2979,14 @@ if __name__ == "__main__":
                 qt_census=qt_wrapper_counts(), scope="Explicit diagnostic GC AFTER unmodified normal samples; not product behavior, release deadline or leak fix")
     with output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
-    print(json.dumps(result))
+    if "causal_timeline" in result.get("persistence_abba", {}):
+        abba = result["persistence_abba"]
+        print(json.dumps(dict(output=str(output), checkout_head=result["checkout_head"],
+            sample_integrity=abba["sample_integrity_gate_passed"],
+            fixed_qt_target=abba["fixed_qt_target_gate_passed"],
+            first_paint_cadence=abba["first_paint_cadence_gate_passed"],
+            dropped_causal_events=abba["causal_timeline"]["dropped_event_count"])))
+    else:
+        print(json.dumps(result))
     if persistence_catchup_exit_code(result):
         raise SystemExit(1)
