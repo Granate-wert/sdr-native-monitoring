@@ -275,6 +275,10 @@ class ProductCloseTests(unittest.TestCase):
     def test_terminal_ack_retires_pyqtgraph_axes_before_qt_module_shutdown(self):
         spectrum = self.page.visualization.spectrum_scene
         waterfall = self.page.visualization.waterfall_pane
+        spectrum_view_box = spectrum.plot_item.getViewBox()
+        waterfall_view_box = waterfall.plot_item.getViewBox()
+        self.assertTrue(spectrum.plot_item.items)
+        self.assertTrue(waterfall.plot_item.items)
         self.assertIsNotNone(spectrum.plot_item.ctrlMenu)
         self.assertIsNotNone(waterfall.plot_item.ctrlMenu)
         self.assertIsNotNone(spectrum.plot_item.getAxis("left").label)
@@ -287,6 +291,10 @@ class ProductCloseTests(unittest.TestCase):
         self.assertIsNone(waterfall.plot_item.ctrlMenu)
         self.assertIsNone(spectrum.plot_item.axes)
         self.assertIsNone(waterfall.plot_item.axes)
+        self.assertEqual(spectrum.plot_item.items, [])
+        self.assertEqual(waterfall.plot_item.items, [])
+        self.assertEqual(spectrum_view_box.addedItems, [])
+        self.assertEqual(waterfall_view_box.addedItems, [])
         self.assertIsNone(waterfall._linked_frequency_source)
         self.assertIsNone(waterfall._source_x_range_callback)
         self.assertIsNone(waterfall._waterfall_x_range_callback)
@@ -351,6 +359,51 @@ class ProductCloseTests(unittest.TestCase):
         self.assertIsNone(spectrum.plot_item.vb)
         self.assertIsNone(axis.label)
         self.assertIsNone(axis.scene())
+
+    def _assert_terminal_retry_after_viewbox_failure(self, *, after_index_removal: bool,
+                                                     curve: bool = False) -> None:
+        spectrum = self.page.visualization.spectrum_scene
+        view_box = spectrum.plot_item.getViewBox()
+        candidates = spectrum.plot_item.curves if curve else spectrum.plot_item.items
+        target = next(item for item in candidates if item in view_box.addedItems)
+        original_remove = view_box.removeItem
+        attempts = []
+
+        def fail_once(item):
+            if item is target and not attempts:
+                attempts.append(item)
+                if after_index_removal:
+                    view_box.addedItems.remove(item)
+                raise RuntimeError("injected mid-ViewBox removal")
+            original_remove(item)
+
+        with patch.object(view_box, "removeItem", side_effect=fail_once):
+            self.assertFalse(self.shell.close())
+            self.wait(lambda: attempts and not self.shell._is_closed)
+            self.assertFalse(spectrum._graphics_terminal_released)
+            self.assertNotIn(target, spectrum.plot_item.items)
+            self.assertIs(target.parentItem(), view_box.childGroup)
+            self.assertEqual(target in view_box.addedItems, not after_index_removal)
+            self.shell.close()
+            self.wait(lambda: self.shell._is_closed)
+
+        self.assertEqual(len(attempts), 1)
+        self.assertTrue(spectrum._graphics_terminal_released)
+        self.assertEqual(spectrum.plot_item.curves, [])
+        self.assertEqual(spectrum.plot_item.dataItems, [])
+        self.assertEqual(spectrum.plot_item.avgCurves, {})
+        self.assertEqual(view_box.addedItems, [])
+        self.assertEqual(view_box.childGroup.childItems(), [])
+        self.assertIsNone(target.scene())
+
+    def test_terminal_graphics_retry_drains_viewbox_index_orphan(self):
+        self._assert_terminal_retry_after_viewbox_failure(after_index_removal=False)
+
+    def test_terminal_graphics_retry_drains_viewbox_child_orphan(self):
+        self._assert_terminal_retry_after_viewbox_failure(after_index_removal=True)
+
+    def test_terminal_graphics_retry_reconciles_detached_curve(self):
+        self._assert_terminal_retry_after_viewbox_failure(after_index_removal=True, curve=True)
 
     def test_multiple_async_ports_are_requested_before_polling_next(self):
         calls = []

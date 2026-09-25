@@ -22,7 +22,7 @@ from PySide6.QtGui import QPainter, QPainterPath, QPen, QTransform
 try:
     from pyqtgraph.graphicsItems.PlotCurveItem import OpenGLHelpers
     from pyqtgraph.Qt.internals import PrimitiveArray
-except ImportError:  # Keep the declared older pyqtgraph range usable, if slower.
+except ImportError:  # Defensive fallback for an unsupported runtime, never a release speed claim.
     OpenGLHelpers = None
     PrimitiveArray = None
 
@@ -254,7 +254,9 @@ class ScreenDashPlotDataItem(pg.PlotDataItem):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         original: pg.PlotCurveItem = self.curve  # type: ignore[has-type]  # pyqtgraph is untyped
-        original.sigClicked.disconnect(self.sigClicked)
+        # 0.13.7 does not connect this child signal; disconnecting it emits a
+        # PySide warning. The old child cannot be clicked after detachment and
+        # Qt drops any existing connection when deleteLater() destroys it.
         original.setParentItem(None)
         original.deleteLater()
         self.curve = ScreenDashCurveItem()

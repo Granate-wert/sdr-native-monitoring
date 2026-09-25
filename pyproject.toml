@@ -25,7 +25,7 @@ dependencies = [
     "Pillow>=10.0",
     "imageio-ffmpeg>=0.5",
     "PySide6-Essentials>=6.8",
-    "pyqtgraph>=0.13.7",
+    "pyqtgraph>=0.14.0,<0.15.0",
     "pyserial>=3.5",
 ]
 
