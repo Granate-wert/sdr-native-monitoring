@@ -2,16 +2,19 @@
 
 import gc
 import sys
+import threading
 import unittest
 import weakref
-from types import SimpleNamespace
 from time import time_ns
+from types import SimpleNamespace
 from unittest.mock import patch
+
 import numpy as np
 from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QPolygon
 
 from scripts import benchmark_app05_physical_ui as observer
+from sdr_monitor.services.native_live import NativeLiveSessionService
 
 
 class PhysicalUiObserverTests(unittest.TestCase):
@@ -135,7 +138,94 @@ class PhysicalUiObserverTests(unittest.TestCase):
         self.assertEqual(args.display_fps, 120)
         self.assertEqual(args.buffer_samples, 262144)
         self.assertFalse(args.teardown_timing)
+        self.assertFalse(args.terminal_native_cancel_witness)
         self.assertFalse(args.process_resources)
+
+    def test_terminal_native_cancel_witness_is_scalar_bounded_and_opt_in(self):
+        args = observer.parser().parse_args([
+            "--uri", "usb:3.12.5", "--output", "unused.json", "--terminal-native-cancel-witness",
+        ])
+        self.assertTrue(args.terminal_native_cancel_witness)
+        native_metrics = SimpleNamespace(
+            state="stopped", has_error=False, expected_cancellations=1,
+            diagnostic_events_lost=0, device=SimpleNamespace(refill_errors=1),
+            engine=SimpleNamespace(iq_blocks_received=11),
+        )
+        engine = SimpleNamespace(metrics=lambda: native_metrics)
+        witness = observer.TerminalNativeCancelWitness(capacity=1)
+        self.assertFalse(witness.report()["complete"])
+        witness.observe(engine)
+        report = witness.report()
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["rows"], [dict(
+            state="stopped", native_has_error=False, expected_cancellations=1,
+            diagnostic_events_lost=0, device_refill_errors=1, iq_blocks_received=11,
+        )])
+        self.assertNotIn(engine, report["rows"])
+        witness.observe(engine)
+        self.assertFalse(witness.report()["complete"])
+        self.assertEqual(witness.report()["total_calls"], 2)
+        self.assertEqual(len(witness.report()["rows"]), 1)
+
+        failing = observer.TerminalNativeCancelWitness()
+        failing.observe(SimpleNamespace(metrics=lambda: (_ for _ in ()).throw(RuntimeError("gone"))))
+        self.assertFalse(failing.report()["complete"])
+        self.assertEqual(failing.report()["rows"], [{"error": "RuntimeError: gone"}])
+
+    def test_terminal_native_completion_samples_after_join_and_never_skips_cleanup(self):
+        for metrics_fail in (False, True):
+            with self.subTest(metrics_fail=metrics_fail):
+                events = []
+                metrics = SimpleNamespace(
+                    state="stopped", has_error=False, expected_cancellations=1,
+                    diagnostic_events_lost=0, device=SimpleNamespace(refill_errors=1),
+                    engine=SimpleNamespace(iq_blocks_received=11),
+                )
+
+                class Engine:
+                    def request_stop(self):
+                        events.append("request_stop")
+
+                    def join(self):
+                        events.append("join")
+
+                    def metrics(self):
+                        events.append("metrics")
+                        if metrics_fail:
+                            raise RuntimeError("unavailable")
+                        return metrics
+
+                    def disconnect(self):
+                        events.append("disconnect")
+
+                witness = observer.TerminalNativeCancelWitness()
+                service = SimpleNamespace(_lock=threading.RLock(), _stop_event=threading.Event(),
+                                          _poller=None, _engine=Engine())
+
+                def original_completion(owner, engine):
+                    self.assertIs(owner, service)
+                    self.assertIs(engine, source_engine)
+                    events.append("original_completion")
+
+                source_engine = service._engine
+                service._capture_native_recording_completion = lambda engine: (
+                    observer.observe_terminal_native_completion(service, engine, witness, original_completion))
+                NativeLiveSessionService._release_stream(service, timeout_s=1.0)
+                self.assertEqual(events, ["request_stop", "join", "metrics", "original_completion",
+                                          "disconnect"])
+                self.assertIsNone(service._engine)
+                self.assertEqual(witness.report()["complete"], not metrics_fail)
+
+    def test_terminal_native_cancel_error_text_is_bounded(self):
+        witness = observer.TerminalNativeCancelWitness()
+
+        def fail_metrics():
+            raise RuntimeError("X" * 4096)
+
+        witness.observe(SimpleNamespace(metrics=fail_metrics))
+        error = witness.report()["rows"][0]["error"]
+        self.assertEqual(len(error), 256)
+        self.assertTrue(error.startswith("RuntimeError: "))
 
     def test_process_resource_sampler_is_bounded_and_reports_missed_due_times(self):
         state = {"private_bytes": 100, "working_set_bytes": 200,

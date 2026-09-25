@@ -145,6 +145,48 @@ class ProcessResourceSampler:
                           "long run, or bound GPU/driver allocations.")
 
 
+class TerminalNativeCancelWitness:
+    """Capture scalar native state after join, before the service disconnects."""
+
+    def __init__(self, *, capacity: int = 2) -> None:
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+            raise ValueError("terminal witness capacity must be positive")
+        self._capacity = capacity
+        self._calls = 0
+        self._rows: list[dict[str, object]] = []
+
+    def observe(self, engine: object) -> None:
+        self._calls += 1
+        if len(self._rows) >= self._capacity:
+            return
+        try:
+            metrics = engine.metrics()
+            row = dict(state=str(metrics.state), native_has_error=bool(metrics.has_error),
+                       expected_cancellations=int(metrics.expected_cancellations),
+                       diagnostic_events_lost=int(metrics.diagnostic_events_lost),
+                       device_refill_errors=int(metrics.device.refill_errors),
+                       iq_blocks_received=int(metrics.engine.iq_blocks_received))
+        except Exception as error:
+            row = dict(error=f"{type(error).__name__}: {error}"[:256])
+        self._rows.append(row)
+
+    def report(self) -> dict[str, object]:
+        return dict(complete=self._calls == 1 and len(self._rows) == 1
+                    and "error" not in self._rows[0],
+                    total_calls=self._calls, capacity=self._capacity, rows=list(self._rows),
+                    scope="Scalar FixedBandMetrics sampled after native join and before disconnect, "
+                          "without draining events or retaining the engine. Expected cancellation "
+                          "correlates with Stop but does not identify the writer or exact time of "
+                          "any buffered libiio C-stderr line.")
+
+
+def observe_terminal_native_completion(service: object, engine: object,
+                                       witness: TerminalNativeCancelWitness, delegate: Any) -> Any:
+    """Keep an opt-in scalar sample before the original completion hook."""
+    witness.observe(engine)
+    return delegate(service, engine)
+
+
 def counter_deltas(before: object, after: object, fields: tuple[str, ...]) -> dict[str, int]:
     """Subtract cumulative counters across the measured interval only."""
     return {field: int(getattr(after, field)) - int(getattr(before, field)) for field in fields}
@@ -639,6 +681,8 @@ def parser() -> argparse.ArgumentParser:
                         help="diagnostic-only flushed stderr markers around Stop, close and process return")
     result.add_argument("--c-stdio-bracket", action="store_true",
                         help="diagnostic-only C stderr flush at lifecycle markers; perturbs all timings")
+    result.add_argument("--terminal-native-cancel-witness", action="store_true",
+                        help="opt-in post-join/pre-disconnect native cancellation counters")
     result.add_argument("--process-resources", action="store_true",
                         help="opt-in bounded 1-Hz Windows private-byte/handle samples during physical Live")
     result.add_argument("--render-mode", choices=("direct", "visual"), default="direct")
@@ -727,6 +771,8 @@ def main() -> int:
         native_binary = None
 
     observer = PaintObserver()
+    terminal_cancel_witness = (TerminalNativeCancelWitness()
+                               if args.terminal_native_cancel_witness else None)
     density_witness = DensitySequenceWitness()
     lifecycle: dict[str, Any] = dict(phase="idle", uploads=[], uploads_total=0,
                                      uploads_not_retained=0, hidden_uploads=0,
@@ -748,6 +794,12 @@ def main() -> int:
     original_accept = SpectrumScene._accept_projection
     original_image_accept = PersistenceOverlay.accept_worker_image
     original_waterfall_set_line = WaterfallPane.set_line
+    original_native_recording_completion = NativeLiveSessionService._capture_native_recording_completion
+
+    def observed_native_recording_completion(service, engine):
+        assert terminal_cancel_witness is not None
+        return observe_terminal_native_completion(service, engine, terminal_cancel_witness,
+                                                  original_native_recording_completion)
 
     def observed_poll(presenter):
         previous = presenter._last_poll_key
@@ -940,6 +992,9 @@ def main() -> int:
     overlap_patch = nullcontext() if overlap_probe is None else overlap_probe
     split_patch = (patch.object(product_live_module, "compose_v2_live_product", observed_compose)
                    if args.split_persistence else nullcontext())
+    terminal_patch = (patch.object(NativeLiveSessionService, "_capture_native_recording_completion",
+                                   observed_native_recording_completion)
+                      if terminal_cancel_witness is not None else nullcontext())
     with visual_patch, overlap_patch, patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
             LivePresenter, "_poll_frames", observed_poll), patch.object(
             LivePresenter, "_emit_render", observed_emit), patch.object(
@@ -950,7 +1005,7 @@ def main() -> int:
             LiveSnapshotPreparer, "prepare_cancellable", observed_prepare), patch.object(
             projection_module, "project_spectrum", observed_project), patch.object(
             projection_module, "prepare_persistence_image", observed_density_image), patch.object(
-            persistence_projector_module, "prepare_persistence_image", observed_density_image), split_patch:
+            persistence_projector_module, "prepare_persistence_image", observed_density_image), split_patch, terminal_patch:
         app = QApplication.instance() or QApplication([])
         # AppShellV2 persists geometry/theme/navigation on close. Never write
         # these benchmark window values into the user's product QSettings.
@@ -1258,6 +1313,10 @@ def main() -> int:
         resource_result = None if resource_sampler is None else resource_sampler.report()
         if resource_result is not None and not resource_result["complete"]:
             failure = ((failure + "; ") if failure else "") + "process resource profile incomplete"
+        terminal_cancel_result = (None if terminal_cancel_witness is None
+                                  else terminal_cancel_witness.report())
+        if terminal_cancel_result is not None and not terminal_cancel_result["complete"]:
+            failure = ((failure + "; ") if failure else "") + "terminal native cancellation witness incomplete"
         hide_show_result = None
         if args.hide_show:
             shown_ns = lifecycle.get("show_intent_ns")
@@ -1297,6 +1356,7 @@ def main() -> int:
                                      hide_show=args.hide_show,
                                      process_resources=args.process_resources,
                                      c_stdio_bracket=args.c_stdio_bracket,
+                                     terminal_native_cancel_witness=args.terminal_native_cancel_witness,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
                                      backend="cpu", warmup_s=args.warmup,
                                      measurement_s=args.duration),
@@ -1336,6 +1396,7 @@ def main() -> int:
                       hide_show=hide_show_result,
                       teardown_stage_events=teardown_stage_events if args.teardown_timing else None,
                       c_stdio_flushes=c_stdio_flushes if args.c_stdio_bracket else None,
+                      terminal_native_cancel_witness=terminal_cancel_result,
                       teardown_stage_events_scope=(
                           "JSON includes markers through report_write_before; "
                           "main_returning is stderr-only. Flushed GUI-thread stderr "
