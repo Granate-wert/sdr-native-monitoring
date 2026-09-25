@@ -332,6 +332,18 @@ class PersistenceWorkerTests(unittest.TestCase):
             self.assertFalse(scans)
             self.assertEqual(result.image.shape, source.density.shape)
 
+    def test_dense_log_transfer_does_not_count_occupied_cells(self):
+        """A prior sparse-selection trial made every dense chunk scan twice."""
+        source = view(np.full((3, 65539), .25, np.float32))
+        for mode in PersistenceRenderMode:
+            with self.subTest(mode=mode), patch.object(
+                density_worker.np, "count_nonzero",
+                side_effect=AssertionError("dense transfer must not pre-count occupied cells"),
+            ):
+                result = prepare_persistence_image(PersistenceImageRequest(
+                    source, PersistenceImagePolicy(1, mode, True)))
+                self.assertEqual(result.image.shape, source.density.shape)
+
     def test_history_has_no_source_or_previous_chain_and_policy_geometry_reset(self):
         policy = PersistenceImagePolicy(1, PersistenceRenderMode.VISUAL, False)
         current = request(policy=policy)
