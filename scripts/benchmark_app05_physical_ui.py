@@ -12,20 +12,20 @@ an explicit URI and a unique output path; no device is opened at import time.
 from __future__ import annotations
 
 import argparse
-from collections import Counter, OrderedDict, deque
-from contextlib import contextmanager, nullcontext
 import ctypes
-from ctypes import wintypes
-from dataclasses import asdict, replace
-from functools import cache
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
 import weakref
+from collections import Counter, OrderedDict, deque
+from contextlib import contextmanager, nullcontext
+from ctypes import wintypes
+from dataclasses import asdict, replace
+from functools import cache
+from pathlib import Path
 from time import perf_counter_ns, time_ns
 from typing import Any
 from unittest.mock import patch
@@ -631,6 +631,8 @@ def parser() -> argparse.ArgumentParser:
                         help="opt-in existing second worker seam; not product wiring")
     result.add_argument("--visual-substages", action="store_true",
                         help="opt-in scalar Visual worker substage timings (perturbs timing)")
+    result.add_argument("--overlap-witness", action="store_true",
+                        help="observer-only one-helper Visual SHA/map overlap, not product wiring")
     result.add_argument("--hide-show", action="store_true",
                         help="one timed Live -> calibration -> analyzer -> Stop lifecycle gate")
     result.add_argument("--teardown-timing", action="store_true",
@@ -658,6 +660,9 @@ def main() -> int:
         raise SystemExit("Visual substage contention profile requires the combined product worker")
     if args.visual_substages and args.render_mode != "visual":
         raise SystemExit("Visual substage profile requires --render-mode visual")
+    if args.overlap_witness and (args.render_mode != "visual" or args.split_persistence
+                                 or args.visual_substages):
+        raise SystemExit("overlap witness requires combined Visual without substage instrumentation")
     if args.hide_show and (args.duration < 6 or args.render_mode != "visual"
                            or args.hide_persistence or args.split_persistence or args.visual_substages):
         raise SystemExit("Hide/Show requires >=6 s Visual with persistence visible and no split/profile")
@@ -690,23 +695,24 @@ def main() -> int:
     import PySide6
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
+
+    import sdr_monitor.ui.v2.product_live as product_live_module
+    import sdr_monitor.ui.v2.spectrum.persistence_projection as persistence_projection_module
+    import sdr_monitor.ui.v2.spectrum.persistence_projector as persistence_projector_module
+    import sdr_monitor.ui.v2.spectrum.projection as projection_module
     from sdr_monitor.domain.live import BackendKind
     from sdr_monitor.services import build_default_sdr_services
     from sdr_monitor.services.native_live import NativeLiveSessionService
     from sdr_monitor.services.native_recording import NativeLiveRecordingService
     from sdr_monitor.services.native_sweep import NativeLiveSweepService
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
-    from sdr_monitor.ui.v2.workspaces.analyzer import AnalyzerWorkspaceV2
-    from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
     from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
-    from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
-    from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
-    from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
-    import sdr_monitor.ui.v2.spectrum.projection as projection_module
-    import sdr_monitor.ui.v2.spectrum.persistence_projection as persistence_projection_module
-    import sdr_monitor.ui.v2.spectrum.persistence_projector as persistence_projector_module
-    import sdr_monitor.ui.v2.product_live as product_live_module
+    from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
+    from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+    from sdr_monitor.ui.v2.state.prepared_live import LiveSnapshotPreparer
+    from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
+    from sdr_monitor.ui.v2.workspaces.analyzer import AnalyzerWorkspaceV2
     from sdr_monitor.ui.v2_composition import build_v2_shell
 
     try:
@@ -725,6 +731,14 @@ def main() -> int:
     original_prepare = LiveSnapshotPreparer.prepare_cancellable
     original_project = projection_module.project_spectrum
     original_density_image = projection_module.prepare_persistence_image
+    overlap_probe = None
+    overlap_probe_sha256 = None
+    if args.overlap_witness:
+        from scripts import probe_app05_overlapped_witness as overlap_module
+
+        overlap_probe = overlap_module.OverlappedWitnessProbe()
+        overlap_probe_sha256 = hashlib.sha256(Path(overlap_module.__file__).read_bytes()).hexdigest()
+        original_density_image = overlap_probe.prepare
     original_poll = LivePresenter._poll_frames
     original_emit = LivePresenter._emit_render
     original_accept = SpectrumScene._accept_projection
@@ -919,9 +933,10 @@ def main() -> int:
             yield
 
     visual_patch = nullcontext() if visual_recorder is None else visual_profile()
+    overlap_patch = nullcontext() if overlap_probe is None else overlap_probe
     split_patch = (patch.object(product_live_module, "compose_v2_live_product", observed_compose)
                    if args.split_persistence else nullcontext())
-    with visual_patch, patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
+    with visual_patch, overlap_patch, patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
             LivePresenter, "_poll_frames", observed_poll), patch.object(
             LivePresenter, "_emit_render", observed_emit), patch.object(
             SpectrumScene, "_accept_projection", observed_accept), patch.object(
@@ -1176,6 +1191,8 @@ def main() -> int:
                 services.live_sdr.stop_and_wait(5.0)
             except Exception as error:
                 failure = (failure or "incomplete UI close") + f"; emergency Stop failed: {error}"
+        if overlap_probe is not None:
+            overlap_probe.close()
         screen = shell.screen()
         window = dict(logical_width=shell.width(), logical_height=shell.height(),
                       dpr=shell.devicePixelRatioF(),
@@ -1257,6 +1274,7 @@ def main() -> int:
                                      vertical_range_locked=args.lock_vertical_range,
                                      split_persistence=args.split_persistence,
                                      visual_substages=args.visual_substages,
+                                     overlap_witness=args.overlap_witness,
                                      hide_show=args.hide_show,
                                      process_resources=args.process_resources,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
@@ -1304,6 +1322,8 @@ def main() -> int:
                           if args.teardown_timing else None),
                       persistence_substage_profile=visual_profile_result,
                       persistence_substage_profile_complete=visual_profile_complete,
+                      overlap_witness_probe=(None if overlap_probe is None else dict(
+                          overlap_probe.report(), probe_sha256=overlap_probe_sha256)),
                       process_resources=resource_result,
                       allocation_budget=asdict(budget), workers_after_close=workers,
                       scope="Successful run means bounded RX/UI lifecycle evidence, not performance acceptance. "
