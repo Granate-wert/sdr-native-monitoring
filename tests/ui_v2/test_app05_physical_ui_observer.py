@@ -4,9 +4,10 @@ import gc
 import sys
 import unittest
 import weakref
-from types import SimpleNamespace
 from time import time_ns
+from types import SimpleNamespace
 from unittest.mock import patch
+
 import numpy as np
 from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QPolygon
@@ -128,6 +129,7 @@ class PhysicalUiObserverTests(unittest.TestCase):
         args = observer.parser().parse_args(["--uri", "usb:3.12.5", "--output", "unused.json"])
         self.assertFalse(args.split_persistence)
         self.assertFalse(args.visual_substages)
+        self.assertFalse(args.baseline_density_rows)
         self.assertFalse(args.hide_persistence)
         self.assertFalse(args.lock_vertical_range)
         self.assertFalse(args.hide_show)
