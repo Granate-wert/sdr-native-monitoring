@@ -41,22 +41,37 @@ def main() -> int:
                         help="Use a dense, low-slope trace to inspect pattern continuity")
     parser.add_argument("--mixed-history", action="store_true",
                         help="Use a long flat plateau followed by a noisy region")
+    parser.add_argument("--diagnostic-component", choices=("full", "lines", "path"),
+                        default="full", help="Isolate one painter component; not a quality capture")
+    parser.add_argument("--diagnostic-cache", action="store_true",
+                        help="Probe Qt device-coordinate cache on static data; not product evidence")
+    parser.add_argument("--cache-limit-kb", type=int, default=65_536,
+                        help="Process-global Qt cache ceiling for diagnostic cache mode")
+    parser.add_argument("--fixed-y-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                        help="Explicit visible dB range for representative paint/cache geometry")
     args = parser.parse_args()
     output = args.output.resolve()
     capture_dir = args.capture_dir.resolve()
     if (not output.parent.is_dir() or output.exists() or not capture_dir.is_dir()
             or not 800 <= args.width <= 3840 or not 500 <= args.height <= 2160
             or not 2 <= args.samples <= 20
-            or (args.smooth_history and args.mixed_history)):
+            or (args.smooth_history and args.mixed_history)
+            or (args.diagnostic_cache and args.diagnostic_component != "full")
+            or not 10_240 <= args.cache_limit_kb <= 262_144
+            or (args.fixed_y_range is not None and not
+                (-200.0 <= args.fixed_y_range[0] < args.fixed_y_range[1] <= 100.0))):
         raise SystemExit("invalid or existing bounded output/geometry/samples")
 
     import pyqtgraph as pg
     import PySide6
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPainterPath, QPixmapCache, QTransform
+    from PySide6.QtWidgets import QApplication, QGraphicsItem
 
     from sdr_monitor.ui.v2.design.tokens import ThemeId
     from sdr_monitor.ui.v2.spectrum import TraceKind
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+    from sdr_monitor.ui.v2.spectrum import screen_dash
     from sdr_monitor.ui.v2.spectrum.screen_dash import ScreenDashCurveItem
 
     trace_kind = {
@@ -66,6 +81,8 @@ def main() -> int:
     }[args.trace]
 
     app = QApplication.instance() or QApplication([])
+    if args.diagnostic_cache:
+        QPixmapCache.setCacheLimit(args.cache_limit_kb)
     frequencies = np.linspace(2.3e9, 2.6e9, 4600)
     rng = np.random.default_rng(17)
     if args.mixed_history:
@@ -92,6 +109,22 @@ def main() -> int:
     history_frame = Frame(history)
     product_paint = ScreenDashCurveItem.paint
     native_paint = pg.PlotCurveItem.paint
+    product_partition = screen_dash._partition_history_edges
+
+    def diagnostic_partition(
+        x: np.ndarray, y: np.ndarray, transform: QTransform,
+        style: Qt.PenStyle, width_pixels: float,
+    ) -> tuple[np.ndarray, QPainterPath] | None:
+        result = product_partition(x, y, transform, style, width_pixels)
+        if result is None or args.diagnostic_component == "full":
+            return result
+        lines, path = result
+        if args.diagnostic_component == "lines":
+            return lines, QPainterPath()
+        return np.empty((0, 4), dtype=np.float64), path
+
+    if args.diagnostic_component != "full":
+        screen_dash._partition_history_edges = diagnostic_partition
     blocks: list[dict[str, object]] = []
     pictures: list[tuple[str, str]] = []
     try:
@@ -133,6 +166,10 @@ def main() -> int:
                 app.processEvents()
                 scene.set_theme(ThemeId.HIGH_CONTRAST)
                 scene.set_frame(current_frame)
+                if args.fixed_y_range is not None:
+                    lower, upper = args.fixed_y_range
+                    scene.set_reference_level(upper)
+                    scene.set_db_per_division((upper - lower) / 8.0)
                 scene.set_trace(trace_kind, history_frame)
                 app.processEvents()
                 if scene.latest_frame is not current_frame:
@@ -141,6 +178,9 @@ def main() -> int:
                 if envelope is None or envelope.display_point_count != history.size:
                     raise RuntimeError("history display fixture changed")
                 paint_state.target = scene._curves[trace_kind].curve
+                if args.diagnostic_cache:
+                    paint_state.target.setCacheMode(
+                        QGraphicsItem.CacheMode.DeviceCoordinateCache)
                 # Exclude construction, theme and first-paint warm-up.
                 scene._graphics.grab()
                 paints_ms.clear()
@@ -158,8 +198,12 @@ def main() -> int:
                         # before bytes() copies it on PySide/Windows.
                         image = pixmap.toImage()
                         pictures.append((str(path), hashlib.sha256(image.bits()).hexdigest()))
-                if len(paints_ms) != args.samples:
-                    raise RuntimeError("history trace paint attribution was not one per grab")
+                if ((not args.diagnostic_cache and len(paints_ms) != args.samples)
+                        or len(paints_ms) > args.samples):
+                    raise RuntimeError(
+                        f"unexpected history trace paint count {len(paints_ms)}")
+                scene_bounds = paint_state.target.sceneBoundingRect()
+                device_bounds = scene._graphics.viewportTransform().mapRect(scene_bounds)
                 blocks.append({
                     "mode": mode, "index": index, "trace_paint_ms": paints_ms,
                     "graphics_grab_ms": grabs_ms,
@@ -168,6 +212,15 @@ def main() -> int:
                     "dpr": scene.devicePixelRatioF(),
                     "source_identity_unchanged": scene.latest_frame is current_frame,
                     "envelope_points": envelope.display_point_count,
+                    "history_cache_mode": int(paint_state.target.cacheMode().value),
+                    "curve_scene_bounds": [
+                        scene_bounds.x(), scene_bounds.y(),
+                        scene_bounds.width(), scene_bounds.height(),
+                    ],
+                    "curve_device_bounds": [
+                        device_bounds.x(), device_bounds.y(),
+                        device_bounds.width(), device_bounds.height(),
+                    ],
                 })
             finally:
                 scene.close()
@@ -176,6 +229,7 @@ def main() -> int:
     finally:
         ScreenDashCurveItem.paint = product_paint
         pg.PlotCurveItem.paint = native_paint
+        screen_dash._partition_history_edges = product_partition
 
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
@@ -189,6 +243,10 @@ def main() -> int:
         "trace_kind": args.trace,
         "history_fixture": ("mixed" if args.mixed_history else
                             "smooth" if args.smooth_history else "noisy"),
+        "diagnostic_component": args.diagnostic_component,
+        "diagnostic_cache": args.diagnostic_cache,
+        "fixed_y_range": args.fixed_y_range,
+        "qt_pixmap_cache_limit_kb": QPixmapCache.cacheLimit(),
         "scope": "Visible Qt surface paint/grab only; no desktop/DWM, LPS or physical RX claim",
         "source_commit": commit,
         "dirty_paths": dirty,
