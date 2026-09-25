@@ -3,6 +3,7 @@ import importlib.util
 from dataclasses import replace
 from concurrent.futures import Future
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -460,6 +461,44 @@ class RtbwUploadWitnessTests(unittest.TestCase):
             self.assertIs(bundle_from_live(replace(snapshot, spectrum=replace(frame, sequence=12))).persistence, raw)
             self.assertIsNone(bundle_from_live(replace(snapshot, spectrum=replace(frame, sequence=10))).persistence)
 
+    def test_static_history_fixture_is_same_grid_immutable_and_not_backend_history(self):
+        frequency = np.linspace(100e6, 101e6, 512)
+        current: np.ndarray = np.full(512, -80, np.float32)
+        current[257] = -20
+        frequency.setflags(write=False)
+        current.setflags(write=False)
+        mixed = OBSERVER.synthetic_history_overlay_frames(
+            frequency, current, fixture="mixed", unit="dBFS/bin")
+        noisy = OBSERVER.synthetic_history_overlay_frames(
+            frequency, current, fixture="noisy", unit="dBFS/bin")
+        self.assertEqual(set(mixed), {"average", "maximum", "minimum"})
+        for role, frame in mixed.items():
+            self.assertIs(frame.frequencies_hz, frequency)
+            self.assertEqual(frame.observer_role, role)
+            self.assertEqual(frame.unit, "dBFS/bin")
+            self.assertFalse(frame.values.flags.writeable)
+            np.testing.assert_array_equal(frame.values,
+                OBSERVER.synthetic_history_overlay_frames(
+                    frequency, current, fixture="mixed", unit="dBFS/bin")[role].values)
+        plateau = round(frequency.size * .60)
+        self.assertTrue(np.all(mixed["average"].values[:plateau] == -82))
+        self.assertFalse(np.all(noisy["average"].values[:plateau] == -82))
+        self.assertTrue(np.all(mixed["maximum"].values >= current + 2))
+        self.assertTrue(np.all(mixed["minimum"].values <= current - 2))
+        np.testing.assert_array_equal(current[:257], np.full(257, -80, np.float32))
+        for bad_frequency, bad_current, fixture, unit in (
+                (frequency[::-1], current, "mixed", "dBFS/bin"),
+                (frequency.copy(), current, "mixed", "dBFS/bin"),
+                (frequency, current.copy(), "mixed", "dBFS/bin"),
+                (frequency, current, "unknown", "dBFS/bin"),
+                (frequency, current, "mixed", "")):
+            with self.subTest(fixture=fixture, unit=unit,
+                              mutable_grid=bad_frequency.flags.writeable,
+                              mutable_current=bad_current.flags.writeable):
+                with self.assertRaises(ValueError):
+                    OBSERVER.synthetic_history_overlay_frames(
+                        bad_frequency, bad_current, fixture=fixture, unit=unit)
+
     def test_persistence_memory_cli_updates_and_uploads_without_forced_collection(self):
         with TemporaryDirectory(prefix="app05-persistence-memory-") as temporary:
             output = Path(temporary) / "result.json"
@@ -648,6 +687,47 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("--persistence-abba requires --qt-platform windows", result.stderr)
+
+    def test_static_history_requires_explicit_visible_high_contrast_abba(self):
+        with TemporaryDirectory(prefix="app05-history-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--qt-platform", "windows", "--static-history-overlays"],
+                cwd=ROOT, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("static history overlays require high-contrast visible ABBA", result.stderr)
+
+    @unittest.skipUnless(sys.platform == "win32" and os.environ.get("APP05_VISIBLE_DPR"),
+                         "opt-in visible Windows Qt test requires APP05_VISIBLE_DPR")
+    def test_visible_static_history_install_paint_stop_and_remove(self):
+        with TemporaryDirectory(prefix="app05-history-live-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"),
+                "--checkout", str(ROOT), "--output", str(output),
+                "--qt-platform", "windows", "--window-size", "1400", "850",
+                "--expected-dpr", os.environ["APP05_VISIBLE_DPR"],
+                "--seconds", "1", "--cycles", "1", "--bins", "1024",
+                "--source-hz", "30", "--persistence-power-bins", "32",
+                "--persistence-every", "5", "--persistence-abba",
+                "--static-history-overlays", "--history-fixture", "noisy",
+                "--theme", "high_contrast", "--fixed-y-range", "-120", "0"],
+                cwd=ROOT, capture_output=True, text=True, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            report = json.loads(output.read_text(encoding="utf-8"))
+        abba = report["persistence_abba"]
+        history = abba["static_history_overlays"]
+        self.assertTrue(abba["sample_integrity_gate_passed"])
+        self.assertTrue(abba["fixed_qt_target_gate_passed"])
+        self.assertTrue(history["gate_passed"])
+        self.assertTrue(history["removed_after_stop"])
+        self.assertEqual(len(history["boundary_checks"]), 10)
+        self.assertTrue(all(block["static_history_paint_ms"][role]["p95"] > 0
+            for block in abba["blocks"].values()
+            for role in ("average", "maximum", "minimum")))
+        self.assertEqual(report["post_close_allocation_budget"]["reserved_bytes"], 0)
+        self.assertEqual(report["remaining_workers"], [])
 
     def test_reverse_order_requires_explicit_matched_run(self):
         with TemporaryDirectory(prefix="app05-baab-validation-") as temporary:

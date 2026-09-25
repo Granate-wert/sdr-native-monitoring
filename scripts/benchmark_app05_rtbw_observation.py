@@ -33,6 +33,7 @@ import platform
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 from typing import Any
 import weakref
 from time import perf_counter
@@ -670,6 +671,40 @@ def synthetic_persistence(frame, power_bins, update_sequence, processed_frames):
         clock_domain=frame.clock_domain, accumulation_id=frame.accumulation_id)
 
 
+def synthetic_history_overlay_frames(frequencies, current, *, fixture, unit):
+    """Three immutable same-grid UI stress traces, not backend statistics.
+
+    The producer's CURRENT spectrum remains authoritative. These auxiliary
+    overlays are static during Live so repeated Qt paint cost and freshness of
+    CURRENT/persistence/Waterfall can be observed without another data owner.
+    """
+    import numpy as np
+
+    frequencies = np.asarray(frequencies)
+    current = np.asarray(current)
+    if (fixture not in ("mixed", "noisy") or frequencies.ndim != 1
+            or current.shape != frequencies.shape or frequencies.size < 2
+            or frequencies.flags.writeable or current.flags.writeable
+            or not np.all(np.isfinite(frequencies)) or not np.all(np.isfinite(current))
+            or not np.all(np.diff(frequencies) > 0)
+            or not isinstance(unit, str) or not unit.strip()):
+        raise ValueError("history overlay requires one immutable finite ascending source grid and unit")
+    rng = np.random.default_rng(17)
+    noise = rng.normal(size=frequencies.size)
+    if fixture == "mixed":
+        noise[:round(frequencies.size * .60)] = 0.0
+    average = (-82.0 + 2.0 * noise).astype(np.float32)
+    maximum = np.maximum(-70.0 + 5.0 * noise, current + 2.0).astype(np.float32)
+    minimum = np.minimum(-92.0 + 5.0 * noise, current - 2.0).astype(np.float32)
+    frames = {}
+    for role, values in (("average", average), ("maximum", maximum),
+                         ("minimum", minimum)):
+        values.setflags(write=False)
+        frames[role] = SimpleNamespace(frequencies_hz=frequencies, values=values,
+                                       unit=unit, observer_role=role)
+    return frames
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
@@ -701,6 +736,14 @@ def main(argv=None):
                              "scalar GUI observer, not paint or DWM")
     parser.add_argument("--persistence-abba", action="store_true",
                         help="Visible single-session Direct→Visual→Visual→Direct matched blocks; --seconds is per steady block")
+    parser.add_argument("--static-history-overlays", action="store_true",
+                        help="Opt-in same-grid AVERAGE/MAX/MIN UI stress overlays during visible ABBA; not backend statistics")
+    parser.add_argument("--history-fixture", choices=("mixed", "noisy"), default="mixed",
+                        help="Static high-contrast history stress shape; only with --static-history-overlays")
+    parser.add_argument("--theme", choices=("dark", "high_contrast"), default="dark",
+                        help="Explicit visible V2 page theme; use high_contrast for matched history controls")
+    parser.add_argument("--fixed-y-range", nargs=2, type=float, metavar=("LOWER", "UPPER"),
+                        help="Explicit manual plot dB range, matched between history/control runs")
     parser.add_argument("--abba-reverse-order", action="store_true",
                         help="With --persistence-abba start Visual and measure Visual→Direct→Direct→Visual")
     parser.add_argument("--projection-stage-timing", action="store_true",
@@ -756,6 +799,15 @@ def main(argv=None):
         parser.error("the visible Windows Qt platform is available only on Windows")
     if args.persistence_abba and args.qt_platform != "windows":
         parser.error("--persistence-abba requires --qt-platform windows")
+    if args.static_history_overlays and (not args.persistence_abba
+            or args.theme != "high_contrast" or args.bins > 65_536
+            or args.fixed_y_range is None or args.expected_dpr is None):
+        parser.error("static history overlays require high-contrast visible ABBA, fixed Y range, expected DPR and <=65536 bins")
+    if args.history_fixture != "mixed" and not args.static_history_overlays:
+        parser.error("--history-fixture requires static history overlays")
+    if args.fixed_y_range is not None and (not all(map(isfinite, args.fixed_y_range))
+            or not 1 <= args.fixed_y_range[1] - args.fixed_y_range[0] <= 200):
+        parser.error("fixed Y range must have finite LOWER < UPPER and 1..200 dB span")
     if args.persistence_catchup and args.qt_platform != "windows":
         parser.error("--persistence-catchup requires --qt-platform windows")
     if args.persistence_abba and args.persistence_catchup:
@@ -808,6 +860,9 @@ def main(argv=None):
     capture_path = args.output.with_suffix(".png")
     if args.capture_window and capture_path.exists():
         parser.error("window capture path must be new")
+    live_history_capture_path = args.output.with_name(args.output.stem + "_live.png")
+    if args.capture_window and args.static_history_overlays and live_history_capture_path.exists():
+        parser.error("Live history capture path must be new")
     if args.persistence_display == "visual" and not args.persistence_power_bins:
         parser.error("Visual persistence profiling requires a generated histogram")
     if args.observer_split_persistence and not args.persistence_power_bins:
@@ -858,6 +913,10 @@ def main(argv=None):
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+    from sdr_monitor.ui.v2.spectrum.contracts import adapt_spectrum_frame
+    from sdr_monitor.ui.v2.spectrum.envelope import peak_preserving_envelope
+    from sdr_monitor.ui.v2.spectrum.screen_dash import ScreenDashCurveItem, ScreenDashPlotDataItem
+    from sdr_monitor.ui.v2.design.tokens import ThemeId, tokens_for_theme
     from sdr_monitor.ui.v2.product_live import V2LiveProductComposition
     from sdr_monitor.ui.v2.spectrum import persistence_projection as density_projection
     from sdr_monitor.ui.presenters.live_presenter import LivePresenter
@@ -1099,6 +1158,8 @@ def main(argv=None):
             source_to_first_paint_ms={target: BoundedSamples(timing_capacity)
                                       for target in age.ages},
             paint_return_ms={target: BoundedSamples(timing_capacity) for target in paints},
+            history_paint_ms={role: BoundedSamples(timing_capacity)
+                              for role in ("average", "maximum", "minimum")},
             first_paint_cadence={target: FirstPaintCadence(timing_capacity) for target in paints},
             qt_target_witness=None,
             boundary_excluded_paints=dict.fromkeys(age.ages, 0),
@@ -1115,6 +1176,14 @@ def main(argv=None):
             first_displayed_sequence=None, last_displayed_sequence=None)
         for name in abba_order}
     abba_warmups, abba_transitions = [], []
+    history_overlay_items: dict[str, ScreenDashPlotDataItem] = {}
+    history_overlay_frames: dict[str, SimpleNamespace] = {}
+    history_overlay_envelopes: dict[str, Any] = {}
+    history_overlay_curve_roles: dict[int, str] = {}
+    history_overlay_witness: dict[str, Any] = {}
+    history_overlay_boundaries: list[dict[str, Any]] = []
+    history_overlay_scene: SpectrumScene | None = None
+    history_overlay_removed = False
     source_session = {}
     persistence_catchup = None
     phase_ages = {phase: {name: deque(maxlen=timing_capacity) for name in age.ages}
@@ -1226,6 +1295,19 @@ def main(argv=None):
                 else:
                     age.changed_during_paint += 1
 
+    original_screen_dash_paint = ScreenDashCurveItem.paint
+
+    def observed_screen_dash_paint(curve, painter, option, widget):
+        role = history_overlay_curve_roles.get(id(curve))
+        if role is None or abba_current_block is None:
+            return original_screen_dash_paint(curve, painter, option, widget)
+        started = perf_counter()
+        try:
+            return original_screen_dash_paint(curve, painter, option, widget)
+        finally:
+            abba_blocks[abba_current_block]["history_paint_ms"][role].append(
+                (perf_counter() - started) * 1000)
+
     with ExitStack() as observer_patches:
         if args.observer_split_persistence:
             observer_patches.enter_context(patch.object(
@@ -1239,6 +1321,9 @@ def main(argv=None):
 
             observer_patches.enter_context(patch.object(PersistenceOverlay, "__init__", observer_overlay_init))
         observer_patches.enter_context(patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics))
+        if args.static_history_overlays:
+            observer_patches.enter_context(patch.object(
+                ScreenDashCurveItem, "paint", observed_screen_dash_paint))
         observer_patches.enter_context(patch.object(WaterfallPane, "_upload_tiles", upload))
         observer_patches.enter_context(patch.object(PersistenceOverlay, "accept_worker_image", accept_persistence_image))
         observer_patches.enter_context(patch.object(_AtomicFakeLive, "start", dispatch_start))
@@ -1302,6 +1387,7 @@ def main(argv=None):
             if args.projection_stage_timing:
                 f.composition.spectrum_projector.work_active_changed.connect(observe_projection_slot)
             f.select_and_apply()
+            f.shell.set_theme(ThemeId(args.theme))
             persistence_enabled = args.persistence_power_bins != 0
             config = replace(f.live.latest_snapshot().applied.applied, fft_size=args.bins,
                              persistence_enabled=persistence_enabled,
@@ -1313,11 +1399,108 @@ def main(argv=None):
             f.shell.resize(*args.window_size)
             scene, waterfall = f.page.visualization.spectrum_scene, f.page.visualization.waterfall_pane
             scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence_display))
+            if args.fixed_y_range is not None:
+                lower, upper = args.fixed_y_range
+                scene.set_reference_level(upper)
+                scene.set_db_per_division((upper - lower) / 8.0)
             persistence_upload_probe["overlay"] = scene._persistence
 
             def current_qt_target():
                 return qt_target_signature(qt_display_metadata(f.shell, f.app, scene, waterfall,
                     requested_size=args.window_size, requested_platform=args.qt_platform))
+
+            def install_static_history_overlays():
+                nonlocal history_overlay_scene
+                if not args.static_history_overlays:
+                    return
+                if history_overlay_items:
+                    raise AssertionError("static history overlays were already installed")
+                displayed = scene.displayed_frame
+                if displayed is None or not scene.isVisible() or scene.view_box.width() < 100:
+                    raise AssertionError("static history requires one visible displayed source grid")
+                spectrum = displayed.spectrum
+                frames = synthetic_history_overlay_frames(
+                    spectrum.frequencies_hz, spectrum.values,
+                    fixture=args.history_fixture, unit=spectrum.unit)
+                tokens = tokens_for_theme(ThemeId.HIGH_CONTRAST).scientific
+                pens = {
+                    "average": (tokens.average, Qt.PenStyle.DashLine),
+                    "maximum": (tokens.max_hold, Qt.PenStyle.DotLine),
+                    "minimum": (tokens.min_hold, Qt.PenStyle.DashDotLine),
+                }
+                history_overlay_scene = scene
+                history_overlay_witness.update(
+                    source_sequence=int(spectrum.sequence),
+                    source_grid_identity=id(spectrum.frequencies_hz),
+                    source_grid_sha256=hashlib.sha256(spectrum.frequencies_hz.tobytes()).hexdigest(),
+                    source_points=int(spectrum.frequencies_hz.size),
+                    installed_at_s=perf_counter() - began,
+                    values_sha256={role: hashlib.sha256(frame.values.tobytes()).hexdigest()
+                                   for role, frame in frames.items()},
+                )
+                for role, frame in frames.items():
+                    envelope = peak_preserving_envelope(
+                        adapt_spectrum_frame(frame), max(1, int(scene.view_box.width())))
+                    color, style = pens[role]
+                    item = ScreenDashPlotDataItem(
+                        pen=pg.mkPen(color, width=1.4, style=style),
+                        name=f"observer-static-{role}")
+                    item.setSkipFiniteCheck(True)
+                    item.setData(envelope.frequencies_hz, envelope.values, connect="finite")
+                    scene.plot_item.addItem(item)
+                    history_overlay_frames[role] = frame
+                    history_overlay_envelopes[role] = envelope
+                    history_overlay_items[role] = item
+                    history_overlay_curve_roles[id(item.curve)] = role
+                verify_static_history_overlays("installed")
+
+            def verify_static_history_overlays(boundary):
+                if not args.static_history_overlays:
+                    return
+                displayed = scene.displayed_frame
+                if displayed is None or not scene.isVisible() or len(history_overlay_items) != 3:
+                    raise AssertionError((boundary, "static history not visible"))
+                actual_y_range = scene.view_box.viewRange()[1]
+                if any(abs(actual - requested) > 1e-6 for actual, requested
+                       in zip(actual_y_range, args.fixed_y_range, strict=True)):
+                    raise AssertionError((boundary, "manual Y range drifted", actual_y_range))
+                grid = displayed.spectrum.frequencies_hz
+                if (grid.size != history_overlay_witness["source_points"]
+                        or not np.array_equal(grid, next(iter(history_overlay_frames.values())).frequencies_hz)
+                        or hashlib.sha256(grid.tobytes()).hexdigest()
+                        != history_overlay_witness["source_grid_sha256"]):
+                    raise AssertionError((boundary, "CURRENT grid changed during static history"))
+                for role, item in history_overlay_items.items():
+                    frame = history_overlay_frames[role]
+                    envelope = history_overlay_envelopes[role]
+                    x, y = item.getData()
+                    if (frame.frequencies_hz is not next(iter(history_overlay_frames.values())).frequencies_hz
+                            or not item.isVisible() or item.scene() is None
+                            or id(item.curve) not in history_overlay_curve_roles
+                            or hashlib.sha256(frame.values.tobytes()).hexdigest()
+                            != history_overlay_witness["values_sha256"][role]
+                            or x is None or y is None
+                            or not np.array_equal(x, envelope.frequencies_hz, equal_nan=True)
+                            or not np.array_equal(y, envelope.values, equal_nan=True)):
+                        raise AssertionError((boundary, role, "static history item changed"))
+                history_overlay_boundaries.append(dict(boundary=boundary,
+                    at_s=perf_counter() - began,
+                    displayed_source_sequence=int(displayed.spectrum.sequence),
+                    actual_y_range=tuple(float(value) for value in actual_y_range),
+                    roles=tuple(history_overlay_items)))
+
+            def remove_static_history_overlays():
+                nonlocal history_overlay_removed
+                if history_overlay_scene is None:
+                    return
+                for item in history_overlay_items.values():
+                    history_overlay_scene.plot_item.removeItem(item)
+                    item.deleteLater()
+                    if item.scene() is not None:
+                        raise AssertionError("observer history item survived plot removal")
+                history_overlay_items.clear()
+                history_overlay_curve_roles.clear()
+                history_overlay_removed = True
 
             def observe_density(state):
                 nonlocal persistence_accepted, last_persistence_accepted, last_persistence_density_identity
@@ -1830,6 +2013,7 @@ def main(argv=None):
                 block = abba_blocks[name]
                 if scene._persistence.render_mode.value != mode.value:
                     raise AssertionError((name, scene._persistence.render_mode, mode))
+                verify_static_history_overlays(f"{name}-start")
                 block["mode"] = mode.value
                 block["started_s"] = perf_counter() - began
                 block["started_perf"] = perf_counter()
@@ -1850,12 +2034,17 @@ def main(argv=None):
                 block["generated_end"] = generated
                 block["overlay_end"] = persistence_state()
                 block["waterfall_uploads_end"] = waterfall.metrics.image_uploads
+                verify_static_history_overlays(f"{name}-end")
                 for target in age.ages:
                     if block["source_to_first_paint_ms"][target].total_count < 2:
                         raise AssertionError(f"ABBA {name} block lacks two fresh {target} paint samples; "
                                              f"boundary_excluded={block['boundary_excluded_paints'][target]}")
                 if block["persistence_update_sequences"].total_count < 2:
                     raise AssertionError(f"ABBA {name} block lacks fresh accepted persistence updates")
+                if args.static_history_overlays and any(
+                        samples.total_count == 0 or samples.dropped
+                        for samples in block["history_paint_ms"].values()):
+                    raise AssertionError(f"ABBA {name} lacks complete visible static history paints")
 
             def run_visible_abba():
                 nonlocal control_phase, resumed_until
@@ -1870,6 +2059,11 @@ def main(argv=None):
                     and not f.composition.view_model.state.busy), 5)
                 control_phase = "running"
                 resumed_until = perf_counter() + .25
+
+                if args.static_history_overlays:
+                    run_qt_until(lambda: checked(lambda: scene.displayed_frame is not None
+                        and scene.isVisible() and scene.view_box.width() >= 100), 5)
+                    install_static_history_overlays()
 
                 initial_warmup = wait_for_persistence_warmup(f"initial-{initial_mode.value}", initial_mode,
                     last_persistence_accepted, scene._persistence.metrics.image_uploads)
@@ -1900,6 +2094,13 @@ def main(argv=None):
                     live_snapshot_epoch_comparable=start_live_epoch is not None,
                     final_publication_sequence=generated)
 
+                verify_static_history_overlays("before-stop")
+                if args.capture_window and args.static_history_overlays:
+                    pixmap = f.shell.grab()
+                    if pixmap.isNull() or not pixmap.save(str(live_history_capture_path), "PNG"):
+                        raise AssertionError("static history Live QWidget capture failed")
+                    history_overlay_witness["live_qwidget_capture"] = str(live_history_capture_path)
+
                 stop_entered = perf_counter()
                 if producer is None or not producer.is_alive():
                     raise AssertionError("Stop was not tested under an active producer after ABBA")
@@ -1924,6 +2125,7 @@ def main(argv=None):
                     heartbeat_ticks_during_driver_delay=sum(driver_entries[-1][0] < beat <
                         driver_entries[-1][0] + args.driver_stop_ms / 1000 for beat in beats)))
                 control_phase = "idle"
+                remove_static_history_overlays()
 
             def run_visible_persistence_catchup():
                 nonlocal control_phase, resumed_until
@@ -2320,6 +2522,9 @@ def main(argv=None):
                                                   in block["source_to_first_paint_ms"].items()},
                         paint_return_ms={target: complete_bounded_summary(values, summary) for target, values
                                          in block["paint_return_ms"].items()},
+                        static_history_paint_ms=(None if not args.static_history_overlays else
+                            {role: complete_bounded_summary(values, summary)
+                             for role, values in block["history_paint_ms"].items()}),
                         first_paint_cadence={target: cadence.report(block["started_perf"],
                             block["ended_perf"], summary)
                             for target, cadence in block["first_paint_cadence"].items()},
@@ -2330,6 +2535,9 @@ def main(argv=None):
                                 for target, values in block["source_to_first_paint_ms"].items()},
                             paint_return_ms={target: bounded_sample_accounting(values)
                                 for target, values in block["paint_return_ms"].items()},
+                            static_history_paint_ms=(None if not args.static_history_overlays else
+                                {role: bounded_sample_accounting(values)
+                                 for role, values in block["history_paint_ms"].items()}),
                             heartbeat_times_s=bounded_sample_accounting(heartbeats),
                             persistence_update_sequences=bounded_sample_accounting(updates)),
                         projection_stages=(None if not args.projection_stage_timing else
@@ -2391,6 +2599,11 @@ def main(argv=None):
                     sample_integrity = sample_integrity and all(
                         persistence_freshness_block_integrity(block)
                         for block in abba_blocks.values())
+                if args.static_history_overlays:
+                    sample_integrity = sample_integrity and all(
+                        samples.total_count > 0 and not samples.dropped
+                        for block in abba_blocks.values()
+                        for samples in block["history_paint_ms"].values())
                 abba_report = dict(
                     order="BAAB" if args.abba_reverse_order else "ABBA",
                     sequence=[dict(block=name, mode=abba_blocks[name]["mode"])
@@ -2410,6 +2623,22 @@ def main(argv=None):
                     interpretation=("One synthetic Live session, "+" -> ".join(abba_order)
                         + ". The two middle blocks are contiguous halves of one mode interval, not independent replications. Mode changes, accepted/uploaded update catch-up and declared warm-up are recorded separately and excluded from steady samples."),
                     limitations="Visible Windows Qt QWidget paint/heartbeat on one host display. Synthetic constant spectrum and rolling histogram only; not DWM/compositor scanout, SDR/RF/LPS, visual smoothing fidelity, physical FHD/QHD coverage, or a general performance acceptance.")
+                abba_report["static_history_overlays"] = dict(
+                    enabled=args.static_history_overlays,
+                    fixture=args.history_fixture if args.static_history_overlays else None,
+                    theme=args.theme,
+                    fixed_y_range=args.fixed_y_range,
+                    source_and_values=(dict(history_overlay_witness)
+                        if args.static_history_overlays else None),
+                    display_points=({role: envelope.display_point_count
+                        for role, envelope in history_overlay_envelopes.items()}
+                        if args.static_history_overlays else None),
+                    boundary_checks=(list(history_overlay_boundaries)
+                        if args.static_history_overlays else None),
+                    removed_after_stop=(history_overlay_removed
+                        if args.static_history_overlays else None),
+                    gate_passed=None,
+                    scope="Observer-owned static same-grid AVERAGE/MAX/MIN plot items. They are not backend statistical traces. Timings are each item paint() on the GUI thread and the whole-canvas QWidget paint return, not DWM/scanout or RF throughput.")
                 abba_report["first_paint_cadence_gate_passed"] = (
                     None if args.max_unique_paint_gap_ms is None else
                     bool(sample_integrity and first_paint_cadence_gate_passes(
@@ -2431,6 +2660,11 @@ def main(argv=None):
                     "may be missed. Metadata queries on the GUI heartbeat instrument and may perturb "
                     "timing; do not compare these tails to uninstrumented baselines without a matched "
                     "control. Qt target is not desktop/DWM scanout or a different physical monitor mode.")
+                if args.static_history_overlays:
+                    abba_report["static_history_overlays"]["gate_passed"] = bool(
+                        sample_integrity and history_overlay_removed
+                        and len(history_overlay_boundaries) == 10
+                        and abba_report["fixed_qt_target_gate_passed"] is True)
                 report["persistence_abba"] = abba_report
                 if args.projection_stage_timing:
                     if observed_split_lane:
@@ -2494,13 +2728,20 @@ def main(argv=None):
             halt.set()
             if producer is not None:
                 producer.join(timeout=3)
-            f.tearDown()
-            f.doCleanups()
-            # PySide can keep the dynamically registered observer subclass
-            # alive. Its paint closure must not root the fixture/scene after
-            # close through callbacks in this observer-owned lookup table.
-            keys.clear()
-            upload_tokens.clear()
+            try:
+                if history_overlay_items:
+                    remove_static_history_overlays()
+            finally:
+                try:
+                    f.tearDown()
+                finally:
+                    try:
+                        f.doCleanups()
+                    finally:
+                        # PySide can keep the dynamically registered observer
+                        # subclass alive. Clear its observer-only lookup roots.
+                        keys.clear()
+                        upload_tokens.clear()
     report["post_close_allocation_budget"] = asdict(f.composition.allocation_budget.snapshot())
     if report["post_close_allocation_budget"]["reserved_bytes"]:
         raise AssertionError("presentation reservation survived owner cleanup")
