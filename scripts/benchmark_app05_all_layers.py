@@ -49,6 +49,8 @@ _RUNTIME_MODULES = (
     "pyqtgraph.Qt.internals",
     "PySide6.QtWidgets",
 )
+_MAX_BOUNDED_PROBE_SEGMENTS = 65_536
+_MAX_BOUNDED_PROBE_INPUT = _MAX_BOUNDED_PROBE_SEGMENTS // 5
 
 
 def _runtime_module_hashes() -> dict[str, dict[str, str]]:
@@ -97,6 +99,24 @@ def _source_arrays(bins: int, fixture: str) -> tuple[np.ndarray, dict[str, np.nd
     return frequency, values
 
 
+def _bounded_noisy_fragments(edges: np.ndarray, *, dotted: bool) -> np.ndarray:
+    """Diagnostic source-edge fragments; preserve both endpoints, not native dash phase."""
+    if edges.ndim != 2 or edges.shape[1] != 4 or len(edges) > _MAX_BOUNDED_PROBE_INPUT:
+        raise ValueError("bounded noisy-edge probe exceeds its input contract")
+    if not np.all(np.isfinite(edges)):
+        raise ValueError("bounded noisy-edge probe requires finite source edges")
+    fractions = (np.array(((0.0, 0.06), (0.23, 0.29), (0.47, 0.53),
+                           (0.71, 0.77), (0.94, 1.0)), dtype=np.float64)
+                 if dotted else
+                 np.array(((0.0, 0.17), (0.32, 0.37), (0.53, 0.70),
+                           (0.88, 1.0)), dtype=np.float64))
+    start = edges[:, None, :2]
+    delta = edges[:, None, 2:] - start
+    first = start + delta * fractions[None, :, 0, None]
+    last = start + delta * fractions[None, :, 1, None]
+    return np.concatenate((first, last), axis=2).reshape(-1, 4)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -107,9 +127,21 @@ def main() -> int:
     parser.add_argument("--bins", type=int, default=4600)
     parser.add_argument("--samples", type=int, default=4)
     parser.add_argument("--fixture", choices=("noisy", "mixed"), default="mixed")
+    parser.add_argument("--attribute-history-geometry", action="store_true",
+                        help="Time MAX/MIN partition separately from the full trace paint")
+    parser.add_argument("--solid-noisy-edge-probe", action="store_true",
+                        help="Observer only: draw source-exact noisy MAX/MIN edges with a solid pen")
+    parser.add_argument("--bounded-noisy-edge-probe", action="store_true",
+                        help="Observer only: draw bounded solid fragments on each noisy MAX/MIN edge")
     parser.add_argument("--expected-dpr", type=float,
                         help="Require this actual Qt widget/screen DPR for every ABBA sample")
     args = parser.parse_args()
+    if args.solid_noisy_edge_probe and args.bounded_noisy_edge_probe:
+        parser.error("select only one noisy-edge probe")
+    if args.bounded_noisy_edge_probe and not args.attribute_history_geometry:
+        parser.error("bounded noisy-edge probe requires history-geometry attribution")
+    if args.bounded_noisy_edge_probe and args.bins > _MAX_BOUNDED_PROBE_INPUT:
+        parser.error(f"bounded noisy-edge diagnostic is limited to {_MAX_BOUNDED_PROBE_INPUT} input bins")
     output = args.output.resolve()
     captures = args.capture_dir.resolve()
     if (not output.parent.is_dir() or output.exists() or not captures.is_dir()
@@ -123,6 +155,7 @@ def main() -> int:
     import pyqtgraph as pg
     import PySide6
     from PySide6.QtCore import QCoreApplication, QEvent, QSettings
+    from PySide6.QtGui import QPen
     from PySide6.QtWidgets import QApplication
 
     from sdr_monitor.ui.v2.design.tokens import ThemeId
@@ -130,6 +163,7 @@ def main() -> int:
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import (
         DensityValueMode, PersistenceDensityFrame,
     )
+    from sdr_monitor.ui.v2.spectrum import screen_dash
     from sdr_monitor.ui.v2.spectrum.screen_dash import ScreenDashCurveItem
     from sdr_monitor.ui.v2.state.analyzer_layers import _waterfall_projection
     from sdr_monitor.ui.v2.waterfall import SpectrumWaterfallView, WaterfallLineFrame
@@ -158,9 +192,44 @@ def main() -> int:
 
     original_native = pg.PlotCurveItem.paint
     original_custom = ScreenDashCurveItem.paint
+    original_partition = screen_dash._partition_history_edges
     target_roles: dict[int, str] = {}
     recorded: dict[str, list[float]] = {}
+    geometry_recorded: dict[str, list[float]] = {}
     in_custom = False
+    active_role: str | None = None
+
+    class SolidNoisyEdgePainter:
+        """Forward every operation, changing only the batched long-edge stroke."""
+
+        def __init__(self, painter):
+            self._painter = painter
+
+        def __getattr__(self, name):
+            return getattr(self._painter, name)
+
+        def drawLines(self, *lines):
+            original = self._painter.pen()
+            solid = QPen(original)
+            solid.setStyle(screen_dash.Qt.PenStyle.SolidLine)
+            self._painter.setPen(solid)
+            try:
+                self._painter.drawLines(*lines)
+            finally:
+                self._painter.setPen(original)
+
+    def timed_partition(*params):
+        start = perf_counter_ns()
+        try:
+            result = original_partition(*params)
+            if (args.bounded_noisy_edge_probe and active_role in ("maximum", "minimum")
+                    and result is not None and len(result[0])):
+                return _bounded_noisy_fragments(
+                    result[0], dotted=params[3] == screen_dash.Qt.PenStyle.DotLine), result[1]
+            return result
+        finally:
+            if active_role is not None:
+                geometry_recorded.setdefault(active_role, []).append((perf_counter_ns() - start) / 1e6)
 
     def timed_native(self, painter, option, widget):
         start = perf_counter_ns()
@@ -170,19 +239,27 @@ def main() -> int:
             recorded.setdefault(role, []).append((perf_counter_ns() - start) / 1e6)
 
     def timed_custom(self, painter, option, widget):
-        nonlocal in_custom
+        nonlocal in_custom, active_role
         start = perf_counter_ns()
         in_custom = True
+        active_role = target_roles.get(id(self))
         try:
-            original_custom(self, painter, option, widget)
+            target = (SolidNoisyEdgePainter(painter)
+                      if (args.solid_noisy_edge_probe or args.bounded_noisy_edge_probe)
+                      and active_role in ("maximum", "minimum")
+                      else painter)
+            original_custom(self, target, option, widget)
         finally:
             in_custom = False
+            active_role = None
         role = target_roles.get(id(self))
         if role is not None:
             recorded.setdefault(role, []).append((perf_counter_ns() - start) / 1e6)
 
     pg.PlotCurveItem.paint = timed_native
     ScreenDashCurveItem.paint = timed_custom  # type: ignore[method-assign]
+    if args.attribute_history_geometry:
+        screen_dash._partition_history_edges = timed_partition
     blocks: list[dict[str, object]] = []
     with TemporaryDirectory(prefix="app05-all-layers-") as temporary:
         settings = QSettings(str(Path(temporary) / "ui.ini"), QSettings.Format.IniFormat)
@@ -232,6 +309,7 @@ def main() -> int:
             target_roles.update({id(scene._curves[kind].curve): kind.value for kind in TraceKind})
             for index, enabled in enumerate((False, True, True, False)):
                 recorded.clear()
+                geometry_recorded.clear()
                 for kind in (TraceKind.AVERAGE, TraceKind.MAXIMUM, TraceKind.MINIMUM):
                     if enabled:
                         scene.set_trace(kind, frames[kind.value])
@@ -243,6 +321,7 @@ def main() -> int:
                 if geometry() != target_geometry:
                     raise RuntimeError("ABBA Qt target geometry changed during warm-up")
                 recorded.clear()
+                geometry_recorded.clear()
                 grabs_ms: list[float] = []
                 image_hash = None
                 path = captures / f"all_layers_{index:02d}_{'on' if enabled else 'off'}.png"
@@ -269,6 +348,11 @@ def main() -> int:
                         or not set(recorded) <= {kind.value for kind in TraceKind}
                         or any(len(paints) != args.samples for paints in recorded.values())):
                     raise RuntimeError(f"unexpected trace paints: { {k: len(v) for k, v in recorded.items()} }")
+                if args.attribute_history_geometry and enabled and any(
+                    len(geometry_recorded.get(role, ())) != args.samples
+                    for role in ("maximum", "minimum")
+                ):
+                    raise RuntimeError(f"missing history partition samples: {geometry_recorded}")
                 if scene.latest_frame is not frames["current"]:
                     raise RuntimeError("history overlay replaced the current measurement")
                 if any((scene.trace_envelope(kind) is None) != (not enabled)
@@ -284,6 +368,7 @@ def main() -> int:
                 blocks.append({
                     "index": index, "histories_enabled": enabled,
                     "grab_ms": grabs_ms, "trace_paint_ms": {k: list(v) for k, v in recorded.items()},
+                    "history_partition_ms": {k: list(v) for k, v in geometry_recorded.items()},
                     "image_path": str(path), "image_sha256": image_hash,
                     "actual_window_logical": [view.width(), view.height()],
                     "spectrum_logical": [scene.width(), scene.height()],
@@ -314,6 +399,7 @@ def main() -> int:
                 app.processEvents()
             ScreenDashCurveItem.paint = original_custom  # type: ignore[method-assign]
             pg.PlotCurveItem.paint = original_native
+            screen_dash._partition_history_edges = original_partition
     if _runtime_module_hashes() != loaded_code:
         raise RuntimeError("loaded renderer module bytes changed during the ABBA run")
 
@@ -325,7 +411,10 @@ def main() -> int:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         commit, dirty = None, None
     result = {
-        "schema": "app05-visible-all-layer-static-v1",
+        "schema": "app05-visible-all-layer-static-v2" if (args.attribute_history_geometry
+                                                               or args.solid_noisy_edge_probe
+                                                               or args.bounded_noisy_edge_probe)
+                  else "app05-visible-all-layer-static-v1",
         "scope": __doc__, "source_commit": commit, "dirty_paths": dirty,
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "loaded_code": loaded_code,
@@ -338,6 +427,9 @@ def main() -> int:
                           "density": hashlib.sha256(density.tobytes()).hexdigest(),
                           "waterfall": hashlib.sha256(waterfall_values.tobytes()).hexdigest()},
         "waterfall_presentation_columns": waterfall_values.size,
+        "history_geometry_attributed": args.attribute_history_geometry,
+        "solid_noisy_edge_probe": args.solid_noisy_edge_probe,
+        "bounded_noisy_edge_probe": args.bounded_noisy_edge_probe,
         "environment": environment, "blocks": blocks,
     }
     output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
