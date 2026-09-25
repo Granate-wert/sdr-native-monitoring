@@ -78,6 +78,39 @@ with PlutoDeviceService("usb:mock") as device:
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     @unittest.skipUnless(MOCK_LIBIIO.exists(), "mock libiio DLL is built by the native P06 target")
+    def test_native_property_bindings_against_mock_libiio(self) -> None:
+        script = r'''
+from esw_dfl.sdr import native_api
+
+native = native_api.require_native()
+device = native.PlutoDevice("usb:mock", 3000)
+assert device.connected is True
+assert device.streaming is False
+assert device.uri == "usb:mock"
+assert device.receiver_selection == native.PlutoReceiverSelection.RX1
+device.disconnect()
+assert device.connected is False
+
+engine = native.PlutoFixedBandEngine("usb:mock", 3000)
+assert engine.connected is True
+assert engine.streaming is False
+engine.disconnect()
+assert engine.connected is False
+'''
+        environment = dict(os.environ)
+        environment["LIBIIO_DLL_PATH"] = str(MOCK_LIBIIO)
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    @unittest.skipUnless(MOCK_LIBIIO.exists(), "mock libiio DLL is built by the native P06 target")
     def test_constructor_and_configure_release_gil(self) -> None:
         script = r'''
 import os
@@ -107,7 +140,7 @@ try:
         source_id="python-gil-mock",
         context_uri="usb:mock",
         center_frequency_hz=2_450_000_000.0,
-        sample_rate_hz=3_000_000.0,
+        sample_rate_hz=4_000_000.0,
         analog_bandwidth_hz=1_500_000.0,
         gain_mode=GainMode.MANUAL,
         manual_gain_db=20.0,

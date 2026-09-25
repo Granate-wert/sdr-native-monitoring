@@ -975,6 +975,8 @@ void bind_pluto(py::module_& module) {
         .def("poll_progress", &sdr_pluto::ContinuousSweepCoordinator::poll_progress, py::call_guard<py::gil_scoped_release>())
         .def("discard_lines", &sdr_pluto::ContinuousSweepCoordinator::discard_lines, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>());
 
+    // pybind11 3.x rejects call_guard as a def_property_readonly attribute.
+    // Wrap each native getter so the Python property and GIL policy both remain.
     py::class_<sdr_pluto::FixedBandEngine>(module, "PlutoFixedBandEngine")
         .def(py::init<std::string, std::uint32_t>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::call_guard<py::gil_scoped_release>())
         .def("configure", &sdr_pluto::FixedBandEngine::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
@@ -984,8 +986,10 @@ void bind_pluto(py::module_& module) {
         .def("join", &sdr_pluto::FixedBandEngine::join, py::call_guard<py::gil_scoped_release>())
         .def("stop", &sdr_pluto::FixedBandEngine::stop, py::call_guard<py::gil_scoped_release>())
         .def("disconnect", &sdr_pluto::FixedBandEngine::disconnect, py::call_guard<py::gil_scoped_release>())
-        .def_property_readonly("connected", &sdr_pluto::FixedBandEngine::connected, py::call_guard<py::gil_scoped_release>())
-        .def_property_readonly("streaming", &sdr_pluto::FixedBandEngine::streaming, py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("connected", py::cpp_function(
+            &sdr_pluto::FixedBandEngine::connected, py::call_guard<py::gil_scoped_release>()))
+        .def_property_readonly("streaming", py::cpp_function(
+            &sdr_pluto::FixedBandEngine::streaming, py::call_guard<py::gil_scoped_release>()))
         .def("state", &sdr_pluto::FixedBandEngine::state, py::call_guard<py::gil_scoped_release>())
         .def("config_generation", &sdr_pluto::FixedBandEngine::config_generation, py::call_guard<py::gil_scoped_release>())
         .def("config", &sdr_pluto::FixedBandEngine::config, py::call_guard<py::gil_scoped_release>())
@@ -1003,9 +1007,12 @@ void bind_pluto(py::module_& module) {
 
     py::class_<sdr_pluto::PlutoDevice>(module, "PlutoDevice")
         .def(py::init<std::string, std::uint32_t>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::call_guard<py::gil_scoped_release>())
-        .def_property_readonly("connected", &sdr_pluto::PlutoDevice::connected, py::call_guard<py::gil_scoped_release>())
-        .def_property_readonly("streaming", &sdr_pluto::PlutoDevice::streaming, py::call_guard<py::gil_scoped_release>())
-        .def_property_readonly("uri", &sdr_pluto::PlutoDevice::uri, py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("connected", py::cpp_function(
+            &sdr_pluto::PlutoDevice::connected, py::call_guard<py::gil_scoped_release>()))
+        .def_property_readonly("streaming", py::cpp_function(
+            &sdr_pluto::PlutoDevice::streaming, py::call_guard<py::gil_scoped_release>()))
+        .def_property_readonly("uri", py::cpp_function(
+            &sdr_pluto::PlutoDevice::uri, py::call_guard<py::gil_scoped_release>()))
         .def("probe", &sdr_pluto::PlutoDevice::probe, py::call_guard<py::gil_scoped_release>())
         .def("capabilities", &sdr_pluto::PlutoDevice::capabilities, py::call_guard<py::gil_scoped_release>())
         // Preserve the pre-R10-E1 positional Python contract:
@@ -1037,7 +1044,8 @@ void bind_pluto(py::module_& module) {
             py::call_guard<py::gil_scoped_release>()
         )
         .def("applied_config", &sdr_pluto::PlutoDevice::applied_config, py::call_guard<py::gil_scoped_release>())
-        .def_property_readonly("receiver_selection", &sdr_pluto::PlutoDevice::receiver_selection, py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("receiver_selection", py::cpp_function(
+            &sdr_pluto::PlutoDevice::receiver_selection, py::call_guard<py::gil_scoped_release>()))
         .def("start_stream", &sdr_pluto::PlutoDevice::start_stream, py::call_guard<py::gil_scoped_release>())
         .def("refill", &sdr_pluto::PlutoDevice::refill, py::call_guard<py::gil_scoped_release>())
         .def("refill_receivers", &sdr_pluto::PlutoDevice::refill_receivers, py::call_guard<py::gil_scoped_release>())
