@@ -48,6 +48,7 @@ from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
 from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
 from .persistence_projector import PersistenceDelivery, PersistenceWork
 from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
+from .screen_dash import ScreenDashPlotDataItem
 from .sweep_coverage_overlay import SweepCoverageOverlay
 from .sweep_position import SweepPositionOverlay
 
@@ -1008,7 +1009,8 @@ class SpectrumScene(QWidget):
         }
         curves: dict[TraceKind, pg.PlotDataItem] = {}
         for kind in TraceKind:
-            curve = pg.PlotDataItem(
+            curve_type = ScreenDashPlotDataItem if kind is TraceKind.AVERAGE else pg.PlotDataItem
+            curve = curve_type(
                 pen=pg.mkPen(color_for[kind], width=1.4), name=text(_TRACE_LABEL_KEYS[kind])
             )
             curve.setSkipFiniteCheck(True)

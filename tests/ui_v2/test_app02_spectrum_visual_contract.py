@@ -13,13 +13,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.ui.v2.design.tokens import (
-    ThemeId, contrast_ratio, density_lookup_table, tokens_for_theme,
+    ThemeId,
+    contrast_ratio,
+    density_lookup_table,
+    tokens_for_theme,
 )
 from sdr_monitor.ui.v2.i18n import UiLocale
+from sdr_monitor.ui.v2.spectrum import TraceKind
 from sdr_monitor.ui.v2.spectrum.persistence_contracts import inferno_lookup_table
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
-from sdr_monitor.ui.v2.spectrum import TraceKind
-
 
 
 def _frame():
@@ -41,7 +43,10 @@ class SpectrumVisualContractTests(unittest.TestCase):
             color = getattr(light.scientific, item.name)
             self.assertGreaterEqual(contrast_ratio(color, light.colors.panel), 4.5)
         high_contrast = tokens_for_theme(ThemeId.HIGH_CONTRAST).scientific
-        self.assertEqual(len({getattr(high_contrast, item.name) for item in fields(high_contrast)}), 5)
+        self.assertEqual(
+            len({getattr(high_contrast, item.name) for item in fields(high_contrast)}),
+            len(fields(high_contrast)),
+        )
 
     def test_density_image_and_legend_share_one_exact_lut(self) -> None:
         self.assertTrue(np.array_equal(inferno_lookup_table(), density_lookup_table()))
