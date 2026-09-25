@@ -1,8 +1,8 @@
-"""Matched visible-Qt average-trace paint comparison; no SDR is opened.
+"""Matched visible-Qt high-contrast trace paint comparison; no SDR is opened.
 
 Run with QT_QPA_PLATFORM=windows for a visible Qt surface. QWidget.grab() is
 not desktop/DWM scanout evidence. Baseline temporarily uses pyqtgraph's own
-PlotCurveItem.paint; the candidate uses the product ScreenDashCurveItem.paint.
+PlotCurveItem.paint; the candidate uses the product painter, when present.
 Neither mode changes source data, FFT, SDR settings or acquisition cadence.
 """
 
@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 from time import perf_counter_ns
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -32,12 +33,21 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=1400)
     parser.add_argument("--height", type=int, default=850)
     parser.add_argument("--samples", type=int, default=4)
+    parser.add_argument("--trace", choices=("average", "maximum", "minimum"),
+                        default="average")
+    parser.add_argument("--baseline-only", action="store_true",
+                        help="Diagnostic native-paint profile before a product candidate exists")
+    parser.add_argument("--smooth-history", action="store_true",
+                        help="Use a dense, low-slope trace to inspect pattern continuity")
+    parser.add_argument("--mixed-history", action="store_true",
+                        help="Use a long flat plateau followed by a noisy region")
     args = parser.parse_args()
     output = args.output.resolve()
     capture_dir = args.capture_dir.resolve()
     if (not output.parent.is_dir() or output.exists() or not capture_dir.is_dir()
             or not 800 <= args.width <= 3840 or not 500 <= args.height <= 2160
-            or not 2 <= args.samples <= 20):
+            or not 2 <= args.samples <= 20
+            or (args.smooth_history and args.mixed_history)):
         raise SystemExit("invalid or existing bounded output/geometry/samples")
 
     import pyqtgraph as pg
@@ -49,12 +59,27 @@ def main() -> int:
     from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
     from sdr_monitor.ui.v2.spectrum.screen_dash import ScreenDashCurveItem
 
+    trace_kind = {
+        "average": TraceKind.AVERAGE,
+        "maximum": TraceKind.MAXIMUM,
+        "minimum": TraceKind.MINIMUM,
+    }[args.trace]
+
     app = QApplication.instance() or QApplication([])
     frequencies = np.linspace(2.3e9, 2.6e9, 4600)
     rng = np.random.default_rng(17)
-    average = (-85.0 + 5.0 * rng.normal(size=frequencies.size)).astype(np.float32)
+    if args.mixed_history:
+        history = np.full(frequencies.size, -73.0, dtype=np.float32)
+        boundary = round(frequencies.size * 0.60)
+        history[boundary:] = (-75.0 + 5.0 * rng.normal(
+            size=frequencies.size - boundary)).astype(np.float32)
+    elif args.smooth_history:
+        history = (-73.0 + 2.0 * np.sin(np.linspace(0.0, 18.0,
+                                                  frequencies.size))).astype(np.float32)
+    else:
+        history = (-85.0 + 5.0 * rng.normal(size=frequencies.size)).astype(np.float32)
     current = (-70.0 + 2.0 * np.sin(np.linspace(0.0, 15.0, frequencies.size))).astype(np.float32)
-    for values in (frequencies, average, current):
+    for values in (frequencies, history, current):
         values.setflags(write=False)
 
     class Frame:
@@ -64,25 +89,43 @@ def main() -> int:
             self.unit = "dBFS/Hz"
 
     current_frame = Frame(current)
-    average_frame = Frame(average)
+    history_frame = Frame(history)
     product_paint = ScreenDashCurveItem.paint
+    native_paint = pg.PlotCurveItem.paint
     blocks: list[dict[str, object]] = []
     pictures: list[tuple[str, str]] = []
     try:
-        for index, mode in enumerate(("baseline", "candidate", "candidate", "baseline")):
+        modes = (("baseline",) if args.baseline_only else
+                 ("baseline", "candidate", "candidate", "baseline"))
+        for index, mode in enumerate(modes):
             print(f"APP05_HC_DASH block={index} mode={mode} begin", flush=True)
-            method = pg.PlotCurveItem.paint if mode == "baseline" else product_paint
             paints_ms: list[float] = []
+            paint_state = SimpleNamespace(target=None, in_custom=False,
+                                          paints=paints_ms, mode=mode)
 
-            def timed_paint(self: ScreenDashCurveItem, painter: object, option: object,
-                            widget: object, _method=method, _paints=paints_ms) -> None:
+            def timed_native(self: pg.PlotCurveItem, painter: object, option: object,
+                             widget: object, _state=paint_state) -> None:
                 start = perf_counter_ns()
-                _method(self, painter, option, widget)
-                _paints.append((perf_counter_ns() - start) / 1e6)
+                native_paint(self, painter, option, widget)
+                if self is _state.target and not _state.in_custom:
+                    _state.paints.append((perf_counter_ns() - start) / 1e6)
+
+            def timed_custom(self: ScreenDashCurveItem, painter: object, option: object,
+                             widget: object, _state=paint_state) -> None:
+                start = perf_counter_ns()
+                _state.in_custom = True
+                try:
+                    (native_paint if _state.mode == "baseline" else product_paint)(
+                        self, painter, option, widget)
+                finally:
+                    _state.in_custom = False
+                if self is _state.target:
+                    _state.paints.append((perf_counter_ns() - start) / 1e6)
 
             # PySide's QGraphicsItem virtual dispatch binds the class override
             # when a new item is constructed; patch before constructing scene.
-            ScreenDashCurveItem.paint = timed_paint
+            pg.PlotCurveItem.paint = timed_native
+            ScreenDashCurveItem.paint = timed_custom
             scene = SpectrumScene()
             try:
                 scene.resize(args.width, args.height)
@@ -90,13 +133,14 @@ def main() -> int:
                 app.processEvents()
                 scene.set_theme(ThemeId.HIGH_CONTRAST)
                 scene.set_frame(current_frame)
-                scene.set_trace(TraceKind.AVERAGE, average_frame)
+                scene.set_trace(trace_kind, history_frame)
                 app.processEvents()
                 if scene.latest_frame is not current_frame:
                     raise RuntimeError("current measurement identity changed")
-                envelope = scene.trace_envelope(TraceKind.AVERAGE)
-                if envelope is None or envelope.display_point_count != average.size:
-                    raise RuntimeError("average display fixture changed")
+                envelope = scene.trace_envelope(trace_kind)
+                if envelope is None or envelope.display_point_count != history.size:
+                    raise RuntimeError("history display fixture changed")
+                paint_state.target = scene._curves[trace_kind].curve
                 # Exclude construction, theme and first-paint warm-up.
                 scene._graphics.grab()
                 paints_ms.clear()
@@ -106,7 +150,7 @@ def main() -> int:
                     pixmap = scene._graphics.grab()
                     grabs_ms.append((perf_counter_ns() - start) / 1e6)
                     if sample == 0:
-                        path = capture_dir / f"hc_dash_{index:02d}_{mode}.png"
+                        path = capture_dir / f"hc_{args.trace}_{index:02d}_{mode}.png"
                         if path.exists() or not pixmap.save(str(path)):
                             raise RuntimeError(f"capture cannot be written: {path}")
                         # Keep the QImage wrapper alive while reading its
@@ -115,9 +159,9 @@ def main() -> int:
                         image = pixmap.toImage()
                         pictures.append((str(path), hashlib.sha256(image.bits()).hexdigest()))
                 if len(paints_ms) != args.samples:
-                    raise RuntimeError("average trace paint attribution was not one per grab")
+                    raise RuntimeError("history trace paint attribution was not one per grab")
                 blocks.append({
-                    "mode": mode, "index": index, "average_paint_ms": paints_ms,
+                    "mode": mode, "index": index, "trace_paint_ms": paints_ms,
                     "graphics_grab_ms": grabs_ms,
                     "actual_window_logical": [scene.width(), scene.height()],
                     "graphics_logical": [scene._graphics.width(), scene._graphics.height()],
@@ -131,6 +175,7 @@ def main() -> int:
             print(f"APP05_HC_DASH block={index} paints={len(paints_ms)} done", flush=True)
     finally:
         ScreenDashCurveItem.paint = product_paint
+        pg.PlotCurveItem.paint = native_paint
 
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
@@ -140,7 +185,10 @@ def main() -> int:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         commit, dirty = None, None
     result = {
-        "schema": "app05-hc-average-paint-v1",
+        "schema": "app05-hc-trace-paint-v2",
+        "trace_kind": args.trace,
+        "history_fixture": ("mixed" if args.mixed_history else
+                            "smooth" if args.smooth_history else "noisy"),
         "scope": "Visible Qt surface paint/grab only; no desktop/DWM, LPS or physical RX claim",
         "source_commit": commit,
         "dirty_paths": dirty,
@@ -149,7 +197,7 @@ def main() -> int:
         "qpa": app.platformName(), "requested_window_logical": [args.width, args.height],
         "source_sha256": {
             "frequency": hashlib.sha256(frequencies.tobytes()).hexdigest(),
-            "average": hashlib.sha256(average.tobytes()).hexdigest(),
+            "history": hashlib.sha256(history.tobytes()).hexdigest(),
             "current": hashlib.sha256(current.tobytes()).hexdigest(),
         },
         "blocks": blocks,
@@ -158,7 +206,7 @@ def main() -> int:
     }
     output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps({"output": str(output), "blocks": [
-        {"mode": b["mode"], "average_paint_ms": b["average_paint_ms"],
+        {"mode": b["mode"], "trace_paint_ms": b["trace_paint_ms"],
          "graphics_grab_ms": b["graphics_grab_ms"]} for b in blocks
     ]}, ensure_ascii=False))
     return 0

@@ -1,4 +1,4 @@
-"""High-contrast average dashes are bounded, visible, and gap-safe."""
+"""High-contrast history patterns are bounded, distinct, and gap-safe."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 import unittest
 
 import numpy as np
+import pyqtgraph as pg
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,6 +19,7 @@ from sdr_monitor.ui.v2.spectrum import TraceKind
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
 from sdr_monitor.ui.v2.spectrum.screen_dash import (
     ScreenDashCurveItem,
+    finite_source_edges,
     screen_dash_segments,
 )
 
@@ -62,6 +64,17 @@ class ScreenDashTests(unittest.TestCase):
         self.assertNotEqual(first.tobytes(), shifted.tobytes())
         self.assertGreater(len(zoomed), len(first))
 
+    def test_dot_and_dash_dot_source_edges_preserve_finite_runs_and_peaks(self) -> None:
+        x = np.array([0.0, 40.0, 50.0, 60.0, 100.0])
+        y = np.array([-80.0, -80.0, np.nan, -90.0, -90.0])
+        edges = finite_source_edges(x, y)
+        assert edges is not None
+        np.testing.assert_array_equal(edges, np.array([
+            [0.0, -80.0, 40.0, -80.0],
+            [60.0, -90.0, 100.0, -90.0],
+        ]))
+        self.assertIsNone(finite_source_edges(np.arange(65_537), np.arange(65_537)))
+
     def test_unsupported_or_oversized_geometry_falls_back(self) -> None:
         x = np.array([0.0, 10.0])
         y = np.array([1.0, 1.0])
@@ -97,6 +110,128 @@ class ScreenDashTests(unittest.TestCase):
         curve.paint(painter, None, None)
         painter.end()
         self.assertEqual(image.pixelColor(4, 30).red(), 0)
+
+    def test_actual_dot_and_dash_dot_paint_are_distinct_at_dpr_1_5(self) -> None:
+        sampled: dict[Qt.PenStyle, bytes] = {}
+        for style in (Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine):
+            curve = ScreenDashCurveItem()
+            pen = QPen(QColor("white"), 1.4, style)
+            pen.setCosmetic(True)
+            curve.setPen(pen)
+            curve.setData(np.array([0.0, 100.0, 110.0, 120.0, 220.0]),
+                          np.array([30.0, 30.0, np.nan, 30.0, 30.0]),
+                          connect="finite")
+            image = QImage(360, 90, QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(1.5)
+            image.fill(QColor("black"))
+            painter = QPainter(image)
+            curve.paint(painter, None, None)
+            painter.end()
+            row = bytes(image.pixelColor(pixel, 45).red() for pixel in range(360))
+            sampled[style] = row
+            self.assertTrue(any(level > 200 for level in row[:150]))
+            self.assertTrue(all(level == 0 for level in row[155:175]))
+            self.assertTrue(any(level > 200 for level in row[190:330]))
+        self.assertNotEqual(sampled[Qt.PenStyle.DotLine],
+                            sampled[Qt.PenStyle.DashDotLine])
+
+    def test_dense_smooth_and_narrow_peak_keep_native_pattern_pixels(self) -> None:
+        x = np.linspace(0.0, 200.0, 4600)
+        for narrow_peak in (False, True):
+            y = np.full(x.size, 30.0)
+            if narrow_peak:
+                y[2300] = 5.0
+            for style in (Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine):
+                curve = ScreenDashCurveItem()
+                pen = QPen(QColor("white"), 1.4, style)
+                pen.setCosmetic(True)
+                curve.setPen(pen)
+                curve.setData(x, y, connect="finite")
+                for dpr in (1.0, 1.5):
+                    images = []
+                    for use_native in (True, False):
+                        image = QImage(round(220 * dpr), round(60 * dpr),
+                                       QImage.Format.Format_ARGB32_Premultiplied)
+                        image.setDevicePixelRatio(dpr)
+                        image.fill(QColor("black"))
+                        painter = QPainter(image)
+                        if use_native:
+                            pg.PlotCurveItem.paint(curve, painter, None, None)
+                        else:
+                            curve.paint(painter, None, None)
+                        painter.end()
+                        images.append(image)
+                    native, candidate = images
+                    if not narrow_peak:
+                        self.assertEqual(bytes(native.bits()), bytes(candidate.bits()))
+                        row = [candidate.pixelColor(pixel, round(30 * dpr)).red()
+                               for pixel in range(round(10 * dpr), round(190 * dpr))]
+                        self.assertGreater(row.count(0), 20)
+                        self.assertGreater(sum(level > 200 for level in row), 20)
+                    else:
+                        self.assertTrue(any(
+                            candidate.pixelColor(px, py).red() > 200
+                            for px in range(round(98 * dpr), round(102 * dpr))
+                            for py in range(round(4 * dpr), round(16 * dpr))
+                        ))
+
+    def test_mixed_plateau_keeps_local_pattern_across_noisy_changes(self) -> None:
+        x = np.linspace(0.0, 200.0, 4600)
+        for style in (Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine):
+            for dpr in (1.0, 1.5):
+                stable_prefixes = []
+                for plateau_fraction in (0.60, 0.79, 0.81):
+                    y = np.full(x.size, 30.0)
+                    boundary = round(x.size * plateau_fraction)
+                    y[boundary:] = 20.0 + 20.0 * (np.arange(x.size - boundary) % 2)
+                    curve = ScreenDashCurveItem()
+                    pen = QPen(QColor("white"), 1.4, style)
+                    pen.setCosmetic(True)
+                    curve.setPen(pen)
+                    curve.setData(x, y, connect="finite")
+                    image = QImage(round(220 * dpr), round(60 * dpr),
+                                   QImage.Format.Format_ARGB32_Premultiplied)
+                    image.setDevicePixelRatio(dpr)
+                    image.fill(QColor("black"))
+                    painter = QPainter(image)
+                    curve.paint(painter, None, None)
+                    painter.end()
+                    row = bytes(image.pixelColor(pixel, round(30 * dpr)).red()
+                                for pixel in range(round(10 * dpr), round(90 * dpr)))
+                    self.assertGreater(row.count(0), 10)
+                    self.assertGreater(sum(level > 200 for level in row), 20)
+                    stable_prefixes.append(row)
+                    self.assertTrue(any(image.pixelColor(px, round(20 * dpr)).red() > 200
+                                        for px in range(round(170 * dpr),
+                                                        round(190 * dpr))))
+                self.assertEqual(stable_prefixes[0], stable_prefixes[1])
+                self.assertEqual(stable_prefixes[1], stable_prefixes[2])
+
+    def test_noisy_fast_painter_never_draws_across_nan_gap(self) -> None:
+        x = np.linspace(0.0, 220.0, 257)
+        y = 20.0 + 20.0 * (np.arange(x.size) % 2)
+        y[120:136] = np.nan
+        images = []
+        for style in (Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine):
+            curve = ScreenDashCurveItem()
+            pen = QPen(QColor("white"), 1.4, style)
+            pen.setCosmetic(True)
+            curve.setPen(pen)
+            curve.setData(x, y, connect="finite")
+            image = QImage(360, 90, QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(1.5)
+            image.fill(QColor("black"))
+            painter = QPainter(image)
+            curve.paint(painter, None, None)
+            painter.end()
+            self.assertTrue(any(image.pixelColor(px, py).red() > 200
+                                for px in range(20, 130) for py in range(30, 65)))
+            self.assertTrue(any(image.pixelColor(px, py).red() > 200
+                                for px in range(200, 300) for py in range(30, 65)))
+            self.assertTrue(all(image.pixelColor(px, py).red() == 0
+                                for px in range(160, 170) for py in range(25, 70)))
+            images.append(bytes(image.bits()))
+        self.assertNotEqual(images[0], images[1])
 
     def test_transformed_dpr_gap_and_native_fallback_paint(self) -> None:
         curve = ScreenDashCurveItem()
@@ -140,23 +275,35 @@ class ScreenDashTests(unittest.TestCase):
     def test_scene_theme_zoom_and_marker_source_remain_coherent(self) -> None:
         frequencies = np.linspace(2.3e9, 2.6e9, 4600)
         current = np.linspace(-90.0, -70.0, frequencies.size).astype(np.float32)
-        average = np.full(frequencies.size, -80.0, dtype=np.float32)
-        average[2300:2310] = np.nan
+        history_values = {}
+        for index, kind in enumerate((TraceKind.AVERAGE, TraceKind.MAXIMUM,
+                                      TraceKind.MINIMUM)):
+            values = np.full(frequencies.size, -80.0 - index * 5.0, dtype=np.float32)
+            values[2300:2310] = np.nan
+            history_values[kind] = values
         frame = type("Frame", (), {"frequencies_hz": frequencies,
                                     "values": current, "unit": "dBFS/Hz"})()
-        average_frame = type("Frame", (), {"frequencies_hz": frequencies,
-                                            "values": average, "unit": "dBFS/Hz"})()
-        before = (frequencies.tobytes(), current.tobytes(), average.tobytes())
+        history_frames = {
+            kind: type("Frame", (), {"frequencies_hz": frequencies,
+                                     "values": values, "unit": "dBFS/Hz"})()
+            for kind, values in history_values.items()
+        }
+        before = (frequencies.tobytes(), current.tobytes(),
+                  *(values.tobytes() for values in history_values.values()))
         scene = SpectrumScene(theme=ThemeId.HIGH_CONTRAST)
         try:
             scene.resize(900, 600)
             scene.show()
             self.app.processEvents()
             scene.set_frame(frame)
-            scene.set_trace(TraceKind.AVERAGE, average_frame)
-            curve = scene._curves[TraceKind.AVERAGE]
-            self.assertIsInstance(curve.curve, ScreenDashCurveItem)
-            self.assertEqual(curve.opts["pen"].style(), Qt.PenStyle.DashLine)
+            for kind, history_frame in history_frames.items():
+                scene.set_trace(kind, history_frame)
+                self.assertIsInstance(scene._curves[kind].curve, ScreenDashCurveItem)
+            styles = {TraceKind.AVERAGE: Qt.PenStyle.DashLine,
+                      TraceKind.MAXIMUM: Qt.PenStyle.DotLine,
+                      TraceKind.MINIMUM: Qt.PenStyle.DashDotLine}
+            for kind, style in styles.items():
+                self.assertEqual(scene._curves[kind].opts["pen"].style(), style)
             initial_items = len(scene._graphics.scene().items())
             marker = scene.place_marker("M1", 2.45e9)
             self.assertIsNotNone(marker)
@@ -168,9 +315,11 @@ class ScreenDashTests(unittest.TestCase):
             scene._graphics.grab()
             self.assertEqual(len(scene._graphics.scene().items()), initial_items)
             self.assertIs(scene.latest_frame, frame)
-            self.assertEqual((frequencies.tobytes(), current.tobytes(), average.tobytes()), before)
+            self.assertEqual((frequencies.tobytes(), current.tobytes(),
+                              *(values.tobytes() for values in history_values.values())), before)
             self.assertEqual(scene.markers[0].frequency_hz, marker.frequency_hz)
-            self.assertEqual(curve.opts["pen"].style(), Qt.PenStyle.DashLine)
+            for kind, style in styles.items():
+                self.assertEqual(scene._curves[kind].opts["pen"].style(), style)
         finally:
             scene.close()
             self.app.processEvents()

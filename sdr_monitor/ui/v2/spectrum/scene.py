@@ -1009,7 +1009,7 @@ class SpectrumScene(QWidget):
         }
         curves: dict[TraceKind, pg.PlotDataItem] = {}
         for kind in TraceKind:
-            curve_type = ScreenDashPlotDataItem if kind is TraceKind.AVERAGE else pg.PlotDataItem
+            curve_type = ScreenDashPlotDataItem if kind is not TraceKind.CURRENT else pg.PlotDataItem
             curve = curve_type(
                 pen=pg.mkPen(color_for[kind], width=1.4), name=text(_TRACE_LABEL_KEYS[kind])
             )

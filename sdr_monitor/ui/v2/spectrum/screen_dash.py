@@ -1,12 +1,13 @@
-"""Bounded screen-space dashes for the high-contrast average trace.
+"""Bounded high-contrast history strokes on a noisy, dense spectrum.
 
 Qt's dashed-path stroker has a severe paint-time cost on a noisy, dense
-envelope.  This item keeps PlotDataItem's source/measurement contract, but
-draws only the visible dash fragments with a solid cosmetic pen.  Dash phase
-is horizontal screen position, not the noisy trace's arc length: otherwise
-thousands of vertical noise excursions produce imperceptibly short dashes.
-Geometry comes from the current device transform on every paint, so zoom,
-resize and DPR changes cannot reuse stale screen-space coordinates.
+envelope. AVERAGE uses screen-X solid dash fragments, intentionally different
+from Qt's arc-length phase. MAXIMUM and MINIMUM use source-exact finite edges
+with their original dotted and dash-dot Qt pens; the pen phase restarts per
+edge on noisy contours, retaining substantially more visible peak evidence
+than an X-only mask. Smooth dense contours retain Qt's continuous native
+pattern so those roles do not collapse to a solid line.
+There is no retained geometry across zoom, resize, DPR or new data.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import math
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QLineF, Qt
-from PySide6.QtGui import QPainter, QPen, QTransform
+from PySide6.QtGui import QPainter, QPainterPath, QPen, QTransform
 
 try:
     from pyqtgraph.graphicsItems.PlotCurveItem import OpenGLHelpers
@@ -28,6 +29,9 @@ except ImportError:  # Keep the declared older pyqtgraph range usable, if slower
 _MAX_INPUT_POINTS = 65_536
 _MAX_DASH_SEGMENTS = 65_536
 _MAX_CUTS = 131_072
+
+_SUPPORTED_STYLES = (Qt.PenStyle.DashLine, Qt.PenStyle.DotLine,
+                     Qt.PenStyle.DashDotLine)
 
 
 def screen_dash_segments(
@@ -117,13 +121,81 @@ def screen_dash_segments(
     return result if np.all(np.isfinite(result)) else None
 
 
+def finite_source_edges(x: np.ndarray, y: np.ndarray) -> np.ndarray | None:
+    """Return source-exact adjacent edges, never connecting across missing data."""
+
+    if x.ndim != 1 or y.ndim != 1 or len(x) != len(y) or len(x) > _MAX_INPUT_POINTS:
+        return None
+    if len(x) < 2:
+        return np.empty((0, 4), dtype=np.float64)
+    finite = np.isfinite(x) & np.isfinite(y)
+    joined = finite[:-1] & finite[1:]
+    result = np.stack((x[:-1][joined], y[:-1][joined],
+                       x[1:][joined], y[1:][joined]), axis=1)
+    return np.asarray(result, dtype=np.float64)
+
+
+def _partition_history_edges(
+    x: np.ndarray, y: np.ndarray, transform: QTransform,
+    style: Qt.PenStyle, width_pixels: float,
+) -> tuple[np.ndarray, QPainterPath] | None:
+    """Separate short-run native paths from long, source-exact pen edges.
+
+    The decision is per source edge, not per whole frame: a noisy change cannot
+    switch an unchanged flat plateau from dots into a solid line. Every short
+    run becomes a native Qt subpath with continuous local dash phase. Long
+    noisy edges keep their exact source vertices and use one batched drawLines.
+    ``None`` means the full native Qt path is required or already optimal.
+    """
+
+    if (not transform.isAffine() or transform.m12() != 0.0
+            or transform.m21() != 0.0 or not all(math.isfinite(value)
+                for value in (transform.m11(), transform.m22(), width_pixels))
+            or width_pixels <= 0.0):
+        return None
+    edges = finite_source_edges(x, y)
+    if edges is None or len(edges) == 0:
+        return None
+    finite = np.isfinite(x) & np.isfinite(y)
+    edge_indices = np.flatnonzero(finite[:-1] & finite[1:])
+    lengths = np.hypot((edges[:, 2] - edges[:, 0]) * transform.m11(),
+                       (edges[:, 3] - edges[:, 1]) * transform.m22())
+    if not np.all(np.isfinite(lengths)):
+        return None
+    on_units = 2.0 if style == Qt.PenStyle.DotLine else 5.0
+    short = lengths <= on_units * width_pixels
+    if np.all(short):
+        return None  # The existing cached continuous Qt path is exact and cheap.
+    # Isolated short edges occupy less than a few pixels: keep them in the
+    # batched line call. Only a contiguous smooth span can visibly collapse
+    # into a solid line or justify the cost of a native subpath.
+    smooth = np.zeros(len(edges), dtype=np.bool_)
+    short_positions = np.flatnonzero(short)
+    if len(short_positions):
+        breaks = np.flatnonzero(np.diff(edge_indices[short_positions]) != 1) + 1
+        starts = np.r_[0, breaks]
+        stops = np.r_[breaks, len(short_positions)]
+        for start, stop in zip(starts, stops, strict=True):
+            if stop - start >= 8:
+                smooth[short_positions[start:stop]] = True
+    path = QPainterPath()
+    previous = -2
+    for edge_index in edge_indices[smooth]:
+        index = int(edge_index)
+        if index != previous + 1:
+            path.moveTo(float(x[index]), float(y[index]))
+        path.lineTo(float(x[index + 1]), float(y[index + 1]))
+        previous = index
+    return edges[~smooth], path
+
+
 class ScreenDashCurveItem(pg.PlotCurveItem):
-    """Use fast solid fragments only for the average trace's dashed pen."""
+    """Use fast solid fragments for supported high-contrast history pens."""
 
     def paint(self, painter: QPainter, option: object, widget: object) -> None:
         pen = self.opts["pen"]
         if (PrimitiveArray is None or OpenGLHelpers is None or pen is None
-                or pen.style() != Qt.PenStyle.DashLine or not pen.isCosmetic()
+                or pen.style() not in _SUPPORTED_STYLES or not pen.isCosmetic()
                 or self.opts["connect"] != "finite" or self.opts["fillLevel"] is not None
                 or self.opts["shadowPen"] is not None or self.opts["stepMode"]
                 or self.opts["compositionMode"] is not None or self._exportOpts is not False
@@ -135,34 +207,49 @@ class ScreenDashCurveItem(pg.PlotCurveItem):
             return
         device = painter.device()
         dpr = device.devicePixelRatioF() if device is not None else 1.0
-        dash_width = max(1.0, float(pen.widthF())) * dpr
-        segments = screen_dash_segments(
-            x, y, painter.deviceTransform(),
-            on_pixels=8.0 * dash_width,
-            off_pixels=4.0 * dash_width,
-        )
+        style = pen.style()
+        path: QPainterPath | None = None
+        if style == Qt.PenStyle.DashLine:
+            dash_width = max(1.0, float(pen.widthF())) * dpr
+            segments = screen_dash_segments(x, y, painter.deviceTransform(),
+                                            on_pixels=8.0 * dash_width,
+                                            off_pixels=4.0 * dash_width)
+        else:
+            partition = _partition_history_edges(
+                x, y, painter.deviceTransform(), style,
+                max(1.0, float(pen.widthF())) * dpr)
+            if partition is None:
+                super().paint(painter, option, widget)
+                return
+            segments, path = partition
         if segments is None:
             # Unsupported geometry must remain correct, even if slower.
             super().paint(painter, option, widget)
             return
-        if not len(segments):
+        if not len(segments) and (path is None or path.isEmpty()):
             return
-        lines = PrimitiveArray(QLineF, 4)
-        lines.resize(len(segments))
-        lines.ndarray()[:] = segments
-        solid = QPen(pen)
-        solid.setStyle(Qt.PenStyle.SolidLine)
+        lines = None
+        if len(segments):
+            lines = PrimitiveArray(QLineF, 4)
+            lines.resize(len(segments))
+            lines.ndarray()[:] = segments
+        stroke = QPen(pen)
+        if style == Qt.PenStyle.DashLine:
+            stroke.setStyle(Qt.PenStyle.SolidLine)
         painter.save()
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, bool(self.opts["antialias"]))
-            painter.setPen(solid)
-            painter.drawLines(*lines.drawargs())
+            painter.setPen(stroke)
+            if lines is not None:
+                painter.drawLines(*lines.drawargs())
+            if path is not None and not path.isEmpty():
+                painter.drawPath(path)
         finally:
             painter.restore()
 
 
 class ScreenDashPlotDataItem(pg.PlotDataItem):
-    """PlotDataItem with a bounded average-only curve painter."""
+    """PlotDataItem with a bounded history-pattern curve painter."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
