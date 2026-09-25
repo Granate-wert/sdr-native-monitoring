@@ -185,14 +185,18 @@ def persistence_image_reserve(request: PersistenceImageRequest) -> int:
     """Output plus bounded NumPy mapping/reduction scratch, not Qt/native RSS.
 
     Inputs/accepted history are accounted separately by the shared root ledger.
-    Scratch: finite selection (input itemsize+bool), or Visual mapped image and
-    reusable delta mask (5 bytes/cell), each at most IMAGE_BATCH cells.
+    Scratch: finite selection (input itemsize+bool), or Visual mapped float32
+    scratch and reusable smoothing bool mask (5 bytes/cell). The mapper also
+    creates a finite bool mask while both Visual buffers are live, requiring
+    6 bytes/cell with history. Each chunk is at most IMAGE_BATCH cells.
     """
     density = request.view.density
     batch = min(IMAGE_BATCH, density.shape[1])
     hash_scratch = (persistence_witness_scratch(request.view)
                     if request.policy.mode is PersistenceRenderMode.VISUAL else 0)
-    return int(density.size * 4 + max(batch * max(5, density.dtype.itemsize + 1), hash_scratch))
+    mapping_bytes_per_cell = max(6 if _compatible_history(request) is not None else 5,
+                                 density.dtype.itemsize + 1)
+    return int(density.size * 4 + max(batch * mapping_bytes_per_cell, hash_scratch))
 
 
 def _compatible_history(request: PersistenceImageRequest) -> np.ndarray | None:

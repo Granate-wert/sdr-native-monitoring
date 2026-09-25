@@ -16,6 +16,7 @@ from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationB
 from sdr_monitor.ui.v2.spectrum.contracts import SpectrumFrameView, TraceKind
 from sdr_monitor.ui.v2.spectrum.persistence_contracts import (
     DensityValueMode,
+    PersistenceDensityFrame,
     PersistenceRenderMode,
     adapt_persistence_density,
 )
@@ -139,6 +140,23 @@ class PersistenceWorkerTests(unittest.TestCase):
         self.assertEqual(persistence_image_reserve(small), 4 * 16 * 4 + 17 * 8)
         with patch.object(density_worker, "persistence_input_witness", side_effect=AssertionError("Direct must not hash")):
             prepare_persistence_image(request())
+
+    def test_visual_history_reserves_finite_mask_while_smoothing_scratch_is_live(self):
+        policy = PersistenceImagePolicy(2, PersistenceRenderMode.VISUAL, True)
+        density = np.full((4, 4096), .5, np.float32)
+        frequencies = np.arange(4097, dtype=np.float32)
+        levels = np.arange(5, dtype=np.float32)
+        for array in (density, frequencies, levels):
+            array.setflags(write=False)
+        source = adapt_persistence_density(PersistenceDensityFrame(
+            density, frequencies, levels, DensityValueMode.PROBABILITY, "dBm"))
+        first = PersistenceImageRequest(source, policy)
+        history = prepare_persistence_image(first).as_history(1)
+        subsequent = PersistenceImageRequest(source, policy, history)
+        self.assertEqual(persistence_image_reserve(first), source.density.nbytes + 4096 * 5)
+        self.assertEqual(persistence_image_reserve(subsequent), source.density.nbytes + 4096 * 6)
+        direct = replace(subsequent, policy=PersistenceImagePolicy(2, PersistenceRenderMode.DIRECT, True))
+        self.assertEqual(persistence_image_reserve(direct), source.density.nbytes + 4096 * 5)
 
     def test_bit_exact_direct_visual_against_existing_overlay_with_missing_and_layouts(self):
         scene = SpectrumScene()
