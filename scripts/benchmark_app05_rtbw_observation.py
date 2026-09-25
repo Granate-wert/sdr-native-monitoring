@@ -50,6 +50,77 @@ def matched_persistence_order(reverse):
     return ("B1", "A1", "A2", "B2") if reverse else ("A1", "B1", "B2", "A2")
 
 
+class ObserverSpectrumPaintLatch:
+    """Bound one observer-only viewport update suppression interval.
+
+    The image and Visual history still commit in the normal order. Only the
+    QGraphicsView viewport's paint is held while a newer required trace is
+    expected; timeout and lifecycle release are mandatory. This is a causal
+    experiment, not a production scheduler or a density freshness guarantee.
+    """
+
+    def __init__(self, viewport, timer, *, limit_ms, on_event=None, clock=perf_counter):
+        if not 1 <= limit_ms <= 50:
+            raise ValueError("observer paint latch requires a 1..50 ms deadline")
+        self.viewport = viewport
+        self.timer = timer
+        self.limit_ms = int(limit_ms)
+        self.on_event = on_event
+        self.clock = clock
+        self.active = False
+        self.old_sequence = None
+        self.started = None
+        self.begins = self.paints_while_disabled = 0
+        self.releases = {}
+        self.hold_ms = BoundedSamples(8192)
+
+    def begin(self, old_sequence):
+        if self.active:
+            return False
+        started = self.clock()
+        self.viewport.setUpdatesEnabled(False)
+        try:
+            self.timer.start(self.limit_ms)
+        except BaseException:
+            self.viewport.setUpdatesEnabled(True)
+            raise
+        self.active = True
+        self.old_sequence = old_sequence
+        self.started = started
+        self.begins += 1
+        if self.on_event is not None:
+            self.on_event("paint_latch_begin", old_sequence)
+        return True
+
+    def release(self, reason):
+        if not self.active:
+            return False
+        now = self.clock()
+        old_sequence = self.old_sequence
+        started = self.started
+        self.active = False
+        self.old_sequence = self.started = None
+        try:
+            self.timer.stop()
+        finally:
+            self.viewport.setUpdatesEnabled(True)
+        self.viewport.update()
+        self.hold_ms.append((now - started) * 1000)
+        self.releases[reason] = self.releases.get(reason, 0) + 1
+        if self.on_event is not None:
+            self.on_event("paint_latch_" + reason, old_sequence)
+        return True
+
+    def report(self, summarize):
+        return dict(enabled=True, deadline_ms=self.limit_ms, begins=self.begins,
+            releases=dict(self.releases), active=self.active,
+            paints_while_disabled=self.paints_while_disabled,
+            hold_ms=complete_bounded_summary(self.hold_ms, summarize),
+            scope="Observer-only Spectrum QGraphicsView viewport paint suppression; "
+                  "ImageItem upload and Visual history keep the product order. "
+                  "This is neither a DWM frame nor a production scheduler.")
+
+
 def record_bounded_stage_interval(samples, overflow, stage, block_started, begin, finish):
     """Keep one block only; flag truncation instead of reporting biased percentiles."""
     if block_started is None or begin < block_started:
@@ -822,6 +893,9 @@ def main(argv=None):
                         help="Instrument shared worker stages in matched blocks; diagnostic, not a latency baseline")
     parser.add_argument("--cadence-causal-timeline", action="store_true",
                         help="Bounded source/worker/GUI/paint events around longest ABBA gaps; diagnostic only")
+    parser.add_argument("--observer-spectrum-paint-latch-ms", type=int,
+                        help="Observer-only bounded Spectrum viewport paint coalescing after old-density "
+                             "accept; requires visible causal ABBA, not a product setting")
     parser.add_argument("--max-unique-paint-gap-ms", type=float,
                         help="Opt-in ABBA gate for longest first-paint silence, including block edges; Qt only")
     parser.add_argument("--persistence-catchup", action="store_true",
@@ -895,6 +969,12 @@ def main(argv=None):
             or args.executor_queue_residency or args.observer_split_persistence
             or args.observer_image_cadence_hz is not None):
         parser.error("causal timeline requires unsplit default-cadence ABBA and excludes other stage/queue timelines")
+    if args.observer_spectrum_paint_latch_ms is not None and (
+            not args.cadence_causal_timeline or not args.persistence_upload_age
+            or args.expected_dpr is None or args.max_unique_paint_gap_ms != 50.0
+            or not 1 <= args.observer_spectrum_paint_latch_ms <= 50):
+        parser.error("observer Spectrum paint latch requires causal ABBA, upload-age observation, "
+                     "fixed DPR, a 50-ms cadence gate and a 1..50 ms deadline")
     if args.max_unique_paint_gap_ms is not None and (not args.persistence_abba
             or not 1 <= args.max_unique_paint_gap_ms <= 120000):
         parser.error("--max-unique-paint-gap-ms requires ABBA and a threshold in 1..120000 ms")
@@ -1021,6 +1101,7 @@ def main(argv=None):
     failures, stops, driver_entries, driver_returns = [], [], [], []
     gui = threading.get_ident()
     causal_probe = CausalTimelineProbe(gui) if args.cadence_causal_timeline else None
+    paint_latch = latch_timer = None
 
     def causal(event, *, when=None, sequence=None, canvas=None,
                required_work=None, accept_phase=None, task_id=None):
@@ -1125,10 +1206,15 @@ def main(argv=None):
             events.append(row)
 
     def show_scene_presentation(scene, active):
+        if not active and paint_latch is not None:
+            paint_latch.release("hide")
         show_event("scene_resume_enter" if active else "scene_hide_enter")
         was_active = scene._presentation_active
         try:
             result = original_scene_presentation(scene, active)
+            if not active:
+                painted_density.update(status="hidden", sequence=None,
+                                       accepted_at=None, upload_counter=None)
             if active and not was_active and args.show_eager_projection_prototype:
                 show_event("prototype_commit_enter")
                 scene.commit_projection()
@@ -1187,8 +1273,28 @@ def main(argv=None):
         phase = "early_required" if required_only else "final"
         causal("scene_accept_enter", sequence=sequence,
                required_work=request.required_work, accept_phase=phase)
+        latch_started = False
+        if (paint_latch is not None and not required_only and result.persistence is not None
+                and request.persistence is scene._persistence.worker_request
+                and scene._early_projection_request is request
+                and scene._projection_current(request)
+                and scene._persistence._visible):
+            latest = scene._trace_views.get(TraceKind.CURRENT)
+            latest_sequence = None if latest is None else view_source_token(latest)
+            if sequence is not None and latest_sequence is not None and latest_sequence > sequence:
+                latch_started = paint_latch.begin(sequence)
         try:
-            return original_scene_accept(scene, result, required_only=required_only)
+            accepted = original_scene_accept(scene, result, required_only=required_only)
+            if (paint_latch is not None and paint_latch.active and sequence is not None
+                    and paint_latch.old_sequence is not None
+                    and sequence > paint_latch.old_sequence and scene._displayed_view is not None
+                    and view_source_token(scene._displayed_view) == sequence):
+                paint_latch.release("new_required")
+            return accepted
+        except BaseException:
+            if paint_latch is not None and latch_started:
+                paint_latch.release("accept_error")
+            raise
         finally:
             causal("scene_accept_return", sequence=sequence,
                    required_work=request.required_work, accept_phase=phase)
@@ -1295,6 +1401,18 @@ def main(argv=None):
             visible_density_unmapped=0,
             visible_density_empty=0,
             visible_density_hidden=0,
+            canvas_density_ages=BoundedSamples(timing_capacity),
+            canvas_density_first_ages=BoundedSamples(timing_capacity),
+            canvas_density_sequence_gaps=BoundedSamples(timing_capacity),
+            canvas_density_unmapped=0,
+            canvas_density_empty=0,
+            canvas_density_hidden=0,
+            painted_density_heartbeat_ages=BoundedSamples(timing_capacity),
+            painted_density_heartbeat_gaps=BoundedSamples(timing_capacity),
+            painted_density_heartbeat_unmapped=0,
+            painted_density_heartbeat_empty=0,
+            painted_density_heartbeat_hidden=0,
+            image_ahead_of_paint_heartbeat=0,
             first_displayed_sequence=None, last_displayed_sequence=None)
         for name in abba_order}
     abba_warmups, abba_transitions = [], []
@@ -1306,6 +1424,11 @@ def main(argv=None):
     history_overlay_boundaries: list[dict[str, Any]] = []
     history_overlay_scene: SpectrumScene | None = None
     history_overlay_removed = False
+    painted_density = dict(status="empty", sequence=None, accepted_at=None,
+                           upload_counter=None)
+    # PySide may retain the dynamically registered MeasuredGraphics subclass.
+    # Its paintEvent closure must not pin the overlay/scene after fixture close.
+    paint_overlay_ref = None
     source_session = {}
     persistence_catchup = None
     phase_ages = {phase: {name: deque(maxlen=timing_capacity) for name in age.ages}
@@ -1377,6 +1500,24 @@ def main(argv=None):
             tracked = keys.get(id(self))
             key = None if tracked is None else tracked[1]()
             began = perf_counter()
+            density_at_enter = None
+            if tracked is not None and tracked[0] == "spectrum" and args.persistence_upload_age:
+                overlay = None if paint_overlay_ref is None else paint_overlay_ref()
+                if overlay is not None:
+                    status, _ = visible_density_freshness_sample(began,
+                        visible=bool(self.isVisible() and overlay.image_item.isVisible()),
+                        uploaded_density=overlay._uploaded_density,
+                        latest_sequence=last_persistence_accepted,
+                        sequence_by_identity=persistence_density_sequence_by_identity,
+                        accepted_at=persistence_accepted_at)
+                    sequence = (persistence_density_sequence_by_identity.get(id(overlay._uploaded_density))
+                                if status == "mapped" else None)
+                    density_at_enter = (status, sequence,
+                        persistence_accepted_at.get(sequence) if sequence is not None else None,
+                        last_persistence_accepted, overlay.metrics.image_uploads)
+            if (paint_latch is not None and paint_latch.active
+                    and tracked is not None and tracked[0] == "spectrum"):
+                paint_latch.paints_while_disabled += 1
             if tracked is not None:
                 causal("paint_enter", when=began, sequence=None if key is None else key[0],
                        canvas=tracked[0])
@@ -1384,6 +1525,25 @@ def main(argv=None):
             ended = perf_counter()
             if tracked is not None:
                 name, current = tracked
+                if density_at_enter is not None:
+                    status, density_sequence, accepted_at, latest_at_enter, upload_counter = density_at_enter
+                    previous_upload = painted_density["upload_counter"]
+                    painted_density.update(status=status, sequence=density_sequence,
+                                           accepted_at=accepted_at,
+                                           upload_counter=upload_counter if status == "mapped" else None)
+                    if abba_current_block is not None:
+                        block = abba_blocks[abba_current_block]
+                        if status == "mapped":
+                            age_ms = (ended - accepted_at) * 1000
+                            block["canvas_density_ages"].append(age_ms)
+                            block["canvas_density_sequence_gaps"].append(
+                                latest_at_enter - density_sequence)
+                            if upload_counter != previous_upload:
+                                block["canvas_density_first_ages"].append(age_ms)
+                            causal("density_canvas_paint", when=ended,
+                                   sequence=density_sequence, canvas="spectrum")
+                        else:
+                            block[f"canvas_density_{status}"] += 1
                 causal("paint_return", when=ended, sequence=None if key is None else key[0],
                        canvas=name)
                 paints[name].append((ended - began) * 1000)
@@ -1475,6 +1635,9 @@ def main(argv=None):
             observer_patches.enter_context(patch.object(SpectrumScene, "_schedule_projection",
                                                   show_scene_schedule))
             observer_patches.enter_context(patch.object(SpectrumScene, "_offer_projection", show_scene_offer))
+        elif args.persistence_upload_age:
+            observer_patches.enter_context(patch.object(SpectrumScene, "set_presentation_active",
+                                                  show_scene_presentation))
         if args.show_projection_timeline or args.cadence_causal_timeline:
             observer_patches.enter_context(patch.object(SpectrumScene, "_accept_projection", show_scene_accept))
             observer_patches.enter_context(patch.object(SpectrumScene, "_paint_trace", show_scene_paint_trace))
@@ -1491,6 +1654,15 @@ def main(argv=None):
         def unsubscribe_density():
             pass
         try:
+            if args.observer_spectrum_paint_latch_ms is not None:
+                scene_for_latch = f.page.visualization.spectrum_scene
+                latch_timer = QTimer(scene_for_latch)
+                latch_timer.setSingleShot(True)
+                paint_latch = ObserverSpectrumPaintLatch(
+                    scene_for_latch._graphics.viewport(), latch_timer,
+                    limit_ms=args.observer_spectrum_paint_latch_ms,
+                    on_event=lambda event, sequence: causal(event, sequence=sequence))
+                latch_timer.timeout.connect(lambda: paint_latch.release("deadline"))
             observed_split_lane = f.composition.spectrum_projector.persistence_projector is not None
             if observed_split_lane != args.observer_split_persistence:
                 raise AssertionError("observer split-lane composition does not match the requested mode")
@@ -1532,6 +1704,8 @@ def main(argv=None):
             f.wait(lambda: not f.composition.view_model.state.busy)
             f.shell.resize(*args.window_size)
             scene, waterfall = f.page.visualization.spectrum_scene, f.page.visualization.waterfall_pane
+            if args.persistence_upload_age:
+                paint_overlay_ref = weakref.ref(scene._persistence)
             scene.set_persistence_render_mode(PersistenceRenderMode(args.persistence_display))
             if args.fixed_y_range is not None:
                 lower, upper = args.fixed_y_range
@@ -1922,6 +2096,26 @@ def main(argv=None):
                             block["visible_density_sequence_gaps"].append(sample[1])
                         else:
                             block[f"visible_density_{status}"] += 1
+                        painted_sequence = painted_density["sequence"]
+                        painted_at = painted_density["accepted_at"]
+                        if not f.page.visualization.isVisible():
+                            painted_status = "hidden"
+                        elif painted_sequence is None or painted_at is None:
+                            painted_status = ("unmapped" if painted_density["status"] == "unmapped"
+                                              else "empty")
+                        elif painted_at > now or painted_sequence > last_persistence_accepted:
+                            painted_status = "unmapped"
+                        else:
+                            painted_status = "mapped"
+                            block["painted_density_heartbeat_ages"].append((now - painted_at) * 1000)
+                            block["painted_density_heartbeat_gaps"].append(
+                                last_persistence_accepted - painted_sequence)
+                            uploaded_sequence = persistence_density_sequence_by_identity.get(
+                                id(overlay._uploaded_density))
+                            if uploaded_sequence is not None and uploaded_sequence > painted_sequence:
+                                block["image_ahead_of_paint_heartbeat"] += 1
+                        if painted_status != "mapped":
+                            block[f"painted_density_heartbeat_{painted_status}"] += 1
                 transition = pending_page_transition
                 if transition is None or "settled" in transition:
                     return
@@ -2134,6 +2328,10 @@ def main(argv=None):
                 old_mode = scene._persistence.render_mode
                 before = persistence_state()
                 switch_started = perf_counter()
+                if paint_latch is not None:
+                    paint_latch.release("mode_switch")
+                painted_density.update(status="empty", sequence=None,
+                                       accepted_at=None, upload_counter=None)
                 scene.set_persistence_render_mode(mode)
                 switch_returned = perf_counter()
                 after_callback = persistence_state()
@@ -2243,6 +2441,8 @@ def main(argv=None):
                     raise AssertionError("Stop was not tested under an active producer after ABBA")
                 stop_phase_observed = stop_phase(f.presenter, f.composition.spectrum_projector)
                 control_phase = "stopping"
+                if paint_latch is not None:
+                    paint_latch.release("stop")
                 f.page.primary.click()
                 click_returned = perf_counter()
                 run_qt_until(lambda: checked(lambda: not f.live.is_running()
@@ -2575,6 +2775,8 @@ def main(argv=None):
                 qt_display_environment=display_metadata,
                 preparation_superseded=f.presenter.preparation_superseded,
                 preparation_stale=f.presenter.preparation_stale)
+            report["observer_spectrum_paint_latch"] = (
+                None if paint_latch is None else paint_latch.report(summary))
             report["persistence_page_lifecycle"] = dict(
                 enabled=bool(args.persistence_page_lifecycle and persistence_enabled),
                 page_interval_seconds=args.page_seconds or None,
@@ -2709,6 +2911,36 @@ def main(argv=None):
                             scope="Nominal 10-ms GUI heartbeat samples the current visible ImageItem "
                                   "during this block, including intervals between commits. This is "
                                   "sampled GUI state, not a new paint or DWM/scanout frame.")),
+                        density_at_spectrum_paint=(None if not args.persistence_upload_age else dict(
+                            canvas_paint_count=block["paint_return_ms"]["spectrum"].total_count,
+                            mapped_paints=block["canvas_density_ages"].total_count,
+                            first_canvas_paints_after_upload=block["canvas_density_first_ages"].total_count,
+                            accepted_to_canvas_paint_ms=complete_bounded_summary(
+                                block["canvas_density_ages"], summary),
+                            accepted_to_first_canvas_paint_ms=complete_bounded_summary(
+                                block["canvas_density_first_ages"], summary),
+                            latest_sequence_gap_at_canvas_paint=complete_bounded_summary(
+                                block["canvas_density_sequence_gaps"], summary),
+                            unmapped=block["canvas_density_unmapped"],
+                            empty=block["canvas_density_empty"],
+                            hidden=block["canvas_density_hidden"],
+                            scope="Capture ImageItem identity at Spectrum paint enter, observe Qt "
+                                  "canvas paint return. This is stronger than ImageItem-state "
+                                  "heartbeat but not pixel-exact image coverage or DWM scanout.")),
+                        last_painted_density_heartbeat=(None if not args.persistence_upload_age else dict(
+                            accepted_to_heartbeat_ms=complete_bounded_summary(
+                                block["painted_density_heartbeat_ages"], summary),
+                            latest_sequence_gap_at_heartbeat=complete_bounded_summary(
+                                block["painted_density_heartbeat_gaps"], summary),
+                            image_ahead_of_paint_ticks=block["image_ahead_of_paint_heartbeat"],
+                            mapped=block["painted_density_heartbeat_ages"].total_count,
+                            unmapped=block["painted_density_heartbeat_unmapped"],
+                            empty=block["painted_density_heartbeat_empty"],
+                            hidden=block["painted_density_heartbeat_hidden"],
+                            scope="Nominal 10-ms heartbeat ages the last ImageItem identity "
+                                  "observed at a completed Spectrum canvas paint, including "
+                                  "intervals when a newer upload has not yet reached a paint. "
+                                  "Not pixel-exact image coverage or DWM scanout.")),
                         waterfall_image_uploads=dict(delta=waterfall_upload_delta,
                             rate_hz=waterfall_upload_delta / elapsed),
                         overlay_start=block["overlay_start"], overlay_end=block["overlay_end"])
@@ -2746,6 +2978,11 @@ def main(argv=None):
                         causal_blocks[block_name] = dict(
                             event_count=len(block_events), observed_fresh_paints=observed_paints,
                             exact_paint_accounting=observed_paints == expected_paints,
+                            paint_latch_begins=sum(row["event"] == "paint_latch_begin"
+                                                   for row in block_events),
+                            paint_latch_releases=sum(row["event"].startswith("paint_latch_")
+                                                     and row["event"] != "paint_latch_begin"
+                                                     for row in block_events),
                             top_gaps=(None if causal_dropped else {
                                 canvas: causal_gap_windows(causal_events, started, ended, canvas)
                                 for canvas in ("spectrum", "waterfall")}))
@@ -2757,12 +2994,31 @@ def main(argv=None):
                             for block in causal_blocks.values()
                             for windows in block["top_gaps"].values()
                             for window in windows)
+                if paint_latch is not None:
+                    sample_integrity = (sample_integrity and not paint_latch.active
+                                        and paint_latch.paints_while_disabled == 0)
                 if args.projection_stage_timing:
                     sample_integrity = sample_integrity and all(
                         not dropped for stages in stage_overflow.values() for dropped in stages.values())
                 if args.persistence_upload_age:
                     sample_integrity = sample_integrity and all(
                         persistence_freshness_block_integrity(block)
+                        for block in abba_blocks.values())
+                    sample_integrity = sample_integrity and all(
+                        not any(series.dropped for series in (
+                            block["canvas_density_ages"], block["canvas_density_first_ages"],
+                            block["canvas_density_sequence_gaps"],
+                            block["painted_density_heartbeat_ages"],
+                            block["painted_density_heartbeat_gaps"]))
+                        and block["paint_return_ms"]["spectrum"].total_count == (
+                            block["canvas_density_ages"].total_count
+                            + block["canvas_density_unmapped"] + block["canvas_density_empty"]
+                            + block["canvas_density_hidden"])
+                        and block["heartbeat_times_s"].total_count == (
+                            block["painted_density_heartbeat_ages"].total_count
+                            + block["painted_density_heartbeat_unmapped"]
+                            + block["painted_density_heartbeat_empty"]
+                            + block["painted_density_heartbeat_hidden"])
                         for block in abba_blocks.values())
                 if args.static_history_overlays:
                     sample_integrity = sample_integrity and all(
@@ -2897,6 +3153,15 @@ def main(argv=None):
                 sample_memory("before-close")
                 census_before_close = qt_wrapper_counts()
         finally:
+            if paint_latch is not None:
+                paint_latch.release("teardown")
+            if latch_timer is not None:
+                latch_timer.stop()
+                latch_timer.timeout.disconnect()
+                latch_timer.deleteLater()
+            # The observer class can outlive this function. Drop its closure's
+            # Qt widget/timer roots before the fixture's normal two-phase close.
+            paint_latch = latch_timer = paint_overlay_ref = None
             unsubscribe_density()
             for t in timers:
                 t.stop()

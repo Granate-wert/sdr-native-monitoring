@@ -27,6 +27,68 @@ def pane(token=3, uploads=1, visible=True, generation=7):
 
 
 class RtbwUploadWitnessTests(unittest.TestCase):
+    def test_observer_paint_latch_has_absolute_release_and_no_payload_owner(self):
+        class Viewport:
+            def __init__(self):
+                self.enabled = True
+                self.updates = 0
+
+            def setUpdatesEnabled(self, enabled):
+                self.enabled = enabled
+
+            def update(self):
+                self.updates += 1
+
+        class Timer:
+            def __init__(self):
+                self.started = []
+                self.stops = 0
+
+            def start(self, interval):
+                self.started.append(interval)
+
+            def stop(self):
+                self.stops += 1
+
+        now = [1.0]
+        events = []
+        viewport, timer = Viewport(), Timer()
+        latch = OBSERVER.ObserverSpectrumPaintLatch(viewport, timer, limit_ms=20,
+            on_event=lambda event, sequence: events.append((event, sequence)),
+            clock=lambda: now[0])
+        self.assertTrue(latch.begin(101))
+        self.assertFalse(latch.begin(102))
+        self.assertFalse(viewport.enabled)
+        self.assertEqual(timer.started, [20])
+        now[0] += .012
+        self.assertTrue(latch.release("new_required"))
+        self.assertFalse(latch.release("deadline"))
+        self.assertTrue(viewport.enabled)
+        self.assertEqual(viewport.updates, 1)
+        self.assertEqual(events, [("paint_latch_begin", 101),
+                                  ("paint_latch_new_required", 101)])
+        self.assertAlmostEqual(latch.report(lambda samples: {"max": max(samples)})
+                               ["hold_ms"]["max"], 12)
+        now[0] += .001
+        self.assertTrue(latch.begin(103))
+        now[0] += .020
+        self.assertTrue(latch.release("deadline"))
+        self.assertTrue(viewport.enabled)
+        self.assertEqual(latch.report(lambda samples: {"max": max(samples)})
+                         ["releases"], {"new_required": 1, "deadline": 1})
+        broken_timer = Timer()
+        broken_timer.start = lambda _interval: (_ for _ in ()).throw(RuntimeError("timer failed"))
+        broken_viewport = Viewport()
+        broken_latch = OBSERVER.ObserverSpectrumPaintLatch(
+            broken_viewport, broken_timer, limit_ms=20)
+        with self.assertRaisesRegex(RuntimeError, "timer failed"):
+            broken_latch.begin(104)
+        self.assertTrue(broken_viewport.enabled)
+        self.assertFalse(broken_latch.active)
+        self.assertEqual(broken_latch.begins, 0)
+        with self.assertRaisesRegex(ValueError, "1..50"):
+            OBSERVER.ObserverSpectrumPaintLatch(viewport, timer, limit_ms=0)
+
     def test_executor_queue_probe_distinguishes_wait_service_and_never_started(self):
         probe = OBSERVER.ExecutorQueueResidencyProbe(capacity=2)
         pending = []
@@ -803,6 +865,19 @@ class RtbwUploadWitnessTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("--max-unique-paint-gap-ms requires ABBA", result.stderr)
+
+    def test_observer_paint_latch_requires_exact_50_ms_gate(self):
+        with TemporaryDirectory(prefix="app05-paint-latch-validation-") as temporary:
+            output = Path(temporary) / "result.json"
+            result = subprocess.run([sys.executable, "-I",
+                str(ROOT / "scripts/benchmark_app05_rtbw_observation.py"), "--checkout", str(ROOT),
+                "--output", str(output), "--observer-spectrum-paint-latch-ms", "20",
+                "--cadence-causal-timeline", "--persistence-upload-age", "--persistence-abba",
+                "--qt-platform", "windows", "--expected-dpr", "1.75",
+                "--max-unique-paint-gap-ms", "100"], cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("a 50-ms cadence gate", result.stderr)
 
     def test_fixed_qt_target_requires_explicit_matched_visible_run(self):
         with TemporaryDirectory(prefix="app05-qt-target-validation-") as temporary:
