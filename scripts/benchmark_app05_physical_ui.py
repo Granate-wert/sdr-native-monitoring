@@ -637,6 +637,8 @@ def parser() -> argparse.ArgumentParser:
                         help="one timed Live -> calibration -> analyzer -> Stop lifecycle gate")
     result.add_argument("--teardown-timing", action="store_true",
                         help="diagnostic-only flushed stderr markers around Stop, close and process return")
+    result.add_argument("--c-stdio-bracket", action="store_true",
+                        help="diagnostic-only C stderr flush at lifecycle markers; perturbs all timings")
     result.add_argument("--process-resources", action="store_true",
                         help="opt-in bounded 1-Hz Windows private-byte/handle samples during physical Live")
     result.add_argument("--render-mode", choices=("direct", "visual"), default="direct")
@@ -666,6 +668,8 @@ def main() -> int:
     if args.hide_show and (args.duration < 6 or args.render_mode != "visual"
                            or args.hide_persistence or args.split_persistence or args.visual_substages):
         raise SystemExit("Hide/Show requires >=6 s Visual with persistence visible and no split/profile")
+    if args.c_stdio_bracket and not args.teardown_timing:
+        raise SystemExit("C stdio bracket requires --teardown-timing")
     output = args.output.resolve()
     if output.exists():
         raise SystemExit("output already exists; choose a new evidence path")
@@ -997,6 +1001,14 @@ def main() -> int:
         applied = None
         measurement_started_ns = measurement_finished_ns = None
         teardown_stage_events: list[dict[str, object]] = []
+        c_stdio_flushes: list[dict[str, object]] = []
+        c_flushers = {}
+        if args.c_stdio_bracket:
+            for library_name in ("msvcrt", "ucrtbase"):
+                flush = ctypes.CDLL(library_name).fflush
+                flush.argtypes = (ctypes.c_void_p,)
+                flush.restype = ctypes.c_int
+                c_flushers[library_name] = flush
 
         def mark_teardown(stage: str) -> None:
             if not args.teardown_timing:
@@ -1004,6 +1016,11 @@ def main() -> int:
             when_ns = perf_counter_ns()
             teardown_stage_events.append(dict(stage=stage, when_ns=when_ns))
             print(f"APP05_STAGE {when_ns} {stage}", file=sys.stderr, flush=True)
+            for library_name, flush in c_flushers.items():
+                print(f"APP05_CFLUSH_BEGIN {stage} {library_name}", file=sys.stderr, flush=True)
+                result = int(flush(None))
+                c_stdio_flushes.append(dict(stage=stage, library=library_name, result=result))
+                print(f"APP05_CFLUSH_RETURN {stage} {library_name} {result}", file=sys.stderr, flush=True)
 
         def lifecycle_snapshot() -> dict[str, object]:
             scene = workspace.visualization.spectrum_scene
@@ -1091,6 +1108,7 @@ def main() -> int:
                         if resource_sampler is not None:
                             resource_sampler.start(now)
                         observer.measuring = True
+                        mark_teardown("measurement_started")
                         phase = "measure"
                 elif phase == "measure":
                     if resource_sampler is not None:
@@ -1135,6 +1153,7 @@ def main() -> int:
                             failure = "native spectrum sequence did not advance during measurement"
                         if resource_sampler is not None:
                             resource_sampler.mark("measure_end", now)
+                        mark_teardown("measurement_ended_before_stop")
                         phase = "stop"
                         deadline_ns = now + 15_000_000_000
                 elif phase == "stop":
@@ -1277,6 +1296,7 @@ def main() -> int:
                                      overlap_witness=args.overlap_witness,
                                      hide_show=args.hide_show,
                                      process_resources=args.process_resources,
+                                     c_stdio_bracket=args.c_stdio_bracket,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
                                      backend="cpu", warmup_s=args.warmup,
                                      measurement_s=args.duration),
@@ -1315,10 +1335,13 @@ def main() -> int:
                       observer=observer.report(),
                       hide_show=hide_show_result,
                       teardown_stage_events=teardown_stage_events if args.teardown_timing else None,
+                      c_stdio_flushes=c_stdio_flushes if args.c_stdio_bracket else None,
                       teardown_stage_events_scope=(
                           "JSON includes markers through report_write_before; "
                           "main_returning is stderr-only. Flushed GUI-thread stderr "
-                          "markers perturb timing and are not a Stop/close latency benchmark"
+                          "markers perturb timing and are not a Stop/close latency benchmark. "
+                          "Optional C stdio flush also changes RX/GUI scheduling and only "
+                          "brackets when buffered libiio text becomes observable"
                           if args.teardown_timing else None),
                       persistence_substage_profile=visual_profile_result,
                       persistence_substage_profile_complete=visual_profile_complete,
