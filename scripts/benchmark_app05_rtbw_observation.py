@@ -883,6 +883,8 @@ def main(argv=None):
                         help="Opt-in same-grid AVERAGE/MAX/MIN UI stress overlays during visible ABBA; not backend statistics")
     parser.add_argument("--history-fixture", choices=("mixed", "noisy"), default="mixed",
                         help="Static high-contrast history stress shape; only with --static-history-overlays")
+    parser.add_argument("--observer-history-raster-cache", action="store_true",
+                        help="Diagnostic only: raster-cache static observer history items; not product UI")
     parser.add_argument("--theme", choices=("dark", "high_contrast"), default="dark",
                         help="Explicit visible V2 page theme; use high_contrast for matched history controls")
     parser.add_argument("--fixed-y-range", nargs=2, type=float, metavar=("LOWER", "UPPER"),
@@ -953,6 +955,8 @@ def main(argv=None):
         parser.error("static history overlays require high-contrast visible ABBA, fixed Y range, expected DPR and <=65536 bins")
     if args.history_fixture != "mixed" and not args.static_history_overlays:
         parser.error("--history-fixture requires static history overlays")
+    if args.observer_history_raster_cache and not args.static_history_overlays:
+        parser.error("--observer-history-raster-cache requires static history overlays")
     if args.fixed_y_range is not None and (not all(map(isfinite, args.fixed_y_range))
             or not 1 <= args.fixed_y_range[1] - args.fixed_y_range[0] <= 200):
         parser.error("fixed Y range must have finite LOWER < UPPER and 1..200 dB span")
@@ -1067,7 +1071,9 @@ def main(argv=None):
     import numpy as np
     import PySide6
     import pyqtgraph as pg
-    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtCore import QPointF, QTimer, Qt
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtWidgets import QWidget
     from sdr_monitor.domain.live import LiveSpectrumFrame
     from sdr_monitor.ui.v2.spectrum.persistence_contracts import PersistenceRenderMode
     from sdr_monitor.ui.v2.spectrum.persistence_overlay import PersistenceOverlay
@@ -1588,6 +1594,85 @@ def main(argv=None):
                     age.changed_during_paint += 1
 
     original_screen_dash_paint = ScreenDashCurveItem.paint
+    history_raster_cache: dict[int, tuple[tuple[object, ...], QImage]] = {}
+    history_raster_stats: dict[str, int] = dict(builds=0, hits=0, denials=0,
+                                                retained_bytes=0, peak_bytes=0)
+    history_raster_limit = 64 * 1024 * 1024
+
+    def drop_history_raster(curve_id: int) -> None:
+        old = history_raster_cache.pop(curve_id, None)
+        if old is not None:
+            history_raster_stats["retained_bytes"] -= old[1].sizeInBytes()
+
+    def raster_history_paint(curve, painter, option, widget):
+        device = painter.device()
+        dpr = device.devicePixelRatioF() if device is not None else 1.0
+        if (device is None or not 0.5 <= dpr <= 4.0 or painter.opacity() != 1.0
+                or painter.compositionMode() != QPainter.CompositionMode.CompositionMode_SourceOver):
+            drop_history_raster(id(curve))
+            return original_screen_dash_paint(curve, painter, option, widget)
+        x, y = curve.getData()
+        if x is None or y is None or len(x) < 2:
+            drop_history_raster(id(curve))
+            return original_screen_dash_paint(curve, painter, option, widget)
+        physical_width = (round(device.width() * dpr) if isinstance(device, QWidget)
+                          else device.width())
+        physical_height = (round(device.height() * dpr) if isinstance(device, QWidget)
+                           else device.height())
+        if not 1 <= physical_width <= 16384 or not 1 <= physical_height <= 16384:
+            drop_history_raster(id(curve))
+            return original_screen_dash_paint(curve, painter, option, widget)
+        transform = painter.worldTransform()
+        pen = curve.opts["pen"]
+        key = (physical_width, physical_height, dpr,
+               tuple(float(value) for value in (transform.m11(), transform.m12(),
+                   transform.m13(), transform.m21(), transform.m22(), transform.m23(),
+                   transform.m31(), transform.m32(), transform.m33())),
+               tuple((painter.window().x(), painter.window().y(),
+                      painter.window().width(), painter.window().height(),
+                      painter.viewport().x(), painter.viewport().y(),
+                      painter.viewport().width(), painter.viewport().height())),
+               pen.color().rgba(), int(pen.style().value), float(pen.widthF()),
+               bool(pen.isCosmetic()), hashlib.sha256(x.tobytes()).digest(),
+               hashlib.sha256(y.tobytes()).digest())
+        old = history_raster_cache.get(id(curve))
+        if old is None or old[0] != key:
+            drop_history_raster(id(curve))
+            old = None  # Drop the former QImage before admitting replacement capacity.
+            needed = physical_width * physical_height * 4
+            if (needed > history_raster_limit or history_raster_stats["retained_bytes"]
+                    + needed > history_raster_limit):
+                history_raster_stats["denials"] += 1
+                return original_screen_dash_paint(curve, painter, option, widget)
+            layer = QImage(physical_width, physical_height,
+                           QImage.Format.Format_ARGB32_Premultiplied)
+            if layer.isNull():
+                history_raster_stats["denials"] += 1
+                return original_screen_dash_paint(curve, painter, option, widget)
+            layer.setDevicePixelRatio(dpr)
+            layer.fill(Qt.GlobalColor.transparent)
+            offscreen = QPainter(layer)
+            try:
+                offscreen.setWindow(painter.window())
+                offscreen.setViewport(painter.viewport())
+                offscreen.setWorldTransform(transform)
+                original_screen_dash_paint(curve, offscreen, option, widget)
+            finally:
+                offscreen.end()
+            history_raster_cache[id(curve)] = (key, layer)
+            history_raster_stats["builds"] += 1
+            history_raster_stats["retained_bytes"] += layer.sizeInBytes()
+            history_raster_stats["peak_bytes"] = max(history_raster_stats["peak_bytes"],
+                                                      history_raster_stats["retained_bytes"])
+        else:
+            layer = old[1]
+            history_raster_stats["hits"] += 1
+        painter.save()
+        try:
+            painter.resetTransform()
+            painter.drawImage(QPointF(0.0, 0.0), layer)
+        finally:
+            painter.restore()
 
     def observed_screen_dash_paint(curve, painter, option, widget):
         role = history_overlay_curve_roles.get(id(curve))
@@ -1595,6 +1680,8 @@ def main(argv=None):
             return original_screen_dash_paint(curve, painter, option, widget)
         started = perf_counter()
         try:
+            if args.observer_history_raster_cache:
+                return raster_history_paint(curve, painter, option, widget)
             return original_screen_dash_paint(curve, painter, option, widget)
         finally:
             abba_blocks[abba_current_block]["history_paint_ms"][role].append(
@@ -1802,6 +1889,7 @@ def main(argv=None):
                 if history_overlay_scene is None:
                     return
                 for item in history_overlay_items.values():
+                    drop_history_raster(id(item.curve))
                     history_overlay_scene.plot_item.removeItem(item)
                     item.deleteLater()
                     if item.scene() is not None:
@@ -3058,6 +3146,11 @@ def main(argv=None):
                         if args.static_history_overlays else None),
                     removed_after_stop=(history_overlay_removed
                         if args.static_history_overlays else None),
+                    diagnostic_raster_cache=(dict(history_raster_stats,
+                        enabled=args.observer_history_raster_cache,
+                        limit_bytes=history_raster_limit,
+                        charged_to_product_budget=False)
+                        if args.static_history_overlays else None),
                     gate_passed=None,
                     scope="Observer-owned static same-grid AVERAGE/MAX/MIN plot items. They are not backend statistical traces. Timings are each item paint() on the GUI thread and the whole-canvas QWidget paint return, not DWM/scanout or RF throughput.")
                 abba_report["first_paint_cadence_gate_passed"] = (
@@ -3097,6 +3190,8 @@ def main(argv=None):
                     abba_report["static_history_overlays"]["gate_passed"] = bool(
                         sample_integrity and history_overlay_removed
                         and len(history_overlay_boundaries) == 10
+                        and not history_raster_cache
+                        and history_raster_stats["retained_bytes"] == 0
                         and abba_report["fixed_qt_target_gate_passed"] is True)
                 report["persistence_abba"] = abba_report
                 if args.projection_stage_timing:
