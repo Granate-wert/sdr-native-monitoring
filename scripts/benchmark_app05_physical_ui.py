@@ -633,8 +633,6 @@ def parser() -> argparse.ArgumentParser:
                         help="opt-in scalar Visual worker substage timings (perturbs timing)")
     result.add_argument("--overlap-witness", action="store_true",
                         help="observer-only one-helper Visual SHA/map overlap, not product wiring")
-    result.add_argument("--baseline-density-rows", action="store_true",
-                        help="observer-only old row-wise density mapping for matched product comparison")
     result.add_argument("--hide-show", action="store_true",
                         help="one timed Live -> calibration -> analyzer -> Stop lifecycle gate")
     result.add_argument("--teardown-timing", action="store_true",
@@ -936,11 +934,9 @@ def main() -> int:
 
     visual_patch = nullcontext() if visual_recorder is None else visual_profile()
     overlap_patch = nullcontext() if overlap_probe is None else overlap_probe
-    mapping_patch = (patch.object(persistence_projection_module, "_flat_mapping_eligible", new=lambda _: False)
-                     if args.baseline_density_rows else nullcontext())
     split_patch = (patch.object(product_live_module, "compose_v2_live_product", observed_compose)
                    if args.split_persistence else nullcontext())
-    with visual_patch, overlap_patch, mapping_patch, patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
+    with visual_patch, overlap_patch, patch.object(pg, "GraphicsLayoutWidget", MeasuredGraphics), patch.object(
             LivePresenter, "_poll_frames", observed_poll), patch.object(
             LivePresenter, "_emit_render", observed_emit), patch.object(
             SpectrumScene, "_accept_projection", observed_accept), patch.object(
@@ -1279,7 +1275,6 @@ def main() -> int:
                                      split_persistence=args.split_persistence,
                                      visual_substages=args.visual_substages,
                                      overlap_witness=args.overlap_witness,
-                                     baseline_density_rows=args.baseline_density_rows,
                                      hide_show=args.hide_show,
                                      process_resources=args.process_resources,
                                      render_mode=args.render_mode, display_fps=args.display_fps,

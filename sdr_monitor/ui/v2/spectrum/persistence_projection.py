@@ -185,29 +185,14 @@ def persistence_image_reserve(request: PersistenceImageRequest) -> int:
     """Output plus bounded NumPy mapping/reduction scratch, not Qt/native RSS.
 
     Inputs/accepted history are accounted separately by the shared root ledger.
-    Scratch: finite selection (input itemsize+bool), or Visual mapped image,
-    reusable smoothing mask and mapping finite mask (6 bytes/cell with history),
-    each at most IMAGE_BATCH cells. A batched C layout charges the full batch.
+    Scratch: finite selection (input itemsize+bool), or Visual mapped image and
+    reusable delta mask (5 bytes/cell), each at most IMAGE_BATCH cells.
     """
     density = request.view.density
-    batch = min(IMAGE_BATCH, density.size if _flat_mapping_eligible(density) else density.shape[1])
+    batch = min(IMAGE_BATCH, density.shape[1])
     hash_scratch = (persistence_witness_scratch(request.view)
                     if request.policy.mode is PersistenceRenderMode.VISUAL else 0)
-    mapping_bytes_per_cell = max(6 if request.history is not None else 5,
-                                 density.dtype.itemsize + 1)
-    return int(density.size * 4 + max(batch * mapping_bytes_per_cell, hash_scratch))
-
-
-def _flat_mapping_eligible(density: np.ndarray) -> bool:
-    """Batch adjacent C rows without changing the 64K-cell cancellation bound.
-
-    Short rows can otherwise multiply Python mapping/native smoothing calls by
-    the histogram height. Tiny fixtures and rows already >= one batch retain
-    their old path and scratch envelope.
-    """
-    # A subclass may override reshape() with a full copy despite C flags.
-    return (type(density) is np.ndarray and density.flags.c_contiguous and density.size >= IMAGE_BATCH
-            and 1024 <= density.shape[1] < IMAGE_BATCH)
+    return int(density.size * 4 + max(batch * max(5, density.dtype.itemsize + 1), hash_scratch))
 
 
 def _compatible_history(request: PersistenceImageRequest) -> np.ndarray | None:
@@ -259,22 +244,16 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
         # Do not keep the last reduction scratch alive during image mapping.
         del chunk
     image = np.empty(view.density.shape, dtype=np.float32)
-    flat_mapping = (_flat_mapping_eligible(view.density)
-                    and (history is None or type(history) is np.ndarray))
-    mapping_batch = min(IMAGE_BATCH, view.density.size if flat_mapping else image.shape[1])
     scratch = (None if history is None else
-               np.empty(mapping_batch, dtype=np.float32))
+               np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.float32))
     mask = (None if history is None else
-            np.empty(mapping_batch, dtype=np.bool_))
+            np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.bool_))
     native_smoothing = _visual_smoothing_kernel() if trusted_history else None
-    source_rows = (view.density.reshape(-1),) if flat_mapping else view.density
-    target_rows = (image.reshape(-1),) if flat_mapping else image
-    history_rows = ((history.reshape(-1),) if flat_mapping else history) if history is not None else None
-    for row_index, source_row in enumerate(source_rows):
+    for row_index, source_row in enumerate(view.density):
         for first in range(0, source_row.size, IMAGE_BATCH):
             check_cancelled(cancelled)
             source = source_row[first:first + IMAGE_BATCH]
-            target = target_rows[row_index][first:first + IMAGE_BATCH]
+            target = image[row_index, first:first + IMAGE_BATCH]
             mapped = target if scratch is None else scratch[:source.size]
             if source.flags.c_contiguous and source[0] == 0.0 and not np.any(source):
                 # All measured cells are signed zero: transfer is identity in
@@ -286,8 +265,7 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                 map_density_row_for_display(source, value_mode=view.value_mode,
                     logarithmic=request.policy.logarithmic, count_maximum=maximum, out=mapped)
             if history is not None:
-                assert history_rows is not None
-                old = history_rows[row_index][first:first + IMAGE_BATCH]
+                old = history[row_index, first:first + IMAGE_BATCH]
                 if native_smoothing is not None:
                     native_smoothing(mapped, old, target)
                 else:
