@@ -231,9 +231,13 @@ class AnalyzerWorkspaceV2(QWidget):
         self._unsubscribe_devices()
         self.sweep_preview.cancel()
         self.drawer.dispose()
+        # Terminal cleanup may be retried after a partial failure. Do not let
+        # Qt paint a PlotItem whose axes have already been retired.
+        self.visualization.hide()
         self.visualization.spectrum_scene.set_presentation_active(False)
         self.visualization.spectrum_scene.clear_measurement()
         self.visualization.waterfall_pane.release_presentation_after_shutdown()
+        self.visualization.spectrum_scene.release_graphics_after_shutdown()
         self._last_bundle = self._last_waterfall = self._last_persistence = None
         self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
         self._terminal_released = True

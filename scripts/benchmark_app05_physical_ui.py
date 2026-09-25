@@ -14,7 +14,10 @@ from __future__ import annotations
 import argparse
 from collections import Counter, OrderedDict, deque
 from contextlib import contextmanager, nullcontext
+import ctypes
+from ctypes import wintypes
 from dataclasses import asdict, replace
+from functools import cache
 import hashlib
 import json
 import os
@@ -38,6 +41,108 @@ NATIVE_COUNTER_FIELDS = (
     "snapshots_emitted", "snapshots_superseded", "persistence_updates",
     "persistence_snapshots_superseded",
 )
+
+
+class _ProcessMemoryCounters(ctypes.Structure):
+    _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+        (name, ctypes.c_size_t) for name in (
+            "peak_working_set", "working_set", "peak_paged", "paged", "peak_nonpaged",
+            "nonpaged", "pagefile", "peak_pagefile", "private_bytes")]
+
+
+@cache
+def _windows_resource_api():
+    if os.name != "nt":
+        raise RuntimeError("process resource observation requires Windows")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.GetProcessHandleCount.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetProcessHandleCount.restype = wintypes.BOOL
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessMemoryCounters), wintypes.DWORD]
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    return kernel, psapi
+
+
+def windows_process_resources() -> dict[str, int]:
+    """Sample this process only; private bytes are not the V2 allocation ledger."""
+    kernel, psapi = _windows_resource_api()
+    handle = kernel.GetCurrentProcess()
+    counters = _ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    handles = wintypes.DWORD()
+    if not kernel.GetProcessHandleCount(handle, ctypes.byref(handles)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return dict(private_bytes=int(counters.private_bytes), working_set_bytes=int(counters.working_set),
+                peak_working_set_bytes=int(counters.peak_working_set), handle_count=int(handles.value),
+                python_thread_count=threading.active_count())
+
+
+class ProcessResourceSampler:
+    """Opt-in, bounded scalar 1-Hz resource witness for one physical Live run."""
+
+    def __init__(self, *, reader=windows_process_resources, capacity: int = 160) -> None:
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 4:
+            raise ValueError("resource sample capacity must be at least four")
+        self._reader = reader
+        self._capacity = capacity
+        self._start_ns: int | None = None
+        self._next_due_ns: int | None = None
+        self._missed_due = 0
+        self._rows: list[dict[str, int | float | str]] = []
+
+    def _record(self, phase: str, when_ns: int) -> None:
+        if len(self._rows) >= self._capacity:
+            raise OverflowError("bounded process resource samples exhausted")
+        elapsed = 0.0 if self._start_ns is None else (when_ns - self._start_ns) / 1e9
+        self._rows.append(dict(phase=phase, elapsed_s=elapsed, **self._reader()))
+
+    def start(self, when_ns: int) -> None:
+        if self._start_ns is not None:
+            raise RuntimeError("resource measurement already started")
+        self._start_ns = when_ns
+        self._next_due_ns = when_ns + 1_000_000_000
+        self._record("measure_start", when_ns)
+
+    def tick(self, when_ns: int) -> None:
+        due = self._next_due_ns
+        if due is None or when_ns < due:
+            return
+        skipped = max(0, (when_ns - due) // 1_000_000_000)
+        self._missed_due += skipped
+        self._next_due_ns = due + (skipped + 1) * 1_000_000_000
+        self._record("measure", when_ns)
+
+    def mark(self, phase: str, when_ns: int) -> None:
+        if phase not in ("measure_end", "stop_ack", "after_close"):
+            raise ValueError("unknown resource phase")
+        if self._start_ns is None:
+            raise RuntimeError("resource measurement was not started")
+        self._record(phase, when_ns)
+
+    def report(self) -> dict[str, object]:
+        rows = self._rows
+        phases = {str(row["phase"]) for row in rows}
+        first = next((row for row in rows if row["phase"] == "measure_start"), None)
+        last = next((row for row in reversed(rows) if row["phase"] == "measure_end"), None)
+        measured = [row for row in rows if row["phase"] in ("measure_start", "measure", "measure_end")]
+        return dict(complete={"measure_start", "measure_end", "stop_ack", "after_close"} <= phases
+                    and len(measured) >= 3,
+                    capacity=self._capacity, retained=len(rows), missed_due_intervals=self._missed_due,
+                    measured_private_delta_bytes=(None if first is None or last is None else
+                        int(last["private_bytes"]) - int(first["private_bytes"])),
+                    measured_private_peak_bytes=(None if not measured else
+                        max(int(row["private_bytes"]) for row in measured)),
+                    measured_handle_delta=(None if first is None or last is None else
+                        int(last["handle_count"]) - int(first["handle_count"])),
+                    rows=rows,
+                    scope="Windows process private bytes/working set/handles and Python thread count at "
+                          "1-Hz due times plus lifecycle endpoints. A delayed Qt tick is reported, not "
+                          "interpolated. This does not identify native allocator owners, prove a leak-free "
+                          "long run, or bound GPU/driver allocations.")
 
 
 def counter_deltas(before: object, after: object, fields: tuple[str, ...]) -> dict[str, int]:
@@ -530,6 +635,8 @@ def parser() -> argparse.ArgumentParser:
                         help="one timed Live -> calibration -> analyzer -> Stop lifecycle gate")
     result.add_argument("--teardown-timing", action="store_true",
                         help="diagnostic-only flushed stderr markers around Stop, close and process return")
+    result.add_argument("--process-resources", action="store_true",
+                        help="opt-in bounded 1-Hz Windows private-byte/handle samples during physical Live")
     result.add_argument("--render-mode", choices=("direct", "visual"), default="direct")
     result.add_argument("--display-fps", type=int, choices=(15, 30, 60, 120, 144, 240), default=120)
     result.add_argument("--window-width", type=int, default=1400)
@@ -791,6 +898,7 @@ def main() -> int:
         return original_compose(presenter, **kwargs)
 
     report: dict[str, object] = {}
+    resource_sampler = ProcessResourceSampler() if args.process_resources else None
     visual_recorder = None
     visual_profiler_sha256 = None
     if args.visual_substages:
@@ -965,9 +1073,13 @@ def main() -> int:
                         projector_at_start = projector_counters(composition.spectrum_projector)
                         composition._presenter.reset_display_metrics()
                         measurement_started_ns = now
+                        if resource_sampler is not None:
+                            resource_sampler.start(now)
                         observer.measuring = True
                         phase = "measure"
                 elif phase == "measure":
+                    if resource_sampler is not None:
+                        resource_sampler.tick(now)
                     if not services.live_sdr.is_running():
                         observer.measuring = False
                         fail("physical RX left RUNNING during measurement")
@@ -1006,6 +1118,8 @@ def main() -> int:
                         projector_before_stop = projector_counters(composition.spectrum_projector)
                         if initial_sequence is None or final_sequence <= initial_sequence:
                             failure = "native spectrum sequence did not advance during measurement"
+                        if resource_sampler is not None:
+                            resource_sampler.mark("measure_end", now)
                         phase = "stop"
                         deadline_ns = now + 15_000_000_000
                 elif phase == "stop":
@@ -1019,6 +1133,8 @@ def main() -> int:
                 elif phase == "wait_stopped":
                     if state.live.primary_action.value != "stop" and not state.live.busy and not state.stopping:
                         mark_teardown("stop_acknowledged")
+                        if resource_sampler is not None:
+                            resource_sampler.mark("stop_ack", now)
                         if args.hide_show:
                             lifecycle["after_stop"] = lifecycle_snapshot()
                         mark_teardown("shell_close_before")
@@ -1050,6 +1166,11 @@ def main() -> int:
         if shell._is_closed and phase == "wait_closed":
             mark_teardown("shell_closed_after_loop")
             phase = "done"
+        if resource_sampler is not None and phase == "done":
+            try:
+                resource_sampler.mark("after_close", perf_counter_ns())
+            except Exception as error:
+                failure = ((failure + "; ") if failure else "") + f"resource endpoint failed: {error}"
         if phase != "done":
             try:
                 services.live_sdr.stop_and_wait(5.0)
@@ -1098,6 +1219,9 @@ def main() -> int:
                                    else bool(visual_profile_result["complete"]))
         if visual_profile_complete is False:
             failure = ((failure + "; ") if failure else "") + "Visual substage profile incomplete"
+        resource_result = None if resource_sampler is None else resource_sampler.report()
+        if resource_result is not None and not resource_result["complete"]:
+            failure = ((failure + "; ") if failure else "") + "process resource profile incomplete"
         hide_show_result = None
         if args.hide_show:
             shown_ns = lifecycle.get("show_intent_ns")
@@ -1116,7 +1240,7 @@ def main() -> int:
             if not hide_show_result["passed"]:
                 failed_checks = ", ".join(name for name, accepted in checks.items() if not accepted)
                 failure = ((failure + "; ") if failure else "") + f"Hide/Show gate: {failed_checks}"
-        report = dict(schema="app05-physical-visible-v2-v7", result="pass" if phase == "done" and
+        report = dict(schema="app05-physical-visible-v2-v8", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
                       failure=failure, phase=phase, source="physical-pluto-rx", uri=args.uri,
@@ -1134,6 +1258,7 @@ def main() -> int:
                                      split_persistence=args.split_persistence,
                                      visual_substages=args.visual_substages,
                                      hide_show=args.hide_show,
+                                     process_resources=args.process_resources,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
                                      backend="cpu", warmup_s=args.warmup,
                                      measurement_s=args.duration),
@@ -1179,6 +1304,7 @@ def main() -> int:
                           if args.teardown_timing else None),
                       persistence_substage_profile=visual_profile_result,
                       persistence_substage_profile_complete=visual_profile_complete,
+                      process_resources=resource_result,
                       allocation_budget=asdict(budget), workers_after_close=workers,
                       scope="Successful run means bounded RX/UI lifecycle evidence, not performance acceptance. "
                             "Visible Qt paint-return only; Pluto timestamp estimates sample start from refill "

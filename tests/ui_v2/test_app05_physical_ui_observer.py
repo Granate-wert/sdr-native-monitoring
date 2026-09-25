@@ -135,6 +135,82 @@ class PhysicalUiObserverTests(unittest.TestCase):
         self.assertEqual(args.display_fps, 120)
         self.assertEqual(args.buffer_samples, 262144)
         self.assertFalse(args.teardown_timing)
+        self.assertFalse(args.process_resources)
+
+    def test_process_resource_sampler_is_bounded_and_reports_missed_due_times(self):
+        state = {"private_bytes": 100, "working_set_bytes": 200,
+                 "peak_working_set_bytes": 250, "handle_count": 10,
+                 "python_thread_count": 2}
+        sampler = observer.ProcessResourceSampler(reader=lambda: dict(state), capacity=5)
+        sampler.start(0)
+        sampler.tick(500_000_000)
+        self.assertEqual(sampler.report()["retained"], 1)
+        state["private_bytes"] = 140
+        state["handle_count"] = 11
+        sampler.tick(1_000_000_000)
+        sampler.tick(2_000_000_000)
+        state["private_bytes"] = 160
+        state["handle_count"] = 12
+        sampler.mark("measure_end", 2_100_000_000)
+        sampler.mark("stop_ack", 2_200_000_000)
+        with self.assertRaisesRegex(OverflowError, "bounded"):
+            sampler.mark("after_close", 2_300_000_000)
+        self.assertFalse(sampler.report()["complete"])
+        with self.assertRaisesRegex(RuntimeError, "already started"):
+            sampler.start(3_000_000_000)
+
+        rows = observer.ProcessResourceSampler(reader=lambda: dict(state), capacity=6)
+        rows.start(0)
+        rows.tick(1_000_000_000)
+        state["private_bytes"] = 180
+        state["handle_count"] = 14
+        rows.tick(3_100_000_000)  # one missed 2-s deadline, never invented a sample
+        rows.mark("measure_end", 3_200_000_000)
+        rows.mark("stop_ack", 3_300_000_000)
+        rows.mark("after_close", 3_400_000_000)
+        report = rows.report()
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["retained"], 6)
+        self.assertEqual(report["missed_due_intervals"], 1)
+        self.assertEqual(report["measured_private_delta_bytes"], 20)
+        self.assertEqual(report["measured_handle_delta"], 2)
+        self.assertEqual(report["measured_private_peak_bytes"], 180)
+        self.assertEqual({row["phase"] for row in report["rows"]},
+                         {"measure_start", "measure", "measure_end", "stop_ack", "after_close"})
+
+    def test_process_resource_sampler_has_capacity_at_maximum_duration(self):
+        state = {"private_bytes": 100, "working_set_bytes": 200,
+                 "peak_working_set_bytes": 250, "handle_count": 10,
+                 "python_thread_count": 2}
+        for delayed in (False, True):
+            with self.subTest(delayed=delayed):
+                sampler = observer.ProcessResourceSampler(reader=lambda: dict(state))
+                sampler.start(0)
+                for second in range(1, 121):
+                    if delayed and 61 <= second <= 69:
+                        continue
+                    when_ns = second * 1_000_000_000
+                    if delayed and second == 70:
+                        when_ns += 250_000_000
+                    sampler.tick(when_ns)
+                sampler.mark("measure_end", 120_100_000_000)
+                sampler.mark("stop_ack", 120_200_000_000)
+                sampler.mark("after_close", 120_300_000_000)
+                report = sampler.report()
+                self.assertTrue(report["complete"])
+                self.assertEqual(report["retained"], 115 if delayed else 124)
+                self.assertEqual(report["missed_due_intervals"], 9 if delayed else 0)
+                self.assertLessEqual(report["retained"], report["capacity"])
+                self.assertEqual(report["rows"][-1]["phase"], "after_close")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows process counters")
+    def test_windows_process_resources_read_current_process_without_device(self):
+        sampled = observer.windows_process_resources()
+        self.assertGreater(sampled["private_bytes"], 0)
+        self.assertGreater(sampled["working_set_bytes"], 0)
+        self.assertGreater(sampled["peak_working_set_bytes"], 0)
+        self.assertGreater(sampled["handle_count"], 0)
+        self.assertGreaterEqual(sampled["python_thread_count"], 1)
 
     def test_visual_substage_profile_requires_an_explicit_flag(self):
         args = observer.parser().parse_args([

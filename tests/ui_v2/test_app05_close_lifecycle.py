@@ -214,6 +214,8 @@ class ProductCloseTests(unittest.TestCase):
             self.assertTrue(self.shell.isVisible())
             self.assertTrue(self.shell._status_bar.isVisible())
             self.assertFalse(self.shell._close_timer.isActive())
+            self.assertFalse(self.page.visualization.spectrum_scene._graphics_terminal_released)
+            self.assertFalse(self.page.visualization.waterfall_pane._graphics_terminal_released)
             other.assert_called_once()
             self.shell.close()
             self.wait(lambda: self.shell._is_closed)
@@ -269,6 +271,86 @@ class ProductCloseTests(unittest.TestCase):
         diag_cases.shutdown.assert_called_once()
         self.assertEqual(replay_cases.shutdown.call_count, 2)
         self.assertTrue(replay_presenter._shutdown_complete)
+
+    def test_terminal_ack_retires_pyqtgraph_axes_before_qt_module_shutdown(self):
+        spectrum = self.page.visualization.spectrum_scene
+        waterfall = self.page.visualization.waterfall_pane
+        self.assertIsNotNone(spectrum.plot_item.ctrlMenu)
+        self.assertIsNotNone(waterfall.plot_item.ctrlMenu)
+        self.assertIsNotNone(spectrum.plot_item.getAxis("left").label)
+        self.assertIsNotNone(waterfall.plot_item.getAxis("left").label)
+        self.shell.close()
+        self.wait(lambda: self.shell._is_closed)
+        self.assertTrue(spectrum._graphics_terminal_released)
+        self.assertTrue(waterfall._graphics_terminal_released)
+        self.assertIsNone(spectrum.plot_item.ctrlMenu)
+        self.assertIsNone(waterfall.plot_item.ctrlMenu)
+        self.assertIsNone(spectrum.plot_item.axes)
+        self.assertIsNone(waterfall.plot_item.axes)
+        self.assertIsNone(waterfall._linked_frequency_source)
+        self.assertIsNone(waterfall._source_x_range_callback)
+        self.assertIsNone(waterfall._waterfall_x_range_callback)
+        spectrum.release_graphics_after_shutdown()
+        waterfall.release_presentation_after_shutdown()
+
+    def test_terminal_graphics_cleanup_retry_after_waterfall_release(self):
+        spectrum = self.page.visualization.spectrum_scene
+        waterfall = self.page.visualization.waterfall_pane
+        release = spectrum.release_graphics_after_shutdown
+        calls = []
+
+        def fail_once():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("injected spectrum graphics release failure")
+            release()
+
+        with patch.object(spectrum, "release_graphics_after_shutdown", side_effect=fail_once):
+            self.assertFalse(self.shell.close())
+            self.wait(lambda: waterfall._graphics_terminal_released and len(calls) == 1)
+            self.assertFalse(self.shell._is_closed)
+            self.assertFalse(self.page._terminal_released)
+            self.assertFalse(spectrum._graphics_terminal_released)
+            self.assertFalse(self.page.visualization.isVisible())
+            self.assertIsNone(waterfall._linked_frequency_source)
+            self.shell.close()
+            self.wait(lambda: self.shell._is_closed)
+
+        self.assertEqual(calls, [1, 1])
+        self.assertTrue(self.page._terminal_released)
+        self.assertTrue(spectrum._graphics_terminal_released)
+        self.assertTrue(waterfall._graphics_terminal_released)
+
+    def test_terminal_graphics_cleanup_resumes_partial_plotitem_close(self):
+        spectrum = self.page.visualization.spectrum_scene
+        waterfall = self.page.visualization.waterfall_pane
+        axis = spectrum.plot_item.getAxis("left")
+        original_close = axis.close
+        calls = []
+
+        def fail_once():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("injected failure inside PlotItem.close")
+            original_close()
+
+        with patch.object(axis, "close", side_effect=fail_once):
+            self.assertFalse(self.shell.close())
+            self.wait(lambda: spectrum.plot_item.ctrlMenu is None and not self.shell._is_closed)
+            self.assertFalse(self.page.visualization.isVisible())
+            self.assertIsNotNone(spectrum.plot_item.axes)
+            self.assertIsNotNone(spectrum.plot_item.vb)
+            self.assertFalse(spectrum._graphics_terminal_released)
+            self.assertTrue(waterfall._graphics_terminal_released)
+            self.shell.close()
+            self.wait(lambda: self.shell._is_closed)
+
+        self.assertEqual(calls, [1])
+        self.assertTrue(spectrum._graphics_terminal_released)
+        self.assertIsNone(spectrum.plot_item.axes)
+        self.assertIsNone(spectrum.plot_item.vb)
+        self.assertIsNone(axis.label)
+        self.assertIsNone(axis.scene())
 
     def test_multiple_async_ports_are_requested_before_polling_next(self):
         calls = []

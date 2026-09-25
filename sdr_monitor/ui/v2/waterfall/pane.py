@@ -6,7 +6,7 @@ from ..spectrum.allocation_budget import PresentationBudgetExceeded
 
 from dataclasses import dataclass, replace
 from functools import lru_cache
-from typing import cast
+from typing import Callable, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
 from ..i18n import UiLocale, enum_text, text
 from ..spectrum.axis import FrequencyAxis
+from ..spectrum.plot_terminal import retire_plot_item_after_shutdown
 from .axis import WaterfallTimeAxis
 from .bounded_ring import BoundedWaterfallRenderer, DEFAULT_WATERFALL_PRESENTATION_BUDGET
 from .contracts import (
@@ -92,8 +93,12 @@ class WaterfallPane(QWidget):
         self._sweep_mode = False
         self._capacity_change_rejected = False
         self._metrics = WaterfallPaneMetrics()
+        self._graphics_terminal_released = False
+        self._graphics_state_disconnected = False
         self._x_syncing = False
         self._linked_frequency_source: pg.ViewBox | None = None
+        self._source_x_range_callback: Callable[..., None] | None = None
+        self._waterfall_x_range_callback: Callable[..., None] | None = None
         self._linked_frequency_available = False
         self._settings_timer = QTimer(self)
         self._settings_timer.setSingleShot(True)
@@ -207,15 +212,34 @@ class WaterfallPane(QWidget):
 
     def link_frequency_view_box(self, source: pg.ViewBox) -> None:
         """Synchronize exact x ranges without letting an empty pane add padding."""
+        self._unlink_frequency_view_box()
 
-        source.sigXRangeChanged.connect(
-            lambda _view_box, interval: self._synchronize_x_range(self._view_box, interval)
-        )
-        self._view_box.sigXRangeChanged.connect(
-            lambda _view_box, interval: self._synchronize_x_range(source, interval)
-        )
+        def source_callback(_view_box: pg.ViewBox, interval: list[float]) -> None:
+            self._synchronize_x_range(self._view_box, interval)
+
+        def waterfall_callback(_view_box: pg.ViewBox, interval: list[float]) -> None:
+            self._synchronize_x_range(source, interval)
+
+        source.sigXRangeChanged.connect(source_callback)
+        self._view_box.sigXRangeChanged.connect(waterfall_callback)
         self._linked_frequency_source = source
+        self._source_x_range_callback = source_callback
+        self._waterfall_x_range_callback = waterfall_callback
         self._synchronize_x_range(self._view_box, source.viewRange()[0])
+
+    def _unlink_frequency_view_box(self) -> None:
+        source = self._linked_frequency_source
+        if source is None:
+            return
+        source_callback = self._source_x_range_callback
+        if source_callback is not None:
+            source.sigXRangeChanged.disconnect(source_callback)
+            self._source_x_range_callback = None
+        waterfall_callback = self._waterfall_x_range_callback
+        if waterfall_callback is not None:
+            self._view_box.sigXRangeChanged.disconnect(waterfall_callback)
+            self._waterfall_x_range_callback = None
+        self._linked_frequency_source = None
 
     def set_line(self, frame: object) -> None:
         """Admit a declared row into the bounded display ring, or fail closed."""
@@ -357,10 +381,21 @@ class WaterfallPane(QWidget):
 
     def release_presentation_after_shutdown(self) -> None:
         """Terminal window cleanup, not local Clear/hide/Stop history policy."""
+        if self._graphics_terminal_released:
+            return
         self.set_presentation_active(False)
         self.clear_history(reset_kind=True)
         self._renderer.reset()  # clear_history keeps capacity for the next row
         self._grid_signature = None
+        self._unlink_frequency_view_box()
+        if self._plot_item.axes is not None:
+            for name in ("left", "right", "top", "bottom"):
+                self._plot_item.getAxis(name).unlinkFromView()
+        if not self._graphics_state_disconnected:
+            self._view_box.sigStateChanged.disconnect(self._plot_item.viewStateChanged)
+            self._graphics_state_disconnected = True
+        retire_plot_item_after_shutdown(self._plot_item)
+        self._graphics_terminal_released = True
 
     def set_history_seconds(self, seconds: int) -> None:
         try:

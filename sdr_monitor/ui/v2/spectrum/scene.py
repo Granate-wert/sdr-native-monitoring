@@ -47,6 +47,7 @@ from .persistence_contracts import (
 from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
 from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
 from .persistence_projector import PersistenceDelivery, PersistenceWork
+from .plot_terminal import retire_plot_item_after_shutdown
 from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
 from .screen_dash import ScreenDashPlotDataItem
 from .sweep_coverage_overlay import SweepCoverageOverlay
@@ -117,6 +118,8 @@ class SpectrumScene(QWidget):
         self._auto_vertical_range = AutoVerticalRange()
         self._shortcut_popover: ContextPopover | None = None
         self._measurement_available: bool | None = None
+        self._graphics_terminal_released = False
+        self._graphics_state_disconnected = False
         self._build_ui()
         self._sweep_position = SweepPositionOverlay(self._plot_item, self._locale)
         self.sweep_coverage = SweepCoverageOverlay(self._plot_item, self._locale)
@@ -522,6 +525,28 @@ class SpectrumScene(QWidget):
         self._plot_item.setLabel("left", "")
         self._empty_overlay.setVisible(True)
         self._set_measurement_available(False)
+
+    def release_graphics_after_shutdown(self) -> None:
+        """Retire pyqtgraph axes before Qt destroys their child text objects.
+
+        This is terminal shell cleanup, never a Live Stop or hidden-page action.
+        PlotItem.close() removes its axes/ViewBox while the scene is still valid;
+        otherwise PySide module shutdown may deliver an AxisItem resize event
+        after its QGraphicsTextItem label has already been deleted.
+        """
+        if self._graphics_terminal_released:
+            return
+        self._projection_timer.stop()
+        if self._plot_item.axes is not None:
+            for name in ("left", "right", "top", "bottom"):
+                self._plot_item.getAxis(name).unlinkFromView()
+        # PlotItem.close() clears autoBtn but pyqtgraph leaves this ViewBox
+        # signal connected; a late range update would call updateButtons().
+        if not self._graphics_state_disconnected:
+            self._view_box.sigStateChanged.disconnect(self._plot_item.viewStateChanged)
+            self._graphics_state_disconnected = True
+        retire_plot_item_after_shutdown(self._plot_item)
+        self._graphics_terminal_released = True
 
     def _set_measurement_available(self, available: bool) -> None:
         """Keep empty axes unlabelled without destroying linked plot geometry."""
