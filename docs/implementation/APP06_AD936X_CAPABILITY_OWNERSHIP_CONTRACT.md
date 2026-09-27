@@ -45,8 +45,27 @@ identity, invalid facts/routes, probe/capability/constructor failures and idle
 close. They prove this adapter's control flow, not native hardware cleanup,
 RF continuity or device-swap behavior.
 
-Optional receiver topology is obtained through its existing separate native
-read-only probe, after this temporary device has closed. It is not a new
+The APP-06A native constructor now opens exactly one context. Its model,
+serial, firmware, backend and device identifiers are inspected through that
+owner's libiio function table, before control-channel discovery and capability
+readback. The probe and capability identity therefore come from the context
+that this PlutoDevice subsequently configures for RX, not a separate preflight
+open. The shared private implementation is used by Windows and Linux; Windows
+mock-driver tests cover distinct serials on every open, one live owner,
+idempotent disconnect/destructor and cleanup after version/timeout errors.
+Linux source parity is not a substitute for a Linux build or hardware test.
+
+This is not discovery-to-Start identity revalidation or a verified unique
+serial on every AD936x firmware. Empty native serial stays empty. A read-only
+2026-09-27 check through the installed iio_info 0.26 independently found both
+hw_serial and usb,serial empty on the connected AD9364. Model, firmware and a
+USB URI cannot manufacture unique physical identity. The strict capability
+mapper must still reject that observation; no firmware change is implied.
+Older active/frozen binaries retain their earlier constructor until explicitly
+rebuilt and qualified; source changes alone do not prove their behavior.
+
+Optional receiver topology is still obtained through its existing separate
+native read-only probe, after this temporary device has closed. It is not a
 same-handle topology attestation; shared LO remains unknown. Physical family
 support and configured ADC rate must keep their existing evidence qualifiers.
 

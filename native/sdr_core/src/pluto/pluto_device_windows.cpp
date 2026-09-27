@@ -1,4 +1,5 @@
 #include "sdr_pluto/pluto_backend.hpp"
+#include "context_probe.hpp"
 
 #include "sdr_core/buffer_pool.hpp"
 #include "sdr_core/errors.hpp"
@@ -93,6 +94,9 @@ struct Api final {
     using create_context_fn = iio_context* (*)(const char*);
     using destroy_context_fn = void (*)(iio_context*);
     using timeout_fn = int (*)(iio_context*, unsigned int);
+    using context_string_fn = const char* (*)(const iio_context*);
+    using context_version_fn = int (*)(const iio_context*, unsigned int*, unsigned int*, char[8]);
+    using context_attr_fn = const char* (*)(const iio_context*, const char*);
     using devices_count_fn = unsigned int (*)(const iio_context*);
     using get_device_fn = iio_device* (*)(const iio_context*, unsigned int);
     using find_device_fn = iio_device* (*)(const iio_context*, const char*);
@@ -125,6 +129,10 @@ struct Api final {
     create_context_fn create_context{library.symbol<create_context_fn>("iio_create_context_from_uri")};
     destroy_context_fn destroy_context{library.symbol<destroy_context_fn>("iio_context_destroy")};
     timeout_fn set_timeout{library.symbol<timeout_fn>("iio_context_set_timeout")};
+    context_string_fn context_name{library.symbol<context_string_fn>("iio_context_get_name")};
+    context_string_fn context_description{library.symbol<context_string_fn>("iio_context_get_description")};
+    context_version_fn context_version{library.symbol<context_version_fn>("iio_context_get_version")};
+    context_attr_fn context_attr{library.symbol<context_attr_fn>("iio_context_get_attr_value")};
     devices_count_fn devices_count{library.symbol<devices_count_fn>("iio_context_get_devices_count")};
     get_device_fn get_device{library.symbol<get_device_fn>("iio_context_get_device")};
     find_device_fn find_device{library.symbol<find_device_fn>("iio_context_find_device")};
@@ -368,12 +376,12 @@ public:
     Impl(std::string uri, const std::uint32_t timeout_ms)
         : api_(std::make_unique<Api>()), uri_(std::move(uri)) {
         if (!(uri_.starts_with("usb:") || uri_.starts_with("ip:"))) throw std::invalid_argument("Pluto URI must start with usb: or ip:");
-        probe_ = probe_context(uri_, timeout_ms);
         context_ = api_->create_context(uri_.c_str());
         if (context_ == nullptr) throw std::runtime_error("iio_create_context_from_uri failed for " + uri_);
         try {
             const int timeout_result = api_->set_timeout(context_, timeout_ms);
             if (timeout_result < 0) throw std::runtime_error("iio_context_set_timeout failed: " + api_->error(timeout_result));
+            probe_ = detail::inspect_open_context(*api_, context_, uri_);
             discover_locked();
             capabilities_ = read_capabilities_locked();
             connected_.store(true, std::memory_order_release);

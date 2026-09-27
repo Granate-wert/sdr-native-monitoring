@@ -18,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-struct iio_context {};
+struct iio_context { std::string serial; };
 struct iio_scan_context {};
 struct iio_context_info { const char* uri; const char* description; };
 struct iio_device { int kind; };
@@ -64,6 +64,7 @@ std::atomic<int> phase_gate_kind{}, phase_gate_ordinal{1}, phase_gate_visits{};
 std::atomic<long long> phase_gate_frequency{};
 std::atomic<bool> phase_gate_entered{}, phase_gate_release{true}, phase_gate_expired{}, phase_gate_written{};
 std::atomic<int> live_buffers{}, created_buffers{};
+std::atomic<int> live_contexts{}, created_contexts{}, destroyed_contexts{};
 
 void phase_gate(int kind, long long center) {
     if (phase_gate_kind.load() != kind || phase_gate_frequency.load() != center) return;
@@ -132,6 +133,13 @@ __declspec(dllexport) int mock_iio_phase_gate_expired() { return phase_gate_expi
 __declspec(dllexport) void mock_iio_release_phase_gate() { phase_gate_release = true; phase_gate_kind = 0; }
 __declspec(dllexport) int mock_iio_live_buffers() { return live_buffers.load(); }
 __declspec(dllexport) int mock_iio_created_buffers() { return created_buffers.load(); }
+__declspec(dllexport) void mock_iio_reset_context_counts() {
+    created_contexts = 0;
+    destroyed_contexts = 0;
+}
+__declspec(dllexport) int mock_iio_live_contexts() { return live_contexts.load(); }
+__declspec(dllexport) int mock_iio_created_contexts() { return created_contexts.load(); }
+__declspec(dllexport) int mock_iio_destroyed_contexts() { return destroyed_contexts.load(); }
 __declspec(dllexport) iio_scan_context* iio_create_scan_context(const char*, unsigned int) { return new iio_scan_context; }
 __declspec(dllexport) void iio_scan_context_destroy(iio_scan_context* value) { delete value; }
 __declspec(dllexport) std::ptrdiff_t iio_scan_context_get_info_list(iio_scan_context*, iio_context_info*** output) {
@@ -162,25 +170,40 @@ __declspec(dllexport) int iio_buffer_set_blocking_mode(iio_buffer*, bool) { retu
 __declspec(dllexport) int iio_buffer_get_poll_fd(const iio_buffer*) { return -1; }
 __declspec(dllexport) iio_context* iio_create_context_from_uri(const char* uri) {
     delay_from_env("SDR_MOCK_LIBIIO_CONSTRUCTOR_DELAY_MS");
-    return uri != nullptr && (std::strncmp(uri, "usb:", 4) == 0 || std::strncmp(uri, "ip:", 3) == 0) ? new iio_context : nullptr;
+    if (uri == nullptr || !(std::strncmp(uri, "usb:", 4) == 0 || std::strncmp(uri, "ip:", 3) == 0)) return nullptr;
+    const auto ordinal = ++created_contexts;
+    auto* context = new iio_context{
+        std::getenv("SDR_MOCK_LIBIIO_CONTEXT_SCOPED_IDENTITY") != nullptr
+            ? "OPEN-" + std::to_string(ordinal) : "MOCK"
+    };
+    ++live_contexts;
+    return context;
 }
-__declspec(dllexport) void iio_context_destroy(iio_context* value) { delete value; }
+__declspec(dllexport) void iio_context_destroy(iio_context* value) {
+    if (value != nullptr) { --live_contexts; ++destroyed_contexts; }
+    delete value;
+}
 __declspec(dllexport) const char* iio_context_get_name(const iio_context*) { return "mock"; }
 __declspec(dllexport) const char* iio_context_get_description(const iio_context*) { return "mock Pluto context"; }
 __declspec(dllexport) int iio_context_get_version(const iio_context*, unsigned int* major, unsigned int* minor, char tag[8]) {
+    if (std::getenv("SDR_MOCK_LIBIIO_CONTEXT_VERSION_FAIL") != nullptr) return -EIO;
     *major = 0U;
     *minor = 25U;
     strcpy_s(tag, 8U, "mock");
     return 0;
 }
-__declspec(dllexport) int iio_context_set_timeout(iio_context*, unsigned int) { return 0; }
-__declspec(dllexport) const char* iio_context_get_attr_value(const iio_context*, const char* attr) {
+__declspec(dllexport) int iio_context_set_timeout(iio_context*, unsigned int) {
+    return std::getenv("SDR_MOCK_LIBIIO_CONTEXT_TIMEOUT_FAIL") != nullptr ? -EIO : 0;
+}
+__declspec(dllexport) const char* iio_context_get_attr_value(const iio_context* context, const char* attr) {
     if (std::strcmp(attr, "hw_model") == 0) {
         return extended_ad9363_profile()
             ? "PlutoSDR mock (AD9363 custom firmware extended profile)"
             : "PlutoSDR mock";
     }
-    if (std::strcmp(attr, "hw_serial") == 0) return "MOCK";
+    if (std::strcmp(attr, "hw_serial") == 0) {
+        return std::getenv("SDR_MOCK_LIBIIO_EMPTY_SERIAL") != nullptr ? "" : context->serial.c_str();
+    }
     if (std::strcmp(attr, "fw_version") == 0) return "mock-fw";
     return nullptr;
 }

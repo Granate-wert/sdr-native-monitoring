@@ -41,6 +41,10 @@ struct MockHooks final {
     int_fn entered{};
     void_fn release{};
     int_fn destroyed{};
+    void_fn reset_context_counts{};
+    int_fn created_contexts{};
+    int_fn destroyed_contexts{};
+    int_fn live_contexts{};
 
     MockHooks() {
         const char* path = std::getenv("LIBIIO_DLL_PATH");
@@ -51,8 +55,14 @@ struct MockHooks final {
         entered = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_cancel_entered"));
         release = reinterpret_cast<void_fn>(GetProcAddress(module, "mock_iio_release_cancel"));
         destroyed = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_destroyed_during_cancel"));
-        if (reset == nullptr || entered == nullptr || release == nullptr || destroyed == nullptr) {
-            throw std::runtime_error("mock cancel-race hooks are missing");
+        reset_context_counts = reinterpret_cast<void_fn>(GetProcAddress(module, "mock_iio_reset_context_counts"));
+        created_contexts = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_created_contexts"));
+        destroyed_contexts = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_destroyed_contexts"));
+        live_contexts = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_live_contexts"));
+        if (reset == nullptr || entered == nullptr || release == nullptr || destroyed == nullptr ||
+            reset_context_counts == nullptr || created_contexts == nullptr ||
+            destroyed_contexts == nullptr || live_contexts == nullptr) {
+            throw std::runtime_error("mock lifecycle hooks are missing");
         }
     }
     ~MockHooks() { if (module != nullptr) FreeLibrary(module); }
@@ -68,6 +78,40 @@ int main() {
         if (contexts.size() != 1U || contexts.front().uri != "usb:mock") return 2;
         const auto probe = sdr_pluto::probe_context("usb:mock");
         if (probe.phy_device_id.empty() || probe.rx_stream_device_id != "iio:device2") return 3;
+        // Each open has a distinct identity: a temporary preflight context
+        // must not provide the evidence for a subsequently opened receiver.
+        MockHooks identity_hooks;
+        if (identity_hooks.live_contexts() != 0) return 45;
+        identity_hooks.reset_context_counts();
+        _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_SCOPED_IDENTITY", "1");
+        {
+            sdr_pluto::PlutoDevice same_handle("usb:mock");
+            if (identity_hooks.created_contexts() != 1 || identity_hooks.live_contexts() != 1 ||
+                identity_hooks.destroyed_contexts() != 0 || same_handle.probe().serial != "OPEN-1" ||
+                same_handle.capabilities().serial != "OPEN-1") return 46;
+            same_handle.disconnect();
+            same_handle.disconnect();
+            if (identity_hooks.live_contexts() != 0 || identity_hooks.destroyed_contexts() != 1) return 47;
+        }
+        if (identity_hooks.destroyed_contexts() != 1) return 48;
+        _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_SCOPED_IDENTITY", "");
+        // Unknown identity stays unknown. Do not synthesize a route serial.
+        _putenv_s("SDR_MOCK_LIBIIO_EMPTY_SERIAL", "1");
+        {
+            sdr_pluto::PlutoDevice unknown_identity("usb:mock");
+            if (!unknown_identity.probe().serial.empty() || !unknown_identity.capabilities().serial.empty()) return 49;
+        }
+        _putenv_s("SDR_MOCK_LIBIIO_EMPTY_SERIAL", "");
+        for (const char* failure : {"SDR_MOCK_LIBIIO_CONTEXT_VERSION_FAIL", "SDR_MOCK_LIBIIO_CONTEXT_TIMEOUT_FAIL"}) {
+            identity_hooks.reset_context_counts();
+            _putenv_s(failure, "1");
+            bool rejected = false;
+            try { sdr_pluto::PlutoDevice failed_open("usb:mock"); }
+            catch (const std::runtime_error&) { rejected = true; }
+            _putenv_s(failure, "");
+            if (!rejected || identity_hooks.created_contexts() != 1 ||
+                identity_hooks.destroyed_contexts() != 1 || identity_hooks.live_contexts() != 0) return 50;
+        }
         const auto single_topology = sdr_pluto::probe_receiver_topology("usb:mock");
         if (single_topology.phy_rx_channel_ids.size() != 1U || single_topology.input_scan_elements.size() != 2U ||
             single_topology.input_scan_elements.front().id != "voltage0" ||
