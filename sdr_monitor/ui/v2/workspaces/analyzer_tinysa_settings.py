@@ -156,8 +156,8 @@ class TinySaSettingsDrawer(QFrame):
                 combo.setItemText(index, text(key))
         for field, key in self._field_labels:
             field.setAccessibleName(text(key))
-        self.rbw.setSuffix(" kHz")
-        self.attenuation.setSuffix(" dB")
+        self.rbw.setSuffix(text("tinysa.settings.unit.khz"))
+        self.attenuation.setSuffix(text("tinysa_analyzer.unit.db"))
         self.screen_time.setSuffix(text("tinysa.common.seconds"))
         for numeric in (self.average, self.screen_time):
             numeric.setSpecialValueText(text("tinysa.settings.preserve"))
