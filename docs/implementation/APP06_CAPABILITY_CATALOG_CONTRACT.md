@@ -630,6 +630,35 @@ counters remain distinct; larger groups naturally produce fewer new spectra.
 Software/native numerical tests do not qualify actual hardware/current EXE,
 visible Windows/DWM, high-Fs speed, FHD/QHD/DPI or long-soak cells.
 
+## HackRF detector-group latency and loss interpretation (2026-09-27)
+
+A physical USB source-process check used the SAME common application owner and
+the exact c9f6837 packaged native/factory2/optionalDSP1/SDK. Three explicit
+Start/Stop profiles were observed: requested20MS/s/FFT4096/group8,
+16MS/s/FFT16384/group8, and20MS/s/FFT262144/group256. The latter first spectrum
+arrived after5.26s, within its10.07s host watchdog, but recorded two software
+ingress loss events and nonzero FFT-discard counters. Normal Stop joined the
+worker and cleared callbacks/slots/ready depth and the logical owner in all
+three observations. This is bounded lifecycle/profile evidence, NOT a
+loss-free high-load performance or universal timing guarantee.
+
+The existing CPU gap flush counts staged FFTs AND already computed partial
+detector-group contributions as fft_frames_dropped. Never interpret that
+counter as exclusively never-computed FFTs, USB packet loss, display omission
+or Qt FPS. A source gap resets incomplete groups rather than averaging across
+a discontinuity; group completion, native output rate, sampled latest snapshots
+and unique visible paints remain different metrics. SDK-requested Fs and
+host-admitted sample rate do not establish ADC readback or RF duty.
+
+This check invoked no network/IIO discovery/context or tinySA serial and
+constructed no Qt renderer. Current EXE startup/Discover was separately
+observed through Windows Computer Use, but a Windows permission dialog blocked
+normal UI selection/Start. Neither a backend-only check nor copied package
+bytes close that actual EXE/device/transport/UI cell. Security-dialog actions
+and firewall rules are never changed automatically; static-path reuse does
+not guarantee future prompt suppression.
+
+
 ## Required further work
 
 TinySA physical resynchronization/Basic and current-input upper-band qualification,
