@@ -30,6 +30,8 @@ from sdr_monitor.services.tinysa_owned_acquisition import TinySaOwnedAcquisition
 from sdr_monitor.services.tinysa_serial_source_backend import TinySaSerialSourceBackend
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.product_live import compose_v2_live_product
+from sdr_monitor.ui.v2.state.prepared_sweep import prepare_sweep_snapshot
+from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerViewModel
 from sdr_monitor.ui.v2_composition import build_v2_shell
 from tests.test_app06_pluto_observation_catalog import _Native
 from tests.test_app06_tinysa_owned_acquisition import _pnp, _Serial
@@ -309,6 +311,7 @@ class TinySaActualCompositionTests(unittest.TestCase):
                 self.assertIsNone(g.live._external_analyzer_owner)
                 self.assertFalse(g.catalog.cleanup_pending)
                 self.assertIn(text("tinysa.common.numerical"), page.applied.text())
+                self.assertNotIn(text("analyzer.sweep_time"), page.status.text())
                 self.assertEqual(len(g.serials), 1)
                 first = state.bundle.spectrum
                 page.tinysa_bar.points.setValue(3)
@@ -317,6 +320,38 @@ class TinySaActualCompositionTests(unittest.TestCase):
                           c.analyzer_view_model.state.bundle.spectrum.epoch > first.epoch and
                           not c.analyzer_view_model.state.controls_locked)
                 self.assertEqual(c.analyzer_view_model.state.bundle.spectrum.values_db.size, 3)
+                # A late/foreign prepared publication cannot replace the current
+                # accepted instrument measurement, even during an active run.
+                run = g.instrument.instrument_run_identity
+                sweep_guard = SimpleNamespace(prepares_snapshots=True, instrument_run_identity=run,
+                    prepared_snapshot_ready=Mock(), snapshot_ready=Mock(), task_failed=Mock(),
+                    running_changed=Mock(), starting_changed=Mock(), stopping_changed=Mock(), can_close=lambda: True)
+                guard = AnalyzerViewModel(c.view_model, sweep_guard)
+                try:
+                    guard._instrument_request = replace(run.request, epoch=0)
+                    guard._running = True
+                    snapshot = g.instrument.poll_latest()
+                    accepted = prepare_sweep_snapshot(snapshot, snapshot.analyzer_bundle)
+                    guard._on_sweep_snapshot(accepted)
+                    self.assertIs(guard.state.bundle.spectrum, snapshot.line)
+                    line = snapshot.line
+                    variants = (
+                        replace(line, source_id="foreign-instrument"),
+                        replace(line, epoch=line.epoch + 1),
+                        replace(line, instrument=replace(line.instrument,
+                            configuration_generation=run.configuration_generation + 1)),
+                        replace(line, instrument=replace(line.instrument,
+                            selection_revision=run.request.selection_revision + 1)),
+                        replace(line, instrument=replace(line.instrument, firmware_fingerprint="sha256:" + "f" * 64)),
+                    )
+                    for foreign in variants:
+                        with self.subTest(axis=foreign):
+                            refused = replace(snapshot, line=foreign)
+                            guard._on_sweep_snapshot(prepare_sweep_snapshot(refused, refused.analyzer_bundle))
+                            self.assertIs(guard.state.bundle.spectrum, line)
+                            self.assertIn("Rejected stale/foreign", guard.state.error)
+                finally:
+                    guard.dispose()
             self.assertEqual(errors, [])
         finally:
             set_active_locale(previous)

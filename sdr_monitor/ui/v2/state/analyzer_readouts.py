@@ -73,7 +73,6 @@ def analyzer_status(state: AnalyzerViewState) -> str:
             parts.append(text("analyzer.frame_loss", samples=frame.dropped_samples_before,
                               blocks=frame.dropped_iq_blocks_before, fft=frame.dropped_fft_frames_before))
     else:
-        parts.append(text("analyzer.sweep_time"))
         if isinstance(frame, SweepLineFrame) and frame.instrument is not None:
             p = frame.instrument
             parts.append(text("tinysa.common.trace", points=p.points, elapsed=f"{p.host_elapsed_s:.2f}"))
@@ -81,6 +80,7 @@ def analyzer_status(state: AnalyzerViewState) -> str:
             if frame.gap_reasons:
                 parts.append(", ".join(reason.value for reason in frame.gap_reasons))
             return " · ".join(parts)
+        parts.append(text("analyzer.sweep_time"))
         statistics = bundle.sweep_statistics
         if statistics is not None:
             parts.append(text("analyzer.sweep_statistics", passes=statistics.retained_passes,

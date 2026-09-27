@@ -421,13 +421,11 @@ class AnalyzerWorkspaceV2(QWidget):
         state = self.model.state
         if not self.primary.isEnabled() or self.drawer.isVisible() or self.display_controls.isVisible():
             return
-        if state.running or state.stop_required:
-            self._execute()
-        elif state.tinysa_controls_available and self.tinysa_bar.valid:
-            self._execute()
-        elif (state.live.primary_action is LiveAction.START and state.rtbw_profile_ready
-              and not self.hackrf_bar.dirty
-              and not self.drawer.dirty and not self.drawer.pending):
+        if (state.running or state.stop_required
+                or state.tinysa_controls_available and self.tinysa_bar.valid
+                or (state.live.primary_action is LiveAction.START and state.rtbw_profile_ready
+                    and not self.hackrf_bar.dirty
+                    and not self.drawer.dirty and not self.drawer.pending)):
             self._execute()
 
     def _update_primary_availability(self) -> None:

@@ -11,8 +11,7 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
-from sdr_monitor.domain.device_capabilities import DeviceFamily
-from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability
+from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
 
 from ..state.live_view_state import LiveAction, LiveViewState
@@ -76,7 +75,8 @@ class AnalyzerViewState:
         return bool(source is not None and source.family is DeviceFamily.TINYSA
                     and selection is not None and not selection.release_pending
                     and source.binding.snapshot is not None and source.binding.calibration_identity is not None
-                    and source.runtime is not None and source.runtime.availability is AdapterRuntimeAvailability.AVAILABLE
+                    and source.runtime is not None
+                    and source.runtime.availability is AdapterRuntimeAvailability.AVAILABLE
                     and source.binding.snapshot.model_id in {"tinysa_basic", "tinysa_ultra"})
 
     @property
