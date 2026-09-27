@@ -1,4 +1,6 @@
 #include "sdr_pluto/pluto_backend.hpp"
+#include "sdr_pluto/fixed_band_engine.hpp"
+#include "sdr_pluto/continuous_sweep_coordinator.hpp"
 #include "sdr_core/dual_rx_dsp.hpp"
 #include "sdr_core/errors.hpp"
 
@@ -45,6 +47,8 @@ struct MockHooks final {
     int_fn created_contexts{};
     int_fn destroyed_contexts{};
     int_fn live_contexts{};
+    int_fn mutation_calls{};
+    int_fn created_buffers{};
 
     MockHooks() {
         const char* path = std::getenv("LIBIIO_DLL_PATH");
@@ -59,9 +63,12 @@ struct MockHooks final {
         created_contexts = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_created_contexts"));
         destroyed_contexts = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_destroyed_contexts"));
         live_contexts = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_live_contexts"));
+        mutation_calls = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_rf_mutation_calls"));
+        created_buffers = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_created_buffers"));
         if (reset == nullptr || entered == nullptr || release == nullptr || destroyed == nullptr ||
             reset_context_counts == nullptr || created_contexts == nullptr ||
-            destroyed_contexts == nullptr || live_contexts == nullptr) {
+            destroyed_contexts == nullptr || live_contexts == nullptr ||
+            mutation_calls == nullptr || created_buffers == nullptr) {
             throw std::runtime_error("mock lifecycle hooks are missing");
         }
     }
@@ -111,6 +118,52 @@ int main() {
             _putenv_s(failure, "");
             if (!rejected || identity_hooks.created_contexts() != 1 ||
                 identity_hooks.destroyed_contexts() != 1 || identity_hooks.live_contexts() != 0) return 50;
+        }
+        // Device, RTBW/sequential-Sweep engine and continuous-Sweep owner all
+        // gate the same opened context before RF writes/channel enables/buffers.
+        for (int kind = 0; kind < 3; ++kind) {
+            const auto construct = [kind](const std::optional<std::string>& expected) {
+                if (kind == 0) { sdr_pluto::PlutoDevice owner("usb:mock", 3000U, expected); }
+                else if (kind == 1) { sdr_pluto::FixedBandEngine owner("usb:mock", 3000U, expected); }
+                else { sdr_pluto::ContinuousSweepCoordinator owner("usb:mock", 3000U, expected); }
+            };
+            const int mutations_before = identity_hooks.mutation_calls();
+            const int buffers_before = identity_hooks.created_buffers();
+            identity_hooks.reset_context_counts();
+            construct(" moCK ");
+            if (identity_hooks.created_contexts() != 1 || identity_hooks.destroyed_contexts() != 1 ||
+                identity_hooks.live_contexts() != 0) return 51;
+            for (const bool missing_observed : {false, true}) {
+                identity_hooks.reset_context_counts();
+                _putenv_s("SDR_MOCK_LIBIIO_EMPTY_SERIAL", missing_observed ? "1" : "");
+                bool rejected = false;
+                try { construct("PRIVATE-EXPECTED-SERIAL"); }
+                catch (const std::runtime_error& error) {
+                    const std::string message(error.what());
+                    rejected = message.find("PRIVATE") == std::string::npos && message.find("usb:") == std::string::npos;
+                }
+                _putenv_s("SDR_MOCK_LIBIIO_EMPTY_SERIAL", "");
+                if (!rejected || identity_hooks.created_contexts() != 1 ||
+                    identity_hooks.destroyed_contexts() != 1 || identity_hooks.live_contexts() != 0) return 52;
+            }
+            // A separately observed MOCK serial cannot authorize OPEN-1.
+            identity_hooks.reset_context_counts();
+            _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_SCOPED_IDENTITY", "1");
+            bool changed_context_rejected = false;
+            try { construct(probe.serial); }
+            catch (const std::runtime_error&) { changed_context_rejected = true; }
+            _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_SCOPED_IDENTITY", "");
+            if (!changed_context_rejected || identity_hooks.created_contexts() != 1 ||
+                identity_hooks.destroyed_contexts() != 1 || identity_hooks.live_contexts() != 0) return 53;
+            for (const char* invalid : {"", "UNKNOWN", "None", "N/A", "-", "contains space", "a\nb"}) {
+                identity_hooks.reset_context_counts();
+                bool rejected = false;
+                try { construct(std::string(invalid)); }
+                catch (const std::invalid_argument&) { rejected = true; }
+                if (!rejected || identity_hooks.created_contexts() != 0 || identity_hooks.live_contexts() != 0) return 54;
+            }
+            if (identity_hooks.mutation_calls() != mutations_before ||
+                identity_hooks.created_buffers() != buffers_before) return 55;
         }
         const auto single_topology = sdr_pluto::probe_receiver_topology("usb:mock");
         if (single_topology.phy_rx_channel_ids.size() != 1U || single_topology.input_scan_elements.size() != 2U ||

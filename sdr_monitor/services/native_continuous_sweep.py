@@ -19,6 +19,7 @@ from ..domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousS
 from ..domain.sweep_progress import SweepProgressFrame
 from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
 from ..domain.sweep_statistics import SweepStatisticsFrame
+from .ad936x_identity_admission import create_identity_bound_owner
 
 
 class ContinuousSweepDisplayPort(Protocol):
@@ -55,13 +56,17 @@ class NativeContinuousSweepDisplayService:
     rather than widget-owned mutable state.
     """
 
-    def __init__(self, native_module: Any, context_uri: str, *, timeout_ms: int = 3000) -> None:
+    def __init__(self, native_module: Any, context_uri: str, *, timeout_ms: int = 3000,
+                 expected_serial: str | None = None) -> None:
         if not context_uri.strip() or timeout_ms <= 0:
             raise ValueError("continuous sweep context URI and timeout must be positive")
         coordinator_type = getattr(native_module, "NativeContinuousSweepCoordinator", None)
         if coordinator_type is None:
             raise RuntimeError("native continuous sweep coordinator is unavailable")
-        self._coordinator = coordinator_type(context_uri, timeout_ms)
+        self._coordinator = create_identity_bound_owner(
+            native_module, "NativeContinuousSweepCoordinator", context_uri, timeout_ms,
+            expected_serial=expected_serial,
+        )
         self._lock = threading.RLock()
         self._closed = False
         self._closing = False

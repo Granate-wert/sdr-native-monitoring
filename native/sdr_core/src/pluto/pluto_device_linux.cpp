@@ -360,15 +360,17 @@ void store_le_i16(std::uint8_t* destination, const std::int16_t value) {
 
 class PlutoDevice::Impl final {
 public:
-    Impl(std::string uri, const std::uint32_t timeout_ms)
+    Impl(std::string uri, const std::uint32_t timeout_ms, const std::optional<std::string>& expected_serial)
         : api_(std::make_unique<Api>()), uri_(std::move(uri)) {
         if (!(uri_.starts_with("usb:") || uri_.starts_with("ip:"))) throw std::invalid_argument("Pluto URI must start with usb: or ip:");
+        detail::validate_expected_serial(expected_serial);
         context_ = api_->create_context(uri_.c_str());
         if (context_ == nullptr) throw std::runtime_error("iio_create_context_from_uri failed for " + uri_);
         try {
             const int timeout_result = api_->set_timeout(context_, timeout_ms);
             if (timeout_result < 0) throw std::runtime_error("iio_context_set_timeout failed: " + api_->error(timeout_result));
             probe_ = detail::inspect_open_context(*api_, context_, uri_);
+            detail::admit_context_identity(probe_, expected_serial);
             discover_locked();
             capabilities_ = read_capabilities_locked();
             connected_.store(true, std::memory_order_release);
@@ -930,8 +932,8 @@ private:
     StreamMetrics metrics_;
     std::unique_ptr<sdr_core::BufferPool> pool_;
 };
-PlutoDevice::PlutoDevice(std::string uri, const std::uint32_t timeout_ms)
-    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms)) {}
+PlutoDevice::PlutoDevice(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
+    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, expected_serial)) {}
 PlutoDevice::~PlutoDevice() = default;
 PlutoDevice::PlutoDevice(PlutoDevice&&) noexcept = default;
 PlutoDevice& PlutoDevice::operator=(PlutoDevice&&) noexcept = default;

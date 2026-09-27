@@ -353,8 +353,8 @@ void validate(const FixedBandConfig& value) {
 
 class FixedBandEngine::Impl final {
 public:
-    Impl(std::string uri, const std::uint32_t timeout_ms)
-        : device_(std::move(uri), timeout_ms) {}
+    Impl(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
+        : device_(std::move(uri), timeout_ms, std::move(expected_serial)) {}
 
     ~Impl() noexcept {
         shutdown_noexcept();
@@ -2180,8 +2180,8 @@ private:
     std::thread spectrum_recorder_thread_;
 };
 
-FixedBandEngine::FixedBandEngine(std::string uri, const std::uint32_t timeout_ms)
-    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms)) {}
+FixedBandEngine::FixedBandEngine(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
+    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, std::move(expected_serial))) {}
 FixedBandEngine::~FixedBandEngine() noexcept = default;
 AppliedConfig FixedBandEngine::configure(const FixedBandConfig& config) {
     return impl_->configure(config);

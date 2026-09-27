@@ -19,6 +19,7 @@ from .native_continuous_sweep import (
     NativeContinuousSweepDisplayService,
 )
 from .native_sweep import NativeSweepLease
+from .ad936x_identity_admission import create_identity_bound_owner
 
 
 class NativeContinuousSweepPlanFactory:
@@ -221,7 +222,8 @@ class NativeContinuousSweepPlanFactory:
     def create_display_service(self) -> NativeContinuousSweepDisplayService:
         self._require_open()
         return NativeContinuousSweepDisplayService(
-            self._lease.native_module, self._lease.source.context_uri
+            self._lease.native_module, self._lease.source.context_uri,
+            expected_serial=self._lease.source.expected_serial,
         )
 
     def create_coordinator(self, *, timeout_ms: int = 3000) -> Any:
@@ -235,8 +237,10 @@ class NativeContinuousSweepPlanFactory:
         self._require_open()
         if timeout_ms <= 0:
             raise ValueError("continuous sweep coordinator timeout must be positive")
-        return self._lease.native_module.NativeContinuousSweepCoordinator(
-            self._lease.source.context_uri, timeout_ms
+        return create_identity_bound_owner(
+            self._lease.native_module, "NativeContinuousSweepCoordinator",
+            self._lease.source.context_uri, timeout_ms,
+            expected_serial=self._lease.source.expected_serial,
         )
 
     def evidence_build_info(self) -> dict[str, str]:

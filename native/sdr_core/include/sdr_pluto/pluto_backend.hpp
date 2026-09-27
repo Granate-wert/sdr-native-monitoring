@@ -157,7 +157,10 @@ struct StreamMetrics {
 
 class PlutoDevice final {
 public:
-    explicit PlutoDevice(std::string uri, std::uint32_t timeout_ms = 3000U);
+    // When supplied, identity is checked on the owned context before any RF
+    // configure/stream call. Nullopt is explicitly unknown, not stable proof.
+    explicit PlutoDevice(std::string uri, std::uint32_t timeout_ms = 3000U,
+                         std::optional<std::string> expected_serial = std::nullopt);
     ~PlutoDevice();
 
     PlutoDevice(const PlutoDevice&) = delete;

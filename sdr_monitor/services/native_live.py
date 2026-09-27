@@ -55,7 +55,7 @@ from ..domain import (
     as_timestamp_ns,
 )
 from .live_session import InMemoryLiveSessionService
-from .ad936x_identity_admission import normalized_pluto_serial
+from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 
 # P07 defaults mirrored from the legacy adapter contract.
@@ -310,7 +310,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 # Probe with a temporary device and release its context
                 # immediately.  Keeping the probe context open blocks the
                 # fixed-band engine from opening the same USB device.
-                temporary = self._native.PlutoDevice(uri, self._timeout_ms)
+                temporary = create_identity_bound_owner(
+                    self._native, "PlutoDevice", uri, self._timeout_ms,
+                    expected_serial=normalized_pluto_serial(selected.serial),
+                )
                 try:
                     temporary.probe()
                 finally:
@@ -513,7 +516,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 candidate = None
                 attempt_started = time.monotonic()
                 try:
-                    candidate = self._native.PlutoFixedBandEngine(route, self._timeout_ms)
+                    candidate = create_identity_bound_owner(
+                        self._native, "PlutoFixedBandEngine", route, self._timeout_ms,
+                        expected_serial=normalized_pluto_serial(device.serial) if device else None,
+                    )
                     candidate_applied = candidate.configure(
                         _native_fixed_band_config(
                             self._native,
@@ -864,6 +870,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     uri,
                     f"native-sweep:{snapshot.device.device_id}",
                     snapshot.applied.applied,
+                    expected_serial=normalized_pluto_serial(snapshot.device.serial),
                 )
                 self._sweep_lease_active = True
                 return NativeSweepLease(

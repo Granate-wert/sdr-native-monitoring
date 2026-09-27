@@ -7,7 +7,7 @@ batches; raw I/Q never reaches Python or Qt.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 import json
 import math
@@ -37,6 +37,7 @@ from ..domain import (
     SweepState,
 )
 from .native_live import build_native_fixed_band_config
+from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .sweep_stitching import SweepStitchOptions, stitch_sweep_segments
 
 
@@ -52,12 +53,15 @@ class NativeSweepSource:
     context_uri: str
     source_id: str
     live_configuration: LiveConfiguration
+    expected_serial: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.context_uri.strip() or not self.source_id.strip():
             raise ValueError("native sweep source route and identity must not be blank")
         if self.live_configuration.backend is not BackendKind.CPU:
             raise ValueError("native sweep currently requires the verified CPU backend")
+        if self.expected_serial is not None and normalized_pluto_serial(self.expected_serial) is None:
+            raise ValueError("expected Pluto identity must be a known serial")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +202,10 @@ class NativeSweepService:
             error_messages: list[str] = []
             cancelled = False
             try:
-                engine = self._native.PlutoFixedBandEngine(self._source.context_uri, self._timeout_ms)
+                engine = create_identity_bound_owner(
+                    self._native, "PlutoFixedBandEngine", self._source.context_uri,
+                    self._timeout_ms, expected_serial=self._source.expected_serial,
+                )
                 self._engine = engine
                 self._shutdown_phase = 0
                 for segment in plan.segments:

@@ -170,7 +170,8 @@ struct LatestSpectrumFrameDrain {
 // in the high-rate path.
 class FixedBandEngine final {
 public:
-    explicit FixedBandEngine(std::string uri, std::uint32_t timeout_ms = 3000U);
+    explicit FixedBandEngine(std::string uri, std::uint32_t timeout_ms = 3000U,
+                             std::optional<std::string> expected_serial = std::nullopt);
     ~FixedBandEngine() noexcept;
 
     FixedBandEngine(const FixedBandEngine&) = delete;

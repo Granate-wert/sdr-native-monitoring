@@ -12,6 +12,33 @@
 
 namespace sdr_pluto::detail {
 
+// Must match Python normalized_pluto_serial; ASCII only, no route inference.
+inline std::optional<std::string> normalized_serial(const std::string& value) {
+    constexpr std::string_view whitespace = " \t\n\r\v\f";
+    const auto first = value.find_first_not_of(whitespace);
+    if (first == std::string::npos) return std::nullopt;
+    auto serial = value.substr(first, value.find_last_not_of(whitespace) - first + 1U);
+    for (auto& character : serial) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (byte < 33U || byte > 126U) return std::nullopt;
+        if (character >= 'A' && character <= 'Z') character = static_cast<char>(character + ('a' - 'A'));
+    }
+    if (serial == "-" || serial == "unknown" || serial == "n/a" || serial == "none") return std::nullopt;
+    return serial;
+}
+
+inline void validate_expected_serial(const std::optional<std::string>& expected) {
+    if (expected.has_value() && !normalized_serial(*expected).has_value()) {
+        throw std::invalid_argument("expected Pluto identity must be a known serial");
+    }
+}
+
+inline void admit_context_identity(const ContextProbe& probe, const std::optional<std::string>& expected) {
+    if (expected.has_value() && normalized_serial(probe.serial) != normalized_serial(*expected)) {
+        throw std::runtime_error("Pluto receiver identity was not confirmed on the opened context");
+    }
+}
+
 // Observe the caller-owned context through that owner's libiio function table.
 // Never open, destroy, configure, enable a channel, or allocate an IIO buffer.
 // Keeping this private and shared makes the Windows/Linux device constructors

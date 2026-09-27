@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -108,7 +109,8 @@ struct ContinuousSweepCoordinatorMetrics {
 
 class ContinuousSweepCoordinator final {
 public:
-    explicit ContinuousSweepCoordinator(std::string uri, std::uint32_t timeout_ms = 3000U);
+    explicit ContinuousSweepCoordinator(std::string uri, std::uint32_t timeout_ms = 3000U,
+                                        std::optional<std::string> expected_serial = std::nullopt);
     ~ContinuousSweepCoordinator() noexcept;
 
     ContinuousSweepCoordinator(const ContinuousSweepCoordinator&) = delete;

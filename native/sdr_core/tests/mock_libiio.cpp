@@ -65,6 +65,7 @@ std::atomic<long long> phase_gate_frequency{};
 std::atomic<bool> phase_gate_entered{}, phase_gate_release{true}, phase_gate_expired{}, phase_gate_written{};
 std::atomic<int> live_buffers{}, created_buffers{};
 std::atomic<int> live_contexts{}, created_contexts{}, destroyed_contexts{};
+std::atomic<int> rf_mutation_calls{};
 
 void phase_gate(int kind, long long center) {
     if (phase_gate_kind.load() != kind || phase_gate_frequency.load() != center) return;
@@ -140,6 +141,7 @@ __declspec(dllexport) void mock_iio_reset_context_counts() {
 __declspec(dllexport) int mock_iio_live_contexts() { return live_contexts.load(); }
 __declspec(dllexport) int mock_iio_created_contexts() { return created_contexts.load(); }
 __declspec(dllexport) int mock_iio_destroyed_contexts() { return destroyed_contexts.load(); }
+__declspec(dllexport) int mock_iio_rf_mutation_calls() { return rf_mutation_calls.load(); }
 __declspec(dllexport) iio_scan_context* iio_create_scan_context(const char*, unsigned int) { return new iio_scan_context; }
 __declspec(dllexport) void iio_scan_context_destroy(iio_scan_context* value) { delete value; }
 __declspec(dllexport) std::ptrdiff_t iio_scan_context_get_info_list(iio_scan_context*, iio_context_info*** output) {
@@ -265,6 +267,7 @@ __declspec(dllexport) std::ptrdiff_t iio_channel_attr_read(const iio_channel* ch
     const auto count = std::min(length, text.size()); std::memcpy(dst, text.data(), count); return static_cast<std::ptrdiff_t>(count);
 }
 __declspec(dllexport) std::ptrdiff_t iio_channel_attr_write(const iio_channel* channel, const char* attr, const char* value) {
+    ++rf_mutation_calls;
     if (channel != &phy_rx || std::strcmp(attr, "gain_control_mode") != 0) return -EINVAL;
     const std::string next(value); if (next != "manual" && next != "slow_attack" && next != "fast_attack" && next != "hybrid") return -EINVAL;
     if (std::getenv("SDR_MOCK_LIBIIO_GAIN_MODE_MISMATCH") == nullptr) gain_mode = next;
@@ -281,6 +284,7 @@ __declspec(dllexport) int iio_channel_attr_read_longlong(const iio_channel* chan
     return 0;
 }
 __declspec(dllexport) int iio_channel_attr_write_longlong(const iio_channel* channel, const char* attr, long long value) {
+    ++rf_mutation_calls;
     if (channel == &phy_rx && std::strcmp(attr, "sampling_frequency") == 0) {
         delay_from_env("SDR_MOCK_LIBIIO_CONFIG_DELAY_MS");
         if (value < 2'083'333LL || value > 61'440'000LL) return -EINVAL;
@@ -305,9 +309,10 @@ __declspec(dllexport) int iio_channel_attr_read_double(const iio_channel* channe
     if (channel != &phy_rx || std::strcmp(attr, "hardwaregain") != 0) return -EINVAL; *value = gain; return 0;
 }
 __declspec(dllexport) int iio_channel_attr_write_double(const iio_channel* channel, const char* attr, double value) {
+    ++rf_mutation_calls;
     if (channel != &phy_rx || std::strcmp(attr, "hardwaregain") != 0 || value < -3.0 || value > 71.0) return -EINVAL; gain = value; return 0;
 }
-__declspec(dllexport) void iio_channel_enable(iio_channel* value) { value->enabled = true; }
+__declspec(dllexport) void iio_channel_enable(iio_channel* value) { ++rf_mutation_calls; value->enabled = true; }
 __declspec(dllexport) void iio_channel_disable(iio_channel* value) { value->enabled = false; }
 __declspec(dllexport) const iio_data_format* iio_channel_get_data_format(const iio_channel*) {
     format.bits = std::getenv("SDR_MOCK_LIBIIO_FORMAT_16") != nullptr ? 16U : 12U;

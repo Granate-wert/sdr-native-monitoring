@@ -67,6 +67,9 @@ py::array_t<T> readonly_sweep_image(const SharedArray<T>& values, std::uint32_t 
 }  // namespace
 
 void bind_pluto(py::module_& module) {
+    // Separate from spectrum schema: known-serial callers must fail closed on
+    // older runtimes rather than perform a separate, non-owning preflight.
+    module.attr("PLUTO_IDENTITY_ADMISSION_PROTOCOL_VERSION") = 1;
     py::class_<sdr_core::DualRxChannelDspConfig>(module, "DualRxChannelDspConfig")
         .def(py::init([](
             const sdr_core::SourceDescriptor& source,
@@ -961,7 +964,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("spectrum_queue_high_water", &sdr_pluto::ContinuousSweepCoordinatorMetrics::spectrum_queue_high_water);
 
     py::class_<sdr_pluto::ContinuousSweepCoordinator>(module, "NativeContinuousSweepCoordinator")
-        .def(py::init<std::string, std::uint32_t>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::call_guard<py::gil_scoped_release>())
+        .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def("configure", &sdr_pluto::ContinuousSweepCoordinator::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("start", &sdr_pluto::ContinuousSweepCoordinator::start, py::call_guard<py::gil_scoped_release>())
         .def("request_stop", &sdr_pluto::ContinuousSweepCoordinator::request_stop, py::call_guard<py::gil_scoped_release>())
@@ -978,7 +981,7 @@ void bind_pluto(py::module_& module) {
     // pybind11 3.x rejects call_guard as a def_property_readonly attribute.
     // Wrap each native getter so the Python property and GIL policy both remain.
     py::class_<sdr_pluto::FixedBandEngine>(module, "PlutoFixedBandEngine")
-        .def(py::init<std::string, std::uint32_t>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::call_guard<py::gil_scoped_release>())
+        .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def("configure", &sdr_pluto::FixedBandEngine::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("reconfigure", &sdr_pluto::FixedBandEngine::reconfigure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("start", &sdr_pluto::FixedBandEngine::start, py::call_guard<py::gil_scoped_release>())
@@ -1006,7 +1009,7 @@ void bind_pluto(py::module_& module) {
         .def("poll_events", &sdr_pluto::FixedBandEngine::poll_events, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>());
 
     py::class_<sdr_pluto::PlutoDevice>(module, "PlutoDevice")
-        .def(py::init<std::string, std::uint32_t>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::call_guard<py::gil_scoped_release>())
+        .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("connected", py::cpp_function(
             &sdr_pluto::PlutoDevice::connected, py::call_guard<py::gil_scoped_release>()))
         .def_property_readonly("streaming", py::cpp_function(
