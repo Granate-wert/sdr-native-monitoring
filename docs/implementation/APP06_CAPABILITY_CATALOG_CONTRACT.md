@@ -365,6 +365,17 @@ Port closure still does NOT prove immediate termination of internal instrument
 RF scanning. Cancel-to-next-Start physical resynchronization, Basic/Ultra upper
 input/settings qualification and frozen executable acceptance remain separate.
 
+tinySA measurement duration is an instrument/profile characteristic, NOT by
+itself an application defect. Do not apply SDR FFT-rate/high-Fs or a 50-ms RF
+sweep deadline to this instrument. Keep device scan/response duration separate
+from completion-to-UI delay and GUI/Stop responsiveness. A slow but valid full
+response is not a failed UI freshness gate before that response exists. Serial
+chunks must still not be marketed as progressive simultaneous RF measurements.
+Actual RF scan duration and RBW were not read back by this path; host elapsed
+collection is not a calibrated RF-time measurement. Failure to resynchronize
+after cancellation is a different protocol/lifecycle debt, never excused or
+diagnosed solely by the instrument's normally low scanning speed.
+
 ## Required further work
 
 TinySA firmware/input-aware settings/physical resynchronization and advanced HackRF
