@@ -207,7 +207,9 @@ class PhysicalUiObserverTests(unittest.TestCase):
 
                 witness = observer.TerminalNativeCancelWitness()
                 service = SimpleNamespace(_lock=threading.RLock(), _stop_event=threading.Event(),
-                                          _poller=None, _engine=Engine())
+                                          _poller=None, _engine=Engine(),
+                                          _observation_owner=SimpleNamespace(
+                                              close=lambda events=events: events.append("observation_close")))
 
                 def original_completion(owner, engine):
                     self.assertIs(owner, service)
@@ -219,7 +221,7 @@ class PhysicalUiObserverTests(unittest.TestCase):
                     observer.observe_terminal_native_completion(service, engine, witness, original_completion))
                 NativeLiveSessionService._release_stream(service, timeout_s=1.0)
                 self.assertEqual(events, ["request_stop", "join", "metrics", "original_completion",
-                                          "disconnect"])
+                                          "disconnect", "observation_close"])
                 self.assertIsNone(service._engine)
                 self.assertEqual(witness.report()["complete"], not metrics_fail)
 
