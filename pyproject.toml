@@ -36,7 +36,8 @@ gui = [
     "numba>=0.60",
 ]
 dev = [
-    "pyinstaller>=6.0",
+    # 6.22.0 generates invalid syntax for the required --hide-console option.
+    "pyinstaller==6.22.3",
     "ruff>=0.1",
     "mypy>=1.7",
 ]

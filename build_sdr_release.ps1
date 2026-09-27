@@ -13,6 +13,10 @@ $python = if ($env:SDR_PYTHON_EXECUTABLE) { $env:SDR_PYTHON_EXECUTABLE } else { 
 if (-not $python -or -not (Test-Path -LiteralPath $python)) { throw "Python 3.13 was not resolved" }
 $pythonVersion = (& $python -c 'import sys; print(str(sys.version_info.major) + "." + str(sys.version_info.minor))').Trim()
 if ($pythonVersion -ne "3.13") { throw "S12 requires frozen Python 3.13 ABI, got $pythonVersion" }
+if (-not $SkipFreeze) {
+    & $python (Join-Path $repoRoot "scripts\preflight_sdr_freezer.py") --entry (Join-Path $repoRoot "main_sdr.py")
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller console policy preflight failed" }
+}
 
 $releaseRoot = Join-Path $repoRoot ("dist\SDRNativeMonitoring-" + $Lane)
 if ($OutputTag) { $releaseRoot = "$releaseRoot-$OutputTag" }
