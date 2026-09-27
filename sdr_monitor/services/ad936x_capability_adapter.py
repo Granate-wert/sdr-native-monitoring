@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-import math
 from typing import Any, SupportsFloat, SupportsIndex, cast
 
 from ..domain.device_capabilities import (
@@ -46,7 +46,12 @@ class Ad936xCapabilityObservation:
 
 
 class Ad936xLibiioCapabilityAdapter:
-    """Own one temporary native context and publish no streaming operations."""
+    """Own one temporary context; a failed close blocks further observation.
+
+    Callers must explicitly retry ``close()`` after a cleanup failure. No
+    successful capability evidence is returned while that owner is retained.
+    This low-rate adapter does not configure or start a receiver.
+    """
 
     def __init__(self, native_module: Any, *, timeout_ms: int = 3000) -> None:
         if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms <= 0:
@@ -55,22 +60,34 @@ class Ad936xLibiioCapabilityAdapter:
             raise ValueError("canonical native module omits PlutoDevice")
         self._native = native_module
         self._timeout_ms = timeout_ms
+        self._pending_device: Any | None = None
+
+    def close(self) -> None:
+        """Release the retained owner, keeping it reachable if cleanup fails."""
+        device = self._pending_device
+        if device is None:
+            return
+        try:
+            device.disconnect()
+        except Exception:  # noqa: BLE001 - a failed native cleanup invalidates the observation.
+            raise Ad936xCapabilityObservationError(_GENERIC_FAILURE) from None
+        self._pending_device = None
 
     def observe(self, route: str) -> Ad936xCapabilityObservation:
         transport = _transport_for_route(route)
+        if self._pending_device is not None:
+            raise Ad936xCapabilityObservationError(_GENERIC_FAILURE)
         device: Any | None = None
         try:
             device = self._native.PlutoDevice(route, self._timeout_ms)
+            self._pending_device = device
             probe = device.probe()
             capabilities = device.capabilities()
         except Exception:
             raise Ad936xCapabilityObservationError(_GENERIC_FAILURE) from None
         finally:
             if device is not None:
-                try:
-                    device.disconnect()
-                except Exception:
-                    pass
+                self.close()
 
         try:
             serial = _required_native_text(getattr(probe, "serial", None), "serial")
