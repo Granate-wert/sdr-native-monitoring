@@ -415,6 +415,11 @@ void test_latest_drain_preserves_identity_and_separate_coalescing() {
     expect(latest.frame->dropped_fft_frames_before == 0U,
            "bridge coalescing became an analytical FFT drop");
     const auto after = dsp.metrics();
+#ifndef SDR_CORE_PROFILING_ENABLED
+#define SDR_CORE_PROFILING_ENABLED 0
+#endif
+    expect(after.stage_timing_available == (SDR_CORE_PROFILING_ENABLED != 0),
+           "HackRF worker timing did not match its build profile");
     expect(before.persistence_updates == 4U && after.persistence_updates == 4U &&
            after.dsp.fft_frames_computed == 4U && after.dsp.fft_frames_dropped == 0U,
            "presentation drain altered native FFT or upstream persistence");

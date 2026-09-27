@@ -103,6 +103,9 @@ target_include_directories(
 )
 target_compile_features(sdr_hackrf PUBLIC cxx_std_20)
 target_link_libraries(sdr_hackrf PUBLIC sdr_core::sdr_core)
+target_compile_definitions(sdr_hackrf
+    PRIVATE SDR_CORE_PROFILING_ENABLED=$<BOOL:${SDR_CORE_ENABLE_PROFILING}>
+)
 sdr_core_apply_platform_defaults(sdr_hackrf)
 sdr_core_apply_sanitizers(sdr_hackrf)
 if(SDR_CORE_BUILD_TESTS)
@@ -431,6 +434,9 @@ if(SDR_CORE_BUILD_TESTS)
     set_tests_properties(sdr_core.hackrf_official_close PROPERTIES TIMEOUT 120)
     add_executable(
         sdr_core_hackrf_fixed_band_dsp_test tests/test_hackrf_fixed_band_dsp.cpp
+    )
+    target_compile_definitions(sdr_core_hackrf_fixed_band_dsp_test
+        PRIVATE SDR_CORE_PROFILING_ENABLED=$<BOOL:${SDR_CORE_ENABLE_PROFILING}>
     )
     target_link_libraries(
         sdr_core_hackrf_fixed_band_dsp_test PRIVATE sdr_core::sdr_hackrf
