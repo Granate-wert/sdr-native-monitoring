@@ -40,7 +40,8 @@ class App02KeyboardUiaTests(unittest.TestCase):
         finally:
             self.fixture.doCleanups()
 
-    def _publish(self, sequence: int, *, state: LiveSessionState | None = None) -> LiveSpectrumFrame:
+    def _publish(self, sequence: int, *, state: LiveSessionState | None = None,
+                 native_quality_flags: int | None = None) -> LiveSpectrumFrame:
         snapshot = self.fixture.live.latest_snapshot()
         configuration = snapshot.applied.applied
         width = 4096
@@ -65,6 +66,7 @@ class App02KeyboardUiaTests(unittest.TestCase):
             frequencies_hz=frequencies,
             values=values,
             unit="dBFS/bin",
+            native_quality_flags=native_quality_flags,
         )
         delivered = replace(
             snapshot,
@@ -80,6 +82,24 @@ class App02KeyboardUiaTests(unittest.TestCase):
         self.fixture.presenter._emit_snapshot(delivered)
         self.fixture.wait(lambda: self.fixture.composition.view_model.state.spectrum is frame)
         return frame
+
+    def test_native_quality_tooltip_decodes_flags_without_expanding_status_line(self) -> None:
+        self.fixture.select_and_apply()
+        self._publish(1, native_quality_flags=0x00002001)
+        page = self.fixture.page
+        for locale in (UiLocale.RU, UiLocale.EN):
+            self.fixture.shell.select_appearance_locale(locale)
+            self.app.processEvents()
+            self.assertIn("0x00002001", page.status.text())
+            self.assertIn(text("analyzer.quality.uncalibrated"), page.status.toolTip())
+            self.assertIn(text("analyzer.quality.timestamp_estimated"), page.status.toolTip())
+            self.assertEqual(page.status.accessibleDescription(), page.status.toolTip())
+            self.assertNotIn(text("analyzer.quality.timestamp_estimated"), page.status.text())
+        self._publish(2, native_quality_flags=None)
+        self.assertIn(text("analyzer.quality_unknown"), page.status.toolTip())
+        self.assertNotIn(text("analyzer.quality.timestamp_estimated"), page.status.toolTip())
+        self._publish(3, native_quality_flags=0)
+        self.assertIn(text("analyzer.quality.no_reported_flags"), page.status.toolTip())
 
     def test_100_actual_publications_retain_canvas_viewport_and_markers(self) -> None:
         self.fixture.select_and_apply()

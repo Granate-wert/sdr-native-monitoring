@@ -735,6 +735,16 @@ density endpoints were correctly withheld by the existing coherence rule.
 
 ## Required further work
 
+### Current frozen HackRF UI observation (2026-09-28)
+
+The exact `68e3c12` CPU onedir EXE (SHA-256 `ce758a274e3300161c354b568ccbabaac826ae9be5f7de45629812c66a2ea8d9`) was visibly driven on Windows through common UI V2: explicit HackRF USB selection, Stage at requested 20 MS/s/FFT4096/group8 with 64-bin exponential native persistence, Start showing live Spectrum/Waterfall/overlay, and explicit Stop returning to a retained last frame with Start enabled. The live UI readout showed approximately 9.76–9.93k analytical FFT/s and 1.22–1.24k native publications/s during a short observation. These displayed estimates are not DWM FPS, ADC readback, USB continuity, RF duty/Pd, 50-ms latency or soak acceptance.
+
+The responding EXE process had one package-local `hackrf.dll`, `pthreadVC3.dll`, `libusb-1.0.dll` and native pyd loaded at the expected **on-disk** file hashes; no `libiio.dll` was loaded in this HackRF-only observation. File/path enumeration is not memory attestation or combined active Pluto/HackRF ABI proof. A subsequent attempted AD936x UI source switch was not observed because the Computer Use helper guarded user-input/minimized state; no Pluto Start was sent. Frozen Pluto/high-Fs/source-switch, genuine Ethernet/tinySA cells and independent review remain open. The diagnostic EXE is not the installed/static release.
+
+### Native quality mask explanation in UI V2 source (2026-09-28)
+
+The raw hexadecimal mask remains in the fixed-height Analyzer status line. Its tooltip and accessible description now decode all 16 defined native `QualityFlag` wire bits in RU/EN while preserving any unknown upper-bit mask. `0x00002001` means uncalibrated plus estimated timestamp; it is **not** an I/Q-loss flag. A zero mask is described only as no reported flags, never as RF-quality proof; an absent mask remains unknown. The source-only change does not expand the graph-stealing status label or alter Spectrum/Waterfall cadence. Unit, UI-widget/locale and full UI V2 software gates passed; no hardware/visible timing or rebuilt EXE acceptance is inferred from those tests. The exact `68e3c12` EXE above predates this tooltip change.
+
 TinySA physical resynchronization/Basic and current-input upper-band qualification,
 the full correction-profile authoring/export workflow and remaining HackRF
 host-Sweep/IQ strategies and further DSP qualification remain.

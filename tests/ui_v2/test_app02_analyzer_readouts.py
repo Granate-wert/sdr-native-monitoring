@@ -9,7 +9,7 @@ from sdr_monitor.domain.analyzer import bundle_from_sweep
 from sdr_monitor.domain.live import LiveSnapshot, LiveSpectrumFrame, LiveSessionState
 from sdr_monitor.domain.sweep_lines import SweepLineFrame, SweepLineState
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
-from sdr_monitor.ui.v2.state.analyzer_readouts import analyzer_status
+from sdr_monitor.ui.v2.state.analyzer_readouts import analyzer_quality_detail, analyzer_status
 from sdr_monitor.ui.v2.state.live_view_state import build_live_view_state
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewState
 from tests.test_app01_product_analyzer import _progress
@@ -40,6 +40,27 @@ class AnalyzerReadoutTests(unittest.TestCase):
             self.assertIn("0x00000004", analyzer_status(known))
             self.assertIn(text("analyzer.frame_loss", samples=12, blocks=2, fft=3), analyzer_status(known))
             self.assertNotIn(text("analyzer.quality_unknown"), analyzer_status(known))
+
+    def test_native_quality_tooltip_decodes_known_bits_and_preserves_unknown_mask(self):
+        keys = (
+            "uncalibrated", "calibration_interpolated", "calibration_extrapolated",
+            "gain_agc", "adc_overload", "iq_dropped", "fft_dropped",
+            "settling_incomplete", "edge_bin", "dc_removed", "lo_leakage",
+            "stitch_overlap", "missing_segment", "timestamp_estimated",
+            "backend_fallback", "backend_discontinuity",
+        )
+        for locale in (UiLocale.RU, UiLocale.EN):
+            set_active_locale(locale)
+            for bit, key in enumerate(keys):
+                with self.subTest(locale=locale, bit=bit):
+                    self.assertEqual(analyzer_quality_detail(1 << bit), text("analyzer.quality." + key))
+            detail = analyzer_quality_detail(0x00002001)
+            self.assertIn(text("analyzer.quality.uncalibrated"), detail)
+            self.assertIn(text("analyzer.quality.timestamp_estimated"), detail)
+            self.assertNotIn(text("analyzer.quality.iq_dropped"), detail)
+            self.assertEqual(analyzer_quality_detail(None), text("analyzer.quality_unknown"))
+            self.assertEqual(analyzer_quality_detail(0), text("analyzer.quality.no_reported_flags"))
+            self.assertIn("0x80000000", analyzer_quality_detail(0x80000000))
 
     def test_stopped_and_error_labels_do_not_mutate_retained_measurement(self):
         state = self.state()

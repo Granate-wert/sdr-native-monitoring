@@ -13,6 +13,31 @@ from ..i18n import text
 from ..view_models.analyzer_view_model import AnalyzerViewState
 
 
+# Native sdr_core::QualityFlag wire bits. Keep the raw mask visible as well:
+# future producer bits must not be interpreted as known-good observations.
+_NATIVE_QUALITY_KEYS = (
+    "uncalibrated", "calibration_interpolated", "calibration_extrapolated",
+    "gain_agc", "adc_overload", "iq_dropped", "fft_dropped",
+    "settling_incomplete", "edge_bin", "dc_removed", "lo_leakage",
+    "stitch_overlap", "missing_segment", "timestamp_estimated",
+    "backend_fallback", "backend_discontinuity",
+)
+
+
+def analyzer_quality_detail(mask: int | None) -> str:
+    """Decode native wire flags for a tooltip, without calling zero RF-clean."""
+    if mask is None:
+        return text("analyzer.quality_unknown")
+    if type(mask) is not int or not 0 <= mask <= 0xFFFFFFFF:
+        return text("analyzer.quality_unknown")
+    values = [text("analyzer.quality." + key) for bit, key in enumerate(_NATIVE_QUALITY_KEYS)
+              if mask & (1 << bit)]
+    unknown = mask & ~((1 << len(_NATIVE_QUALITY_KEYS)) - 1)
+    if unknown:
+        values.append(text("analyzer.quality.unrecognized", mask=f"0x{unknown:08X}"))
+    return ", ".join(values) if values else text("analyzer.quality.no_reported_flags")
+
+
 def tinysa_settings_readout(frame: object) -> str:
     p = frame.instrument if isinstance(frame, SweepLineFrame) else None
     observed = p.settings if p is not None else None

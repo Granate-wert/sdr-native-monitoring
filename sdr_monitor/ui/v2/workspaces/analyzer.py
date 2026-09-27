@@ -22,6 +22,7 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsSettings
 
 from ..design import ThemeId, stylesheet_for_theme
@@ -35,6 +36,7 @@ from ..spectrum.projection import SpectrumProjector
 from ..state.analyzer_layers import persistence_density_from_sweep, waterfall_line_from_sweep
 from ..state.analyzer_readouts import (
     analyzer_periods,
+    analyzer_quality_detail,
     analyzer_status,
     spectrum_numerical_readout,
     tinysa_settings_readout,
@@ -684,8 +686,13 @@ class AnalyzerWorkspaceV2(QWidget):
                 self.periods.setAccessibleDescription(description)
             status = analyzer_status(state)
             _set_text_if_changed(self.status, status)
-            if self.status.toolTip() != status:
-                self.status.setToolTip(status)
+            frame = getattr(state.bundle, "spectrum", None)
+            quality = ("\n" + analyzer_quality_detail(frame.native_quality_flags)
+                       if isinstance(frame, LiveSpectrumFrame) else "")
+            detail = status + quality
+            if self.status.toolTip() != detail:
+                self.status.setToolTip(detail)
+                self.status.setAccessibleDescription(detail)
 
 
 def _set_text_if_changed(widget: QLabel | QPushButton, value: str) -> None:
