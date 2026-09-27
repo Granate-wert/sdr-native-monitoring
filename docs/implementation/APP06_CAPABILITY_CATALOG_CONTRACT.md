@@ -798,3 +798,34 @@ build was not isolated. Mask0x00002001 must not override separate loss
 metadata. Heavy-density stage timing, loss-mask consistency, overlay coherence,
 default256-bin loads, independent review and longer responsiveness checks remain
 open alongside physical tinySA/Ethernet/common-family and release gates.
+
+### HackRF density-to-spectrum coherence and bounded bin conversion (2026-09-28)
+
+Source `53015f1` polls native density before the bounded newest-spectrum drain
+and publishes both in one validated immutable V2 snapshot. A deterministic
+advancing-producer test reproduced an ahead-of-spectrum density endpoint before
+the change and passed afterward. The same source passed the exact 1006-test
+full V2 gate (66 skipped, zero failed), native35/35 CTest and frozen355-file
+package checks. Its diagnostic EXE visibly showed Spectrum, Waterfall and a
+colored persistence overlay during HackRF Live at requested20MS/s,
+FFT16384/hop8192/group1/64 bins. It also accumulated I/Q loss under this
+heavy profile; turning persistence off for a short subsequent run reported
+none. These are sequential observations, not causal isolation or long-soak
+acceptance. The EXE was closed and is not a promoted static release.
+
+Separate native20-s default256-bin FFT16384 source-process tests found
+queue-full I/Q loss even without the UI: baseline admitted roughly17.8–18.1
+MS/s in three runs, with 302–336 queue-full drops. Source `db1bfff` bounds
+power-bin conversion before integer cast while preserving finite in-range
+floor/clamp mapping and renderer row-major output. It passed 35/35 native
+tests including 4/64/256-bin reference/boundary/rolling-layout checks.
+Its isolated benchmark improved from about5.0–5.2k to5.6–5.8k updates/s
+at FFT16384/256; two physical20-s runs admitted19.19–19.38MS/s, but still
+had120–124 queue-full drops. Exact `db1bfff` full UI V2 software gate passed
+1006 tests/66 skipped/zero failed with no product imports outside checkout;
+this does not test the candidate in a frozen GUI. No default256 loss-free
+claim, full-UI candidate performance claim, ADC readback, USB/RF duty, DWM
+FPS or 50-ms acceptance follows. `QualityFlag::IqDropped` is per affected input whereas cumulative
+lost-sample metadata persists; a later mask0x00002001 does not erase loss.
+Further exact stage isolation and sustained current-source frozen testing
+remain required; the active installed/canonical EXE is unchanged.
