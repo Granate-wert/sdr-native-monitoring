@@ -65,10 +65,12 @@ class LiveSessionApplicationService:
 
     def __init__(self, port: LiveSessionPort, *, sweep_preflight: Callable[
         [LiveConfiguration, ContinuousSweepPlanRequest], AnalyzerGeometryPreflight,
-    ] | None = None, analyzer: AnalyzerSessionApplicationService | None = None) -> None:
+    ] | None = None, analyzer: AnalyzerSessionApplicationService | None = None,
+                 catalog_close: Callable[[], None] | None = None) -> None:
         self._port = port
         self._sweep_preflight = sweep_preflight
         self._analyzer = analyzer
+        self._catalog_close = catalog_close
         self._control_error: tuple[str, LiveErrorKind | None] | None = None
 
     @property
@@ -221,13 +223,26 @@ class LiveSessionApplicationService:
         return self._port.is_running()
 
     def shutdown(self, timeout_s: float = 5.0) -> None:
+        errors: list[Exception] = []
         try:
             if self._analyzer is not None:
                 self._analyzer.stop()
-        finally:
-            # Pending/failed controller transitions must not suppress the
-            # backend's cancellation/join path during application shutdown.
+        except Exception as error:  # noqa: BLE001 - independent owner cleanup must still run.
+            errors.append(error)
+        try:
             self._port.stop_and_wait(timeout_s)
+        except Exception as error:  # noqa: BLE001 - preserve failure and attempt independent catalog release.
+            errors.append(error)
+        try:
+            # Runs on the presenter's lifecycle worker, after RX cancellation.
+            # Its shared control gate refuses unresolved stream ownership; it
+            # never steals that owner merely to close a read-only provider.
+            if self._catalog_close is not None:
+                self._catalog_close()
+        except Exception as error:  # noqa: BLE001 - preserve the same retained provider for explicit retry.
+            errors.append(error)
+        if errors:
+            raise errors[0]  # Explicit subsequent shutdown can resume cleanup.
 
 
 __all__ = ["LiveSessionApplicationService", "LiveSessionPort", "LiveSessionUseCases"]

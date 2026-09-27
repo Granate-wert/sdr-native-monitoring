@@ -69,6 +69,7 @@ def build_v2_shell(services=None):
         NativeContinuousSweepPlanFactory, NativeLiveContinuousSweepDisplayService,
     )
     from ..services.native_live import NativeLiveSessionService
+    from ..services.source_capability_catalog import SourceCapabilityCatalog
     from ..application.analyzer_session import AnalyzerSessionApplicationService
     from ..application.analyzer_continuous_sweep import AnalyzerContinuousSweepApplicationService
     from ..ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
@@ -87,10 +88,12 @@ def build_v2_shell(services=None):
                   if isinstance(services.live_sdr, NativeLiveSessionService)
                   else services.live_sdr.start)
     analyzer = AnalyzerSessionApplicationService(services.live_sdr, display, start_live=start_live)
+    catalog = getattr(services, "device_catalog", None)
     live_application = LiveSessionApplicationService(
         services.live_sdr,
         sweep_preflight=NativeContinuousSweepPlanFactory.preflight_profile,
         analyzer=analyzer,
+        catalog_close=catalog.close if isinstance(catalog, SourceCapabilityCatalog) else None,
     )
     analyzer_presenter = ContinuousSweepPresenter(
         AnalyzerContinuousSweepApplicationService(live_application, display),

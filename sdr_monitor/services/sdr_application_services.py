@@ -19,6 +19,7 @@ from .sweep_session import InMemorySweepService
 from .recording_session import RecordingService
 from .replay_session import ReplayService
 from .diagnostics_session import DiagnosticsService
+from .source_capability_catalog import SourceCapabilityCatalog
 
 
 class UnavailableLiveService:
@@ -211,6 +212,8 @@ class SdrApplicationServices:
     replay: ReplaySdrService = field(default_factory=ReplayService)
     diagnostics: DiagnosticsSdrService = field(default_factory=DiagnosticsService)
     profiles: LiveProfileStore = field(default_factory=_default_profile_store)
+    # Shared retained catalog for V2 source routing. None in inert/test graphs.
+    device_catalog: SourceCapabilityCatalog | None = None
 
 
 def build_default_sdr_services() -> SdrApplicationServices:
@@ -230,7 +233,10 @@ def build_default_sdr_services() -> SdrApplicationServices:
     else:
         recording = UnavailableNativeRecordingService()
     sweep: SweepSdrService = NativeLiveSweepService(live) if isinstance(live, NativeLiveSessionService) else InMemorySweepService()
-    return SdrApplicationServices(live_sdr=live, sweep=sweep, recording=recording)
+    from .source_capability_providers import build_source_capability_catalog
+
+    catalog = build_source_capability_catalog(live) if isinstance(live, NativeLiveSessionService) else None
+    return SdrApplicationServices(live_sdr=live, sweep=sweep, recording=recording, device_catalog=catalog)
 
 
 def build_offscreen_smoke_sdr_services() -> SdrApplicationServices:

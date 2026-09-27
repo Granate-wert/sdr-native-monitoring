@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, cast
 from ..domain.live import LiveAdmissionRejected
@@ -323,6 +324,38 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 ) for device in self._devices),
                 runtimes=(_ad936x_runtime_snapshot(self._native),),
             )
+
+    @property
+    def capability_cleanup_pending(self) -> bool:
+        return self._observation_owner.cleanup_pending
+
+    @contextmanager
+    def capability_control_transaction(self):
+        """Shared no-queue control exclusion for the composed V2 catalog.
+
+        Pending read-only cleanup is allowed ONLY so explicit catalog close
+        can release it. Catalog refresh itself refuses that pending owner.
+        RX/Sweep/stream cleanup can never be stolen or stopped by this seam.
+        """
+        if not self._recording_transaction_lock.acquire(blocking=False):
+            raise LiveAdmissionRejected("Source control operation is pending")
+        try:
+            with self._sweep_lease_lock, self._lock:
+                if (self._engine is not None or self._poller is not None or self._sweep_lease_active
+                        or self._snapshot.state is _running_state()
+                        or (self._stream_release_failed and not self._observation_owner.cleanup_pending)):
+                    raise LiveAdmissionRejected("Selected RX is already owned by another operation")
+            yield
+        finally:
+            self._recording_transaction_lock.release()
+
+    def close_capability_observation(self) -> None:
+        """Explicit observer release, not Live Stop or route/config reset."""
+        with self.capability_control_transaction():
+            pending = self._observation_owner.cleanup_pending
+            self._observation_owner.close()
+            if pending:
+                self._stream_release_failed = False  # no stream owner exists under this gate
 
     def select_device(self, device_id: str) -> LiveSnapshot:
         with self._recording_transaction_lock:

@@ -145,6 +145,10 @@ class TinySaSerialSourceBackend:
             raise RuntimeError("tinySA endpoint identity is absent or ambiguous")
         return matches[0]
 
+    def resolve_endpoint(self, expected: TinySaTransportEndpoint) -> TinySaTransportEndpoint:
+        """Public PnP-only seam for the retained read-only catalog owner."""
+        return self._resolve(expected)
+
 
 class _BoundTinySaTraceCollector:
     def __init__(
