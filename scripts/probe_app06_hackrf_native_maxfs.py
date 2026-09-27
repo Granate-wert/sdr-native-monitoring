@@ -1,0 +1,145 @@
+"""Bounded physical RX at 20 MS/s through the issued official-native permit.
+
+No TX, amplifier/bias, raw-I/Q transfer into Python, UI, security or firmware
+change. Reports requested/API-accepted Fs, NOT independent ADC rate readback.
+This one-device staging test cannot claim common Analyzer or release support.
+"""
+
+import argparse
+import hashlib
+import json
+import math
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from scripts.preflight_sdr_native_build import (
+    _load_native_module,
+    _read_manifest,
+    load_contract_expectations,
+    validate_contract_surface,
+    validate_hackrf_factory,
+    validate_manifest,
+)
+from sdr_monitor.services.hackrf_activation_preflight import HackrfActivationPreflightService
+from sdr_monitor.services.hackrf_capability_adapter import HackrfCapabilityAdapter
+from sdr_monitor.services.hackrf_live_admission import HackrfLiveRequest, admit_hackrf_live
+from sdr_monitor.services.hackrf_native_factory import HackrfNativeRuntimeFactory
+from sdr_monitor.services.libhackrf_read_only import LibhackrfReadOnlyPort
+from sdr_monitor.services.libhackrf_runtime_identity import LibhackrfRuntimeIdentityPort
+
+
+def counter_delta(before, after, name):
+    first, last = getattr(before, name), getattr(after, name)
+    if type(first) is not int or type(last) is not int or last < first:
+        raise ValueError("counter unavailable or regressed: " + name)
+    return last - first
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--module", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--seconds", type=float, default=30)
+    parser.add_argument("--rx", action="store_true", help="Explicit physical RX, always required")
+    args = parser.parse_args()
+    if not args.rx or not math.isfinite(args.seconds) or not 5 <= args.seconds <= 120:
+        parser.error("--rx and seconds5..120 required")
+    output = args.output.resolve()
+    if output.exists():
+        parser.error("a new output file is required")
+    module_path = args.module.resolve()
+    manifest = _read_manifest(args.manifest.resolve())
+    validate_manifest(module_path, manifest, expected_cuda=False)
+    if manifest.get("hackrf_official_compiled") is not True:
+        parser.error("only an official-HackRF staged module is admitted")
+    if "sdr_monitor._sdr_native" in sys.modules or "_sdr_native" in sys.modules:
+        raise RuntimeError("native module already loaded; fresh isolated process required")
+    native = _load_native_module(module_path)
+    sys.modules["sdr_monitor._sdr_native"] = native
+    validate_hackrf_factory(native, manifest)
+    validate_contract_surface(native, load_contract_expectations(ROOT / "esw_dfl/sdr/contracts.py"))
+    runtime = module_path.parent
+    dll = runtime / "hackrf.dll"
+    observation = HackrfCapabilityAdapter(lambda: LibhackrfReadOnlyPort(dll, runtime)).observe()
+    request = HackrfLiveRequest(center_frequency_hz=100e6, sample_rate_hz=20e6,
+        baseband_filter_hz=15_000_000, lna_gain_db=16, vga_gain_db=20,
+        fft_size=4096, hop_size=2048, source_id="app06-hackrf-native-maxfs")
+    admission = admit_hackrf_live(observation.snapshot, observation.calibration_identity, request)
+    if admission.plan is None:
+        raise RuntimeError("capability admission rejected")
+    preflight = HackrfActivationPreflightService(lambda: LibhackrfRuntimeIdentityPort(dll, runtime)).verify(admission.plan)
+    if preflight.permit is None:
+        raise RuntimeError("current physical identity admission rejected")
+    report = {"schema": "app06-hackrf-native-maxfs-v1",
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "native_manifest": manifest, "native_module": str(module_path),
+        "request": {"sample_rate_hz": 20e6, "center_hz": 100e6, "rf_filter_hz": 15e6,
+            "fft": 4096, "hop": 2048, "lna_db": 16, "vga_db": 20, "amplifier": False, "bias": False},
+        "device_family": observation.snapshot.family.value,
+        "identity_key": observation.snapshot.identity_key,
+        "scope": "One physical native RX/DSP staging test. Requested/API-accepted Fs, not independent Fs readback; no common UI, RF calibration, DWM, duty or release acceptance."}
+    control = None
+    try:
+        control = HackrfNativeRuntimeFactory(lambda: native).create(preflight.permit)
+        warmup_end = time.monotonic() + 3
+        while time.monotonic() < warmup_end:
+            control.poll_spectrum_frames(4)
+            time.sleep(.002)
+        before = control.metrics()
+        started = time.monotonic()
+        previous = None
+        frames_seen = invalid = flagged = 0
+        while time.monotonic() - started < args.seconds:
+            for frame in control.poll_spectrum_frames(4):
+                frames_seen += 1
+                valid = (frame.fft_size == 4096 and frame.hop_size == 2048
+                    and frame.unit == native.SpectrumUnit.DBFS_BIN
+                    and frame.precision_mode == native.PrecisionMode.REFERENCE_F64
+                    and frame.config_generation == request.configuration_generation
+                    and frame.source.source_id == str(request.source_id)
+                    and frame.sample_rate_hz == request.sample_rate_hz
+                    and (previous is None or frame.frame_sequence > previous))
+                invalid += not valid
+                previous = frame.frame_sequence
+                flagged += bool(frame.dropped_samples_before or frame.dropped_iq_blocks_before
+                                or frame.dropped_fft_frames_before)
+            time.sleep(.002)
+        elapsed = time.monotonic() - started
+        after = control.metrics()
+        samples = counter_delta(before.source, after.source, "samples_admitted")
+        fft = counter_delta(before.processing.dsp.dsp, after.processing.dsp.dsp, "fft_frames_computed")
+        report.update(elapsed_s=elapsed, samples_admitted=samples, ingress_msps=samples / elapsed / 1e6,
+            analytical_fft_per_s=fft / elapsed, reduced_frames_polled=frames_seen,
+            invalid_frame_contracts=invalid, frames_with_drop_flags=flagged,
+            ingress_software_dropped_samples=counter_delta(before.source, after.source, "dropped_samples"),
+            device_overrun_counter_available=after.source.device_overrun_counter_available,
+            worker_failures=after.processing.worker_failures)
+    finally:
+        if control is not None:
+            stop_started = time.monotonic()
+            shutdown = control.stop(5000)
+            final = control.metrics()
+            report.update(stop_ms=(time.monotonic() - stop_started) * 1000,
+                stop_complete=shutdown.complete(), callbacks_active=final.source.callbacks_active,
+                slots_in_use=final.source.slots_in_use, ready_depth=final.source.ready_depth,
+                worker_joined=final.processing.worker_joined, lifecycle_open=final.lifecycle_open)
+            report["passed"] = bool(report.get("samples_admitted", 0) > 0
+                and report.get("reduced_frames_polled", 0) > 0
+                and report.get("invalid_frame_contracts") == 0 and report.get("worker_failures") == 0
+                and report["stop_complete"] and report["worker_joined"]
+                and not any((report["callbacks_active"], report["slots_in_use"], report["ready_depth"], report["lifecycle_open"])))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps({name: report.get(name) for name in ("passed", "ingress_msps", "analytical_fft_per_s", "reduced_frames_polled", "stop_ms")}))
+    return 0 if report.get("passed") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
