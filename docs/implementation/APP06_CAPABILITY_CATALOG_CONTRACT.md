@@ -759,3 +759,42 @@ not frozen executable or performance acceptance.
 Official shared-DLL/frozen qualification and actual high-Fs device/transport cells
 remain separate acceptance gates. APP-05 performance debts, APP-06A/B,
 APP-06C/D, APP-07 and release acceptance are not closed by this source packet.
+
+### Bounded HackRF UI latest-frame bridge (2026-09-28)
+
+Source `26070a6` adds a native presentation-only drain forwarded through the
+existing HackRF DSP/acquisition/runtime owners. A call pops at most the
+configured presentation capacity (maximum256), returns the newest consumed
+frame and counts the other consumed frames; it cannot chase a continuously
+refilling producer forever. Pybind releases the GIL during native work and
+materializes at most one frame. The common V2 bridge waits nominally4ms,
+not1ms, between polls. This is neither a guaranteed250Hz publication cadence
+nor a4ms latency target. Old batch polling remains for existing consumers.
+
+Native Fs, FFT/hop/window/detector grouping and upstream persistence are
+unchanged. Coalescing retains canonical source/sequence/generation/unit/loss
+metadata and is reported separately from acquisition or analytical FFT loss.
+The V2 analyzer requires native latest-frame bridge protocol1 and a callable
+drain before Stage/Start; unsupported modules are refused before RX/SDK
+effects, with no automatic fallback or restart. Malformed drain results retain
+the same owned control until explicit Stop. Identity factory protocol2 is
+unchanged. A native/pybind test verifies separate coalescing and unchanged
+upstream accumulation; the exact full V2 gate has939pass/66skip/0fail.
+
+An exact-source CPU onedir diagnostic EXE at requested20MS/s visibly updated
+Spectrum/Waterfall with group1 at FFT4096/hop2048 and FFT16384/hop8192, before
+explicit Stop; the previously observed no-live-frame profile did not recur.
+Sampled native FFT rates were about9.7k/s and2.44k/s respectively, with new
+Qt-frame readouts about15–20ms and16–19ms. These are short UI observations,
+not independent DWM FPS, 50ms end-to-end, hardware Fs, RF duty, lossless USB
+or sustained performance acceptance. Native drain versus slower poll effects
+were not separately isolated. No release/static installation was promoted.
+
+The heavier FFT16384/group1/64-bin decay profile also stayed visually live,
+but its overlay was not present in every observation and later frames explicitly
+reported I/Q loss (stopped retained frame:12451840samples/95blocks/0FFT).
+That performance cell is NOT accepted; its delta relative to the earlier
+build was not isolated. Mask0x00002001 must not override separate loss
+metadata. Heavy-density stage timing, loss-mask consistency, overlay coherence,
+default256-bin loads, independent review and longer responsiveness checks remain
+open alongside physical tinySA/Ethernet/common-family and release gates.
