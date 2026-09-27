@@ -199,6 +199,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._last_metrics_frames = 0
         self._last_metrics_snapshots = 0
         self._last_metrics_samples = 0
+        self._last_metrics_blocks: int | None = None
         # R10-D6 scalar-only bridge counters. The native spectrum queue remains
         # bounded/latest-wins. Native latest-only draining reports any frames
         # it deliberately skips separately from analytical FFT loss.
@@ -614,6 +615,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._last_metrics_frames = 0
             self._last_metrics_snapshots = 0
             self._last_metrics_samples = 0
+            self._last_metrics_blocks = None
             self._bridge_native_frames_polled = 0
             self._bridge_frames_coalesced = 0
             self._bridge_frames_published = 0
@@ -1266,10 +1268,19 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         fft_frames = int(getattr(engine_metrics, "fft_frames_computed", 0) or 0)
         snapshots = int(getattr(engine_metrics, "spectrum_snapshots_emitted", 0) or 0)
         samples = int(getattr(engine_metrics, "iq_samples_received", 0) or 0)
+        raw_blocks = getattr(engine_metrics, "iq_blocks_received", None)
+        blocks = raw_blocks if type(raw_blocks) is int and raw_blocks >= 0 else None
+        block_rate = (None if blocks is None or self._last_metrics_blocks is None
+                      or blocks < self._last_metrics_blocks
+                      or self._last_metrics_sample_s <= 0 or now_s <= self._last_metrics_sample_s else
+                      (blocks - self._last_metrics_blocks) / elapsed)
         snapshot_rate = max(0.0, (snapshots - self._last_metrics_snapshots) / elapsed)
         iq_rate = max(0.0, (samples - self._last_metrics_samples) / elapsed)
         analytical_rate = float(getattr(engine_metrics, "analytical_fft_rate", 0.0) or 0.0)
         performance = LivePerformance(
+            iq_blocks_received=blocks,
+            iq_block_rate_hz=block_rate,
+            configured_iq_buffer_samples=self._device_buffer_samples,
             rate_observation_interval_s=(elapsed if self._last_metrics_sample_s > 0
                 and all(hasattr(engine_metrics, name) for name in (
                     "analytical_fft_rate", "spectrum_snapshots_emitted", "iq_samples_received"
@@ -1369,6 +1380,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._last_metrics_frames = fft_frames
         self._last_metrics_snapshots = snapshots
         self._last_metrics_samples = samples
+        self._last_metrics_blocks = blocks
 
         if now_s - self._last_metrics_log_s >= _PERFORMANCE_LOG_INTERVAL_S:
             log_event(

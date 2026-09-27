@@ -19,7 +19,7 @@ from ..i18n import current_locale, text
 from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
-from .analyzer_status_label import AnalyzerStatusLabel
+from .analyzer_status_label import AnalyzerStatusLabel, AnalyzerPeriodsLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_inspector import AnalyzerInspector
 from ..shell.contracts import WorkspaceDefinition
@@ -28,7 +28,7 @@ from ..spectrum.contracts import PreparedSpectrumFrame, TraceKind
 from ..spectrum.projection import SpectrumProjector
 from ..spectrum.allocation_budget import PresentationBudgetExceeded
 from ..state.live_view_state import LiveAction
-from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout
+from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout, analyzer_periods
 from ..state.analyzer_status_cadence import AnalyzerStatusCadence
 from ..state.analyzer_layers import waterfall_line_from_sweep, persistence_density_from_sweep
 from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_summary
@@ -136,6 +136,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self.status.setProperty("ui2Role", "secondary")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.periods = AnalyzerPeriodsLabel(self)
+        self.periods.setProperty("ui2Role", "secondary")
+        layout.addWidget(self.periods)
         self.drawer.close_requested.connect(self._hide_settings)
         self.drawer.draft_changed.connect(lambda: self._render(model.state))
         self.drawer.hide()
@@ -563,6 +566,11 @@ class AnalyzerWorkspaceV2(QWidget):
                     self._sweep_waterfall_error = False
             self._last_sweep_snapshot = snapshot
         if self._status_cadence.admit(state, monotonic()):
+            _set_text_if_changed(self.periods, analyzer_periods(state, scene.paint_cadence.period_ms()))
+            description = text("analyzer.periods.scope")
+            if self.periods.toolTip() != description:
+                self.periods.setToolTip(description)
+                self.periods.setAccessibleDescription(description)
             status = analyzer_status(state)
             _set_text_if_changed(self.status, status)
             if self.status.toolTip() != status:

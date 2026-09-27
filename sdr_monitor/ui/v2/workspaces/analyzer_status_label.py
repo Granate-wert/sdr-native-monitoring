@@ -27,3 +27,9 @@ class AnalyzerStatusLabel(QLabel):
 
     def heightForWidth(self, width):
         return self.height()
+
+
+class AnalyzerPeriodsLabel(AnalyzerStatusLabel):
+    """One stable-height period row; inherits font/style-change handling."""
+    def _reserve_height(self):
+        self.setFixedHeight(self.fontMetrics().lineSpacing() + 2)

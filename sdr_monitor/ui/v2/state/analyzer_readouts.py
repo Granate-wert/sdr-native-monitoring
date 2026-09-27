@@ -122,6 +122,38 @@ def analyzer_rtbw_rates(state: AnalyzerViewState) -> str:
                 iq=value("iq_sample_rate_hz", 1e6))
 
 
+def analyzer_periods(state: AnalyzerViewState, visual_period_ms: float | None) -> str:
+    """Distinct Qt frames versus observed host receive/full-pass period.
+
+    Neither host refill period nor reciprocal complete-line LPS proves RF
+    revisit, capture duty or pulse detection. Stopped readouts are unavailable,
+    rather than a zero period or an apparently still-running rate.
+    """
+    def number(value) -> str:
+        return ((f"{value:.1f}" if value < 10 else f"{value:.0f}")
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+                and isfinite(value) and value > 0 else "—")
+
+    if not state.running:
+        return text("analyzer.periods.stopped")
+    if state.mode.value == "sweep":
+        metrics = getattr(state.sweep_snapshot, "metrics", None)
+        rate = getattr(metrics, "completed_line_lps", None)
+        completed = getattr(metrics, "completed_lines", None)
+        valid = type(completed) is int and completed > 0
+        label = "analyzer.periods.sweep"
+    else:
+        metrics = getattr(state.live.snapshot, "performance", None)
+        rate = getattr(metrics, "iq_block_rate_hz", None)
+        interval = getattr(metrics, "rate_observation_interval_s", None)
+        valid = (isinstance(interval, (int, float)) and not isinstance(interval, bool)
+                 and isfinite(interval) and interval > 0)
+        label = "analyzer.periods.rtbw"
+    period = (1000 / rate if valid and isinstance(rate, (int, float)) and not isinstance(rate, bool)
+              and isfinite(rate) and rate > 0 else None)
+    return text(label, visual=number(visual_period_ms), source=number(period))
+
+
 def spectrum_numerical_readout(frame: object | None) -> str:
     """Producer metadata only: never derive RBW/calibration from UI drafts."""
     metadata = getattr(frame, "numerical_provenance", None)

@@ -1759,6 +1759,13 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.applying": MappingProxyType({UiLocale.RU: "Применение…", UiLocale.EN: "Applying…"}),
         "analyzer.quick.name": MappingProxyType({UiLocale.RU: "Частота и разрешение", UiLocale.EN: "Frequency and resolution"}),
         "analyzer.rtbw_rates": MappingProxyType({UiLocale.RU: "FFT/с: {fft} · Публ./с: {publications} · I/Q MS/s: {iq}", UiLocale.EN: "FFT/s: {fft} · Pub/s: {publications} · I/Q MS/s: {iq}"}),
+        "analyzer.periods.rtbw": MappingProxyType({UiLocale.RU: "Новый кадр Qt: ≈{visual} мс · Буфер → ПК: ≈{source} мс · RF duty: неизвестен", UiLocale.EN: "New Qt frame: ≈{visual} ms · Buffer → host: ≈{source} ms · RF duty: unknown"}),
+        "analyzer.periods.sweep": MappingProxyType({UiLocale.RU: "Новый кадр Qt: ≈{visual} мс · Полный проход: ≈{source} мс · RF revisit: не измерен", UiLocale.EN: "New Qt frame: ≈{visual} ms · Complete pass: ≈{source} ms · RF revisit: unmeasured"}),
+        "analyzer.periods.stopped": MappingProxyType({UiLocale.RU: "Периоды: приём не запущен; сохранённый кадр не считается новым", UiLocale.EN: "Periods: RX is not running; a retained frame is not a new frame"}),
+        "analyzer.periods.scope": MappingProxyType({
+            UiLocale.RU: "Кадр: средний период уникальных публикаций/ревизий, завершивших Qt paint за последние 4 с; повторная перерисовка не учитывается. Не DWM/FPS монитора. Буфер → ПК: средний период host ingress из native счётчика блоков, не период ADC и не RF revisit. Полный проход: обратная величина native complete-line LPS, не время повторного наблюдения отдельной частоты. RF duty и вероятность встречи импульса неизвестны без подтверждённых окон захвата; delivered/Fs не является вероятностью обнаружения.",
+            UiLocale.EN: "Frame: mean period of unique publications/revisions completing Qt paint in the last 4 s; repeated redraws do not count. Not DWM/monitor FPS. Buffer → host: mean host-ingress period from native block counts, not ADC period or RF revisit. Complete pass: reciprocal native complete-line LPS, not a frequency's revisit time. RF duty and pulse encounter probability are unknown without verified capture windows; delivered/Fs is not detection probability.",
+        }),
         "analyzer.quick.center": MappingProxyType({UiLocale.RU: "Центр, МГц", UiLocale.EN: "Center, MHz"}),
         "analyzer.quick.span": MappingProxyType({UiLocale.RU: "Вид, МГц", UiLocale.EN: "View, MHz"}),
         "analyzer.quick.fft": MappingProxyType({UiLocale.RU: "FFT", UiLocale.EN: "FFT"}),

@@ -1,0 +1,92 @@
+"""Bounded unique-source Qt paint cadence; no frame/array ownership or RF claim."""
+
+from collections import deque
+from time import perf_counter_ns
+
+import pyqtgraph as pg
+
+PaintKey = tuple[tuple[object, ...], tuple[int, object, object]]
+
+
+def spectrum_paint_key(frame: object) -> PaintKey | None:
+    """Scalar publication identity, including partial revisions and terminal state."""
+    frame = getattr(frame, "spectrum", frame)
+    source = getattr(frame, "source_id", None)
+    sequence = getattr(frame, "sequence", None)
+    if not isinstance(source, str) or not source or type(sequence) is not int:
+        return None
+    identity = getattr(frame, "identity", None)
+    epoch = getattr(frame, "epoch", getattr(identity, "acquisition_epoch", None))
+    generation = getattr(frame, "config_generation", None)
+    state = getattr(frame, "state", None)
+    state = getattr(state, "value", state)
+    revision = getattr(frame, "revision", None)
+    def scalar(value):
+        return value if value is None or type(value) in (str, int, bool) else None
+
+    scope = (source, scalar(epoch), scalar(generation), scalar(getattr(identity, "receiver_id", None)),
+             scalar(getattr(frame, "unit", None)), hasattr(frame, "epoch"))
+    return scope, (sequence, scalar(revision), scalar(state))
+
+
+class UniquePaintCadence:
+    """Mean period of distinct revisions painted during the last four seconds.
+
+    Repainting the same source due to chrome/zoom/persistence does not count.
+    A single scalar pending key describes the curve actually admitted by the
+    renderer, not latest acquisition. Hidden views and new epochs start fresh.
+    """
+    def __init__(self) -> None:
+        self.key: PaintKey | None = None
+        self._last_key: PaintKey | None = None
+        self._times: deque[int] = deque(maxlen=512)
+
+    def clear(self) -> None:
+        self.key = self._last_key = None
+        self._times.clear()
+
+    def admit(self, frame: object) -> None:
+        key = spectrum_paint_key(frame)
+        if key is None or self.key is not None and key[0] != self.key[0]:
+            self.clear()
+        self.key = key
+
+    def painted(self, key: PaintKey | None, when_ns: int) -> None:
+        if key is None or key != self.key or key == self._last_key:
+            return
+        if self._last_key is not None and key[1][0] < self._last_key[1][0]:
+            return  # A previously superseded publication is not a fresh frame.
+        if self._times and when_ns <= self._times[-1]:
+            self._times.clear()
+        self._last_key = key
+        self._times.append(when_ns)
+        cutoff = when_ns - 4_000_000_000
+        while len(self._times) > 1 and self._times[0] < cutoff:
+            self._times.popleft()
+
+    def period_ms(self, now_ns: int | None = None) -> float | None:
+        now_ns = perf_counter_ns() if now_ns is None else now_ns
+        if (len(self._times) < 2 or now_ns < self._times[-1]
+                or now_ns - self._times[-1] > 1_000_000_000):
+            return None
+        return (self._times[-1] - self._times[0]) / (len(self._times) - 1) / 1e6
+
+
+def cadence_graphics_widget(parent, cadence: UniquePaintCadence):
+    """Wrap the selected pg widget implementation, including opt-in observers.
+
+    The tiny local subclass captures no frame, scene or meter. Looking up the
+    base at construction preserves existing observer/injected-widget seams;
+    no global monkeypatch, QObject timer, signal or worker is added.
+    """
+    class CadenceGraphics(pg.GraphicsLayoutWidget):
+        paint_cadence: UniquePaintCadence
+
+        def paintEvent(self, event):
+            key = self.paint_cadence.key
+            super().paintEvent(event)
+            self.paint_cadence.painted(key, perf_counter_ns())
+
+    widget = CadenceGraphics(parent)
+    widget.paint_cadence = cadence
+    return widget

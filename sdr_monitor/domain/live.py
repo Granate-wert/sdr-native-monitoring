@@ -457,6 +457,10 @@ class LivePerformance:
     source_inter_refill_gap_count: int = 0
     # Append-only: None distinguishes default zeros from observed rates.
     rate_observation_interval_s: float | None = None
+    # Host-ingress observations, not acquisition duty or device revisit proof.
+    iq_blocks_received: int | None = None
+    iq_block_rate_hz: float | None = None
+    configured_iq_buffer_samples: int | None = None
 
 
 # Keep the established public name while making the snapshot role explicit in

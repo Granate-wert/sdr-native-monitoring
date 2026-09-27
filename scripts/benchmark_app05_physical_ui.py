@@ -732,6 +732,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--display-fps", type=int, choices=(15, 30, 60, 120, 144, 240), default=120)
     result.add_argument("--window-width", type=int, default=1400)
     result.add_argument("--window-height", type=int, default=850)
+    result.add_argument("--capture-surface", type=Path,
+                        help="opt-in Live QWidget PNG after measurement; not DWM/scanout evidence")
     return result
 
 
@@ -761,6 +763,11 @@ def main() -> int:
     if output.exists():
         raise SystemExit("output already exists; choose a new evidence path")
     output.parent.mkdir(parents=True, exist_ok=True)
+    capture_path = None if args.capture_surface is None else args.capture_surface.resolve()
+    if capture_path is not None:
+        if capture_path.exists() or capture_path == output or capture_path.suffix.lower() != ".png":
+            raise SystemExit("capture-surface must be a new PNG path distinct from output")
+        capture_path.parent.mkdir(parents=True, exist_ok=True)
     os.environ["QT_QPA_PLATFORM"] = "windows"
     try:
         revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
@@ -1092,6 +1099,9 @@ def main() -> int:
         native_at_start = None
         native_ingress_at_start = None
         native_ingress_before_stop = None
+        period_readout_before_stop = None
+        paint_period_before_stop_ms = None
+        capture_status = None
         display_before_stop = None
         persistence_before_stop = None
         persistence_at_start = None
@@ -1150,6 +1160,7 @@ def main() -> int:
             nonlocal display_before_stop, persistence_before_stop, projector_before_stop
             nonlocal native_at_start, persistence_at_start, projector_at_start
             nonlocal native_ingress_at_start, native_ingress_before_stop
+            nonlocal period_readout_before_stop, paint_period_before_stop_ms, capture_status
             nonlocal initial_sequence, final_sequence
             nonlocal measurement_started_ns, measurement_finished_ns
             now = perf_counter_ns()
@@ -1250,6 +1261,10 @@ def main() -> int:
                         applied = snapshot.applied
                         display_before_stop = composition._presenter.display_metrics
                         scene = workspace.visualization.spectrum_scene
+                        period_label = getattr(workspace, "periods", None)
+                        period_readout_before_stop = None if period_label is None else period_label.text()
+                        cadence = getattr(scene, "paint_cadence", None)
+                        paint_period_before_stop_ms = None if cadence is None else cadence.period_ms()
                         persistence_before_stop = scene.persistence_metrics
                         projector_before_stop = projector_counters(composition.spectrum_projector)
                         if initial_sequence is None or final_sequence <= initial_sequence:
@@ -1257,6 +1272,12 @@ def main() -> int:
                         if resource_sampler is not None:
                             resource_sampler.mark("measure_end", now)
                         mark_teardown("measurement_ended_before_stop")
+                        if capture_path is not None:
+                            pixmap = shell.grab()
+                            if pixmap.isNull() or not pixmap.save(str(capture_path), "PNG"):
+                                raise OSError("Live QWidget.grab/save failed")
+                            capture_status = dict(path=str(capture_path), width=pixmap.width(), height=pixmap.height(),
+                                sha256=hashlib.sha256(capture_path.read_bytes()).hexdigest())
                         phase = "stop"
                         deadline_ns = now + 15_000_000_000
                 elif phase == "stop":
@@ -1387,7 +1408,7 @@ def main() -> int:
             if not hide_show_result["passed"]:
                 failed_checks = ", ".join(name for name, accepted in checks.items() if not accepted)
                 failure = ((failure + "; ") if failure else "") + f"Hide/Show gate: {failed_checks}"
-        report = dict(schema="app05-physical-visible-v2-v9", result="pass" if phase == "done" and
+        report = dict(schema="app05-physical-visible-v2-v10", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
                       failure=failure, phase=phase, source="physical-pluto-rx", uri=args.uri,
@@ -1442,6 +1463,11 @@ def main() -> int:
                           end_to_end_latency_ms=native_before_stop.end_to_end_latency_ms),
                       native_measurement_deltas=native_interval,
                       native_ingress_interval=ingress_interval,
+                      period_readout_before_stop=period_readout_before_stop,
+                      unique_paint_period_before_stop_ms=paint_period_before_stop_ms,
+                      native_iq_block_rate_before_stop_hz=(None if native_before_stop is None else
+                          getattr(native_before_stop, "iq_block_rate_hz", None)),
+                      surface_capture=capture_status,
                       display_scheduler=None if display_before_stop is None else asdict(display_before_stop),
                       persistence_overlay_measurement_deltas=persistence_interval,
                       projector_measurement_deltas=projector_interval,

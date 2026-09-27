@@ -48,6 +48,7 @@ from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
 from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
 from .persistence_projector import PersistenceDelivery, PersistenceWork
 from .plot_terminal import retire_plot_item_after_shutdown
+from .paint_cadence import UniquePaintCadence, cadence_graphics_widget
 from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
 from .screen_dash import ScreenDashPlotDataItem
 from .sweep_coverage_overlay import SweepCoverageOverlay
@@ -87,6 +88,7 @@ class SpectrumScene(QWidget):
         super().__init__(parent)
         self._theme = theme
         self._presentation_active = True
+        self.paint_cadence = UniquePaintCadence()
         self._locale = locale
         self._latest_view: SpectrumFrameView | None = None
         self._prepared_spectrum: PreparedSpectrumFrame | None = None
@@ -391,6 +393,7 @@ class SpectrumScene(QWidget):
             return
         self._presentation_active = active
         if not active:
+            self.paint_cadence.clear()
             self._invalidate_projection()
             self._auto_vertical_range.reset()
             # Hidden pixels need not pin a previous coherent bundle (including
@@ -495,6 +498,7 @@ class SpectrumScene(QWidget):
         self._curves[kind].clear()
         if kind is TraceKind.CURRENT:
             self._displayed_view = None
+            self.paint_cadence.clear()
             self._displayed_extent = None
         self._request_projection()
 
@@ -885,7 +889,7 @@ class SpectrumScene(QWidget):
         self._chart_host.setProperty("ui2Role", "panel")
         host_layout = QVBoxLayout(self._chart_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
-        self._graphics = pg.GraphicsLayoutWidget(self._chart_host)
+        self._graphics = cadence_graphics_widget(self._chart_host, self.paint_cadence)
         # V2 already separates the panels; use its 4 px spacing grid instead
         # of stacking pyqtgraph's default outer padding inside another frame.
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
@@ -1076,6 +1080,7 @@ class SpectrumScene(QWidget):
         self._envelopes[kind] = envelope
         self._curves[kind].setData(envelope.frequencies_hz, envelope.values, connect="finite")
         if kind is TraceKind.CURRENT:
+            self.paint_cadence.admit(view.source_frame)
             self._unit_readout.setText(text("spectrum.unit.readout", self._locale, unit=view.unit_label))
             self._unit_readout.setAccessibleDescription(
                 text("spectrum.unit.exact_description", self._locale, unit=view.unit_label)
