@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from .readonly_observation_owner import RetainedReadOnlyObserver
+
 from ..domain.device_capabilities import (
     AcquisitionKind,
     CapabilityEvidence,
@@ -94,27 +96,25 @@ class HackrfCapabilityAdapter:
     def __init__(self, port_factory: Callable[[], HackrfReadOnlyProbePort]) -> None:
         if not callable(port_factory):
             raise ValueError("HackRF port factory must be callable")
-        self._port_factory = port_factory
+        self._observer = RetainedReadOnlyObserver(port_factory)
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return self._observer.cleanup_pending
+
+    def close(self) -> None:
+        try:
+            self._observer.close()
+        except Exception:  # noqa: BLE001 - release failures retain the observer's owner.
+            raise HackrfCapabilityObservationError(_GENERIC_FAILURE) from None
 
     def observe(self) -> HackrfCapabilityObservation:
-        port: HackrfReadOnlyProbePort | None = None
-        probe: HackrfReadOnlyProbe | None = None
-        failed = False
         try:
-            port = self._port_factory()
-            probe = port.probe()
+            probe = self._observer.observe()
             if not isinstance(probe, HackrfReadOnlyProbe):
-                failed = True
-        except Exception:
-            failed = True
-        finally:
-            if port is not None:
-                try:
-                    port.close()
-                except Exception:
-                    failed = True
-        if failed or probe is None:
-            raise HackrfCapabilityObservationError(_GENERIC_FAILURE)
+                raise ValueError("invalid HackRF probe contract")
+        except Exception:  # noqa: BLE001 - no failed native read or release can publish capabilities.
+            raise HackrfCapabilityObservationError(_GENERIC_FAILURE) from None
 
         try:
             if probe.board_kind is not HackrfBoardKind.HACKRF_ONE:

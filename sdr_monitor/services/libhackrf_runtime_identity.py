@@ -8,6 +8,7 @@ opens a device, changes configuration, starts RX, or starts TX.
 from __future__ import annotations
 
 import ctypes
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -40,13 +41,26 @@ class LibhackrfRuntimeIdentityPort:
         self._list: Any | None = None
         self._initialized = False
         self._closed = False
+        self._release_started = False
+        self._probe_failed = False
+        self._lock = threading.RLock()
         self._dependency_handle: Any | None = None
 
     def probe(self) -> HackrfRuntimeIdentityProbe:
+        with self._lock:
+            if self._closed or self._release_started or self._probe_failed:
+                raise RuntimeError("HackRF identity context requires explicit release")
+            try:
+                if self._dll is None:
+                    self._open_enumeration_context()
+                return self._probe_owned()
+            except Exception:  # noqa: BLE001 - keep partial enumeration resources until explicit close.
+                self._probe_failed = True
+                raise RuntimeError("portable HackRF identity context failed closed") from None
+
+    def _probe_owned(self) -> HackrfRuntimeIdentityProbe:
         if self._closed:
             raise RuntimeError("HackRF identity context is closed")
-        if self._dll is None:
-            self._open_enumeration_context()
         assert self._dll is not None
         assert self._list is not None
         listed = self._list.contents
@@ -63,51 +77,37 @@ class LibhackrfRuntimeIdentityPort:
         )
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        failure = False
-        dll = self._dll
-        if dll is not None and self._list is not None:
+        with self._lock:
+            if self._closed:
+                return
+            self._release_started = True
+            dll = self._dll
             try:
-                dll.hackrf_device_list_free(self._list)
-            except Exception:
-                failure = True
-            self._list = None
-        if dll is not None and self._initialized:
-            try:
-                failure = dll.hackrf_exit() != _HACKRF_SUCCESS
-            except Exception:
-                failure = True
-            self._initialized = False
-        self._dll = None
-        if self._dependency_handle is not None:
-            try:
-                self._dependency_handle.close()
-            except Exception:
-                failure = True
-            self._dependency_handle = None
-        if failure:
-            raise RuntimeError("HackRF identity context failed to close")
+                if dll is not None and self._list is not None:
+                    dll.hackrf_device_list_free(self._list)
+                    self._list = None
+                if dll is not None and self._initialized:
+                    self._check(dll.hackrf_exit())
+                    self._initialized = False
+                if self._dependency_handle is not None:
+                    self._dependency_handle.close()
+                    self._dependency_handle = None
+            except Exception:  # noqa: BLE001 - failed phase retains the remaining resource cursor.
+                raise RuntimeError("HackRF identity context failed to close") from None
+            self._dll = None
+            self._closed = True
 
     def _open_enumeration_context(self) -> None:
         if not self._dll_path.is_file() or not self._dependency_directory.is_dir():
             raise RuntimeError("portable libhackrf runtime is unavailable")
-        try:
-            self._dependency_handle = os_add_dll_directory(self._dependency_directory)
-            self._dll = ctypes.CDLL(str(self._dll_path))
-            self._bind_allowlist()
-            self._check(self._dll.hackrf_init())
-            self._initialized = True
-            self._list = self._dll.hackrf_device_list()
-            if not self._list:
-                raise RuntimeError("HackRF enumeration failed")
-        except Exception:
-            try:
-                self.close()
-            except Exception:
-                pass
-            raise RuntimeError("portable HackRF identity context failed closed") from None
+        self._dependency_handle = os_add_dll_directory(self._dependency_directory)
+        self._dll = ctypes.CDLL(str(self._dll_path))
+        self._bind_allowlist()
+        self._check(self._dll.hackrf_init())
+        self._initialized = True
+        self._list = self._dll.hackrf_device_list()
+        if not self._list:
+            raise RuntimeError("HackRF enumeration failed")
 
     def _bind_allowlist(self) -> None:
         assert self._dll is not None

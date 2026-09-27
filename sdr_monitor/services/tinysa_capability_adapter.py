@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from .readonly_observation_owner import RetainedReadOnlyObserver
+
 from ..domain.device_capabilities import (
     AcquisitionKind,
     CapabilityEvidence,
@@ -130,27 +132,25 @@ class TinySaCapabilityAdapter:
     def __init__(self, port_factory: Callable[[], TinySaReadOnlyProbePort]) -> None:
         if not callable(port_factory):
             raise TypeError("tinySA port factory must be callable")
-        self._port_factory = port_factory
+        self._observer = RetainedReadOnlyObserver(port_factory)
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return self._observer.cleanup_pending
+
+    def close(self) -> None:
+        try:
+            self._observer.close()
+        except Exception:  # noqa: BLE001 - retain the injected owner after failed release.
+            raise TinySaCapabilityObservationError(_GENERIC_FAILURE) from None
 
     def observe(self) -> TinySaCapabilityObservation:
-        port: TinySaReadOnlyProbePort | None = None
-        probe: TinySaReadOnlyProbe | None = None
-        failed = False
         try:
-            port = self._port_factory()
-            probe = port.probe()
+            probe = self._observer.observe()
             if not isinstance(probe, TinySaReadOnlyProbe):
-                failed = True
+                raise ValueError("invalid tinySA probe contract")
         except Exception:  # noqa: BLE001 - an injected device boundary must fail closed.
-            failed = True
-        finally:
-            if port is not None:
-                try:
-                    port.close()
-                except Exception:  # noqa: BLE001 - a failed close invalidates the observation.
-                    failed = True
-        if failed or probe is None:
-            raise TinySaCapabilityObservationError(_GENERIC_FAILURE)
+            raise TinySaCapabilityObservationError(_GENERIC_FAILURE) from None
 
         try:
             identity_key = stable_identity_key(

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 import threading
 
+from .readonly_observation_owner import RetainedReadOnlyObserver
+
 from ..domain import stable_identity_key
 from .hackrf_capability_adapter import (
     HACKRF_LIBHACKRF_ADAPTER_ID,
@@ -147,7 +149,15 @@ class HackrfActivationPreflightService:
     def __init__(self, port_factory: Callable[[], HackrfRuntimeIdentityPort]) -> None:
         if not callable(port_factory):
             raise ValueError("HackRF identity port factory must be callable")
-        self._port_factory = port_factory
+        self._observer = RetainedReadOnlyObserver(port_factory)
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return self._observer.cleanup_pending
+
+    def close(self) -> None:
+        """Explicit release retry; failure keeps the identity owner reachable."""
+        self._observer.close()
 
     def verify(self, plan: HackrfLiveActivationPlan) -> HackrfActivationPreflight:
         """Observe once, always close, and never propagate SDK/route details."""
@@ -159,23 +169,11 @@ class HackrfActivationPreflightService:
             return HackrfActivationPreflight(
                 reason=HackrfActivationPreflightReason.PLAN_NOT_ADMITTED
             )
-        port: HackrfRuntimeIdentityPort | None = None
-        probe: HackrfRuntimeIdentityProbe | None = None
-        failed = False
         try:
-            port = self._port_factory()
-            probe = port.probe()
+            probe = self._observer.observe()
             if not isinstance(probe, HackrfRuntimeIdentityProbe):
-                failed = True
+                raise ValueError("invalid HackRF identity probe contract")
         except Exception:
-            failed = True
-        finally:
-            if port is not None:
-                try:
-                    port.close()
-                except Exception:
-                    failed = True
-        if failed or probe is None:
             return HackrfActivationPreflight(
                 reason=HackrfActivationPreflightReason.RUNTIME_OBSERVATION
             )

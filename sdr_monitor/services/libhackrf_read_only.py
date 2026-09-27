@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -36,35 +37,50 @@ class LibhackrfReadOnlyPort:
     """Own library/list/device lifetime; no stream or configuration symbol is bound."""
 
     def __init__(self, dll_path: Path, dependency_directory: Path) -> None:
+        # Return the owner before SDK acquisition so even partial-open failures
+        # remain reachable by the retained read-only provider.
+        self._dll_path = Path(dll_path)
+        self._dependency_directory = Path(dependency_directory)
         self._dll: Any | None = None
         self._list: Any | None = None
         self._device = ctypes.c_void_p()
         self._initialized = False
         self._closed = False
+        self._release_started = False
+        self._probe_failed = False
+        self._lock = threading.RLock()
         self._dependency_handle: Any | None = None
-        dll = Path(dll_path)
-        dependencies = Path(dependency_directory)
-        if not dll.is_file() or not dependencies.is_dir():
+
+    def _open_read_only_context(self) -> None:
+        if not self._dll_path.is_file() or not self._dependency_directory.is_dir():
             raise RuntimeError("portable libhackrf runtime is unavailable")
-        try:
-            self._dependency_handle = os_add_dll_directory(dependencies)
-            self._dll = ctypes.CDLL(str(dll))
-            self._bind_allowlist()
-            self._check(self._dll.hackrf_init())
-            self._initialized = True
-            self._list = self._dll.hackrf_device_list()
-            if not self._list or self._list.contents.devicecount != 1:
-                raise RuntimeError("finite HackRF observation requires exactly one device")
-            if self._list.contents.usb_board_ids[0] != _USB_BOARD_ID_HACKRF_ONE:
-                raise RuntimeError("listed device is not HackRF One")
-            self._check(self._dll.hackrf_device_list_open(self._list, 0, ctypes.byref(self._device)))
-            if not self._device.value:
-                raise RuntimeError("HackRF device handle is unavailable")
-        except Exception:
-            self.close()
-            raise RuntimeError("portable HackRF read-only context failed closed") from None
+        self._dependency_handle = os_add_dll_directory(self._dependency_directory)
+        self._dll = ctypes.CDLL(str(self._dll_path))
+        self._bind_allowlist()
+        self._check(self._dll.hackrf_init())
+        self._initialized = True
+        self._list = self._dll.hackrf_device_list()
+        if not self._list or self._list.contents.devicecount != 1 or not self._list.contents.usb_board_ids:
+            raise RuntimeError("finite HackRF observation requires exactly one device")
+        if self._list.contents.usb_board_ids[0] != _USB_BOARD_ID_HACKRF_ONE:
+            raise RuntimeError("listed device is not HackRF One")
+        self._check(self._dll.hackrf_device_list_open(self._list, 0, ctypes.byref(self._device)))
+        if not self._device.value:
+            raise RuntimeError("HackRF device handle is unavailable")
 
     def probe(self) -> HackrfReadOnlyProbe:
+        with self._lock:
+            if self._closed or self._release_started or self._probe_failed:
+                raise RuntimeError("HackRF read-only context requires explicit release")
+            try:
+                if self._dll is None:
+                    self._open_read_only_context()
+                return self._probe_owned()
+            except Exception:  # noqa: BLE001 - retain partial resources for the caller's explicit close.
+                self._probe_failed = True
+                raise RuntimeError("portable HackRF read-only context failed closed") from None
+
+    def _probe_owned(self) -> HackrfReadOnlyProbe:
         if self._closed or self._dll is None or not self._device.value:
             raise RuntimeError("HackRF read-only context is closed")
         board = ctypes.c_uint8(0xFF)
@@ -94,38 +110,28 @@ class LibhackrfReadOnlyPort:
         )
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        failure = False
-        dll = self._dll
-        if dll is not None and self._device.value:
+        with self._lock:
+            if self._closed:
+                return
+            self._release_started = True
+            dll = self._dll
             try:
-                failure = dll.hackrf_close(self._device) != _HACKRF_SUCCESS
-            except Exception:
-                failure = True
-            self._device = ctypes.c_void_p()
-        if dll is not None and self._list:
-            try:
-                dll.hackrf_device_list_free(self._list)
-            except Exception:
-                failure = True
-            self._list = None
-        if dll is not None and self._initialized:
-            try:
-                failure = dll.hackrf_exit() != _HACKRF_SUCCESS or failure
-            except Exception:
-                failure = True
-            self._initialized = False
-        self._dll = None
-        if self._dependency_handle is not None:
-            try:
-                self._dependency_handle.close()
-            except Exception:
-                failure = True
-            self._dependency_handle = None
-        if failure:
-            raise RuntimeError("portable HackRF read-only context failed to close")
+                if dll is not None and self._device.value:
+                    self._check(dll.hackrf_close(self._device))
+                    self._device = ctypes.c_void_p()
+                if dll is not None and self._list:
+                    dll.hackrf_device_list_free(self._list)
+                    self._list = None
+                if dll is not None and self._initialized:
+                    self._check(dll.hackrf_exit())
+                    self._initialized = False
+                if self._dependency_handle is not None:
+                    self._dependency_handle.close()
+                    self._dependency_handle = None
+            except Exception:  # noqa: BLE001 - stop at the failed phase; keep remaining resources.
+                raise RuntimeError("portable HackRF read-only context failed to close") from None
+            self._dll = None
+            self._closed = True
 
     def _bind_allowlist(self) -> None:
         assert self._dll is not None
