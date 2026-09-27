@@ -1,24 +1,24 @@
 """Discovery control feedback must not fabricate acquisition or empty results."""
 
-from dataclasses import replace
 import os
 import threading
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+import tests.test_app02_analyzer_workspace_product as product_fixture
+import tests.ui_v2.test_app02_analyzer_readouts as readouts_fixture
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.state.analyzer_readouts import analyzer_status
 from sdr_monitor.ui.v2.state.analyzer_status_cadence import AnalyzerStatusCadence
 from sdr_monitor.ui.v2.view_models.live_view_model import LiveViewModel
 from tests.ui_v2.test_app02_live_command_errors import Presenter
-import tests.ui_v2.test_app02_analyzer_readouts as readouts_fixture
-import tests.test_app02_analyzer_workspace_product as product_fixture
 
 
 class DiscoveryFeedbackTests(unittest.TestCase):
@@ -77,6 +77,12 @@ class DiscoveryFeedbackTests(unittest.TestCase):
         self.assertFalse(self.model.state.discovery_pending)
         self.assertFalse(self.model.state.busy)
 
+    def test_local_discovery_requests_startup_scope_only(self):
+        local = Mock()
+        with patch.object(self.presenter, "discover_devices", local):
+            self.assertTrue(self.model.discover_devices(local_only=True))
+        local.assert_called_once_with(startup=True)
+
     def test_labels_and_urgent_cadence_preserve_retained_frame_and_error(self):
         base = replace(readouts_fixture.AnalyzerReadoutTests().state(), running=False)
         for locale in (UiLocale.RU, UiLocale.EN):
@@ -127,7 +133,8 @@ class ProductDiscoveryFeedbackTests(unittest.TestCase):
         timer.setInterval(1)
         timer.timeout.connect(lambda: beats.append(1))
         try:
-            with patch.object(fixture.live, "discover_devices", side_effect=discover):
+            with patch.object(fixture.live, "discover_startup_devices", side_effect=discover), \
+                 patch.object(fixture.live, "discover_devices", side_effect=AssertionError("unexpected IP scan")):
                 page = fixture.page
                 initial_height = page.status.height()
                 initial_width = page.primary.width()
@@ -138,6 +145,7 @@ class ProductDiscoveryFeedbackTests(unittest.TestCase):
                 self.assertNotIn(text("analyzer.idle"), page.status.text())
                 self.assertIn(text("analyzer.discovering"), page.status.text())
                 self.assertFalse(page.discover.isEnabled())
+                self.assertFalse(page.discover_network.isEnabled())
                 self.assertFalse(page.primary.isEnabled())
                 self.assertFalse(page.model.discover_devices())
                 self.assertIsNone(page.model.state.bundle)
@@ -148,11 +156,29 @@ class ProductDiscoveryFeedbackTests(unittest.TestCase):
                 self.assertIn(text("analyzer.discovery_empty"), page.status.text())
                 self.assertEqual(page.source.count(), 1)
                 self.assertTrue(page.discover.isEnabled())
+                self.assertTrue(page.discover_network.isEnabled())
                 self.assertFalse(page.primary.isEnabled())
                 self.assertFalse(fixture.live.is_running())
         finally:
             release.set()
             timer.stop()
             fixture.wait(lambda: not fixture.page.model.state.live.busy)
+            fixture.tearDown()
+            fixture.doCleanups()
+
+    def test_network_discovery_is_a_separate_explicit_button(self):
+        fixture = product_fixture.AnalyzerWorkspaceProductTests("runTest")
+        fixture.app = self.app
+        fixture.setUp()
+        try:
+            with patch.object(fixture.live, "discover_devices", return_value=()) as network, \
+                 patch.object(fixture.live, "discover_startup_devices",
+                              side_effect=AssertionError("unexpected USB-only scan")):
+                fixture.page.discover_network.click()
+                fixture.wait(lambda: network.call_count == 1 and not fixture.page.model.state.live.busy)
+                network.assert_called_once_with()
+                self.assertEqual(fixture.page.source.count(), 1)
+                self.assertIn(text("analyzer.discover.usb_ip.warning"), fixture.page.discover_network.toolTip())
+        finally:
             fixture.tearDown()
             fixture.doCleanups()

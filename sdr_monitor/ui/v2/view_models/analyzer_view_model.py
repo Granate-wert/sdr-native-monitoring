@@ -217,8 +217,9 @@ class AnalyzerViewModel:
             return self.live.execute_primary_action()
         return False
 
-    def discover_devices(self) -> bool:
-        return not self._disposed and not self.state.controls_locked and self.live.discover_devices()
+    def discover_devices(self, *, local_only: bool = False) -> bool:
+        return (not self._disposed and not self.state.controls_locked
+                and self.live.discover_devices(local_only=local_only))
 
     def select_device(self, identifier: str) -> bool:
         return not self._disposed and not self.state.controls_locked and self.live.select_device(identifier)

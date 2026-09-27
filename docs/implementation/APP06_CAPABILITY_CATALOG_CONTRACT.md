@@ -160,6 +160,14 @@ authoritative. Manual AD936x URI selection stays a separate explicit native
 action. Its current operational binding is displayed but is not inserted into
 catalog truth or inferred to be an alias of an existing USB/IP device.
 
+The Analyzer's default **Discover USB** action uses the retained catalog's
+local-only discovery route. It still enumerates local AD936x, HackRF and tinySA
+candidates, but does not start libiio's IP broadcast scan. **USB + IP** is a
+separate explicit action over the same catalog and ownership gates. libiio's
+network scan has no cancellation handle and can take a long time on some host
+networks; the UI warns before offering that route. Neither action silently
+retries, selects a substitute device or claims a bounded network-scan latency.
+
 Source change or failed observation clears the prior accepted configuration,
 draft, Spectrum/Waterfall/persistence presentation and preparation cache. Delayed
 native snapshots with a different source and older selection acknowledgements

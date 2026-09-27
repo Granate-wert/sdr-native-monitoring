@@ -99,8 +99,10 @@ class AnalyzerWorkspaceV2(QWidget):
         self.rx.setEnabled(False)
         self.rx.setToolTip(text("analyzer.rx.unavailable"))
         commands.addWidget(self.rx)
-        self.discover = self._button("live.discover", model.discover_devices)
+        self.discover = self._button("analyzer.discover.usb", lambda: model.discover_devices(local_only=True))
         commands.addWidget(self.discover)
+        self.discover_network = self._button("analyzer.discover.usb_ip", model.discover_devices)
+        commands.addWidget(self.discover_network)
         self.mode = QComboBox(self)
         self.mode.setProperty("ui2Role", "utility-select")
         self.mode.setAccessibleName(text("analyzer.mode"))
@@ -218,6 +220,7 @@ class AnalyzerWorkspaceV2(QWidget):
         for widget, key in self._text_bindings:
             widget.setText(text(key))
             widget.setAccessibleName(text(key))
+        self.discover_network.setToolTip(text("analyzer.discover.usb_ip.warning"))
         self.mode.setAccessibleName(text("analyzer.mode"))
         self.rx.setToolTip(text("analyzer.rx.unavailable"))
         self.rx.setAccessibleName(text("analyzer.rx.unavailable"))
@@ -408,7 +411,7 @@ class AnalyzerWorkspaceV2(QWidget):
                 self.error.setText(text("tinysa.common.invalid"))
                 self.error.show()
         elif state.live.primary_action is LiveAction.DISCOVER:
-            self.model.discover_devices()
+            self.model.discover_devices(local_only=True)
         elif state.hackrf_controls_available:
             if state.rtbw_profile_ready and not self.hackrf_bar.dirty:
                 self.model.start()
@@ -507,7 +510,7 @@ class AnalyzerWorkspaceV2(QWidget):
                 self.source_summary.show()
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(self.mode.findData(state.mode))
-        for control in (self.source, self.discover, self.mode):
+        for control in (self.source, self.discover, self.discover_network, self.mode):
             control.setEnabled(not state.controls_locked)
         self.frequency_bar.apply_view_state(state, has_frame=state.bundle is not None)
         self.frequency_bar.setVisible(state.ad936x_controls_available)

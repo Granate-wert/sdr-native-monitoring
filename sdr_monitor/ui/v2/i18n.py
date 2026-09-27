@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextvars import ContextVar
 from enum import StrEnum
 from string import Formatter
 from types import MappingProxyType
-from typing import Mapping
 
 
 class UiLocale(StrEnum):
@@ -677,6 +677,12 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Выбрать обнаруженное устройство", UiLocale.EN: "Select discovered device"}
         ),
         "live.discover": MappingProxyType({UiLocale.RU: "Найти", UiLocale.EN: "Discover"}),
+        "analyzer.discover.usb": MappingProxyType({UiLocale.RU: "Найти USB", UiLocale.EN: "Discover USB"}),
+        "analyzer.discover.usb_ip": MappingProxyType({UiLocale.RU: "USB + IP", UiLocale.EN: "USB + IP"}),
+        "analyzer.discover.usb_ip.warning": MappingProxyType({
+            UiLocale.RU: "Явный поиск USB и IP. Сетевое сканирование libiio может быть долгим и не поддерживает отмену.",
+            UiLocale.EN: "Explicit USB and IP discovery. libiio network scanning can be slow and cannot be cancelled.",
+        }),
         "live.discover.name": MappingProxyType(
             {UiLocale.RU: "Найти устройства через существующий слой представления", UiLocale.EN: "Discover devices through the existing presenter"}
         ),

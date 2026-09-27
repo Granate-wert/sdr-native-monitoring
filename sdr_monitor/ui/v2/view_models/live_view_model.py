@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Protocol, cast
+
 from sdr_monitor.domain import LiveConfiguration
-from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
-from ..state.live_view_state import LiveAction, LiveViewState, build_live_view_state
 from ..state.analyzer_layer_cache import AnalyzerLayerCache
+from ..state.live_view_state import LiveAction, LiveViewState, build_live_view_state
 
 
 class _SignalPort(Protocol):
@@ -29,7 +30,7 @@ class LivePresenterPort(Protocol):
     busy_changed: _SignalPort
     render_ready: _SignalPort
 
-    def discover_devices(self) -> None: ...
+    def discover_devices(self, *, startup: bool = False) -> None: ...
 
     def select_device(self, device_id: str) -> None: ...
 
@@ -152,15 +153,23 @@ class LiveViewModel:
         # service operation from an error string.
         return False
 
-    def discover_devices(self) -> bool:
-        """Request the existing presenter's public discovery command explicitly."""
+    def discover_devices(self, *, local_only: bool = False) -> bool:
+        """Expose a local scan to Analyzer while retaining explicit full scan.
+
+        Keep the no-argument path for callers that deliberately request the
+        existing full transport scan. libiio's IP scan has no cancellation
+        handle, so the common Analyzer USB action must not invoke it.
+        """
 
         if self._busy:
             return False
         self._begin_explicit_command()
         self._discovery_pending = True
         try:
-            self._presenter.discover_devices()
+            if local_only:
+                self._presenter.discover_devices(startup=True)
+            else:
+                self._presenter.discover_devices()
         except Exception as error:
             self._on_task_failed(str(error))
             return False
