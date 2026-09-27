@@ -56,6 +56,9 @@ from ..domain import (
 )
 from .live_session import InMemoryLiveSessionService
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
+from .ad936x_capability_adapter import Ad936xCapabilityObservationError, Ad936xLibiioCapabilityAdapter
+from .pluto_readonly_observation import PlutoReadOnlyObservation, PlutoReadOnlyObserver
+from ..domain.device_capabilities import DeviceCapabilityInventory, build_device_capability_inventory
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 
 # P07 defaults mirrored from the legacy adapter contract.
@@ -82,6 +85,8 @@ _PERFORMANCE_LOG_INTERVAL_S = 5.0
 _STALL_TIMEOUT_S = 2.0
 _SCHEMA_VERSION = 5
 _RELEASE_FAILED_MESSAGE = "Native Live release was not confirmed; retry explicit Stop before another RX operation"
+_MAX_DISCOVERY_ROUTES = 64
+_MAX_DISCOVERY_DEVICES = 32
 
 _QUALITY_FLAG_BITS = {
     "IQ_DROPPED": 1 << 5,
@@ -188,7 +193,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._allow_nonstandard_evidence_buffer_geometry = bool(
             allow_nonstandard_evidence_buffer_geometry
         )
-        self._native_device: Any | None = None
+        self._observation_owner = PlutoReadOnlyObserver(native_module, timeout_ms=timeout_ms)
         self._native_uri: str | None = None
         self._engine: Any | None = None
         self._poller: threading.Thread | None = None
@@ -244,9 +249,16 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         return self._discover_devices("usb")
 
     def _discover_devices(self, transports: str) -> tuple[DeviceDescriptor, ...]:
+        with self._recording_transaction_lock:
+            self._require_route_selection_idle()
+            return self._discover_devices_unlocked(transports)
+
+    def _discover_devices_unlocked(self, transports: str) -> tuple[DeviceDescriptor, ...]:
         started = time.monotonic()
         try:
             contexts = tuple(self._native.scan_pluto_contexts(transports))
+            if len(contexts) > _MAX_DISCOVERY_ROUTES:
+                raise RuntimeError("Pluto discovery exceeds its bounded route limit")
         except Exception as error:
             log_event(
                 _LOGGER,
@@ -259,8 +271,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             )
             raise RuntimeError(f"Pluto/libiio discovery failed: {error}") from error
 
-        routes = tuple(self._descriptor_for_context(context) for context in contexts)
+        unique_contexts: dict[str, Any] = {}
+        for context in contexts:
+            unique_contexts.setdefault(str(context.uri), context)
+        routes = tuple(self._descriptor_for_context(context) for context in unique_contexts.values())
         devices = _merge_duplicate_pluto_routes(routes)
+        if len(devices) > _MAX_DISCOVERY_DEVICES:
+            raise RuntimeError("Pluto discovery exceeds its bounded logical device limit")
         self._devices = devices
         log_event(
             _LOGGER,
@@ -282,6 +299,20 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         )
         return devices
 
+    def capability_inventory(self) -> DeviceCapabilityInventory:
+        """Freeze admitted existing snapshots; no SDK/discovery call is made.
+
+        Unknown-serial/older-runtime candidates remain in discover_devices,
+        but never become stable physical capability evidence in this inventory.
+        """
+        with self._recording_transaction_lock:
+            if self._observation_owner.cleanup_pending:
+                raise LiveAdmissionRejected("Release the pending Pluto observation before using its catalog")
+            return build_device_capability_inventory(
+                device.capability_snapshot for device in self._devices
+                if device.capability_snapshot is not None
+            )
+
     def select_device(self, device_id: str) -> LiveSnapshot:
         with self._recording_transaction_lock:
             self._require_route_selection_idle()
@@ -292,6 +323,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             with self._lock:
                 if (self._engine is not None or self._poller is not None
                         or self._stream_release_failed or self._sweep_lease_active
+                        or self._observation_owner.cleanup_pending
                         or self._snapshot.state is _running_state()):
                     raise LiveAdmissionRejected("Stop and release the current RX owner before selecting another route")
 
@@ -310,23 +342,21 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 # Probe with a temporary device and release its context
                 # immediately.  Keeping the probe context open blocks the
                 # fixed-band engine from opening the same USB device.
-                temporary = create_identity_bound_owner(
-                    self._native, "PlutoDevice", uri, self._timeout_ms,
+                observation = self._observation_owner.observe(
+                    uri,
                     expected_serial=normalized_pluto_serial(selected.serial),
                 )
-                try:
-                    temporary.probe()
-                finally:
-                    try:
-                        temporary.disconnect()
-                    except Exception:
-                        pass
+                fresh = self._descriptor_for_observation(uri, selected.label, observation)
                 self._native_uri = uri
                 selected = replace(
                     selected,
                     uri=uri,
                     transport=_transport_for_uri(uri),
                     alternate_uris=tuple(route for route in _ordered_routes(selected) if route != uri),
+                    capabilities=fresh.capabilities,
+                    capability_snapshot=fresh.capability_snapshot,
+                    serial=fresh.serial,
+                    identity_key=fresh.identity_key,
                 )
                 self._devices = tuple(
                     selected if item.device_id == device_id else item
@@ -345,6 +375,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 )
                 return super().select_device(device_id)
             except Exception as error:
+                if self._observation_owner.cleanup_pending:
+                    return self._fail(_RELEASE_FAILED_MESSAGE, kind=LiveErrorKind.CONNECTION_FAILED)
                 failures.append({"uri": uri, "error": str(error)})
         self._clear_selected_route()
         return self._fail(
@@ -424,6 +456,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 with self._lock:
                     if (self._sweep_lease_active or self._engine is not None or self._poller is not None
                             or self._stream_release_failed
+                            or self._observation_owner.cleanup_pending
                             or self._snapshot.state is _running_state()):
                         raise LiveAdmissionRejected("Selected RX is already owned by another operation")
             return self._start_unlocked()
@@ -442,7 +475,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     def _start_unlocked(self) -> LiveSnapshot:
         with self._lock:
-            if self._stream_release_failed:
+            if self._stream_release_failed or self._observation_owner.cleanup_pending:
                 return self._fail(_RELEASE_FAILED_MESSAGE, kind=LiveErrorKind.INTERNAL)
         with self._sweep_lease_lock:
             if self._sweep_lease_active:
@@ -806,6 +839,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 # fails, retain both owners; an explicit Stop can retry safely.
                 self._capture_native_recording_completion(engine)
                 engine.disconnect()
+            self._observation_owner.close()
         except Exception:
             with self._lock:
                 self._stream_release_failed = True
@@ -857,7 +891,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     recording_active = self._native_recording_active is not None
                     recording_armed = self._native_recording_armed is not None
                     owner_present = (self._engine is not None or self._poller is not None
-                                     or self._stream_release_failed)
+                                     or self._stream_release_failed or self._observation_owner.cleanup_pending)
                 if snapshot.state is _running_state() or owner_present:
                     raise RuntimeError("stop Live before acquiring the native sweep lease")
                 if recording_active or recording_armed:
@@ -1714,27 +1748,14 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         return self._descriptor_for_uri(uri, str(getattr(context, "description", "")))
 
     def _descriptor_for_uri(self, uri: str, description: str | None) -> DeviceDescriptor:
-        probe = None
-        try:
-            probe = self._native.probe_pluto_context(uri, self._timeout_ms)
-        except Exception:
-            # A context returned by libiio is still useful to show in the
-            # dialog; selection performs the authoritative connection probe.
-            pass
+        observation = self._observation_owner.observe(uri)
+        return self._descriptor_for_observation(uri, description, observation)
 
-        native_capabilities = None
-        temporary_device = None
-        try:
-            temporary_device = self._native.PlutoDevice(uri, self._timeout_ms)
-            native_capabilities = temporary_device.capabilities()
-        except Exception:
-            native_capabilities = None
-        finally:
-            if temporary_device is not None:
-                try:
-                    temporary_device.disconnect()
-                except Exception:
-                    pass
+    def _descriptor_for_observation(
+        self, uri: str, description: str | None, observation: PlutoReadOnlyObservation,
+    ) -> DeviceDescriptor:
+        probe = observation.probe
+        native_capabilities = observation.capabilities
 
         model = str(getattr(probe, "model", "") or getattr(native_capabilities, "model", "") or "PlutoSDR")
         serial = str(getattr(probe, "serial", "") or getattr(native_capabilities, "serial", "") or "").strip()
@@ -1747,7 +1768,14 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             firmware=firmware,
             device_ids=device_ids,
         )
-        topology = _domain_receiver_topology(self._native, uri, probe, identity_key)
+        topology = _domain_receiver_topology(observation.topology, probe, identity_key)
+        capability_snapshot = None
+        try:
+            capability_snapshot = Ad936xLibiioCapabilityAdapter.map_observation(observation, uri).snapshot
+        except Ad936xCapabilityObservationError:
+            # No stable serial/coherent facts: preserve the operational route,
+            # not invented stable evidence, inferred RX count or calibration.
+            pass
         description_text = (description or "").strip()
         model_prefix = model.split("(", 1)[0].strip().casefold()
         label = model if not description_text or model_prefix in description_text.casefold() else f"{model} — {description_text}"
@@ -1759,6 +1787,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             capabilities=_domain_capabilities(self._native, native_capabilities, receiver_topology=topology),
             serial=serial or None,
             identity_key=identity_key,
+            capability_snapshot=capability_snapshot,
         )
 
     def _fail(
@@ -1781,14 +1810,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         return snapshot
 
     def _clear_selected_route(self) -> None:
-        device = self._native_device
-        self._native_device = None
+        self._observation_owner.close()
         self._native_uri = None
-        if device is not None:
-            try:
-                device.disconnect()
-            except Exception:
-                pass
 
 
 def _shutdown_engine_instance(engine: Any) -> None:
@@ -2273,6 +2296,15 @@ def _merge_device_group(group: list[DeviceDescriptor]) -> DeviceDescriptor:
     identity = _physical_identity_key(
         uri=preferred.uri, model=preferred.label, serial=serial, firmware="", device_ids=(),
     )
+    snapshot = preferred.capability_snapshot
+    if snapshot is not None:
+        snapshots = tuple(item.capability_snapshot for item in ordered)
+        if any(item is None or replace(item, transports=snapshot.transports) != snapshot for item in snapshots):
+            snapshot = None  # conflicting/unverified alias facts cannot become one admitted snapshot.
+        else:
+            snapshot = replace(snapshot, transports=tuple(dict.fromkeys(
+                transport for item in snapshots if item is not None for transport in item.transports
+            )))
     return replace(
         preferred,
         device_id=f"pluto:{identity}",
@@ -2280,6 +2312,7 @@ def _merge_device_group(group: list[DeviceDescriptor]) -> DeviceDescriptor:
         alternate_uris=tuple(routes[1:]),
         identity_key=identity,
         serial=preferred.serial,
+        capability_snapshot=snapshot,
     )
 
 
@@ -2328,8 +2361,7 @@ def _infer_failure_stage(message: str) -> str:
 
 
 def _domain_receiver_topology(
-    native_module: Any,
-    uri: str,
+    observation: Any | None,
     context_probe: Any | None,
     physical_identity_key: str,
 ) -> ReceiverTopologySnapshot | None:
@@ -2340,11 +2372,9 @@ def _domain_receiver_topology(
     never an inferred single- or dual-RX capability.
     """
 
-    probe_topology = getattr(native_module, "probe_pluto_receiver_topology", None)
-    if not callable(probe_topology):
+    if observation is None:
         return None
     try:
-        observation = probe_topology(uri, 3000)
         context = getattr(observation, "context", None) or context_probe
         stream_id = str(getattr(context, "rx_stream_device_id", "") or "").strip()
         if not stream_id:

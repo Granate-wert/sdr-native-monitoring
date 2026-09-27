@@ -171,6 +171,7 @@ public:
     [[nodiscard]] bool connected() const noexcept;
     [[nodiscard]] std::string uri() const;
     [[nodiscard]] ContextProbe probe() const;
+    [[nodiscard]] ReceiverTopologyProbe receiver_topology() const;
     [[nodiscard]] sdr_core::DeviceCapabilities capabilities() const;
     [[nodiscard]] AppliedConfig configure(const sdr_core::DeviceConfig& config);
     [[nodiscard]] AppliedConfig configure(

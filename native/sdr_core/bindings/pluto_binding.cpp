@@ -70,6 +70,7 @@ void bind_pluto(py::module_& module) {
     // Separate from spectrum schema: known-serial callers must fail closed on
     // older runtimes rather than perform a separate, non-owning preflight.
     module.attr("PLUTO_IDENTITY_ADMISSION_PROTOCOL_VERSION") = 1;
+    module.attr("PLUTO_OBSERVATION_PROTOCOL_VERSION") = 1;
     py::class_<sdr_core::DualRxChannelDspConfig>(module, "DualRxChannelDspConfig")
         .def(py::init([](
             const sdr_core::SourceDescriptor& source,
@@ -1017,6 +1018,7 @@ void bind_pluto(py::module_& module) {
         .def_property_readonly("uri", py::cpp_function(
             &sdr_pluto::PlutoDevice::uri, py::call_guard<py::gil_scoped_release>()))
         .def("probe", &sdr_pluto::PlutoDevice::probe, py::call_guard<py::gil_scoped_release>())
+        .def("receiver_topology", &sdr_pluto::PlutoDevice::receiver_topology, py::call_guard<py::gil_scoped_release>())
         .def("capabilities", &sdr_pluto::PlutoDevice::capabilities, py::call_guard<py::gil_scoped_release>())
         // Preserve the pre-R10-E1 positional Python contract:
         // ``configure(config, pool_blocks)``.  The receiver-aware overload

@@ -400,6 +400,11 @@ public:
     }
     std::string uri() const { std::scoped_lock lock(mutex_); return uri_; }
     ContextProbe probe() const { std::scoped_lock lock(mutex_); require_connected_locked(); return probe_; }
+    ReceiverTopologyProbe receiver_topology() const {
+        std::scoped_lock lock(mutex_);
+        require_connected_locked();
+        return detail::inspect_context_topology(*api_, context_, probe_);
+    }
     sdr_core::DeviceCapabilities capabilities() const { std::scoped_lock lock(mutex_); require_connected_locked(); return capabilities_; }
 
     AppliedConfig configure(
@@ -965,6 +970,7 @@ PlutoDevice& PlutoDevice::operator=(PlutoDevice&&) noexcept = default;
 bool PlutoDevice::connected() const noexcept { return impl_ != nullptr && impl_->connected(); }
 std::string PlutoDevice::uri() const { return impl_->uri(); }
 ContextProbe PlutoDevice::probe() const { return impl_->probe(); }
+ReceiverTopologyProbe PlutoDevice::receiver_topology() const { return impl_->receiver_topology(); }
 sdr_core::DeviceCapabilities PlutoDevice::capabilities() const { return impl_->capabilities(); }
 AppliedConfig PlutoDevice::configure(const sdr_core::DeviceConfig& config) { return impl_->configure(config, ReceiverSelection::Rx1, 8U); }
 AppliedConfig PlutoDevice::configure(const sdr_core::DeviceConfig& config, const std::uint32_t output_pool_blocks) { return impl_->configure(config, ReceiverSelection::Rx1, output_pool_blocks); }

@@ -27,6 +27,7 @@ from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .presentation_omission import PresentationOmission
+from .device_capabilities import DeviceCapabilitySnapshot
 
 
 class DeviceTransport(StrEnum):
@@ -295,6 +296,9 @@ class DeviceDescriptor:
     alternate_uris: tuple[str, ...] = ()
     serial: str | None = None
     identity_key: str | None = None
+    # The existing canonical capability model, not a second mutable registry.
+    # None means unavailable/unverified identity/observation, not unsupported.
+    capability_snapshot: DeviceCapabilitySnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)

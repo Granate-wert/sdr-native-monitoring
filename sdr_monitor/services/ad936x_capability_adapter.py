@@ -19,6 +19,8 @@ from ..domain.device_capabilities import (
     DeviceFamily,
     stable_identity_key,
 )
+from .ad936x_identity_admission import normalized_pluto_serial
+from .pluto_readonly_observation import PlutoReadOnlyObservation, PlutoReadOnlyObserver
 
 
 AD936X_LIBIIO_ADAPTER_ID = "native.libiio.ad936x.v1"
@@ -58,39 +60,35 @@ class Ad936xLibiioCapabilityAdapter:
             raise ValueError("timeout_ms must be a positive integer")
         if not callable(getattr(native_module, "PlutoDevice", None)):
             raise ValueError("canonical native module omits PlutoDevice")
-        self._native = native_module
-        self._timeout_ms = timeout_ms
-        self._pending_device: Any | None = None
+        self._observer = PlutoReadOnlyObserver(native_module, timeout_ms=timeout_ms)
 
     def close(self) -> None:
         """Release the retained owner, keeping it reachable if cleanup fails."""
-        device = self._pending_device
-        if device is None:
-            return
         try:
-            device.disconnect()
+            self._observer.close()
         except Exception:  # noqa: BLE001 - a failed native cleanup invalidates the observation.
             raise Ad936xCapabilityObservationError(_GENERIC_FAILURE) from None
-        self._pending_device = None
 
     def observe(self, route: str) -> Ad936xCapabilityObservation:
-        transport = _transport_for_route(route)
-        if self._pending_device is not None:
-            raise Ad936xCapabilityObservationError(_GENERIC_FAILURE)
-        device: Any | None = None
+        _transport_for_route(route)
         try:
-            device = self._native.PlutoDevice(route, self._timeout_ms)
-            self._pending_device = device
-            probe = device.probe()
-            capabilities = device.capabilities()
+            observation = self._observer.observe(route)
+            return self.map_observation(observation, route)
         except Exception:
             raise Ad936xCapabilityObservationError(_GENERIC_FAILURE) from None
-        finally:
-            if device is not None:
-                self.close()
 
+    @staticmethod
+    def map_observation(observation: PlutoReadOnlyObservation, route: str) -> Ad936xCapabilityObservation:
+        """Map existing owned facts without opening another context or topology."""
         try:
-            serial = _required_native_text(getattr(probe, "serial", None), "serial")
+            transport = _transport_for_route(route)
+            if not observation.coherent_context:
+                raise ValueError("native observation has no coherent-context protocol")
+            probe = observation.probe
+            capabilities = observation.capabilities
+            serial = normalized_pluto_serial(getattr(probe, "serial", None))
+            if serial is None:
+                raise ValueError("native serial is unavailable")
             firmware = _required_native_text(getattr(probe, "firmware", None), "firmware")
             identity_key = stable_identity_key(f"ad936x-serial|{serial.casefold()}")
             firmware_fingerprint = stable_identity_key(f"ad936x-firmware|{firmware}")
@@ -147,11 +145,7 @@ class Ad936xLibiioCapabilityAdapter:
                     "native-overflow-flag-readback",
                 ),
             ]
-            rx_channel_count = _observe_rx_channel_count(
-                self._native,
-                route,
-                self._timeout_ms,
-            )
+            rx_channel_count = _observe_rx_channel_count(observation.topology)
             if rx_channel_count is not None:
                 evidence.append(
                     CapabilityEvidence(
@@ -256,12 +250,10 @@ def _native_ranges(values: object, unit: str) -> tuple[CapabilityRange, ...]:
     return result
 
 
-def _observe_rx_channel_count(native_module: Any, route: str, timeout_ms: int) -> int | None:
-    topology_probe = getattr(native_module, "probe_pluto_receiver_topology", None)
-    if not callable(topology_probe):
+def _observe_rx_channel_count(topology: Any | None) -> int | None:
+    if topology is None:
         return None
     try:
-        topology = topology_probe(route, timeout_ms)
         element_ids = tuple(
             str(getattr(element, "id", "")).strip().casefold()
             for element in (getattr(topology, "input_scan_elements", ()) or ())

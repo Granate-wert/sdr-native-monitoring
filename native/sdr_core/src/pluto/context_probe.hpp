@@ -109,4 +109,49 @@ ContextProbe inspect_open_context(const Api& api, const Context* context, const 
     return result;
 }
 
+// Copy scan-layout facts while the observed owner still holds this context.
+// No second open, channel enable or buffer creation is performed.
+template <typename Api, typename Context>
+ReceiverTopologyProbe inspect_context_topology(const Api& api, const Context* context, const ContextProbe& probe) {
+    if (context == nullptr) throw std::invalid_argument("cannot inspect a null IIO context");
+    const auto text = [](const char* value) { return value == nullptr ? std::string{} : std::string(value); };
+    ReceiverTopologyProbe result;
+    result.context = probe;
+    bool found_phy = false;
+    bool found_stream = false;
+    for (unsigned int index = 0U; index < api.devices_count(context); ++index) {
+        const auto* device = api.get_device(context, index);
+        if (device == nullptr) throw std::runtime_error("IIO topology contains a null device");
+        const auto id = text(api.device_id(device));
+        if (id != probe.phy_device_id && id != probe.rx_stream_device_id) continue;
+        const bool is_phy = id == probe.phy_device_id;
+        found_phy = found_phy || is_phy;
+        found_stream = found_stream || !is_phy;
+        for (unsigned int channel_index = 0U; channel_index < api.channels_count(device); ++channel_index) {
+            const auto* channel = api.get_channel(device, channel_index);
+            if (channel == nullptr || api.channel_output(channel)) continue;
+            const auto channel_id = text(api.channel_id(channel));
+            if (channel_id.empty()) continue;
+            if (is_phy) {
+                result.phy_rx_channel_ids.push_back(channel_id);
+                continue;
+            }
+            const auto* format = api.format(channel);
+            if (format == nullptr) continue;
+            result.input_scan_elements.push_back({
+                .id = channel_id,
+                .device_channel_index = channel_index,
+                .storage_bits = format->length,
+                .significant_bits = format->bits,
+                .shift = format->shift,
+                .is_signed = format->is_signed,
+                .is_big_endian = format->is_be,
+                .repeat = format->repeat,
+            });
+        }
+    }
+    if (!found_phy || !found_stream) throw std::runtime_error("IIO topology cannot resolve the observed PHY/RX devices");
+    return result;
+}
+
 }  // namespace sdr_pluto::detail

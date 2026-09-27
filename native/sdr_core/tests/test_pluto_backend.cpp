@@ -93,9 +93,12 @@ int main() {
         _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_SCOPED_IDENTITY", "1");
         {
             sdr_pluto::PlutoDevice same_handle("usb:mock");
+            const auto owned_topology = same_handle.receiver_topology();
             if (identity_hooks.created_contexts() != 1 || identity_hooks.live_contexts() != 1 ||
                 identity_hooks.destroyed_contexts() != 0 || same_handle.probe().serial != "OPEN-1" ||
-                same_handle.capabilities().serial != "OPEN-1") return 46;
+                same_handle.capabilities().serial != "OPEN-1" || owned_topology.context.serial != "OPEN-1" ||
+                owned_topology.input_scan_elements.size() != 2U ||
+                owned_topology.input_scan_elements.front().significant_bits != 12U) return 46;
             same_handle.disconnect();
             same_handle.disconnect();
             if (identity_hooks.live_contexts() != 0 || identity_hooks.destroyed_contexts() != 1) return 47;

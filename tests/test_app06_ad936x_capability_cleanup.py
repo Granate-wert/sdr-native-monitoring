@@ -49,8 +49,16 @@ class _Device:
         if self.disconnect_error:
             raise RuntimeError("disconnect private route")
 
+    def receiver_topology(self) -> SimpleNamespace:
+        self.calls.append("topology")
+        return SimpleNamespace(
+            context=SimpleNamespace(serial=self.serial, firmware="fixture-fw"),
+            input_scan_elements=(),
+        )
+
 
 class _Native:
+    PLUTO_OBSERVATION_PROTOCOL_VERSION = 1
     def __init__(self, device: _Device) -> None:
         self.device = device
         self.open_calls: list[tuple[str, int]] = []
@@ -66,7 +74,7 @@ class App06Ad936xCapabilityCleanupTests(unittest.TestCase):
         native = _Native(device)
         adapter = Ad936xLibiioCapabilityAdapter(native)
         usb = adapter.observe("usb:1.2.3")
-        self.assertEqual(device.calls, ["probe", "capabilities", "disconnect"])
+        self.assertEqual(device.calls, ["probe", "capabilities", "topology", "disconnect"])
         ip = adapter.observe("ip:fixture.local")
         self.assertEqual(usb.snapshot.identity_key, ip.snapshot.identity_key)
         self.assertEqual(usb.snapshot.transports, (CapabilityTransport.USB,))
@@ -97,7 +105,7 @@ class App06Ad936xCapabilityCleanupTests(unittest.TestCase):
         with self.assertRaises(Ad936xCapabilityObservationError) as error:
             adapter.observe("usb:1.2.3")
         self.assertNotIn("private", str(error.exception))
-        self.assertEqual(device.calls, ["probe", "capabilities", "disconnect"])
+        self.assertEqual(device.calls, ["probe", "capabilities", "topology", "disconnect"])
         with self.assertRaises(Ad936xCapabilityObservationError):
             adapter.observe("ip:fixture.local")
         self.assertEqual(len(native.open_calls), 1)

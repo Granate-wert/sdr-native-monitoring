@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from sdr_monitor.services.ad936x_identity_admission import create_identity_bound_owner
+from sdr_monitor.services.native_live import NativeLiveSessionService
 
 
 class CompiledPlutoIdentityTests(unittest.TestCase):
@@ -51,6 +52,10 @@ class CompiledPlutoIdentityTests(unittest.TestCase):
                                                     expected_serial=" MOCK ")
                 self.assertEqual(self.mock.mock_iio_created_contexts(), 1)
                 self.assertEqual(self.mock.mock_iio_live_contexts(), 1)
+                if factory_name == "PlutoDevice":
+                    self.assertEqual(self.native.PLUTO_OBSERVATION_PROTOCOL_VERSION, 1)
+                    self.assertEqual(owner.receiver_topology().context.serial, owner.probe().serial)
+                    self.assertEqual(self.mock.mock_iio_created_contexts(), 1)
                 owner.disconnect()
                 self.assertEqual(self.mock.mock_iio_destroyed_contexts(), 1)
                 self.assertEqual(self.mock.mock_iio_live_contexts(), 0)
@@ -62,6 +67,25 @@ class CompiledPlutoIdentityTests(unittest.TestCase):
                 self.assertEqual(self.mock.mock_iio_live_contexts(), 0)
                 self.assertEqual(self.mock.mock_iio_rf_mutation_calls(), before_mutations)
                 self.assertEqual(self.mock.mock_iio_created_buffers(), before_buffers)
+
+    def test_compiled_discovery_is_one_context_and_publishes_existing_inventory_after_close(self) -> None:
+        self.mock.mock_iio_reset_context_counts()
+        before_mutations = self.mock.mock_iio_rf_mutation_calls()
+        before_buffers = self.mock.mock_iio_created_buffers()
+        service = NativeLiveSessionService(self.native)
+        devices = service.discover_devices()
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(self.mock.mock_iio_created_contexts(), 1)
+        self.assertEqual(self.mock.mock_iio_destroyed_contexts(), 1)
+        self.assertEqual(self.mock.mock_iio_live_contexts(), 0)
+        inventory = service.capability_inventory()
+        self.assertEqual(len(inventory.snapshots), 1)
+        self.assertIs(inventory.snapshots[0], devices[0].capability_snapshot)
+        self.assertEqual(inventory.snapshots[0].rx_channel_count, 1)
+        self.assertEqual(self.mock.mock_iio_created_contexts(), 1)
+        self.assertEqual(self.mock.mock_iio_rf_mutation_calls(), before_mutations)
+        self.assertEqual(self.mock.mock_iio_created_buffers(), before_buffers)
+        service.close_live()
 
 
 if __name__ == "__main__":
