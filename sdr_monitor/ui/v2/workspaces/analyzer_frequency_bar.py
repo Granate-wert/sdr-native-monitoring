@@ -21,6 +21,7 @@ class AnalyzerFrequencyBar(QWidget):
         self._bindings: list[tuple[QLabel | QPushButton, str]] = []
         self._rtbw: list[QWidget] = []
         self._sweep: list[QWidget] = []
+        self._native_common: list[QWidget] = []
         self._mode = AnalyzerMode.RTBW
         self._has_frame = False
         row = QHBoxLayout(self)
@@ -41,11 +42,12 @@ class AnalyzerFrequencyBar(QWidget):
         self._field(row, "analyzer.quick.span", self.span, self._rtbw)
         self._field(row, "analyzer.start_frequency", self.start, self._sweep)
         self._field(row, "analyzer.stop_frequency", self.stop, self._sweep)
-        self._field(row, "analyzer.quick.fft", self.fft)
-        self._field(row, "analyzer.quick.gain", self.gain)
+        self._field(row, "analyzer.quick.fft", self.fft, self._native_common)
+        self._field(row, "analyzer.quick.gain", self.gain, self._native_common)
         row.addStretch(1)
         self.apply = self._button(row, "analyzer.apply", drawer.apply_draft)
         self.cancel = self._button(row, "analyzer.cancel", drawer.cancel_draft)
+        self._native_common.extend((self.apply, self.cancel))
         self.set_locale()
 
     def _frequency(self, value: float) -> QDoubleSpinBox:
@@ -92,6 +94,8 @@ class AnalyzerFrequencyBar(QWidget):
             widget.setVisible(state.mode is AnalyzerMode.RTBW and state.ad936x_controls_available)
         for widget in self._sweep:
             widget.setVisible(state.mode is AnalyzerMode.SWEEP and state.ad936x_controls_available)
+        for widget in self._native_common:
+            widget.setVisible(state.ad936x_controls_available)
         self.start.setEnabled(not state.controls_locked and state.ad936x_controls_available)
         self.stop.setEnabled(not state.controls_locked and state.ad936x_controls_available)
         # RF editor enabled/dirty state is owned by the drawer. Viewport zoom

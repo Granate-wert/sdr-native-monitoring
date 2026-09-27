@@ -84,6 +84,11 @@ class LiveViewModel:
             signal.connect(callback)
         presenter.busy_changed.connect(self._on_busy_changed)
         presenter.task_failed.connect(self._on_task_failed)
+        # Consume only the presenter's cached immutable state. A new V2 shell
+        # must not briefly show AD936x controls before its first Discover ACK.
+        initial_selection = getattr(presenter, "source_selection", None)
+        if isinstance(initial_selection, AnalyzerSourceSelection):
+            self._on_source_selection(initial_selection)
 
     @property
     def state(self) -> LiveViewState:

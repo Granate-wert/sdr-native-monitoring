@@ -171,6 +171,13 @@ class LivePresenter(QObject):
         return self._snapshot_preparer is not None
 
     @property
+    def source_selection(self) -> AnalyzerSourceSelection | None:
+        """Cached control state for a new subscriber; never discover or probe."""
+        getter = getattr(self._use_cases, "current_source_selection", None)
+        value = getter() if callable(getter) else None
+        return value if isinstance(value, AnalyzerSourceSelection) else None
+
+    @property
     def preparation_superseded(self) -> int:
         """Replaced waiting display requests, never analytical FFT loss."""
         return self._preparation_superseded
@@ -409,11 +416,7 @@ class LivePresenter(QObject):
 
     def _emit_source_selection(self) -> None:
         """Control completion only; never read catalog/format per FFT/render."""
-        getter = getattr(self._use_cases, "current_source_selection", None)
-        if callable(getter):
-            value = getter()
-            if value is None or isinstance(value, AnalyzerSourceSelection):
-                self.source_selection_changed.emit(value)
+        self.source_selection_changed.emit(self.source_selection)
 
     def _offer_preparation(self, snapshot: LiveSnapshot, revision: int, *, render: bool = True) -> None:
         if self._closing or self._closed:

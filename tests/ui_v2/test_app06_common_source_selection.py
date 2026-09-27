@@ -399,6 +399,12 @@ class CommonSourceV2CompositionTests(unittest.TestCase):
             with patch("sys.excepthook", side_effect=lambda *args: errors.append(args)):
                 self.assertIsNotNone(presenter._use_cases._sources)
                 self.assertIs(presenter._use_cases._sources._catalog, graph.catalog)
+                self.assertIs(composition.view_model.source_selection, presenter.source_selection)
+                self.assertEqual(composition.view_model.source_selection.revision, 0)
+                self.assertFalse(composition.analyzer_view_model.state.ad936x_controls_available)
+                for widget in (page.frequency_bar.fft, page.frequency_bar.gain,
+                               page.frequency_bar.apply, page.frequency_bar.cancel):
+                    self.assertTrue(widget.isHidden())
                 self.assertEqual(graph.native.created, [])  # Opening/navigation are inert.
                 page.discover.click()
                 self.wait(lambda: page.source.count() == 4 and not composition.view_model.state.busy)
@@ -408,6 +414,9 @@ class CommonSourceV2CompositionTests(unittest.TestCase):
                 self.wait(lambda: composition.view_model.source_selection.selected_id == native_id
                           and not composition.view_model.state.busy)
                 self.assertEqual(len(graph.native.created), 2)
+                for widget in (page.frequency_bar.fft, page.frequency_bar.gain,
+                               page.frequency_bar.apply, page.frequency_bar.cancel):
+                    self.assertFalse(widget.isHidden())
                 page.drawer._sample_rate.setValue(61.44)
                 page.drawer._fft.setValue(4096)
                 page.drawer._backend.setCurrentIndex(page.drawer._backend.findData(BackendKind.CPU.value))
@@ -429,6 +438,9 @@ class CommonSourceV2CompositionTests(unittest.TestCase):
                     self.assertTrue(page.drawer._sample_rate.isHidden())
                     self.assertTrue(page.drawer._rf_bandwidth.isHidden())
                     self.assertTrue(page.drawer._backend.isHidden())
+                    for widget in (page.frequency_bar.fft, page.frequency_bar.gain,
+                                   page.frequency_bar.apply, page.frequency_bar.cancel):
+                        self.assertTrue(widget.isHidden())
                     self.assertIn(text("analyzer.source.family_path_pending"), page.source_summary.text())
                     self.assertIsNone(composition.view_model.state.snapshot.device)
                     composition.view_model._on_prepared_snapshot(build_live_view_state(old_snapshot))
@@ -443,6 +455,14 @@ class CommonSourceV2CompositionTests(unittest.TestCase):
                 finally:
                     set_active_locale(previous_locale)
                     page.set_locale()
+                page.source.setCurrentIndex(page.source.findData(native_id))
+                self.wait(lambda: composition.view_model.source_selection.selected_id == native_id
+                          and not composition.view_model.state.busy)
+                for widget in (page.frequency_bar.fft, page.frequency_bar.gain,
+                               page.frequency_bar.apply, page.frequency_bar.cancel):
+                    self.assertFalse(widget.isHidden())
+                self.assertFalse(page.drawer.dirty)
+                self.assertNotEqual(page.frequency_bar.gain.value(), 45)
                 # Fail selected read-only cleanup while the local mode is Sweep.
                 # The actual Stop button must release the catalog, not dispatch
                 # cancellation to a receiver/Sweep it does not own.

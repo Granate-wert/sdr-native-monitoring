@@ -168,6 +168,13 @@ measurement snapshots, including failed commands; no per-FFT catalog formatting
 or new renderer lane is introduced. Disposal disconnects its signal and terminal
 release drops both selection and device-list references.
 
+New subscribers receive the cached immutable selection before their first
+Discover/selection acknowledgement, without opening a device. Cold startup and
+foreign selection hide ALL AD936x quick controls, their labels and Apply/Discard
+actions, including the FFT/Gain editors moved out of the settings drawer. Returning
+to an observed AD936x restores those same editors with a fresh draft, not the
+unsubmitted gain from a previously selected source.
+
 HackRF/tinySA are selectable typed control-plane choices at this checkpoint,
 NOT completed family acquisition paths. UI hides old Pluto-specific parameters
 and refuses their Apply/Start/preflight before native dispatch. The empty native
