@@ -67,7 +67,6 @@ if ($nativeModules.Count -ne 1) { throw "Expected one ABI-specific _sdr_native e
 $freezeNativeHash = (Get-FileHash -LiteralPath $nativeModules[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $libiioRuntimeNames = @("libiio.dll", "libserialport-0.dll", "libusb-1.0.dll", "libxml2-2.dll", "libiconv-2.dll", "liblzma-5.dll", "zlib1.dll")
 $libiioPyInstallerArgs = @()
-$officialPyInstallerArgs = @()
 $sharedRuntimeReportPath = Join-Path $buildRoot 'shared_runtime_inputs.json'
 if (-not $SkipFreeze) {
     $libiioRuntimeDir = if ($env:SDR_LIBIIO_RUNTIME_DIR) { $env:SDR_LIBIIO_RUNTIME_DIR } else { Join-Path $env:ProgramFiles "IIO Oscilloscope\bin" }
@@ -84,13 +83,6 @@ if (-not $SkipFreeze) {
     & $python (Join-Path $repoRoot 'scripts\preflight_sdr_shared_runtime.py') --module $nativeModules[0].FullName --manifest $freezeNativeManifestPath --libiio-directory $libiioRuntimeDir --lane $Lane
     if ($LASTEXITCODE -ne 0) { throw 'Shared Pluto/HackRF runtime admission failed before freeze' }
     if ($hackrfRequested) {
-        # libusb appears ONCE, from the explicitly hash-matched libiio bundle.
-        foreach ($name in @('hackrf.dll', 'pthreadVC3.dll')) {
-            $officialPyInstallerArgs += '--add-binary'
-            $officialPyInstallerArgs += "$(Join-Path $freezeNativeDirectory $name);sdr_monitor"
-        }
-        # Do not let analysis collect the active baseline module/manifest.
-        $officialPyInstallerArgs += @('--exclude-module', 'sdr_monitor._sdr_native', '--add-data', "$freezeNativeManifestPath;sdr_monitor")
         & $python (Join-Path $repoRoot 'scripts\preflight_sdr_shared_runtime.py') --module $nativeModules[0].FullName --manifest $freezeNativeManifestPath --libiio-directory $libiioRuntimeDir --lane CPU --output $sharedRuntimeReportPath
         if ($LASTEXITCODE -ne 0) { throw 'Official shared-runtime input report failed' }
     }
@@ -103,7 +95,11 @@ if (-not $SkipFreeze) {
         $env:PATH = ($freezeOriginalPath.Split(';') | Where-Object { $_ -notmatch '[\\/]codex-runtimes[\\/]' }) -join ';'
         # Preserve stdout for --version and frozen metadata/smoke commands.
         # Hide only a console owned by this GUI launch, never a caller's shell.
-        & $python -m PyInstaller --noconfirm --clean --onedir --hide-console hide-early --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main --add-binary ("$($nativeModules[0].FullName);sdr_monitor") @libiioPyInstallerArgs @officialPyInstallerArgs (Join-Path $repoRoot "main_sdr.py")
+        if ($hackrfRequested) {
+            & $python (Join-Path $repoRoot 'scripts\freeze_sdr_official.py') --repo-root $repoRoot --native-directory $freezeNativeDirectory --libiio-directory $libiioRuntimeDir --release-root $releaseRoot --build-root $buildRoot
+        } else {
+            & $python -m PyInstaller --noconfirm --clean --onedir --hide-console hide-early --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main --add-binary ("$($nativeModules[0].FullName);sdr_monitor") @libiioPyInstallerArgs (Join-Path $repoRoot "main_sdr.py")
+        }
     } finally {
         $env:PATH = $freezeOriginalPath
     }

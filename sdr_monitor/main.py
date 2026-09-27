@@ -135,6 +135,20 @@ def _offscreen_default_shell_verdict() -> dict[str, object]:
     return _run_offscreen_shell(default_composition=True)
 
 
+def _native_startup_owner_state(live_service: object) -> dict[str, bool]:
+    """Current retained observation/stream owners; missing fields fail loudly."""
+    observer = getattr(live_service, "_observation_owner")
+    return {
+        "native_device_constructed": bool(getattr(observer, "cleanup_pending")
+                                          or getattr(live_service, "_native_uri") is not None),
+        "native_engine_constructed": bool(getattr(live_service, "_engine") is not None
+                                          or getattr(live_service, "_poller") is not None
+                                          or getattr(live_service, "_sweep_lease_active")
+                                          or getattr(live_service, "_stream_release_failed")
+                                          or getattr(live_service, "_external_analyzer_owner") is not None),
+    }
+
+
 def _run_offscreen_shell(*, default_composition: bool) -> dict[str, object]:
     """Run one private AppShell lifecycle command without receiver work.
 
@@ -194,8 +208,7 @@ def _run_offscreen_shell(*, default_composition: bool) -> dict[str, object]:
                 if not bool(native_info.get("pluto_compiled")):
                     raise RuntimeError("default offscreen shell native module lacks Pluto support")
                 native_state = {
-                    "native_device_constructed": live_service._native_device is not None,
-                    "native_engine_constructed": live_service._engine is not None,
+                    **_native_startup_owner_state(live_service),
                     "pluto_compiled": True,
                 }
             else:

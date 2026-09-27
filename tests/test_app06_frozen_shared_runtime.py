@@ -18,6 +18,7 @@ from scripts.preflight_sdr_release import build_manifest
 from scripts.verify_sdr_frozen_shared_runtime import verify_frozen_shared_runtime
 from sdr_monitor import frozen_shared_runtime as runtime
 from sdr_monitor import main as main_module
+from sdr_monitor.libiio_runtime import LIBIIO_RUNTIME_COMPONENTS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,6 +39,14 @@ def package_fixture(package: Path) -> tuple[Path, Path, dict]:
         "hackrf_header_sha256": "b" * 64, "hackrf_library_sha256": "c" * 64,
     }
     (directory / "native_build_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    inputs = {
+        "schema": "app06-shared-libusb-preflight-v1", "passed": True, "official_hackrf": True,
+        "source_commit": manifest["source_commit"],
+        "selected_libusb_sha256": manifest["hackrf_runtime_sha256"]["libusb-1.0.dll"],
+        "hackrf_libusb_sha256": manifest["hackrf_runtime_sha256"]["libusb-1.0.dll"],
+        "libiio_runtime_sha256": {n: runtime.file_sha256(directory / n) for n in LIBIIO_RUNTIME_COMPONENTS},
+    }
+    (package / "shared_runtime_inputs.json").write_text(json.dumps(inputs), encoding="utf-8")
     release = package / "release_manifest.json"
     release.write_text(json.dumps(build_manifest(package, "CPU", "0.16.10")), encoding="utf-8")
     return module, release, manifest
@@ -163,6 +172,22 @@ class SharedRuntimeDiagnosticTests(unittest.TestCase):
 
 
 class FrozenSharedRuntimeVerifierTests(unittest.TestCase):
+    def test_input_report_mismatch_refuses_even_if_final_release_records_every_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp).resolve()
+            _, release, _ = package_fixture(package)
+            path = package / "shared_runtime_inputs.json"
+            recorded = json.loads(path.read_text())
+            for updates in ({"passed": False}, {"official_hackrf": False}, {"source_commit": "unknown"},
+                            {"libiio_runtime_sha256": {}}, {"selected_libusb_sha256": "0" * 64}):
+                path.write_text(json.dumps({**recorded, **updates}))
+                release.write_text(json.dumps(build_manifest(package, "CPU", "0.16.10")))
+                with (self.subTest(updates=updates),
+                      patch("scripts.verify_sdr_frozen_shared_runtime.subprocess.run") as run,
+                      self.assertRaisesRegex(ValueError, "pre-freeze inputs")):
+                    verify_frozen_shared_runtime(package, release, "0.16.10")
+                run.assert_not_called()
+
     def test_mock_frozen_contract_and_isolated_path_then_refuse_forged_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             package = Path(tmp).resolve()
@@ -252,11 +277,13 @@ class OfficialPackagePipelineTests(unittest.TestCase):
 
     def test_script_freezes_stage_only_and_exact_manifest_with_one_libusb(self):
         source = (ROOT / "build_sdr_release.ps1").read_text(encoding="utf-8")
+        freeze = (ROOT / "scripts/freeze_sdr_official.py").read_text(encoding="utf-8")
         self.assertIn("-StageOnly -HackrfIncludeDirectory", source)
         self.assertIn("windows-msvc-cpu-hackrf\\python", source)
-        self.assertIn("'--exclude-module', 'sdr_monitor._sdr_native'", source)
-        self.assertIn('"$freezeNativeManifestPath;sdr_monitor"', source)
-        self.assertIn("@('hackrf.dll', 'pthreadVC3.dll')", source)
+        self.assertIn("freeze_sdr_official.py", source)
+        self.assertIn('"sdr_monitor._sdr_native"', freeze)
+        self.assertIn('str(manifest_path) + ";sdr_monitor"', freeze)
+        self.assertIn('("hackrf.dll", "pthreadVC3.dll")', freeze)
         self.assertIn("existing packages are preserved", source)
         self.assertGreater(source.index("verify_sdr_frozen_shared_runtime.py"),
                            source.index("verify_sdr_frozen_tinysa_runtime.py"))

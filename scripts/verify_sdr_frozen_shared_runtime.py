@@ -15,6 +15,7 @@ if __package__ in {None, ""}:
 from scripts.preflight_sdr_native_build import _file_sha256, _read_manifest, validate_manifest
 from scripts.preflight_sdr_release import verify_manifest
 from sdr_monitor.frozen_shared_runtime import REQUIRED_LOADED, SHARED_COMPONENTS
+from sdr_monitor.libiio_runtime import LIBIIO_RUNTIME_COMPONENTS
 
 
 def verify_frozen_shared_runtime(package_dir: Path, manifest_path: Path, version: str) -> dict[str, object]:
@@ -39,6 +40,18 @@ def verify_frozen_shared_runtime(package_dir: Path, manifest_path: Path, version
         if len(matches) != 1 or matches[0] != runtime_dir / name:
             raise ValueError("shared package dependency missing, duplicate or misplaced: " + name)
         files[name] = _file_sha256(matches[0])
+    with (package / "shared_runtime_inputs.json").open("rb") as stream:
+        encoded = stream.read(16_385)
+    if len(encoded) > 16_384:
+        raise ValueError("shared runtime input report exceeds bound")
+    inputs = json.loads(encoded)
+    if (not isinstance(inputs, dict) or inputs.get("schema") != "app06-shared-libusb-preflight-v1"
+            or inputs.get("passed") is not True or inputs.get("official_hackrf") is not True
+            or inputs.get("source_commit") != native_manifest.get("source_commit")
+            or inputs.get("libiio_runtime_sha256") != {name: files[name] for name in LIBIIO_RUNTIME_COMPONENTS}
+            or inputs.get("selected_libusb_sha256") != files["libusb-1.0.dll"]
+            or inputs.get("hackrf_libusb_sha256") != files["libusb-1.0.dll"]):
+        raise ValueError("frozen runtime payload differs from admitted pre-freeze inputs")
     environment = dict(os.environ)
     environment["LIBIIO_DLL_PATH"] = str(package / "external-runtime-must-not-be-loaded.dll")
     environment["SDR_AUTO_DISCOVER"] = "0"

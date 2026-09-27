@@ -554,6 +554,18 @@ native hash. The package includes a shared-runtime input report and all-file
 release manifest. A mismatched/duplicate/misplaced native/manifest/DLL payload
 refuses qualification even if its files are otherwise listed in that manifest.
 
+Official freeze uses the installed pinned STANDARD spec generator, retaining
+console stdout/hide-early policy. A checked operation on its generated binary
+TOC keeps the explicit sibling destination and omits PE-analysis root copies
+ONLY after confirming every copy has identical selected-input bytes and BINARY
+type. Different bytes, missing/repeated canonical entries, unsupported types or
+generator-policy drift refuse the build. No already-frozen file is deleted or
+substituted. The final verifier also compares all seven libiio hashes/source/
+shared libusb against the admitted PRE-freeze report, not only final file hashes.
+Default-composition smoke observes the CURRENT retained observation/route and
+engine/poller/Sweep/external-owner/release state; missing owner fields fail,
+rather than using the obsolete `_native_device` or guessing an inert default.
+
 The hidden exclusive frozen diagnostic loads native exports and libiio VERSION
 metadata only. It does NOT construct the HackRF factory, call SDK init/enumerate,
 open an IIO context/serial device, create a GUI/Live engine or attempt RX. A bounded
