@@ -137,6 +137,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.applied = QLabel(self)
         self.applied.setProperty("ui2Role", "secondary")
         self.applied.setWordWrap(True)
+        self.applied.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.applied)
         self.sweep_preview = AnalyzerSweepPreview(model.live.preview_sweep, self)
         self.sweep_preview.status_changed.connect(self._update_primary_availability)

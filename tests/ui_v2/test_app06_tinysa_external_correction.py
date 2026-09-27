@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.analyzer import bundle_from_sweep
@@ -314,11 +315,13 @@ class TinySaExternalCorrectionTests(unittest.TestCase):
                 drawer.input.setCurrentIndex(1)
                 drawer.frontend_chain.setText("coax-A")
                 draft = page.tinysa_bar.request()
-                saved = service.finalize_profile(curve(draft, plane="antenna"))
+                saved = service.finalize_profile(curve(draft, plane="<b>antenna</b>"))
                 active = service.active_profile()
                 drawer.refresh_profiles.click()
                 self.wait(lambda: drawer.correction.count() == 2 and not c.calibration_view_model.state.busy)
                 drawer.correction.setCurrentIndex(1)
+                self.assertTrue(drawer.frontend_chain.isEnabled())
+                self.assertTrue(drawer.extrapolate.isEnabled())
                 selected = page.tinysa_bar.request()
                 self.assertEqual(selected.external_correction.fingerprint, saved.fingerprint)
                 self.assertEqual(g.serials, [])
@@ -331,6 +334,8 @@ class TinySaExternalCorrectionTests(unittest.TestCase):
                 line = c.analyzer_view_model.state.bundle.spectrum
                 self.assertTrue(line.instrument.external_correction.applied)
                 self.assertIn(saved.fingerprint[:8], page.applied.text())
+                self.assertIn("<b>antenna</b>", page.applied.text())
+                self.assertEqual(page.applied.textFormat(), Qt.TextFormat.PlainText)
                 self.assertIs(service.active_profile(), active)  # no global SDR profile mutation
                 run = g.instrument.instrument_run_identity
                 port = SimpleNamespace(prepares_snapshots=True, instrument_run_identity=run,
@@ -357,6 +362,8 @@ class TinySaExternalCorrectionTests(unittest.TestCase):
                     guard.dispose()
                 first = line.instrument.external_correction
                 drawer.correction.setCurrentIndex(0)
+                self.assertFalse(drawer.frontend_chain.isEnabled())
+                self.assertFalse(drawer.extrapolate.isEnabled())
                 self.assertIsNone(page.tinysa_bar.request().external_correction)
                 page.primary.click()
                 self.wait(lambda: c.analyzer_view_model.state.bundle is not None
