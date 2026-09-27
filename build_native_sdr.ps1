@@ -4,10 +4,13 @@ param(
     [ValidateSet("CPU", "CUDA")][string]$Lane = "CPU",
     [string]$PythonExecutable = "",
     [switch]$Clean,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    # Test an alternate lane without replacing the approved application module.
+    [switch]$StageOnly
 )
 
 $ErrorActionPreference = "Stop"
+if ($StageOnly -and $Clean) { throw "StageOnly cannot be combined with Clean (which removes active artifacts)" }
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceDir = Join-Path $repoRoot "native\sdr_core"
 $outDir = Join-Path $sourceDir "out"
@@ -203,7 +206,7 @@ $preflight = Join-Path $repoRoot "scripts\preflight_sdr_native_build.py"
 $preflightArgs = @($preflight, "--module", $artifacts[0].FullName, "--manifest", $manifestPath)
 if ($Lane -eq "CUDA") { $preflightArgs += "--expect-cuda" } else { $preflightArgs += "--expect-cpu" }
 Invoke-Checked -FilePath $PythonExecutable -Arguments $preflightArgs
-if ($Configuration -eq "Release") {
+if ($Configuration -eq "Release" -and -not $StageOnly) {
     $activeDir = Join-Path $repoRoot "sdr_monitor"
     # Keep only the extension matching the selected Python ABI in the active
     # standalone package. Older ABI artifacts must not shadow a rerun.
@@ -239,4 +242,5 @@ if ($Configuration -eq "Release") {
         "--manifest", $activeManifest
     )
 }
+if ($StageOnly) { Write-Host "Staged native artifact only; active application module and manifest unchanged." }
 Write-Host "S12 native module ($Lane/$Configuration): $($artifacts[0].FullName)"
