@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import replace
-from typing import Protocol
+from typing import Protocol, cast
 from sdr_monitor.domain import LiveConfiguration
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
@@ -65,6 +66,14 @@ class LiveViewModel:
         self._devices: tuple[object, ...] = ()
         self._device_listeners: list[Callable[[tuple[object, ...]], None]] = []
         self._state = build_live_view_state(None)
+        self._source_selection: AnalyzerSourceSelection | None = None
+        source_signal = getattr(presenter, "source_selection_changed", None)
+        self._source_connections: tuple[tuple[_SignalPort, Callable[[object], None]], ...] = (
+            ((cast(_SignalPort, source_signal), self._on_source_selection),)
+            if callable(getattr(source_signal, "connect", None)) else ()
+        )
+        for source_signal_port, source_callback in self._source_connections:
+            source_signal_port.connect(source_callback)
         presenter.devices_discovered.connect(self._on_devices_discovered)
         self._snapshot_connections = (
             ((getattr(presenter, "prepared_snapshot_ready"), self._on_prepared_snapshot),)
@@ -85,6 +94,10 @@ class LiveViewModel:
         """Return the last public discovery result; no route is inferred or stored."""
 
         return self._devices
+
+    @property
+    def source_selection(self) -> AnalyzerSourceSelection | None:
+        return self._source_selection
 
     def subscribe(self, listener: Callable[[LiveViewState], None]) -> Callable[[], None]:
         """Subscribe to immutable presentation updates and receive current state."""
@@ -158,6 +171,15 @@ class LiveViewModel:
         self._presenter.select_device(identifier)
         return True
 
+    def release_source(self) -> bool:
+        """Explicit retained-catalog cleanup, not Stop on a foreign RX owner."""
+        if (self._disposed or self._busy or self._source_selection is None
+                or not self._source_selection.release_pending):
+            return False
+        self._begin_explicit_command()
+        self._presenter.stop()
+        return True
+
     def select_manual_uri(self, uri: str) -> bool:
         """Delegate a non-empty explicit URI; transport validation remains upstream."""
 
@@ -201,6 +223,7 @@ class LiveViewModel:
         for signal, callback in (
             (self._presenter.devices_discovered, self._on_devices_discovered),
             *self._snapshot_connections,
+            *self._source_connections,
             (self._presenter.busy_changed, self._on_busy_changed),
             (self._presenter.task_failed, self._on_task_failed),
         ):
@@ -222,6 +245,39 @@ class LiveViewModel:
         self._prepared_measurement = None
         self._layer_cache.clear()
         self._state = build_live_view_state(None)
+        self._source_selection = None
+        self._devices = ()
+
+    def _on_source_selection(self, value: object) -> None:
+        if self._disposed or value is self._source_selection:
+            return
+        if value is not None and not isinstance(value, AnalyzerSourceSelection):
+            self._on_task_failed("Invalid source selection publication")
+            return
+        if (value is not None and self._source_selection is not None
+                and value.revision < self._source_selection.revision):
+            return  # A delayed control acknowledgement cannot resurrect a source.
+        self._source_selection = value
+        self._last_snapshot = None
+        self._prepared_measurement = None
+        self._layer_cache.clear()
+        if value is not None and self._devices is not value.choices:
+            self._devices = value.choices
+            for listener in tuple(self._device_listeners):
+                listener(self._devices)
+        self._publish()
+
+    def _snapshot_matches_source(self, snapshot: object) -> bool:
+        selection = self._source_selection
+        if selection is None:
+            return True
+        if not selection.ad936x_controls_available:
+            # Only an EMPTY native state is admitted for a foreign selection.
+            return (getattr(snapshot, "device", None) is None
+                    and getattr(snapshot, "spectrum", None) is None
+                    and getattr(snapshot, "persistence", None) is None
+                    and getattr(snapshot, "applied", None) is None)
+        return getattr(getattr(snapshot, "device", None), "device_id", None) == selection.selected_id
 
     def _on_devices_discovered(self, devices: object) -> None:
         if self._disposed:
@@ -244,7 +300,7 @@ class LiveViewModel:
         self._publish()
 
     def _on_snapshot(self, snapshot: object) -> None:
-        if self._disposed:
+        if self._disposed or not self._snapshot_matches_source(snapshot):
             return
         self._prepared_measurement = None
         self._last_snapshot = snapshot
@@ -255,6 +311,8 @@ class LiveViewModel:
             return
         if not isinstance(value, LiveViewState):
             self._on_task_failed("Invalid prepared Live publication")
+            return
+        if not self._snapshot_matches_source(value.snapshot):
             return
         self._prepared_measurement = value
         self._last_snapshot = value.snapshot

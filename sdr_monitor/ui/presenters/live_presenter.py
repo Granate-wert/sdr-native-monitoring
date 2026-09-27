@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from ...application import LiveSessionUseCases
 from ...domain import LiveConfiguration, LiveSnapshot
 from ...domain.analyzer_resources import AnalyzerGeometryPreflight
+from ...domain.analyzer_sources import AnalyzerSourceSelection
 from ...domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ...domain.live_configuration_patch import LiveConfigurationPatch
 from ..display_scheduler import DisplayScheduler, DisplaySchedulerMetrics
@@ -43,6 +44,7 @@ class LivePresenter(QObject):
     """Moves all potentially blocking service methods off the Qt GUI thread."""
 
     devices_discovered = Signal(object)
+    source_selection_changed = Signal(object)
     snapshot_changed = Signal(object)
     task_failed = Signal(str)
     busy_changed = Signal(bool)
@@ -356,6 +358,7 @@ class LivePresenter(QObject):
 
     def _complete(self, future: Future[Any], on_success: Callable[[Any], None]) -> None:
         try:
+            self._emit_source_selection()
             value = future.result()
         except Exception as error:  # pragma: no cover - adapter-dependent branch
             self.task_failed.emit(str(error))
@@ -365,6 +368,8 @@ class LivePresenter(QObject):
             self.busy_changed.emit(False)
 
     def _emit_snapshot(self, snapshot: LiveSnapshot) -> None:
+        if not self.prepares_snapshots:
+            self._emit_source_selection()
         snapshot = self._admit_snapshot(snapshot)
         with self._publication_lock:
             self._control_revision += 1
@@ -401,6 +406,14 @@ class LivePresenter(QObject):
             self.task_failed.emit(f"Analyzer publication rejected: {error}")
             return
         self.analyzer_ready.emit(bundle)
+
+    def _emit_source_selection(self) -> None:
+        """Control completion only; never read catalog/format per FFT/render."""
+        getter = getattr(self._use_cases, "current_source_selection", None)
+        if callable(getter):
+            value = getter()
+            if value is None or isinstance(value, AnalyzerSourceSelection):
+                self.source_selection_changed.emit(value)
 
     def _offer_preparation(self, snapshot: LiveSnapshot, revision: int, *, render: bool = True) -> None:
         if self._closing or self._closed:
@@ -479,6 +492,7 @@ class LivePresenter(QObject):
             if not current:
                 self._preparation_stale += 1
                 return
+            self._emit_source_selection()
             value = future.result()  # completion notification, never a GUI wait
             if isinstance(value, _PreparedDelivery):
                 self._deliver_prepared(replace(value, revision=acknowledged_revision))
@@ -518,6 +532,8 @@ class LivePresenter(QObject):
         if delivery.error is not None:
             self.task_failed.emit("Live display preparation failed: " + delivery.error)
             return
+        if not delivery.render:
+            self._emit_source_selection()
         self.prepared_snapshot_ready.emit(delivery.value)
         # Compatibility observers receive the same snapshot; V2 subscribes only
         # to prepared_snapshot_ready, so no deep GUI conversion is repeated.

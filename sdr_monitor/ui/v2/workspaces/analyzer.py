@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QStyl
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsSettings
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 
 from ..design import ThemeId, stylesheet_for_theme
@@ -52,6 +53,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._theme = ThemeId.DARK
         self._last_bundle: AnalyzerFrameBundle | None = None
         self._last_mode = model.state.mode
+        self._last_source_selection: AnalyzerSourceSelection | None = None
         self._last_waterfall: WaterfallLineFrame | None = None
         self._last_persistence: PersistenceDensityFrame | None = None
         self._last_identity = None
@@ -98,6 +100,13 @@ class AnalyzerWorkspaceV2(QWidget):
         self.start_frequency = self.frequency_bar.start
         self.stop_frequency = self.frequency_bar.stop
         layout.addWidget(self.frequency_bar)
+        self.source_summary = QLabel(self)
+        self.source_summary.setObjectName("v2-analyzer-source-summary")
+        self.source_summary.setProperty("ui2Role", "secondary")
+        self.source_summary.setWordWrap(True)
+        self.source_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.source_summary.hide()
+        layout.addWidget(self.source_summary)
         self.applied = QLabel(self)
         self.applied.setProperty("ui2Role", "secondary")
         self.applied.setWordWrap(True)
@@ -169,6 +178,7 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def set_locale(self) -> None:
         """Translate controls in place; preserve canvas, source and local range."""
+        self._last_source_selection = None  # Reformat this scalar readout in the new locale.
         self.setAccessibleName(text("analyzer.title"))
         self.source.setAccessibleName(text("live.device_selector.name"))
         with QSignalBlocker(self.source):
@@ -313,7 +323,8 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def _sync_source(self, state: AnalyzerViewState) -> None:
         """Show published selection, not an optimistic in-flight combo choice."""
-        device = getattr(state.live.snapshot, "device", None)
+        device = (state.source_selection.selected if state.source_selection is not None
+                  else getattr(state.live.snapshot, "device", None))
         identifier = getattr(device, "device_id", None)
         with QSignalBlocker(self.source):
             index = self.source.findData(identifier)
@@ -367,8 +378,9 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def _refresh_preview(self, _value: object = None) -> None:
         state = self.model.state
-        self.sweep_preview.setVisible(state.mode is AnalyzerMode.SWEEP)
-        if state.mode is not AnalyzerMode.SWEEP:
+        native_sweep = state.mode is AnalyzerMode.SWEEP and state.ad936x_controls_available
+        self.sweep_preview.setVisible(native_sweep)
+        if not native_sweep:
             self.sweep_preview.cancel()
         elif not state.controls_locked:
             try:
@@ -390,14 +402,17 @@ class AnalyzerWorkspaceV2(QWidget):
     def _update_primary_availability(self) -> None:
         """Known-invalid Sweep plans disable Start; pending drafts can still resolve on click."""
         state = self.model.state
-        ready = (state.live.has_applied_configuration and not self.drawer.dirty
+        ready = (state.ad936x_controls_available and state.live.has_applied_configuration and not self.drawer.dirty
                  and not self.drawer.pending and state.live.primary_action is LiveAction.START
                  and state.live.primary_action_enabled)
         invalid_sweep = ready and state.mode is AnalyzerMode.SWEEP and self.sweep_preview.has_error
         enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
                    and (state.running or state.stop_required or (ready and not invalid_sweep)))
         self.primary.setEnabled(enabled)
-        hint = (self.sweep_preview.summary.text() if invalid_sweep
+        hint = (text("analyzer.source.family_path_pending")
+                if state.source_selection is not None and state.source_selection.selected is not None
+                and not state.ad936x_controls_available
+                else self.sweep_preview.summary.text() if invalid_sweep
                 else "" if ready or state.running or state.stop_required
                 else text("analyzer.start_requires_configuration"))
         if self.primary.toolTip() != hint:
@@ -408,6 +423,16 @@ class AnalyzerWorkspaceV2(QWidget):
             return
         self._refresh_preview()
         self._sync_source(state)
+        selection = state.source_selection
+        if selection is not self._last_source_selection:
+            self._last_source_selection = selection
+            selected = selection.selected if selection is not None else None
+            if selected is None:
+                self.source_summary.hide()
+            else:
+                from ..state.source_selection_readout import source_selection_readout
+                self.source_summary.setText(source_selection_readout(selected))
+                self.source_summary.show()
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(self.mode.findData(state.mode))
         for control in (self.source, self.discover, self.mode):

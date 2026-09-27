@@ -141,15 +141,54 @@ USB serial/model/version do NOT prove continuity, RF accuracy or calibration.
 Probing a second tinySA retains both current same-family observations until a
 fresh discovery deliberately invalidates them.
 
-This wiring does not yet route the Analyzer's Discover/select controls through
-the common registry; it establishes retained DI/cleanup for that next packet.
-Existing explicit tinySA activation is not presented as a completed common UI.
+## Shared Analyzer source selection (first APP-06C packet)
+
+Production UI V2 now routes its existing Analyzer Discover/select controls
+through that SAME retained catalog, not a parallel discovery model. A low-rate
+immutable source selection references the exact operational binding and runtime
+objects. Its bounded revision is a selection revision, never an RF configuration
+generation, receiver epoch, timestamp or continuity claim. Current-state reads
+perform no SDK calls and take no long-held I/O lock. The Analyzer reserves idle
+control while discovery/observation runs in the existing presenter worker; Start,
+mode changes, other control and bounded Sweep tools refuse that reservation.
+
+Discovery publishes at most 32 choices without automatic selection. Labels use
+model/transport and an opaque operational-ID suffix, not a serial/COM/URI. Selected
+AD936x is observed exactly once through the retained NativeLive provider. Its
+actual native snapshot/configuration and current high-Fs RTBW/Sweep paths remain
+authoritative. Manual AD936x URI selection stays a separate explicit native
+action. Its current operational binding is displayed but is not inserted into
+catalog truth or inferred to be an alias of an existing USB/IP device.
+
+Source change or failed observation clears the prior accepted configuration,
+draft, Spectrum/Waterfall/persistence presentation and preparation cache. Delayed
+native snapshots with a different source and older selection acknowledgements
+cannot restore those facts. Control signals carry this selection separately from
+measurement snapshots, including failed commands; no per-FFT catalog formatting
+or new renderer lane is introduced. Disposal disconnects its signal and terminal
+release drops both selection and device-list references.
+
+HackRF/tinySA are selectable typed control-plane choices at this checkpoint,
+NOT completed family acquisition paths. UI hides old Pluto-specific parameters
+and refuses their Apply/Start/preflight before native dispatch. The empty native
+publication has no device/config/frame and unit `unavailable`; it is not a fake
+HackRF/tinySA Live snapshot. tinySA selects local Sweep-only intent, with no
+claim of RTBW, raw I/Q or a host FFT. The UI explicitly reports that family
+configuration/acquisition integration remains pending. Existing separate tinySA
+activation is still compatibility work, not the final shared Analyzer design.
+
+Failed retained release clears selectable facts and visibly requires explicit
+Stop. That Stop routes to catalog cleanup even in local Sweep mode and even
+without a native snapshot; it never cancels an unrelated receiver/Sweep. Failure
+remains visible and quarantined, and only a subsequent explicit retry resumes
+the SAME providers. This is composed-graph exclusion, not a process-global or
+direct SDK arbiter.
 
 ## Required further work
 
-The integrated UI V2 source selector, family-specific controls and one common
-acquisition owner/router still remain. HackRF/tinySA
-compatibility tests do not establish their selectable V2 product paths.
+Family-specific configuration/acquisition controls and one common acquisition
+owner/router still remain. HackRF/tinySA control-plane selection and compatibility
+tests do not establish their actual V2 RX/trace product paths.
 Official shared-DLL/frozen packaging and actual high-Fs device/transport cells
 also remain separate acceptance gates. APP-05 performance debts, APP-06A/B,
 APP-06C/D, APP-07 and release acceptance are not closed by this source packet.

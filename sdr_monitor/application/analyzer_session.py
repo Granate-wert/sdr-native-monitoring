@@ -70,6 +70,7 @@ class AnalyzerSessionApplicationService:
         self._state = AnalyzerSessionState()
         self._start_dispatched = False
         self._bounded_sweep_active = False
+        self._idle_control_active = False
         self._next_operation_id = 0
         self._last_sweep_epoch = -1
 
@@ -82,7 +83,7 @@ class AnalyzerSessionApplicationService:
         Native admission remains the final authority after a tool error.
         """
         with self._lock:
-            if self._state.phase is not AnalyzerPhase.IDLE:
+            if self._state.phase is not AnalyzerPhase.IDLE or self._idle_control_active:
                 raise RuntimeError("Stop the current Analyzer before running the Sweep tool")
             self._bounded_sweep_active = True
             self._next_operation_id += 1
@@ -94,6 +95,28 @@ class AnalyzerSessionApplicationService:
             with self._lock:
                 self._bounded_sweep_active = False
                 self._state = replace(self._state, phase=AnalyzerPhase.IDLE)
+
+    @contextmanager
+    def idle_control_operation(self) -> Iterator[None]:
+        """Reserve idle control without holding a lock across slow catalog I/O.
+
+        No RF Start/epoch is invented. Start/mode/bounded-tool admission refuses
+        this reservation; immutable state reads stay nonblocking during probe.
+        """
+        with self._lock:
+            if self._state.phase is not AnalyzerPhase.IDLE or self._idle_control_active:
+                raise LiveAdmissionRejected("Analyzer control operation is pending")
+            self._idle_control_active = True
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._idle_control_active = False
+
+    @property
+    def control_busy(self) -> bool:
+        with self._lock:
+            return self._idle_control_active
 
     @property
     def state(self) -> AnalyzerSessionState:
@@ -108,14 +131,14 @@ class AnalyzerSessionApplicationService:
     def select_mode(self, mode: AnalyzerMode) -> AnalyzerSessionState:
         mode = AnalyzerMode(mode)
         with self._lock:
-            if self._state.phase is not AnalyzerPhase.IDLE:
+            if self._state.phase is not AnalyzerPhase.IDLE or self._idle_control_active:
                 raise RuntimeError("stop the current analyzer strategy before switching mode")
             self._state = replace(self._state, mode=mode)
             return self._state
 
     def start(self, request: ContinuousSweepPlanRequest | None = None) -> AnalyzerSessionState:
         with self._lock:
-            if self._state.phase is not AnalyzerPhase.IDLE:
+            if self._state.phase is not AnalyzerPhase.IDLE or self._idle_control_active:
                 raise RuntimeError("analyzer is not idle")
             mode = self._state.mode
             if (mode is AnalyzerMode.SWEEP) != (request is not None):
@@ -162,6 +185,8 @@ class AnalyzerSessionApplicationService:
 
     def stop(self) -> AnalyzerSessionState:
         with self._lock:
+            if self._idle_control_active:
+                raise LiveAdmissionRejected("Analyzer control operation is pending")
             if self._bounded_sweep_active:
                 raise RuntimeError("Cancel the bounded Sweep tool and wait for its completion")
             if self._state.phase is AnalyzerPhase.IDLE:

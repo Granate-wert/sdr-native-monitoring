@@ -9,7 +9,9 @@ from typing import Protocol
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from sdr_monitor.domain.device_capabilities import DeviceFamily
 
 from ..state.live_view_state import LiveAction, LiveViewState
 from ..state.prepared_sweep import PreparedSweepSnapshot
@@ -46,6 +48,11 @@ class AnalyzerViewState:
     configuration_pending: bool = False
     sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
     prepared_sweep: PreparedSweepSnapshot | None = None
+    source_selection: AnalyzerSourceSelection | None = None
+
+    @property
+    def ad936x_controls_available(self) -> bool:
+        return self.source_selection is None or self.source_selection.ad936x_controls_available
 
     @property
     def controls_locked(self) -> bool:
@@ -92,15 +99,18 @@ class AnalyzerViewModel:
     @property
     def state(self) -> AnalyzerViewState:
         live = self.live.state
+        selection = getattr(self.live, "source_selection", None)
         rtbw_running = live.primary_action is LiveAction.STOP
         return AnalyzerViewState(
             self._mode, live, self._bundle, self._starting, self._stopping,
             self._running or rtbw_running,
-            not self._sweep.can_close() and not (self._running or self._starting or self._stopping),
+            (not self._sweep.can_close() and not (self._running or self._starting or self._stopping))
+            or bool(selection and selection.release_pending),
             self._error or live.error_label,
             self._configuration_pending,
             self._sweep_snapshot,
             self._prepared_sweep,
+            selection,
         )
 
     def subscribe(self, callback: Callable[[AnalyzerViewState], None]) -> Callable[[], None]:
@@ -117,6 +127,10 @@ class AnalyzerViewModel:
         mode = AnalyzerMode(mode)
         if self._disposed or self.state.controls_locked:
             return False
+        selection = getattr(self.live, "source_selection", None)
+        if (selection is not None and selection.selected is not None
+                and selection.selected.family is DeviceFamily.TINYSA and mode is not AnalyzerMode.SWEEP):
+            return False
         if mode is not self._mode:
             self._mode = mode
             self._bundle = None  # Never label a prior-mode frame as current.
@@ -129,6 +143,7 @@ class AnalyzerViewModel:
     def start(self, request: ContinuousSweepPlanRequest | None = None) -> bool:
         state = self.state
         if (self._disposed or state.controls_locked or
+                not state.ad936x_controls_available or
                 state.live.primary_action is not LiveAction.START or
                 not state.live.primary_action_enabled or
                 not state.live.has_applied_configuration):
@@ -153,6 +168,8 @@ class AnalyzerViewModel:
         state = self.state
         if self._disposed or state.starting or state.stopping or state.live.busy:
             return False
+        if state.source_selection is not None and state.source_selection.release_pending:
+            return self.live.release_source()
         if self._mode is AnalyzerMode.SWEEP and (self._running or state.stop_required):
             self._sweep.stop()
             return True
@@ -170,7 +187,7 @@ class AnalyzerViewModel:
         return not self._disposed and not self.state.controls_locked and self.live.select_manual_uri(uri)
 
     def apply_configuration(self, configuration: object) -> bool:
-        if self._disposed or self.state.controls_locked:
+        if self._disposed or self.state.controls_locked or not self.state.ad936x_controls_available:
             return False
         self._configuration_pending = True
         self._publish()
@@ -210,14 +227,19 @@ class AnalyzerViewModel:
         if self._disposed:
             return
         snapshot = state.snapshot
+        selection = getattr(self.live, "source_selection", None)
+        if (selection is not None and selection.selected is not None
+                and selection.selected.family is DeviceFamily.TINYSA):
+            self._mode = AnalyzerMode.SWEEP  # Local supported-mode intent, no retune.
         identity = (getattr(snapshot, "session_id", None), getattr(snapshot, "generation", None),
-                    getattr(getattr(snapshot, "device", None), "device_id", None))
+                    getattr(getattr(snapshot, "device", None), "device_id", None),
+                    selection.revision if selection is not None else None)
         if self._live_identity is not None and identity != self._live_identity:
             self._bundle = None
             self._sweep_snapshot = None
             self._prepared_sweep = None
         self._live_identity = identity
-        if self._mode is AnalyzerMode.RTBW:
+        if self._mode is AnalyzerMode.RTBW and self.state.ad936x_controls_available:
             self._bundle = state.analyzer_bundle
         self._publish()
 

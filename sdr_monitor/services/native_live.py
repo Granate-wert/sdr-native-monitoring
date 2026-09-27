@@ -325,6 +325,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 runtimes=(_ad936x_runtime_snapshot(self._native),),
             )
 
+    def discovered_devices(self) -> tuple[DeviceDescriptor, ...]:
+        """Current descriptor references only; no discovery or owner access."""
+        return self._devices
+
     @property
     def capability_cleanup_pending(self) -> bool:
         return self._observation_owner.cleanup_pending

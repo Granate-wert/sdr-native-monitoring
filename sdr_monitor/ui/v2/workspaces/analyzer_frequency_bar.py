@@ -89,11 +89,11 @@ class AnalyzerFrequencyBar(QWidget):
     def apply_view_state(self, state: AnalyzerViewState, *, has_frame: bool) -> None:
         self._mode, self._has_frame = state.mode, has_frame
         for widget in self._rtbw:
-            widget.setVisible(state.mode is AnalyzerMode.RTBW)
+            widget.setVisible(state.mode is AnalyzerMode.RTBW and state.ad936x_controls_available)
         for widget in self._sweep:
-            widget.setVisible(state.mode is AnalyzerMode.SWEEP)
-        self.start.setEnabled(not state.controls_locked)
-        self.stop.setEnabled(not state.controls_locked)
+            widget.setVisible(state.mode is AnalyzerMode.SWEEP and state.ad936x_controls_available)
+        self.start.setEnabled(not state.controls_locked and state.ad936x_controls_available)
+        self.stop.setEnabled(not state.controls_locked and state.ad936x_controls_available)
         # RF editor enabled/dirty state is owned by the drawer. Viewport zoom
         # remains available during RX and never changes that draft.
         self.span.setEnabled(has_frame)

@@ -45,6 +45,7 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._conflicted = False
         self._pending: tuple[int, LiveConfiguration] | None = None
         self._base_identity: tuple[str, int, str] | None = None
+        self._source_revision: int | None = None
         self._has_applied = False
         self._backend_selectable = False
         self._published_backends: tuple[BackendKind, ...] = ()
@@ -127,7 +128,8 @@ class AnalyzerConfigurationDrawer(QFrame):
             widget.setText(text(key))
             widget.setAccessibleName(text(key))
         self._uri.setPlaceholderText(text("live.uri.placeholder"))
-        self._uri.setAccessibleName(text("live.uri.label"))
+        self._uri.setAccessibleName(text("analyzer.source.manual_ad936x"))
+        self._uri.setToolTip(text("analyzer.source.manual_ad936x"))
         self.sweep_profile.set_locale()
         self._translate_bandwidth_options()
         self._rf_bandwidth.setAccessibleName(text("analyzer.rf_bandwidth"))
@@ -182,7 +184,7 @@ class AnalyzerConfigurationDrawer(QFrame):
         self._use_uri = QPushButton(self)
         self._use_uri.clicked.connect(self._on_use_uri)
         self._use_uri.setProperty("ui2Role", "utility-action")
-        self._labels.append((self._use_uri, "live.uri.use"))
+        self._labels.append((self._use_uri, "analyzer.source.use_manual_ad936x"))
         uri_row.addWidget(self._uri, 1)
         uri_row.addWidget(self._use_uri)
         outer.addLayout(uri_row)
@@ -327,6 +329,21 @@ class AnalyzerConfigurationDrawer(QFrame):
         configuration = getattr(getattr(snapshot, "applied", None), "applied", None)
         identity = _identity(snapshot)
         state_changed = False
+        selection = state.source_selection
+        if selection is not None and selection.revision != self._source_revision:
+            # A failed observation or a foreign-family selection must discard
+            # the old authority too, even when no replacement Live snapshot
+            # exists. Never preserve its draft or pending Apply for later reuse.
+            self._source_revision = selection.revision
+            self._base, self._base_identity = LiveConfiguration(), None
+            self._has_applied = False
+            was_pending = self._pending is not None
+            self._pending = None
+            self._dirty = self._conflicted = False
+            if was_pending:
+                self._resolve_model_pending()
+            self._load(self._base)
+            state_changed = True
         new_owner = identity is not None and self._base_identity is not None and not _same_owner(
             identity, self._base_identity)
         if new_owner:
@@ -382,11 +399,22 @@ class AnalyzerConfigurationDrawer(QFrame):
         locked = state.controls_locked
         if configuration is None and identity is not None and self._base_identity is None:
             self._base_identity = identity
-        editing_locked = locked or self._pending is not None
-        self.sweep_profile.setVisible(state.mode is AnalyzerMode.SWEEP)
+        native_family = state.ad936x_controls_available
+        editing_locked = locked or self._pending is not None or not native_family
+        for field in (self._center, self._sample_rate, self._rf_bandwidth, self._gain, self._fft, self._backend):
+            if self._measurement_form.labelForField(field) is not None:
+                self._measurement_form.setRowVisible(field, native_family)
+        self._applied.setVisible(native_family)
+        self._apply.setVisible(native_family)
+        self._cancel.setVisible(native_family)
+        self.sweep_profile.setVisible(state.mode is AnalyzerMode.SWEEP and native_family)
         self.sweep_profile.setEnabled(not editing_locked)
-        for field in (self._uri, self._use_uri, self._center, self._sample_rate, self._gain, self._fft):
+        for field in (self._center, self._sample_rate, self._gain, self._fft):
             field.setEnabled(not editing_locked)
+        # Manual AD936x/IP routing remains an explicit action even before a
+        # catalog choice; it does not apply a foreign family's configuration.
+        for manual_uri_field in (self._uri, self._use_uri):
+            manual_uri_field.setEnabled(not locked and self._pending is None)
         self._backend.setEnabled(not editing_locked and self._backend_selectable)
         self._rf_bandwidth.setEnabled(not editing_locked and self._bandwidth_selectable)
         self._apply.setEnabled(self._can_submit())
@@ -510,13 +538,17 @@ class AnalyzerConfigurationDrawer(QFrame):
         identity = _identity(self._model.state.live.snapshot)
         return (
             identity is not None and identity == self._base_identity
+            and self._model.state.ad936x_controls_available
             and not self._model.state.controls_locked
             and (self._dirty or not self._has_applied)
             and not self._conflicted and self._pending is None
         )
 
     def _render_status(self) -> None:
-        if getattr(self._model.state.live.snapshot, "device", None) is None:
+        selection = self._model.state.source_selection
+        if selection is not None and selection.selected is not None and not self._model.state.ad936x_controls_available:
+            self._status.setText(text("analyzer.source.family_path_pending"))
+        elif getattr(self._model.state.live.snapshot, "device", None) is None:
             self._status.setText(text("analyzer.settings.select_source"))
         elif _identity(self._model.state.live.snapshot) is None:
             self._status.setText(text("live.configuration.identity_missing"))

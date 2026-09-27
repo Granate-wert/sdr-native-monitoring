@@ -15,8 +15,10 @@ from .analyzer_session import (
     AnalyzerSessionApplicationService, AnalyzerSessionState, AnalyzerMode,
     AnalyzerPhase, AnalyzerLiveRejected,
 )
+from .analyzer_sources import AnalyzerSourceSelectionApplicationService
+from ..domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 
-from ..domain import DeviceDescriptor, LiveConfiguration, LiveSnapshot
+from ..domain import DeviceDescriptor, LiveConfiguration, LiveSnapshot, ConfigurationGeneration, FrameSequence
 from ..domain.live_configuration_patch import LiveConfigurationPatch
 from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET, LiveSessionState, LiveErrorKind
 from ..domain.analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
@@ -43,7 +45,7 @@ class LiveSessionPort(Protocol):
 class LiveSessionUseCases(Protocol):
     """Application operations consumed by the Qt presenter."""
 
-    def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor, ...]: ...
+    def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]: ...
     def select_device(self, device_id: str) -> LiveSnapshot: ...
     def select_manual_uri(self, uri: str) -> LiveSnapshot: ...
     def current_snapshot(self) -> LiveSnapshot: ...
@@ -66,11 +68,14 @@ class LiveSessionApplicationService:
     def __init__(self, port: LiveSessionPort, *, sweep_preflight: Callable[
         [LiveConfiguration, ContinuousSweepPlanRequest], AnalyzerGeometryPreflight,
     ] | None = None, analyzer: AnalyzerSessionApplicationService | None = None,
-                 catalog_close: Callable[[], None] | None = None) -> None:
+                 catalog_close: Callable[[], None] | None = None,
+                 sources: AnalyzerSourceSelectionApplicationService | None = None) -> None:
         self._port = port
         self._sweep_preflight = sweep_preflight
         self._analyzer = analyzer
         self._catalog_close = catalog_close
+        self._sources = sources
+        self._empty_source_snapshot: tuple[AnalyzerSourceSelection, LiveSnapshot] | None = None
         self._control_error: tuple[str, LiveErrorKind | None] | None = None
 
     @property
@@ -81,7 +86,7 @@ class LiveSessionApplicationService:
         if self._analyzer is None:
             return
         state = self._analyzer.state
-        if state.phase is AnalyzerPhase.IDLE:
+        if state.phase is AnalyzerPhase.IDLE and not self._analyzer.control_busy:
             return
         if not idle_only and state.mode is AnalyzerMode.RTBW and state.phase is AnalyzerPhase.RUNNING:
             return
@@ -106,18 +111,46 @@ class LiveSessionApplicationService:
         self._control_error = (snapshot.error or str(error), snapshot.error_kind)
         return self._lifecycle_snapshot(snapshot)
 
-    def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor, ...]:
+    def current_source_selection(self) -> AnalyzerSourceSelection | None:
+        """Immutable low-rate control metadata; no SDK/catalog rebuild."""
+        return self._sources.current() if self._sources is not None else None
+
+    def _require_native_family(self) -> None:
+        if self._sources is not None:
+            self._sources.require_ad936x_controls()
+
+    def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]:
+        if self._sources is not None:
+            return self._sources.discover(startup=startup)
         return self._port.discover_startup_devices() if startup else self._port.discover_devices()
 
     def select_device(self, device_id: str) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
+        if self._sources is not None:
+            self._sources.select(device_id)
+            return self.current_snapshot()
         return self._port.select_device(device_id)
 
     def select_manual_uri(self, uri: str) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
+        if self._sources is not None:
+            return self._sources.select_manual_uri(uri)
         return self._port.select_manual_uri(uri)
 
     def current_snapshot(self) -> LiveSnapshot:
+        selection = self.current_source_selection()
+        if selection is not None and not selection.ad936x_controls_available:
+            # This is an EMPTY AD936x publication, not a fabricated HackRF/
+            # instrument LiveSnapshot. Typed family control state is separate.
+            if self._empty_source_snapshot is None or self._empty_source_snapshot[0] is not selection:
+                snapshot = LiveSnapshot(ConfigurationGeneration(0), FrameSequence(0),
+                    LiveSessionState.ERROR if selection.refusal else LiveSessionState.DISCONNECTED,
+                    unit="unavailable", error="Source observation failed closed" if selection.refusal else None,
+                    error_kind=LiveErrorKind.CONNECTION_FAILED if selection.refusal else None,
+                    stop_required=selection.release_pending)
+                self._empty_source_snapshot = selection, snapshot
+            return self._empty_source_snapshot[1]
+        self._empty_source_snapshot = None
         return self._lifecycle_snapshot(self._port.latest_snapshot())
 
     def current_analyzer_bundle(self) -> AnalyzerFrameBundle | None:
@@ -130,6 +163,7 @@ class LiveSessionApplicationService:
 
     def preflight_configuration(self, configuration: LiveConfiguration) -> AnalyzerGeometryPreflight:
         """Pure geometry/resource admission, never applied hardware readback."""
+        self._require_native_family()
         resources = DEFAULT_LIVE_RESOURCE_BUDGET.validate(configuration)
         retained = resources.spectrum_backlog_bytes // (configuration.fft_size * 16)
         reduced = estimate_analyzer_reduced("rtbw", configuration.fft_size, retained)
@@ -146,11 +180,13 @@ class LiveSessionApplicationService:
     def preflight_sweep(
         self, configuration: LiveConfiguration, request: ContinuousSweepPlanRequest,
     ) -> AnalyzerGeometryPreflight:
+        self._require_native_family()
         if self._sweep_preflight is None:
             raise RuntimeError("Sweep preflight is unavailable in this composition")
         return self._sweep_preflight(configuration, request)
 
     def apply_configuration(self, configuration: LiveConfiguration | LiveConfigurationPatch) -> LiveSnapshot:
+        self._require_native_family()
         self._configuration_admission()
         # The presenter invokes this inside its single control worker, not
         # while the UI is assembling a draft. A conflict has no port mutation.
@@ -181,6 +217,7 @@ class LiveSessionApplicationService:
         return self.start() if snapshot.error is None else snapshot
 
     def start(self) -> LiveSnapshot:
+        self._require_native_family()
         if self._analyzer is not None:
             self._analyzer.select_mode(AnalyzerMode.RTBW)
             self._control_error = None
@@ -192,6 +229,7 @@ class LiveSessionApplicationService:
         return self._port.start()
 
     def start_sweep(self, request: ContinuousSweepPlanRequest) -> AnalyzerSessionState:
+        self._require_native_family()
         if self._analyzer is None:
             raise RuntimeError("Shared analyzer is unavailable in this composition")
         self._configuration_admission(idle_only=True)
@@ -213,13 +251,21 @@ class LiveSessionApplicationService:
                 self._analyzer.stop()
             except Exception as error:
                 return self._failed_lifecycle_snapshot(error)
+            if self._sources is not None:
+                self._sources.release_pending()
             return self.current_snapshot()
         return self._port.stop()
 
     def poll_published_snapshots(self) -> list[LiveSnapshot]:
+        selection = self.current_source_selection()
+        if selection is not None and not selection.ad936x_controls_available:
+            return []
         return [self._lifecycle_snapshot(snapshot) for snapshot in self._port.poll_frames()]
 
     def is_running(self) -> bool:
+        selection = self.current_source_selection()
+        if selection is not None and not selection.ad936x_controls_available:
+            return False
         return self._port.is_running()
 
     def shutdown(self, timeout_s: float = 5.0) -> None:
