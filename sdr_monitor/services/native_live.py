@@ -80,6 +80,7 @@ _PERFORMANCE_LOG_INTERVAL_S = 5.0
 # healthy, the bridge reports a stalled stream instead of hanging in RUNNING.
 _STALL_TIMEOUT_S = 2.0
 _SCHEMA_VERSION = 5
+_RELEASE_FAILED_MESSAGE = "Native Live release was not confirmed; retry explicit Stop before another RX operation"
 
 _QUALITY_FLAG_BITS = {
     "IQ_DROPPED": 1 << 5,
@@ -190,6 +191,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._native_uri: str | None = None
         self._engine: Any | None = None
         self._poller: threading.Thread | None = None
+        self._stream_release_failed = False
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
         self._last_native_frame_sequence = -1
@@ -280,6 +282,19 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         return devices
 
     def select_device(self, device_id: str) -> LiveSnapshot:
+        with self._recording_transaction_lock:
+            self._require_route_selection_idle()
+            return self._select_device_unlocked(device_id)
+
+    def _require_route_selection_idle(self) -> None:
+        with self._sweep_lease_lock:
+            with self._lock:
+                if (self._engine is not None or self._poller is not None
+                        or self._stream_release_failed or self._sweep_lease_active
+                        or self._snapshot.state is _running_state()):
+                    raise LiveAdmissionRejected("Stop and release the current RX owner before selecting another route")
+
+    def _select_device_unlocked(self, device_id: str) -> LiveSnapshot:
         selected = next((device for device in self._devices if device.device_id == device_id), None)
         if selected is None:
             return self._fail(
@@ -334,6 +349,11 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         )
 
     def select_manual_uri(self, uri: str) -> LiveSnapshot:
+        with self._recording_transaction_lock:
+            self._require_route_selection_idle()
+            return self._select_manual_uri_unlocked(uri)
+
+    def _select_manual_uri_unlocked(self, uri: str) -> LiveSnapshot:
         value = uri.strip()
         if not value:
             return self._fail(
@@ -398,7 +418,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._recording_transaction_lock:
             with self._sweep_lease_lock:
                 with self._lock:
-                    if (self._sweep_lease_active or self._engine is not None
+                    if (self._sweep_lease_active or self._engine is not None or self._poller is not None
+                            or self._stream_release_failed
                             or self._snapshot.state is _running_state()):
                         raise LiveAdmissionRejected("Selected RX is already owned by another operation")
             return self._start_unlocked()
@@ -416,6 +437,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             return self._start_unlocked()
 
     def _start_unlocked(self) -> LiveSnapshot:
+        with self._lock:
+            if self._stream_release_failed:
+                return self._fail(_RELEASE_FAILED_MESSAGE, kind=LiveErrorKind.INTERNAL)
         with self._sweep_lease_lock:
             if self._sweep_lease_active:
                 return self._fail(
@@ -511,7 +535,14 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                         candidate_metrics = candidate_applied
                 except Exception as error:
                     if candidate is not None:
-                        _shutdown_engine_instance(candidate)
+                        try:
+                            _shutdown_engine_instance(candidate)
+                        except Exception:
+                            # Retain the failed candidate instead of trying another
+                            # route over an owner whose release is unconfirmed.
+                            self._engine = candidate
+                            self._stream_release_failed = True
+                            raise RuntimeError(_RELEASE_FAILED_MESSAGE) from None
                     message = str(error)
                     failures.append(
                         {
@@ -722,9 +753,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         return snapshot
 
     def close_live(self) -> None:
-        self.stop()
-        with self._lock:
-            self._clear_selected_route()
+        with self._recording_transaction_lock:
+            self._stop_unlocked()
+            with self._lock:
+                self._clear_selected_route()
 
     def stop_and_wait(self, timeout_s: float) -> None:
         # Serialize the terminal cleanup with Start/Stop and Sweep admission.
@@ -746,29 +778,37 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._stop_event.set()
             poller = self._poller
             engine = self._engine
-            self._poller = None
-            self._engine = None
 
-        if engine is not None:
-            try:
-                engine.request_stop()
-            except Exception:
-                pass
-        if poller is not None and poller is not threading.current_thread():
-            poller.join(timeout=timeout_s)
-        if engine is not None:
-            try:
+        try:
+            if engine is not None:
+                try:
+                    engine.request_stop()
+                except Exception:
+                    # Join followed by disconnect is still the terminal proof;
+                    # a failed stop request alone must not skip that cleanup.
+                    pass
+            if poller is not None:
+                if poller is threading.current_thread():
+                    raise RuntimeError("cannot join the current native poller")
+                poller.join(timeout=timeout_s)
+                if poller.is_alive():
+                    raise RuntimeError("native poller did not confirm termination")
+            if engine is not None:
                 engine.join()
-            except Exception:
-                pass
-            # Join finalizes native writer manifests before this low-rate
-            # metrics read.  Capture it before disconnect destroys the engine
-            # object, then atomically finish the companion lifecycle evidence.
-            self._capture_native_recording_completion(engine)
-            try:
+                # Capture the finalized writer before disconnect. If any stage
+                # fails, retain both owners; an explicit Stop can retry safely.
+                self._capture_native_recording_completion(engine)
                 engine.disconnect()
-            except Exception:
-                pass
+        except Exception:
+            with self._lock:
+                self._stream_release_failed = True
+            raise RuntimeError(_RELEASE_FAILED_MESSAGE) from None
+        with self._lock:
+            if self._poller is poller:
+                self._poller = None
+            if self._engine is engine:
+                self._engine = None
+            self._stream_release_failed = False
 
     def poll_frames(self) -> list[LiveSnapshot]:
         with self._lock:
@@ -809,8 +849,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     uri = self._native_uri
                     recording_active = self._native_recording_active is not None
                     recording_armed = self._native_recording_armed is not None
-                    engine_present = self._engine is not None
-                if snapshot.state is _running_state() or engine_present:
+                    owner_present = (self._engine is not None or self._poller is not None
+                                     or self._stream_release_failed)
+                if snapshot.state is _running_state() or owner_present:
                     raise RuntimeError("stop Live before acquiring the native sweep lease")
                 if recording_active or recording_armed:
                     raise RuntimeError("native RTBW recording must be stopped/unarmed before Sweep")
@@ -1451,10 +1492,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 self._bridge_frames_published += 1
 
     def _publish_frame(self, frame: Any, *, expected_engine: Any = None) -> bool:
-        native_sequence = int(frame.frame_sequence)
         with self._lock:
-            if expected_engine is not None and expected_engine is not self._engine:
+            if expected_engine is not None and (expected_engine is not self._engine or self._stop_event.is_set()):
                 return False
+            native_sequence = int(frame.frame_sequence)
             publication_context = self._snapshot
             if native_sequence <= self._last_native_frame_sequence:
                 return False
@@ -1500,7 +1541,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._publish_error(f"Pluto RX frame conversion failed: {error}")
             return False
         with self._lock:
-            if expected_engine is not None and expected_engine is not self._engine:
+            if expected_engine is not None and (expected_engine is not self._engine or self._stop_event.is_set()):
                 return False
             self._sequence += 1
             dropped = self._engine_drop_count()
@@ -1549,7 +1590,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     def _publish_persistence(self, value: Any, *, expected_engine: Any = None) -> None:
         with self._lock:
-            if expected_engine is not None and expected_engine is not self._engine:
+            if expected_engine is not None and (expected_engine is not self._engine or self._stop_event.is_set()):
                 return
             publication_context = self._snapshot
         try:
@@ -1586,7 +1627,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._publish_error(f"Pluto persistence conversion failed: {error}")
             return
         with self._lock:
-            if expected_engine is not None and expected_engine is not self._engine:
+            if expected_engine is not None and (expected_engine is not self._engine or self._stop_event.is_set()):
                 return
             self._snapshot = LiveSnapshot(
                 generation=self._snapshot.generation,
@@ -1743,20 +1784,14 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
 
 def _shutdown_engine_instance(engine: Any) -> None:
-    """Best-effort cleanup for an engine that failed during start/configure."""
+    """Require join/disconnect before a failed Start may try another route."""
 
     try:
         engine.request_stop()
     except Exception:
         pass
-    try:
-        engine.join()
-    except Exception:
-        pass
-    try:
-        engine.disconnect()
-    except Exception:
-        pass
+    engine.join()
+    engine.disconnect()
 
 
 def _running_state() -> Any:
