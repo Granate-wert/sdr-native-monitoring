@@ -45,14 +45,17 @@ std::uint32_t PersistenceAccumulator::bin_for(const float value) const noexcept 
     const double span = config_.power_max_db - config_.power_min_db;
     const double normalized =
         (static_cast<double>(value) - config_.power_min_db) / span;
-    const auto raw = static_cast<std::int64_t>(
-        std::floor(normalized * static_cast<double>(config_.power_bins))
-    );
-    return static_cast<std::uint32_t>(std::clamp<std::int64_t>(
-        raw,
-        0,
-        static_cast<std::int64_t>(config_.power_bins) - 1
-    ));
+    const double scaled = normalized * static_cast<double>(config_.power_bins);
+    if (scaled <= 0.0) {
+        return 0U;
+    }
+    if (scaled >= static_cast<double>(config_.power_bins)) {
+        return config_.power_bins - 1U;
+    }
+    // Only positive interior values reach this conversion, where truncation
+    // equals floor. Bound before conversion so out-of-range inputs cannot
+    // overflow an integer intermediate.
+    return static_cast<std::uint32_t>(scaled);
 }
 
 std::optional<PersistenceSnapshot> PersistenceAccumulator::update(

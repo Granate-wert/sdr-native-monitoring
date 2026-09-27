@@ -1,7 +1,9 @@
 #include "sdr_core/persistence.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -103,5 +105,85 @@ int main() {
             "probability scale must normalize the lazy epoch");
     require(std::fabs(after_half_life->count_scale - 0.5) < 1e-12,
             "count scale must carry elapsed exponential decay");
+
+    // The accumulator may choose a cache-friendly internal layout, but each
+    // immutable publication remains renderer-ready [power, frequency].
+    auto distinct = frame(1, 1, -90.0F);
+    distinct.frequencies_hz = std::make_shared<const std::vector<double>>(
+        std::vector<double>{2.400e9, 2.401e9, 2.402e9});
+    distinct.values = std::make_shared<const std::vector<float>>(
+        std::vector<float>{-90.0F, -50.0F, -10.0F});
+    sdr_core::PersistenceAccumulator layout(config);
+    const auto layout_first = layout.update(distinct);
+    require(layout_first.has_value() && layout_first->density &&
+            *layout_first->density == std::vector<float>({
+                1.0F, 0.0F, 0.0F,
+                0.0F, 0.0F, 0.0F,
+                0.0F, 1.0F, 0.0F,
+                0.0F, 0.0F, 1.0F}),
+            "persistence snapshot lost row-major power/frequency layout");
+    distinct.timestamp_ns = 34'000'001LL;
+    distinct.frame_sequence = 2U;
+    distinct.values = std::make_shared<const std::vector<float>>(
+        std::vector<float>{-10.0F, -50.0F, -90.0F});
+    static_cast<void>(layout.update(distinct));
+    distinct.timestamp_ns = 68'000'001LL;
+    distinct.frame_sequence = 3U;
+    distinct.values = std::make_shared<const std::vector<float>>(
+        std::vector<float>{-90.0F, -90.0F, -90.0F});
+    const auto layout_third = layout.update(distinct);
+    require(layout_third.has_value() && layout_third->density &&
+            *layout_third->density == std::vector<float>({
+                1.0F, 1.0F, 2.0F,
+                0.0F, 0.0F, 0.0F,
+                0.0F, 1.0F, 0.0F,
+                1.0F, 0.0F, 0.0F}),
+            "rolling expiration or publication transposed the density image");
+    require((*layout_first->density)[0] == 1.0F &&
+            (*layout_first->density)[11] == 1.0F,
+            "later updates mutated an immutable persistence publication");
+
+    for (const std::uint32_t power_bins : {4U, 64U, 256U}) {
+        auto mapping_config = config;
+        mapping_config.power_bins = power_bins;
+        sdr_core::PersistenceAccumulator mapping(mapping_config);
+        std::vector<float> values;
+        values.reserve(4'104U);
+        for (int index = 0; index < 4'096; ++index) {
+            values.push_back(-200.0F + static_cast<float>(index) * 0.1F);
+        }
+        for (const float boundary : {-100.0F, -75.0F, -50.0F, -25.0F,
+                                     0.0F, std::numeric_limits<float>::max(),
+                                     std::numeric_limits<float>::infinity(),
+                                     std::numeric_limits<float>::quiet_NaN()}) {
+            values.push_back(boundary);
+        }
+        sdr_core::SpectrumFrame mapped;
+        mapped.frame_sequence = 1U;
+        mapped.timestamp_ns = 1;
+        mapped.frequencies_hz = std::make_shared<const std::vector<double>>(
+            values.size(), 2.4e9);
+        mapped.values = std::make_shared<const std::vector<float>>(values);
+        const auto result = mapping.update(mapped);
+        require(result.has_value() && result->density,
+                "persistence boundary mapping did not publish");
+        std::vector<float> expected(values.size() * power_bins, 0.0F);
+        for (std::size_t column = 0U; column < values.size(); ++column) {
+            const auto value = values[column];
+            if (!std::isfinite(value)) {
+                continue;
+            }
+            const double scaled =
+                ((static_cast<double>(value) - mapping_config.power_min_db) /
+                 (mapping_config.power_max_db - mapping_config.power_min_db)) *
+                static_cast<double>(power_bins);
+            const auto row = scaled <= 0.0 ? 0U :
+                scaled >= static_cast<double>(power_bins) ? power_bins - 1U :
+                static_cast<std::uint32_t>(std::floor(scaled));
+            expected[static_cast<std::size_t>(row) * values.size() + column] = 1.0F;
+        }
+        require(*result->density == expected,
+                "optimized mapping differs from floor/clamp reference");
+    }
     return 0;
 }
