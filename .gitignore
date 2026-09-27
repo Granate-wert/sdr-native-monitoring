@@ -39,7 +39,11 @@ recordings/
 # Local-only engineering material
 /AGENTS.md
 /AGENT.md
-/docs/
+/docs/*
+!/docs/implementation/
+/docs/implementation/*
+# Explicit public source contract; review/evidence remain local-only.
+!/docs/implementation/APP06_CAPABILITY_CATALOG_CONTRACT.md
 /TZ_SDR_native_monitoring/
 
 # Local logs, screenshots and acceptance output
