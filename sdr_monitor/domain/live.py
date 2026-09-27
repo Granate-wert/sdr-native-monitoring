@@ -289,9 +289,9 @@ class DeviceDescriptor:
     transport: DeviceTransport
     capabilities: DeviceCapabilities
     # A physical Pluto can be visible through USB and its network gadget at
-    # the same time.  Discovery exposes one logical device and retains the
-    # alternate routes for failover instead of forcing the operator to guess
-    # which duplicate row is the same radio.
+    # the same time. Only matching observed serials establish automatic aliases.
+    # Unknown-serial routes stay separate; model/default IP/route count are not
+    # physical identity proof. Every known-serial owner must recheck at open.
     alternate_uris: tuple[str, ...] = ()
     serial: str | None = None
     identity_key: str | None = None

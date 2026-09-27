@@ -55,6 +55,7 @@ from ..domain import (
     as_timestamp_ns,
 )
 from .live_session import InMemoryLiveSessionService
+from .ad936x_identity_admission import normalized_pluto_serial
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 
 # P07 defaults mirrored from the legacy adapter contract.
@@ -2178,11 +2179,6 @@ def _transport_for_uri(uri: str) -> DeviceTransport:
     return DeviceTransport.MANUAL
 
 
-def _valid_serial(value: str | None) -> bool:
-    serial = (value or "").strip()
-    return bool(serial and serial not in {"-", "—", "unknown", "n/a", "none"})
-
-
 def _physical_identity_key(
     *,
     uri: str,
@@ -2191,16 +2187,16 @@ def _physical_identity_key(
     firmware: str,
     device_ids: tuple[str, ...],
 ) -> str:
-    """Return a stable, non-sensitive logical identity.
+    """Return a non-sensitive serial key or an explicitly route-scoped key.
 
     A serial is hashed before it enters UI state/logging.  When libiio does
-    not expose a serial, the route remains distinct until the conservative
-    USB/IP duplicate heuristic below can prove that there is only one
-    candidate radio.
+    not expose a serial, the key identifies only this route observation;
+    it is not proof of a stable physical device or USB/IP equivalence.
     """
 
-    if _valid_serial(serial):
-        payload = f"serial|{serial.casefold()}".encode("utf-8", "replace")
+    normalized = normalized_pluto_serial(serial)
+    if normalized is not None:
+        payload = f"serial|{normalized}".encode("utf-8", "replace")
         return f"serial-{hashlib.sha256(payload).hexdigest()[:16]}"
     payload = "|".join(
         (
@@ -2254,15 +2250,6 @@ def _normalized_model(label: str) -> str:
     return " ".join(value.split())
 
 
-def _is_default_pluto_ip(uri: str) -> bool:
-    value = uri.casefold().strip()
-    return value in {
-        "ip:pluto.local",
-        "ip:192.168.2.1",
-        "ip:192.168.3.1",
-    }
-
-
 def _merge_device_group(group: list[DeviceDescriptor]) -> DeviceDescriptor:
     ordered = sorted(group, key=lambda item: _route_priority(item.uri))
     preferred = ordered[0]
@@ -2273,17 +2260,19 @@ def _merge_device_group(group: list[DeviceDescriptor]) -> DeviceDescriptor:
     # has a dedicated route/detail line after this refactor.
     if len(ordered) > 1:
         label = f"{_normalized_model(preferred.label).title()} ({transports})"
-    identity = next((item.identity_key for item in ordered if item.identity_key and item.identity_key.startswith("serial-")), None)
-    if identity is None:
-        payload = "|".join(sorted(routes)).encode("utf-8", "replace")
-        identity = f"logical-{hashlib.sha256(payload).hexdigest()[:16]}"
+    serial = normalized_pluto_serial(preferred.serial)
+    if serial is None or any(normalized_pluto_serial(item.serial) != serial for item in ordered):
+        raise ValueError("Pluto aliases require matching observed serials")
+    identity = _physical_identity_key(
+        uri=preferred.uri, model=preferred.label, serial=serial, firmware="", device_ids=(),
+    )
     return replace(
         preferred,
         device_id=f"pluto:{identity}",
         label=label,
         alternate_uris=tuple(routes[1:]),
         identity_key=identity,
-        serial=next((item.serial for item in ordered if _valid_serial(item.serial)), None),
+        serial=preferred.serial,
     )
 
 
@@ -2292,11 +2281,9 @@ def _merge_duplicate_pluto_routes(
 ) -> tuple[DeviceDescriptor, ...]:
     """Collapse transport aliases without hiding multiple physical radios.
 
-    Serial matches are authoritative.  When libiio omits the serial on the IP
-    route, exactly one serial-less USB radio may absorb one or more default
-    Pluto network aliases (``pluto.local``/USB-gadget addresses) with the same
-    normalized model.  The heuristic is disabled as soon as more than one USB
-    candidate exists.
+    Only a matching observed serial establishes an alias here. Route counts,
+    model labels, default IP addresses and pre-existing identity keys are not
+    evidence that two observations describe the same physical receiver.
     """
 
     if not routes:
@@ -2304,32 +2291,14 @@ def _merge_duplicate_pluto_routes(
     serial_groups: dict[str, list[DeviceDescriptor]] = {}
     ungrouped: list[DeviceDescriptor] = []
     for route in routes:
-        if _valid_serial(route.serial):
-            serial_groups.setdefault(route.identity_key or route.device_id, []).append(route)
+        serial = normalized_pluto_serial(route.serial)
+        if serial is not None:
+            serial_groups.setdefault(serial, []).append(route)
         else:
             ungrouped.append(route)
     merged = [_merge_device_group(group) for group in serial_groups.values()]
 
-    usb = [item for item in ungrouped if item.transport is DeviceTransport.USB]
-    default_ip = [
-        item
-        for item in ungrouped
-        if item.transport is DeviceTransport.IP and _is_default_pluto_ip(item.uri)
-    ]
-    other = [item for item in ungrouped if item not in usb and item not in default_ip]
-    if (
-        len(usb) == 1
-        and default_ip
-        and not any(item.transport is DeviceTransport.IP for item in other)
-        and all(
-            _normalized_model(item.label) == _normalized_model(usb[0].label)
-            for item in default_ip
-        )
-    ):
-        merged.append(_merge_device_group([usb[0], *default_ip]))
-        merged.extend(other)
-    else:
-        merged.extend(ungrouped)
+    merged.extend(ungrouped)
     return tuple(sorted(merged, key=lambda item: _route_priority(item.uri)))
 
 
