@@ -14,6 +14,7 @@
         "SDR_CORE_BUILD_TESTS": "ON",
         "SDR_CORE_ENABLE_PLUTO": "OFF",
         "SDR_CORE_ENABLE_CUDA": "OFF",
+        "SDR_CORE_ENABLE_HACKRF_OFFICIAL": "OFF",
         "SDR_CORE_ENABLE_SIMD": "ON",
         "SDR_CORE_ENABLE_SANITIZERS": "OFF",
         "SDR_CORE_ENABLE_PROFILING": "OFF"
@@ -38,6 +39,18 @@
         "SDR_CORE_BUILD_PYTHON": "ON",
         "SDR_CORE_ENABLE_PLUTO": "ON",
         "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/windows-msvc-cpu/python"
+      }
+    },
+    {
+      "name": "windows-msvc-cpu-hackrf",
+      "displayName": "Windows MSVC CPU + Pluto + official HackRF staging",
+      "inherits": "windows-msvc-cpu",
+      "binaryDir": "${sourceDir}/out/build/windows-msvc-cpu-hackrf",
+      "cacheVariables": {
+        "SDR_CORE_ENABLE_HACKRF_OFFICIAL": "ON",
+        "SDR_CORE_HACKRF_INCLUDE_DIR": "$env{SDR_HACKRF_INCLUDE_DIR}",
+        "SDR_CORE_HACKRF_LIBRARY": "$env{SDR_HACKRF_LIBRARY}",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/windows-msvc-cpu-hackrf/python"
       }
     },
     {
@@ -151,6 +164,10 @@
   ],
   "buildPresets": [
     {
+      "name": "windows-msvc-cpu-hackrf-release",
+      "configurePreset": "windows-msvc-cpu-hackrf"
+    },
+    {
       "name": "windows-msvc-cpu-release",
       "configurePreset": "windows-msvc-cpu"
     },
@@ -188,6 +205,13 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "windows-msvc-cpu-hackrf",
+      "configurePreset": "windows-msvc-cpu-hackrf",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
     {
       "name": "windows-msvc-cpu",
       "configurePreset": "windows-msvc-cpu",

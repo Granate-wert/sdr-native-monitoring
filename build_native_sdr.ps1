@@ -6,11 +6,36 @@ param(
     [switch]$Clean,
     [switch]$SkipTests,
     # Test an alternate lane without replacing the approved application module.
-    [switch]$StageOnly
+    [switch]$StageOnly,
+    # Explicit opt-in SDK; this first integration lane is staging-only.
+    [string]$HackrfIncludeDirectory = "",
+    [string]$HackrfLibrary = ""
 )
 
 $ErrorActionPreference = "Stop"
 if ($StageOnly -and $Clean) { throw "StageOnly cannot be combined with Clean (which removes active artifacts)" }
+$hackrfRequested = [bool]($HackrfIncludeDirectory -or $HackrfLibrary)
+if ($hackrfRequested) {
+    if (-not $StageOnly -or $Lane -ne "CPU" -or $Configuration -ne "Release") {
+        throw "Official HackRF SDK currently requires StageOnly CPU Release; package activation is not accepted yet"
+    }
+    if (-not $HackrfIncludeDirectory -or -not $HackrfLibrary) {
+        throw "Both HackrfIncludeDirectory and HackrfLibrary are required"
+    }
+    $HackrfIncludeDirectory = [System.IO.Path]::GetFullPath($HackrfIncludeDirectory)
+    $HackrfLibrary = [System.IO.Path]::GetFullPath($HackrfLibrary)
+    $hackrfHeader = Join-Path $HackrfIncludeDirectory 'hackrf.h'
+    if (-not (Test-Path -LiteralPath $hackrfHeader -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $HackrfLibrary -PathType Leaf)) {
+        throw "Official HackRF header/import library is missing"
+    }
+    $hackrfRuntimeDirectory = Split-Path -Parent $HackrfLibrary
+    foreach ($runtimeName in @('hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $hackrfRuntimeDirectory $runtimeName) -PathType Leaf)) {
+            throw "Official HackRF SDK runtime bundle is incomplete: $runtimeName"
+        }
+    }
+}
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceDir = Join-Path $repoRoot "native\sdr_core"
 $outDir = Join-Path $sourceDir "out"
@@ -124,16 +149,24 @@ $localPybind = Join-Path $sourceDir "out\python-tools\pybind11\share\cmake\pybin
 if (Test-Path -LiteralPath $localPybind) {
     $pybindCmakeDir = $localPybind
 } else {
-    $pybindCmakeDir = (& $PythonExecutable -c "import pybind11; print(pybind11.get_cmake_dir())").Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $pybindCmakeDir) {
+    $pybindOutput = & $PythonExecutable -c "import pybind11; print(pybind11.get_cmake_dir())"
+    if ($LASTEXITCODE -ne 0 -or -not $pybindOutput) {
         throw "pybind11 was not found. Install it or populate native/sdr_core/out/python-tools."
     }
+    $pybindCmakeDir = $pybindOutput.Trim()
 }
 
 $env:SDR_PYTHON_EXECUTABLE = [System.IO.Path]::GetFullPath($PythonExecutable)
 $env:SDR_PYBIND11_CMAKE_DIR = [System.IO.Path]::GetFullPath($pybindCmakeDir)
 
-if ($Lane -eq "CUDA") {
+if ($hackrfRequested) {
+    $env:SDR_HACKRF_INCLUDE_DIR = $HackrfIncludeDirectory
+    $env:SDR_HACKRF_LIBRARY = $HackrfLibrary
+    $configurePreset = "windows-msvc-cpu-hackrf"
+    $buildPreset = "windows-msvc-cpu-hackrf-release"
+    $testPreset = "windows-msvc-cpu-hackrf"
+    $artifactDir = Join-Path $sourceDir "out\build\windows-msvc-cpu-hackrf\python"
+} elseif ($Lane -eq "CUDA") {
     if ($Configuration -eq "Debug") { throw "CUDA lane supports Release only" }
     $configurePreset = "windows-msvc-cuda"
     $buildPreset = "windows-msvc-cuda-release"
@@ -199,6 +232,22 @@ $manifest = [ordered]@{
     native_version = "0.6.0"
     source_commit = $sourceCommit
     artifact_sha256 = $artifactSha256
+}
+if ($hackrfRequested) {
+    $runtimeHashes = [ordered]@{}
+    foreach ($runtimeName in @('hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll')) {
+        $stagedRuntime = Join-Path $artifactDir $runtimeName
+        $acceptedRuntime = Join-Path $hackrfRuntimeDirectory $runtimeName
+        $stagedHash = (Get-FileHash -LiteralPath $stagedRuntime -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($stagedHash -ne (Get-FileHash -LiteralPath $acceptedRuntime -Algorithm SHA256).Hash.ToLowerInvariant()) {
+            throw "Staged HackRF runtime differs from accepted SDK bundle: $runtimeName"
+        }
+        $runtimeHashes[$runtimeName] = $stagedHash
+    }
+    $manifest['hackrf_official_compiled'] = $true
+    $manifest['hackrf_runtime_sha256'] = $runtimeHashes
+    $manifest['hackrf_header_sha256'] = (Get-FileHash -LiteralPath $hackrfHeader -Algorithm SHA256).Hash.ToLowerInvariant()
+    $manifest['hackrf_library_sha256'] = (Get-FileHash -LiteralPath $HackrfLibrary -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $manifestPath = Join-Path $artifactDir "native_build_manifest.json"
 $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8

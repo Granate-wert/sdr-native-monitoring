@@ -19,11 +19,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import TypeAlias
 
-
-ContractValue: TypeAlias = str | int
-ContractEnums: TypeAlias = dict[str, dict[str, ContractValue]]
+type ContractValue = str | int
+type ContractEnums = dict[str, dict[str, ContractValue]]
 
 
 class ContractSurfaceError(ValueError):
@@ -203,6 +201,26 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
         raise ContractSurfaceError("manifest artifact_sha256 is missing or invalid")
     if _file_sha256(module_path) != expected_hash:
         raise ContractSurfaceError("staged native module does not match manifest artifact_sha256")
+    if "hackrf_official_compiled" in manifest:
+        if manifest["hackrf_official_compiled"] is not True:
+            raise ContractSurfaceError("explicit HackRF staging manifest must declare compiled=true")
+        hashes = manifest.get("hackrf_runtime_sha256")
+        if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
+            raise ContractSurfaceError("HackRF staging requires the complete app-local runtime manifest")
+        for name, expected in hashes.items():
+            runtime = module_path.parent / name
+            if (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)
+                    or not runtime.is_file() or _file_sha256(runtime) != expected):
+                raise ContractSurfaceError("HackRF staging runtime identity mismatch: " + name)
+        for name in ("hackrf_header_sha256", "hackrf_library_sha256"):
+            if not isinstance(manifest.get(name), str) or not re.fullmatch(r"[0-9a-f]{64}", str(manifest[name])):
+                raise ContractSurfaceError("HackRF staging SDK identity is missing: " + name)
+
+
+def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> None:
+    """Runtime presence, not a device probe or physical support assertion."""
+    if callable(getattr(module, "create_hackrf_runtime_dsp_control", None)) != bool(manifest.get("hackrf_official_compiled")):
+        raise ContractSurfaceError("native HackRF factory does not match its staging manifest")
 
 
 def validate_active_artifact(
@@ -255,6 +273,7 @@ def main() -> int:
     try:
         validate_manifest(module_path, manifest, args.expect_cuda)
         module = _load_native_module(module_path)
+        validate_hackrf_factory(module, manifest)
         info = dict(module.build_info())
         if bool(info.get("cuda_compiled")) != args.expect_cuda:
             raise ContractSurfaceError("build_info cuda_compiled does not match manifest")
@@ -284,8 +303,8 @@ def main() -> int:
         "manifest": manifest,
         "build_info": info,
         "contract_schema": {
-            "schema": getattr(module, "CONTRACT_SCHEMA_NAME"),
-            "schema_version": getattr(module, "CONTRACT_SCHEMA_VERSION"),
+            "schema": module.CONTRACT_SCHEMA_NAME,
+            "schema_version": module.CONTRACT_SCHEMA_VERSION,
         },
         "self_test": outcome,
     }
