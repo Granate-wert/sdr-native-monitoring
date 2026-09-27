@@ -1,5 +1,24 @@
 # APP-06 — общий UI V2 для Pluto, HackRF и tinySA
 
+## Текущий checkpoint APP-06A — 2026-09-27, source c22361f
+
+Читайте [APP_06A_IDENTITY_AND_OWNER_CHECKPOINT_2026-09-27.md](APP_06A_IDENTITY_AND_OWNER_CHECKPOINT_2026-09-27.md)
+для новых identity/owner gates, exact native SHA, full V2/physical results и
+следующей работы. Коммиты3397de3/2340d5b/6495f14/7734b12/c22361f: один native
+context; retained owner при failed Stop; aliases только observed serial;
+same-owner expected-serial admission RTBW/Sweep и exact protocol1 guard.
+34/34 native CTest,71 focused service tests,compiled binding test и894/66skip
+full UI V2 PASS. Physical unknown-serial maxFs61.44/RF56/FFT4096 RX Stop/close
+PASS; stable physical identity, common multi-family UI и frozen EXE не приняты.
+Active nativeB218/diagnostic EXEaec7a85 не заменены; новая native0db493… staged.
+
+Уточнение старого inventory текста ниже: ip:pluto.local с похожей моделью и
+один USB **не доказывают alias** при пустом serial. Это route candidates,
+не подтверждение отдельного RJ45 AD9363 или одной physical identity.
+APP-05 timebox завершён около08:44MSK и не перезапущен; acceptance долги OPEN.
+APP-06A/B PARTIAL, C/D OPEN. NEXT — coherent capability/catalog/owner routing,
+не повторение короткого physical smoke или новый бесконечный APP-05 профиль.
+
 Подготовка handoff 2026-09-27. APP-05 не закрыт. Четырёхчасовая итерация
 APP-05 имеет прежнюю границу около08:44 MSK с исключением паузы; этот файл
 не запускает новый таймер и не заменяет normative roadmap. Изменения только
