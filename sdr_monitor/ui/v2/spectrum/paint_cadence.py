@@ -56,6 +56,12 @@ class UniquePaintCadence:
             return
         if self._last_key is not None and key[1][0] < self._last_key[1][0]:
             return  # A previously superseded publication is not a fresh frame.
+        if self._last_key is not None and key[1][0] == self._last_key[1][0]:
+            revision, previous_revision = key[1][1], self._last_key[1][1]
+            if (type(revision) is int and
+                    (type(previous_revision) is int and revision < previous_revision
+                     or self._last_key[1][2] in ("complete", "gap"))):
+                return  # Neither a late partial nor terminal rollback is fresh.
         if self._times and when_ns <= self._times[-1]:
             self._times.clear()
         self._last_key = key

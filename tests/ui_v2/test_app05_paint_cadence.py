@@ -74,6 +74,19 @@ class PaintCadenceTests(unittest.TestCase):
         self.meter.admit(SimpleNamespace(sequence=3))
         self.assertIsNone(self.meter.period_ms(1_100_000_000))
 
+    def test_late_same_pass_revision_is_not_a_fresh_frame(self):
+        self.paint(frame(1, revision=1), 1_000_000_000)
+        self.paint(frame(1, revision=3), 1_100_000_000)
+        self.paint(frame(1, revision=2), 1_200_000_000)
+        self.assertEqual(len(self.meter._times), 2)
+        self.assertEqual(self.meter.period_ms(1_200_000_000), 100)
+        self.paint(frame(1, state="complete"), 1_300_000_000)
+        self.paint(frame(1, revision=4), 1_400_000_000)
+        self.assertEqual(len(self.meter._times), 3)
+        self.assertEqual(self.meter._last_key[1][2], "complete")
+        self.paint(frame(1, state="gap"), 1_500_000_000)
+        self.assertEqual(len(self.meter._times), 4)
+
 
 class PaintCadenceWidgetTests(unittest.TestCase):
     @classmethod
