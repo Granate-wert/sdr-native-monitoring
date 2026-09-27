@@ -14,8 +14,8 @@ from ...domain import LiveConfiguration, LiveSnapshot
 from ...domain.analyzer_resources import AnalyzerGeometryPreflight
 from ...domain.analyzer_sources import AnalyzerSourceSelection
 from ...domain.continuous_sweep_request import ContinuousSweepPlanRequest
-from ...domain.live_configuration_patch import LiveConfigurationPatch
 from ...domain.hackrf_live import HackrfConfigurationPatch
+from ...domain.live_configuration_patch import LiveConfigurationPatch
 from ..display_scheduler import DisplayScheduler, DisplaySchedulerMetrics
 
 
