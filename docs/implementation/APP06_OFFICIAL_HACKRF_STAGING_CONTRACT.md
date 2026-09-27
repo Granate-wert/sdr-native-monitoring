@@ -47,8 +47,13 @@ The private issued permit carries four serial words without exposing them in
 UI diagnostics. The Python factory requires protocol2 and passes that
 expectation to native code. After opening exactly one HackRF One, native
 reads its serial on that SAME handle before any RF configuration or RX start.
-Mismatch is fail-closed; cleanup preserves a failed-close handle for the
-destructor's retry. Manual C++ tools may omit this optional expectation, but
+Mismatch is fail-closed. Official `hackrf_close` consumes the handle even on
+an error return: cleanup invalidates it and never recloses it in the destructor.
+The first error remains visible; explicit session cleanup can subsequently
+finish library exit without another SDK close. See
+[family ownership contract](APP06_READONLY_FAMILY_OWNERSHIP_CONTRACT.md).
+This supersedes the initial same-handle checkpoint's unsafe retry assumption.
+Manual C++ tools may omit this optional expectation, but
 the product Python factory cannot. Old protocol1 extensions are unavailable,
 not silently adapted; their rejection does not consume the permit.
 

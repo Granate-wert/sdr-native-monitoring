@@ -105,6 +105,7 @@ def _owned_port(port_class, dll, dependency):
     port._closed = False
     port._release_started = False
     port._probe_failed = False
+    port._device_close_ambiguous = False
     port._dependency_handle = dependency
     port._lock = threading.RLock()
     return port
@@ -234,8 +235,8 @@ class ReadOnlyProviderCleanupTests(unittest.TestCase):
 
 
 class ConcreteHackrfReadOnlyCleanupTests(unittest.TestCase):
-    def test_failed_device_close_retains_all_dependencies_and_retries_in_order(self):
-        for failure in (-1, RuntimeError("PRIVATE SDK detail")):
+    def test_error_return_consumes_device_and_retry_releases_only_dependencies(self):
+        for failure in (-1, -1001):
             with self.subTest(failure=type(failure).__name__):
                 dll = _Dll()
                 dependency = _Dependency(dll.calls)
@@ -245,7 +246,7 @@ class ConcreteHackrfReadOnlyCleanupTests(unittest.TestCase):
                     port.close()
                 self.assertNotIn("PRIVATE", str(caught.exception))
                 self.assertEqual(dll.calls, ["device_close"])
-                self.assertEqual(port._device.value, 123)
+                self.assertFalse(port._device.value)
                 self.assertFalse(port._closed)
                 self.assertIs(port._dll, dll)
                 self.assertIs(port._list, dll.list)
@@ -256,10 +257,32 @@ class ConcreteHackrfReadOnlyCleanupTests(unittest.TestCase):
                 dll.failures.clear()
                 port.close()
                 port.close()
-                self.assertEqual(dll.calls, ["device_close", "device_close", "list_free", "exit", "dependency_close"])
+                self.assertEqual(dll.calls, ["device_close", "list_free", "exit", "dependency_close"])
                 self.assertTrue(port._closed)
                 self.assertFalse(port._device.value)
                 self.assertIsNone(port._dll)
+
+    def test_foreign_close_exception_is_quarantined_without_pointer_retry(self):
+        dll = _Dll()
+        dependency = _Dependency(dll.calls)
+        port = _owned_port(LibhackrfReadOnlyPort, dll, dependency)
+        dll.failures["device_close"] = RuntimeError("PRIVATE SDK detail")
+        provider = HackrfCapabilityAdapter(lambda: port)
+        with self.assertRaises(HackrfCapabilityObservationError):
+            provider.observe()
+        self.assertTrue(provider.cleanup_pending)
+        dll.failures.clear()
+        for _ in range(2):
+            with self.assertRaises(HackrfCapabilityObservationError):
+                provider.close()
+            with self.assertRaises(HackrfCapabilityObservationError):
+                provider.observe()
+        self.assertTrue(provider.cleanup_pending)
+        self.assertEqual(dll.calls, ["device_close"])
+        self.assertEqual(port._device.value, 123)
+        self.assertIs(port._dll, dll)
+        self.assertIs(port._dependency_handle, dependency)
+        self.assertFalse(port._closed)
 
     def test_close_phase_failures_preserve_cursor_without_repeating_completed_phases(self):
         for port_class in (LibhackrfReadOnlyPort, LibhackrfRuntimeIdentityPort):

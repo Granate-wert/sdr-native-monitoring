@@ -37,17 +37,32 @@ partial resources with its caller. Neither port retries an unsuccessful probe.
 
 Concrete ports serialize probe/close, latch failed reads or begun release,
 and reject another probe until that owner is closed. Close stops immediately
-at the failed phase. It retains the failed resource and all dependencies,
-and clears each successfully released resource only after the SDK call returns
-successfully. The closed flag is set only after all phases finish:
+at the failed phase and retains every still-owned dependency. The closed flag
+is set only after all phases finish:
 
 1. Read-only device close, where applicable.
 2. Enumeration-list free.
 3. Library initialization exit.
 4. DLL-directory handle close, then Python library reference release.
 
-An explicit retry resumes the remaining phases; completed phases are not
-repeated. Enumeration-only ports have no device-open or RF-control symbols.
+Important SDK exception: official `hackrf_close` consumes the device pointer
+even on a nonzero return. Both the Python read-only port and native official
+RX port invalidate it on any normal return, while preserving the first error.
+Explicit cleanup resumes list/exit/dependency phases, never that SDK close.
+The native port acknowledges a later session cleanup attempt without a second
+foreign close; reopening requires completed library exit and reinitialization.
+An exception instead of a normal device-close return has indeterminate foreign
+ownership: the Python port is quarantined, retains its dependencies and refuses
+all retries/new probes. In-process recovery is not claimed for this case.
+
+This corrects earlier keep-the-pointer-on-error assumptions, including the
+initial APP-06 family cleanup candidate and same-handle factory staging text.
+The selected local SDK source has this consumption rule at hackrf.c:2413,
+also present in [official v2026.01.3 source](https://github.com/greatscottgadgets/hackrf/blob/1cfe7dfe98d333450217d50e3f3a1ad0702e000f/host/libhackrf/src/hackrf.c#L2413).
+Source review is not binary attestation of the compiled DLL.
+
+An explicit retry resumes only remaining phases; completed/consumed phases
+are not repeated. Enumeration-only ports have no device-open or RF-control symbols.
 These are reference/lifecycle obligations, not in-memory DLL-unload attestation.
 SDK calls with no return status are considered completed only on normal return;
 this does not establish recoverability of arbitrary native crashes or partially
@@ -55,12 +70,18 @@ executed foreign code. SDK-global concurrency is still the common owner's job.
 
 ## Evidence boundaries
 
-Fault-injected tests cover negative return/exception during device close,
+Fault-injected tests distinguish a consumed negative device-close return from
+an indeterminate exception (quarantined, not retried), and cover
 list/exit/dependency phase failures, failed partial opens, no-SDK construction,
 blocked competing observations, explicit retry and idempotence. Provider tests
 also retain probe+close failures, redact errors, and prevent permit publication.
 They do not simulate physical USB unplugging or prove actual SDK close-failure
-recovery on hardware. Positive real probes are a separate gate.
+recovery on hardware. A CTest compiles the actual official RX wrapper against
+test-only SDK symbols that consume the pointer on every normal close return;
+it verifies direct, identity-failure/destructor and explicit session Stop retry.
+It is neither vendor ABI validation nor a loadable hardware runtime.
+Positive real probes are a separate gate. The official SDK's internal close
+may send its own stop command; the port adds no RF Configure/RX/TX API action.
 
 tinySA retains device-reported dBm, separate optional external correction and
 no raw I/Q/host FFT claims. This change applies to its injected capability port,

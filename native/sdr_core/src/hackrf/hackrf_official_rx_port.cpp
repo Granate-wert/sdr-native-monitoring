@@ -39,11 +39,14 @@ public:
         }
         const auto status = hackrf_init();
         initialized_ = status == HACKRF_SUCCESS;
+        if (initialized_) {
+            device_close_consumed_ = false;
+        }
         return status;
     }
 
     int open_exactly_one_hackrf_one() noexcept override {
-        if (!initialized_ || device_ != nullptr) {
+        if (!initialized_ || device_ != nullptr || device_close_consumed_) {
             return invalid_state_status;
         }
         auto* const list = hackrf_device_list();
@@ -79,8 +82,8 @@ public:
         }
         hackrf_device_list_free(list);
         if (status != HACKRF_SUCCESS && device_ != nullptr) {
-            // Preserve a failed-close handle for the destructor's cleanup;
-            // clearing it regardless of close status could leak the device.
+            // Official close consumes this handle even on an error return.
+            // Destructor cleanup must never call close on it a second time.
             static_cast<void>(close_device());
         }
         return status;
@@ -164,13 +167,18 @@ public:
     }
 
     int close_device() noexcept override {
-        if (streaming_ || device_ == nullptr) {
+        if (streaming_) {
             return invalid_state_status;
         }
-        const auto status = hackrf_close(device_);
-        if (status == HACKRF_SUCCESS) {
-            device_ = nullptr;
+        if (device_ == nullptr) {
+            // An explicit session retry can finish library cleanup without
+            // retrying an already consumed SDK pointer. The first close
+            // error has already been returned to the caller.
+            return device_close_consumed_ ? HACKRF_SUCCESS : invalid_state_status;
         }
+        const auto status = hackrf_close(device_);
+        device_ = nullptr;
+        device_close_consumed_ = true;
         return status;
     }
 
@@ -215,6 +223,7 @@ private:
     void* callback_context_{};
     bool initialized_{};
     bool streaming_{};
+    bool device_close_consumed_{};
     std::optional<std::array<std::uint32_t, 4>> expected_serial_words_;
 };
 

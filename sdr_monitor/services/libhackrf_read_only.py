@@ -48,6 +48,7 @@ class LibhackrfReadOnlyPort:
         self._closed = False
         self._release_started = False
         self._probe_failed = False
+        self._device_close_ambiguous = False
         self._lock = threading.RLock()
         self._dependency_handle: Any | None = None
 
@@ -114,11 +115,21 @@ class LibhackrfReadOnlyPort:
             if self._closed:
                 return
             self._release_started = True
+            if self._device_close_ambiguous:
+                raise RuntimeError("portable HackRF close outcome is indeterminate")
             dll = self._dll
             try:
                 if dll is not None and self._device.value:
-                    self._check(dll.hackrf_close(self._device))
+                    try:
+                        status = dll.hackrf_close(self._device)
+                    except Exception:  # noqa: BLE001 - foreign exception has no ownership guarantee.
+                        self._device_close_ambiguous = True
+                        raise
+                    # Official libhackrf frees the device even on an error
+                    # return. Never retry that consumed pointer. Report the
+                    # status first; explicit cleanup resumes other phases.
                     self._device = ctypes.c_void_p()
+                    self._check(status)
                 if dll is not None and self._list:
                     dll.hackrf_device_list_free(self._list)
                     self._list = None

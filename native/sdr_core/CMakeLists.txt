@@ -415,6 +415,20 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_hackrf_rx_session_test)
     add_test(NAME sdr_core.hackrf_rx_session COMMAND sdr_core_hackrf_rx_session_test)
     set_tests_properties(sdr_core.hackrf_rx_session PROPERTIES TIMEOUT 120)
+    # Compile the REAL official wrapper against fault-injected SDK symbols.
+    # No DLL, device access, or official runtime is linked into this test.
+    add_executable(sdr_core_hackrf_official_close_test
+        tests/test_hackrf_official_close.cpp
+        src/hackrf/hackrf_official_rx_port.cpp
+    )
+    target_include_directories(sdr_core_hackrf_official_close_test
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/mock_hackrf"
+    )
+    target_link_libraries(sdr_core_hackrf_official_close_test PRIVATE sdr_core::sdr_hackrf)
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_official_close_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_official_close_test)
+    add_test(NAME sdr_core.hackrf_official_close COMMAND sdr_core_hackrf_official_close_test)
+    set_tests_properties(sdr_core.hackrf_official_close PROPERTIES TIMEOUT 120)
     add_executable(
         sdr_core_hackrf_fixed_band_dsp_test tests/test_hackrf_fixed_band_dsp.cpp
     )
