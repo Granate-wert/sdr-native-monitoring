@@ -36,6 +36,7 @@ from ..domain import (
     SweepSegmentState,
     SweepState,
 )
+from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from .native_live import build_native_fixed_band_config
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .sweep_stitching import SweepStitchOptions, stitch_sweep_segments
@@ -72,6 +73,9 @@ class NativeSweepLease:
     source: NativeSweepSource
     assert_active: Callable[[], None]
     release: Callable[[], None]
+    # Pure guard bound to the same immutable catalog/profile as the lease.
+    # None preserves older explicit/fake lease contracts, not stable admission.
+    validate_continuous_request: Callable[[ContinuousSweepPlanRequest], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

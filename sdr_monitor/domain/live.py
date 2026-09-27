@@ -27,7 +27,7 @@ from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .presentation_omission import PresentationOmission
-from .device_capabilities import DeviceCapabilitySnapshot
+from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilitySnapshot
 
 
 class DeviceTransport(StrEnum):
@@ -299,6 +299,22 @@ class DeviceDescriptor:
     # The existing canonical capability model, not a second mutable registry.
     # None means unavailable/unverified identity/observation, not unsupported.
     capability_snapshot: DeviceCapabilitySnapshot | None = None
+    # The SAME owned observation supplies this canonical firmware/device join.
+    # It is not an absolute-unit calibration or a rewrite of operational IDs.
+    calibration_identity: DeviceCalibrationIdentity | None = None
+
+    def __post_init__(self) -> None:
+        identity = self.calibration_identity
+        if identity is None:
+            return  # Legacy/fake/unverified descriptors have no canonical join.
+        if not isinstance(identity, DeviceCalibrationIdentity):
+            raise TypeError("device requires an existing calibration identity")
+        snapshot = self.capability_snapshot
+        if (not isinstance(snapshot, DeviceCapabilitySnapshot)
+                or identity.family is not snapshot.family
+                or identity.adapter_id != snapshot.adapter_id
+                or identity.device_identity_key != snapshot.identity_key):
+            raise ValueError("device capability and calibration identity must agree")
 
 
 @dataclass(frozen=True, slots=True)

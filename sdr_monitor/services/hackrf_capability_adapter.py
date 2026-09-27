@@ -130,6 +130,7 @@ class HackrfCapabilityAdapter:
                 label="HackRF One receiver",
                 family=DeviceFamily.HACKRF,
                 adapter_id=HACKRF_LIBHACKRF_ADAPTER_ID,
+                model_id=probe.board_kind.value,
                 transports=(CapabilityTransport.USB,),
                 acquisition_kinds=(AcquisitionKind.COMPLEX_IQ,),
                 tuning_ranges_hz=(CapabilityRange(1e6, 6e9, "Hz"),),
@@ -142,6 +143,11 @@ class HackrfCapabilityAdapter:
                 hardware_timestamp_available=None,
                 hardware_overflow_counter_available=None,
                 evidence=(
+                    CapabilityEvidence(
+                        CapabilityField.MODEL,
+                        CapabilityEvidenceOrigin.RUNTIME_READBACK,
+                        "libhackrf-board-id-readback",
+                    ),
                     CapabilityEvidence(
                         CapabilityField.TRANSPORT,
                         CapabilityEvidenceOrigin.RUNTIME_TOPOLOGY,

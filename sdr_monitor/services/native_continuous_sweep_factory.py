@@ -51,6 +51,8 @@ class NativeContinuousSweepPlanFactory:
         """Read the held applied profile; construct no native config or device."""
         self._require_open()
         self._lease.assert_active()
+        if self._lease.validate_continuous_request is not None:
+            self._lease.validate_continuous_request(request)
         return self.preflight_profile(self._lease.source.live_configuration, request)
 
     @staticmethod

@@ -164,11 +164,17 @@ class TinySaCapabilityAdapter:
                 label=_label_for(probe.model),
                 family=DeviceFamily.TINYSA,
                 adapter_id=TINYSA_READ_ONLY_ADAPTER_ID,
+                model_id=probe.model.value,
                 transports=(CapabilityTransport.USB,),
                 acquisition_kinds=(AcquisitionKind.SPECTRUM_TRACE,),
                 tuning_ranges_hz=_tuning_ranges_for(probe.model),
                 raw_iq_available=False,
                 evidence=(
+                    CapabilityEvidence(
+                        CapabilityField.MODEL,
+                        CapabilityEvidenceOrigin.RUNTIME_READBACK,
+                        "tinysa-read-only-model",
+                    ),
                     CapabilityEvidence(
                         CapabilityField.TRANSPORT,
                         CapabilityEvidenceOrigin.RUNTIME_TOPOLOGY,

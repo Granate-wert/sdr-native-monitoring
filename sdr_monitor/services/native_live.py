@@ -56,10 +56,17 @@ from ..domain import (
 )
 from .live_session import InMemoryLiveSessionService
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
-from .ad936x_capability_adapter import Ad936xCapabilityObservationError, Ad936xLibiioCapabilityAdapter
+from .ad936x_capability_adapter import (
+    AD936X_LIBIIO_ADAPTER_ID, Ad936xCapabilityObservationError, Ad936xLibiioCapabilityAdapter,
+)
 from .pluto_readonly_observation import PlutoReadOnlyObservation, PlutoReadOnlyObserver
-from ..domain.device_capabilities import DeviceCapabilityInventory, build_device_capability_inventory
+from ..domain.device_capabilities import (
+    AdapterRuntimeAvailability, AdapterRuntimeSnapshot, DeviceCapabilityBinding,
+    DeviceCapabilityInventory, DeviceFamily, build_device_capability_inventory,
+)
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
+from .source_capability_admission import admit_source_request, live_configuration_numbers_valid
+from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
 # P07 defaults mirrored from the legacy adapter contract.
 _FFT_SIZE = 4096
@@ -309,8 +316,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if self._observation_owner.cleanup_pending:
                 raise LiveAdmissionRejected("Release the pending Pluto observation before using its catalog")
             return build_device_capability_inventory(
-                device.capability_snapshot for device in self._devices
-                if device.capability_snapshot is not None
+                (device.capability_snapshot for device in self._devices if device.capability_snapshot is not None),
+                bindings=(DeviceCapabilityBinding(
+                    device.device_id, DeviceFamily.AD936X, AD936X_LIBIIO_ADAPTER_ID,
+                    device.capability_snapshot, device.calibration_identity,
+                ) for device in self._devices),
+                runtimes=(_ad936x_runtime_snapshot(self._native),),
             )
 
     def select_device(self, device_id: str) -> LiveSnapshot:
@@ -355,6 +366,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     alternate_uris=tuple(route for route in _ordered_routes(selected) if route != uri),
                     capabilities=fresh.capabilities,
                     capability_snapshot=fresh.capability_snapshot,
+                    calibration_identity=fresh.calibration_identity,
                     serial=fresh.serial,
                     identity_key=fresh.identity_key,
                 )
@@ -459,7 +471,26 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                             or self._observation_owner.cleanup_pending
                             or self._snapshot.state is _running_state()):
                         raise LiveAdmissionRejected("Selected RX is already owned by another operation")
+            reason = self._start_capability_refusal()
+            if reason is not None:
+                raise LiveAdmissionRejected(reason)
             return self._start_unlocked()
+
+    def _start_capability_refusal(self, snapshot: LiveSnapshot | None = None) -> str | None:
+        """Low-rate pure gate before factory access; route compatibility stays explicit."""
+        snapshot = self._snapshot if snapshot is None else snapshot
+        if snapshot.applied is None:
+            return None  # Existing missing-profile refusal owns this case.
+        configuration = snapshot.applied.applied
+        if not live_configuration_numbers_valid(configuration):
+            return "Live configuration numbers are invalid"
+        device = snapshot.device
+        if device is None or device.capability_snapshot is None:
+            return None  # No canonical claim for explicit unverified routes.
+        admitted = admit_source_request(self.capability_inventory(), device.device_id, "rtbw", configuration)
+        if admitted.reason is None:
+            return None
+        return f"Live capability admission refused: {admitted.reason.value}"
 
     def start(self) -> LiveSnapshot:
         """Start Live, applying a previously armed native recording request.
@@ -477,6 +508,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._lock:
             if self._stream_release_failed or self._observation_owner.cleanup_pending:
                 return self._fail(_RELEASE_FAILED_MESSAGE, kind=LiveErrorKind.INTERNAL)
+        reason = self._start_capability_refusal()
+        if reason is not None:
+            return self._fail(reason, kind=LiveErrorKind.CONFIGURATION_REJECTED)
         with self._sweep_lease_lock:
             if self._sweep_lease_active:
                 return self._fail(
@@ -496,12 +530,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._release_stream(timeout_s=5.0)
 
         with self._lock:
+            prepared = self._snapshot
             if self._native_uri is None:
                 return self._fail(
                     "Select a device before starting a live session",
                     kind=LiveErrorKind.DEVICE_NOT_FOUND,
                 )
-            if self._snapshot.applied is None:
+            if prepared.applied is None:
                 return self._fail(
                     "Apply a live configuration before starting",
                     kind=LiveErrorKind.CONFIGURATION_REJECTED,
@@ -511,13 +546,18 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     "Live session is already started",
                     kind=LiveErrorKind.INTERNAL,
                 )
-            requested = self._snapshot.applied.applied
-            device = self._snapshot.device
+            requested = prepared.applied.applied
+            device = prepared.device
             if device is None:
                 return self._fail(
                     "Select a device before starting a live session",
                     kind=LiveErrorKind.DEVICE_NOT_FOUND,
                 )
+            # Revalidate the exact immutable profile used below, not an earlier
+            # snapshot that a concurrent configuration may have replaced.
+            reason = self._start_capability_refusal(prepared)
+            if reason is not None:
+                return self._fail(reason, kind=LiveErrorKind.CONFIGURATION_REJECTED)
             routes = _start_routes(device, self._native_uri)
             recording_request = self._native_recording_armed
             log_event(
@@ -694,7 +734,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._sequence = 0
             backend = _backend_kind(engine_metrics, fallback=applied)
             final_applied = _domain_applied_configuration(
-                self._snapshot.applied,
+                prepared.applied,
                 native_applied=applied,
                 active_backend=backend,
             )
@@ -900,6 +940,24 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     raise RuntimeError("select a device and apply a CPU Live configuration before Sweep")
                 if snapshot.applied.applied.backend is not BackendKind.CPU:
                     raise RuntimeError("native Sweep currently requires an explicitly applied CPU Live configuration")
+                reason = self._start_capability_refusal(snapshot)
+                if reason is not None:
+                    raise LiveAdmissionRejected(reason)
+                inventory = self.capability_inventory()
+                selected_device = snapshot.device
+                selected_profile = snapshot.applied.applied
+                # A callback captures only already observed immutable facts.
+                # It does not consult changing Live state or acquire a new owner.
+                def validate_continuous_request(request: ContinuousSweepPlanRequest) -> None:
+                    if selected_device.capability_snapshot is None:
+                        return  # Explicit route compatibility; no canonical claim.
+                    admitted = admit_source_request(
+                        inventory, selected_device.device_id, "sweep", request,
+                        applied_live=selected_profile,
+                    )
+                    if admitted.reason is not None:
+                        raise LiveAdmissionRejected(f"Sweep capability admission refused: {admitted.reason.value}")
+
                 source = NativeSweepSource(
                     uri,
                     f"native-sweep:{snapshot.device.device_id}",
@@ -912,6 +970,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     source,
                     self._assert_native_sweep_lease,
                     self._release_native_sweep_lease,
+                    validate_continuous_request,
                 )
 
     def _assert_native_sweep_lease(self) -> None:
@@ -1770,8 +1829,11 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         )
         topology = _domain_receiver_topology(observation.topology, probe, identity_key)
         capability_snapshot = None
+        calibration_identity = None
         try:
-            capability_snapshot = Ad936xLibiioCapabilityAdapter.map_observation(observation, uri).snapshot
+            mapped = Ad936xLibiioCapabilityAdapter.map_observation(observation, uri)
+            capability_snapshot = mapped.snapshot
+            calibration_identity = mapped.calibration_identity
         except Ad936xCapabilityObservationError:
             # No stable serial/coherent facts: preserve the operational route,
             # not invented stable evidence, inferred RX count or calibration.
@@ -1788,6 +1850,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             serial=serial or None,
             identity_key=identity_key,
             capability_snapshot=capability_snapshot,
+            calibration_identity=calibration_identity,
         )
 
     def _fail(
@@ -2246,6 +2309,20 @@ def _safe_identity(identity: str | None) -> str | None:
     return hashlib.sha256(identity.encode("utf-8", "replace")).hexdigest()[:12]
 
 
+def _ad936x_runtime_snapshot(native: Any) -> AdapterRuntimeSnapshot:
+    """Observe the already loaded surface only; no SDK/discovery/load call."""
+    protocols = (getattr(native, "PLUTO_OBSERVATION_PROTOCOL_VERSION", None),
+                 getattr(native, "PLUTO_IDENTITY_ADMISSION_PROTOCOL_VERSION", None))
+    present = (all(type(value) is int and value == 1 for value in protocols)
+               and callable(getattr(native, "PlutoDevice", None))
+               and callable(getattr(native, "PlutoFixedBandEngine", None)))
+    return AdapterRuntimeSnapshot(
+        AD936X_LIBIIO_ADAPTER_ID, DeviceFamily.AD936X,
+        AdapterRuntimeAvailability.AVAILABLE if present else AdapterRuntimeAvailability.UNAVAILABLE,
+        "loaded-ad936x-contract-v1" if present else "ad936x-contract-v1-unavailable",
+    )
+
+
 def _route_priority(uri: str) -> tuple[int, str]:
     transport = _transport_for_uri(uri)
     order = {
@@ -2297,10 +2374,14 @@ def _merge_device_group(group: list[DeviceDescriptor]) -> DeviceDescriptor:
         uri=preferred.uri, model=preferred.label, serial=serial, firmware="", device_ids=(),
     )
     snapshot = preferred.capability_snapshot
+    calibration_identity = preferred.calibration_identity
     if snapshot is not None:
         snapshots = tuple(item.capability_snapshot for item in ordered)
-        if any(item is None or replace(item, transports=snapshot.transports) != snapshot for item in snapshots):
+        if (calibration_identity is None
+                or any(item.calibration_identity != calibration_identity for item in ordered)
+                or any(item is None or replace(item, transports=snapshot.transports) != snapshot for item in snapshots)):
             snapshot = None  # conflicting/unverified alias facts cannot become one admitted snapshot.
+            calibration_identity = None
         else:
             snapshot = replace(snapshot, transports=tuple(dict.fromkeys(
                 transport for item in snapshots if item is not None for transport in item.transports
@@ -2313,6 +2394,7 @@ def _merge_device_group(group: list[DeviceDescriptor]) -> DeviceDescriptor:
         identity_key=identity,
         serial=preferred.serial,
         capability_snapshot=snapshot,
+        calibration_identity=calibration_identity,
     )
 
 

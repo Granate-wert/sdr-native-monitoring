@@ -7,6 +7,7 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import islice
 
 
 class DeviceFamily(StrEnum):
@@ -25,6 +26,7 @@ class AcquisitionKind(StrEnum):
 
 
 class CapabilityField(StrEnum):
+    MODEL = "model"
     TRANSPORT = "transport"
     ACQUISITION_KIND = "acquisition_kind"
     TUNING_RANGE = "tuning_range"
@@ -52,6 +54,14 @@ class CapabilityTransport(StrEnum):
     PCIE = "pcie"
     MANUAL_INSTRUMENT = "manual_instrument"
     REPLAY = "replay"
+
+
+class AdapterRuntimeAvailability(StrEnum):
+    """Observed contract surface, NOT hardware support or package acceptance."""
+
+    UNKNOWN = "unknown"
+    UNAVAILABLE = "unavailable"
+    AVAILABLE = "available"
 
 
 def _required_text(value: object, label: str) -> str:
@@ -146,6 +156,8 @@ class DeviceCapabilitySnapshot:
     hardware_timestamp_available: bool | None = None
     hardware_overflow_counter_available: bool | None = None
     evidence: tuple[CapabilityEvidence, ...] = ()
+    # Adapter-observed discriminator, not parsing the human label.
+    model_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "device_id", _opaque_identifier(self.device_id, "device_id"))
@@ -159,6 +171,8 @@ class DeviceCapabilitySnapshot:
             raise ValueError("label must be short and must not contain a URI or path")
         object.__setattr__(self, "label", label)
         object.__setattr__(self, "family", DeviceFamily(self.family))
+        if self.model_id is not None:
+            object.__setattr__(self, "model_id", _opaque_identifier(self.model_id, "model_id"))
         transports = tuple(CapabilityTransport(item) for item in self.transports)
         acquisitions = tuple(AcquisitionKind(item) for item in self.acquisition_kinds)
         if not transports or len(set(transports)) != len(transports):
@@ -205,6 +219,7 @@ class DeviceCapabilitySnapshot:
             if any(item.unit != unit for item in values):
                 raise ValueError(f"capability range must use {unit}")
         declared_fields = {
+            CapabilityField.MODEL: self.model_id is not None,
             CapabilityField.TRANSPORT: bool(transports),
             CapabilityField.ACQUISITION_KIND: bool(acquisitions),
             CapabilityField.TUNING_RANGE: bool(self.tuning_ranges_hz),
@@ -253,15 +268,14 @@ class DeviceCapabilitySnapshot:
 class DeviceCapabilityInventory:
     snapshots: tuple[DeviceCapabilitySnapshot, ...]
     maximum_devices: int = 32
+    bindings: tuple[DeviceCapabilityBinding, ...] = ()
+    runtimes: tuple[AdapterRuntimeSnapshot, ...] = ()
 
     def __post_init__(self) -> None:
-        snapshots = tuple(self.snapshots)
-        if isinstance(self.maximum_devices, bool) or not isinstance(self.maximum_devices, int):
-            raise TypeError("maximum_devices must be an integer")
-        if not 1 <= self.maximum_devices <= 256:
-            raise ValueError("maximum_devices must be in [1, 256]")
-        if len(snapshots) > self.maximum_devices:
-            raise ValueError("device capability inventory exceeds its finite bound")
+        _validate_inventory_limit(self.maximum_devices)
+        snapshots = _bounded_inventory_values(self.snapshots, self.maximum_devices)
+        bindings = _bounded_inventory_values(self.bindings, self.maximum_devices)
+        runtimes = _bounded_inventory_values(self.runtimes, self.maximum_devices)
         if any(not isinstance(item, DeviceCapabilitySnapshot) for item in snapshots):
             raise ValueError("device capability inventory must contain capability snapshots")
         device_ids = tuple(item.device_id for item in snapshots)
@@ -270,7 +284,44 @@ class DeviceCapabilityInventory:
             raise ValueError("device capability inventory requires unique device ids")
         if len(set(identity_keys)) != len(identity_keys):
             raise ValueError("device capability inventory requires unique identity keys")
+        if any(not isinstance(item, DeviceCapabilityBinding) for item in bindings):
+            raise ValueError("inventory bindings must contain DeviceCapabilityBinding values")
+        if any(not isinstance(item, AdapterRuntimeSnapshot) for item in runtimes):
+            raise ValueError("inventory runtimes must contain AdapterRuntimeSnapshot values")
+        if len({item.source_id for item in bindings}) != len(bindings):
+            raise ValueError("inventory bindings require unique operational source ids")
+        if len({item.adapter_id for item in runtimes}) != len(runtimes):
+            raise ValueError("inventory runtimes require unique adapter ids")
+        snapshots_by_key = {item.identity_key: item for item in snapshots}
+        identities: dict[str, DeviceCalibrationIdentity] = {}
+        families: dict[str, DeviceFamily] = {}
+        observations: tuple[DeviceCapabilitySnapshot | DeviceCapabilityBinding | AdapterRuntimeSnapshot, ...] = (
+            *snapshots, *bindings, *runtimes,
+        )
+        for item in observations:
+            prior_family = families.setdefault(item.adapter_id, item.family)
+            if prior_family is not item.family:
+                raise ValueError("inventory adapter family facts conflict")
+        for binding in bindings:
+            if binding.snapshot is None:
+                continue  # An operational route is not canonical identity evidence.
+            if snapshots_by_key.get(binding.snapshot.identity_key) != binding.snapshot:
+                raise ValueError("inventory binding has orphan or conflicting capability facts")
+            assert binding.calibration_identity is not None
+            prior = identities.setdefault(binding.snapshot.identity_key, binding.calibration_identity)
+            if prior != binding.calibration_identity:
+                raise ValueError("inventory alias calibration firmware facts conflict")
         object.__setattr__(self, "snapshots", snapshots)
+        object.__setattr__(self, "bindings", bindings)
+        object.__setattr__(self, "runtimes", runtimes)
+
+    def binding_for_source(self, source_id: str) -> DeviceCapabilityBinding | None:
+        normalized = _catalog_source_id(source_id)
+        return next((item for item in self.bindings if item.source_id == normalized), None)
+
+    def runtime_for_adapter(self, adapter_id: str) -> AdapterRuntimeSnapshot | None:
+        normalized = _opaque_identifier(adapter_id, "adapter_id")
+        return next((item for item in self.runtimes if item.adapter_id == normalized), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,25 +351,148 @@ class DeviceCalibrationIdentity:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DeviceCapabilityBinding:
+    """Explicit operational→canonical join referencing existing immutable facts.
+
+    Unknown routes remain selectable by their owner but have no stable key or
+    calibration identity. Construction does not establish hardware provenance.
+    """
+
+    source_id: str
+    family: DeviceFamily
+    adapter_id: str
+    snapshot: DeviceCapabilitySnapshot | None = None
+    calibration_identity: DeviceCalibrationIdentity | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_id", _catalog_source_id(self.source_id))
+        object.__setattr__(self, "family", DeviceFamily(self.family))
+        object.__setattr__(self, "adapter_id", _opaque_identifier(self.adapter_id, "adapter_id"))
+        if (self.snapshot is None) != (self.calibration_identity is None):
+            raise ValueError("canonical binding requires both capability and calibration identity")
+        if self.snapshot is None:
+            return
+        if not isinstance(self.snapshot, DeviceCapabilitySnapshot):
+            raise TypeError("binding requires an existing capability snapshot")
+        identity = self.calibration_identity
+        if not isinstance(identity, DeviceCalibrationIdentity):
+            raise TypeError("binding requires an existing calibration identity")
+        if (self.family is not self.snapshot.family or self.adapter_id != self.snapshot.adapter_id
+                or identity.family is not self.family or identity.adapter_id != self.adapter_id
+                or identity.device_identity_key != self.snapshot.identity_key):
+            raise ValueError("binding canonical identity, family and adapter must agree")
+
+    @property
+    def identity_key(self) -> str | None:
+        return self.snapshot.identity_key if self.snapshot is not None else None
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterRuntimeSnapshot:
+    """Low-rate no-load contract observation, distinct from device capabilities.
+
+    AVAILABLE is not RF-path/physical/mode/throughput or frozen-DLL acceptance.
+    Missing observation is unknown; never infer availability from a snapshot.
+    """
+
+    adapter_id: str
+    family: DeviceFamily
+    availability: AdapterRuntimeAvailability = AdapterRuntimeAvailability.UNKNOWN
+    reference: str = "not-recorded"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "adapter_id", _opaque_identifier(self.adapter_id, "adapter_id"))
+        object.__setattr__(self, "family", DeviceFamily(self.family))
+        object.__setattr__(self, "availability", AdapterRuntimeAvailability(self.availability))
+        object.__setattr__(self, "reference", _opaque_identifier(self.reference, "runtime reference"))
+        if self.availability is not AdapterRuntimeAvailability.UNKNOWN and self.reference == "not-recorded":
+            raise ValueError("observed runtime availability requires its own reference")
+
+
+def _catalog_source_id(value: object) -> str:
+    normalized = _required_text(value, "operational source id")
+    if (normalized != value or len(normalized) > 128 or not normalized[0].isalnum()
+            or normalized.casefold().startswith(("usb:", "ip:", "manual:", "serial:"))
+            or any(not (character.isascii() and (character.isalnum() or character in ".:_-"))
+                   for character in normalized)):
+        raise ValueError("operational source id must be opaque and route-free")
+    return normalized
+
+
+def _validate_inventory_limit(value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("maximum_devices must be an integer")
+    if not 1 <= value <= 256:
+        raise ValueError("maximum_devices must be in [1, 256]")
+
+
+def _bounded_inventory_values[T](values: Iterable[T], limit: int) -> tuple[T, ...]:
+    result = tuple(islice(values, limit + 1))
+    if len(result) > limit:
+        raise ValueError("device capability inventory exceeds its finite bound")
+    return result
+
+
 def build_device_capability_inventory(
-    snapshots: Iterable[DeviceCapabilitySnapshot], *, maximum_devices: int = 32
+    snapshots: Iterable[DeviceCapabilitySnapshot], *, maximum_devices: int = 32,
+    bindings: Iterable[DeviceCapabilityBinding] = (), runtimes: Iterable[AdapterRuntimeSnapshot] = (),
 ) -> DeviceCapabilityInventory:
     """Freeze already observed facts without importing or calling an adapter."""
 
-    return DeviceCapabilityInventory(tuple(snapshots), maximum_devices)
+    _validate_inventory_limit(maximum_devices)
+    return DeviceCapabilityInventory(
+        _bounded_inventory_values(snapshots, maximum_devices), maximum_devices,
+        _bounded_inventory_values(bindings, maximum_devices),
+        _bounded_inventory_values(runtimes, maximum_devices),
+    )
+
+
+def merge_device_capability_inventories(
+    inventories: Iterable[DeviceCapabilityInventory], *, maximum_devices: int = 32,
+) -> DeviceCapabilityInventory:
+    """Merge already owned facts exactly; conflicting/stale facts never win last.
+
+    No factory, discovery, SDK load, request dispatch or transport merge occurs.
+    Family providers own alias/provenance validation before this boundary.
+    """
+    _validate_inventory_limit(maximum_devices)
+    snapshots: dict[str, DeviceCapabilitySnapshot] = {}
+    bindings: dict[str, DeviceCapabilityBinding] = {}
+    runtimes: dict[str, AdapterRuntimeSnapshot] = {}
+    for inventory in _bounded_inventory_values(inventories, 256):
+        if not isinstance(inventory, DeviceCapabilityInventory):
+            raise TypeError("common catalog requires existing capability inventories")
+        for item in inventory.snapshots:
+            if snapshots.setdefault(item.identity_key, item) != item:
+                raise ValueError("common catalog capability facts conflict")
+        for binding in inventory.bindings:
+            if bindings.setdefault(binding.source_id, binding) != binding:
+                raise ValueError("common catalog operational identity facts conflict")
+        for runtime in inventory.runtimes:
+            if runtimes.setdefault(runtime.adapter_id, runtime) != runtime:
+                raise ValueError("common catalog runtime observations conflict")
+        if max(len(snapshots), len(bindings), len(runtimes)) > maximum_devices:
+            raise ValueError("common catalog exceeds its finite bound")
+    return build_device_capability_inventory(snapshots.values(), maximum_devices=maximum_devices,
+                                            bindings=bindings.values(), runtimes=runtimes.values())
 
 
 __all__ = [
     "AcquisitionKind",
+    "AdapterRuntimeAvailability",
+    "AdapterRuntimeSnapshot",
     "CapabilityEvidence",
     "CapabilityEvidenceOrigin",
     "CapabilityField",
     "CapabilityRange",
     "CapabilityTransport",
     "DeviceCalibrationIdentity",
+    "DeviceCapabilityBinding",
     "DeviceCapabilityInventory",
     "DeviceCapabilitySnapshot",
     "DeviceFamily",
     "build_device_capability_inventory",
+    "merge_device_capability_inventories",
     "stable_identity_key",
 ]
