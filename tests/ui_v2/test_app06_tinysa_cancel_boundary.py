@@ -132,6 +132,21 @@ class TinySaCancelBoundaryOwnerTests(unittest.TestCase):
         self.assertIs(self.owner.failure, failure)
         self.assertNotIn(("write", self.request.command), self.serial.calls)
 
+    def test_cancel_during_version_or_zero_finishes_prompt_without_scan(self):
+        for command in (b"version\r", b"zero ?\r"):
+            with self.subTest(command=command):
+                self.setUp()
+                self.serial.on_write = lambda data, command=command: self.owner.cancel() if data == command else None
+                read = self.serial.read
+                self.serial.read = lambda size, read=read: read(min(size, 1))
+                with self.assertRaises(TinySaTraceCollectionCancelled):
+                    self.owner.collect(self.request)
+                self.assertEqual(self.serial.response, b"")
+                self.assertFalse(self.owner.measurement_pending)
+                self.assertNotIn(("write", self.request.command), self.serial.calls)
+                self.assertIsNone(self.owner.failure)
+                self.assertFalse(self.owner.cleanup_pending)
+
 
 class TinySaCancelBoundaryCommonTests(unittest.TestCase):
     wait = repeated_fixtures.TinySaRepeatedCommonTests.wait

@@ -392,6 +392,9 @@ plus five seconds (maximum 125 s). Qt remains responsive and state is Stopping;
 the graph remains claimed until join/close/release. A slow remaining pass can
 therefore delay Stop completion, not block Qt or license another Start. This
 is not immediate hardware RF Stop or a 50-ms tinySA scan/Stop requirement.
+Cancellation during a consumed version/zero query also finishes that bounded
+ASCII prompt, then refuses the subsequent command. Their existing two-second
+deadlines are unchanged; a version/zero cancellation cannot issue a new scan.
 Missing/malformed prompt, transport or close failure is NOT successful protocol
 recovery; a confirmed transport close alone still does not prove firmware-ready.
 Recovery from an already-stranded older session remains separate physical debt.

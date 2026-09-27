@@ -309,7 +309,8 @@ class TinySaOwnedAcquisition:
         deadline = self._monotonic() + 2.0
         response = bytearray()
         while self._monotonic() < deadline:
-            self._cancelled()
+            # The version write is already consumed. Finish its prompt within
+            # this two-second deadline, then cancellation refuses zero/scan.
             size = min(256, 4096 - len(response) + 1)
             chunk = port.read(size)
             if not isinstance(chunk, bytes) or len(chunk) > size:
@@ -328,8 +329,8 @@ class TinySaOwnedAcquisition:
         raise TinySaTraceCollectionError("tinySA version response deadline expired",
                                          reason=TinySaTraceFailureReason.DEADLINE)
 
-    def _active_port(self, *, finish_consumed_scan: bool = False) -> TinySaTraceSerialPort:
-        if not (finish_consumed_scan and self._measurement_pending):
+    def _active_port(self, *, finish_consumed_response: bool = False) -> TinySaTraceSerialPort:
+        if not (finish_consumed_response and self._commands):
             self._cancelled()
         if not self._ready or self._closing or self._closed or self._port is None:
             raise TinySaTraceCollectionError("tinySA acquisition owner is not ready")
@@ -357,12 +358,12 @@ class TinySaOwnedAcquisition:
         return port.write(data)
 
     def flush(self) -> None:
-        self._active_port(finish_consumed_scan=True).flush()
+        self._active_port(finish_consumed_response=True).flush()
 
     def read(self, size: int = 1) -> bytes:
         if type(size) is not int or not 1 <= size <= MAX_TINYSA_SCANRAW_READ_BYTES:
             raise TinySaTraceCollectionError("tinySA acquisition read exceeds its bound")
-        chunk = self._active_port(finish_consumed_scan=True).read(size)
+        chunk = self._active_port(finish_consumed_response=True).read(size)
         if not isinstance(chunk, bytes) or len(chunk) > size:
             raise TinySaTraceCollectionError("tinySA acquisition read contract is invalid")
         return chunk

@@ -230,7 +230,7 @@ def collect_tinysa_open_pass(
         raise TinySaTraceCollectionError("tinySA zero query was incomplete")
     serial_port.flush()
     zero, zero_bytes, zero_reads = _read_zero_offset(serial_port,
-        cancel_requested=cancel_requested, monotonic_ns=monotonic_ns)
+        cancel_requested=cancel_requested, monotonic_ns=monotonic_ns, finish_on_cancel=finish_on_cancel)
     if cancel_requested():
         raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
     if serial_port.write(request.command) != len(request.command):
@@ -309,6 +309,7 @@ def collect_tinysa_scanraw_trace(
             serial_port,
             cancel_requested=cancel_requested,
             monotonic_ns=monotonic_ns,
+            finish_on_cancel=finish_on_cancel,
         )
         if cancel_requested is not None and cancel_requested():
             raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
@@ -413,12 +414,13 @@ def _read_zero_offset(
     *,
     cancel_requested: Callable[[], bool] | None,
     monotonic_ns: Callable[[], int],
+    finish_on_cancel: bool = False,
 ) -> tuple[float, int, int]:
     deadline_ns = monotonic_ns() + round(TINYSA_ZERO_RESPONSE_DEADLINE_SECONDS * 1_000_000_000)
     response = bytearray()
     read_calls = 0
     while monotonic_ns() < deadline_ns:
-        if cancel_requested is not None and cancel_requested():
+        if not finish_on_cancel and cancel_requested is not None and cancel_requested():
             raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
         chunk = serial_port.read(min(256, MAX_TINYSA_ZERO_RESPONSE_BYTES - len(response) + 1))
         read_calls += 1
