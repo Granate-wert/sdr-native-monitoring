@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from typing import Protocol
+from typing import Protocol, cast
 
 from serial import EIGHTBITS, PARITY_NONE, STOPBITS_ONE, Serial
 
@@ -61,12 +61,26 @@ class TinySaSerialSettingsCommandPort:
         self._monotonic = monotonic
         self._port: TinySaSettingsSerialPort | None = None
         self._closed = False
+        self._used = False
+        self._faulted = False
+
+    @property
+    def cleanup_pending(self) -> bool:
+        """The Python serial object remains owned until close is confirmed."""
+        return self._port is not None
 
     def command(self, command: bytes) -> bytes:
-        if self._closed:
+        if self._closed or self._faulted:
             raise RuntimeError("tinySA settings command port is closed")
         if not isinstance(command, bytes) or not _is_admitted_command(command):
             raise ValueError("tinySA settings command is outside the admitted allowlist")
+        try:
+            return self._command(command)
+        except Exception:  # noqa: BLE001 - quarantine after any ordinary transport failure.
+            self._faulted = True
+            raise RuntimeError("tinySA settings command failed closed; explicit close required") from None
+
+    def _command(self, command: bytes) -> bytes:
         port = self._ensure_open()
         written = port.write(command)
         if written != len(command):
@@ -87,29 +101,43 @@ class TinySaSerialSettingsCommandPort:
         raise RuntimeError("tinySA settings response deadline expired")
 
     def close(self) -> None:
-        if self._closed:
+        if self._closed and self._port is None:
             return
         self._closed = True
         port = self._port
-        self._port = None
-        if port is not None and getattr(port, "is_open", False):
-            port.close()
+        if port is not None:
+            try:
+                # Also close partial-open objects reporting is_open=False.
+                # PySerial close is an object operation, not a raw-handle retry.
+                port.close()
+                if port.is_open is not False:
+                    raise RuntimeError("tinySA settings close was not confirmed")
+            except Exception:  # noqa: BLE001 - retain this exact owner, never reopen/replace it.
+                raise RuntimeError("tinySA settings port close failed; explicit close required") from None
+            self._port = None
 
     def _ensure_open(self) -> TinySaSettingsSerialPort:
         if self._port is not None:
             return self._port
+        if self._used:
+            raise RuntimeError("tinySA settings serial acquisition cannot be retried")
+        self._used = True  # Before factory/open; a partial attempt is never reopened.
         port = (
             _make_serial(self._route)
             if self._serial_factory is None
             else self._serial_factory(self._route)
         )
+        self._port = cast(TinySaSettingsSerialPort, port)  # BEFORE validation or side effects.
         if not _is_serial_port(port):
             raise ValueError("tinySA settings serial factory returned an invalid port")
+        if port.is_open is not False:
+            raise RuntimeError("tinySA settings factory must return an unopened serial object")
         port.dtr = False
         port.rts = False
         port.open()
+        if port.is_open is not True:
+            raise RuntimeError("tinySA settings serial open was not confirmed")
         port.reset_input_buffer()
-        self._port = port
         return port
 
 

@@ -151,6 +151,18 @@ class TinySaCapabilityAdapter:
         except Exception:  # noqa: BLE001 - an injected device boundary must fail closed.
             raise TinySaCapabilityObservationError(_GENERIC_FAILURE) from None
 
+        return self.map_probe(probe)
+
+    @staticmethod
+    def map_probe(probe: TinySaReadOnlyProbe) -> TinySaCapabilityObservation:
+        """One pure mapping for catalog and same-owner acquisition admission.
+
+        This performs no observation, serial access or publication. A later
+        acquisition compares its fresh probe with the retained catalog facts;
+        it does not construct a second capability inventory.
+        """
+        if not isinstance(probe, TinySaReadOnlyProbe):
+            raise TinySaCapabilityObservationError(_GENERIC_FAILURE)
         try:
             identity_key = stable_identity_key(
                 f"tinysa-device|{probe.model.value}|{probe.device_identity.casefold()}"
@@ -215,10 +227,10 @@ class TinySaCapabilityAdapter:
 def _normalized_probe_text(value: object, label: str) -> str:
     if not isinstance(value, str) or value != value.strip() or not value:
         raise ValueError(f"{label} must be normalized text")
-    if len(value) > 128 or any(
+    if len(value) > 128 or any(not 0x20 <= ord(character) <= 0x7e for character in value) or any(
         token in value.casefold() for token in ("usb:", "ip:", "serial:", "\\", "/")
     ):
-        raise ValueError(f"{label} must not contain a route or path")
+        raise ValueError(f"{label} must be bounded printable ASCII without a route or path")
     if value.casefold() in {"unknown", "none", "n/a", "-"}:
         raise ValueError(f"{label} must be known")
     return value

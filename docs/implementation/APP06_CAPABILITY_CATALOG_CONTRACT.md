@@ -240,6 +240,54 @@ HackRF host Sweep, persistence and I/Q recording are not integrated in this
 common path. TinySA remains selection-only here. These gaps are visible, not
 converted into hardware-impossible claims or synthetic host FFT.
 
+## Retained tinySA acquisition preparation (2026-09-27)
+
+`prepare_tinysa_acquisition` reserves an inert acquisition object from the SAME
+provider/backend/observed endpoint. It accepts only the exact retained binding
+and runtime references; equal copies or stale selections refuse. This creates
+no second capability inventory, serial port, measurement, settings or firmware
+effect. A reserved unused owner requires explicit close; all catalog probes
+refuse while it or failed cleanup remains pending.
+
+One finite `TinySaOwnedAcquisition.collect` uses one opened Python serial object
+for a fresh `version`, `zero ?`, and exactly one buffered `scanraw` command.
+Model/canonical identity/firmware facts must match the existing observation via
+the SAME pure capability mapping, before zero or measurement commands. USB serial
+must be unique; the resolved route/identity cannot change during the transaction.
+The endpoint is checked again after confirmed close before publishing the result.
+PnP checks narrow races; they are NOT authenticated-device or firmware continuity
+proof. Preserved instrument input/settings and upper-band Ultra operation still
+require their own mode/admission qualification.
+
+The existing exact parser retains device-reported dBm/built-in calibration
+provenance, actual observed zero offset, stop-exclusive integer-Hz grid, and
+read-only arrays. The maximum remains 10001 points / 30005 binary frame bytes.
+Host completion time is not RF acquisition time. No complex I/Q, host FFT,
+external correction, simultaneous-frequency capture, metrological accuracy or
+progressive spectrum is inferred from serial chunks. This packet deliberately
+does not reinterpret this instrument trace as a Pluto RTBW frame.
+
+Cancellation is cooperative around finite reads; an in-flight port cannot be
+closed by another caller without cancellation/join. No measurement retry/reopen
+occurs. The exact lazy Python serial object is retained before validation/open;
+failed partial-open/close blocks all new probes/owners until explicit confirmed
+close. Cleanup also runs when a partial object reports is_open=False. No caller
+accesses/retries an OS raw handle. Ordinary Python-object close failures remain
+visible; this is not proof against an arbitrary faulty driver or injected SDK.
+
+The existing settings command port now retains its partial-open/failed-close
+owner and quarantines commands after a transport failure. Its bound executor
+also retains a failed command owner; a new settings plan cannot substitute it.
+Only explicit close resumes cleanup, not commands. The command allowlist, no
+rollback/retry/persistent writes, and ACK-not-readback semantics are unchanged.
+This is NOT new common-Analyzer settings/RBW/LNA/attenuation admission.
+
+The V2 tinySA path is STILL selection-only: the new retained acquisition is a
+backend integration prerequisite, not the common Sweep request/router/canvas
+wiring. Production Start has not been enabled by this preparation API. Actual
+Analyzer composition, firmware/input-aware controls, epoch/unit/late-frame guards,
+bounded repeat scheduling and physical visible/frozen cells remain mandatory.
+
 ## Required further work
 
 TinySA family-specific settings/device-dBm trace acquisition and advanced HackRF

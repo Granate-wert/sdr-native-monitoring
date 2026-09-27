@@ -179,6 +179,22 @@ class _BoundTinySaSettingsExecutor:
     ) -> None:
         self._backend = backend
         self._endpoint = endpoint
+        self._port: TinySaSettingsCommandPort | None = None
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return self._port is not None
+
+    def close(self) -> None:
+        port = self._port
+        if port is not None:
+            try:
+                port.close()
+                if getattr(port, "cleanup_pending", False) is not False:
+                    raise RuntimeError("tinySA settings release was not confirmed")
+            except Exception:  # noqa: BLE001 - exact owner retained on foreign/partial close failure.
+                raise RuntimeError("tinySA settings release failed; explicit close required") from None
+            self._port = None
 
     def apply(
         self,
@@ -188,16 +204,25 @@ class _BoundTinySaSettingsExecutor:
     ) -> TinySaSettingsApplyResult:
         if not isinstance(plan, TinySaSweepSettingsPlan):
             raise TypeError("tinySA settings request is invalid")
+        if self.cleanup_pending:
+            raise RuntimeError("tinySA settings owner requires explicit close before another plan")
 
         def port_factory() -> TinySaSettingsCommandPort:
             current = self._backend._resolve(self._endpoint)
-            return self._backend._settings_port_factory(current.route)
+            port = self._backend._settings_port_factory(current.route)
+            self._port = port  # BEFORE the settings controller invokes a command.
+            return port
 
-        return apply_tinysa_sweep_settings(
-            plan,
-            confirmation=confirmation,
-            port_factory=port_factory,
-        )
+        try:
+            result = apply_tinysa_sweep_settings(plan, confirmation=confirmation, port_factory=port_factory)
+        except Exception:
+            # A concrete serial port exposes confirmed cleanup. Unknown
+            # injected command owners stay quarantined after any failure.
+            if self._port is not None and getattr(self._port, "cleanup_pending", True) is False:
+                self._port = None
+            raise
+        self._port = None  # Success already requires the command port's close contract.
+        return result
 
 
 def _normalized_route(value: object) -> str:

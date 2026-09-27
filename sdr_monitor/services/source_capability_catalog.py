@@ -7,7 +7,10 @@ from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, contextmanager
 from enum import StrEnum
 from itertools import islice
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from .tinysa_owned_acquisition import TinySaOwnedAcquisition
 
 from ..domain.device_capabilities import (
     AdapterRuntimeSnapshot,
@@ -181,6 +184,33 @@ class SourceCapabilityCatalog:
             self._publish()
             self._failures = ()
             return self._inventory
+
+    def prepare_tinysa_acquisition(self, binding: DeviceCapabilityBinding,
+                                  runtime: AdapterRuntimeSnapshot) -> TinySaOwnedAcquisition:
+        """Reserve a same-provider serial owner from EXACT retained references.
+
+        No new Discover/probe, serial open, measurement or firmware/settings
+        effect. This is not a Start permit: the Analyzer must still reserve
+        its graph exclusion and enforce mode/input/request admission. An unused
+        prepared owner also needs explicit close; all probes refuse meanwhile.
+        """
+        from .source_capability_providers import TinySaCapabilityProvider
+
+        with self._operation(), self._control_transaction():
+            self._require_released()
+            if (not isinstance(binding, DeviceCapabilityBinding)
+                    or binding.family is not DeviceFamily.TINYSA
+                    or self._inventory.binding_for_source(binding.source_id) is not binding
+                    or self._inventory.runtime_for_adapter(binding.adapter_id) is not runtime):
+                raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_CONTRACT)
+            provider = next((value for value in self._providers
+                             if value.adapter_id == binding.adapter_id), None)
+            if not isinstance(provider, TinySaCapabilityProvider):
+                raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_CONTRACT)
+            try:
+                return provider.prepare_acquisition(binding.source_id, binding)
+            except Exception:  # noqa: BLE001 - no routes, serial/vendor failures or substitution.
+                raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_FAILED) from None
 
     def close(self) -> None:
         """Explicit release only. Never Stop an unrelated stream owner."""

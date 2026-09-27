@@ -54,7 +54,9 @@ class TinySaTraceCollectionCancelled(TinySaTraceCollectionError):
 
 
 class TinySaTraceSerialPort(Protocol):
-    is_open: bool
+    @property
+    def is_open(self) -> bool: ...
+
     dtr: bool
     rts: bool
 
@@ -245,11 +247,15 @@ def collect_tinysa_scanraw_trace(
     except Exception as error:  # noqa: BLE001 - all ordinary port failures must fail closed.
         collection_error = error
     finally:
-        if getattr(serial_port, "is_open", False):
-            try:
-                serial_port.close()
-            except Exception as error:  # noqa: BLE001 - close failure must remain visible.
-                close_error = error
+        # A partial open can own resources even if is_open is still False.
+        # Retained callers supply the same owned object and expose explicit
+        # close recovery; this helper must not silently skip its cleanup.
+        try:
+            serial_port.close()
+            if getattr(serial_port, "is_open", None) is not False:
+                raise TinySaTraceCollectionError("tinySA trace close was not confirmed")
+        except Exception as error:  # noqa: BLE001 - close failure must remain visible.
+            close_error = error
 
     elapsed_seconds = max(0.0, (monotonic_ns() - started_ns) / 1_000_000_000.0)
     if close_error is not None:

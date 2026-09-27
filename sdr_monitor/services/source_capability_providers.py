@@ -21,6 +21,7 @@ from .libhackrf_read_only import LibhackrfReadOnlyPort
 from .native_live import NativeLiveSessionService
 from .source_capability_catalog import SourceCapabilityCatalog
 from .tinysa_capability_adapter import TINYSA_READ_ONLY_ADAPTER_ID, TinySaCapabilityAdapter, TinySaCapabilityObservation
+from .tinysa_owned_acquisition import TinySaOwnedAcquisition
 from .tinysa_readonly_port import TinySaSerialReadOnlyPort
 from .tinysa_serial_source_backend import TinySaSerialSourceBackend
 from .tinysa_source_composition import MAX_TINYSA_DISCOVERED_SOURCES, TinySaTransportEndpoint
@@ -96,18 +97,23 @@ class TinySaCapabilityProvider:
     family = DeviceFamily.TINYSA
 
     def __init__(self, backend: TinySaSerialSourceBackend | None = None, *,
-                 port_factory: Callable[[TinySaTransportEndpoint], TinySaSerialReadOnlyPort] | None = None) -> None:
+                 port_factory: Callable[[TinySaTransportEndpoint], TinySaSerialReadOnlyPort] | None = None,
+                 acquisition_factory: Callable[[TinySaSerialSourceBackend, TinySaTransportEndpoint,
+                                               TinySaCapabilityObservation], TinySaOwnedAcquisition] = TinySaOwnedAcquisition) -> None:
         self._backend = backend if backend is not None else TinySaSerialSourceBackend()
         self._port_factory = port_factory or (lambda endpoint: TinySaSerialReadOnlyPort(self._backend, endpoint))
         self._endpoints: dict[str, TinySaTransportEndpoint] = {}
         self._adapters: dict[str, TinySaCapabilityAdapter] = {}
         self._observations: dict[str, TinySaCapabilityObservation] = {}
+        self._acquisition_factory = acquisition_factory
+        self._acquisitions: dict[str, TinySaOwnedAcquisition] = {}
         self._runtime = AdapterRuntimeSnapshot(self.adapter_id, self.family,
             AdapterRuntimeAvailability.AVAILABLE, "bounded-version-and-scanraw-serial-contract")
 
     @property
     def cleanup_pending(self) -> bool:
-        return any(adapter.cleanup_pending for adapter in self._adapters.values())
+        return (any(adapter.cleanup_pending for adapter in self._adapters.values())
+                or any(owner.cleanup_pending for owner in self._acquisitions.values()))
 
     def runtime_snapshot(self) -> AdapterRuntimeSnapshot:
         return self._runtime
@@ -124,6 +130,7 @@ class TinySaCapabilityProvider:
         self._endpoints = dict(pairs)
         self._adapters = {}  # all previous temporary owners confirmed closed above
         self._observations = {}
+        self._acquisitions = {}  # previous acquisition objects confirmed closed above
         # VID/PID/location alone is only a candidate, never confirmed model/UID.
         return build_device_capability_inventory((), runtimes=(self._runtime,),
             bindings=(DeviceCapabilityBinding(source, self.family, self.adapter_id) for source, _ in pairs))
@@ -146,9 +153,35 @@ class TinySaCapabilityProvider:
         return build_device_capability_inventory((value.snapshot for value in self._observations.values()),
                                                 bindings=bindings, runtimes=(self._runtime,))
 
+    def prepare_acquisition(self, source_id: str, binding: DeviceCapabilityBinding) -> TinySaOwnedAcquisition:
+        """Reserve a SAME-backend owner without opening serial or changing facts."""
+        endpoint = self._endpoints.get(source_id)
+        observed = self._observations.get(source_id)
+        if (self.cleanup_pending or endpoint is None or observed is None
+                or binding.source_id != source_id or binding.family is not self.family
+                or binding.adapter_id != self.adapter_id
+                or binding.snapshot is not observed.snapshot
+                or binding.calibration_identity is not observed.external_correction_identity):
+            raise RuntimeError("tinySA retained acquisition binding is unavailable")
+        owner = self._acquisition_factory(self._backend, endpoint, observed)
+        if not isinstance(owner, TinySaOwnedAcquisition):
+            # This injection is an inert construction seam, not an SDK factory.
+            raise TypeError("tinySA acquisition factory returned an invalid inert owner")
+        self._acquisitions[source_id] = owner
+        return owner
+
     def close(self) -> None:
-        for adapter in self._adapters.values():
-            adapter.close()
+        first_error: Exception | None = None
+        owners: tuple[TinySaOwnedAcquisition | TinySaCapabilityAdapter, ...] = (
+            *self._acquisitions.values(), *self._adapters.values())
+        for owner in owners:
+            try:
+                owner.close()
+            except Exception as error:  # noqa: BLE001 - attempt independent owners, retain first failure.
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise RuntimeError("tinySA provider release failed; explicit close required") from None
 
 
 def _qualified_hackrf_sdk_directory(native: object) -> Path | None:
