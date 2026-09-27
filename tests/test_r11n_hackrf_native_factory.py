@@ -95,6 +95,7 @@ class _DetectorType:
 
 
 class _NativeFactory:
+    HACKRF_FACTORY_CONTRACT_VERSION = 2
     WindowType = _WindowType
     DetectorType = _DetectorType
 
@@ -134,6 +135,46 @@ class R11NHackrfNativeFactoryTests(unittest.TestCase):
         self.assertEqual(values["presentation_capacity"], 4)
         self.assertEqual(values["configuration_generation"], 9)
         self.assertEqual(values["source_id"], "native.hackrf.live")
+        self.assertEqual(values["expected_serial_words"], (0, 0, 0x010961DC, 0x2B78454F))
+
+    def test_incomplete_private_handle_identity_fails_before_loading_native(self) -> None:
+        for words in (None, (), (False, 0, 0, 0), (0, 0, 0, 1 << 32)):
+            with self.subTest(words=words):
+                permit = _permit()
+                object.__setattr__(permit, "_serial_words", words)
+                called = []
+                def loader(called=called):
+                    called.append(True)
+                    return _NativeFactory()
+                with self.assertRaises(HackrfNativeFactoryError) as rejected:
+                    HackrfNativeRuntimeFactory(loader).create(permit)
+                self.assertIs(rejected.exception.failure, HackrfNativeFactoryFailure.PREFLIGHT_NOT_ADMITTED)
+                self.assertEqual(called, [])
+
+    def test_old_factory_rejected_without_consuming_current_permit(self) -> None:
+        permit = _permit()
+        native = _NativeFactory()
+        native.HACKRF_FACTORY_CONTRACT_VERSION = 1
+        factory = HackrfNativeRuntimeFactory(lambda: native)
+        with self.assertRaises(HackrfNativeFactoryError) as rejected:
+            factory.create(permit)
+        self.assertIs(rejected.exception.failure, HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE)
+        self.assertEqual(native.calls, [])
+        native.HACKRF_FACTORY_CONTRACT_VERSION = 2
+        self.assertIs(factory.create(permit), native.control)
+
+    def test_native_open_checks_same_handle_before_configuration_and_preserves_failed_close(self) -> None:
+        source = (ROOT / "native/sdr_core/src/hackrf/hackrf_official_rx_port.cpp").read_text(encoding="utf-8")
+        opening = source[source.index("int open_exactly_one_hackrf_one()"):source.index("std::uint32_t transfer_buffer_size()")]
+        self.assertLess(opening.index("hackrf_device_list_open"), opening.index("hackrf_board_partid_serialno_read(device_"))
+        self.assertIn("observed.serial_no[index] != (*expected_serial_words_)[index]", opening)
+        self.assertIn("static_cast<void>(close_device())", opening)
+        self.assertNotIn("device_ = nullptr", opening)
+        self.assertNotIn("set_sample_rate", opening)
+        self.assertNotIn("hackrf_start_rx", opening)
+        binding = BINDING_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('py::arg("expected_serial_words")', binding)
+        self.assertNotIn('py::arg("expected_serial_words") =', binding)
 
     def test_unissued_or_unavailable_preflight_fails_closed_without_native_call(self) -> None:
         native = _NativeFactory()

@@ -31,7 +31,7 @@ class OfficialHackrfStagingTests(unittest.TestCase):
         self.assertEqual(candidate["cacheVariables"]["SDR_CORE_ENABLE_HACKRF_OFFICIAL"], "ON")
         self.assertIn("$env{SDR_HACKRF", candidate["cacheVariables"]["SDR_CORE_HACKRF_LIBRARY"])
         script = (ROOT / "build_native_sdr.ps1").read_text(encoding="utf-8")
-        self.assertLess(script.index('if ($hackrfRequested)'), script.index('$repoRoot ='))
+        self.assertLess(script.index("if ($hackrfRequested)"), script.index("$repoRoot ="))
         self.assertIn('-not $StageOnly -or $Lane -ne "CPU"', script)
         for name in RUNTIMES:
             self.assertIn(name, script)
@@ -42,24 +42,47 @@ class OfficialHackrfStagingTests(unittest.TestCase):
             (["-HackrfLibrary", "missing.lib"], "requires StageOnly CPU Release"),
             (["-StageOnly", "-HackrfLibrary", "missing.lib"], "Both Hackrf"),
             (["-StageOnly", "-Lane", "CUDA", "-HackrfLibrary", "missing.lib"], "requires StageOnly CPU Release"),
-            (["-StageOnly", "-HackrfLibrary", "missing.lib", "-HackrfIncludeDirectory", "missing"], "header/import library is missing"),
+            (
+                ["-StageOnly", "-HackrfLibrary", "missing.lib", "-HackrfIncludeDirectory", "missing"],
+                "header/import library is missing",
+            ),
         )
         for arguments, reason in requests:
             with self.subTest(arguments=arguments):
-                result = subprocess.run([
-                    "powershell.exe", "-NoProfile", "-File", str(ROOT / "build_native_sdr.ps1"), *arguments,
-                ], capture_output=True, text=True, timeout=15, check=False)
+                result = subprocess.run(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-File",
+                        str(ROOT / "build_native_sdr.ps1"),
+                        *arguments,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(reason, result.stderr)
 
     def test_factory_presence_never_calls_it_or_probes_a_radio(self):
         factory = Mock()
-        validate_hackrf_factory(SimpleNamespace(create_hackrf_runtime_dsp_control=factory),
-                                {"hackrf_official_compiled": True})
+        validate_hackrf_factory(
+            SimpleNamespace(create_hackrf_runtime_dsp_control=factory, HACKRF_FACTORY_CONTRACT_VERSION=2),
+            {"hackrf_official_compiled": True, "hackrf_factory_contract_version": 2},
+        )
         validate_hackrf_factory(SimpleNamespace(), {})
         factory.assert_not_called()
-        for module, manifest in ((SimpleNamespace(), {"hackrf_official_compiled": True}),
-                                 (SimpleNamespace(create_hackrf_runtime_dsp_control=factory), {})):
+        for version in (None, 1, True, "2"):
+            with self.subTest(version=version), self.assertRaisesRegex(ContractSurfaceError, "contract version"):
+                validate_hackrf_factory(
+                    SimpleNamespace(create_hackrf_runtime_dsp_control=factory, HACKRF_FACTORY_CONTRACT_VERSION=version),
+                    {"hackrf_official_compiled": True, "hackrf_factory_contract_version": 2},
+                )
+        for module, manifest in (
+            (SimpleNamespace(), {"hackrf_official_compiled": True}),
+            (SimpleNamespace(create_hackrf_runtime_dsp_control=factory), {}),
+        ):
             with self.assertRaisesRegex(ContractSurfaceError, "factory does not match"):
                 validate_hackrf_factory(module, manifest)
 
@@ -70,10 +93,16 @@ class OfficialHackrfStagingTests(unittest.TestCase):
             module.write_bytes(b"test module only, never imported")
             for name in RUNTIMES:
                 (directory / name).write_bytes(name.encode())
-            manifest = {"cuda_compiled": False, "python_abi": "cp313-win_amd64",
-                        "artifact_sha256": _file_sha256(module), "hackrf_official_compiled": True,
-                        "hackrf_runtime_sha256": {name: _file_sha256(directory / name) for name in RUNTIMES},
-                        "hackrf_header_sha256": "a" * 64, "hackrf_library_sha256": "b" * 64}
+            manifest = {
+                "cuda_compiled": False,
+                "python_abi": "cp313-win_amd64",
+                "artifact_sha256": _file_sha256(module),
+                "hackrf_official_compiled": True,
+                "hackrf_factory_contract_version": 2,
+                "hackrf_runtime_sha256": {name: _file_sha256(directory / name) for name in RUNTIMES},
+                "hackrf_header_sha256": "a" * 64,
+                "hackrf_library_sha256": "b" * 64,
+            }
             validate_manifest(module, manifest, expected_cuda=False)
             for name in RUNTIMES:
                 path = directory / name
@@ -85,9 +114,12 @@ class OfficialHackrfStagingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ContractSurfaceError, "runtime identity mismatch"):
                     validate_manifest(module, manifest, expected_cuda=False)
                 path.write_bytes(original)
-            for update in ({"hackrf_official_compiled": "true"},
-                           {"hackrf_header_sha256": "unknown"},
-                           {"hackrf_library_sha256": None},
-                           {"hackrf_runtime_sha256": {**manifest["hackrf_runtime_sha256"], "extra.dll": "a" * 64}}):
+            for update in (
+                {"hackrf_official_compiled": "true"},
+                {"hackrf_factory_contract_version": True},
+                {"hackrf_header_sha256": "unknown"},
+                {"hackrf_library_sha256": None},
+                {"hackrf_runtime_sha256": {**manifest["hackrf_runtime_sha256"], "extra.dll": "a" * 64}},
+            ):
                 with self.subTest(update=update), self.assertRaises(ContractSurfaceError):
                     validate_manifest(module, {**manifest, **update}, expected_cuda=False)

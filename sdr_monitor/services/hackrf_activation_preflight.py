@@ -63,14 +63,18 @@ class HackrfActivationPermit:
     _issuer: object = field(repr=False, compare=False)
     _claim_lock: LockType = field(repr=False, compare=False)
     _consumed: bool = field(repr=False, compare=False)
+    # Adapter-private expectation, never emitted as UI/source diagnostics.
+    _serial_words: tuple[int, int, int, int] = field(repr=False, compare=False)
 
     @classmethod
-    def _issue(cls, plan: HackrfLiveActivationPlan) -> HackrfActivationPermit:
+    def _issue(cls, plan: HackrfLiveActivationPlan,
+               serial_words: tuple[int, int, int, int]) -> HackrfActivationPermit:
         result = object.__new__(cls)
         object.__setattr__(result, "plan", plan)
         object.__setattr__(result, "_issuer", _PERMIT_ISSUER)
         object.__setattr__(result, "_claim_lock", threading.Lock())
         object.__setattr__(result, "_consumed", False)
+        object.__setattr__(result, "_serial_words", serial_words)
         return result
 
 
@@ -115,6 +119,9 @@ def _is_issued_hackrf_activation_permit(value: object) -> bool:
         and getattr(value, "_issuer", None) is _PERMIT_ISSUER
         and _is_issued_hackrf_live_activation_plan(value.plan)
         and value.plan.adapter_id == HACKRF_LIBHACKRF_ADAPTER_ID
+        and isinstance(getattr(value, "_serial_words", None), tuple)
+        and len(value._serial_words) == 4
+        and all(type(word) is int and 0 <= word <= 0xFFFFFFFF for word in value._serial_words)
     )
 
 
@@ -181,7 +188,7 @@ class HackrfActivationPreflightService:
             return HackrfActivationPreflight(
                 reason=HackrfActivationPreflightReason.RUNTIME_OBSERVATION
             )
-        return HackrfActivationPreflight(permit=HackrfActivationPermit._issue(plan))
+        return HackrfActivationPreflight(permit=HackrfActivationPermit._issue(plan, probe.serial_words))
 
 
 __all__ = [

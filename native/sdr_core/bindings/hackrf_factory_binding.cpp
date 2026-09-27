@@ -1,6 +1,7 @@
 #include "hackrf_binding.hpp"
 
 #include "sdr_hackrf/hackrf_live_factory.hpp"
+#include <pybind11/stl.h>
 
 #include <cstdint>
 #include <string>
@@ -54,6 +55,8 @@ namespace {
 }  // namespace
 
 void bind_hackrf_factory(py::module_& module) {
+    // Private optional factory protocol; independent of Spectrum wire schema.
+    module.attr("HACKRF_FACTORY_CONTRACT_VERSION") = 2;
     module.def(
         "create_hackrf_runtime_dsp_control",
         [](
@@ -73,7 +76,8 @@ void bind_hackrf_factory(py::module_& module) {
             const std::uint32_t dsp_output_capacity,
             const std::uint32_t presentation_capacity,
             const std::uint64_t configuration_generation,
-            std::string source_id
+            std::string source_id,
+            std::array<std::uint32_t, 4> expected_serial_words
         ) {
             auto config = hackrf_live_factory_config(
                 center_frequency_hz,
@@ -97,7 +101,7 @@ void bind_hackrf_factory(py::module_& module) {
             // Reject malformed values before the first device/library action.
             static_cast<void>(sdr_hackrf::make_hackrf_runtime_dsp_config(config));
             py::gil_scoped_release release;
-            return sdr_hackrf::make_official_hackrf_runtime_dsp_session(config);
+            return sdr_hackrf::make_official_hackrf_runtime_dsp_session(config, expected_serial_words);
         },
         py::arg("center_frequency_hz"),
         py::arg("sample_rate_hz"),
@@ -115,7 +119,8 @@ void bind_hackrf_factory(py::module_& module) {
         py::arg("dsp_output_capacity"),
         py::arg("presentation_capacity"),
         py::arg("configuration_generation"),
-        py::arg("source_id")
+        py::arg("source_id"),
+        py::arg("expected_serial_words")
     );
 }
 

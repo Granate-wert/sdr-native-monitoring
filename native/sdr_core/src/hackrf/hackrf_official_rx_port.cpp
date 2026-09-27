@@ -14,9 +14,13 @@ namespace {
 constexpr int wrong_device_count_status = -30'001;
 constexpr int wrong_device_kind_status = -30'002;
 constexpr int invalid_state_status = -30'003;
+constexpr int wrong_device_identity_status = -30'004;
 
 class OfficialHackrfRxPort final : public HackrfRxRuntimePort {
 public:
+    explicit OfficialHackrfRxPort(std::optional<std::array<std::uint32_t, 4>> expected_serial_words)
+        : expected_serial_words_(expected_serial_words) {}
+
     ~OfficialHackrfRxPort() override {
         if (streaming_) {
             static_cast<void>(stop_rx());
@@ -54,10 +58,30 @@ public:
             status = wrong_device_kind_status;
         } else {
             status = hackrf_device_list_open(list, 0, &device_);
+            if (status == HACKRF_SUCCESS && device_ == nullptr) {
+                status = invalid_state_status;
+            }
+            // Verify the SAME opened handle before returning success to the
+            // session that configures RF and starts RX. Enumeration may race
+            // a physical device swap; its opaque Python permit is not enough.
+            if (status == HACKRF_SUCCESS && expected_serial_words_) {
+                read_partid_serialno_t observed{};
+                status = hackrf_board_partid_serialno_read(device_, &observed);
+                if (status == HACKRF_SUCCESS) {
+                    for (std::size_t index = 0; index < expected_serial_words_->size(); ++index) {
+                        if (observed.serial_no[index] != (*expected_serial_words_)[index]) {
+                            status = wrong_device_identity_status;
+                            break;
+                        }
+                    }
+                }
+            }
         }
         hackrf_device_list_free(list);
-        if (status != HACKRF_SUCCESS) {
-            device_ = nullptr;
+        if (status != HACKRF_SUCCESS && device_ != nullptr) {
+            // Preserve a failed-close handle for the destructor's cleanup;
+            // clearing it regardless of close status could leak the device.
+            static_cast<void>(close_device());
         }
         return status;
     }
@@ -191,12 +215,14 @@ private:
     void* callback_context_{};
     bool initialized_{};
     bool streaming_{};
+    std::optional<std::array<std::uint32_t, 4>> expected_serial_words_;
 };
 
 }  // namespace
 
-std::unique_ptr<HackrfRxRuntimePort> make_official_hackrf_rx_port() {
-    return std::make_unique<OfficialHackrfRxPort>();
+std::unique_ptr<HackrfRxRuntimePort> make_official_hackrf_rx_port(
+    std::optional<std::array<std::uint32_t, 4>> expected_serial_words) {
+    return std::make_unique<OfficialHackrfRxPort>(expected_serial_words);
 }
 
 }  // namespace sdr_hackrf

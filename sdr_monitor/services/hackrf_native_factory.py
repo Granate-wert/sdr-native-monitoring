@@ -98,7 +98,8 @@ class HackrfNativeRuntimeFactory:
             ) from None
         try:
             native_factory = getattr(native_module, "create_hackrf_runtime_dsp_control", None)
-            if not callable(native_factory):
+            version = getattr(native_module, "HACKRF_FACTORY_CONTRACT_VERSION", None)
+            if not callable(native_factory) or type(version) is not int or version != 2:
                 raise HackrfNativeFactoryError(
                     HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE
                 )
@@ -125,6 +126,7 @@ class HackrfNativeRuntimeFactory:
                 presentation_capacity=request.presentation_capacity,
                 configuration_generation=request.configuration_generation,
                 source_id=str(request.source_id),
+                expected_serial_words=permit._serial_words,
             )
         except HackrfNativeFactoryError:
             raise

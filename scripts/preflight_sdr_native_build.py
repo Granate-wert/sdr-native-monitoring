@@ -204,6 +204,8 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
     if "hackrf_official_compiled" in manifest:
         if manifest["hackrf_official_compiled"] is not True:
             raise ContractSurfaceError("explicit HackRF staging manifest must declare compiled=true")
+        if type(manifest.get("hackrf_factory_contract_version")) is not int or manifest["hackrf_factory_contract_version"] != 2:
+            raise ContractSurfaceError("HackRF staging requires the identity-bound factory contract version2")
         hashes = manifest.get("hackrf_runtime_sha256")
         if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
             raise ContractSurfaceError("HackRF staging requires the complete app-local runtime manifest")
@@ -221,6 +223,10 @@ def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> N
     """Runtime presence, not a device probe or physical support assertion."""
     if callable(getattr(module, "create_hackrf_runtime_dsp_control", None)) != bool(manifest.get("hackrf_official_compiled")):
         raise ContractSurfaceError("native HackRF factory does not match its staging manifest")
+    if manifest.get("hackrf_official_compiled"):
+        version = getattr(module, "HACKRF_FACTORY_CONTRACT_VERSION", None)
+        if type(version) is not int or version != 2 or manifest.get("hackrf_factory_contract_version") != version:
+            raise ContractSurfaceError("native HackRF factory contract version does not match its staging manifest")
 
 
 def validate_active_artifact(

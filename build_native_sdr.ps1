@@ -245,6 +245,7 @@ if ($hackrfRequested) {
         $runtimeHashes[$runtimeName] = $stagedHash
     }
     $manifest['hackrf_official_compiled'] = $true
+    $manifest['hackrf_factory_contract_version'] = 2
     $manifest['hackrf_runtime_sha256'] = $runtimeHashes
     $manifest['hackrf_header_sha256'] = (Get-FileHash -LiteralPath $hackrfHeader -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifest['hackrf_library_sha256'] = (Get-FileHash -LiteralPath $HackrfLibrary -Algorithm SHA256).Hash.ToLowerInvariant()

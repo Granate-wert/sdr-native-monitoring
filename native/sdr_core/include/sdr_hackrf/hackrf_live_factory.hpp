@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <array>
+#include <optional>
 
 namespace sdr_hackrf {
 
@@ -44,6 +46,7 @@ struct HackrfLiveFactoryConfig {
 // exactly one HackRF One and start the already validated R11-G/I/J/K owner.
 // It is intentionally unavailable in normal CPU/CUDA builds.
 [[nodiscard]] std::unique_ptr<HackrfRuntimeDspSession>
-make_official_hackrf_runtime_dsp_session(const HackrfLiveFactoryConfig& config);
+make_official_hackrf_runtime_dsp_session(const HackrfLiveFactoryConfig& config,
+    std::optional<std::array<std::uint32_t, 4>> expected_serial_words = std::nullopt);
 
 }  // namespace sdr_hackrf

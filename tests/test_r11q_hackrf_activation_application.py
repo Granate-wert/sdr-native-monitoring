@@ -111,6 +111,7 @@ class _DetectorType:
 
 
 class _Native:
+    HACKRF_FACTORY_CONTRACT_VERSION = 2
     WindowType = _WindowType
     DetectorType = _DetectorType
 
