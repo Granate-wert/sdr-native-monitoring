@@ -16,10 +16,11 @@ def normalized_pluto_serial(value: str | None) -> str | None:
 
     if not isinstance(value, str):
         return None
-    serial = value.strip(" \t\n\r\v\f").lower()
-    if not serial or serial in {"-", "unknown", "n/a", "none"}:
-        return None
+    serial = value.strip(" \t\n\r\v\f")
     if any(not 33 <= ord(character) <= 126 for character in serial):
+        return None
+    serial = serial.lower()
+    if not serial or serial in {"-", "unknown", "n/a", "none"}:
         return None
     return serial
 

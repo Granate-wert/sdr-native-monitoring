@@ -56,7 +56,7 @@ def _selected():
 class PlutoIdentityAdmissionTests(unittest.TestCase):
     def test_normalization_is_explicit_and_rejects_placeholder_or_control(self) -> None:
         self.assertEqual(normalized_pluto_serial(" \tABC-123\r\n"), "abc-123")
-        for invalid in (None, "", " UNKNOWN ", "None", "N/A", "—", "-", "a b", "a\nb", "é", 123):
+        for invalid in (None, "", " UNKNOWN ", "None", "N/A", "—", "-", "a b", "a\nb", "é", "K", 123):
             with self.subTest(invalid=invalid):
                 self.assertIsNone(normalized_pluto_serial(invalid))
 
