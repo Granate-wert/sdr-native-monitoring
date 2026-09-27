@@ -27,7 +27,7 @@ from dataclasses import asdict, replace
 from functools import cache
 from pathlib import Path
 from time import perf_counter_ns, time_ns
-from typing import Any
+from typing import Any, NamedTuple
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +190,49 @@ def observe_terminal_native_completion(service: object, engine: object,
 def counter_deltas(before: object, after: object, fields: tuple[str, ...]) -> dict[str, int]:
     """Subtract cumulative counters across the measured interval only."""
     return {field: int(getattr(after, field)) - int(getattr(before, field)) for field in fields}
+
+
+class NativeIngressSample(NamedTuple):
+    engine: object
+    sampled_ns: int
+    iq_samples_received: int
+    iq_blocks_received: int
+
+
+def sample_native_ingress(service: object) -> NativeIngressSample | None:
+    """Read cumulative native counts, not a rolling displayed I/Q rate."""
+    engine = getattr(service, "_engine", None)
+    if engine is None:
+        return None
+    try:
+        metrics = engine.metrics()
+        core = getattr(metrics, "engine", metrics)
+        samples = int(core.iq_samples_received)
+        blocks = int(core.iq_blocks_received)
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return None
+    if samples < 0 or blocks < 0:
+        return None
+    return NativeIngressSample(engine, perf_counter_ns(), samples, blocks)
+
+
+def native_ingress_interval(
+    before: NativeIngressSample | None, after: NativeIngressSample | None,
+    applied_fs_hz: float | None,
+) -> dict[str, float | int | None] | None:
+    """Bound a same-owner host-count interval; never assert RF continuity."""
+    if before is None or after is None or before.engine is not after.engine:
+        return None
+    elapsed_ns = after.sampled_ns - before.sampled_ns
+    samples = after.iq_samples_received - before.iq_samples_received
+    blocks = after.iq_blocks_received - before.iq_blocks_received
+    if elapsed_ns <= 0 or samples < 0 or blocks < 0:
+        return None
+    delivered_rate = samples * 1.0e9 / elapsed_ns
+    return dict(iq_samples_received=samples, iq_blocks_received=blocks,
+                elapsed_s=elapsed_ns / 1.0e9, delivered_iq_samples_per_s=delivered_rate,
+                delivered_to_applied_ratio=(None if applied_fs_hz is None or applied_fs_hz <= 0
+                                            else delivered_rate / applied_fs_hz))
 
 
 def projector_counters(projector: object | None) -> dict[str, int] | None:
@@ -1047,6 +1090,8 @@ def main() -> int:
         failure = None
         native_before_stop = None
         native_at_start = None
+        native_ingress_at_start = None
+        native_ingress_before_stop = None
         display_before_stop = None
         persistence_before_stop = None
         persistence_at_start = None
@@ -1104,6 +1149,7 @@ def main() -> int:
             nonlocal phase, deadline_ns, measure_end_ns, applied, native_before_stop, failure
             nonlocal display_before_stop, persistence_before_stop, projector_before_stop
             nonlocal native_at_start, persistence_at_start, projector_at_start
+            nonlocal native_ingress_at_start, native_ingress_before_stop
             nonlocal initial_sequence, final_sequence
             nonlocal measurement_started_ns, measurement_finished_ns
             now = perf_counter_ns()
@@ -1155,6 +1201,7 @@ def main() -> int:
                             workspace.visualization.spectrum_scene.set_vertical_lock(True)
                         snapshot = services.live_sdr.latest_snapshot()
                         native_at_start = snapshot.performance
+                        native_ingress_at_start = sample_native_ingress(services.live_sdr)
                         initial_sequence = int(snapshot.sequence)
                         persistence_at_start = workspace.visualization.spectrum_scene.persistence_metrics
                         projector_at_start = projector_counters(composition.spectrum_projector)
@@ -1198,6 +1245,7 @@ def main() -> int:
                             lifecycle["at_end"] = lifecycle_snapshot()
                         snapshot = services.live_sdr.latest_snapshot()
                         native_before_stop = snapshot.performance
+                        native_ingress_before_stop = sample_native_ingress(services.live_sdr)
                         final_sequence = int(snapshot.sequence)
                         applied = snapshot.applied
                         display_before_stop = composition._presenter.display_metrics
@@ -1278,6 +1326,9 @@ def main() -> int:
                               else (measurement_finished_ns - measurement_started_ns) / 1e9)
         native_interval = (None if native_at_start is None or native_before_stop is None else
                            counter_deltas(native_at_start, native_before_stop, NATIVE_COUNTER_FIELDS))
+        applied_fs_hz = (None if applied is None else float(applied.applied.sample_rate_hz))
+        ingress_interval = native_ingress_interval(
+            native_ingress_at_start, native_ingress_before_stop, applied_fs_hz)
         if native_interval is not None and measured_elapsed_s is not None and measured_elapsed_s > 0:
             native_interval["computed_fft_per_s"] = native_interval["fft_frames_computed"] / measured_elapsed_s
         persistence_interval = None
@@ -1292,6 +1343,7 @@ def main() -> int:
             projector_interval = {key: value - projector_at_start[key]
                                   for key, value in projector_before_stop.items()}
         measurement_valid = (measured_elapsed_s is not None and native_interval is not None
+                             and ingress_interval is not None
                              and native_interval["fft_frames_computed"] > 0
                              and all(value >= 0 for key, value in native_interval.items()
                                      if key != "computed_fft_per_s")
@@ -1335,7 +1387,7 @@ def main() -> int:
             if not hide_show_result["passed"]:
                 failed_checks = ", ".join(name for name, accepted in checks.items() if not accepted)
                 failure = ((failure + "; ") if failure else "") + f"Hide/Show gate: {failed_checks}"
-        report = dict(schema="app05-physical-visible-v2-v8", result="pass" if phase == "done" and
+        report = dict(schema="app05-physical-visible-v2-v9", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
                       failure=failure, phase=phase, source="physical-pluto-rx", uri=args.uri,
@@ -1389,6 +1441,7 @@ def main() -> int:
                           persistence_snapshots_superseded=native_before_stop.persistence_snapshots_superseded,
                           end_to_end_latency_ms=native_before_stop.end_to_end_latency_ms),
                       native_measurement_deltas=native_interval,
+                      native_ingress_interval=ingress_interval,
                       display_scheduler=None if display_before_stop is None else asdict(display_before_stop),
                       persistence_overlay_measurement_deltas=persistence_interval,
                       projector_measurement_deltas=projector_interval,
@@ -1413,6 +1466,8 @@ def main() -> int:
                       scope="Successful run means bounded RX/UI lifecycle evidence, not performance acceptance. "
                             "Visible Qt paint-return only; Pluto timestamp estimates sample start from refill "
                             "completion and nominal block duration. No hardware capture, DWM/scanout/FPS claim. "
+                            "Native ingress count/rate spans two host metrics reads of the same engine; "
+                            "it does not prove device/USB sample continuity or detect silent hardware overflow. "
                             "Observer patches viewport paint and scalar stage methods; timings are perturbed. "
                             "Repeated paint categories name tracked admissions, not proven Qt invalidation causes. "
                             "Qt event.rect() is only a bounding rectangle, not painted-pixel/scanout area. "

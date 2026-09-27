@@ -405,6 +405,29 @@ class PhysicalUiObserverTests(unittest.TestCase):
             "optional_completed": 4, "optional_cancelled": 1, "optional_superseded": 2,
         })
 
+    def test_native_ingress_interval_uses_same_engine_cumulative_counts(self):
+        engine = SimpleNamespace(metrics=lambda: SimpleNamespace(engine=SimpleNamespace(
+            iq_samples_received=1000, iq_blocks_received=2)))
+        with patch.object(observer, "perf_counter_ns", return_value=1_000_000_000):
+            before = observer.sample_native_ingress(SimpleNamespace(_engine=engine))
+        engine.metrics = lambda: SimpleNamespace(engine=SimpleNamespace(
+            iq_samples_received=5_001_000, iq_blocks_received=22))
+        with patch.object(observer, "perf_counter_ns", return_value=2_000_000_000):
+            after = observer.sample_native_ingress(SimpleNamespace(_engine=engine))
+        interval = observer.native_ingress_interval(before, after, 5_000_000.0)
+        assert interval is not None
+        self.assertEqual(interval["iq_samples_received"], 5_000_000)
+        self.assertEqual(interval["iq_blocks_received"], 20)
+        self.assertEqual(interval["delivered_iq_samples_per_s"], 5_000_000.0)
+        self.assertEqual(interval["delivered_to_applied_ratio"], 1.0)
+        self.assertIsNone(observer.native_ingress_interval(
+            before, observer.NativeIngressSample(object(), 2_000_000_000, 5_001_000, 22),
+            5_000_000.0))
+        self.assertIsNone(observer.native_ingress_interval(
+            before, observer.NativeIngressSample(engine, 2_000_000_000, 999, 22),
+            5_000_000.0))
+        self.assertIsNone(observer.sample_native_ingress(SimpleNamespace(_engine=None)))
+
 
 if __name__ == "__main__":
     unittest.main()

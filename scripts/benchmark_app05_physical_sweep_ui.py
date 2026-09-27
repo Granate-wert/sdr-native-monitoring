@@ -504,20 +504,24 @@ def main() -> int:
                         phase = "wait_stopped"
                 elif phase == "wait_stopped":
                     if not state.running and not state.stopping and composition.can_close():
-                        stop_ack_ns = now
+                        if stop_ack_ns is None:
+                            stop_ack_ns = now
                         terminal_snapshot = state.sweep_snapshot
-                        if capture_path is not None:
-                            try:
-                                pixmap = shell.grab()
-                                if pixmap.isNull() or not pixmap.save(str(capture_path), "PNG"):
-                                    raise OSError("QWidget.grab/save returned no image")
-                                capture_status = dict(path=str(capture_path),
-                                                      sha256=hashlib.sha256(capture_path.read_bytes()).hexdigest(),
-                                                      width=pixmap.width(), height=pixmap.height())
-                            except (OSError, RuntimeError) as caught:
-                                error = error or f"post-Stop QWidget surface capture failed: {caught}"
-                        shell.close()
-                        phase = "wait_closed"
+                        gap_key = sweep_key(None if terminal_snapshot is None else terminal_snapshot.line)
+                        gap_seen = terminal_gap_paints(events, gap_key, stop_intent_ns) is not None
+                        if gap_seen or now - stop_ack_ns >= 2_000_000_000:
+                            if capture_path is not None:
+                                try:
+                                    pixmap = shell.grab()
+                                    if pixmap.isNull() or not pixmap.save(str(capture_path), "PNG"):
+                                        raise OSError("QWidget.grab/save returned no image")
+                                    capture_status = dict(path=str(capture_path),
+                                                          sha256=hashlib.sha256(capture_path.read_bytes()).hexdigest(),
+                                                          width=pixmap.width(), height=pixmap.height())
+                                except (OSError, RuntimeError) as caught:
+                                    error = error or f"post-Stop QWidget surface capture failed: {caught}"
+                            shell.close()
+                            phase = "wait_closed"
                 elif phase == "wait_closed":
                     if shell._is_closed:
                         phase = "done"
@@ -569,7 +573,7 @@ def main() -> int:
                           applied, sample_rate_msps=args.sample_rate_msps, fft=args.fft)),
                       stopped_and_closed=phase == "done" and composition.can_close(),
                       bounded_presentation=budget.reserved_bytes == 0 and not workers and overflow == 0)
-        report = dict(schema="app05-physical-sweep-ui-v1",
+        report = dict(schema="app05-physical-sweep-ui-v2",
                       result="pass" if all(checks.values()) and not error else "fail",
                       error=error, phase=phase, checks=checks, source="physical-pluto-rx", uri=args.uri,
                       source_commit=source_commit, tracked_dirty_paths=tracked_dirty_paths,
@@ -596,6 +600,7 @@ def main() -> int:
                                        else (stop_click_return_ns - stop_intent_ns) / 1e6),
                       stop_ack_ms=(None if stop_intent_ns is None or stop_ack_ns is None
                                    else (stop_ack_ns - stop_intent_ns) / 1e6),
+                      post_stop_paint_wait_timeout_s=2.0,
                       max_tick_gap_ms=max_tick_gap_ms,
                       post_stop_gap_paints=gap_paints,
                       post_stop_gap_paint_ms=(None if gap_paints is None or stop_intent_ns is None else
