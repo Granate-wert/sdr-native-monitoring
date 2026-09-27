@@ -24,6 +24,7 @@ from ..domain.device_capabilities import (
     DeviceFamily,
     stable_identity_key,
 )
+from ..domain.tinysa_settings import tinysa_control_contract
 from .readonly_observation_owner import RetainedReadOnlyObserver
 
 TINYSA_READ_ONLY_ADAPTER_ID = "native.tinysa.usb_cdc_serial.v1"
@@ -170,6 +171,7 @@ class TinySaCapabilityAdapter:
             firmware_fingerprint = stable_identity_key(
                 f"tinysa-firmware|{probe.model.value}|{probe.firmware_version}"
             )
+            control_contract = tinysa_control_contract(probe.firmware_version)
             snapshot = DeviceCapabilitySnapshot(
                 device_id=f"tinysa-{identity_key[7:23]}",
                 identity_key=identity_key,
@@ -177,6 +179,7 @@ class TinySaCapabilityAdapter:
                 family=DeviceFamily.TINYSA,
                 adapter_id=TINYSA_READ_ONLY_ADAPTER_ID,
                 model_id=probe.model.value,
+                runtime_control_contract=control_contract,
                 transports=(CapabilityTransport.USB,),
                 acquisition_kinds=(AcquisitionKind.SPECTRUM_TRACE,),
                 tuning_ranges_hz=_tuning_ranges_for(probe.model),
@@ -207,7 +210,8 @@ class TinySaCapabilityAdapter:
                         CapabilityEvidenceOrigin.VENDOR_DECLARATION,
                         _VENDOR_SPEC_REFERENCE,
                     ),
-                ),
+                ) + ((CapabilityEvidence(CapabilityField.RUNTIME_CONTROL_CONTRACT,
+                    CapabilityEvidenceOrigin.VENDOR_DECLARATION, control_contract),) if control_contract else ()),
             )
             correction_identity = DeviceCalibrationIdentity(
                 family=DeviceFamily.TINYSA,

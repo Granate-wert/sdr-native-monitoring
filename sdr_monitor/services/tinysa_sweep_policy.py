@@ -11,25 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ..domain.tinysa_settings import TINYSA_FIRMWARE_SOURCE_COMMIT, TinySaSweepAccuracy, validate_firmware_speedup
 from .tinysa_capability_adapter import TinySaModel
 
-TINYSA_FIRMWARE_SOURCE_COMMIT = "26fc821ad3432f929630718cd290314dbc711f48"
 TINYSA_BASIC_DISPLAY_POINTS_MAX = 290
 TINYSA_ULTRA_DISPLAY_POINTS_MAX = 450
 TINYSA_PRODUCT_SCANRAW_POINTS_MAX = 10_001
 TINYSA_SCANRAW_RECORD_BYTES = 3
 TINYSA_SCANRAW_FRAME_OVERHEAD_BYTES = 2
 TINYSA_PRODUCT_SCANRAW_PAYLOAD_BYTES_MAX = 30 * 1_024
-
-
-class TinySaSweepAccuracy(StrEnum):
-    """Acquisition policies exposed by ``sweep <mode>``."""
-
-    UNCHANGED = "unchanged"
-    NORMAL = "normal"
-    PRECISE = "precise"
-    FAST = "fast"
-    NOISE_SOURCE = "noise_source"
 
 
 class TinySaParameterAccess(StrEnum):
@@ -146,18 +136,6 @@ def sweep_accuracy_semantics(mode: TinySaSweepAccuracy) -> TinySaSweepAccuracySe
         "broadband noise source only",
         False,
     )
-
-
-def validate_firmware_speedup(value: int) -> int:
-    """Validate the exact firmware UI field, not a host command.
-
-    Commit ``26fc821`` displays ``2..20, 0=disable``.  There is no direct
-    NSPEEDUP/WSPEEDUP shell command or stable readback in that firmware.
-    """
-
-    if isinstance(value, bool) or not isinstance(value, int) or value not in {0, *range(2, 21)}:
-        raise ValueError("tinySA firmware speedup must be 0 or an integer from 2 to 20")
-    return value
 
 
 __all__ = [

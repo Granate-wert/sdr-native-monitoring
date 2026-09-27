@@ -38,6 +38,7 @@ class CapabilityField(StrEnum):
     RAW_IQ = "raw_iq"
     HARDWARE_TIMESTAMP = "hardware_timestamp"
     HARDWARE_OVERFLOW_COUNTER = "hardware_overflow_counter"
+    RUNTIME_CONTROL_CONTRACT = "runtime_control_contract"
 
 
 class CapabilityEvidenceOrigin(StrEnum):
@@ -158,6 +159,8 @@ class DeviceCapabilitySnapshot:
     evidence: tuple[CapabilityEvidence, ...] = ()
     # Adapter-observed discriminator, not parsing the human label.
     model_id: str | None = None
+    # Exact adapter-mapped protocol discriminator, not generic runtime availability.
+    runtime_control_contract: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "device_id", _opaque_identifier(self.device_id, "device_id"))
@@ -173,6 +176,9 @@ class DeviceCapabilitySnapshot:
         object.__setattr__(self, "family", DeviceFamily(self.family))
         if self.model_id is not None:
             object.__setattr__(self, "model_id", _opaque_identifier(self.model_id, "model_id"))
+        if self.runtime_control_contract is not None:
+            object.__setattr__(self, "runtime_control_contract",
+                               _opaque_identifier(self.runtime_control_contract, "runtime_control_contract"))
         transports = tuple(CapabilityTransport(item) for item in self.transports)
         acquisitions = tuple(AcquisitionKind(item) for item in self.acquisition_kinds)
         if not transports or len(set(transports)) != len(transports):
@@ -231,6 +237,7 @@ class DeviceCapabilitySnapshot:
             CapabilityField.RAW_IQ: self.raw_iq_available is not None,
             CapabilityField.HARDWARE_TIMESTAMP: self.hardware_timestamp_available is not None,
             CapabilityField.HARDWARE_OVERFLOW_COUNTER: self.hardware_overflow_counter_available is not None,
+            CapabilityField.RUNTIME_CONTROL_CONTRACT: self.runtime_control_contract is not None,
         }
         admitted_evidence = {
             item.field for item in evidence if item.origin is not CapabilityEvidenceOrigin.UNKNOWN

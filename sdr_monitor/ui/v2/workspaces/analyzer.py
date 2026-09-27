@@ -3,40 +3,55 @@
 from __future__ import annotations
 
 from time import monotonic
+
 import numpy as np
 from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QStyle, QStyleOptionButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QStyle,
+    QStyleOptionButton,
+    QVBoxLayout,
+    QWidget,
+)
 
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsSettings
-from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
-from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
-from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..design.icons import V2IconId
 from ..i18n import current_locale, text
+from ..shell.contracts import WorkspaceDefinition
+from ..spectrum import PersistenceDensityFrame
+from ..spectrum.allocation_budget import PresentationBudgetExceeded
+from ..spectrum.contracts import PreparedSpectrumFrame, TraceKind
+from ..spectrum.projection import SpectrumProjector
+from ..state.analyzer_layers import persistence_density_from_sweep, waterfall_line_from_sweep
+from ..state.analyzer_readouts import (
+    analyzer_periods,
+    analyzer_status,
+    spectrum_numerical_readout,
+    tinysa_settings_readout,
+)
+from ..state.analyzer_status_cadence import AnalyzerStatusCadence
+from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_summary
+from ..state.live_view_state import LiveAction
+from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
+from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
 from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from .analyzer_hackrf_configuration import HackrfConfigurationBar
-from .analyzer_tinysa_configuration import TinySaConfigurationBar
-from .analyzer_status_label import AnalyzerStatusLabel, AnalyzerPeriodsLabel
-from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_inspector import AnalyzerInspector
-from ..shell.contracts import WorkspaceDefinition
-from ..spectrum import PersistenceDensityFrame
-from ..spectrum.contracts import PreparedSpectrumFrame, TraceKind
-from ..spectrum.projection import SpectrumProjector
-from ..spectrum.allocation_budget import PresentationBudgetExceeded
-from ..state.live_view_state import LiveAction
-from ..state.analyzer_readouts import analyzer_status, spectrum_numerical_readout, analyzer_periods
-from ..state.analyzer_status_cadence import AnalyzerStatusCadence
-from ..state.analyzer_layers import waterfall_line_from_sweep, persistence_density_from_sweep
-from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_summary
-from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
-from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
+from .analyzer_status_label import AnalyzerPeriodsLabel, AnalyzerStatusLabel
+from .analyzer_sweep_preview import AnalyzerSweepPreview
+from .analyzer_tinysa_configuration import TinySaConfigurationBar
 
 
 class AnalyzerWorkspaceV2(QWidget):
@@ -109,6 +124,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.tinysa_bar = TinySaConfigurationBar(model, self)
         layout.addWidget(self.tinysa_bar)
         self.tinysa_bar.draft_changed.connect(self._update_primary_availability)
+        self.tinysa_bar.settings_drawer.close_requested.connect(self._hide_settings)
         self.source_summary = QLabel(self)
         self.source_summary.setObjectName("v2-analyzer-source-summary")
         self.source_summary.setProperty("ui2Role", "secondary")
@@ -160,7 +176,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self.drawer.close_requested.connect(self._hide_settings)
         self.drawer.draft_changed.connect(lambda: self._render(model.state))
         self.drawer.hide()
-        for child in (self.drawer, *self.drawer.findChildren(QWidget),
+        for child in (self.tinysa_bar.settings_drawer, *self.tinysa_bar.settings_drawer.findChildren(QWidget),
+                      self.drawer, *self.drawer.findChildren(QWidget),
                       self.display_controls, *self.display_controls.findChildren(QWidget)):
             child.installEventFilter(self)
         self._unsubscribe = model.subscribe(self._render)
@@ -268,7 +285,16 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def _toggle_settings(self) -> None:
         if self.model.state.tinysa_controls_available:
-            self.tinysa_bar.start.setFocus()
+            self.display_controls.hide()
+            self.drawer.hide()
+            drawer = self.tinysa_bar.settings_drawer
+            if drawer.isVisible():
+                self._hide_settings()
+            else:
+                self._position_settings()
+                drawer.show()
+                drawer.raise_()
+                drawer.setFocus()
             return
         if self.model.state.hackrf_controls_available:
             self.hackrf_bar.center.setFocus()
@@ -284,10 +310,12 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def _hide_settings(self) -> None:
         self.drawer.hide()
+        self.tinysa_bar.settings_drawer.hide()
         self.settings.setFocus()
 
     def _toggle_display(self) -> None:
         self.drawer.hide()
+        self.tinysa_bar.settings_drawer.hide()
         if self.display_controls.isVisible():
             self._hide_display()
         else:
@@ -304,12 +332,12 @@ class AnalyzerWorkspaceV2(QWidget):
         if (watched is self.drawer.scroll_area.widget()
                 and event.type() == QEvent.Type.LayoutRequest and self.drawer.isVisible()):
             self._position_settings()
-        if ((self.drawer.isVisible() or self.display_controls.isVisible())
+        if ((self.drawer.isVisible() or self.tinysa_bar.settings_drawer.isVisible() or self.display_controls.isVisible())
                 and event.type() in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress)
                 and event.key() == Qt.Key.Key_Escape):
             event.accept()
             if event.type() == QEvent.Type.KeyPress:
-                self._hide_settings() if self.drawer.isVisible() else self._hide_display()
+                self._hide_settings() if self.drawer.isVisible() or self.tinysa_bar.settings_drawer.isVisible() else self._hide_display()
             return True
         return super().eventFilter(watched, event)
 
@@ -318,6 +346,8 @@ class AnalyzerWorkspaceV2(QWidget):
         # Below both command rows: the explicit Stop action stays exposed.
         self.drawer.setGeometry(max(8, self.width() - width - 8), 84, width,
                                 min(self.drawer.preferred_height(width), max(120, self.height() - 92)))
+        self.tinysa_bar.settings_drawer.setGeometry(max(8, self.width() - width - 8), 84, width,
+                                                   max(120, self.height() - 92))
         display_width = min(1180, max(320, self.width() - 16))
         self.display_controls.setGeometry(max(8, self.width() - display_width - 8), 84,
                                          display_width,
@@ -419,7 +449,8 @@ class AnalyzerWorkspaceV2(QWidget):
     def _execute_keyboard_primary(self) -> None:
         """Graph-local Space may only dispatch an already-enabled Start/Stop."""
         state = self.model.state
-        if not self.primary.isEnabled() or self.drawer.isVisible() or self.display_controls.isVisible():
+        if (not self.primary.isEnabled() or self.drawer.isVisible() or self.display_controls.isVisible()
+                or self.tinysa_bar.settings_drawer.isVisible()):
             return
         if (state.running or state.stop_required
                 or state.tinysa_controls_available and self.tinysa_bar.valid
@@ -441,7 +472,7 @@ class AnalyzerWorkspaceV2(QWidget):
         enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
                    and (state.running or state.stop_required or (ready and not invalid_sweep)))
         self.primary.setEnabled(enabled)
-        hint = (text("tinysa.common.invalid") if state.tinysa_controls_available and not ready else
+        hint = (self.tinysa_bar.validation_message if state.tinysa_controls_available and not ready else
                 text("analyzer.source.family_path_pending")
                 if state.source_selection is not None and state.source_selection.selected is not None
                 and not state.ad936x_controls_available and not state.hackrf_controls_available and not state.tinysa_controls_available
@@ -501,7 +532,7 @@ class AnalyzerWorkspaceV2(QWidget):
             self.rx.setAccessibleName(receiver_detail)
         hackrf = getattr(state.live.snapshot, "hackrf_request", None) if state.hackrf_controls_available else None
         _set_text_if_changed(self.applied,
-            text("tinysa.common.numerical") if state.tinysa_controls_available else
+            tinysa_settings_readout(getattr(state.bundle, "spectrum", None)) if state.tinysa_controls_available else
             text("hackrf.profile", center=f"{hackrf.center_frequency_hz / 1e6:g}", rate=f"{hackrf.sample_rate_hz / 1e6:g}",
                  bandwidth=f"{hackrf.baseband_filter_hz / 1e6:g}", fft=hackrf.fft_size, lna=hackrf.lna_gain_db,
                  vga=hackrf.vga_gain_db, generation=hackrf.configuration_generation) if hackrf is not None else

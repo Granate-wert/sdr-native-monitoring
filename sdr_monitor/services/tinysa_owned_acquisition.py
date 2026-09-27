@@ -10,6 +10,7 @@ an independent capability catalog. A caller still owns Start/Stop admission.
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -17,6 +18,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, cast
 
+from ..domain.tinysa_settings import (
+    TinySaInputMode,
+    TinySaSettingsObservation,
+    TinySaSweepSettingsPlan,
+    compile_tinysa_runtime_settings,
+)
 from .tinysa_capability_adapter import (
     TinySaCapabilityAdapter,
     TinySaCapabilityObservation,
@@ -51,6 +58,8 @@ class TinySaAcquisitionPhase(StrEnum):
     VERSION = "version"
     ZERO = "zero"
     SCAN = "scan"
+    SETTINGS = "settings"
+    READBACK = "readback"
     CLOSE = "close"
 
 
@@ -104,6 +113,35 @@ class TinySaOwnedAcquisition:
         self._pass_started_ns: int | None = None
         self._phase = TinySaAcquisitionPhase.PREPARED
         self._failure: TinySaAcquisitionFailure | None = None
+        self._settings_plan = TinySaSweepSettingsPlan()
+        self._input_mode = TinySaInputMode.PRESERVE
+        self._settings_commands: tuple[str, ...] = ()
+        self._settings_readback = False
+        self._settings_observation: TinySaSettingsObservation | None = None
+        self._settings_request: TinySaScanRawRequest | None = None
+
+    def configure_runtime_settings(self, request: TinySaScanRawRequest, plan: TinySaSweepSettingsPlan,
+                                   input_mode: TinySaInputMode, *, readback: bool = False) -> None:
+        """Inert exact intent, admitted before open and rechecked on SAME version."""
+        if not self._operations.acquire(blocking=False):
+            raise ValueError("tinySA runtime settings cannot change a pending owner")
+        try:
+            if self._used or self._closing or self._closed:
+                raise ValueError("tinySA runtime settings cannot change an active owner")
+            self._admit(request)
+            snapshot = self._expected.snapshot
+            commands = compile_tinysa_runtime_settings(plan, input_mode, model_id=snapshot.model_id or "",
+                control_contract=snapshot.runtime_control_contract, start_hz=request.start_frequency_hz,
+                stop_hz=request.stop_frequency_hz, readback=readback)
+            self._settings_plan, self._input_mode = plan, input_mode
+            self._settings_commands, self._settings_readback = commands, readback
+            self._settings_request = request
+        finally:
+            self._operations.release()
+
+    @property
+    def settings_observation(self) -> TinySaSettingsObservation | None:
+        return self._settings_observation  # cached post-pass facts, no SDK query
 
     @property
     def failure(self) -> TinySaAcquisitionFailure | None:
@@ -176,6 +214,8 @@ class TinySaOwnedAcquisition:
     def _admit(self, request: TinySaScanRawRequest) -> None:
         if not isinstance(request, TinySaScanRawRequest):
             raise TypeError("tinySA acquisition requires a validated immutable request")
+        if self._settings_request is not None and request != self._settings_request:
+            raise ValueError("tinySA acquisition differs from its exact configured request")
         snapshot = self._expected.snapshot
         if request.model.value != snapshot.model_id or not any(
             item.minimum <= request.start_frequency_hz < request.stop_frequency_hz <= item.maximum
@@ -193,9 +233,12 @@ class TinySaOwnedAcquisition:
             if self._used or self._closing or self._closed:
                 raise TinySaTraceCollectionError("tinySA acquisition requires explicit close/new Start")
             self._request = request
-            result = collect_tinysa_scanraw_trace(self._endpoint.route, request,
-                serial_factory=lambda _: self, cancel_requested=self._cancel.is_set,
-                monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
+            if self._settings_commands or self._settings_readback:
+                result = self._collect_configured_once(request)
+            else:
+                result = collect_tinysa_scanraw_trace(self._endpoint.route, request,
+                    serial_factory=lambda _: self, cancel_requested=self._cancel.is_set,
+                    monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
             self._measurement_pending = False
             self._endpoint_matches()  # Changed/removed endpoint cannot publish a result.
             return result
@@ -207,6 +250,25 @@ class TinySaOwnedAcquisition:
         finally:
             self._operation_thread = None
             self._operations.release()
+
+    def _collect_configured_once(self, request: TinySaScanRawRequest) -> TinySaTraceCollection:
+        """Complete response/readback/close before a one-shot result can escape."""
+        started = self._monotonic_ns()
+        try:
+            self.open()
+            response = collect_tinysa_open_pass(self, request, cancel_requested=self._cancel.is_set,
+                monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
+            self._observe_settings()
+            self._endpoint_matches()
+        except Exception as error:
+            self._record_failure(error)
+            raise
+        finally:
+            self._close_owned()
+        return TinySaTraceCollection(response.trace, response.command_bytes, response.response_bytes_read,
+            response.discarded_prefix_bytes, response.read_calls, response.zero_response_bytes,
+            response.zero_read_calls, response.scanraw_zero_offset_db,
+            max(0.0, (self._monotonic_ns() - started) / 1e9), port_closed=True)
 
     def collect_repeated(self, request: TinySaScanRawRequest, publish: Callable[[TinySaTracePass], None], *,
                          interval_s: float = 0.1) -> None:
@@ -234,6 +296,7 @@ class TinySaOwnedAcquisition:
                     self._pass_started_ns = self._monotonic_ns()
                     result = collect_tinysa_open_pass(self, request, cancel_requested=self._cancel.is_set,
                                                      monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
+                    self._observe_settings()
                     self._measurement_pending = False
                     self._endpoint_matches()
                     if not result.prompt_confirmed:
@@ -282,7 +345,84 @@ class TinySaOwnedAcquisition:
         # is finished before release; this is NOT mid-response resynchronization.
         port.reset_input_buffer()
         self._verify_version(port, current)
+        self._execute_settings()
         self._ready = True
+
+    def _settings_exchange(self, command: bytes) -> bytes:
+        """One <=512-byte prompt response on the pinned object, never reset/retry.
+
+        Cancellation finishes a consumed response within its original 2s
+        deadline; the caller then refuses ALL subsequent commands/publication.
+        """
+        self._cancelled()
+        self._endpoint_matches()
+        port = self._port
+        if port is None or self._closing or self._closed:
+            raise TinySaTraceCollectionError("tinySA settings owner is unavailable")
+        if port.write(command) != len(command):
+            raise TinySaTraceCollectionError("tinySA settings write was incomplete",
+                reason=TinySaTraceFailureReason.TRANSPORT)
+        port.flush()
+        deadline = self._monotonic() + 2.0
+        response = bytearray()
+        while self._monotonic() < deadline:
+            size = min(128, 512 - len(response) + 1)
+            chunk = port.read(size)
+            if not isinstance(chunk, bytes) or len(chunk) > size:
+                raise TinySaTraceCollectionError("tinySA settings read contract is invalid",
+                    reason=TinySaTraceFailureReason.TRANSPORT)
+            response.extend(chunk)
+            if len(response) > 512:
+                raise TinySaTraceCollectionError("tinySA settings response exceeds bound",
+                    reason=TinySaTraceFailureReason.BOUND)
+            if b"ch> " in response:
+                _settings_payload(bytes(response), command)
+                self._endpoint_matches()
+                return bytes(response)
+        raise TinySaTraceCollectionError("tinySA settings response deadline expired",
+            reason=TinySaTraceFailureReason.DEADLINE)
+
+    def _execute_settings(self) -> None:
+        self._phase = TinySaAcquisitionPhase.SETTINGS
+        for command in self._settings_commands:
+            encoded = (command + "\r").encode("ascii")
+            response = self._settings_exchange(encoded)
+            # A shell usage/error plus prompt is NOT an acknowledgement.
+            if _settings_payload(response, encoded):
+                raise TinySaTraceCollectionError("tinySA settings command was refused",
+                    reason=TinySaTraceFailureReason.FRAMING)
+            self._cancelled()
+
+    def _observe_settings(self) -> None:
+        if not self._settings_commands and not self._settings_readback:
+            return
+        self._phase = TinySaAcquisitionPhase.READBACK
+        actual: dict[str, float] = {}
+        if self._settings_readback:
+            model = self._expected.snapshot.model_id
+            specs = (
+                ("actual_rbw_hz", b"rbw ?\r", "rbw 0.2..850|auto" if model == "tinysa_ultra" else "rbw 2..600|auto", "Hz"),
+                ("actual_attenuation_db", b"attenuate ?\r", "attenuate 0..31|auto", ""),
+                ("screen_sweep_time_s", b"sweeptime ?\r", "sweeptime 0.003..60", "s"),
+            )
+            for field, command, usage, unit in specs:
+                response = self._settings_exchange(command)
+                lines = _settings_payload(response, command)
+                if lines and lines[0] in {usage, "usage: " + usage}:
+                    lines = lines[1:]
+                if len(lines) != 1 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?" + re.escape(unit), lines[0]):
+                    raise TinySaTraceCollectionError("tinySA settings readback framing is invalid",
+                        reason=TinySaTraceFailureReason.FRAMING)
+                actual[field] = float(lines[0][:-len(unit)] if unit else lines[0])
+                self._cancelled()
+        try:
+            observation = TinySaSettingsObservation(self._settings_plan, self._input_mode,
+                                                    self._settings_commands, **actual)
+        except (ValueError, TypeError):
+            raise TinySaTraceCollectionError("tinySA settings readback is invalid",
+                reason=TinySaTraceFailureReason.BOUND) from None
+        self._cancelled()
+        self._settings_observation = observation
 
     def _verify_version(self, port: TinySaTraceSerialPort, current: TinySaTransportEndpoint) -> None:
         self._phase = TinySaAcquisitionPhase.VERSION
@@ -397,6 +537,19 @@ class TinySaOwnedAcquisition:
             self._port = None
         self._ready = False
         self._closed = True
+
+
+def _settings_payload(response: bytes, command: bytes) -> list[str]:
+    end = response.find(b"ch> ")
+    if (end < 0 or response.count(b"ch> ") != 1
+            or any(value not in b"\t\r\n " for value in response[end + 4:])
+            or any(value not in (9, 10, 13) and not 32 <= value <= 126 for value in response[:end])):
+        raise TinySaTraceCollectionError("tinySA settings prompt framing is invalid",
+            reason=TinySaTraceFailureReason.FRAMING)
+    lines = [line.strip() for line in response[:end].decode("ascii").replace("\r", "\n").split("\n") if line.strip()]
+    if lines and lines[0] == command.decode("ascii").strip():
+        lines = lines[1:]
+    return lines
 
 
 __all__ = ["TinySaOwnedAcquisition"]

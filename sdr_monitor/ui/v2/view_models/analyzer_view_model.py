@@ -322,6 +322,8 @@ class AnalyzerViewModel:
                 if (request is None or provenance is None or selection is None or not isinstance(frame, SweepLineFrame)
                         or not isinstance(run, TinySaSweepRunIdentity)
                         or run.request.source is not request.source
+                        or (run.request.settings, run.request.input_mode, run.request.readback_settings) != (
+                            request.settings, request.input_mode, request.readback_settings)
                         or frame.epoch != run.request.epoch
                         or provenance.configuration_generation != run.configuration_generation
                         or selection.selected is not request.source
@@ -333,6 +335,15 @@ class AnalyzerViewModel:
                         or frame.epoch < request.epoch
                         or (provenance.start_hz, provenance.stop_hz, provenance.points) !=
                            (request.start_hz, request.stop_hz, request.points)
+                        or provenance.settings is not None and (
+                            provenance.settings.plan != request.settings or provenance.settings.input_mode != request.input_mode)
+                        or provenance.settings is not None and not (
+                            request.settings.commands or request.input_mode.value != "preserve" or request.readback_settings)
+                        or frame.is_complete and (request.settings.commands or request.input_mode.value != "preserve"
+                            or request.readback_settings) and provenance.settings is None
+                        or frame.is_complete and request.readback_settings and provenance.settings is not None and any(
+                            value is None for value in (provenance.settings.actual_rbw_hz,
+                                provenance.settings.actual_attenuation_db, provenance.settings.screen_sweep_time_s))
                         or self._instrument_epoch is not None and frame.epoch != self._instrument_epoch
                         or self._instrument_sequence is not None and frame.sequence < self._instrument_sequence):
                     self._on_error("Rejected stale/foreign instrument Sweep publication")

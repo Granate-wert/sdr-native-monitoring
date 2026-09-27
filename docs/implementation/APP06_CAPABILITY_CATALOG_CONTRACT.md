@@ -406,10 +406,83 @@ These are host protocol diagnostics, not RF quality/readback or continuity proof
 Actual current-firmware cancel-to-next-Start and malformed/session recovery still
 require physical evidence; software tests do not replace them.
 
+## tinySA same-owner runtime settings and post-pass readback (2026-09-27)
+
+The SAME common Analyzer now admits an immutable TinySaSweepSettingsPlan,
+explicit input intent and optional post-pass query policy. Existing setting
+types moved to the Qt/transport-free domain; legacy settings/policy modules
+re-export the SAME types, not a parallel settings truth model. All defaults
+preserve current settings; changing a drawer draft performs no serial work.
+The V2 settings button opens a bounded scrollable overlay; RU/EN changes keep
+the same draft, Esc closes only the drawer, and controls lock with acquisition.
+
+The EXISTING DeviceCapabilitySnapshot carries an optional evidenced opaque
+runtime_control_contract. The tinySA adapter maps an observed terminal revision
+suffix 26fc821 (short or full, optional git-describe g prefix) to the pinned
+shell SOURCE contract; unknown/dirty/extra suffixes do not qualify. This is
+NOT firmware image/build-flag attestation or RF verification. Generic runtime
+availability and a device label do not grant setting commands. Unknown firmware
+retains explicit preserve-only acquisition compatibility, NOT input/state proof.
+
+Pure request admission checks model/input/range and firmware before open. Basic
+LOW covers 0.1..350 MHz, HIGH 240..960 MHz; Ultra has no Basic HIGH input. Basic
+has no extra-LNA/automatic-spur command in this contract, uses a 2..600-kHz target
+RBW bound, and admits 0..31-dB attenuation only with explicit LOW intent. Basic
+HIGH attenuation is frequency-dependent and is not represented by that setter.
+Ultra target RBW is 0.2..850 kHz. Explicit LNA-on plus explicit attenuation is
+refused. NSPEEDUP/WSPEEDUP, Ultra enabling/config setters and output modes are
+not silently invented; upper-band current-input qualification remains OPEN.
+Model bounds use the [Basic specification](https://tinysa.org/wiki/pmwiki.php?n=Main.Specification)
+and [Ultra specification](https://tinysa.org/wiki/pmwiki.php?n=TinySA4.Specification).
+Exact command/query syntax is tied to the [pinned shell source](https://github.com/erikkaashoek/tinySA/blob/26fc821ad3432f929630718cd290314dbc711f48/sa_cmd.c),
+not an assumption that all firmware versions expose those commands.
+
+After SAME-owner fresh version/opaque firmware admission, the worker sends at
+most one input command and seven exact finite setting commands, consuming each
+<=512-byte ASCII prompt within an absolute two-second response deadline. Only
+the expected echo/whitespace and prompt is ACK; usage/error plus prompt is NOT
+success. No saveconfig/save/flash, output, abort-on, reset, retry/reopen or
+rollback is introduced. Input changes may have firmware-defined side effects;
+unspecified old state is NOT promised restored/preserved after a mode command.
+
+The configured finite pass uses the existing full scanraw decoder and common
+Spectrum/Waterfall. With readback enabled, AFTER that full response the SAME
+port queries rbw ?, attenuate ? and sweeptime ?, consuming/validating bounded
+numeric answers before publication. Changed V2 drafts request these queries
+automatically; preserve-only drafts have a separate explicit query checkbox.
+The public typed service can also explicitly retain ACK-only provenance, which
+has None actual values and MUST NOT imply readback/whole-profile verification.
+
+TinySaSettingsObservation keeps EXACT plan/input/ACK accounting separate from
+actual post-pass RBW, attenuation readout and instrument SCREEN-sweep time.
+Quantized/dynamic RBW can differ from the target. SCREEN time is NOT measured
+scanraw response/RF duration; attenuation is a host-observed scalar, not a
+per-frequency calibration table. Input/LNA/spur/accuracy/repeat have no admitted
+readback, even if all prompts acknowledged. Device dBm and built-in calibration
+remain separate; external correction is still unapplied. Cached UI labels show
+these distinctions instead of inventing Fs/FFT/applied RF or calibrated timing.
+
+Explicit repeated Sweep configures once on ONE port, queries after each completed
+pass, and checks fresh version before the next. No setter replay between passes.
+Cancellation finishes a CONSUMED setter/query prompt within its ORIGINAL deadline
+and refuses subsequent commands/publication; confirmed transport close still is
+not firmware-ready or immediate RF Stop. Failed close keeps the same owner and
+graph claim until explicit cleanup. First fixed settings/readback phase/reason
+survives cleanup; malformed/refused readback does not publish a measured frame.
+Exact request/generation/epoch/settings/readback gates also reject a foreign,
+missing or unrequested setting observation in prepared UI data.
+
+Software/fake-serial and actual offscreen V2-root evidence is NOT physical Basic,
+current-Ultra cancel-to-next-Start, visible Windows/FHD/QHD/DPI/DWM/FPS/soak,
+firmware attestation, EXE/frozen closure or RF accuracy acceptance. Naturally
+slow tinySA scanning remains a normal instrument characteristic, not an app
+defect or an SDR 50-ms acquisition target.
+
 ## Required further work
 
-TinySA firmware/input-aware settings/physical resynchronization and advanced HackRF
-DSP controls/strategies remain. Common source-process HackRF RTBW integration is
+TinySA physical resynchronization/Basic and current-input upper-band qualification,
+separate external correction and advanced HackRF DSP controls/strategies remain.
+Common source-process HackRF RTBW and tinySA runtime settings integration is
 not frozen executable or performance acceptance.
 Official shared-DLL/frozen packaging and actual high-Fs device/transport cells
 also remain separate acceptance gates. APP-05 performance debts, APP-06A/B,

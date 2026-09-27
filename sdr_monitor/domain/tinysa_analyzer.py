@@ -1,10 +1,16 @@
 """Instrument Sweep intent/provenance, never a synthetic SDR/FFT profile."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .analyzer_sources import AnalyzerSourceChoice
 from .device_capabilities import AdapterRuntimeAvailability, DeviceFamily
+from .tinysa_settings import (
+    TinySaInputMode,
+    TinySaSettingsObservation,
+    TinySaSweepSettingsPlan,
+    compile_tinysa_runtime_settings,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +24,9 @@ class TinySaSweepRequest:
     epoch: int = 0
     repeat_until_stop: bool = False
     interval_s: float = 0.1
+    settings: TinySaSweepSettingsPlan = field(default_factory=TinySaSweepSettingsPlan)
+    input_mode: TinySaInputMode = TinySaInputMode.PRESERVE
+    readback_settings: bool = False
 
     def __post_init__(self) -> None:
         source = self.source
@@ -44,6 +53,9 @@ class TinySaSweepRequest:
                 or not isinstance(self.interval_s, (int, float)) or not math.isfinite(self.interval_s)
                 or not 0.05 <= self.interval_s <= 60):
             raise ValueError("tinySA explicit repeat/interval is invalid")
+        compile_tinysa_runtime_settings(self.settings, self.input_mode, model_id=source.binding.snapshot.model_id,
+            control_contract=source.binding.snapshot.runtime_control_contract, start_hz=self.start_hz,
+            stop_hz=self.stop_hz, readback=self.readback_settings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +85,7 @@ class TinySaSweepProvenance:
     value_provenance: str = "device_reported_trace"
     calibration_provenance: str = "device_reported_builtin"
     clock_domain: str = "host_steady_completion"
+    settings: TinySaSettingsObservation | None = None
 
     def __post_init__(self) -> None:
         if any(type(v) is not int or not 0 <= v <= (1 << 64) - 1
@@ -97,3 +110,5 @@ class TinySaSweepProvenance:
                 or self.calibration_provenance != "device_reported_builtin"
                 or self.clock_domain != "host_steady_completion"):
             raise ValueError("instrument semantics cannot imply FFT, external correction or RF time")
+        if self.settings is not None and not isinstance(self.settings, TinySaSettingsObservation):
+            raise TypeError("instrument settings must be a typed same-owner observation")

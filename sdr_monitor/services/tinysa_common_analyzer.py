@@ -81,6 +81,8 @@ class TinySaCommonAnalyzerService:
             # Inert preparation is retained BEFORE graph acquisition. A later
             # claim/start failure therefore requires Stop, not admission reset.
             self._owner = self._catalog.prepare_tinysa_acquisition(source.binding, source.runtime)
+            self._owner.configure_runtime_settings(scan, request.settings, request.input_mode,
+                                                   readback=request.readback_settings)
             self._request = request
             self._generation += 1
             self._run_identity = TinySaSweepRunIdentity(request, self._generation)
@@ -107,7 +109,8 @@ class TinySaCommonAnalyzerService:
         assert identity is not None
         p = TinySaSweepProvenance(request.selection_revision, self._generation,
             request.source.binding.snapshot.model_id or "", identity.device_identity_key,
-            identity.firmware_fingerprint, request.start_hz, request.stop_hz, request.points, zero, elapsed)
+            identity.firmware_fingerprint, request.start_hz, request.stop_hz, request.points, zero, elapsed,
+            settings=self._owner.settings_observation if self._owner is not None and not cancelled else None)
         grid = request.start_hz + np.arange(request.points, dtype=np.float64) * (
             (request.stop_hz - request.start_hz) // request.points)
         return SweepLineFrame(self._sequence, request.epoch, self._clock_ns(), request.source.device_id,

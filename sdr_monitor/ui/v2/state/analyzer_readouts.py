@@ -5,12 +5,26 @@ from __future__ import annotations
 from math import isfinite
 
 from sdr_monitor.domain.live import LiveSpectrumFrame
+from sdr_monitor.domain.presentation_omission import PresentationOmission
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from ..i18n import text
 from ..view_models.analyzer_view_model import AnalyzerViewState
-from sdr_monitor.domain.presentation_omission import PresentationOmission
+
+
+def tinysa_settings_readout(frame: object) -> str:
+    p = frame.instrument if isinstance(frame, SweepLineFrame) else None
+    observed = p.settings if p is not None else None
+    if observed is None:
+        return text("tinysa.common.numerical")
+
+    def value(number: float | None, divisor: float = 1) -> str:
+        return "—" if number is None else f"{number / divisor:g}"
+
+    return text("tinysa.settings.observed", ack=len(observed.acknowledged_commands),
+        rbw=value(observed.actual_rbw_hz, 1000), atten=value(observed.actual_attenuation_db),
+        screen=value(observed.screen_sweep_time_s))
 
 
 def presentation_omission(state: AnalyzerViewState) -> PresentationOmission | None:

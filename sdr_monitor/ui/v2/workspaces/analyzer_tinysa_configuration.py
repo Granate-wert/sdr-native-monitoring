@@ -1,12 +1,14 @@
 """Instrument-only draft for the common Analyzer; no SDK work on Qt."""
 
-from PySide6.QtCore import QSignalBlocker, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QGridLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
+from sdr_monitor.domain.tinysa_settings import TinySaInputMode
 
 from ..i18n import text
 from ..view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState
+from .analyzer_tinysa_settings import TinySaSettingsDrawer
 
 
 class TinySaConfigurationBar(QWidget):
@@ -16,6 +18,8 @@ class TinySaConfigurationBar(QWidget):
         super().__init__(parent)
         self._model = model
         self._revision: int | None = None
+        self.settings_drawer = TinySaSettingsDrawer(parent)
+        self.settings_drawer.draft_changed.connect(self._changed)
         self.setObjectName("v2-tinysa-settings")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -23,13 +27,16 @@ class TinySaConfigurationBar(QWidget):
         self.start = QDoubleSpinBox(self)
         self.stop = QDoubleSpinBox(self)
         for frequency in (self.start, self.stop):
+            frequency.setProperty("ui2Role", "range-control")
             frequency.setRange(0.1, 5300)
             frequency.setDecimals(6)
             frequency.setKeyboardTracking(False)
         self.points = QSpinBox(self)
+        self.points.setProperty("ui2Role", "range-control")
         self.points.setRange(2, 10001)
         self.points.setKeyboardTracking(False)
         self.deadline = QSpinBox(self)
+        self.deadline.setProperty("ui2Role", "range-control")
         self.deadline.setRange(1, 120)
         self.deadline.setKeyboardTracking(False)
         self._fields: tuple[QDoubleSpinBox | QSpinBox, ...] = (self.start, self.stop, self.points, self.deadline)
@@ -37,6 +44,7 @@ class TinySaConfigurationBar(QWidget):
         for index, (field, key) in enumerate(zip(self._fields, (
                 "tinysa.common.start", "tinysa.common.stop", "tinysa.common.points", "tinysa.common.deadline"))):
             label = QLabel(self)
+            label.setProperty("ui2Role", "secondary")
             self._labels.append((label, key))
             row.addWidget(label, index // 2, (index % 2) * 2)
             row.addWidget(field, index // 2, (index % 2) * 2 + 1)
@@ -46,15 +54,19 @@ class TinySaConfigurationBar(QWidget):
             numeric.valueChanged.connect(self._changed)
         layout.addLayout(row)
         self.repeat = QCheckBox(self)
+        self.repeat.setProperty("ui2Role", "utility-toggle")
         self.repeat.toggled.connect(self._changed)
         layout.addWidget(self.repeat)
         self.summary = QLabel(self)
+        self.summary.setProperty("ui2Role", "secondary")
+        self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         self.set_locale()
         self.hide()
 
     def _changed(self, _value: object = None) -> None:
+        self.settings_drawer.apply_view_state(self._model.state)
         self.draft_changed.emit()
 
     def set_locale(self) -> None:
@@ -68,6 +80,7 @@ class TinySaConfigurationBar(QWidget):
         self.repeat.setText(text("tinysa.common.repeat"))
         self.repeat.setAccessibleName(text("tinysa.common.repeat"))
         self.repeat.setToolTip(text("tinysa.common.repeat.help"))
+        self.settings_drawer.set_locale()
 
     def apply_view_state(self, state: AnalyzerViewState) -> None:
         available = state.tinysa_controls_available
@@ -87,15 +100,33 @@ class TinySaConfigurationBar(QWidget):
         for field in self._fields:
             field.setEnabled(available and not state.controls_locked)
         self.repeat.setEnabled(available and not state.controls_locked)
+        self.settings_drawer.apply_view_state(state)
+        if available and selection is not None and selection.selected is not None:
+            snapshot = selection.selected.binding.snapshot
+            maximum = 960 if snapshot is not None and snapshot.model_id == "tinysa_basic" else 5300
+            for field in (self.start, self.stop):
+                with QSignalBlocker(field):
+                    field.setMaximum(maximum)
 
     def request(self) -> TinySaSweepRequest:
         state = self._model.state
         selection = state.source_selection
         if not state.tinysa_controls_available or selection is None or selection.selected is None:
             raise ValueError("Instrument selection is not ready")
+        plan = self.settings_drawer.plan()
+        input_mode = TinySaInputMode(self.settings_drawer.input.currentData())
+        readback = bool(plan.commands or input_mode is not TinySaInputMode.PRESERVE or self.settings_drawer.readback.isChecked())
         return TinySaSweepRequest(selection.selected, selection.revision,
             round(self.start.value() * 1e6), round(self.stop.value() * 1e6), self.points.value(), self.deadline.value(),
-            repeat_until_stop=self.repeat.isChecked())
+            repeat_until_stop=self.repeat.isChecked(), settings=plan, input_mode=input_mode, readback_settings=readback)
+
+    @property
+    def validation_message(self) -> str:
+        try:
+            self.request()
+        except (ValueError, TypeError) as error:
+            return str(error)  # Pure fixed compiler messages, no device/vendor text.
+        return ""
 
     @property
     def valid(self) -> bool:
