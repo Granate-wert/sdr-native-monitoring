@@ -83,6 +83,8 @@ class Control:
             sample_rate_hz=request.sample_rate_hz, fft_size=request.fft_size, hop_size=request.hop_size,
             frequencies_hz=frequencies, values=np.full(request.fft_size, -80, dtype=np.float32),
             unit="DBFS_BIN", dropped_samples_before=0, dropped_iq_blocks_before=0,
+            window=request.window, detector=request.detector, averaging_frames=request.averaging_frames,
+            precision_mode="reference_f64", calibration_status="uncalibrated",
             dropped_fft_frames_before=0, quality_flags=1 << 13)
         if self.frame_change:
             self.frame_change(frame)

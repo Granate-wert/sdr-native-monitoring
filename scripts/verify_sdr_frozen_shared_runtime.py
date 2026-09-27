@@ -74,6 +74,11 @@ def verify_frozen_shared_runtime(package_dir: Path, manifest_path: Path, version
     if not isinstance(verdict, dict) or any(type(verdict.get(k)) is not type(v) or verdict.get(k) != v
                                             for k, v in expected.items()):
         raise ValueError("frozen shared runtime result does not match its load-only contract")
+    dsp_version = native_manifest.get("hackrf_dsp_profile_contract_version")
+    if (dsp_version is not None and (type(dsp_version) is not int or dsp_version != 1)
+            or type(verdict.get("hackrf_dsp_profile_contract_version")) is not type(dsp_version)
+            or verdict.get("hackrf_dsp_profile_contract_version") != dsp_version):
+        raise ValueError("frozen optional DSP profile contract differs from its native manifest")
     if (Path(verdict.get("native_path", "")).resolve() != native
             or verdict.get("native_sha256") != _file_sha256(native)
             or verdict.get("native_source_commit") != native_manifest.get("source_commit")

@@ -33,6 +33,7 @@ struct HackrfLiveFactoryConfig {
     std::uint32_t presentation_capacity{};
     std::uint64_t configuration_generation{};
     std::string source_id;
+    std::uint32_t averaging_frames{1U};
 };
 
 // Pure configuration translation and validation. It does not create a port,

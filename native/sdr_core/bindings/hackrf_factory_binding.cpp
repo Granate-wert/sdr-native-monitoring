@@ -57,6 +57,9 @@ namespace {
 void bind_hackrf_factory(py::module_& module) {
     // Private optional factory protocol; independent of Spectrum wire schema.
     module.attr("HACKRF_FACTORY_CONTRACT_VERSION") = 2;
+    // Backward-compatible optional detector-group arguments; identity protocol2
+    // remains unchanged. Old modules must never silently ignore these values.
+    module.attr("HACKRF_DSP_PROFILE_CONTRACT_VERSION") = 1;
     module.def(
         "create_hackrf_runtime_dsp_control",
         [](
@@ -77,7 +80,8 @@ void bind_hackrf_factory(py::module_& module) {
             const std::uint32_t presentation_capacity,
             const std::uint64_t configuration_generation,
             std::string source_id,
-            std::array<std::uint32_t, 4> expected_serial_words
+            std::array<std::uint32_t, 4> expected_serial_words,
+            const std::uint32_t averaging_frames
         ) {
             auto config = hackrf_live_factory_config(
                 center_frequency_hz,
@@ -98,6 +102,7 @@ void bind_hackrf_factory(py::module_& module) {
                 configuration_generation,
                 std::move(source_id)
             );
+            config.averaging_frames = averaging_frames;
             // Reject malformed values before the first device/library action.
             static_cast<void>(sdr_hackrf::make_hackrf_runtime_dsp_config(config));
             py::gil_scoped_release release;
@@ -120,7 +125,8 @@ void bind_hackrf_factory(py::module_& module) {
         py::arg("presentation_capacity"),
         py::arg("configuration_generation"),
         py::arg("source_id"),
-        py::arg("expected_serial_words")
+        py::arg("expected_serial_words"),
+        py::arg("averaging_frames") = 1U
     );
 }
 

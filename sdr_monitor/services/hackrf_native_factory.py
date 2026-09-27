@@ -103,11 +103,20 @@ class HackrfNativeRuntimeFactory:
                 raise HackrfNativeFactoryError(
                     HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE
                 )
+            request = plan.request
+            extras: dict[str, object] = {}
+            if request.averaging_frames != 1:
+                dsp_version = getattr(native_module, "HACKRF_DSP_PROFILE_CONTRACT_VERSION", None)
+                if type(dsp_version) is not int or dsp_version != 1:
+                    raise HackrfNativeFactoryError(HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE)
+                extras["averaging_frames"] = request.averaging_frames
+            # Resolve all optional enums BEFORE consuming the identity permit.
+            window = _native_window(native_module, request.window)
+            detector = _native_detector(native_module, request.detector)
             if not _claim_hackrf_activation_permit(permit):
                 raise HackrfNativeFactoryError(
                     HackrfNativeFactoryFailure.PERMIT_ALREADY_CONSUMED
                 )
-            request = plan.request
             control = cast(Callable[..., object], native_factory)(
                 center_frequency_hz=request.center_frequency_hz,
                 sample_rate_hz=request.sample_rate_hz,
@@ -118,8 +127,8 @@ class HackrfNativeRuntimeFactory:
                 bias_tee_enabled=False,
                 fft_size=request.fft_size,
                 hop_size=request.hop_size,
-                window=_native_window(native_module, request.window),
-                detector=_native_detector(native_module, request.detector),
+                window=window,
+                detector=detector,
                 slot_count=request.slot_count,
                 ready_capacity=request.ready_capacity,
                 dsp_output_capacity=request.resolved_dsp_output_capacity,
@@ -127,6 +136,7 @@ class HackrfNativeRuntimeFactory:
                 configuration_generation=request.configuration_generation,
                 source_id=str(request.source_id),
                 expected_serial_words=permit._serial_words,
+                **extras,
             )
         except HackrfNativeFactoryError:
             raise

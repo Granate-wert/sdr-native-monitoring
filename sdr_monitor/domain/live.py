@@ -647,8 +647,12 @@ class LiveSnapshot:
     source_choice: AnalyzerSourceChoice | None = None
     selection_revision: int | None = None
     hackrf_request: HackrfLiveRequest | None = None
+    # Loaded native optional protocol observation, not a hardware capability.
+    hackrf_detector_groups_available: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.hackrf_detector_groups_available) is not bool:
+            raise TypeError("HackRF detector-group availability must be explicit boolean")
         if self.source_choice is not None:
             if not isinstance(self.source_choice, AnalyzerSourceChoice):
                 raise TypeError("family publication needs an existing source choice")
@@ -656,6 +660,10 @@ class LiveSnapshot:
                 raise ValueError("family publication needs an explicit selection revision")
         elif self.selection_revision is not None or self.hackrf_request is not None:
             raise ValueError("family publication cannot omit its source choice")
+        if self.hackrf_detector_groups_available:
+            from .device_capabilities import DeviceFamily
+            if self.source_choice is None or self.source_choice.family is not DeviceFamily.HACKRF:
+                raise ValueError("HackRF detector-group runtime observation needs its source choice")
         if self.source_choice is not None:
             from .device_capabilities import DeviceFamily
             if (self.source_choice.family is DeviceFamily.HACKRF and self.hackrf_request is None
@@ -687,6 +695,13 @@ class LiveSnapshot:
                         or frame.acquisition_epoch != self.acquisition_epoch or self.acquisition_epoch is None
                         or frame.clock_domain != "host_steady_ns" or self.clock_domain != frame.clock_domain):
                     raise ValueError("HackRF frame does not belong to this source/profile/epoch/unit")
+                provenance = frame.numerical_provenance
+                if (provenance is None or provenance.window != request.window
+                        or provenance.detector != request.detector
+                        or provenance.averaging_frames != request.averaging_frames
+                        or provenance.precision_mode != "reference_f64"
+                        or provenance.calibration_status != "uncalibrated"):
+                    raise ValueError("HackRF numerical metadata does not match its exact staged DSP profile")
             if self.persistence is not None:
                 raise ValueError("HackRF persistence is not yet integrated")
         if self.presentation_omission is not None and not isinstance(self.presentation_omission, PresentationOmission):

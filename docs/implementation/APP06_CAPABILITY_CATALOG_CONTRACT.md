@@ -588,10 +588,51 @@ APP-06D/release acceptance. The existing owner/quarantine/explicit Start rules
 remain unchanged. Baseline CPU/CUDA builds remain without official HackRF unless
 the explicit supported package lane is chosen.
 
+## HackRF common Analyzer DSP settings (2026-09-27)
+
+The SAME retained RTBW owner/router/common Spectrum and Waterfall accept six
+canonical CPU windows, five power detectors, explicit FFT hop (1..N subject to
+the existing queue budget) and 1..256 consecutive analytical FFTs per detector
+group. Sample selects the group's last FFT; peak/minimum operate on linear
+power; RMS and average-power share the current mean-power implementation.
+This is native signal processing, NOT averaging pixel-reduced UI frames.
+Existing CPU F64/dBFS-bin/DC-OFF/Kaiser beta8.6 semantics remain explicit;
+there is no new calibration, spur filter, CUDA, Sweep, persistence or I/Q path.
+
+The existing identity-bound private factory protocol2 remains compatible.
+Non-default groups require optional HACKRF_DSP_PROFILE_CONTRACT_VERSION1 and
+an exactly matching sibling manifest field; missing/malformed/mismatched
+extensions refuse before SDK effects. Catalog locator, standalone native
+preflight and frozen diagnostics check the same pair. The factory resolves
+enums/optional support before consuming its one-use same-handle permit.
+Legacy factory2 receives no extra keyword for its one-FFT default. There is
+no alternate loader, hidden runtime substitution or same-permit SDK retry.
+
+UI V2 has a collapsed-by-default localized DSP section. Expansion/locale/draft
+editing perform no SDK I/O. Stage updates the immutable existing request,
+preserving hidden ingress/output/presentation bounds and explicit queue policy.
+All supported FFT powers256..262144 and one bounded non-preset requested Fs
+can be retained without nearest-choice substitution. FFT reduction clamps ONLY
+the visible draft hop; active profiles remain unchanged until explicit Start.
+Controls lock during acquisition; unsupported detector groups are disabled
+with a reason, rather than silently reduced to one FFT. Profile readouts are
+staged intent, not hardware readback or speed acceptance.
+
+Every common HackRF frame must additionally match the exact producer-reported
+window/detector/group/CPU-F64/uncalibrated semantics. Missing or different
+metadata fails closed and retains the owner until explicit Stop; request values
+never fill missing producer metadata. The host spectrum-stall watchdog uses a
+two-second floor, three requested group periods and a120-second hard bound,
+not a measured RF/duty/display period. Analytical FFT and native output/Qt paint
+counters remain distinct; larger groups naturally produce fewer new spectra.
+Software/native numerical tests do not qualify actual hardware/current EXE,
+visible Windows/DWM, high-Fs speed, FHD/QHD/DPI or long-soak cells.
+
 ## Required further work
 
 TinySA physical resynchronization/Basic and current-input upper-band qualification,
-the full correction-profile authoring/export workflow and advanced HackRF DSP controls/strategies remain.
+the full correction-profile authoring/export workflow and remaining HackRF
+host-Sweep/persistence/IQ/DSP strategies remain.
 Common source-process HackRF RTBW and tinySA runtime settings integration is
 not frozen executable or performance acceptance.
 Official shared-DLL/frozen qualification and actual high-Fs device/transport cells

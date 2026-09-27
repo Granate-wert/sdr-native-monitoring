@@ -105,6 +105,9 @@ class HackrfLiveRequest:
     presentation_capacity: int = 4
     configuration_generation: int = 1
     source_id: SourceId = field(default_factory=lambda: SourceId("native.hackrf.live"))
+    # Detector groups consume consecutive analytical FFTs, not display frames.
+    # Optional native DSP profile protocol1 is required for non-default groups.
+    averaging_frames: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "center_frequency_hz", _finite_positive(self.center_frequency_hz, "center_frequency_hz"))
@@ -147,6 +150,7 @@ class HackrfLiveRequest:
             raise ValueError("detector must be a canonical CPU DSP detector")
         object.__setattr__(self, "window", window)
         object.__setattr__(self, "detector", detector)
+        _bounded_integer(self.averaging_frames, "averaging_frames", 1, 256)
         if BackendKind(self.backend) is not BackendKind.CPU:
             raise ValueError("R11-M admits only the CPU DSP backend")
         object.__setattr__(self, "backend", BackendKind.CPU)
@@ -178,6 +182,16 @@ class HackrfLiveRequest:
         if self.dsp_output_capacity is not None:
             return self.dsp_output_capacity
         return (_TRANSFER_SAMPLES + self.hop_size - 1) // self.hop_size
+
+    @property
+    def spectrum_stall_timeout_s(self) -> float:
+        """Bounded host watchdog, NOT observed RF/display period or Fs readback.
+
+        Large detector groups intentionally delay the first reduced frame.
+        Preserve the old two-second floor; allow three requested group periods.
+        """
+        group_samples = self.fft_size + (self.averaging_frames - 1) * self.hop_size
+        return min(120.0, max(2.0, 3.0 * group_samples / self.sample_rate_hz))
 
 
 @dataclass(frozen=True, slots=True)

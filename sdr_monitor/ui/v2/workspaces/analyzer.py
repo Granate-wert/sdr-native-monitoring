@@ -541,7 +541,10 @@ class AnalyzerWorkspaceV2(QWidget):
             tinysa_settings_readout(getattr(state.bundle, "spectrum", None)) if state.tinysa_controls_available else
             text("hackrf.profile", center=f"{hackrf.center_frequency_hz / 1e6:g}", rate=f"{hackrf.sample_rate_hz / 1e6:g}",
                  bandwidth=f"{hackrf.baseband_filter_hz / 1e6:g}", fft=hackrf.fft_size, lna=hackrf.lna_gain_db,
-                 vga=hackrf.vga_gain_db, generation=hackrf.configuration_generation) if hackrf is not None else
+                 vga=hackrf.vga_gain_db, generation=hackrf.configuration_generation) + "\n" +
+            text("hackrf.dsp.profile", window=text("hackrf.window." + hackrf.window),
+                 detector=text("hackrf.detector." + hackrf.detector), hop=hackrf.hop_size,
+                 group=hackrf.averaging_frames) if hackrf is not None else
             text("live.configuration.no_applied") if configuration is None else
             configuration_prefix(getattr(state.live.snapshot, "applied", None)) + " " +
             f"{configuration.center_hz / 1e6:g} MHz · Fs {configuration.sample_rate_hz / 1e6:g} MS/s · "

@@ -28,6 +28,9 @@ namespace {
 }
 
 void validate_factory_config(const HackrfLiveFactoryConfig& config) {
+    if (config.averaging_frames == 0U || config.averaging_frames > 256U) {
+        throw sdr_core::ConfigurationError("HackRF detector group must contain 1..256 FFTs");
+    }
     if (config.configuration_generation == 0U) {
         throw sdr_core::ConfigurationError(
             "HackRF Live factory configuration generation must be nonzero"
@@ -80,7 +83,7 @@ HackrfRuntimeDspSessionConfig make_hackrf_runtime_dsp_config(
     dsp.dsp.unit = sdr_core::SpectrumUnit::DbfsBin;
     dsp.dsp.precision_mode = sdr_core::PrecisionMode::ReferenceF64;
     dsp.dsp.batch_size = 1U;
-    dsp.dsp.averaging_frames = 1U;
+    dsp.dsp.averaging_frames = config.averaging_frames;
     dsp.dsp.calibration_status = sdr_core::CalibrationStatus::Uncalibrated;
     dsp.dsp.calibration_profile_id.clear();
     dsp.dc_removal = sdr_core::DcRemovalMode::Off;

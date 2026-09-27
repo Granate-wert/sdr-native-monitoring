@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import QSignalBlocker, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -11,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -47,7 +50,7 @@ class HackrfConfigurationBar(QWidget):
                    8_000_000, 9_000_000, 10_000_000, 12_000_000, 14_000_000, 15_000_000, 20_000_000):
             self.bandwidth.addItem(f"{hz / 1e6:g} MHz", hz)
         self.fft = QComboBox(self)
-        for fft in (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536):
+        for fft in (256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144):
             self.fft.addItem(str(fft), fft)
         self.lna = QSpinBox(self)
         self.lna.setRange(0, 40)
@@ -67,6 +70,41 @@ class HackrfConfigurationBar(QWidget):
             elif isinstance(field, (QDoubleSpinBox, QSpinBox)):
                 field.valueChanged.connect(self._changed)
         layout.addLayout(row)
+        self.dsp_toggle = QToolButton(self)
+        self.dsp_toggle.setCheckable(True)
+        layout.addWidget(self.dsp_toggle)
+        self.dsp_panel = QWidget(self)
+        dsp_layout = QVBoxLayout(self.dsp_panel)
+        dsp_layout.setContentsMargins(0, 0, 0, 0)
+        dsp_grid = QGridLayout()
+        self.fft_window = QComboBox(self)
+        for token in ("rectangular", "hann", "blackman_harris_4term", "flat_top", "nuttall", "kaiser"):
+            self.fft_window.addItem(token, token)
+        self.detector = QComboBox(self)
+        for token in ("sample", "peak", "negative_peak", "rms", "average_power"):
+            self.detector.addItem(token, token)
+        self.hop = QSpinBox(self)
+        self.hop.setRange(1, 262144)
+        self.averaging = QSpinBox(self)
+        self.averaging.setRange(1, 256)
+        dsp_fields: tuple[QComboBox | QSpinBox, ...] = (self.fft_window, self.detector, self.hop, self.averaging)
+        for index, (field, key) in enumerate(zip(dsp_fields, ("hackrf.window", "hackrf.detector", "hackrf.hop", "hackrf.group"))):
+            label = QLabel(self)
+            self._labels.append((label, key))
+            dsp_grid.addWidget(label, index // 2, (index % 2) * 2)
+            dsp_grid.addWidget(field, index // 2, (index % 2) * 2 + 1)
+            if isinstance(field, QComboBox):
+                field.currentIndexChanged.connect(self._changed)
+            elif isinstance(field, QSpinBox):
+                field.valueChanged.connect(self._changed)
+        self._fields += dsp_fields
+        dsp_layout.addLayout(dsp_grid)
+        self.dsp_help = QLabel(self)
+        self.dsp_help.setWordWrap(True)
+        dsp_layout.addWidget(self.dsp_help)
+        layout.addWidget(self.dsp_panel)
+        self.dsp_panel.hide()
+        self.dsp_toggle.toggled.connect(self.dsp_panel.setVisible)
         actions = QHBoxLayout()
         self.stage = QPushButton(self)
         self.stage.clicked.connect(self._stage)
@@ -85,6 +123,13 @@ class HackrfConfigurationBar(QWidget):
         self.center.setSuffix(text("hackrf.unit.mhz"))
         self.lna.setSuffix(text("hackrf.unit.db"))
         self.vga.setSuffix(text("hackrf.unit.db"))
+        self.dsp_toggle.setText(text("hackrf.dsp"))
+        self.dsp_toggle.setAccessibleName(text("hackrf.dsp"))
+        self.dsp_help.setText(text("hackrf.dsp.help"))
+        for combo, prefix in ((self.fft_window, "hackrf.window."), (self.detector, "hackrf.detector.")):
+            with QSignalBlocker(combo):
+                for index in range(combo.count()):
+                    combo.setItemText(index, text(prefix + combo.itemData(index)))
         for index in range(self.bandwidth.count()):
             self.bandwidth.setItemText(index, f"{self.bandwidth.itemData(index) / 1e6:g}{text('hackrf.unit.mhz')}")
         for label, key in self._labels:
@@ -107,23 +152,38 @@ class HackrfConfigurationBar(QWidget):
             self._reset()
         for field in self._fields:
             field.setEnabled(available and not state.controls_locked)
+        self.averaging.setEnabled(available and not state.controls_locked
+            and bool(getattr(snapshot, "hackrf_detector_groups_available", False)))
+        self.averaging.setToolTip(text("hackrf.group.help") if getattr(snapshot, "hackrf_detector_groups_available", False)
+                                 else text("hackrf.group.unavailable"))
         self.stage.setEnabled(available and not state.controls_locked and (self.dirty or self._base is None))
         self.discard.setEnabled(available and not state.controls_locked and self.dirty)
 
     def _reset(self) -> None:
         request = self._base
         # These are visible defaults only. No automatic stage or Start.
-        values = (request.center_frequency_hz / 1e6 if request else 100.0,
+        values: tuple[int | float | str, ...] = (request.center_frequency_hz / 1e6 if request else 100.0,
                   request.sample_rate_hz if request else 20e6,
                   request.baseband_filter_hz if request else 15_000_000,
                   request.fft_size if request else 4096,
-                  request.lna_gain_db if request else 16, request.vga_gain_db if request else 20)
+                  request.lna_gain_db if request else 16, request.vga_gain_db if request else 20,
+                  request.window if request else "hann", request.detector if request else "sample",
+                  request.hop_size if request else 2048, request.averaging_frames if request else 1)
+        with QSignalBlocker(self.hop):
+            self.hop.setMaximum(request.fft_size if request else 4096)
+        # Preserve a valid non-preset request; at most ONE extra Fs item exists.
+        # Never infer a measured rate or silently substitute a nearby preset.
+        with QSignalBlocker(self.rate):
+            while self.rate.count() > 4:
+                self.rate.removeItem(4)
+            if self.rate.findData(values[1]) < 0:
+                self.rate.addItem(f"{float(values[1]) / 1e6:g} MS/s", values[1])
         for field, value in zip(self._fields, values):
             with QSignalBlocker(field):
                 if isinstance(field, QComboBox):
                     field.setCurrentIndex(field.findData(value))
                 elif isinstance(field, QDoubleSpinBox):
-                    field.setValue(value)
+                    field.setValue(float(value))
                 else:
                     field.setValue(int(value))
         self.dirty = False
@@ -133,6 +193,10 @@ class HackrfConfigurationBar(QWidget):
         self.draft_changed.emit()
 
     def _changed(self, _value: object = None) -> None:
+        fft = self.fft.currentData()
+        if type(fft) is int:
+            with QSignalBlocker(self.hop):
+                self.hop.setMaximum(fft)  # Visible draft clamp; never applies to an active owner.
         self.dirty = True
         self.apply_view_state(self._model.state)
         self.draft_changed.emit()
@@ -144,9 +208,12 @@ class HackrfConfigurationBar(QWidget):
             return
         try:
             fft = self.fft.currentData()
-            request = HackrfLiveRequest(center_frequency_hz=self.center.value() * 1e6,
+            base = self._base or HackrfLiveRequest(100e6, 20e6, 15_000_000, 16, 20)
+            request = replace(base, center_frequency_hz=self.center.value() * 1e6,
                 sample_rate_hz=self.rate.currentData(), baseband_filter_hz=self.bandwidth.currentData(),
-                fft_size=fft, hop_size=fft // 2, lna_gain_db=self.lna.value(), vga_gain_db=self.vga.value(),
+                fft_size=fft, hop_size=self.hop.value(), window=self.fft_window.currentData(),
+                detector=self.detector.currentData(), averaging_frames=self.averaging.value(),
+                lna_gain_db=self.lna.value(), vga_gain_db=self.vga.value(),
                 source_id=as_source_id(selection.selected.device_id))
             patch = HackrfConfigurationPatch(request, selection.revision, getattr(state.live.snapshot, "generation", 0))
             self._model.stage_hackrf_configuration(patch)

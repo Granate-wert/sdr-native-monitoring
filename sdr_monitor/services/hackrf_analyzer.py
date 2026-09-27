@@ -74,7 +74,13 @@ class HackrfAnalyzerService:
             self._snapshot = LiveSnapshot(ConfigurationGeneration(0), FrameSequence(0),
                 LiveSessionState.CONNECTED if choice and choice.family is DeviceFamily.HACKRF else LiveSessionState.DISCONNECTED,
                 unit="unavailable", source_choice=choice if choice and choice.family is DeviceFamily.HACKRF else None,
-                selection_revision=selection.revision if choice and choice.family is DeviceFamily.HACKRF else None)
+                selection_revision=selection.revision if choice and choice.family is DeviceFamily.HACKRF else None,
+                hackrf_detector_groups_available=bool(choice and choice.family is DeviceFamily.HACKRF
+                    and self._detector_groups_available()))
+
+    def _detector_groups_available(self) -> bool:
+        version = getattr(self._native, "HACKRF_DSP_PROFILE_CONTRACT_VERSION", None)
+        return type(version) is int and version == 1
 
     def current_snapshot(self) -> LiveSnapshot:
         with self._lock:
@@ -95,6 +101,8 @@ class HackrfAnalyzerService:
         return self._generation
 
     def _admit(self, request: HackrfLiveRequest) -> None:
+        if request.averaging_frames != 1 and not self._detector_groups_available():
+            raise LiveAdmissionRejected("HackRF detector groups require native DSP profile protocol1")
         selection = self._selection
         if selection is None or selection.selected is None or selection.release_pending:
             raise LiveAdmissionRejected("HackRF selection is unavailable")
@@ -249,7 +257,9 @@ class HackrfAnalyzerService:
                         self._published += 1
                         last_frame = time.monotonic()
                 now = time.monotonic()
-                if now - last_frame > 2.0:
+                request = self.current_snapshot().hackrf_request
+                assert request is not None
+                if now - last_frame > request.spectrum_stall_timeout_s:
                     self._error("HackRF reduced spectrum stalled; explicit Stop required")
                     return
                 if now - last_metrics >= 0.25:

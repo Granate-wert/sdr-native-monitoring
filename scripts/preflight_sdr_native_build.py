@@ -206,6 +206,10 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
             raise ContractSurfaceError("explicit HackRF staging manifest must declare compiled=true")
         if type(manifest.get("hackrf_factory_contract_version")) is not int or manifest["hackrf_factory_contract_version"] != 2:
             raise ContractSurfaceError("HackRF staging requires the identity-bound factory contract version2")
+        if "hackrf_dsp_profile_contract_version" in manifest and (
+                type(manifest["hackrf_dsp_profile_contract_version"]) is not int
+                or manifest["hackrf_dsp_profile_contract_version"] != 1):
+            raise ContractSurfaceError("HackRF optional DSP staging requires contract version1")
         hashes = manifest.get("hackrf_runtime_sha256")
         if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
             raise ContractSurfaceError("HackRF staging requires the complete app-local runtime manifest")
@@ -227,6 +231,15 @@ def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> N
         version = getattr(module, "HACKRF_FACTORY_CONTRACT_VERSION", None)
         if type(version) is not int or version != 2 or manifest.get("hackrf_factory_contract_version") != version:
             raise ContractSurfaceError("native HackRF factory contract version does not match its staging manifest")
+        # Keep this standalone build boundary free of product-package imports
+        # (including an editable installation from another checkout).
+        missing = object()
+        observed = getattr(module, "HACKRF_DSP_PROFILE_CONTRACT_VERSION", missing)
+        declared = manifest.get("hackrf_dsp_profile_contract_version", missing)
+        if not (observed is missing and declared is missing) and (
+                type(observed) is not int or observed != 1
+                or type(declared) is not int or declared != observed):
+            raise ContractSurfaceError("HackRF optional DSP profile contract does not match its native manifest")
 
 
 def validate_active_artifact(
