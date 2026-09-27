@@ -104,11 +104,13 @@ class CalibrationService:
     ) -> CalibrationProfile:
         if not preview.valid:
             raise CalibrationProfileError("cannot finalize an invalid CSV preview")
+        selected_signature = signature or self.current_settings()
         profile = CalibrationProfile(
             profile_id=preview.profile_id,
             profile_version=preview.profile_version,
-            signature=signature or self._current,
+            signature=selected_signature,
             points=preview.points,
+            reference_plane=selected_signature.reference_plane,
             reference_equipment=reference_equipment,
             notes=notes,
         )

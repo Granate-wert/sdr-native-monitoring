@@ -459,7 +459,7 @@ Quantized/dynamic RBW can differ from the target. SCREEN time is NOT measured
 scanraw response/RF duration; attenuation is a host-observed scalar, not a
 per-frequency calibration table. Input/LNA/spur/accuracy/repeat have no admitted
 readback, even if all prompts acknowledged. Device dBm and built-in calibration
-remain separate; external correction is still unapplied. Cached UI labels show
+remain separate; external correction was still unapplied in that packet (superseded below). Cached UI labels show
 these distinctions instead of inventing Fs/FFT/applied RF or calibrated timing.
 
 Explicit repeated Sweep configures once on ONE port, queries after each completed
@@ -478,10 +478,69 @@ firmware attestation, EXE/frozen closure or RF accuracy acceptance. Naturally
 slow tinySA scanning remains a normal instrument characteristic, not an app
 defect or an SDR 50-ms acquisition target.
 
+## Explicit tinySA external frequency correction (2026-09-27)
+
+The SAME common Analyzer now captures an optional immutable CalibrationProfile
+from the EXISTING CalibrationProfileStore/service/presenter/profile view model.
+There is no second store, calibration worker, renderer, serial owner or global
+SDR-profile activation. The default is Do not apply. Refresh runs through the
+existing off-Qt executor; up to 128 instrument profiles are listed. Store refresh
+does not silently replace the selected immutable snapshot with None or a new
+version; acquisition locks controls and defers list replacement. Refresh failure
+shows a fixed localized status without raw filesystem/vendor exception text.
+Both normal child close and parent-shell terminal release unsubscribe the drawer.
+
+The existing profile/signature model admits a typed InstrumentCalibrationContext
+with observed model, explicit declared input, opaque exact settings-intent hash,
+post-pass RBW/attenuation and device-reported-dBm convention. Schema 2 represents
+these instrument correction profiles, retaining the same immutable versioned
+JSON store/CSV finalization path. It has no fabricated Fs, analog bandwidth,
+gain, normalization, FFT unit or measured-dBFS reference points. The raw serial
+field remains unknown: the existing binding's opaque device identity is NOT a
+raw serial. Old SDR schema-1 serialized fields and canonical fingerprints remain
+unchanged. Profile fingerprints are cached once on immutable construction, not
+recomputed per repaint. The existing SDR dBFS-to-dBm operation refuses instrument
+profiles; this correction adds dB to existing device dBm exactly once.
+
+Explicit Start requires an observed canonical source/firmware/adapter, an input,
+the profile's user-declared frontend chain and exact command-plan intent before
+any SDK/serial effect. It forces the SAME owner's existing post-pass readback;
+actual RBW/attenuation must match the captured profile. Input/LNA/spur/accuracy
+intent and the frontend chain are NOT read back or RF-attested. No instrument
+built-in calibration command or persistent write is introduced. The reference
+plane is declared by the selected curve, not verified by the instrument.
+
+Correction uses bounded vector interpolation on the EXACT stop-exclusive scan
+grid. Scan arrays and curves are capped at 10001 points before result conversion;
+the original device values, correction and author-declared curve uncertainty
+remain immutable separate arrays. The correction's uncertainty is NOT total RF
+measurement uncertainty. NaN gaps survive; infinities/overflow/negative
+extrapolated uncertainty refuse invalid results. Curve range must cover actual
+grid points unless the user explicitly allows linear extrapolation; no hidden
+clamp, extrapolation or resampling of pixel-reduced data occurs.
+
+A post-pass condition mismatch displays the unmodified original device dBm and
+a visible refusal, never a fabricated zero correction or a calibrated status.
+Applied/interpolated/extrapolated status includes exact profile/version/hash and
+declared plane with instrument accuracy UNVERIFIED. Existing source/revision/
+run/epoch/generation/unit guards additionally require the exact captured profile
+object and same observed signature; a different artifact cannot replace it by
+matching its profile id. The existing value-history context isolates corrected
+and raw levels without inventing a new RF acquisition epoch. An interrupted
+pass carries only the previous display-plane context and an all-unknown gap,
+not old correction arrays, settings readback or observed calibration.
+
+Profile selection/apply/disable is source-integrated; a complete user-facing
+profile creation/import/compare wizard and correction-aware exports/Replay
+remain APP-08/09 work. Backend CSV/JSON/store round trips and offscreen actual
+root/fake-serial tests do NOT qualify physical RF accuracy, Basic/Ultra settings,
+cancel-to-next-Start, current EXE/frozen/DWM/DPI/soak or tinySA scanning speed.
+Naturally slow instrument scans remain separate from UI/processing delays.
+
 ## Required further work
 
 TinySA physical resynchronization/Basic and current-input upper-band qualification,
-separate external correction and advanced HackRF DSP controls/strategies remain.
+the full correction-profile authoring/export workflow and advanced HackRF DSP controls/strategies remain.
 Common source-process HackRF RTBW and tinySA runtime settings integration is
 not frozen executable or performance acceptance.
 Official shared-DLL/frozen packaging and actual high-Fs device/transport cells

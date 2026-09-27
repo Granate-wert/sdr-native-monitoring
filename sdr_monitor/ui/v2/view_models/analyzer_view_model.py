@@ -13,6 +13,7 @@ from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
+from sdr_monitor.domain.tinysa_correction import tinysa_correction_signature
 
 from ..state.live_view_state import LiveAction, LiveViewState
 from ..state.prepared_sweep import PreparedSweepSnapshot
@@ -324,6 +325,9 @@ class AnalyzerViewModel:
                         or run.request.source is not request.source
                         or (run.request.settings, run.request.input_mode, run.request.readback_settings) != (
                             request.settings, request.input_mode, request.readback_settings)
+                        or run.request.external_correction is not request.external_correction
+                        or (run.request.frontend_chain, run.request.allow_correction_extrapolation) != (
+                            request.frontend_chain, request.allow_correction_extrapolation)
                         or frame.epoch != run.request.epoch
                         or provenance.configuration_generation != run.configuration_generation
                         or selection.selected is not request.source
@@ -344,6 +348,17 @@ class AnalyzerViewModel:
                         or frame.is_complete and request.readback_settings and provenance.settings is not None and any(
                             value is None for value in (provenance.settings.actual_rbw_hz,
                                 provenance.settings.actual_attenuation_db, provenance.settings.screen_sweep_time_s))
+                        or frame.is_complete and (provenance.external_correction is None) != (request.external_correction is None)
+                        or provenance.external_correction is not None and (
+                            provenance.external_correction.profile is not request.external_correction
+                            or provenance.settings is None
+                            or provenance.settings.actual_rbw_hz is None
+                            or provenance.settings.actual_attenuation_db is None
+                            or provenance.external_correction.current_signature != tinysa_correction_signature(
+                                request, rbw_hz=provenance.settings.actual_rbw_hz,
+                                attenuation_db=provenance.settings.actual_attenuation_db))
+                        or provenance.gap_value_context not in (
+                            None, "external:" + request.external_correction.fingerprint if request.external_correction else None)
                         or self._instrument_epoch is not None and frame.epoch != self._instrument_epoch
                         or self._instrument_sequence is not None and frame.sequence < self._instrument_sequence):
                     self._on_error("Rejected stale/foreign instrument Sweep publication")

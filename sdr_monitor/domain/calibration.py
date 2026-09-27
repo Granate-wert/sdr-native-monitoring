@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -95,16 +95,59 @@ def _integer(value: object, name: str) -> int:
 
 
 @dataclass(frozen=True, slots=True)
+class InstrumentCalibrationContext:
+    """Declared instrument conditions plus post-pass readouts, never host FFT."""
+
+    model_id: str
+    input_mode: str
+    settings_fingerprint: str
+    rbw_hz: float
+    attenuation_db: float
+    value_convention: str = "device-reported-dBm"
+
+    def __post_init__(self) -> None:
+        if (self.model_id not in {"tinysa_basic", "tinysa_ultra"}
+                or self.input_mode not in {"low", "high"}
+                or self.model_id == "tinysa_ultra" and self.input_mode == "high"
+                or self.value_convention != "device-reported-dBm"):
+            raise CalibrationProfileError("instrument correction requires explicit model/input/device dBm")
+        object.__setattr__(self, "settings_fingerprint",
+                           _opaque_or_unknown(self.settings_fingerprint, "instrument settings", digest=True))
+        if self.settings_fingerprint == "unknown":
+            raise CalibrationProfileError("instrument correction requires an exact settings intent")
+        rbw = _finite(self.rbw_hz, "instrument RBW")
+        attenuation = _finite(self.attenuation_db, "instrument attenuation")
+        if not 0 < rbw <= 2_000_000 or not 0 <= attenuation <= 40:
+            raise CalibrationProfileError("instrument readouts are outside the bounded contract")
+        object.__setattr__(self, "rbw_hz", rbw)
+        object.__setattr__(self, "attenuation_db", attenuation)
+
+    def to_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> InstrumentCalibrationContext:
+        if set(payload) != set(cls.__dataclass_fields__):
+            raise CalibrationProfileError("instrument correction context requires exact fields")
+        return cls(model_id=_text(payload.get("model_id"), "instrument model"),
+                   input_mode=_text(payload.get("input_mode"), "instrument input"),
+                   settings_fingerprint=_text(payload.get("settings_fingerprint"), "instrument settings"),
+                   rbw_hz=_finite(payload.get("rbw_hz"), "instrument RBW"),
+                   attenuation_db=_finite(payload.get("attenuation_db"), "instrument attenuation"),
+                   value_convention=_text(payload.get("value_convention"), "instrument units"))
+
+
+@dataclass(frozen=True, slots=True)
 class CalibrationSignature:
     device_serial: str = "unknown"
     backend: str = "cpu"
     rf_port_path: str = "rx"
-    sample_rate_hz: float = 1e6
-    analog_bandwidth_hz: float = 800e3
-    gain_mode: str = "manual"
-    manual_gain_db: float = 0.0
-    window_normalization_version: str = "standalone-v1"
-    fft_unit_convention: str = "dBFS/bin"
+    sample_rate_hz: float | None = 1e6
+    analog_bandwidth_hz: float | None = 800e3
+    gain_mode: str | None = "manual"
+    manual_gain_db: float | None = 0.0
+    window_normalization_version: str | None = "standalone-v1"
+    fft_unit_convention: str | None = "dBFS/bin"
     frontend_chain: str = "unknown"
     reference_plane: str = "rf_input"
     device_family: str = "unknown"
@@ -112,19 +155,30 @@ class CalibrationSignature:
     device_identity_key: str = "unknown"
     firmware_fingerprint: str = "unknown"
     temperature_range_c: tuple[float, float] | None = None
+    instrument_context: InstrumentCalibrationContext | None = None
 
     def __post_init__(self) -> None:
         for name in (
             "device_serial",
             "backend",
             "rf_port_path",
-            "gain_mode",
-            "window_normalization_version",
-            "fft_unit_convention",
             "frontend_chain",
             "reference_plane",
         ):
             object.__setattr__(self, name, _text(getattr(self, name), name))
+        if self.instrument_context is not None:
+            if not isinstance(self.instrument_context, InstrumentCalibrationContext):
+                raise CalibrationProfileError("instrument context must be typed")
+            if (self.backend != "instrument" or self.device_family != "tinysa"
+                    or self.rf_port_path != self.instrument_context.input_mode
+                    or self.frontend_chain == "unknown" or self.temperature_range_c is not None
+                    or any(getattr(self, name) is not None for name in (
+                        "sample_rate_hz", "analog_bandwidth_hz", "gain_mode", "manual_gain_db",
+                        "window_normalization_version", "fft_unit_convention"))):
+                raise CalibrationProfileError("instrument correction cannot fabricate Fs/gain/FFT or unknown chain")
+        else:
+            for name in ("gain_mode", "window_normalization_version", "fft_unit_convention"):
+                object.__setattr__(self, name, _text(getattr(self, name), name))
         object.__setattr__(self, "device_family", _opaque_or_unknown(self.device_family, "device_family"))
         object.__setattr__(self, "adapter_id", _opaque_or_unknown(self.adapter_id, "adapter_id"))
         object.__setattr__(
@@ -138,6 +192,8 @@ class CalibrationSignature:
             _opaque_or_unknown(self.firmware_fingerprint, "firmware_fingerprint", digest=True),
         )
         for name in ("sample_rate_hz", "analog_bandwidth_hz", "manual_gain_db"):
+            if self.instrument_context is not None:
+                continue
             value = _finite(getattr(self, name), name)
             if name != "manual_gain_db" and value <= 0:
                 raise CalibrationProfileError(f"{name} must be positive")
@@ -152,7 +208,10 @@ class CalibrationSignature:
             object.__setattr__(self, "temperature_range_c", (low, high))
 
     def to_dict(self) -> dict[str, object]:
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+        result = {name: getattr(self, name) for name in self.__dataclass_fields__ if name != "instrument_context"}
+        if self.instrument_context is not None:
+            result["instrument_context"] = self.instrument_context.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "CalibrationSignature":
@@ -160,6 +219,16 @@ class CalibrationSignature:
         extra = set(payload) - set(cls.__dataclass_fields__)
         if extra:
             raise CalibrationProfileError("signature contains unsupported fields: " + ", ".join(sorted(extra)))
+        raw_instrument = payload.get("instrument_context")
+        if raw_instrument is not None and not isinstance(raw_instrument, Mapping):
+            raise CalibrationProfileError("instrument context must be an object")
+        instrument = InstrumentCalibrationContext.from_dict(raw_instrument) if isinstance(raw_instrument, Mapping) else None
+        def numeric(name: str) -> float | None:
+            value = payload.get(name, getattr(defaults, name))
+            return None if instrument is not None and value is None else _finite(value, name)
+        def optional_text(name: str) -> str | None:
+            value = payload.get(name, getattr(defaults, name))
+            return None if instrument is not None and value is None else _text(value, name)
         raw_temperature = payload.get("temperature_range_c", defaults.temperature_range_c)
         temperature: tuple[float, float] | None
         if raw_temperature is None:
@@ -175,12 +244,12 @@ class CalibrationSignature:
             device_serial=_text(payload.get("device_serial", defaults.device_serial), "device_serial"),
             backend=_text(payload.get("backend", defaults.backend), "backend"),
             rf_port_path=_text(payload.get("rf_port_path", defaults.rf_port_path), "rf_port_path"),
-            sample_rate_hz=_finite(payload.get("sample_rate_hz", defaults.sample_rate_hz), "sample_rate_hz"),
-            analog_bandwidth_hz=_finite(payload.get("analog_bandwidth_hz", defaults.analog_bandwidth_hz), "analog_bandwidth_hz"),
-            gain_mode=_text(payload.get("gain_mode", defaults.gain_mode), "gain_mode"),
-            manual_gain_db=_finite(payload.get("manual_gain_db", defaults.manual_gain_db), "manual_gain_db"),
-            window_normalization_version=_text(payload.get("window_normalization_version", defaults.window_normalization_version), "window_normalization_version"),
-            fft_unit_convention=_text(payload.get("fft_unit_convention", defaults.fft_unit_convention), "fft_unit_convention"),
+            sample_rate_hz=numeric("sample_rate_hz"),
+            analog_bandwidth_hz=numeric("analog_bandwidth_hz"),
+            gain_mode=optional_text("gain_mode"),
+            manual_gain_db=numeric("manual_gain_db"),
+            window_normalization_version=optional_text("window_normalization_version"),
+            fft_unit_convention=optional_text("fft_unit_convention"),
             frontend_chain=_text(payload.get("frontend_chain", defaults.frontend_chain), "frontend_chain"),
             reference_plane=_text(payload.get("reference_plane", defaults.reference_plane), "reference_plane"),
             device_family=_text(payload.get("device_family", defaults.device_family), "device_family"),
@@ -192,6 +261,7 @@ class CalibrationSignature:
                 payload.get("firmware_fingerprint", defaults.firmware_fingerprint), "firmware_fingerprint"
             ),
             temperature_range_c=temperature,
+            instrument_context=instrument,
         )
 
 
@@ -263,6 +333,7 @@ class CalibrationProfile:
     interpolation_method: str = "linear"
     valid_start_hz: float | None = None
     valid_stop_hz: float | None = None
+    _fingerprint: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         profile_id = validate_calibration_profile_id(self.profile_id)
@@ -275,6 +346,11 @@ class CalibrationProfile:
         points = tuple(self.points)
         if len(points) < 2 or any(not isinstance(point, CalibrationPoint) for point in points):
             raise CalibrationProfileError("points must contain at least two calibration points")
+        if self.signature.instrument_context is not None and len(points) > 10001:
+            raise CalibrationProfileError("instrument correction curve exceeds its bounded point count")
+        if self.signature.instrument_context is not None and any(
+                point.reference_dbm != 0 or point.measured_dbfs != 0 for point in points):
+            raise CalibrationProfileError("instrument correction points cannot carry an SDR reference conversion")
         if any(left.frequency_hz >= right.frequency_hz for left, right in zip(points, points[1:])):
             raise CalibrationProfileError("points must contain at least two strictly increasing frequencies")
         if self.reference_plane != self.signature.reference_plane:
@@ -297,16 +373,17 @@ class CalibrationProfile:
         object.__setattr__(self, "created_at", _text(created_at, "created_at"))
         if not isinstance(self.reference_equipment, str) or not isinstance(self.notes, str):
             raise CalibrationProfileError("reference_equipment and notes must be text")
+        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        object.__setattr__(self, "_fingerprint", hashlib.sha256(payload.encode()).hexdigest())
 
     @property
     def fingerprint(self) -> str:
-        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode()).hexdigest()
+        return self._fingerprint  # immutable profile; no repeated JSON work in UI
 
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": "sdr-calibration-profile",
-            "schema_version": 1,
+            "schema_version": 2 if self.signature.instrument_context is not None else 1,
             "profile_id": self.profile_id,
             "profile_version": self.profile_version,
             "finalized": self.finalized,
@@ -318,7 +395,9 @@ class CalibrationProfile:
             "created_at": self.created_at,
             "reference_equipment": self.reference_equipment,
             "notes": self.notes,
-            "points": [point.to_dict() for point in self.points],
+            "points": [({"frequency_hz": point.frequency_hz, "correction_db": point.correction_db,
+                         "uncertainty_db": point.uncertainty_db}
+                        if self.signature.instrument_context is not None else point.to_dict()) for point in self.points],
         }
 
     @classmethod
@@ -335,18 +414,25 @@ class CalibrationProfile:
         if (
             payload.get("schema") != "sdr-calibration-profile"
             or isinstance(schema_version, bool)
-            or schema_version != 1
+            or schema_version not in (1, 2)
         ):
             raise CalibrationProfileError("unknown calibration profile schema")
         raw_points = payload.get("points")
         signature = payload.get("signature")
         if not isinstance(raw_points, list) or not isinstance(signature, Mapping):
             raise CalibrationProfileError("profile requires signature and points")
+        if ((schema_version == 2) != (signature.get("instrument_context") is not None)):
+            raise CalibrationProfileError("profile schema version does not match instrument/SDR semantics")
+        if schema_version == 2 and not 2 <= len(raw_points) <= 10001:
+            raise CalibrationProfileError("instrument correction curve exceeds its bounded point count")
         if any(not isinstance(item, Mapping) for item in raw_points):
             raise CalibrationProfileError("profile points must be objects")
-        point_fields = set(CalibrationPoint.__dataclass_fields__)
+        point_fields = ({"frequency_hz", "correction_db", "uncertainty_db"} if schema_version == 2
+                        else set(CalibrationPoint.__dataclass_fields__))
         if any(set(item) - point_fields for item in raw_points if isinstance(item, Mapping)):
             raise CalibrationProfileError("calibration point contains unsupported fields")
+        if schema_version == 2 and any(set(item) != point_fields for item in raw_points):
+            raise CalibrationProfileError("instrument correction points require exact curve fields")
         points = tuple(
             CalibrationPoint(
                 frequency_hz=_finite(item.get("frequency_hz", 0.0), "frequency_hz"),
@@ -410,6 +496,7 @@ def check_applicability(profile: CalibrationProfile, settings: CalibrationSignat
         ("Device family", "device_family"), ("Adapter", "adapter_id"),
         ("Device identity", "device_identity_key"), ("Firmware", "firmware_fingerprint"),
         ("Temperature range", "temperature_range_c"),
+        ("Instrument context", "instrument_context"),
     )
     rows = []
     for label, name in fields:
@@ -441,6 +528,9 @@ def check_applicability(profile: CalibrationProfile, settings: CalibrationSignat
 
 
 def apply_calibration(values: Sequence[float] | np.ndarray, frequencies_hz: Sequence[float] | np.ndarray, profile: CalibrationProfile | None, settings: CalibrationSignature | None, *, allow_extrapolation: bool = False) -> "CalibratedArray":
+    if (profile is not None and profile.signature.instrument_context is not None
+            or settings is not None and settings.instrument_context is not None):
+        raise CalibrationProfileError("instrument dBm requires the separate external-correction operation")
     raw = np.asarray(values, dtype=np.float64).reshape(-1)
     frequencies = np.asarray(frequencies_hz, dtype=np.float64).reshape(-1)
     if raw.size != frequencies.size or raw.size == 0:
@@ -536,4 +626,4 @@ class MeasurementValue:
             raise ValueError("absolute dBm requires a valid calibration profile")
 
 
-__all__ = ["ApplicabilityRow", "CalibratedArray", "CalibrationApplicability", "CalibrationImportPreview", "CalibrationPoint", "CalibrationProfile", "CalibrationProfileError", "CalibrationSignature", "CalibrationStatus", "MeasurementQuality", "MeasurementValue", "apply_calibration", "check_applicability", "preview_calibration_csv", "validate_calibration_profile_id"]
+__all__ = ["ApplicabilityRow", "CalibratedArray", "CalibrationApplicability", "CalibrationImportPreview", "CalibrationPoint", "CalibrationProfile", "CalibrationProfileError", "CalibrationSignature", "CalibrationStatus", "InstrumentCalibrationContext", "MeasurementQuality", "MeasurementValue", "apply_calibration", "check_applicability", "preview_calibration_csv", "validate_calibration_profile_id"]

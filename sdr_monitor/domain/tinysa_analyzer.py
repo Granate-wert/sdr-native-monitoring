@@ -4,7 +4,9 @@ import math
 from dataclasses import dataclass, field
 
 from .analyzer_sources import AnalyzerSourceChoice
+from .calibration import CalibrationProfile
 from .device_capabilities import AdapterRuntimeAvailability, DeviceFamily
+from .tinysa_correction import InstrumentCorrectionObservation, admit_tinysa_correction
 from .tinysa_settings import (
     TinySaInputMode,
     TinySaSettingsObservation,
@@ -27,6 +29,9 @@ class TinySaSweepRequest:
     settings: TinySaSweepSettingsPlan = field(default_factory=TinySaSweepSettingsPlan)
     input_mode: TinySaInputMode = TinySaInputMode.PRESERVE
     readback_settings: bool = False
+    external_correction: CalibrationProfile | None = None
+    frontend_chain: str = "unknown"
+    allow_correction_extrapolation: bool = False
 
     def __post_init__(self) -> None:
         source = self.source
@@ -56,6 +61,13 @@ class TinySaSweepRequest:
         compile_tinysa_runtime_settings(self.settings, self.input_mode, model_id=source.binding.snapshot.model_id,
             control_contract=source.binding.snapshot.runtime_control_contract, start_hz=self.start_hz,
             stop_hz=self.stop_hz, readback=self.readback_settings)
+        if (not isinstance(self.frontend_chain, str) or not 1 <= len(self.frontend_chain) <= 128
+                or any(ord(c) < 32 or ord(c) == 127 for c in self.frontend_chain)
+                or self.frontend_chain != self.frontend_chain.strip()
+                or type(self.allow_correction_extrapolation) is not bool
+                or self.external_correction is None and self.allow_correction_extrapolation):
+            raise ValueError("tinySA correction chain/extrapolation intent is invalid")
+        admit_tinysa_correction(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +98,8 @@ class TinySaSweepProvenance:
     calibration_provenance: str = "device_reported_builtin"
     clock_domain: str = "host_steady_completion"
     settings: TinySaSettingsObservation | None = None
+    external_correction: InstrumentCorrectionObservation | None = None
+    gap_value_context: str | None = None
 
     def __post_init__(self) -> None:
         if any(type(v) is not int or not 0 <= v <= (1 << 64) - 1
@@ -112,3 +126,13 @@ class TinySaSweepProvenance:
             raise ValueError("instrument semantics cannot imply FFT, external correction or RF time")
         if self.settings is not None and not isinstance(self.settings, TinySaSettingsObservation):
             raise TypeError("instrument settings must be a typed same-owner observation")
+        if self.external_correction is not None and not isinstance(self.external_correction, InstrumentCorrectionObservation):
+            raise TypeError("instrument external correction must be a typed observation")
+        if self.gap_value_context is not None and (
+                not self.gap_value_context.startswith("external:") or len(self.gap_value_context) != 73
+                or any(c not in "0123456789abcdef" for c in self.gap_value_context[9:])):
+            raise ValueError("instrument gap display context is invalid")
+
+    @property
+    def value_context_key(self) -> str | None:
+        return self.external_correction.display_key if self.external_correction is not None else self.gap_value_context

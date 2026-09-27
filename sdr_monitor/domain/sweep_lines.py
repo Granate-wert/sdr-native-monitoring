@@ -226,6 +226,25 @@ class SweepLineFrame:
             p = self.instrument
             if not isinstance(p, TinySaSweepProvenance):
                 raise TypeError("instrument Sweep requires typed provenance")
+            correction = p.external_correction
+            if self.is_complete:
+                if p.gap_value_context is not None:
+                    raise ValueError("complete instrument data cannot borrow gap display context")
+                if correction is not None:
+                    context = correction.current_signature.instrument_context
+                    settings = p.settings
+                    if (settings is None or context is None
+                            or context.model_id != p.model_id
+                            or correction.current_signature.device_identity_key != p.device_identity_key
+                            or correction.current_signature.firmware_fingerprint != p.firmware_fingerprint
+                            or context.input_mode != settings.input_mode.value
+                            or context.rbw_hz != settings.actual_rbw_hz
+                            or context.attenuation_db != settings.actual_attenuation_db
+                            or correction.device_values_dbm.shape != values.shape
+                            or not np.array_equal(correction.display_values(), values, equal_nan=True)):
+                        raise ValueError("instrument correction does not match exact measurement/readout provenance")
+            elif correction is not None:
+                raise ValueError("unreceived instrument gap cannot invent observed correction")
             expected = p.start_hz + np.arange(p.points, dtype=np.float64) * ((p.stop_hz - p.start_hz) // p.points)
             if (self.quality_schema is not SweepQualitySchema.INSTRUMENT_V1 or self.unit != "dBm"
                     or not np.array_equal(self.frequencies_hz, expected)

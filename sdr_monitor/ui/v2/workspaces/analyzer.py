@@ -43,6 +43,7 @@ from ..state.analyzer_status_cadence import AnalyzerStatusCadence
 from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_summary
 from ..state.live_view_state import LiveAction
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
+from ..view_models.calibration_view_model import CalibrationProfileViewModel
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
 from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
@@ -63,6 +64,7 @@ class AnalyzerWorkspaceV2(QWidget):
     """
 
     def __init__(self, model: AnalyzerViewModel, *, projector: SpectrumProjector | None = None,
+                 calibration_profiles: CalibrationProfileViewModel | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.model = model
@@ -183,6 +185,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._unsubscribe = model.subscribe(self._render)
         self._unsubscribe_devices = model.live.subscribe_devices(self._devices)
         self.set_locale()
+        self.tinysa_bar.settings_drawer.bind_profiles(calibration_profiles)
 
     def _button(self, key, callback):
         button = QPushButton(text(key), self)
@@ -262,6 +265,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._unsubscribe()
         self._unsubscribe_devices()
         self.drawer.dispose()
+        self.tinysa_bar.settings_drawer.release_profiles()
         super().closeEvent(event)
 
     def release_presentation_after_shutdown(self) -> None:
@@ -272,6 +276,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._unsubscribe_devices()
         self.sweep_preview.cancel()
         self.drawer.dispose()
+        self.tinysa_bar.settings_drawer.release_profiles()
         # Terminal cleanup may be retried after a partial failure. Do not let
         # Qt paint a PlotItem whose axes have already been retired.
         self.visualization.hide()
@@ -687,10 +692,12 @@ def _set_text_if_changed(widget: QLabel | QPushButton, value: str) -> None:
 
 
 def analyzer_workspace_definition(model: AnalyzerViewModel,
-                                  projector: SpectrumProjector | None = None) -> WorkspaceDefinition:
+                                  projector: SpectrumProjector | None = None,
+                                  calibration_profiles: CalibrationProfileViewModel | None = None) -> WorkspaceDefinition:
     return WorkspaceDefinition(
         workspace_id="analyzer", label=text("analyzer.title"), description=text("analyzer.description"),
-        icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(model, projector=projector),
+        icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(
+            model, projector=projector, calibration_profiles=calibration_profiles),
         inspector_factory=lambda: AnalyzerInspector(model),
         label_key="analyzer.title", description_key="analyzer.description",
         terminal_cleanup=_release_analyzer_workspace,

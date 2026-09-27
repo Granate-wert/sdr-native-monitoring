@@ -145,10 +145,13 @@ def waterfall_line_from_sweep(frame: SweepLineFrame | SweepProgressFrame, *,
         sequence=frame.sequence, revision=frame.revision if isinstance(frame, SweepProgressFrame) else 0,
         state=SweepRowState.PARTIAL if isinstance(frame, SweepProgressFrame) else SweepRowState(frame.state.value),
     )
+    context = (frame.instrument.value_context_key
+               if isinstance(frame, SweepLineFrame) and frame.instrument is not None else None)
+    generation = (frame.source_id, frame.epoch) if context is None else (frame.source_id, frame.epoch, context)
     return SweepWaterfallLine(
         row=WaterfallLineFrame(
             values=values, frequency_edges_hz=edges, timestamp_ns=0,
-            configuration_generation="sweep:" + json.dumps((frame.source_id, frame.epoch)),
+            configuration_generation="sweep:" + json.dumps(generation),
             unit_label=frame.unit, timestamp_known=False, sequence=frame.sequence,
         ),
         stamp=stamp,

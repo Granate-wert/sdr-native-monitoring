@@ -115,10 +115,14 @@ class TinySaConfigurationBar(QWidget):
             raise ValueError("Instrument selection is not ready")
         plan = self.settings_drawer.plan()
         input_mode = TinySaInputMode(self.settings_drawer.input.currentData())
-        readback = bool(plan.commands or input_mode is not TinySaInputMode.PRESERVE or self.settings_drawer.readback.isChecked())
+        correction = self.settings_drawer.correction_profile()
+        readback = bool(plan.commands or input_mode is not TinySaInputMode.PRESERVE
+                        or self.settings_drawer.readback.isChecked() or correction is not None)
         return TinySaSweepRequest(selection.selected, selection.revision,
             round(self.start.value() * 1e6), round(self.stop.value() * 1e6), self.points.value(), self.deadline.value(),
-            repeat_until_stop=self.repeat.isChecked(), settings=plan, input_mode=input_mode, readback_settings=readback)
+            repeat_until_stop=self.repeat.isChecked(), settings=plan, input_mode=input_mode, readback_settings=readback,
+            external_correction=correction, frontend_chain=self.settings_drawer.frontend_chain.text().strip() or "unknown",
+            allow_correction_extrapolation=correction is not None and self.settings_drawer.extrapolate.isChecked())
 
     @property
     def validation_message(self) -> str:

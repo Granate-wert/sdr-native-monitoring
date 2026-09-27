@@ -133,7 +133,10 @@ class AnalyzerFrameBundle:
                                    if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument else None),
                 clock_domain=(self.spectrum.instrument.clock_domain
                               if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument else None),
-                accumulation_id=f"epoch:{self.spectrum.epoch}",
+                accumulation_id=(f"epoch:{self.spectrum.epoch}" +
+                    (":" + self.spectrum.instrument.value_context_key
+                     if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument
+                     and self.spectrum.instrument.value_context_key is not None else "")),
                 source_frame_sequence=base.source_frame_sequence,
                 unit=base.unit, frequencies_hz=base.frequencies_hz,
             )

@@ -240,7 +240,8 @@ class V2LiveProductComposition:
         if self.analyzer_view_model is not None:
             # Product Analyzer replaces both old routes, not two pages hidden
             # inside a tab. Their application ownership remains unchanged.
-            workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector),) + tuple(
+            workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector,
+                self.calibration_view_model),) + tuple(
                 item for item in workspaces if item.workspace_id not in {"home", "live", "sweep"}
             )
         self.context = V2ShellContext(

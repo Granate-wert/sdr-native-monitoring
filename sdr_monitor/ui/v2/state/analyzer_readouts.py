@@ -22,9 +22,19 @@ def tinysa_settings_readout(frame: object) -> str:
     def value(number: float | None, divisor: float = 1) -> str:
         return "—" if number is None else f"{number / divisor:g}"
 
+    correction = p.external_correction if p is not None else None
+    if correction is None:
+        correction_label = text("tinysa.correction.not_applied")
+    elif correction.applied:
+        correction_label = text("tinysa.correction.applied", name=correction.profile.profile_id,
+            version=correction.profile.profile_version, digest=correction.profile.fingerprint[:8],
+            status=text("tinysa.correction.status." + correction.status.value), plane=correction.profile.reference_plane)
+    else:
+        correction_label = text("tinysa.correction.refused",
+            reason=text("tinysa.correction.reason." + correction.reason))
     return text("tinysa.settings.observed", ack=len(observed.acknowledged_commands),
         rbw=value(observed.actual_rbw_hz, 1000), atten=value(observed.actual_attenuation_db),
-        screen=value(observed.screen_sweep_time_s))
+        screen=value(observed.screen_sweep_time_s), correction=correction_label)
 
 
 def presentation_omission(state: AnalyzerViewState) -> PresentationOmission | None:

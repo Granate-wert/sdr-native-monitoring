@@ -20,6 +20,7 @@ from ..domain.analyzer_sources import AnalyzerSourceSelection
 from ..domain.live import LiveAdmissionRejected
 from ..domain.sweep_lines import SweepLineFrame, SweepLineGapReason, SweepLineState, SweepQualitySchema
 from ..domain.tinysa_analyzer import TinySaSweepProvenance, TinySaSweepRequest, TinySaSweepRunIdentity
+from ..domain.tinysa_correction import correct_tinysa_values
 from .source_capability_admission import admit_source_request
 from .source_capability_catalog import SourceCapabilityCatalog
 from .tinysa_capability_adapter import TinySaModel
@@ -107,12 +108,25 @@ class TinySaCommonAnalyzerService:
         assert request is not None and request.source.binding.snapshot is not None
         identity = request.source.binding.calibration_identity
         assert identity is not None
+        settings = self._owner.settings_observation if self._owner is not None and not cancelled else None
+        grid = request.start_hz + np.arange(request.points, dtype=np.float64) * (
+            (request.stop_hz - request.start_hz) // request.points)
+        correction = None
+        gap_context = None
+        if request.external_correction is not None and not cancelled:
+            assert settings is not None and settings.actual_rbw_hz is not None and settings.actual_attenuation_db is not None
+            correction = correct_tinysa_values(request, grid, values, rbw_hz=settings.actual_rbw_hz,
+                                               attenuation_db=settings.actual_attenuation_db)
+            values = correction.display_values()
+        if cancelled:
+            with self._lock:
+                previous = self._snapshot.line
+            if previous is not None and previous.instrument is not None:
+                gap_context = previous.instrument.value_context_key  # display plane only; no observed settings/calibration
         p = TinySaSweepProvenance(request.selection_revision, self._generation,
             request.source.binding.snapshot.model_id or "", identity.device_identity_key,
             identity.firmware_fingerprint, request.start_hz, request.stop_hz, request.points, zero, elapsed,
-            settings=self._owner.settings_observation if self._owner is not None and not cancelled else None)
-        grid = request.start_hz + np.arange(request.points, dtype=np.float64) * (
-            (request.stop_hz - request.start_hz) // request.points)
+            settings=settings, external_correction=correction, gap_value_context=gap_context)
         return SweepLineFrame(self._sequence, request.epoch, self._clock_ns(), request.source.device_id,
             SweepLineState.GAP if cancelled else SweepLineState.COMPLETE, grid, values,
             np.zeros(request.points, dtype=np.uint16), np.full(request.points, -1, dtype=np.int32),
