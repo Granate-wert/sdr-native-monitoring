@@ -58,6 +58,11 @@ if (-not $SkipFreeze) {
         $libiioPyInstallerArgs += "--add-binary"
         $libiioPyInstallerArgs += "$libiioRuntimePath;sdr_monitor"
     }
+    # Pluto and official HackRF share a Windows dependency basename. Never
+    # let PyInstaller silently select/overwrite a different SDK's libusb.
+    $freezeNativeManifestPath = Join-Path $repoRoot 'sdr_monitor\native_build_manifest.json'
+    & $python (Join-Path $repoRoot 'scripts\preflight_sdr_shared_runtime.py') --module $nativeModules[0].FullName --manifest $freezeNativeManifestPath --libiio-directory $libiioRuntimeDir --lane $Lane
+    if ($LASTEXITCODE -ne 0) { throw 'Shared Pluto/HackRF runtime admission failed before freeze' }
     # Codex helper runtimes can put Poppler/ICU and libheif DLL directories on
     # PATH. They are not product dependencies: collecting their ICU shadows
     # Windows ICU and breaks Qt's unversioned ucnv_* imports. Isolate only the

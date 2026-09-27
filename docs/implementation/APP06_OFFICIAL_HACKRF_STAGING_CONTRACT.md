@@ -62,6 +62,23 @@ Native artifact and Python runner source commits/hashes are independent.
 Do not claim that a script-only change rebuilt the staged extension. Do not
 confuse frames polled or FFT/s with Qt/DWM FPS or Waterfall LPS.
 
+## Shared Windows runtime must be explicit
+
+`build_sdr_release.ps1` now runs a no-load shared-runtime preflight before
+freezing. All seven canonical libiio components must be present and hashed.
+If the native manifest admits official HackRF, its exact SDK libusb hash must
+equal the libusb chosen for the libiio payload. A different same-basename
+library is rejected; the builder does not silently overwrite it or change
+system DLLs. Runtime load, ABI behavior, sequential device ownership and
+package activation still need their own gates. A static PASS is not that proof.
+
+The observed local IIO libusb1.0.26 and HackRF SDK libusb1.0.30 differ. The
+older exports lack `libusb_endpoint_set_raw_io` and
+`libusb_endpoint_supports_raw_io` required by this exact hackrf.dll. A fresh
+process preloading the older DLL rejected the official native extension's
+import; preloading the admitted SDK DLL allowed import and CPU self-test.
+Do not implement common packaging by copying both versions under one name.
+
 ## Common integration still required
 
 - Preserve physical opaque identity and aliases in the common catalog;
