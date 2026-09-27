@@ -1,5 +1,29 @@
 # APP-06 — общий UI V2 для Pluto, HackRF и tinySA
 
+## Текущий coherent catalog checkpoint — 2026-09-27
+
+Читайте [APP_06A_COHERENT_CATALOG_CHECKPOINT_2026-09-27.md](APP_06A_COHERENT_CATALOG_CHECKPOINT_2026-09-27.md).
+Product b7446bf / final tested9a8a5c1 (fixture-only): owned topology + shared
+retained read-only transaction; NativeLive discovery/selection uses those
+same facts, existing DeviceCapabilitySnapshot/Inventory without second SDK
+probe or truth model. Unknown serial retains operational route, not stable
+catalog evidence. Invalid observation protocol/conflicting alias facts fail
+stable admission; pending close blocks new RX/discovery until explicit Stop.
+
+Clean native34/34CTest40.28s, compiled2 tests/3owner subtests,109 combined
+tests, final fullV2 gate894/66skip/0fail249.723s PASS. First full gate2 errors
+were an incomplete terminal test fixture, corrected without weakening cleanup.
+Native staged383085… manifestb7446bf; canonicalB218/EXEaec7a85 unchanged.
+Physical USB coherent observation + Fs61.44/RF56/FFT4096 RTBW Stop/close PASS;
+serial empty, admitted stable catalog0. Not desktop/LPS/frozen acceptance.
+
+NEXT: retained cleanup of other family providers (fake HackRF close-failure
+repro loses refs), common runtime/capability registry and explicit canonical
+identity join, official shared-runtime frozen package, one UI V2 owner/router,
+high-Fs matrix. AD936x service catalog ≠ completed common Analyzer support.
+APP-05 timebox ended~08:44MSK/not restarted; performance debts OPEN.
+APP-06A/B PARTIAL,C/D and APP-07/release OPEN. No subagents this iteration.
+
 ## Текущий checkpoint APP-06A — 2026-09-27, source c22361f
 
 Читайте [APP_06A_IDENTITY_AND_OWNER_CHECKPOINT_2026-09-27.md](APP_06A_IDENTITY_AND_OWNER_CHECKPOINT_2026-09-27.md)

@@ -57,8 +57,10 @@ mock-driver tests cover distinct serials on every open, one live owner,
 idempotent disconnect/destructor and cleanup after version/timeout errors.
 Linux source parity is not a substitute for a Linux build or hardware test.
 
-This is not discovery-to-Start identity revalidation or a verified unique
-serial on every AD936x firmware. Empty native serial stays empty. A read-only
+This read-only transaction alone is not discovery-to-Start identity
+revalidation. The separate identity protocol1 admits expected serial on the
+actual receiver owner before RF configuration. Neither contract proves a
+verified unique serial on every AD936x firmware. Empty native serial stays empty. A read-only
 2026-09-27 check through the installed iio_info 0.26 independently found both
 hw_serial and usb,serial empty on the connected AD9364. Model, firmware and a
 USB URI cannot manufacture unique physical identity. The strict capability
