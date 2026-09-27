@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import threading
+from itertools import islice
 from typing import Protocol
 
 from .hackrf_activation_preflight import (
@@ -208,6 +209,23 @@ class HackrfProductLiveCoordinator:
             return control.metrics()
         except Exception:
             return None
+
+    def poll_persistence_snapshots(self, max_items: int = 2) -> tuple[object, ...]:
+        """Required optional-path contract; failures retain owner for explicit Stop."""
+        if type(max_items) is not int or not 1 <= max_items <= 2:
+            raise ValueError("persistence poll must be bounded to one or two snapshots")
+        with self._lock:
+            control = self._control if self._state is HackrfProductLiveState.ACTIVE else None
+        poll = getattr(control, "poll_persistence_snapshots", None)
+        if not callable(poll):
+            raise RuntimeError("HackRF native persistence control unavailable")  # noqa: TRY004 - foreign owner contract failure, not caller type validation.
+        try:
+            frames = tuple(islice(poll(max_items), max_items + 1))
+        except Exception:  # noqa: BLE001 - retain owner and redact foreign SDK failures.
+            raise RuntimeError("HackRF native persistence poll failed") from None
+        if len(frames) > max_items:
+            raise RuntimeError("HackRF native persistence poll exceeded its bound")
+        return frames
 
     def stop(self, timeout_ms: int) -> HackrfProductLiveStopResult:
         """Run only the existing explicit three-phase native stop once requested."""

@@ -152,8 +152,9 @@ def packaged_shared_runtime_verdict(native: object) -> dict[str, object]:
     if (type(factory_version) is not int or factory_version != 2
             or not callable(getattr(native, "create_hackrf_runtime_dsp_control", None))):
         raise RuntimeError("official HackRF factory2 is unavailable")
-    from .services.hackrf_dsp_contract import hackrf_dsp_profile_contract_version
+    from .services.hackrf_dsp_contract import hackrf_dsp_profile_contract_version, hackrf_persistence_contract_version
     dsp_version = hackrf_dsp_profile_contract_version(native, manifest)
+    persistence_version = hackrf_persistence_contract_version(native, manifest)
     hashes = manifest.get("hackrf_runtime_sha256")
     if not isinstance(hashes, dict) or set(hashes) != set(HACKRF_COMPONENTS):
         raise RuntimeError("official SDK runtime manifest is incomplete")
@@ -186,6 +187,7 @@ def packaged_shared_runtime_verdict(native: object) -> dict[str, object]:
         "hackrf_official_compiled": True,
         "hackrf_factory_contract_version": 2,
         "hackrf_dsp_profile_contract_version": dsp_version,
+        "hackrf_persistence_contract_version": persistence_version,
         "cuda_compiled": False,
         "libiio_available": True,
         "metadata_hold_released": True,

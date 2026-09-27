@@ -48,6 +48,11 @@ HackrfRuntimeDspSession::poll_spectrum_frames(const std::size_t max_items) {
     return impl_->processing->poll_spectrum_frames(max_items);
 }
 
+std::vector<sdr_core::PersistenceSnapshot>
+HackrfRuntimeDspSession::poll_persistence_snapshots(const std::size_t max_items) {
+    return impl_->processing->poll_persistence_snapshots(max_items);
+}
+
 HackrfRuntimeDspMetrics HackrfRuntimeDspSession::metrics() const {
     HackrfRuntimeDspMetrics result;
     result.lifecycle_open = impl_->source->running();

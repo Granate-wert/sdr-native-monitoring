@@ -60,6 +60,7 @@ void bind_hackrf_factory(py::module_& module) {
     // Backward-compatible optional detector-group arguments; identity protocol2
     // remains unchanged. Old modules must never silently ignore these values.
     module.attr("HACKRF_DSP_PROFILE_CONTRACT_VERSION") = 1;
+    module.attr("HACKRF_PERSISTENCE_CONTRACT_VERSION") = 1;
     module.def(
         "create_hackrf_runtime_dsp_control",
         [](
@@ -81,7 +82,8 @@ void bind_hackrf_factory(py::module_& module) {
             const std::uint64_t configuration_generation,
             std::string source_id,
             std::array<std::uint32_t, 4> expected_serial_words,
-            const std::uint32_t averaging_frames
+            const std::uint32_t averaging_frames,
+            const sdr_core::PersistenceConfig& persistence
         ) {
             auto config = hackrf_live_factory_config(
                 center_frequency_hz,
@@ -103,6 +105,7 @@ void bind_hackrf_factory(py::module_& module) {
                 std::move(source_id)
             );
             config.averaging_frames = averaging_frames;
+            config.persistence = persistence;
             // Reject malformed values before the first device/library action.
             static_cast<void>(sdr_hackrf::make_hackrf_runtime_dsp_config(config));
             py::gil_scoped_release release;
@@ -126,7 +129,8 @@ void bind_hackrf_factory(py::module_& module) {
         py::arg("configuration_generation"),
         py::arg("source_id"),
         py::arg("expected_serial_words"),
-        py::arg("averaging_frames") = 1U
+        py::arg("averaging_frames") = 1U,
+        py::arg("persistence") = sdr_core::PersistenceConfig{}
     );
 }
 

@@ -16,12 +16,13 @@ from typing import Any, Protocol, cast
 from ..domain.analyzer_sources import AnalyzerSourceSelection
 from ..domain.device_capabilities import DeviceCapabilityInventory, DeviceFamily
 from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
-from ..domain.identity import ConfigurationGeneration, FrameSequence, SessionId
+from ..domain.identity import ConfigurationGeneration, FrameSequence, SessionId, TimestampQuality
 from ..domain.live import (
     BackendKind,
     LiveAdmissionRejected,
     LiveErrorKind,
     LivePerformance,
+    LivePersistenceFrame,
     LiveQuality,
     LiveSessionState,
     LiveSnapshot,
@@ -30,7 +31,7 @@ from ..domain.live import (
 from .hackrf_activation_preflight import HackrfActivationPreflightService, HackrfRuntimeIdentityPort
 from .hackrf_live_admission import admit_hackrf_live
 from .hackrf_product_live import HackrfNativeFactoryPort, HackrfProductLiveCoordinator, HackrfProductLiveState
-from .native_live import _native_frame_metadata, _native_spectrum_unit
+from .native_live import _native_frame_metadata, _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .source_capability_admission import admit_source_request
 
@@ -60,6 +61,7 @@ class HackrfAnalyzerService:
         self._generation = 0
         self._epoch = 0
         self._last_native_sequence = -1
+        self._last_density_sequence = -1
         self._polled = self._coalesced = self._published = 0
 
     def bind_selection(self, selection: AnalyzerSourceSelection) -> None:
@@ -76,7 +78,13 @@ class HackrfAnalyzerService:
                 unit="unavailable", source_choice=choice if choice and choice.family is DeviceFamily.HACKRF else None,
                 selection_revision=selection.revision if choice and choice.family is DeviceFamily.HACKRF else None,
                 hackrf_detector_groups_available=bool(choice and choice.family is DeviceFamily.HACKRF
-                    and self._detector_groups_available()))
+                    and self._detector_groups_available()),
+                hackrf_persistence_available=bool(choice and choice.family is DeviceFamily.HACKRF
+                    and self._persistence_available()))
+
+    def _persistence_available(self) -> bool:
+        version = getattr(self._native, "HACKRF_PERSISTENCE_CONTRACT_VERSION", None)
+        return type(version) is int and version == 1
 
     def _detector_groups_available(self) -> bool:
         version = getattr(self._native, "HACKRF_DSP_PROFILE_CONTRACT_VERSION", None)
@@ -101,6 +109,8 @@ class HackrfAnalyzerService:
         return self._generation
 
     def _admit(self, request: HackrfLiveRequest) -> None:
+        if request.persistence_enabled and not self._persistence_available():
+            raise LiveAdmissionRejected("HackRF persistence requires native persistence protocol1")
         if request.averaging_frames != 1 and not self._detector_groups_available():
             raise LiveAdmissionRejected("HackRF detector groups require native DSP profile protocol1")
         selection = self._selection
@@ -130,7 +140,7 @@ class HackrfAnalyzerService:
             with self._lock:
                 self._snapshot = replace(snapshot, generation=ConfigurationGeneration(request.configuration_generation),
                     hackrf_request=request, unit="dBFS/bin", error=None, error_kind=None,
-                    state=LiveSessionState.CONNECTED, spectrum=None, performance=LivePerformance(),
+                    state=LiveSessionState.CONNECTED, spectrum=None, persistence=None, performance=LivePerformance(),
                     active_source_id=None, active_config_generation=None, acquisition_epoch=None, clock_domain=None)
                 return self._snapshot
 
@@ -164,7 +174,7 @@ class HackrfAnalyzerService:
             self._epoch += 1
             with self._lock:
                 self._snapshot = replace(snapshot, generation=ConfigurationGeneration(request.configuration_generation),
-                    hackrf_request=request, spectrum=None, performance=LivePerformance(),
+                    hackrf_request=request, spectrum=None, persistence=None, performance=LivePerformance(),
                     state=LiveSessionState.STARTING, stop_required=True, error=None, error_kind=None,
                     session_id=SessionId(f"hackrf-analyzer-{self._epoch}"), active_source_id=request.source_id,
                     active_config_generation=request.configuration_generation, acquisition_epoch=self._epoch,
@@ -178,6 +188,7 @@ class HackrfAnalyzerService:
                     return self._error("HackRF native activation failed; explicit Stop required")
                 self._cancel.clear()
                 self._last_native_sequence = -1
+                self._last_density_sequence = -1
                 self._polled = self._coalesced = self._published = 0
                 with self._lock:
                     self._snapshot = replace(self._snapshot, state=LiveSessionState.RUNNING)
@@ -233,6 +244,32 @@ class HackrfAnalyzerService:
             native_quality_flags=int(frame.quality_flags), acquisition_epoch=context.acquisition_epoch,
             clock_domain=context.clock_domain, numerical_provenance=provenance)
 
+    def _convert_persistence(self, value: Any, context: LiveSnapshot) -> LivePersistenceFrame:
+        request = context.hackrf_request
+        assert request is not None
+        if (getattr(value, "source_id", None) != request.source_id
+                or getattr(value, "config_generation", None) != request.configuration_generation
+                or getattr(value, "quality_flags", None) is None
+                or isinstance(value.quality_flags, bool)):
+            raise ValueError("missing/foreign HackRF persistence producer metadata")
+        density = LivePersistenceFrame(
+            update_sequence=value.update_sequence, timestamp_ns=value.timestamp_ns,
+            source_frame_sequence=value.source_frame_sequence,
+            power_min_db=value.power_min_db, power_max_db=value.power_max_db,
+            power_bins=value.power_bins, frequency_bins=value.frequency_bins,
+            processed_frames=value.processed_frames, exponential_decay=value.exponential_decay,
+            frequencies_hz=value.frequencies_hz, density=value.density,
+            probability_scale=value.probability_scale, count_scale=value.count_scale,
+            source_id=value.source_id, config_generation=value.config_generation,
+            unit=_native_spectrum_unit(value.unit), producer_identity_available=True,
+            timestamp_quality=TimestampQuality.ESTIMATED
+                if _native_quality_mask(self._native, value, "TIMESTAMP_ESTIMATED") else TimestampQuality.UNKNOWN,
+            acquisition_epoch=context.acquisition_epoch, clock_domain=context.clock_domain,
+            accumulation_id=str(context.session_id), native_quality_flags=int(value.quality_flags))
+        # Validate before caching, including disabled/profile/grid/source guards.
+        replace(context, persistence=density)
+        return density
+
     def _poll(self) -> None:
         last_frame = time.monotonic()
         last_metrics = last_frame
@@ -259,6 +296,20 @@ class HackrfAnalyzerService:
                 now = time.monotonic()
                 request = self.current_snapshot().hackrf_request
                 assert request is not None
+                if request.persistence_enabled:
+                    densities = self._coordinator.poll_persistence_snapshots(2)
+                    if densities:
+                        context = self.current_snapshot()
+                        density = self._convert_persistence(densities[-1], context)
+                        if density.update_sequence < self._last_density_sequence:
+                            raise ValueError("HackRF persistence update sequence regressed")
+                        if density.update_sequence > self._last_density_sequence:
+                            with self._lock:
+                                if self._cancel.is_set():
+                                    return
+                                self._snapshot = replace(self._snapshot, persistence=density,
+                                    sequence=FrameSequence(self._snapshot.sequence + 1))
+                            self._last_density_sequence = int(density.update_sequence)
                 if now - last_frame > request.spectrum_stall_timeout_s:
                     self._error("HackRF reduced spectrum stalled; explicit Stop required")
                     return
@@ -274,6 +325,8 @@ class HackrfAnalyzerService:
                     interval = now - last_metrics
                     rates = tuple((counts[i] - previous[i]) / interval for i in range(4)) if previous else (0.0, 0.0, 0.0, 0.0)
                     performance = LivePerformance(fft_frames_computed=computed,
+                        persistence_updates=int(dsp.persistence_updates) if request.persistence_enabled else 0,
+                        persistence_snapshots_superseded=int(dsp.persistence.dropped) if request.persistence_enabled else 0,
                         fft_frames_dropped=int(dsp.dsp.fft_frames_dropped),
                         snapshots_superseded=int(dsp.presentation.dropped),
                         snapshots_emitted=int(dsp.presentation.pushed),

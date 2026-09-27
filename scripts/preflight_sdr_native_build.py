@@ -210,6 +210,10 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
                 type(manifest["hackrf_dsp_profile_contract_version"]) is not int
                 or manifest["hackrf_dsp_profile_contract_version"] != 1):
             raise ContractSurfaceError("HackRF optional DSP staging requires contract version1")
+        if "hackrf_persistence_contract_version" in manifest and (
+                type(manifest["hackrf_persistence_contract_version"]) is not int
+                or manifest["hackrf_persistence_contract_version"] != 1):
+            raise ContractSurfaceError("HackRF optional persistence staging requires contract version1")
         hashes = manifest.get("hackrf_runtime_sha256")
         if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
             raise ContractSurfaceError("HackRF staging requires the complete app-local runtime manifest")
@@ -240,6 +244,12 @@ def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> N
                 type(observed) is not int or observed != 1
                 or type(declared) is not int or declared != observed):
             raise ContractSurfaceError("HackRF optional DSP profile contract does not match its native manifest")
+        observed = getattr(module, "HACKRF_PERSISTENCE_CONTRACT_VERSION", missing)
+        declared = manifest.get("hackrf_persistence_contract_version", missing)
+        if not (observed is missing and declared is missing) and (
+                type(observed) is not int or observed != 1
+                or type(declared) is not int or declared != observed):
+            raise ContractSurfaceError("HackRF optional persistence contract does not match its native manifest")
 
 
 def validate_active_artifact(

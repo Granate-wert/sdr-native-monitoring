@@ -55,12 +55,29 @@ void validate_hackrf_fixed_band_dsp_config(const HackrfFixedBandDspConfig& confi
         config.presentation_capacity > hackrf_fixed_band_max_presentation_capacity) {
         invalid("HackRF presentation capacity is outside the bounded range");
     }
+    sdr_core::validate(config.persistence);
+    if (config.persistence.power_bins < 16U || config.persistence.power_bins > 4096U ||
+        config.persistence.window_frames > 1000000U) {
+        invalid("HackRF persistence dimensions are outside the bounded range");
+    }
+    if (config.persistence.enabled) {
+        const auto n = static_cast<std::uint64_t>(config.dsp.fft_size);
+        const auto cells = n * config.persistence.power_bins;
+        const auto ring = config.persistence.mode == sdr_core::PersistenceMode::RollingExact
+                              ? n * config.persistence.window_frames * 4U : 0U;
+        const auto bytes = cells * 4U * 5U + n * 8U * 4U + ring;
+        if (bytes > 256U * 1024U * 1024U) {
+            invalid("HackRF persistence exceeds the 256 MiB allocation policy");
+        }
+    }
 }
 
 struct HackrfFixedBandDsp::Impl final {
     explicit Impl(HackrfFixedBandDspConfig value)
         : config(std::move(value)),
-          presentation(config.presentation_capacity, hackrf_fixed_band_presentation_overflow_policy) {
+          presentation(config.presentation_capacity, hackrf_fixed_band_presentation_overflow_policy),
+          persistence_queue(2U, sdr_core::OverflowPolicy::DropOldest),
+          persistence(config.persistence) {
         sdr_core::DspOptions options;
         options.dc_removal = config.dc_removal;
         options.source = config.source;
@@ -72,6 +89,8 @@ struct HackrfFixedBandDsp::Impl final {
     HackrfFixedBandDspConfig config;
     std::unique_ptr<sdr_core::DspBackend> dsp;
     sdr_core::BoundedQueue<sdr_core::SpectrumFrame> presentation;
+    sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot> persistence_queue;
+    sdr_core::PersistenceAccumulator persistence;
     mutable std::mutex mutex;
     std::uint64_t iq_blocks_processed{};
     std::uint64_t iq_samples_processed{};
@@ -158,18 +177,10 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
 
     const auto missing_blocks = impl_->source_blocks_missing;
     const auto missing_samples = impl_->source_samples_missing;
-    // CPU DSP batches restart their local frame sequence at each poll. Its
-    // global computed-frame counter is canonical across all admitted input,
-    // including an intentional analytical drop, so derive publication order
-    // from that monotonic source rather than a batch-local frame field.
-    const auto computed_fft_frames = impl_->dsp->metrics().fft_frames_computed;
-    if (frames.size() > computed_fft_frames) {
-        invalid("HackRF publication frame count exceeds computed FFT count");
-    }
-    auto presentation_frame_sequence =
-        computed_fft_frames - static_cast<std::uint64_t>(frames.size());
+    // Preserve the canonical CPU detector-output sequence. It is monotonic
+    // across polls and includes evicted outputs; analytical FFT count is a
+    // DIFFERENT domain when averaging_frames > 1 and cannot derive this ID.
     for (auto& frame : frames) {
-        frame.frame_sequence = presentation_frame_sequence++;
         frame.dropped_iq_blocks_before = missing_blocks;
         frame.dropped_samples_before = missing_samples;
         // `dropped_fft_frames_before` and FftDropped are canonical analytical
@@ -180,6 +191,11 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
         if (frame.dropped_fft_frames_before != 0U) {
             frame.quality_flags =
                 frame.quality_flags | sdr_core::QualityFlag::FftDropped;
+        }
+        // SAME canonical accumulation on detector outputs, BEFORE the lossy
+        // presentation boundary. No raw IQ/Python/UI frame averaging.
+        if (auto density = impl_->persistence.update(frame)) {
+            static_cast<void>(impl_->persistence_queue.try_push(std::move(*density)));
         }
         static_cast<void>(impl_->presentation.try_push(std::move(frame)));
     }
@@ -192,6 +208,18 @@ std::vector<sdr_core::SpectrumFrame> HackrfFixedBandDsp::poll_spectrum_frames(
     sdr_core::SpectrumFrame frame;
     while ((max_items == 0U || result.size() < max_items) &&
            impl_->presentation.try_pop(frame)) {
+        result.push_back(std::move(frame));
+    }
+    return result;
+}
+
+std::vector<sdr_core::PersistenceSnapshot> HackrfFixedBandDsp::poll_persistence_snapshots(
+    const std::size_t max_items
+) {
+    std::vector<sdr_core::PersistenceSnapshot> result;
+    sdr_core::PersistenceSnapshot frame;
+    while ((max_items == 0U || result.size() < max_items) &&
+           impl_->persistence_queue.try_pop(frame)) {
         result.push_back(std::move(frame));
     }
     return result;
@@ -211,6 +239,8 @@ HackrfFixedBandDspMetrics HackrfFixedBandDsp::metrics() const {
     result.source_estimated_timestamp_blocks = impl_->source_estimated_timestamp_blocks;
     result.dsp = impl_->dsp->metrics();
     result.presentation = impl_->presentation.stats();
+    result.persistence_updates = impl_->persistence.processed_frames();
+    result.persistence = impl_->persistence_queue.stats();
     result.presentation_frames_superseded = result.presentation.dropped;
     result.presentation_frames_abandoned = result.presentation.abandoned;
     return result;

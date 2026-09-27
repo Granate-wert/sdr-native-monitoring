@@ -90,8 +90,16 @@ class HackrfConfigurationBar(QWidget):
         self.hop.setRange(1, 262144)
         self.averaging = QSpinBox(self)
         self.averaging.setRange(1, 256)
-        dsp_fields: tuple[QComboBox | QSpinBox, ...] = (self.fft_window, self.detector, self.hop, self.averaging)
-        for index, (field, key) in enumerate(zip(dsp_fields, ("hackrf.window", "hackrf.detector", "hackrf.hop", "hackrf.group"))):
+        self.persistence_mode = QComboBox(self)
+        for token in ("disabled", "exponential-decay", "rolling-exact"):
+            self.persistence_mode.addItem(token, token)
+        self.persistence_bins = QSpinBox(self)
+        self.persistence_bins.setRange(16, 4096)
+        dsp_fields: tuple[QComboBox | QSpinBox, ...] = (
+            self.fft_window, self.detector, self.hop, self.averaging,
+            self.persistence_mode, self.persistence_bins)
+        for index, (field, key) in enumerate(zip(dsp_fields, ("hackrf.window", "hackrf.detector", "hackrf.hop", "hackrf.group",
+                                                            "hackrf.persistence", "hackrf.persistence.bins"))):
             label = QLabel(self)
             label.setProperty("ui2Role", "secondary")
             self._labels.append((label, key))
@@ -136,7 +144,8 @@ class HackrfConfigurationBar(QWidget):
         self.dsp_toggle.setText(text("hackrf.dsp"))
         self.dsp_toggle.setAccessibleName(text("hackrf.dsp"))
         self.dsp_help.setText(text("hackrf.dsp.help"))
-        for combo, prefix in ((self.fft_window, "hackrf.window."), (self.detector, "hackrf.detector.")):
+        for combo, prefix in ((self.fft_window, "hackrf.window."), (self.detector, "hackrf.detector."),
+                              (self.persistence_mode, "hackrf.persistence.")):
             with QSignalBlocker(combo):
                 for index in range(combo.count()):
                     combo.setItemText(index, text(prefix + combo.itemData(index)))
@@ -166,6 +175,12 @@ class HackrfConfigurationBar(QWidget):
             and bool(getattr(snapshot, "hackrf_detector_groups_available", False)))
         self.averaging.setToolTip(text("hackrf.group.help") if getattr(snapshot, "hackrf_detector_groups_available", False)
                                  else text("hackrf.group.unavailable"))
+        persistence_available = bool(getattr(snapshot, "hackrf_persistence_available", False))
+        self.persistence_mode.setEnabled(available and not state.controls_locked and persistence_available)
+        self.persistence_bins.setEnabled(available and not state.controls_locked and persistence_available
+                                        and self.persistence_mode.currentData() != "disabled")
+        self.persistence_mode.setToolTip(text("hackrf.persistence.help") if persistence_available
+                                        else text("hackrf.persistence.unavailable"))
         self.stage.setEnabled(available and not state.controls_locked and (self.dirty or self._base is None))
         self.discard.setEnabled(available and not state.controls_locked and self.dirty)
 
@@ -178,7 +193,9 @@ class HackrfConfigurationBar(QWidget):
                   request.fft_size if request else 4096,
                   request.lna_gain_db if request else 16, request.vga_gain_db if request else 20,
                   request.window if request else "hann", request.detector if request else "sample",
-                  request.hop_size if request else 2048, request.averaging_frames if request else 1)
+                  request.hop_size if request else 2048, request.averaging_frames if request else 1,
+                  request.persistence_mode if request else "disabled",
+                  request.persistence_power_bins if request else 256)
         with QSignalBlocker(self.hop):
             self.hop.setMaximum(request.fft_size if request else 4096)
         # Preserve a valid non-preset request; at most ONE extra Fs item exists.
@@ -223,12 +240,16 @@ class HackrfConfigurationBar(QWidget):
                 sample_rate_hz=self.rate.currentData(), baseband_filter_hz=self.bandwidth.currentData(),
                 fft_size=fft, hop_size=self.hop.value(), window=self.fft_window.currentData(),
                 detector=self.detector.currentData(), averaging_frames=self.averaging.value(),
+                persistence_enabled=self.persistence_mode.currentData() != "disabled",
+                persistence_mode=self.persistence_mode.currentData(),
+                persistence_power_bins=self.persistence_bins.value(),
                 lna_gain_db=self.lna.value(), vga_gain_db=self.vga.value(),
                 source_id=as_source_id(selection.selected.device_id))
             patch = HackrfConfigurationPatch(request, selection.revision, getattr(state.live.snapshot, "generation", 0))
             self._model.stage_hackrf_configuration(patch)
-        except (ValueError, TypeError):
-            self.summary.setText(text("hackrf.invalid"))
+        except (ValueError, TypeError) as error:
+            self.summary.setText(text("hackrf.persistence.budget")
+                if "256 MiB" in str(error) else text("hackrf.invalid"))
 
 
 __all__ = ["HackrfConfigurationBar"]

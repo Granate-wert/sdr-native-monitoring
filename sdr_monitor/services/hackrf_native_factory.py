@@ -105,6 +105,21 @@ class HackrfNativeRuntimeFactory:
                 )
             request = plan.request
             extras: dict[str, object] = {}
+            if request.persistence_enabled:
+                version = getattr(native_module, "HACKRF_PERSISTENCE_CONTRACT_VERSION", None)
+                if type(version) is not int or version != 1:
+                    raise HackrfNativeFactoryError(HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE)
+                config_type = getattr(native_module, "PersistenceConfig", None)
+                enum_type = getattr(native_module, "PersistenceMode", None)
+                mode = getattr(enum_type, {"rolling-exact": "ROLLING_EXACT",
+                    "exponential-decay": "EXPONENTIAL_DECAY"}.get(request.persistence_mode, ""), None)
+                if not callable(config_type) or mode is None:
+                    raise HackrfNativeFactoryError(HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE)
+                # Validate/coerce the complete typed config BEFORE permit consume.
+                extras["persistence"] = config_type(True, mode, request.persistence_window_frames,
+                    request.persistence_half_life_s, request.persistence_power_min_db,
+                    request.persistence_power_max_db, request.persistence_power_bins,
+                    request.persistence_snapshot_rate_hz, 5)
             if request.averaging_frames != 1:
                 dsp_version = getattr(native_module, "HACKRF_DSP_PROFILE_CONTRACT_VERSION", None)
                 if type(dsp_version) is not int or dsp_version != 1:

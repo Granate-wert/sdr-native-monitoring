@@ -208,6 +208,7 @@ PersistenceSnapshot PersistenceAccumulator::make_snapshot(
     // the shared owner, so publication need not copy 4096 doubles per update.
     result.frequencies_hz = frame.frequencies_hz;
     result.density = std::move(density);
+    result.quality_flags = frame.quality_flags;
     return result;
 }
 

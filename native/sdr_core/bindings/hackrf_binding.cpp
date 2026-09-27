@@ -179,6 +179,8 @@ void bind_hackrf(py::module_& module) {
             &sdr_hackrf::HackrfFixedBandDspMetrics::source_estimated_timestamp_blocks
         )
         .def_readonly("dsp", &sdr_hackrf::HackrfFixedBandDspMetrics::dsp)
+        .def_readonly("persistence_updates", &sdr_hackrf::HackrfFixedBandDspMetrics::persistence_updates)
+        .def_readonly("persistence", &sdr_hackrf::HackrfFixedBandDspMetrics::persistence)
         .def_readonly("presentation", &sdr_hackrf::HackrfFixedBandDspMetrics::presentation);
 
     py::class_<sdr_hackrf::HackrfAcquisitionDspMetrics>(
@@ -239,6 +241,9 @@ void bind_hackrf(py::module_& module) {
         .def_readonly("processing", &sdr_hackrf::HackrfRuntimeDspMetrics::processing);
 
     py::class_<sdr_hackrf::HackrfRuntimeDspSession>(module, "HackrfRuntimeDspControl")
+        .def("poll_persistence_snapshots",
+            &sdr_hackrf::HackrfRuntimeDspSession::poll_persistence_snapshots,
+            py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def(
             "poll_spectrum_frames",
             [](sdr_hackrf::HackrfRuntimeDspSession& value, const std::size_t max_items) {

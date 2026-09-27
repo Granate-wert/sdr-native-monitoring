@@ -352,6 +352,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("update_sequence", &sdr_core::PersistenceSnapshot::update_sequence)
         .def_readonly("timestamp_ns", &sdr_core::PersistenceSnapshot::timestamp_ns)
         .def_readonly("source_frame_sequence", &sdr_core::PersistenceSnapshot::source_frame_sequence)
+        .def_readonly("quality_flags", &sdr_core::PersistenceSnapshot::quality_flags)
         .def_readonly("power_min_db", &sdr_core::PersistenceSnapshot::power_min_db)
         .def_readonly("power_max_db", &sdr_core::PersistenceSnapshot::power_max_db)
         .def_readonly("power_bins", &sdr_core::PersistenceSnapshot::power_bins)

@@ -79,6 +79,11 @@ def verify_frozen_shared_runtime(package_dir: Path, manifest_path: Path, version
             or type(verdict.get("hackrf_dsp_profile_contract_version")) is not type(dsp_version)
             or verdict.get("hackrf_dsp_profile_contract_version") != dsp_version):
         raise ValueError("frozen optional DSP profile contract differs from its native manifest")
+    persistence_version = native_manifest.get("hackrf_persistence_contract_version")
+    if (persistence_version is not None and (type(persistence_version) is not int or persistence_version != 1)
+            or type(verdict.get("hackrf_persistence_contract_version")) is not type(persistence_version)
+            or verdict.get("hackrf_persistence_contract_version") != persistence_version):
+        raise ValueError("frozen optional persistence contract differs from its native manifest")
     if (Path(verdict.get("native_path", "")).resolve() != native
             or verdict.get("native_sha256") != _file_sha256(native)
             or verdict.get("native_source_commit") != native_manifest.get("source_commit")

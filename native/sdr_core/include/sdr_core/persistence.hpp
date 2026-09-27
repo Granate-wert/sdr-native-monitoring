@@ -32,6 +32,8 @@ struct PersistenceSnapshot {
     double count_scale{1.0};
     SharedArray<double> frequencies_hz;
     std::shared_ptr<const std::vector<float>> density;
+    // Latest contributing detector frame, not an aggregate RF-duty assertion.
+    QualityFlag quality_flags{QualityFlag::None};
 };
 
 class PersistenceAccumulator final {

@@ -43,8 +43,17 @@ sdr_hackrf::HackrfLiveFactoryConfig valid_config() {
 }
 
 void test_pure_translation_retains_every_bounded_field() {
-    const auto config = valid_config();
+    auto config = valid_config();
+    config.persistence.enabled = true;
+    config.persistence.mode = sdr_core::PersistenceMode::RollingExact;
+    config.persistence.power_bins = 32U;
+    config.persistence.window_frames = 123U;
     const auto translated = sdr_hackrf::make_hackrf_runtime_dsp_config(config);
+    expect(translated.processing.dsp.persistence.enabled &&
+           translated.processing.dsp.persistence.mode == sdr_core::PersistenceMode::RollingExact &&
+           translated.processing.dsp.persistence.power_bins == 32U &&
+           translated.processing.dsp.persistence.window_frames == 123U,
+           "factory silently replaced the native persistence profile");
 
     expect(translated.rx.center_frequency_hz == config.center_frequency_hz,
            "factory lost center frequency");

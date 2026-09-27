@@ -593,6 +593,7 @@ class LivePersistenceFrame:
     acquisition_epoch: int | None = None
     clock_domain: str | None = None
     accumulation_id: str | None = None
+    native_quality_flags: int = 0
 
     def __post_init__(self) -> None:
         frequencies = np.asarray(self.frequencies_hz, dtype=np.float64).reshape(-1)
@@ -649,10 +650,13 @@ class LiveSnapshot:
     hackrf_request: HackrfLiveRequest | None = None
     # Loaded native optional protocol observation, not a hardware capability.
     hackrf_detector_groups_available: bool = False
+    hackrf_persistence_available: bool = False
 
     def __post_init__(self) -> None:
         if type(self.hackrf_detector_groups_available) is not bool:
             raise TypeError("HackRF detector-group availability must be explicit boolean")
+        if type(self.hackrf_persistence_available) is not bool:
+            raise TypeError("HackRF persistence availability must be explicit boolean")
         if self.source_choice is not None:
             if not isinstance(self.source_choice, AnalyzerSourceChoice):
                 raise TypeError("family publication needs an existing source choice")
@@ -660,7 +664,7 @@ class LiveSnapshot:
                 raise ValueError("family publication needs an explicit selection revision")
         elif self.selection_revision is not None or self.hackrf_request is not None:
             raise ValueError("family publication cannot omit its source choice")
-        if self.hackrf_detector_groups_available:
+        if self.hackrf_detector_groups_available or self.hackrf_persistence_available:
             from .device_capabilities import DeviceFamily
             if self.source_choice is None or self.source_choice.family is not DeviceFamily.HACKRF:
                 raise ValueError("HackRF detector-group runtime observation needs its source choice")
@@ -703,7 +707,27 @@ class LiveSnapshot:
                         or provenance.calibration_status != "uncalibrated"):
                     raise ValueError("HackRF numerical metadata does not match its exact staged DSP profile")
             if self.persistence is not None:
-                raise ValueError("HackRF persistence is not yet integrated")
+                density = self.persistence
+                if (not request.persistence_enabled or not self.hackrf_persistence_available
+                        or density.source_id != request.source_id or self.active_source_id != request.source_id
+                        or density.config_generation != request.configuration_generation
+                        or self.active_config_generation != request.configuration_generation
+                        or not density.producer_identity_available
+                        or density.frequency_bins != request.fft_size
+                        or density.power_bins != request.persistence_power_bins
+                        or density.power_min_db != request.persistence_power_min_db
+                        or density.power_max_db != request.persistence_power_max_db
+                        or density.exponential_decay != (request.persistence_mode == "exponential-decay")
+                        or density.unit != "dBFS/bin" or self.unit != density.unit
+                        or density.receiver_id is not None or self.receiver_id is not None
+                        or density.acquisition_epoch != self.acquisition_epoch or self.acquisition_epoch is None
+                        or density.clock_domain != "host_steady_ns" or self.clock_domain != density.clock_domain
+                        or density.accumulation_id != str(self.session_id)
+                        or density.processed_frames <= 0
+                        or not np.isfinite(density.probability_scale) or not np.isfinite(density.count_scale)):
+                    raise ValueError("HackRF persistence does not belong to its exact source/profile/epoch/unit")
+                if self.spectrum is not None and not np.array_equal(density.frequencies_hz, self.spectrum.frequencies_hz):
+                    raise ValueError("HackRF persistence grid differs from its source spectrum")
         if self.presentation_omission is not None and not isinstance(self.presentation_omission, PresentationOmission):
             raise TypeError("invalid Live presentation omission")
         if self.presentation_omission is not None and (self.spectrum is not None or self.persistence is not None):

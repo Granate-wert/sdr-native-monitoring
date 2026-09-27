@@ -210,7 +210,8 @@ def build_live_view_state(
     )
     has_applied_configuration = getattr(applied, "applied", None) is not None
     data_age_ms = _data_age_ms(spectrum, now_ns)
-    persistence, persistence_label = _persistence_presentation(applied, persistence_frame)
+    persistence, persistence_label = _persistence_presentation(
+        applied, persistence_frame, getattr(snapshot, "hackrf_request", None))
     quality = getattr(snapshot, "quality", None)
     performance = getattr(snapshot, "performance", None)
     return LiveViewState(
@@ -347,8 +348,9 @@ def _calibration_presentation(snapshot: object) -> tuple[CalibrationPresentation
 def _persistence_presentation(
     applied: object | None,
     persistence_frame: object | None,
+    hackrf_request: object | None = None,
 ) -> tuple[PersistencePresentation, str]:
-    configuration = getattr(applied, "applied", None)
+    configuration = hackrf_request if hackrf_request is not None else getattr(applied, "applied", None)
     if configuration is None or not hasattr(configuration, "persistence_enabled"):
         return PersistencePresentation.NOT_CONFIGURED, text("live_state.persistence.not_configured")
     if not bool(getattr(configuration, "persistence_enabled")):

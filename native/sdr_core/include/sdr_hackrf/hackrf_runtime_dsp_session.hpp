@@ -53,6 +53,9 @@ public:
         std::size_t max_items = 0U
     );
     [[nodiscard]] HackrfRuntimeDspMetrics metrics() const;
+    [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
+        std::size_t max_items = 0U
+    );
     [[nodiscard]] HackrfRuntimeDspStopResult stop(
         std::chrono::milliseconds callback_timeout
     ) noexcept;

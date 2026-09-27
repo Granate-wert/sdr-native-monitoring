@@ -108,6 +108,13 @@ class HackrfLiveRequest:
     # Detector groups consume consecutive analytical FFTs, not display frames.
     # Optional native DSP profile protocol1 is required for non-default groups.
     averaging_frames: int = 1
+    persistence_mode: str = "disabled"
+    persistence_power_min_db: float = -140.0
+    persistence_power_max_db: float = 20.0
+    persistence_power_bins: int = 256
+    persistence_window_frames: int = 500
+    persistence_half_life_s: float = 1.0
+    persistence_snapshot_rate_hz: float = 15.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "center_frequency_hz", _finite_positive(self.center_frequency_hz, "center_frequency_hz"))
@@ -154,8 +161,31 @@ class HackrfLiveRequest:
         if BackendKind(self.backend) is not BackendKind.CPU:
             raise ValueError("R11-M admits only the CPU DSP backend")
         object.__setattr__(self, "backend", BackendKind.CPU)
-        if self.persistence_enabled:
-            raise ValueError("R11-M does not admit persistence")
+        if type(self.persistence_enabled) is not bool:
+            raise ValueError("persistence_enabled must be an explicit boolean")
+        mode = self.persistence_mode.strip().casefold().replace("_", "-") if isinstance(self.persistence_mode, str) else ""
+        if mode not in {"disabled", "rolling-exact", "exponential-decay"}:
+            raise ValueError("invalid persistence mode")
+        if self.persistence_enabled != (mode != "disabled"):
+            raise ValueError("persistence_enabled and persistence_mode must agree")
+        object.__setattr__(self, "persistence_mode", mode)
+        for name in ("persistence_power_min_db", "persistence_power_max_db"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)):
+                raise ValueError("persistence power bounds must be finite numbers")
+            object.__setattr__(self, name, float(value))
+        if self.persistence_power_max_db <= self.persistence_power_min_db:
+            raise ValueError("persistence power bounds must be ordered")
+        _bounded_integer(self.persistence_power_bins, "persistence_power_bins", 16, 4096)
+        _bounded_integer(self.persistence_window_frames, "persistence_window_frames", 1, 1_000_000)
+        object.__setattr__(self, "persistence_half_life_s",
+            _finite_positive(self.persistence_half_life_s, "persistence_half_life_s"))
+        rate = _finite_positive(self.persistence_snapshot_rate_hz, "persistence_snapshot_rate_hz")
+        if not 10.0 <= rate <= 30.0:
+            raise ValueError("persistence_snapshot_rate_hz must be in [10, 30]")
+        object.__setattr__(self, "persistence_snapshot_rate_hz", rate)
+        if self.persistence_allocation_bytes > 256 * 1024 * 1024:
+            raise ValueError("HackRF persistence exceeds the 256 MiB allocation policy")
         slot_count = _bounded_integer(self.slot_count, "slot_count", 1, _MAX_QUEUE_CAPACITY)
         ready_capacity = _bounded_integer(self.ready_capacity, "ready_capacity", 1, slot_count)
         object.__setattr__(self, "slot_count", slot_count)
@@ -175,6 +205,20 @@ class HackrfLiveRequest:
         object.__setattr__(self, "presentation_capacity", presentation_capacity)
         object.__setattr__(self, "configuration_generation", _bounded_integer(self.configuration_generation, "configuration_generation", 1, _MAX_GENERATION))
         object.__setattr__(self, "source_id", _opaque_source_id(self.source_id))
+
+    @property
+    def persistence_allocation_bytes(self) -> int:
+        """Native histogram/ring plus bounded snapshots; NOT a process RSS cap.
+
+        Same conservative accounting as LiveCapacityLimits: histogram, two
+        queued immutable images, one constructing image and one service view.
+        UI holders remain governed separately by PresentationAllocationBudget.
+        """
+        if not self.persistence_enabled:
+            return 0
+        cells = self.fft_size * self.persistence_power_bins
+        ring = self.fft_size * self.persistence_window_frames * 4 if self.persistence_mode == "rolling-exact" else 0
+        return cells * 4 * 5 + self.fft_size * 8 * 4 + ring
 
     @property
     def resolved_dsp_output_capacity(self) -> int:

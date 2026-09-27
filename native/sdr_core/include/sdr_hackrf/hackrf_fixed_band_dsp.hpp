@@ -3,6 +3,7 @@
 #include "sdr_core/bounded_queue.hpp"
 #include "sdr_core/configuration.hpp"
 #include "sdr_core/dsp_backend.hpp"
+#include "sdr_core/persistence.hpp"
 #include "sdr_core/types.hpp"
 #include "sdr_hackrf/hackrf_rx_ingress.hpp"
 
@@ -29,6 +30,7 @@ struct HackrfFixedBandDspConfig {
     sdr_core::SourceDescriptor source;
     std::uint32_t dsp_output_capacity{256U};
     std::uint32_t presentation_capacity{4U};
+    sdr_core::PersistenceConfig persistence{};
 };
 
 struct HackrfFixedBandDspMetrics {
@@ -47,6 +49,8 @@ struct HackrfFixedBandDspMetrics {
     std::uint64_t presentation_frames_superseded{};
     std::uint64_t presentation_frames_abandoned{};
     sdr_core::QueueStats presentation;
+    std::uint64_t persistence_updates{};
+    sdr_core::QueueStats persistence;
 };
 
 // A scalar-only assessment of the two intentionally independent boundaries
@@ -90,6 +94,9 @@ public:
         std::size_t max_items = 0U
     );
     [[nodiscard]] HackrfFixedBandDspMetrics metrics() const;
+    [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
+        std::size_t max_items = 0U
+    );
 
 private:
     struct Impl;

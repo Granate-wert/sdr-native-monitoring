@@ -100,6 +100,11 @@ HackrfAcquisitionDspSession::poll_spectrum_frames(const std::size_t max_items) {
     return impl_->dsp.poll_spectrum_frames(max_items);
 }
 
+std::vector<sdr_core::PersistenceSnapshot>
+HackrfAcquisitionDspSession::poll_persistence_snapshots(const std::size_t max_items) {
+    return impl_->dsp.poll_persistence_snapshots(max_items);
+}
+
 HackrfAcquisitionDspMetrics HackrfAcquisitionDspSession::metrics() const {
     HackrfAcquisitionDspMetrics result;
     result.state = impl_->state.load(std::memory_order_acquire);

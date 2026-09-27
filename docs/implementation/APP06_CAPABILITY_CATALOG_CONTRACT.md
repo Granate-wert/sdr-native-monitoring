@@ -659,11 +659,62 @@ and firewall rules are never changed automatically; static-path reuse does
 not guarantee future prompt suppression.
 
 
+## HackRF native persistence in common Analyzer UI V2 (2026-09-27)
+
+The SAME CPU RTBW acquisition/DSP worker, retained source owner, application
+router and common Spectrum/Waterfall renderer now support native persistence.
+It defaults OFF; explicit Stage and Start enable exact rolling or exponential
+decay accumulation. Existing live controls remain locked: changing the active
+profile requires explicit Stop, Stage and Start, with a new session/epoch.
+There is no hidden restart, second renderer, raw-IQ Python loop or fake Pluto
+configuration. Typed replacement preserves an existing request's hidden
+half-life, rolling-window length, power limits, snapshot cadence and queue bounds.
+
+The canonical shared PersistenceAccumulator receives detector OUTPUTS after
+the CPU analytical output boundary and BEFORE the lossy spectrum presentation
+queue. A group of eight analytical FFTs contributes one detector output, not
+eight density observations. Analytical output eviction may still lose density
+input; presentation supersession cannot. Accumulation does not invent hits for
+non-finite power bins. Its normalized histogram is not RF duty, continuous
+capture proof or hardware pulse-detection probability. Quality flags describe
+the last contributing detector frame, not an aggregate RF-quality assessment.
+
+The CPU producer's monotonic detector-output frame sequence is retained across
+polls/evictions, not synthesized from the DIFFERENT analytical FFT counter.
+Native density endpoints refer to that same output sequence. Native update,
+analytical FFT, detector-output, sampled density and Qt paint counts remain
+separate. The fixed-band wrapper's old analytical-counter rewrite is removed.
+
+Density has a two-snapshot DropOldest queue, immutable shared native buffers
+and bounded polling. Power bins16..4096, rolling outputs1..1000000 and snapshot
+cadence10..30Hz are validated without silent clamping; the default cadence is
+15Hz. Histogram, exact ring, two queued snapshots, one constructing snapshot
+and one service-held snapshot must fit a conservative256MiB allocation policy.
+This is separate from the64MiB spectrum queue policy and the existing UI
+allocation budget; it is NOT a process RSS cap or a speed/freshness acceptance.
+
+Identity factory protocol2 remains unchanged. Enabled density requires optional
+HACKRF_PERSISTENCE_CONTRACT_VERSION1 and the exact sibling manifest pair in
+the catalog locator, native preflight and frozen verifier. Both fields absent
+remain compatible only with OFF requests. Mismatch, boolean or unknown versions
+fail closed; optional enum/config resolution precedes one-use permit consumption
+and SDK/device effects. No alternate loader or same-permit retry is introduced.
+Older OFF factory calls omit the new keyword entirely.
+
+Common density publication validates exact source/generation/profile/grid,
+dBFS/bin, epoch, host clock and accumulation identity before caching. Missing
+producer metadata, foreign frames, regressed update sequences or malformed
+optional polling retain the owner/error until explicit Stop. Density ahead of
+the displayed spectrum is marked pending by the existing bundle coherence
+rules rather than attached to a wrong endpoint. Stage/new Start clear old density.
+Software/native numerical gates do not qualify the actual frozen EXE, physical
+RX throughput, visible Windows/DWM, FHD/QHD/DPI, RF duty or long-soak cells.
+
 ## Required further work
 
 TinySA physical resynchronization/Basic and current-input upper-band qualification,
 the full correction-profile authoring/export workflow and remaining HackRF
-host-Sweep/persistence/IQ/DSP strategies remain.
+host-Sweep/IQ strategies and further DSP qualification remain.
 Common source-process HackRF RTBW and tinySA runtime settings integration is
 not frozen executable or performance acceptance.
 Official shared-DLL/frozen qualification and actual high-Fs device/transport cells

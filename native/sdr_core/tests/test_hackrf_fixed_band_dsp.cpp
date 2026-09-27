@@ -3,6 +3,7 @@
 #include "sdr_core/errors.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -296,6 +297,102 @@ void test_real_transfer_sized_burst_capacity_keeps_analysis_loss_free() {
     }
 }
 
+void test_persistence_precedes_presentation_and_is_bounded() {
+    for (const auto mode : {sdr_core::PersistenceMode::RollingExact,
+                            sdr_core::PersistenceMode::ExponentialDecay}) {
+        auto config = dsp_config(1U);
+        config.dsp.averaging_frames = 4U;
+        config.persistence.enabled = true;
+        config.persistence.mode = mode;
+        config.persistence.power_bins = 16U;
+        config.persistence.window_frames = 3U;
+        config.persistence.snapshot_rate_hz = 15.0;
+        sdr_hackrf::HackrfFixedBandDsp dsp(config);
+        sdr_hackrf::HackrfRxIngress ingress(ingress_config(2048U));
+        const auto input = constant_ci8(1024U);
+        sdr_core::PersistenceSnapshot retained;
+        std::vector<float> retained_copy;
+        for (std::int64_t index = 0; index < 12; ++index) {
+            push_one(ingress, dsp, input, 1000000000LL + index * 100000000LL);
+            if (index == 0) {
+                auto first = dsp.poll_persistence_snapshots(1U);
+                expect(first.size() == 1U, "first native density missing");
+                retained = first.front();
+                retained_copy = *retained.density;
+            }
+        }
+        const auto snapshots = dsp.poll_persistence_snapshots(0U);
+        expect(snapshots.size() == 2U, "native density queue is not bounded to two");
+        const auto& latest = snapshots.back();
+        expect(latest.processed_frames == 12U && latest.update_sequence == 12U,
+               "density must count detector outputs, not polled display frames");
+        expect(latest.source_frame_sequence == 11U,
+               "native density endpoint lost the canonical spectrum sequence");
+        expect(latest.source.source_id == config.source.source_id &&
+               latest.config_generation == 9U && latest.unit == sdr_core::SpectrumUnit::DbfsBin,
+               "native persistence lost producer identity/unit");
+        expect(sdr_core::has_flag(latest.quality_flags, sdr_core::QualityFlag::TimestampEstimated),
+               "estimated producer timestamp quality missing");
+        expect(*retained.density == retained_copy, "a retained snapshot was mutated");
+        for (std::uint32_t column = 0U; column < latest.frequency_bins; ++column) {
+            double count = 0;
+            for (std::uint32_t row = 0U; row < latest.power_bins; ++row) {
+                count += (*latest.density)[row * latest.frequency_bins + column];
+            }
+            if (column == latest.frequency_bins / 2U) {
+                expect(std::abs(count * latest.probability_scale - 1.0) < 0.0001,
+                       "normalized finite-tone density lost its distribution");
+                if (mode == sdr_core::PersistenceMode::RollingExact) {
+                    expect(count == 3.0, "exact rolling detector-output window is incorrect");
+                }
+            } else {
+                // Rectangular constant CI8 has EXACT zero power (-infinity)
+                // outside DC. The common accumulator does not invent hits
+                // for non-finite values or normalize an unobserved column.
+                expect(count == 0.0, "non-finite FFT bins acquired invented density");
+            }
+        }
+        const auto metrics = dsp.metrics();
+        expect(metrics.persistence_updates == 12U && metrics.dsp.fft_frames_computed == 48U,
+               "density, analytical FFT and presentation counts were conflated");
+        expect(metrics.presentation.dropped == 11U && metrics.dsp.fft_frames_dropped == 0U,
+               "presentation loss contaminated analytical persistence");
+        expect(metrics.persistence.capacity == 2U && metrics.persistence.high_water == 2U &&
+               metrics.persistence.dropped > 0U, "density queue bound/supersession missing");
+        expect(dsp.poll_spectrum_frames(0U).size() == 1U,
+               "density enlarged the spectrum presentation queue");
+    }
+    auto invalid = dsp_config();
+    invalid.dsp.fft_size = 262144U;
+    invalid.persistence.enabled = true;
+    invalid.persistence.mode = sdr_core::PersistenceMode::ExponentialDecay;
+    invalid.persistence.power_bins = 4096U;
+    bool rejected = false;
+    try {
+        sdr_hackrf::validate_hackrf_fixed_band_dsp_config(invalid);
+    } catch (const sdr_core::ConfigurationError&) {
+        rejected = true;
+    }
+    expect(rejected, "excessive density memory was admitted");
+}
+
+void test_detector_group_sequence_retains_native_output_identity_across_polls() {
+    auto config = dsp_config();
+    config.dsp.averaging_frames = 4U;
+    sdr_hackrf::HackrfFixedBandDsp dsp(config);
+    sdr_hackrf::HackrfRxIngress ingress(ingress_config(4096U));
+    const auto input = constant_ci8(2048U);
+    for (std::uint64_t batch = 0; batch < 2U; ++batch) {
+        push_one(ingress, dsp, input, 1000000000LL + static_cast<std::int64_t>(batch) * 100000000LL);
+        const auto frames = dsp.poll_spectrum_frames(0U);
+        expect(frames.size() == 2U, "two complete detector groups were not retained");
+        expect(frames[0].frame_sequence == batch * 2U && frames[1].frame_sequence == batch * 2U + 1U,
+               "detector-output sequence was fabricated from the analytical FFT count");
+    }
+    expect(dsp.metrics().dsp.fft_frames_computed == 16U,
+           "preserving output identity changed the analytical FFT count");
+}
+
 }  // namespace
 
 int main() {
@@ -306,6 +403,8 @@ int main() {
         test_presentation_latest_wins_is_exact_and_separate_from_fft_loss();
         test_cpu_fft_drop_remains_analytical_and_sets_frame_quality();
         test_real_transfer_sized_burst_capacity_keeps_analysis_loss_free();
+        test_persistence_precedes_presentation_and_is_bounded();
+        test_detector_group_sequence_retains_native_output_identity_across_polls();
         std::cout << "R11-I HackRF fixed-band CPU DSP OK\n";
         return 0;
     } catch (const std::exception& error) {
