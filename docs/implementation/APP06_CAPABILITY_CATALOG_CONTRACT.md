@@ -596,8 +596,9 @@ the existing queue budget) and 1..256 consecutive analytical FFTs per detector
 group. Sample selects the group's last FFT; peak/minimum operate on linear
 power; RMS and average-power share the current mean-power implementation.
 This is native signal processing, NOT averaging pixel-reduced UI frames.
-Existing CPU F64/dBFS-bin/DC-OFF/Kaiser beta8.6 semantics remain explicit;
-there is no new calibration, spur filter, CUDA, Sweep, persistence or I/Q path.
+Existing CPU F64/dBFS-bin/DC-OFF/Kaiser beta8.6 semantics remain explicit.
+That DSP-controls checkpoint added no calibration, spur filter, CUDA, Sweep,
+persistence or I/Q path; the later persistence integration is specified below.
 
 The existing identity-bound private factory protocol2 remains compatible.
 Non-default groups require optional HACKRF_DSP_PROFILE_CONTRACT_VERSION1 and
@@ -709,6 +710,20 @@ the displayed spectrum is marked pending by the existing bundle coherence
 rules rather than attached to a wrong endpoint. Stage/new Start clear old density.
 Software/native numerical gates do not qualify the actual frozen EXE, physical
 RX throughput, visible Windows/DWM, FHD/QHD/DPI, RF duty or long-soak cells.
+
+A separate bounded physical USB source-process check used exact5bb6a72 code,
+staged native5fe9c637 and the same qualified official sibling SDK, not a frozen
+GUI. OFF, decay and rolling requests at20MS/s/FFT4096/hop2048/group8, plus decay
+at16MS/s/FFT16384/hop8192/group8, used64 power bins. Enabled accumulation counts
+equaled native detector-output counts despite spectrum presentation supersession;
+approximately14.86/14.86/14.33 native density images/s were published at a15Hz
+requested cadence. Reported software ingress/FFT drops were zero in these short
+single runs. All four explicit Stops joined the worker, cleared callbacks/slots/
+ready depth and the logical owner; retained readonly density views stayed valid
+and unchanged after Stop. This does NOT qualify higher/default256 power-bin
+loads, lossless USB/RF capture, RF accuracy/Pd, ADC-Fs readback, Qt FPS/LPS,
+current-source frozen integration or long-soak performance. Sampled pending
+density endpoints were correctly withheld by the existing coherence rule.
 
 ## Required further work
 
