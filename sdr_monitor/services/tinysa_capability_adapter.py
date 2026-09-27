@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from .readonly_observation_owner import RetainedReadOnlyObserver
-
 from ..domain.device_capabilities import (
     AcquisitionKind,
     CapabilityEvidence,
@@ -26,6 +24,7 @@ from ..domain.device_capabilities import (
     DeviceFamily,
     stable_identity_key,
 )
+from .readonly_observation_owner import RetainedReadOnlyObserver
 
 TINYSA_READ_ONLY_ADAPTER_ID = "native.tinysa.usb_cdc_serial.v1"
 _GENERIC_FAILURE = "tinySA capability observation failed closed"
@@ -148,7 +147,7 @@ class TinySaCapabilityAdapter:
         try:
             probe = self._observer.observe()
             if not isinstance(probe, TinySaReadOnlyProbe):
-                raise ValueError("invalid tinySA probe contract")
+                raise TypeError("invalid tinySA probe contract")
         except Exception:  # noqa: BLE001 - an injected device boundary must fail closed.
             raise TinySaCapabilityObservationError(_GENERIC_FAILURE) from None
 

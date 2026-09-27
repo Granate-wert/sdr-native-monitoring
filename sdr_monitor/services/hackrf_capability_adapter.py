@@ -112,7 +112,7 @@ class HackrfCapabilityAdapter:
         try:
             probe = self._observer.observe()
             if not isinstance(probe, HackrfReadOnlyProbe):
-                raise ValueError("invalid HackRF probe contract")
+                raise TypeError("invalid HackRF probe contract")
         except Exception:  # noqa: BLE001 - no failed native read or release can publish capabilities.
             raise HackrfCapabilityObservationError(_GENERIC_FAILURE) from None
 

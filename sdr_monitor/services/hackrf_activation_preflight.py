@@ -172,7 +172,7 @@ class HackrfActivationPreflightService:
         try:
             probe = self._observer.observe()
             if not isinstance(probe, HackrfRuntimeIdentityProbe):
-                raise ValueError("invalid HackRF identity probe contract")
+                raise TypeError("invalid HackRF identity probe contract")
         except Exception:
             return HackrfActivationPreflight(
                 reason=HackrfActivationPreflightReason.RUNTIME_OBSERVATION
