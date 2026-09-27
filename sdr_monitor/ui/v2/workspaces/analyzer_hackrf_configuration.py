@@ -39,7 +39,6 @@ class HackrfConfigurationBar(QWidget):
         self.center = QDoubleSpinBox(self)
         self.center.setRange(1, 6000)
         self.center.setDecimals(4)
-        self.center.setSuffix(" MHz")
         self.rate = QComboBox(self)
         for rate in (20, 16, 10, 8):
             self.rate.addItem(f"{rate} MS/s", float(rate * 1e6))
@@ -53,11 +52,9 @@ class HackrfConfigurationBar(QWidget):
         self.lna = QSpinBox(self)
         self.lna.setRange(0, 40)
         self.lna.setSingleStep(8)
-        self.lna.setSuffix(" dB")
         self.vga = QSpinBox(self)
         self.vga.setRange(0, 62)
         self.vga.setSingleStep(2)
-        self.vga.setSuffix(" dB")
         self._fields: tuple[QComboBox | QDoubleSpinBox | QSpinBox, ...] = (
             self.center, self.rate, self.bandwidth, self.fft, self.lna, self.vga)
         for index, (field, key) in enumerate(zip(self._fields, ("hackrf.center", "hackrf.rate", "hackrf.filter", "hackrf.fft", "hackrf.lna", "hackrf.vga"))):
@@ -85,6 +82,11 @@ class HackrfConfigurationBar(QWidget):
         self.hide()
 
     def set_locale(self) -> None:
+        self.center.setSuffix(text("hackrf.unit.mhz"))
+        self.lna.setSuffix(text("hackrf.unit.db"))
+        self.vga.setSuffix(text("hackrf.unit.db"))
+        for index in range(self.bandwidth.count()):
+            self.bandwidth.setItemText(index, f"{self.bandwidth.itemData(index) / 1e6:g}{text('hackrf.unit.mhz')}")
         for label, key in self._labels:
             label.setText(text(key))
         for field, (_, key) in zip(self._fields, self._labels):

@@ -227,6 +227,11 @@ no UTC conversion, hardware timestamp or RF continuity is invented. RX identity
 is unknown. Waterfall and age labels do not claim UTC timing for these frames.
 Native analytical loss, presentation queue supersession and bridge coalescing
 remain distinct; rates are host-ingress/native FFT observations, not RF duty/FPS.
+`spectrum_snapshot_rate_hz` measures native presentation pushes BEFORE bounded
+queue supersession, bridge coalescing and Qt painting, not visual LPS/FPS. Host
+sequence/sample-index discontinuities, timestamp regressions and estimated-clock
+block counters retain their native meanings; no hardware overflow availability
+is inferred from clean host counters.
 
 UI V2 has explicit HackRF profile staging and Start/Stop on the SAME Analyzer
 canvas, amp/bias OFF and CPU only. Source changes discard drafts/history; late

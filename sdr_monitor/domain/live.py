@@ -658,12 +658,12 @@ class LiveSnapshot:
             raise ValueError("family publication cannot omit its source choice")
         if self.source_choice is not None:
             from .device_capabilities import DeviceFamily
-            if self.source_choice.family is DeviceFamily.HACKRF and self.hackrf_request is None:
-                if self.device is not None or self.applied is not None or self.spectrum is not None or self.persistence is not None:
-                    raise ValueError("Unstaged HackRF source cannot carry native measurements/configuration")
+            if (self.source_choice.family is DeviceFamily.HACKRF and self.hackrf_request is None
+                    and (self.device is not None or self.applied is not None or self.spectrum is not None or self.persistence is not None)):
+                raise ValueError("Unstaged HackRF source cannot carry native measurements/configuration")
         if self.hackrf_request is not None:
-            from .hackrf_live import HackrfLiveRequest
             from .device_capabilities import DeviceFamily
+            from .hackrf_live import HackrfLiveRequest
             if (not isinstance(self.hackrf_request, HackrfLiveRequest)
                     or self.source_choice is None
                     or self.source_choice.family is not DeviceFamily.HACKRF

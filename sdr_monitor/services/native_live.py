@@ -361,12 +361,11 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         """Reserve the common graph before foreign SDK effects; no hardware I/O."""
         if owner is None:
             raise ValueError("Common Analyzer ownership token cannot be absent")
-        with self.capability_control_transaction():
-            with self._lock:
-                if (self._observation_owner.cleanup_pending or self._stream_release_failed
-                        or self._native_recording_active is not None or self._native_recording_armed is not None):
-                    raise LiveAdmissionRejected("Release/unarm the native owner before another Analyzer RX")
-                self._external_analyzer_owner = owner
+        with self.capability_control_transaction(), self._lock:
+            if (self._observation_owner.cleanup_pending or self._stream_release_failed
+                    or self._native_recording_active is not None or self._native_recording_armed is not None):
+                raise LiveAdmissionRejected("Release/unarm the native owner before another Analyzer RX")
+            self._external_analyzer_owner = owner
 
     def release_external_analyzer_rx(self, owner: object) -> None:
         """Only the same owner may release after its explicit confirmed Stop/join."""

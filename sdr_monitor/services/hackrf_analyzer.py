@@ -228,7 +228,7 @@ class HackrfAnalyzerService:
     def _poll(self) -> None:
         last_frame = time.monotonic()
         last_metrics = last_frame
-        previous: tuple[int, int, int] | None = None
+        previous: tuple[int, int, int, int] | None = None
         try:
             while not self._cancel.wait(0.001):
                 frames = self._coordinator.poll_spectrum_frames(32)
@@ -259,9 +259,10 @@ class HackrfAnalyzerService:
                         return
                     ingress, dsp = metrics.processing.ingress, metrics.processing.dsp
                     computed = int(dsp.dsp.fft_frames_computed)
-                    counts = (int(ingress.samples_admitted), int(ingress.blocks_admitted), computed)
+                    counts = (int(ingress.samples_admitted), int(ingress.blocks_admitted), computed,
+                              int(dsp.presentation.pushed))
                     interval = now - last_metrics
-                    rates = tuple((counts[i] - previous[i]) / interval for i in range(3)) if previous else (0.0, 0.0, 0.0)
+                    rates = tuple((counts[i] - previous[i]) / interval for i in range(4)) if previous else (0.0, 0.0, 0.0, 0.0)
                     performance = LivePerformance(fft_frames_computed=computed,
                         fft_frames_dropped=int(dsp.dsp.fft_frames_dropped),
                         snapshots_superseded=int(dsp.presentation.dropped),
@@ -274,6 +275,13 @@ class HackrfAnalyzerService:
                         bridge_frames_published=self._published, iq_samples_dropped=int(ingress.dropped_samples),
                         iq_blocks_received=counts[1], iq_block_rate_hz=rates[1] if previous else None,
                         iq_sample_rate_hz=rates[0], analytical_fft_rate_hz=rates[2],
+                        # Native publication BEFORE queue supersession/bridge/Qt.
+                        # This is not unique display paints, FPS or RF duty.
+                        spectrum_snapshot_rate_hz=rates[3],
+                        source_sequence_discontinuities=int(dsp.source_sequence_discontinuities),
+                        source_sample_index_discontinuities=int(dsp.source_sample_index_discontinuities),
+                        source_timestamp_regressions=int(dsp.source_timestamp_regressions),
+                        source_estimated_timestamp_blocks=int(dsp.source_estimated_timestamp_blocks),
                         rate_observation_interval_s=interval if previous else None)
                     with self._lock:
                         if not self._cancel.is_set():

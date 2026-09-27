@@ -144,7 +144,7 @@ class LivePresenter(QObject):
     def stage_hackrf_configuration(self, patch: HackrfConfigurationPatch) -> None:
         operation = getattr(self._use_cases, "stage_hackrf_configuration", None)
         if not callable(operation):
-            raise RuntimeError("Common HackRF RTBW is unavailable")
+            raise RuntimeError("Common HackRF RTBW is unavailable")  # noqa: TRY004 - absent optional port, not an invalid patch type.
         self._submit(lambda: operation(patch), self._emit_snapshot)
 
     def reconfigure(self, configuration: LiveConfiguration, *, restart: bool = True) -> None:

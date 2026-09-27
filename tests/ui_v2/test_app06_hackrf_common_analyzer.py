@@ -36,9 +36,10 @@ from sdr_monitor.services.hackrf_product_live import HackrfProductLiveCoordinato
 from sdr_monitor.services.native_live import NativeLiveSessionService
 from sdr_monitor.services.source_capability_catalog import SourceCapabilityCatalog
 from sdr_monitor.services.source_capability_providers import NativeLiveCapabilityProvider
-from sdr_monitor.ui.v2.i18n import text
+from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.product_live import compose_v2_live_product
 from sdr_monitor.ui.v2.state.live_view_state import build_live_view_state
+from sdr_monitor.ui.v2.workspaces.analyzer_hackrf_configuration import HackrfConfigurationBar
 from sdr_monitor.ui.v2_composition import build_v2_shell
 from tests.test_app01_analyzer_session import Sweep
 from tests.test_app06_pluto_observation_catalog import _Native
@@ -69,6 +70,7 @@ class Control:
         self.stops = []
         self.stop_fail = False
         self.frame_change = None
+        self.metrics_change = None
         self.metrics_thread_names = []
 
     def poll_spectrum_frames(self, _count):
@@ -89,11 +91,16 @@ class Control:
     def metrics(self):
         import threading
         self.metrics_thread_names.append(threading.current_thread().name)
-        return SimpleNamespace(processing=SimpleNamespace(worker_failures=0,
+        metrics = SimpleNamespace(processing=SimpleNamespace(worker_failures=0,
             ingress=SimpleNamespace(samples_admitted=self.sequence * 131072, blocks_admitted=self.sequence,
                                     dropped_samples=0, loss_events=0, ready_depth=0),
             dsp=SimpleNamespace(dsp=SimpleNamespace(fft_frames_computed=self.sequence * 64, fft_frames_dropped=0),
+                                source_sequence_discontinuities=0, source_sample_index_discontinuities=0,
+                                source_timestamp_regressions=0, source_estimated_timestamp_blocks=self.sequence,
                                 presentation=SimpleNamespace(dropped=0, pushed=self.sequence, depth=0))))
+        if self.metrics_change:
+            self.metrics_change(metrics)
+        return metrics
 
     def stop(self, timeout):
         self.stops.append(timeout)
@@ -223,6 +230,32 @@ class HackrfCommonOwnerTests(unittest.TestCase):
         self.assertIs(self.g.live.latest_snapshot(), before)
         self.assertIsNone(self.g.live._native_recording_armed)
 
+    def test_native_publication_rate_and_clock_counters_are_not_fft_drops_or_qt_fps(self):
+        stage(self.g)
+        self.g.application.start()
+        control = self.g.factory.controls[0]
+        def alter(metrics):
+            dsp = metrics.processing.dsp
+            dsp.presentation.dropped = 7
+            dsp.source_sequence_discontinuities = 2
+            dsp.source_sample_index_discontinuities = 3
+            dsp.source_timestamp_regressions = 4
+        control.metrics_change = alter
+        self.wait(lambda: self.g.application.current_snapshot().performance.rate_observation_interval_s is not None)
+        performance = self.g.application.current_snapshot().performance
+        self.assertGreater(performance.spectrum_snapshot_rate_hz, 0)
+        self.assertAlmostEqual(performance.analytical_fft_rate_hz, 64 * performance.spectrum_snapshot_rate_hz)
+        self.assertAlmostEqual(performance.iq_sample_rate_hz, 131072 * performance.spectrum_snapshot_rate_hz)
+        self.assertEqual(performance.snapshots_superseded, 7)
+        self.assertEqual(performance.fft_frames_dropped, 0)
+        self.assertEqual(performance.iq_samples_dropped, 0)
+        self.assertEqual((performance.source_sequence_discontinuities,
+                          performance.source_sample_index_discontinuities,
+                          performance.source_timestamp_regressions), (2, 3, 4))
+        self.assertGreater(performance.source_estimated_timestamp_blocks, 0)
+        self.assertFalse(performance.hardware_overflow_counter_available)
+        self.assertEqual(set(control.metrics_thread_names), {"sdr-hackrf-analyzer"})
+
     def test_stop_failure_keeps_exact_owner_and_explicit_retry_only(self):
         stage(self.g)
         self.g.application.start()
@@ -335,6 +368,26 @@ class HackrfActualCompositionTests(unittest.TestCase):
                 self.fail("bounded V2 common HackRF completion timeout")
             time.sleep(.001)
         self.app.processEvents()
+
+    def test_hackrf_units_switch_locale_without_changing_numeric_draft_or_starting_io(self):
+        previous_locale = current_locale()
+        bar = HackrfConfigurationBar(SimpleNamespace(state=SimpleNamespace(controls_locked=False)))
+        try:
+            bar._reset()
+            for locale, mhz, db in ((UiLocale.RU, " МГц", " дБ"), (UiLocale.EN, " MHz", " dB")):
+                set_active_locale(locale)
+                bar.set_locale()
+                self.assertEqual(bar.center.suffix(), mhz)
+                self.assertEqual((bar.lna.suffix(), bar.vga.suffix()), (db, db))
+                self.assertTrue(bar.bandwidth.currentText().endswith(mhz))
+                self.assertEqual((bar.center.value(), bar.lna.value(), bar.vga.value()), (100, 16, 20))
+                self.assertEqual((bar.rate.currentData(), bar.bandwidth.currentData()), (20e6, 15_000_000))
+                self.assertFalse(bar.dirty)
+                self.assertIsNone(bar._base)
+        finally:
+            set_active_locale(previous_locale)
+            bar.deleteLater()
+            self.app.processEvents()
 
     def test_actual_root_stage_start_same_canvas_stop_foreign_late_ack_and_draft_reset(self):
         g = graph()
