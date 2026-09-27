@@ -608,7 +608,9 @@ enums/optional support before consuming its one-use same-handle permit.
 Legacy factory2 receives no extra keyword for its one-FFT default. There is
 no alternate loader, hidden runtime substitution or same-permit SDK retry.
 
-UI V2 has a collapsed-by-default localized DSP section. Expansion/locale/draft
+UI V2 has a collapsed-by-default localized DSP section using the SAME semantic
+theme roles for labels/fields/actions; bounded vertical sizing returns space to
+the existing graph. Expansion/locale/draft
 editing perform no SDK I/O. Stage updates the immutable existing request,
 preserving hidden ingress/output/presentation bounds and explicit queue policy.
 All supported FFT powers256..262144 and one bounded non-preset requested Fs

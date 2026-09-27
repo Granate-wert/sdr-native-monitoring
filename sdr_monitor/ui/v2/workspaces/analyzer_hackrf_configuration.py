@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +35,7 @@ class HackrfConfigurationBar(QWidget):
         self._base: HackrfLiveRequest | None = None
         self.dirty = False
         self.setObjectName("v2-hackrf-settings")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         row = QGridLayout()
@@ -62,6 +63,7 @@ class HackrfConfigurationBar(QWidget):
             self.center, self.rate, self.bandwidth, self.fft, self.lna, self.vga)
         for index, (field, key) in enumerate(zip(self._fields, ("hackrf.center", "hackrf.rate", "hackrf.filter", "hackrf.fft", "hackrf.lna", "hackrf.vga"))):
             label = QLabel(self)
+            label.setProperty("ui2Role", "secondary")
             self._labels.append((label, key))
             row.addWidget(label, index // 3, (index % 3) * 2)
             row.addWidget(field, index // 3, (index % 3) * 2 + 1)
@@ -70,8 +72,9 @@ class HackrfConfigurationBar(QWidget):
             elif isinstance(field, (QDoubleSpinBox, QSpinBox)):
                 field.valueChanged.connect(self._changed)
         layout.addLayout(row)
-        self.dsp_toggle = QToolButton(self)
+        self.dsp_toggle = QPushButton(self)
         self.dsp_toggle.setCheckable(True)
+        self.dsp_toggle.setProperty("ui2Role", "utility-action")
         layout.addWidget(self.dsp_toggle)
         self.dsp_panel = QWidget(self)
         dsp_layout = QVBoxLayout(self.dsp_panel)
@@ -90,6 +93,7 @@ class HackrfConfigurationBar(QWidget):
         dsp_fields: tuple[QComboBox | QSpinBox, ...] = (self.fft_window, self.detector, self.hop, self.averaging)
         for index, (field, key) in enumerate(zip(dsp_fields, ("hackrf.window", "hackrf.detector", "hackrf.hop", "hackrf.group"))):
             label = QLabel(self)
+            label.setProperty("ui2Role", "secondary")
             self._labels.append((label, key))
             dsp_grid.addWidget(label, index // 2, (index % 2) * 2)
             dsp_grid.addWidget(field, index // 2, (index % 2) * 2 + 1)
@@ -98,8 +102,11 @@ class HackrfConfigurationBar(QWidget):
             elif isinstance(field, QSpinBox):
                 field.valueChanged.connect(self._changed)
         self._fields += dsp_fields
+        for field in self._fields:
+            field.setProperty("ui2Role", "utility-select" if isinstance(field, QComboBox) else "range-control")
         dsp_layout.addLayout(dsp_grid)
         self.dsp_help = QLabel(self)
+        self.dsp_help.setProperty("ui2Role", "secondary")
         self.dsp_help.setWordWrap(True)
         dsp_layout.addWidget(self.dsp_help)
         layout.addWidget(self.dsp_panel)
@@ -107,10 +114,13 @@ class HackrfConfigurationBar(QWidget):
         self.dsp_toggle.toggled.connect(self.dsp_panel.setVisible)
         actions = QHBoxLayout()
         self.stage = QPushButton(self)
+        self.stage.setProperty("ui2Role", "utility-action")
         self.stage.clicked.connect(self._stage)
         self.discard = QPushButton(self)
+        self.discard.setProperty("ui2Role", "utility-action")
         self.discard.clicked.connect(self._reset)
         self.summary = QLabel(self)
+        self.summary.setProperty("ui2Role", "secondary")
         self.summary.setWordWrap(True)
         actions.addWidget(self.stage)
         actions.addWidget(self.discard)

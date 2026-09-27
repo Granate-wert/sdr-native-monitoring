@@ -9,10 +9,12 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
 from sdr_monitor.domain.live import LiveAdmissionRejected
+from sdr_monitor.ui.v2.design import ThemeId, stylesheet_for_theme, tokens_for_theme
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.product_live import compose_v2_live_product
 from sdr_monitor.ui.v2.workspaces.analyzer_hackrf_configuration import HackrfConfigurationBar
@@ -169,6 +171,27 @@ class HackrfDspUiTests(unittest.TestCase):
             self.assertEqual(bar.hop.maximum(), 512)
             self.assertEqual(bar.hop.value(), 512)
             self.assertTrue(bar.dirty)
+        finally:
+            bar.deleteLater()
+            self.app.processEvents()
+
+    def test_shared_theme_roles_keep_labels_and_fields_legible_in_all_three_themes(self):
+        bar = HackrfConfigurationBar(SimpleNamespace(state=SimpleNamespace(controls_locked=False)))
+        try:
+            bar._reset()
+            bar.setProperty("ui2Root", True)
+            for theme in ThemeId:
+                colors = tokens_for_theme(theme).colors
+                bar.setStyleSheet(stylesheet_for_theme(theme))
+                for label, _key in bar._labels:
+                    label.ensurePolished()
+                    self.assertEqual(label.property("ui2Role"), "secondary")
+                    self.assertEqual(label.palette().color(QPalette.ColorRole.WindowText).name(), colors.secondary_text.lower())
+                for field in bar._fields:
+                    self.assertIn(field.property("ui2Role"), ("utility-select", "range-control"))
+                    field.ensurePolished()
+                    self.assertEqual(field.palette().color(QPalette.ColorRole.Text).name(), colors.primary_text.lower())
+                self.assertEqual(bar.dsp_toggle.property("ui2Role"), "utility-action")
         finally:
             bar.deleteLater()
             self.app.processEvents()
