@@ -127,6 +127,8 @@ class TinySaCommonAnalyzerService:
                 owner.collect_repeated(scan, self._publish_pass, interval_s=request.interval_s)
                 return  # Repeated collection normally exits by explicit Stop.
             result = owner.collect(scan)
+            if owner.cancellation_requested:
+                raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
             line = self._line(result.trace.values_dbm, zero=result.trace.scanraw_zero_offset_db,
                               elapsed=self._clock() - started)
             snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(
@@ -141,10 +143,13 @@ class TinySaCommonAnalyzerService:
             snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(
                 completed_lines=self._completed, gapped_lines=self._gapped))
         except Exception:  # noqa: BLE001 - never publish serial routes/vendor exception strings.
+            failure = owner.failure
+            suffix = f" [{failure.phase.value}/{failure.reason.value}]" if failure is not None else ""
             with self._lock:
                 previous = self._snapshot
             snapshot = replace(previous, metrics=replace(previous.metrics,
-                has_error=True, acquisition_finished=False, error="tinySA acquisition failed; Stop/release required"))
+                has_error=True, acquisition_finished=False,
+                error="tinySA acquisition failed; Stop/release required" + suffix))
         with self._lock:
             self._snapshot = snapshot
 
@@ -152,6 +157,8 @@ class TinySaCommonAnalyzerService:
         """One latest immutable response; no accumulation or queue on the producer."""
         if self._sequence >= (1 << 64) - 1 or not result.prompt_confirmed:
             raise RuntimeError("tinySA repeated publication contract exhausted")
+        if self._owner is not None and self._owner.cancellation_requested:
+            raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
         line = self._line(result.trace.values_dbm, zero=result.trace.scanraw_zero_offset_db,
                           elapsed=result.elapsed_seconds)
         now = self._clock()
@@ -178,7 +185,11 @@ class TinySaCommonAnalyzerService:
             if owner is not None:
                 owner.cancel()
             if thread is not None and thread.ident is not None:
-                thread.join(timeout=3.0)
+                # Runs on the shared off-Qt lifecycle worker. Do not strand a
+                # slow firmware response by closing its port at cancellation.
+                # No RF abort setting/command is implicitly enabled or sent.
+                timeout = self._request.timeout_s + 5.0 if self._request is not None else 3.0
+                thread.join(timeout=timeout)
                 if thread.is_alive():
                     raise RuntimeError("tinySA worker did not join; owner retained")
             if owner is not None:

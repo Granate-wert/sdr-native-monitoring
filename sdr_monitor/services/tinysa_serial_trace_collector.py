@@ -13,6 +13,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from serial import EIGHTBITS, PARITY_NONE, STOPBITS_ONE, Serial
@@ -45,8 +46,24 @@ _MODEL_MAX_FREQUENCY_HZ = {
 }
 
 
+class TinySaTraceFailureReason(StrEnum):
+    UNKNOWN = "unknown"
+    DEADLINE = "deadline"
+    FRAMING = "framing"
+    BOUND = "bound"
+    IDENTITY = "identity"
+    TRANSPORT = "transport"
+    CLOSE = "close"
+
+
 class TinySaTraceCollectionError(RuntimeError):
     """Route-free finite collection failure."""
+
+    def __init__(self, message: str, *, reason: TinySaTraceFailureReason = TinySaTraceFailureReason.UNKNOWN) -> None:
+        if not isinstance(reason, TinySaTraceFailureReason):
+            raise TypeError("tinySA failure reason must be a fixed diagnostic code")
+        super().__init__(message)
+        self.reason = reason
 
 
 class TinySaTraceCollectionCancelled(TinySaTraceCollectionError):
@@ -195,12 +212,15 @@ def _validate_trace_response(response: TinySaTracePass | TinySaTraceCollection) 
 def collect_tinysa_open_pass(
     serial_port: TinySaTraceSerialPort, request: TinySaScanRawRequest, *,
     cancel_requested: Callable[[], bool], monotonic_ns: Callable[[], int] = time.monotonic_ns,
+    finish_on_cancel: bool = False,
 ) -> TinySaTracePass:
     """One exact request on an already-owned port; consume its final prompt.
 
     Only a retained session owner may use this. No open/reset/close/retry is
     performed here. A failed transaction is NOT safe to resume or discard.
     """
+    if type(finish_on_cancel) is not bool:
+        raise TypeError("tinySA finish-on-cancel policy must be explicit")
     if not isinstance(request, TinySaScanRawRequest) or serial_port.is_open is not True:
         raise TinySaTraceCollectionError("tinySA open pass requires a ready owned port")
     started = monotonic_ns()
@@ -218,10 +238,16 @@ def collect_tinysa_open_pass(
     serial_port.flush()
     frame, response_bytes, prefix_bytes, reads = _read_one_frame(serial_port, request,
         cancel_requested=cancel_requested, monotonic_ns=monotonic_ns,
-        started_ns=monotonic_ns(), require_prompt=True)
-    trace = parse_tinysa_scanraw_trace(frame, model=request.model,
-        start_frequency_hz=request.start_frequency_hz, stop_frequency_hz=request.stop_frequency_hz,
-        host_timestamp_ns=monotonic_ns(), scanraw_zero_offset_db=zero)
+        started_ns=monotonic_ns(), require_prompt=True, finish_on_cancel=finish_on_cancel)
+    if cancel_requested():
+        raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
+    try:
+        trace = parse_tinysa_scanraw_trace(frame, model=request.model,
+            start_frequency_hz=request.start_frequency_hz, stop_frequency_hz=request.stop_frequency_hz,
+            host_timestamp_ns=monotonic_ns(), scanraw_zero_offset_db=zero)
+    except (ValueError, TypeError):
+        raise TinySaTraceCollectionError("tinySA scanraw frame is invalid",
+                                         reason=TinySaTraceFailureReason.FRAMING) from None
     return TinySaTracePass(trace, len(request.command), response_bytes, prefix_bytes, reads,
         zero_bytes, zero_reads, zero, max(0.0, (monotonic_ns() - started) / 1e9), prompt_confirmed=True)
 
@@ -233,6 +259,7 @@ def collect_tinysa_scanraw_trace(
     serial_factory: Callable[[str], TinySaTraceSerialPort] | None = None,
     cancel_requested: Callable[[], bool] | None = None,
     monotonic_ns: Callable[[], int] = time.monotonic_ns,
+    finish_on_cancel: bool = False,
 ) -> TinySaTraceCollection:
     """Execute exactly one request, close the port, then return reduced ownership.
 
@@ -247,6 +274,8 @@ def collect_tinysa_scanraw_trace(
         raise TypeError("tinySA cancellation source must be callable")
     if not callable(monotonic_ns):
         raise TypeError("tinySA monotonic clock must be callable")
+    if type(finish_on_cancel) is not bool:
+        raise TypeError("tinySA finish-on-cancel policy must be explicit")
     serial_port = (
         _make_serial(normalized_port)
         if serial_factory is None
@@ -294,15 +323,23 @@ def collect_tinysa_scanraw_trace(
             cancel_requested=cancel_requested,
             monotonic_ns=monotonic_ns,
             started_ns=scan_started_ns,
+            require_prompt=finish_on_cancel,
+            finish_on_cancel=finish_on_cancel,
         )
-        parsed_trace = parse_tinysa_scanraw_trace(
-            frame,
-            model=request.model,
-            start_frequency_hz=request.start_frequency_hz,
-            stop_frequency_hz=request.stop_frequency_hz,
-            host_timestamp_ns=monotonic_ns(),
-            scanraw_zero_offset_db=zero_offset_db,
-        )
+        if cancel_requested is not None and cancel_requested():
+            raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
+        try:
+            parsed_trace = parse_tinysa_scanraw_trace(
+                frame,
+                model=request.model,
+                start_frequency_hz=request.start_frequency_hz,
+                stop_frequency_hz=request.stop_frequency_hz,
+                host_timestamp_ns=monotonic_ns(),
+                scanraw_zero_offset_db=zero_offset_db,
+            )
+        except (ValueError, TypeError):
+            raise TinySaTraceCollectionError("tinySA scanraw frame is invalid",
+                                             reason=TinySaTraceFailureReason.FRAMING) from None
     except Exception as error:  # noqa: BLE001 - all ordinary port failures must fail closed.
         collection_error = error
     finally:
@@ -318,11 +355,14 @@ def collect_tinysa_scanraw_trace(
 
     elapsed_seconds = max(0.0, (monotonic_ns() - started_ns) / 1_000_000_000.0)
     if close_error is not None:
-        raise TinySaTraceCollectionError("tinySA trace port did not close cleanly") from None
+        raise TinySaTraceCollectionError("tinySA trace port did not close cleanly",
+                                         reason=TinySaTraceFailureReason.CLOSE) from None
     if collection_error is not None:
         if isinstance(collection_error, TinySaTraceCollectionCancelled):
             raise collection_error
-        raise TinySaTraceCollectionError("tinySA trace collection failed closed") from None
+        reason = (collection_error.reason if isinstance(collection_error, TinySaTraceCollectionError)
+                  else TinySaTraceFailureReason.TRANSPORT)
+        raise TinySaTraceCollectionError("tinySA trace collection failed closed", reason=reason) from None
     if parsed_trace is None or zero_offset_db is None or getattr(serial_port, "is_open", False):
         raise TinySaTraceCollectionError("tinySA trace collection did not reach a closed result")
     return TinySaTraceCollection(
@@ -346,20 +386,25 @@ def parse_tinysa_zero_offset_response(response: bytes | bytearray | memoryview) 
         raise TinySaTraceCollectionError("tinySA zero response must be bytes")
     raw = bytes(response)
     if not raw or len(raw) > MAX_TINYSA_ZERO_RESPONSE_BYTES or raw.count(b"ch> ") != 1:
-        raise TinySaTraceCollectionError("tinySA zero response is incomplete or oversized")
+        raise TinySaTraceCollectionError("tinySA zero response is incomplete or oversized",
+                                         reason=TinySaTraceFailureReason.FRAMING)
     prompt_end = raw.rfind(b"ch> ") + len(b"ch> ")
     if any(value not in b"\t\r\n " for value in raw[prompt_end:]):
-        raise TinySaTraceCollectionError("tinySA zero response contains trailing data")
+        raise TinySaTraceCollectionError("tinySA zero response contains trailing data",
+                                         reason=TinySaTraceFailureReason.FRAMING)
     try:
         decoded = raw[:prompt_end].decode("ascii", errors="strict")
-    except UnicodeDecodeError as error:
-        raise TinySaTraceCollectionError("tinySA zero response is not bounded ASCII") from error
+    except UnicodeDecodeError:
+        raise TinySaTraceCollectionError("tinySA zero response is not bounded ASCII",
+                                         reason=TinySaTraceFailureReason.FRAMING) from None
     matches = _ZERO_OFFSET_LINE_PATTERN.findall(decoded.replace("ch> ", ""))
     if len(matches) != 1:
-        raise TinySaTraceCollectionError("tinySA zero response has no unique offset")
+        raise TinySaTraceCollectionError("tinySA zero response has no unique offset",
+                                         reason=TinySaTraceFailureReason.FRAMING)
     offset = float(matches[0])
     if not 0.0 <= offset <= 512.0:
-        raise TinySaTraceCollectionError("tinySA zero offset is outside the fixed bound")
+        raise TinySaTraceCollectionError("tinySA zero offset is outside the fixed bound",
+                                         reason=TinySaTraceFailureReason.BOUND)
     return offset
 
 
@@ -381,10 +426,12 @@ def _read_zero_offset(
             raise TinySaTraceCollectionError("tinySA serial read returned a non-byte payload")
         response.extend(chunk)
         if len(response) > MAX_TINYSA_ZERO_RESPONSE_BYTES:
-            raise TinySaTraceCollectionError("tinySA zero response exceeds the fixed bound")
+            raise TinySaTraceCollectionError("tinySA zero response exceeds the fixed bound",
+                                             reason=TinySaTraceFailureReason.BOUND)
         if b"ch> " in response:
             return parse_tinysa_zero_offset_response(response), len(response), read_calls
-    raise TinySaTraceCollectionError("tinySA zero response exceeded the absolute deadline")
+    raise TinySaTraceCollectionError("tinySA zero response exceeded the absolute deadline",
+                                     reason=TinySaTraceFailureReason.DEADLINE)
 
 
 def _read_one_frame(
@@ -395,6 +442,7 @@ def _read_one_frame(
     monotonic_ns: Callable[[], int],
     started_ns: int,
     require_prompt: bool = False,
+    finish_on_cancel: bool = False,
 ) -> tuple[bytes, int, int, int]:
     deadline_ns = started_ns + round(request.deadline_seconds * 1_000_000_000)
     frame = bytearray()
@@ -403,7 +451,7 @@ def _read_one_frame(
     read_calls = 0
     suffix = bytearray()
     while monotonic_ns() < deadline_ns:
-        if cancel_requested is not None and cancel_requested():
+        if not finish_on_cancel and cancel_requested is not None and cancel_requested():
             raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
         chunk = serial_port.read(MAX_TINYSA_SCANRAW_READ_BYTES)
         read_calls += 1
@@ -416,32 +464,39 @@ def _read_one_frame(
                     frame.append(value)
                     continue
                 if value not in b"\t\r\n " and not 0x20 <= value <= 0x7E:
-                    raise TinySaTraceCollectionError("tinySA response prefix is not bounded ASCII")
+                    raise TinySaTraceCollectionError("tinySA response prefix is not bounded ASCII",
+                                                     reason=TinySaTraceFailureReason.FRAMING)
                 prefix_bytes += 1
                 if prefix_bytes > MAX_TINYSA_SCANRAW_PREFIX_BYTES:
-                    raise TinySaTraceCollectionError("tinySA response prefix exceeds the fixed bound")
+                    raise TinySaTraceCollectionError("tinySA response prefix exceeds the fixed bound",
+                                                     reason=TinySaTraceFailureReason.BOUND)
                 continue
             if len(frame) < request.expected_frame_bytes:
                 frame.append(value)
                 continue
             if value == ord("{") or (value not in b"\t\r\n " and not 0x20 <= value <= 0x7E):
-                raise TinySaTraceCollectionError("tinySA returned extra binary data after one frame")
+                raise TinySaTraceCollectionError("tinySA returned extra binary data after one frame",
+                                                 reason=TinySaTraceFailureReason.FRAMING)
             if require_prompt:
                 suffix.append(value)
                 if len(suffix) > MAX_TINYSA_SCANRAW_PREFIX_BYTES:
-                    raise TinySaTraceCollectionError("tinySA scanraw prompt exceeded its fixed bound")
+                    raise TinySaTraceCollectionError("tinySA scanraw prompt exceeded its fixed bound",
+                                                     reason=TinySaTraceFailureReason.BOUND)
         if len(frame) == request.expected_frame_bytes:
             if frame[-1] != ord("}"):
-                raise TinySaTraceCollectionError("tinySA scanraw frame lacks its fixed terminator")
+                raise TinySaTraceCollectionError("tinySA scanraw frame lacks its fixed terminator",
+                                                 reason=TinySaTraceFailureReason.FRAMING)
             if not require_prompt:
                 return bytes(frame), response_bytes, prefix_bytes, read_calls
             if b"ch> " in suffix:
                 if bytes(suffix).strip() != b"ch>" or suffix.count(b"ch> ") != 1:
-                    raise TinySaTraceCollectionError("tinySA scanraw completion prompt is invalid")
+                    raise TinySaTraceCollectionError("tinySA scanraw completion prompt is invalid",
+                                                     reason=TinySaTraceFailureReason.FRAMING)
                 return bytes(frame), response_bytes, prefix_bytes, read_calls
         if len(frame) > request.expected_frame_bytes:
             raise TinySaTraceCollectionError("tinySA scanraw frame exceeds its fixed bound")
-    raise TinySaTraceCollectionError("tinySA scanraw response exceeded the absolute deadline")
+    raise TinySaTraceCollectionError("tinySA scanraw response exceeded the absolute deadline",
+                                     reason=TinySaTraceFailureReason.DEADLINE)
 
 
 def _validated_port(port: str) -> str:

@@ -313,7 +313,7 @@ interpolated serial-chunk measurements. RF timestamp/accuracy/duty remain unknow
 Successful normal one-shot completion invokes the same nonblocking Stop/join
 path. No repeated scan, reopen, restart or retry occurs. Acquisition errors stop
 polling and remain visible; FAILED close is not automatically retried. Explicit
-Stop cancels/joins (bounded 3 seconds), closes the same retained object and only
+Stop cancels/joins (the newer finish-on-cancel bound is specified below), closes the same retained object and only
 then releases graph exclusion. Failed join/close/release retains the obligation;
 Discover/native RX/configure/recording cannot steal this graph. Closing a serial
 port does NOT prove immediate termination of the instrument's internal RF scan.
@@ -375,6 +375,33 @@ Actual RF scan duration and RBW were not read back by this path; host elapsed
 collection is not a calibrated RF-time measurement. Failure to resynchronize
 after cancellation is a different protocol/lifecycle debt, never excused or
 diagnosed solely by the instrument's normally low scanning speed.
+
+## tinySA cancellation at a confirmed response boundary (2026-09-27)
+
+The common owned path now finishes a CONSUMED scan response before serial close.
+Stop cancels publication/new passes, not the already-running firmware command.
+The SAME acquisition worker continues bounded reads through the exact binary
+frame AND completion prompt, using the original absolute scan deadline. Only
+then is the cancelled result suppressed and a terminal unknown gap emitted.
+No abort/abort-on/pause/reset/resume command, input purge, second measurement,
+reopen or command retry is introduced. One-shot owned acquisition also requires
+the prompt; the legacy standalone collector's default close contract remains.
+
+The shared off-Qt Stop worker joins for at most the requested response deadline
+plus five seconds (maximum 125 s). Qt remains responsive and state is Stopping;
+the graph remains claimed until join/close/release. A slow remaining pass can
+therefore delay Stop completion, not block Qt or license another Start. This
+is not immediate hardware RF Stop or a 50-ms tinySA scan/Stop requirement.
+Missing/malformed prompt, transport or close failure is NOT successful protocol
+recovery; a confirmed transport close alone still does not prove firmware-ready.
+Recovery from an already-stranded older session remains separate physical debt.
+
+Immutable cached failure phase/reason codes retain version/zero/scan/close and
+deadline/framing/bound/identity/transport distinctions without route/raw response
+or injected exception text. First recorded failure survives explicit cleanup.
+These are host protocol diagnostics, not RF quality/readback or continuity proof.
+Actual current-firmware cancel-to-next-Start and malformed/session recovery still
+require physical evidence; software tests do not replace them.
 
 ## Required further work
 

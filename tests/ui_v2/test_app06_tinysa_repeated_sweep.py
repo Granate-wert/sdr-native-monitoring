@@ -41,7 +41,7 @@ class _PromptSerial(_Serial):
         result = super().write(data)
         if data.startswith(b"scanraw "):
             self.scans += 1
-            self.response += self.suffix
+            self.response = self.response.removesuffix(b"\r\nch> ") + self.suffix
         return result
 
     def read(self, size):
@@ -223,7 +223,7 @@ class TinySaRepeatedCommonTests(unittest.TestCase):
                     if serial.scans == 2:
                         entered.set()
                         resume.wait(5)
-                        return b"x"  # cancellation checked before the next bounded read
+                        return read(size)  # cancelled pass finishes its response, not publication
                     return read(size)
                 serial.read = blocked
                 return serial

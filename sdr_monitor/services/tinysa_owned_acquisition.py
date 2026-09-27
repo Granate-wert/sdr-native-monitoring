@@ -13,6 +13,8 @@ import math
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol, cast
 
 from .tinysa_capability_adapter import (
@@ -27,6 +29,7 @@ from .tinysa_serial_trace_collector import (
     TinySaTraceCollection,
     TinySaTraceCollectionCancelled,
     TinySaTraceCollectionError,
+    TinySaTraceFailureReason,
     TinySaTracePass,
     TinySaTraceSerialPort,
     _is_serial_port,
@@ -42,11 +45,34 @@ class TinySaEndpointResolver(Protocol):
     def resolve_endpoint(self, expected: TinySaTransportEndpoint) -> TinySaTransportEndpoint: ...
 
 
+class TinySaAcquisitionPhase(StrEnum):
+    PREPARED = "prepared"
+    OPEN = "open"
+    VERSION = "version"
+    ZERO = "zero"
+    SCAN = "scan"
+    CLOSE = "close"
+
+
+@dataclass(frozen=True, slots=True)
+class TinySaAcquisitionFailure:
+    """Fixed route-free codes only; never vendor exception text or serial bytes."""
+    phase: TinySaAcquisitionPhase
+    reason: TinySaTraceFailureReason
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.phase, TinySaAcquisitionPhase) or not isinstance(self.reason, TinySaTraceFailureReason):
+            raise TypeError("tinySA acquisition diagnostics require fixed scalar codes")
+
+
 class TinySaOwnedAcquisition:
     """One reserved session of finite passes with mandatory same-owner cleanup.
 
     ``collect`` and ``collect_repeated`` run off Qt on the acquisition worker.
-    Cancellation is cooperative, checked around each bounded PySerial read.
+    Cancellation suppresses publication immediately. An already-consumed scan
+    is read through its final prompt on the SAME object before release. Closing
+    mid-response can strand firmware in streamWrite; no abort setting is changed.
+    The original absolute response deadline bounds this finish-on-cancel policy.
     The production serial factory has 50-ms reads and a 1-s write timeout;
     injected factories must uphold that contract. Close must be called after
     the operation has returned, not concurrently to steal an in-flight port.
@@ -76,6 +102,18 @@ class TinySaOwnedAcquisition:
         self._current_endpoint: TinySaTransportEndpoint | None = None
         self._measurement_pending = False
         self._pass_started_ns: int | None = None
+        self._phase = TinySaAcquisitionPhase.PREPARED
+        self._failure: TinySaAcquisitionFailure | None = None
+
+    @property
+    def failure(self) -> TinySaAcquisitionFailure | None:
+        return self._failure  # immutable cached scalar codes, no serial I/O
+
+    def _record_failure(self, error: Exception, *, phase: TinySaAcquisitionPhase | None = None) -> None:
+        if self._failure is None and not isinstance(error, TinySaTraceCollectionCancelled):
+            reason = (error.reason if isinstance(error, TinySaTraceCollectionError)
+                      else TinySaTraceFailureReason.TRANSPORT)
+            self._failure = TinySaAcquisitionFailure(phase or self._phase, reason)
 
     @property
     def cleanup_pending(self) -> bool:
@@ -108,6 +146,10 @@ class TinySaOwnedAcquisition:
     def cancel(self) -> None:
         """No transport command or close from the cancelling caller."""
         self._cancel.set()
+
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._cancel.is_set()
 
     @property
     def measurement_pending(self) -> bool:
@@ -153,13 +195,14 @@ class TinySaOwnedAcquisition:
             self._request = request
             result = collect_tinysa_scanraw_trace(self._endpoint.route, request,
                 serial_factory=lambda _: self, cancel_requested=self._cancel.is_set,
-                monotonic_ns=self._monotonic_ns)
+                monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
             self._measurement_pending = False
             self._endpoint_matches()  # Changed/removed endpoint cannot publish a result.
             return result
         except TinySaTraceCollectionCancelled:
             raise
-        except Exception:  # noqa: BLE001 - redact injected resolver/factory failures too.
+        except Exception as error:  # noqa: BLE001 - redact injected resolver/factory failures too.
+            self._record_failure(error)
             raise TinySaTraceCollectionError("tinySA owned trace collection failed closed") from None
         finally:
             self._operation_thread = None
@@ -190,7 +233,7 @@ class TinySaOwnedAcquisition:
                     self._cancelled()
                     self._pass_started_ns = self._monotonic_ns()
                     result = collect_tinysa_open_pass(self, request, cancel_requested=self._cancel.is_set,
-                                                     monotonic_ns=self._monotonic_ns)
+                                                     monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
                     self._measurement_pending = False
                     self._endpoint_matches()
                     if not result.prompt_confirmed:
@@ -202,11 +245,15 @@ class TinySaOwnedAcquisition:
                     # next transaction on the SAME object and pinned endpoint.
                     self._commands = 0
                     self._verify_version(self._active_port(), self._endpoint_matches())
+            except Exception as error:  # Capture first failure before close, then propagate unchanged.
+                self._record_failure(error)
+                raise
             finally:
                 self._close_owned()
         except TinySaTraceCollectionCancelled:
             raise
-        except Exception:  # noqa: BLE001 - never expose route/vendor/callback details.
+        except Exception as error:  # noqa: BLE001 - never expose route/vendor/callback details.
+            self._record_failure(error)
             raise TinySaTraceCollectionError("tinySA repeated acquisition failed closed") from None
         finally:
             self._operation_thread = None
@@ -216,6 +263,7 @@ class TinySaOwnedAcquisition:
         if self._used or self._closing or self._closed or self._request is None:
             raise TinySaTraceCollectionError("tinySA acquisition cannot reopen a used owner")
         self._used = True  # Before ANY factory or SDK effect.
+        self._phase = TinySaAcquisitionPhase.OPEN
         self._cancelled()
         current = self._endpoint_matches()
         self._current_endpoint = current
@@ -230,21 +278,30 @@ class TinySaOwnedAcquisition:
         if port.is_open is not True:
             raise TinySaTraceCollectionError("tinySA serial open was not confirmed")
         self._cancelled()
-        # Discard a stale startup prompt before the fresh version query.
+        # Only the pre-command startup buffer is discarded. A consumed scan
+        # is finished before release; this is NOT mid-response resynchronization.
         port.reset_input_buffer()
         self._verify_version(port, current)
         self._ready = True
 
     def _verify_version(self, port: TinySaTraceSerialPort, current: TinySaTransportEndpoint) -> None:
+        self._phase = TinySaAcquisitionPhase.VERSION
         self._cancelled()
         if port.write(b"version\r") != len(b"version\r"):
-            raise TinySaTraceCollectionError("tinySA version write was incomplete")
+            raise TinySaTraceCollectionError("tinySA version write was incomplete",
+                                             reason=TinySaTraceFailureReason.TRANSPORT)
         port.flush()
-        version = _parse_version(self._read_version(port))
+        response = self._read_version(port)
+        try:
+            version = _parse_version(response)
+        except ValueError:
+            raise TinySaTraceCollectionError("tinySA version response is invalid",
+                                             reason=TinySaTraceFailureReason.FRAMING) from None
         fresh = TinySaCapabilityAdapter.map_probe(TinySaReadOnlyProbe(
             version.model, current.identity_key, version.normalized_version))
         if fresh != self._expected:
-            raise TinySaTraceCollectionError("tinySA model/firmware identity changed before measurement")
+            raise TinySaTraceCollectionError("tinySA model/firmware identity changed before measurement",
+                                             reason=TinySaTraceFailureReason.IDENTITY)
         self._cancelled()
         self._endpoint_matches()  # Same route/USB serial before zero/scan writes.
 
@@ -256,19 +313,24 @@ class TinySaOwnedAcquisition:
             size = min(256, 4096 - len(response) + 1)
             chunk = port.read(size)
             if not isinstance(chunk, bytes) or len(chunk) > size:
-                raise TinySaTraceCollectionError("tinySA version read contract is invalid")
+                raise TinySaTraceCollectionError("tinySA version read contract is invalid",
+                                                 reason=TinySaTraceFailureReason.TRANSPORT)
             response.extend(chunk)
             if len(response) > 4096:
-                raise TinySaTraceCollectionError("tinySA version response exceeded its fixed bound")
+                raise TinySaTraceCollectionError("tinySA version response exceeded its fixed bound",
+                                                 reason=TinySaTraceFailureReason.BOUND)
             if b"ch> " in response:
                 end = response.find(b"ch> ") + 4
                 if response.count(b"ch> ") != 1 or any(value not in b"\t\r\n " for value in response[end:]):
-                    raise TinySaTraceCollectionError("tinySA version response framing is invalid")
+                    raise TinySaTraceCollectionError("tinySA version response framing is invalid",
+                                                     reason=TinySaTraceFailureReason.FRAMING)
                 return bytes(response)
-        raise TinySaTraceCollectionError("tinySA version response deadline expired")
+        raise TinySaTraceCollectionError("tinySA version response deadline expired",
+                                         reason=TinySaTraceFailureReason.DEADLINE)
 
-    def _active_port(self) -> TinySaTraceSerialPort:
-        self._cancelled()
+    def _active_port(self, *, finish_consumed_scan: bool = False) -> TinySaTraceSerialPort:
+        if not (finish_consumed_scan and self._measurement_pending):
+            self._cancelled()
         if not self._ready or self._closing or self._closed or self._port is None:
             raise TinySaTraceCollectionError("tinySA acquisition owner is not ready")
         return self._port
@@ -288,18 +350,19 @@ class TinySaOwnedAcquisition:
             raise TinySaTraceCollectionError("tinySA acquisition command is outside the exact request")
         self._endpoint_matches()
         port = self._active_port()
+        self._phase = TinySaAcquisitionPhase.ZERO if self._commands == 0 else TinySaAcquisitionPhase.SCAN
         if self._commands == 1:
             self._measurement_pending = True  # Partial writes are consumed too.
         self._commands += 1  # Even a partial write is consumed, never retried.
         return port.write(data)
 
     def flush(self) -> None:
-        self._active_port().flush()
+        self._active_port(finish_consumed_scan=True).flush()
 
     def read(self, size: int = 1) -> bytes:
         if type(size) is not int or not 1 <= size <= MAX_TINYSA_SCANRAW_READ_BYTES:
             raise TinySaTraceCollectionError("tinySA acquisition read exceeds its bound")
-        chunk = self._active_port().read(size)
+        chunk = self._active_port(finish_consumed_scan=True).read(size)
         if not isinstance(chunk, bytes) or len(chunk) > size:
             raise TinySaTraceCollectionError("tinySA acquisition read contract is invalid")
         return chunk
@@ -327,6 +390,8 @@ class TinySaOwnedAcquisition:
                 if getattr(port, "is_open", None) is not False:
                     raise TinySaTraceCollectionError("tinySA serial close was not confirmed")
             except Exception:  # noqa: BLE001 - retained/redacted transport boundary.
+                self._record_failure(TinySaTraceCollectionError("tinySA close failed",
+                    reason=TinySaTraceFailureReason.CLOSE), phase=TinySaAcquisitionPhase.CLOSE)
                 raise TinySaTraceCollectionError("tinySA acquisition close failed; explicit close required") from None
             self._port = None
         self._ready = False

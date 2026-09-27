@@ -79,7 +79,7 @@ class _Serial:
             self.response = f"zero ?\r\n{self.zero}dBm\r\nch> ".encode("ascii")
         elif data.startswith(b"scanraw "):
             points = int(data.split()[3])
-            self.response = self.payload or b"{" + b"x\x80\x0c" * points + b"}"
+            self.response = (self.payload or b"{" + b"x\x80\x0c" * points + b"}") + b"\r\nch> "
         else:
             self.response = data + b"\nch> "
         return len(data) - int(data == self.short_command)
@@ -132,7 +132,7 @@ class TinySaOwnedAcquisitionTests(unittest.TestCase):
         self.serial.zero = 128
         request = replace(self.request, points=10_001)
         result = self.owner.collect(request)
-        self.assertEqual(result.response_bytes_read, 30_005)
+        self.assertEqual(result.response_bytes_read, 30_005 + len(b"\r\nch> "))
         self.assertEqual(result.trace.values_dbm.size, 10_001)
         self.assertTrue(np.all(result.trace.values_dbm == -28))
         step = (request.stop_frequency_hz - request.start_frequency_hz) // request.points
