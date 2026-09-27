@@ -95,6 +95,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=30)
     parser.add_argument("--rx", action="store_true", help="Explicit physical RX, always required")
+    parser.add_argument("--fft-size", type=int, choices=(4096, 16384), default=4096)
+    parser.add_argument("--persistence-bins", type=int, choices=(0, 64, 256), default=0,
+                        help="0 disables native persistence; 64/256 enable exponential density")
+    parser.add_argument("--latest-bridge", action="store_true",
+                        help="Poll density then one bounded latest spectrum every nominal 4 ms")
     parser.add_argument(
         "--identity-negative",
         action="store_true",
@@ -126,9 +131,12 @@ def main():
         baseband_filter_hz=15_000_000,
         lna_gain_db=16,
         vga_gain_db=20,
-        fft_size=4096,
-        hop_size=2048,
+        fft_size=args.fft_size,
+        hop_size=args.fft_size // 2,
         source_id="app06-hackrf-native-maxfs",
+        persistence_enabled=args.persistence_bins != 0,
+        persistence_mode="exponential-decay" if args.persistence_bins else "disabled",
+        persistence_power_bins=args.persistence_bins or 256,
     )
     admission = admit_hackrf_live(observation.snapshot, observation.calibration_identity, request)
     if admission.plan is None:
@@ -139,7 +147,7 @@ def main():
     if preflight.permit is None:
         raise RuntimeError("current physical identity admission rejected")
     report = {
-        "schema": "app06-hackrf-native-maxfs-v2",
+        "schema": "app06-hackrf-native-maxfs-v3",
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "native_manifest": manifest,
@@ -148,8 +156,10 @@ def main():
             "sample_rate_hz": 20e6,
             "center_hz": 100e6,
             "rf_filter_hz": 15e6,
-            "fft": 4096,
-            "hop": 2048,
+            "fft": request.fft_size,
+            "hop": request.hop_size,
+            "persistence_power_bins": args.persistence_bins,
+            "latest_bridge": args.latest_bridge,
             "lna_db": 16,
             "vga_db": 20,
             "amplifier": False,
@@ -157,7 +167,7 @@ def main():
         },
         "device_family": observation.snapshot.family.value,
         "identity_key": observation.snapshot.identity_key,
-        "scope": "One physical native RX/DSP staging test. Requested/API-accepted Fs, not independent Fs readback; no common UI, RF calibration, DWM, duty or release acceptance.",
+        "scope": "One physical native RX/DSP staging test. Passed means contracts/lifecycle, not loss-free I/Q. Requested/API-accepted Fs, not independent Fs readback; no common UI, RF calibration, DWM, duty or release acceptance.",
     }
     control = None
     try:
@@ -173,18 +183,31 @@ def main():
         control = HackrfNativeRuntimeFactory(lambda: native).create(preflight.permit)
         warmup_end = time.monotonic() + 3
         while time.monotonic() < warmup_end:
-            control.poll_spectrum_frames(4)
-            time.sleep(0.002)
+            if args.latest_bridge:
+                if request.persistence_enabled:
+                    control.poll_persistence_snapshots(2)
+                control.drain_latest_spectrum_frame()
+            else:
+                control.poll_spectrum_frames(4)
+            time.sleep(0.004 if args.latest_bridge else 0.002)
         before = control.metrics()
         started = time.monotonic()
         previous = None
-        frames_seen = invalid = flagged = 0
+        frames_seen = invalid = flagged = coalesced = density_snapshots = 0
         while time.monotonic() - started < args.seconds:
-            for frame in control.poll_spectrum_frames(4):
+            if args.latest_bridge:
+                if request.persistence_enabled:
+                    density_snapshots += len(control.poll_persistence_snapshots(2))
+                drained = control.drain_latest_spectrum_frame()
+                coalesced += drained.coalesced_frames
+                frames = () if drained.frame is None else (drained.frame,)
+            else:
+                frames = control.poll_spectrum_frames(4)
+            for frame in frames:
                 frames_seen += 1
                 valid = (
-                    frame.fft_size == 4096
-                    and frame.hop_size == 2048
+                    frame.fft_size == request.fft_size
+                    and frame.hop_size == request.hop_size
                     and frame.unit == native.SpectrumUnit.DBFS_BIN
                     and frame.precision_mode == native.PrecisionMode.REFERENCE_F64
                     and frame.config_generation == request.configuration_generation
@@ -197,7 +220,7 @@ def main():
                 flagged += bool(
                     frame.dropped_samples_before or frame.dropped_iq_blocks_before or frame.dropped_fft_frames_before
                 )
-            time.sleep(0.002)
+            time.sleep(0.004 if args.latest_bridge else 0.002)
         elapsed = time.monotonic() - started
         after = control.metrics()
         samples = counter_delta(before.source, after.source, "samples_admitted")
@@ -208,9 +231,26 @@ def main():
             ingress_msps=samples / elapsed / 1e6,
             analytical_fft_per_s=fft / elapsed,
             reduced_frames_polled=frames_seen,
+            reduced_frames_coalesced=coalesced,
+            persistence_snapshots_polled=density_snapshots,
+            persistence_updates=counter_delta(before.processing.dsp, after.processing.dsp,
+                                              "persistence_updates"),
             invalid_frame_contracts=invalid,
             frames_with_drop_flags=flagged,
             ingress_software_dropped_samples=counter_delta(before.source, after.source, "dropped_samples"),
+            ingress_queue_full_drops=counter_delta(before.source, after.source, "queue_full_drops"),
+            ingress_pool_exhaustion_drops=counter_delta(before.source, after.source,
+                                                        "pool_exhaustion_drops"),
+            ingress_lock_contention_drops=counter_delta(before.source, after.source,
+                                                        "lock_contention_drops"),
+            ingress_ready_high_water=after.source.ready_high_water,
+            ingress_ready_capacity=after.source.ready_capacity,
+            iq_blocks_processed=counter_delta(before.processing.dsp, after.processing.dsp,
+                                               "iq_blocks_processed"),
+            source_blocks_missing=counter_delta(before.processing.dsp, after.processing.dsp,
+                                                "source_blocks_missing"),
+            source_samples_missing=counter_delta(before.processing.dsp, after.processing.dsp,
+                                                 "source_samples_missing"),
             device_overrun_counter_available=after.source.device_overrun_counter_available,
             worker_failures=after.processing.worker_failures,
         )
@@ -251,7 +291,8 @@ def main():
         json.dumps(
             {
                 name: report.get(name)
-                for name in ("passed", "ingress_msps", "analytical_fft_per_s", "reduced_frames_polled", "stop_ms")
+                for name in ("passed", "ingress_msps", "analytical_fft_per_s", "reduced_frames_polled",
+                             "ingress_software_dropped_samples", "stop_ms")
             }
         )
     )

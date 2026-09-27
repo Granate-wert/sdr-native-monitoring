@@ -103,6 +103,37 @@ class HackrfPersistenceOwnerTests(unittest.TestCase):
         self.assertIsNone(self.g.application.stop().error)
         self.assertIsNone(self.g.live._external_analyzer_owner)
 
+    def test_density_poll_before_latest_frame_avoids_permanent_future_endpoint(self):
+        # Model an independent native producer that advances between the two
+        # bridge reads. Spectrum-first polling leaves every completed poll
+        # with a future density endpoint; a mid-poll frame is only transient.
+        original_create = self.g.factory.create
+        observed_issues = []
+        def create(permit):
+            control = original_create(permit)
+            original_poll = control.poll_persistence_snapshots
+            def poll(count):
+                control.poll_spectrum_frames(1)
+                return original_poll(count)
+            control.poll_persistence_snapshots = poll
+            original_metrics = control.metrics_change
+            def capture_metrics(value):
+                original_metrics(value)
+                bundle = bundle_from_live(self.g.hackrf.current_snapshot())
+                observed_issues.append(None if bundle is None else bundle.coherence_issues)
+            control.metrics_change = capture_metrics
+            return control
+        self.g.factory.create = create
+        stage_density(self.g)
+        self.g.application.start()
+        self.wait(lambda: self.g.application.current_snapshot().persistence is not None)
+        self.wait(lambda: len(observed_issues) >= 3)
+        snapshot = self.g.application.current_snapshot()
+        self.assertTrue(all(issues is not None and "persistence_pending" not in issues
+                            for issues in observed_issues))
+        self.assertLessEqual(snapshot.persistence.source_frame_sequence, snapshot.spectrum.sequence)
+        self.assertIsNone(self.g.application.stop().error)
+
     def test_new_explicit_start_clears_old_density_and_changes_epoch(self):
         stage_density(self.g)
         self.g.application.start()

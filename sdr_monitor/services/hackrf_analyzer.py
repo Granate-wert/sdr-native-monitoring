@@ -283,40 +283,50 @@ class HackrfAnalyzerService:
             # GUI consumes latest at a much lower rate. Four milliseconds
             # bounds bridge/GIL pressure without changing native FFT/persistence.
             while not self._cancel.wait(0.004):
+                context = self.current_snapshot()
+                request = context.hackrf_request
+                assert request is not None
+                density = None
+                if request.persistence_enabled:
+                    # Snapshot first, then the latest spectrum. Reading in the
+                    # opposite order can consistently pair a new accumulation
+                    # endpoint with an older trace when the producer advances
+                    # between bridge calls. The domain must still refuse any
+                    # genuinely future endpoint; polling order is not proof.
+                    densities = self._coordinator.poll_persistence_snapshots(2)
+                    if densities:
+                        candidate_density = self._convert_persistence(densities[-1], context)
+                        if candidate_density.update_sequence < self._last_density_sequence:
+                            raise ValueError("HackRF persistence update sequence regressed")
+                        if candidate_density.update_sequence > self._last_density_sequence:
+                            density = candidate_density
                 frame, coalesced = self._coordinator.drain_latest_spectrum_frame()
+                spectrum = None
                 if frame is not None:
-                    context = self.current_snapshot()
-                    spectrum = self._convert(frame, context)
+                    candidate_spectrum = self._convert(frame, context)
                     self._polled += coalesced + 1
                     self._coalesced += coalesced
-                    if spectrum.sequence > self._last_native_sequence:
-                        with self._lock:
-                            if self._cancel.is_set():
-                                return
-                            candidate = replace(self._snapshot, spectrum=spectrum, unit=spectrum.unit,
-                                sequence=FrameSequence(self._snapshot.sequence + 1),
-                                quality=LiveQuality(backend=BackendKind.CPU, loss_reasons=spectrum.loss_reasons))
-                            self._snapshot = candidate  # Domain validates exact profile/epoch/unit.
+                    if candidate_spectrum.sequence > self._last_native_sequence:
+                        spectrum = candidate_spectrum
+                if spectrum is not None or density is not None:
+                    with self._lock:
+                        if self._cancel.is_set():
+                            return
+                        candidate = replace(self._snapshot,
+                            spectrum=spectrum if spectrum is not None else self._snapshot.spectrum,
+                            persistence=density if density is not None else self._snapshot.persistence,
+                            unit=spectrum.unit if spectrum is not None else self._snapshot.unit,
+                            quality=(LiveQuality(backend=BackendKind.CPU, loss_reasons=spectrum.loss_reasons)
+                                     if spectrum is not None else self._snapshot.quality),
+                            sequence=FrameSequence(self._snapshot.sequence + 1))
+                        self._snapshot = candidate  # Exact profile/epoch/unit/grid guard.
+                    if spectrum is not None:
                         self._last_native_sequence = int(spectrum.sequence)
                         self._published += 1
                         last_frame = time.monotonic()
+                    if density is not None:
+                        self._last_density_sequence = int(density.update_sequence)
                 now = time.monotonic()
-                request = self.current_snapshot().hackrf_request
-                assert request is not None
-                if request.persistence_enabled:
-                    densities = self._coordinator.poll_persistence_snapshots(2)
-                    if densities:
-                        context = self.current_snapshot()
-                        density = self._convert_persistence(densities[-1], context)
-                        if density.update_sequence < self._last_density_sequence:
-                            raise ValueError("HackRF persistence update sequence regressed")
-                        if density.update_sequence > self._last_density_sequence:
-                            with self._lock:
-                                if self._cancel.is_set():
-                                    return
-                                self._snapshot = replace(self._snapshot, persistence=density,
-                                    sequence=FrameSequence(self._snapshot.sequence + 1))
-                            self._last_density_sequence = int(density.update_sequence)
                 if now - last_frame > request.spectrum_stall_timeout_s:
                     self._error("HackRF reduced spectrum stalled; explicit Stop required")
                     return
