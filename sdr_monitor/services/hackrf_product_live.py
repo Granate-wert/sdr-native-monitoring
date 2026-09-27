@@ -126,6 +126,7 @@ class HackrfProductLiveCoordinator:
         self._lock = threading.RLock()
         self._state = HackrfProductLiveState.IDLE
         self._control: HackrfRuntimeControlPort | None = None
+        self._quarantined_control: object | None = None
 
     def snapshot(self) -> HackrfProductLiveSnapshot:
         with self._lock:
@@ -170,6 +171,9 @@ class HackrfProductLiveCoordinator:
             )
         if not _valid_control(control):
             with self._lock:
+                # A foreign result may already own SDK resources. Keep it
+                # reachable; no guessed close, replacement or destructor retry.
+                self._quarantined_control = control
                 self._state = HackrfProductLiveState.FAULTED
             return HackrfProductLiveStartResult(
                 self.snapshot(), HackrfProductLiveFailure.CONTROL_CONTRACT

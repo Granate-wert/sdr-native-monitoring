@@ -15,6 +15,7 @@ from ...domain.analyzer_resources import AnalyzerGeometryPreflight
 from ...domain.analyzer_sources import AnalyzerSourceSelection
 from ...domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ...domain.live_configuration_patch import LiveConfigurationPatch
+from ...domain.hackrf_live import HackrfConfigurationPatch
 from ..display_scheduler import DisplayScheduler, DisplaySchedulerMetrics
 
 
@@ -139,6 +140,12 @@ class LivePresenter(QObject):
 
     def apply_configuration(self, configuration: LiveConfiguration | LiveConfigurationPatch) -> None:
         self._submit(lambda: self._use_cases.apply_configuration(configuration), self._emit_snapshot)
+
+    def stage_hackrf_configuration(self, patch: HackrfConfigurationPatch) -> None:
+        operation = getattr(self._use_cases, "stage_hackrf_configuration", None)
+        if not callable(operation):
+            raise RuntimeError("Common HackRF RTBW is unavailable")
+        self._submit(lambda: operation(patch), self._emit_snapshot)
 
     def reconfigure(self, configuration: LiveConfiguration, *, restart: bool = True) -> None:
         """Delegate the session transaction to the Qt-free application layer."""

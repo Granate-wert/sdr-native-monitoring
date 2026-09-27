@@ -16,6 +16,8 @@ from .analyzer_session import (
     AnalyzerPhase, AnalyzerLiveRejected,
 )
 from .analyzer_sources import AnalyzerSourceSelectionApplicationService
+from .analyzer_rtbw_router import AnalyzerRtbwRouter
+from ..domain.hackrf_live import HackrfConfigurationPatch
 from ..domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 
 from ..domain import DeviceDescriptor, LiveConfiguration, LiveSnapshot, ConfigurationGeneration, FrameSequence
@@ -69,12 +71,14 @@ class LiveSessionApplicationService:
         [LiveConfiguration, ContinuousSweepPlanRequest], AnalyzerGeometryPreflight,
     ] | None = None, analyzer: AnalyzerSessionApplicationService | None = None,
                  catalog_close: Callable[[], None] | None = None,
-                 sources: AnalyzerSourceSelectionApplicationService | None = None) -> None:
+                 sources: AnalyzerSourceSelectionApplicationService | None = None,
+                 rtbw: AnalyzerRtbwRouter | None = None) -> None:
         self._port = port
         self._sweep_preflight = sweep_preflight
         self._analyzer = analyzer
         self._catalog_close = catalog_close
         self._sources = sources
+        self._rtbw = rtbw
         self._empty_source_snapshot: tuple[AnalyzerSourceSelection, LiveSnapshot] | None = None
         self._control_error: tuple[str, LiveErrorKind | None] | None = None
 
@@ -103,7 +107,7 @@ class LiveSessionApplicationService:
 
     def _failed_lifecycle_snapshot(self, error: Exception) -> LiveSnapshot:
         snapshot = error.snapshot if isinstance(error, AnalyzerLiveRejected) else replace(
-            self._port.latest_snapshot(), state=LiveSessionState.ERROR,
+            self._rtbw.current_snapshot() if self._rtbw is not None else self._port.latest_snapshot(), state=LiveSessionState.ERROR,
             error=str(error), error_kind=LiveErrorKind.INTERNAL,
         )
         if snapshot.error is None:
@@ -121,23 +125,37 @@ class LiveSessionApplicationService:
 
     def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]:
         if self._sources is not None:
-            return self._sources.discover(startup=startup)
+            try:
+                return self._sources.discover(startup=startup)
+            finally:
+                if self._rtbw is not None:
+                    self._rtbw.refresh_selection()
         return self._port.discover_startup_devices() if startup else self._port.discover_devices()
 
     def select_device(self, device_id: str) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
         if self._sources is not None:
-            self._sources.select(device_id)
+            try:
+                self._sources.select(device_id)
+            finally:
+                if self._rtbw is not None:
+                    self._rtbw.refresh_selection()
             return self.current_snapshot()
         return self._port.select_device(device_id)
 
     def select_manual_uri(self, uri: str) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
         if self._sources is not None:
-            return self._sources.select_manual_uri(uri)
+            try:
+                return self._sources.select_manual_uri(uri)
+            finally:
+                if self._rtbw is not None:
+                    self._rtbw.refresh_selection()
         return self._port.select_manual_uri(uri)
 
     def current_snapshot(self) -> LiveSnapshot:
+        if self._rtbw is not None and self._rtbw.hackrf_selected:
+            return self._lifecycle_snapshot(self._rtbw.current_snapshot())
         selection = self.current_source_selection()
         if selection is not None and not selection.ad936x_controls_available:
             # This is an EMPTY AD936x publication, not a fabricated HackRF/
@@ -217,7 +235,8 @@ class LiveSessionApplicationService:
         return self.start() if snapshot.error is None else snapshot
 
     def start(self) -> LiveSnapshot:
-        self._require_native_family()
+        if self._rtbw is None or not self._rtbw.hackrf_selected:
+            self._require_native_family()
         if self._analyzer is not None:
             self._analyzer.select_mode(AnalyzerMode.RTBW)
             self._control_error = None
@@ -227,6 +246,13 @@ class LiveSessionApplicationService:
                 return self._failed_lifecycle_snapshot(error)
             return self.current_snapshot()
         return self._port.start()
+
+    def stage_hackrf_configuration(self, patch: HackrfConfigurationPatch) -> LiveSnapshot:
+        self._configuration_admission(idle_only=True)
+        if self._rtbw is None or self._analyzer is None:
+            raise RuntimeError("Common HackRF RTBW is unavailable")
+        with self._analyzer.idle_control_operation():
+            return self._lifecycle_snapshot(self._rtbw.stage_hackrf(patch))
 
     def start_sweep(self, request: ContinuousSweepPlanRequest) -> AnalyzerSessionState:
         self._require_native_family()
@@ -257,12 +283,16 @@ class LiveSessionApplicationService:
         return self._port.stop()
 
     def poll_published_snapshots(self) -> list[LiveSnapshot]:
+        if self._rtbw is not None:
+            return [self._lifecycle_snapshot(value) for value in self._rtbw.poll_frames()]
         selection = self.current_source_selection()
         if selection is not None and not selection.ad936x_controls_available:
             return []
         return [self._lifecycle_snapshot(snapshot) for snapshot in self._port.poll_frames()]
 
     def is_running(self) -> bool:
+        if self._rtbw is not None:
+            return self._rtbw.is_running()
         selection = self.current_source_selection()
         if selection is not None and not selection.ad936x_controls_available:
             return False

@@ -191,11 +191,55 @@ remains visible and quarantined, and only a subsequent explicit retry resumes
 the SAME providers. This is composed-graph exclusion, not a process-global or
 direct SDK arbiter.
 
+## Common HackRF RTBW (APP-06C acquisition packet)
+
+The next source packet supersedes the earlier HackRF **selection-only** state:
+one family router now dispatches beneath the EXISTING Analyzer lifecycle. It
+retains the exact dispatched port before SDK effects and uses it for Stop, not
+a newly selected source. Native AD936x admission remains atomic. There is no
+second lifecycle controller, new renderer, fake Pluto descriptor/applied profile
+or automatic fallback. Optional unavailable HackRF runtime remains explicit.
+
+Production DI uses the SAME loaded native module and statically qualified sibling
+SDK folder as the retained catalog. Selection binds existing capability/runtime
+objects, not a second truth model. A typed HackRF draft keeps LNA/VGA separate,
+uses selection-revision and expected-profile-generation conflicts, and performs
+NO hardware I/O when staged. Explicit Start rechecks the exact catalog references,
+pure capability admission, current enumeration permit and same-opened-handle serial
+factory admission. Each attempt receives a fresh generation/application epoch.
+Staged/requested Fs and successful setters are NOT hardware rate readback.
+
+The common graph reserves a logical foreign-owner token BEFORE SDK effects.
+Native Discover/select/configuration/Start/Sweep/recording refuse that token,
+including after failed activation, Stop, observer close or poller join. Only
+explicit Stop of the SAME coordinator/identity observer and confirmed join clears
+it. This is per-composed-graph exclusion, NOT process-global/Legacy SDK arbitration
+or APP-07 parallel resource scheduling. A malformed foreign coarse control is
+retained in quarantine; no guessed close, replacement or destructor retry.
+Official consumed-pointer-close semantics remain unchanged.
+
+A bounded off-Qt reduced-spectrum poller feeds existing LiveSnapshot/
+LiveSpectrumFrame -> shared preparation -> Spectrum/Waterfall. No IQ is passed
+to Python. Frames require exact source/profile geometry/generation, dBFS/bin and
+the owned application epoch; mismatches fail closed and require Stop. Native
+timestamps preserve `host_steady_ns`, estimated/unknown quality and loss flags;
+no UTC conversion, hardware timestamp or RF continuity is invented. RX identity
+is unknown. Waterfall and age labels do not claim UTC timing for these frames.
+Native analytical loss, presentation queue supersession and bridge coalescing
+remain distinct; rates are host-ingress/native FFT observations, not RF duty/FPS.
+
+UI V2 has explicit HackRF profile staging and Start/Stop on the SAME Analyzer
+canvas, amp/bias OFF and CPU only. Source changes discard drafts/history; late
+foreign selection/preparation and older profile acknowledgements are rejected.
+HackRF host Sweep, persistence and I/Q recording are not integrated in this
+common path. TinySA remains selection-only here. These gaps are visible, not
+converted into hardware-impossible claims or synthetic host FFT.
+
 ## Required further work
 
-Family-specific configuration/acquisition controls and one common acquisition
-owner/router still remain. HackRF/tinySA control-plane selection and compatibility
-tests do not establish their actual V2 RX/trace product paths.
+TinySA family-specific settings/device-dBm trace acquisition and advanced HackRF
+DSP controls/strategies remain. Common source-process HackRF RTBW integration is
+not frozen executable or performance acceptance.
 Official shared-DLL/frozen packaging and actual high-Fs device/transport cells
 also remain separate acceptance gates. APP-05 performance debts, APP-06A/B,
 APP-06C/D, APP-07 and release acceptance are not closed by this source packet.

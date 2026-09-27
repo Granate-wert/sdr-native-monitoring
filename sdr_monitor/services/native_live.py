@@ -206,6 +206,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._engine: Any | None = None
         self._poller: threading.Thread | None = None
         self._stream_release_failed = False
+        # One composed Analyzer may own a non-IIO receiver. This is a logical
+        # exclusion token, not a process-global SDK arbiter or a device handle.
+        self._external_analyzer_owner: object | None = None
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
         self._last_native_frame_sequence = -1
@@ -346,12 +349,38 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         try:
             with self._sweep_lease_lock, self._lock:
                 if (self._engine is not None or self._poller is not None or self._sweep_lease_active
+                        or self._external_analyzer_owner is not None
                         or self._snapshot.state is _running_state()
                         or (self._stream_release_failed and not self._observation_owner.cleanup_pending)):
                     raise LiveAdmissionRejected("Selected RX is already owned by another operation")
             yield
         finally:
             self._recording_transaction_lock.release()
+
+    def claim_external_analyzer_rx(self, owner: object) -> None:
+        """Reserve the common graph before foreign SDK effects; no hardware I/O."""
+        if owner is None:
+            raise ValueError("Common Analyzer ownership token cannot be absent")
+        with self.capability_control_transaction():
+            with self._lock:
+                if (self._observation_owner.cleanup_pending or self._stream_release_failed
+                        or self._native_recording_active is not None or self._native_recording_armed is not None):
+                    raise LiveAdmissionRejected("Release/unarm the native owner before another Analyzer RX")
+                self._external_analyzer_owner = owner
+
+    def release_external_analyzer_rx(self, owner: object) -> None:
+        """Only the same owner may release after its explicit confirmed Stop/join."""
+        if owner is None:
+            raise ValueError("Common Analyzer ownership token cannot be absent")
+        with self._recording_transaction_lock, self._lock:
+            if self._external_analyzer_owner is not owner:
+                raise RuntimeError("Foreign Analyzer ownership token does not match")
+            self._external_analyzer_owner = None
+
+    def _require_no_external_analyzer_owner(self) -> None:
+        with self._lock:
+            if self._external_analyzer_owner is not None:
+                raise LiveAdmissionRejected("Stop and release the common Analyzer RX before native control")
 
     def close_capability_observation(self) -> None:
         """Explicit observer release, not Live Stop or route/config reset."""
@@ -370,6 +399,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._sweep_lease_lock:
             with self._lock:
                 if (self._engine is not None or self._poller is not None
+                        or self._external_analyzer_owner is not None
                         or self._stream_release_failed or self._sweep_lease_active
                         or self._observation_owner.cleanup_pending
                         or self._snapshot.state is _running_state()):
@@ -456,6 +486,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         return self.select_device(descriptor.device_id)
 
     def apply_configuration(self, requested: LiveConfiguration) -> LiveSnapshot:
+        # Low-rate transaction only; reject BEFORE staging/logging a mutation.
+        with self._recording_transaction_lock:
+            self._require_no_external_analyzer_owner()
+            return self._apply_configuration_unlocked(requested)
+
+    def _apply_configuration_unlocked(self, requested: LiveConfiguration) -> LiveSnapshot:
         log_event(
             _LOGGER,
             "configuration",
@@ -504,6 +540,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             with self._sweep_lease_lock:
                 with self._lock:
                     if (self._sweep_lease_active or self._engine is not None or self._poller is not None
+                            or self._external_analyzer_owner is not None
                             or self._stream_release_failed
                             or self._observation_owner.cleanup_pending
                             or self._snapshot.state is _running_state()):
@@ -542,6 +579,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             return self._start_unlocked()
 
     def _start_unlocked(self) -> LiveSnapshot:
+        self._require_no_external_analyzer_owner()
         with self._lock:
             if self._stream_release_failed or self._observation_owner.cleanup_pending:
                 return self._fail(_RELEASE_FAILED_MESSAGE, kind=LiveErrorKind.INTERNAL)
@@ -968,6 +1006,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     recording_active = self._native_recording_active is not None
                     recording_armed = self._native_recording_armed is not None
                     owner_present = (self._engine is not None or self._poller is not None
+                                     or self._external_analyzer_owner is not None
                                      or self._stream_release_failed or self._observation_owner.cleanup_pending)
                 if snapshot.state is _running_state() or owner_present:
                     raise RuntimeError("stop Live before acquiring the native sweep lease")
@@ -1033,6 +1072,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         """
 
         with self._recording_transaction_lock:
+            self._require_no_external_analyzer_owner()
             if self._native_recording_active is not None:
                 raise RuntimeError("native recording is already active")
             self._native_recording_epoch += 1
@@ -1065,6 +1105,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         """
 
         with self._recording_transaction_lock:
+            self._require_no_external_analyzer_owner()
             if self._native_recording_active is not None:
                 raise RuntimeError("native recording is already active")
             was_running = self.is_running()

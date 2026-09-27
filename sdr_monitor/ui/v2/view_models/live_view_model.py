@@ -204,6 +204,14 @@ class LiveViewModel:
         self._presenter.apply_configuration(configuration)
         return True
 
+    def stage_hackrf_configuration(self, patch: object) -> bool:
+        operation = getattr(self._presenter, "stage_hackrf_configuration", None)
+        if self._disposed or self._busy or not callable(operation):
+            return False
+        self._begin_explicit_command()
+        operation(patch)
+        return True
+
     def refresh_presentation(self) -> None:
         """Rebuild labels from the current immutable snapshot without a presenter call."""
 
@@ -276,6 +284,16 @@ class LiveViewModel:
         selection = self._source_selection
         if selection is None:
             return True
+        choice = selection.selected
+        if (choice is not None and getattr(snapshot, "source_choice", None) is choice
+                and getattr(snapshot, "selection_revision", None) == selection.revision):
+            from sdr_monitor.domain.device_capabilities import DeviceFamily
+            from sdr_monitor.domain.live import LiveSnapshot
+            if choice is not None and choice.family is DeviceFamily.HACKRF and isinstance(snapshot, LiveSnapshot):
+                previous = self._last_snapshot
+                return (getattr(snapshot, "device", None) is None and snapshot.applied is None
+                        and (previous is None or getattr(previous, "selection_revision", None) != selection.revision
+                             or snapshot.generation >= getattr(previous, "generation", 0)))
         if not selection.ad936x_controls_available:
             # Only an EMPTY native state is admitted for a foreign selection.
             return (getattr(snapshot, "device", None) is None

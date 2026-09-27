@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -28,6 +29,10 @@ from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .presentation_omission import PresentationOmission
 from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilitySnapshot
+from .analyzer_sources import AnalyzerSourceChoice
+
+if TYPE_CHECKING:
+    from .hackrf_live import HackrfLiveRequest
 
 
 class DeviceTransport(StrEnum):
@@ -636,8 +641,54 @@ class LiveSnapshot:
     active_config_generation: int | None = None
     # Application display projection only; never changes quality or RX state.
     presentation_omission: "PresentationOmission | None" = None
+    # Common-family publication, not a fabricated Pluto descriptor/profile.
+    # The HackRF request is staged intent / setter acknowledgement, NOT RF
+    # readback. Its source references are those of the current V2 selection.
+    source_choice: AnalyzerSourceChoice | None = None
+    selection_revision: int | None = None
+    hackrf_request: HackrfLiveRequest | None = None
 
     def __post_init__(self) -> None:
+        if self.source_choice is not None:
+            if not isinstance(self.source_choice, AnalyzerSourceChoice):
+                raise TypeError("family publication needs an existing source choice")
+            if type(self.selection_revision) is not int or not 0 <= self.selection_revision < 1 << 64:
+                raise ValueError("family publication needs an explicit selection revision")
+        elif self.selection_revision is not None or self.hackrf_request is not None:
+            raise ValueError("family publication cannot omit its source choice")
+        if self.source_choice is not None:
+            from .device_capabilities import DeviceFamily
+            if self.source_choice.family is DeviceFamily.HACKRF and self.hackrf_request is None:
+                if self.device is not None or self.applied is not None or self.spectrum is not None or self.persistence is not None:
+                    raise ValueError("Unstaged HackRF source cannot carry native measurements/configuration")
+        if self.hackrf_request is not None:
+            from .hackrf_live import HackrfLiveRequest
+            from .device_capabilities import DeviceFamily
+            if (not isinstance(self.hackrf_request, HackrfLiveRequest)
+                    or self.source_choice is None
+                    or self.source_choice.family is not DeviceFamily.HACKRF
+                    or self.hackrf_request.source_id != self.source_choice.device_id
+                    or self.device is not None or self.applied is not None):
+                raise ValueError("HackRF publication cannot use a foreign/Pluto configuration")
+            request = self.hackrf_request
+            if self.generation != request.configuration_generation:
+                raise ValueError("HackRF publication generation must match its staged profile")
+            if self.spectrum is not None:
+                frame = self.spectrum
+                if (frame.source_id != request.source_id or self.active_source_id != request.source_id
+                        or frame.config_generation != request.configuration_generation
+                        or self.active_config_generation != request.configuration_generation
+                        or frame.center_frequency_hz != request.center_frequency_hz
+                        or frame.sample_rate_hz != request.sample_rate_hz
+                        or frame.fft_size != request.fft_size or frame.hop_size != request.hop_size
+                        or frame.frequencies_hz.size != request.fft_size or frame.values.size != request.fft_size
+                        or frame.unit != "dBFS/bin" or self.unit != frame.unit
+                        or frame.receiver_id is not None or self.receiver_id is not None
+                        or frame.acquisition_epoch != self.acquisition_epoch or self.acquisition_epoch is None
+                        or frame.clock_domain != "host_steady_ns" or self.clock_domain != frame.clock_domain):
+                    raise ValueError("HackRF frame does not belong to this source/profile/epoch/unit")
+            if self.persistence is not None:
+                raise ValueError("HackRF persistence is not yet integrated")
         if self.presentation_omission is not None and not isinstance(self.presentation_omission, PresentationOmission):
             raise TypeError("invalid Live presentation omission")
         if self.presentation_omission is not None and (self.spectrum is not None or self.persistence is not None):

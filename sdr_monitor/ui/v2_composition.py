@@ -87,19 +87,24 @@ def build_v2_shell(services=None):
     start_live = (services.live_sdr.start_admitted
                   if isinstance(services.live_sdr, NativeLiveSessionService)
                   else services.live_sdr.start)
-    analyzer = AnalyzerSessionApplicationService(services.live_sdr, display, start_live=start_live)
     catalog = getattr(services, "device_catalog", None)
     from ..application.analyzer_sources import AnalyzerSourceSelectionApplicationService
     sources = (AnalyzerSourceSelectionApplicationService(catalog, services.live_sdr,
-               control_transaction=analyzer.idle_control_operation)
+               control_transaction=lambda: analyzer.idle_control_operation())
                if isinstance(catalog, SourceCapabilityCatalog) and isinstance(services.live_sdr, NativeLiveSessionService)
                else None)
+    from ..application.analyzer_rtbw_router import AnalyzerRtbwRouter
+    router = (AnalyzerRtbwRouter(services.live_sdr, sources, getattr(services, "analyzer_hackrf", None))
+              if sources is not None else None)
+    analyzer = AnalyzerSessionApplicationService(router or services.live_sdr, display,
+                                                 start_live=router.start if router else start_live)
     live_application = LiveSessionApplicationService(
         services.live_sdr,
         sweep_preflight=NativeContinuousSweepPlanFactory.preflight_profile,
         analyzer=analyzer,
         catalog_close=catalog.close if isinstance(catalog, SourceCapabilityCatalog) else None,
         sources=sources,
+        rtbw=router,
     )
     analyzer_presenter = ContinuousSweepPresenter(
         AnalyzerContinuousSweepApplicationService(live_application, display),

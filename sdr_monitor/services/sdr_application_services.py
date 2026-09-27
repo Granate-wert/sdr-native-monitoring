@@ -20,6 +20,7 @@ from .recording_session import RecordingService
 from .replay_session import ReplayService
 from .diagnostics_session import DiagnosticsService
 from .source_capability_catalog import SourceCapabilityCatalog
+from .hackrf_analyzer import HackrfAnalyzerService
 
 
 class UnavailableLiveService:
@@ -214,6 +215,7 @@ class SdrApplicationServices:
     profiles: LiveProfileStore = field(default_factory=_default_profile_store)
     # Shared retained catalog for V2 source routing. None in inert/test graphs.
     device_catalog: SourceCapabilityCatalog | None = None
+    analyzer_hackrf: HackrfAnalyzerService | None = None
 
 
 def build_default_sdr_services() -> SdrApplicationServices:
@@ -236,7 +238,10 @@ def build_default_sdr_services() -> SdrApplicationServices:
     from .source_capability_providers import build_source_capability_catalog
 
     catalog = build_source_capability_catalog(live) if isinstance(live, NativeLiveSessionService) else None
-    return SdrApplicationServices(live_sdr=live, sweep=sweep, recording=recording, device_catalog=catalog)
+    from .hackrf_analyzer import build_hackrf_analyzer_service
+    hackrf = build_hackrf_analyzer_service(live, catalog) if catalog is not None else None
+    return SdrApplicationServices(live_sdr=live, sweep=sweep, recording=recording, device_catalog=catalog,
+                                  analyzer_hackrf=hackrf)
 
 
 def build_offscreen_smoke_sdr_services() -> SdrApplicationServices:

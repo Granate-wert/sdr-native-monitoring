@@ -23,6 +23,17 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
+        "hackrf.center": MappingProxyType({UiLocale.RU: "Центр", UiLocale.EN: "Center"}),
+        "hackrf.rate": MappingProxyType({UiLocale.RU: "Fs (запрос)", UiLocale.EN: "Fs (requested)"}),
+        "hackrf.filter": MappingProxyType({UiLocale.RU: "Фильтр", UiLocale.EN: "Filter"}),
+        "hackrf.fft": MappingProxyType({UiLocale.RU: "FFT", UiLocale.EN: "FFT"}),
+        "hackrf.lna": MappingProxyType({UiLocale.RU: "LNA", UiLocale.EN: "LNA"}),
+        "hackrf.vga": MappingProxyType({UiLocale.RU: "VGA", UiLocale.EN: "VGA"}),
+        "hackrf.stage": MappingProxyType({UiLocale.RU: "Подготовить профиль", UiLocale.EN: "Stage profile"}),
+        "hackrf.discard": MappingProxyType({UiLocale.RU: "Отменить правки", UiLocale.EN: "Discard edits"}),
+        "hackrf.scope": MappingProxyType({UiLocale.RU: "Профиль применяется только по Старт. CPU · amp/bias OFF · dBFS/bin. Sweep, persistence и I/Q запись для этого общего пути ещё не подключены. Fs — запрос, не аппаратный readback.", UiLocale.EN: "Profile applies only on Start. CPU · amp/bias OFF · dBFS/bin. Sweep, persistence and I/Q recording are not yet integrated in this common path. Fs is requested, not hardware readback."}),
+        "hackrf.invalid": MappingProxyType({UiLocale.RU: "Недопустимый профиль: фильтр ≤ Fs; LNA кратно 8 dB, VGA кратно 2 dB. Профиль не изменён.", UiLocale.EN: "Invalid profile: filter ≤ Fs; LNA step 8 dB, VGA step 2 dB. Staged profile unchanged."}),
+        "hackrf.profile": MappingProxyType({UiLocale.RU: "Подготовлен HackRF: {center} MHz · Fs запрос {rate} MS/s · фильтр {bandwidth} MHz · FFT {fft} · LNA {lna} / VGA {vga} dB · поколение {generation}. Не аппаратный readback.", UiLocale.EN: "Staged HackRF: {center} MHz · requested Fs {rate} MS/s · filter {bandwidth} MHz · FFT {fft} · LNA {lna} / VGA {vga} dB · generation {generation}. Not hardware readback."}),
         "analyzer.source_memory_limited": MappingProxyType({
             UiLocale.RU: "Кадр не показан: лимит памяти UI. График и история очищены; это не признак потери RF-данных.",
             UiLocale.EN: "Frame not displayed: UI memory limit. Plot and history cleared; this does not imply RF data loss."}),

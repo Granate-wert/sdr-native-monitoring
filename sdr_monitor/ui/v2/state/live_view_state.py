@@ -196,6 +196,8 @@ def build_live_view_state(
         action = LiveAction.STOP
     primary_action_label = _action_label(action)
     device = getattr(snapshot, "device", None)
+    if device is None:
+        device = getattr(snapshot, "source_choice", None)
     device_label = str(getattr(device, "label", text("live_state.device.unselected")))
     unit_label = str(getattr(snapshot, "unit", "dBFS/bin") or "dBFS/bin")
     if analyzer_bundle is not None:

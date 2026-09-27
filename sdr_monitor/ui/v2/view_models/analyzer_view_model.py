@@ -55,6 +55,19 @@ class AnalyzerViewState:
         return self.source_selection is None or self.source_selection.ad936x_controls_available
 
     @property
+    def hackrf_controls_available(self) -> bool:
+        selection = self.source_selection
+        return bool(selection is not None and selection.selected is not None
+                    and selection.selected.family is DeviceFamily.HACKRF and not selection.release_pending
+                    and getattr(self.live.snapshot, "source_choice", None) is selection.selected
+                    and getattr(self.live.snapshot, "selection_revision", None) == selection.revision)
+
+    @property
+    def rtbw_profile_ready(self) -> bool:
+        return ((self.ad936x_controls_available and self.live.has_applied_configuration)
+                or (self.hackrf_controls_available and getattr(self.live.snapshot, "hackrf_request", None) is not None))
+
+    @property
     def controls_locked(self) -> bool:
         return (self.live.busy or self.starting or self.stopping or self.running
                 or self.stop_required or self.configuration_pending)
@@ -131,6 +144,9 @@ class AnalyzerViewModel:
         if (selection is not None and selection.selected is not None
                 and selection.selected.family is DeviceFamily.TINYSA and mode is not AnalyzerMode.SWEEP):
             return False
+        if (selection is not None and selection.selected is not None
+                and selection.selected.family is DeviceFamily.HACKRF and mode is not AnalyzerMode.RTBW):
+            return False  # Host Sweep runtime missing, not a hardware-impossible claim.
         if mode is not self._mode:
             self._mode = mode
             self._bundle = None  # Never label a prior-mode frame as current.
@@ -143,10 +159,10 @@ class AnalyzerViewModel:
     def start(self, request: ContinuousSweepPlanRequest | None = None) -> bool:
         state = self.state
         if (self._disposed or state.controls_locked or
-                not state.ad936x_controls_available or
+                not state.rtbw_profile_ready or
                 state.live.primary_action is not LiveAction.START or
                 not state.live.primary_action_enabled or
-                not state.live.has_applied_configuration):
+                (self._mode is AnalyzerMode.SWEEP and not state.ad936x_controls_available)):
             return False
         self._error = None
         if self._mode is AnalyzerMode.RTBW:
@@ -206,6 +222,11 @@ class AnalyzerViewModel:
             self._configuration_pending = False
             self._publish()
 
+    def stage_hackrf_configuration(self, patch: object) -> bool:
+        if self._disposed or self.state.controls_locked or not self.state.hackrf_controls_available:
+            return False
+        return self.live.stage_hackrf_configuration(patch)
+
     def dispose(self) -> None:
         if self._disposed:
             return
@@ -231,6 +252,9 @@ class AnalyzerViewModel:
         if (selection is not None and selection.selected is not None
                 and selection.selected.family is DeviceFamily.TINYSA):
             self._mode = AnalyzerMode.SWEEP  # Local supported-mode intent, no retune.
+        elif (selection is not None and selection.selected is not None
+              and selection.selected.family is DeviceFamily.HACKRF):
+            self._mode = AnalyzerMode.RTBW
         identity = (getattr(snapshot, "session_id", None), getattr(snapshot, "generation", None),
                     getattr(getattr(snapshot, "device", None), "device_id", None),
                     selection.revision if selection is not None else None)
@@ -239,7 +263,7 @@ class AnalyzerViewModel:
             self._sweep_snapshot = None
             self._prepared_sweep = None
         self._live_identity = identity
-        if self._mode is AnalyzerMode.RTBW and self.state.ad936x_controls_available:
+        if self._mode is AnalyzerMode.RTBW and (self.state.ad936x_controls_available or self.state.hackrf_controls_available):
             self._bundle = state.analyzer_bundle
         self._publish()
 

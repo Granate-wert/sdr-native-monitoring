@@ -20,6 +20,7 @@ from ..i18n import current_locale, text
 from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
+from .analyzer_hackrf_configuration import HackrfConfigurationBar
 from .analyzer_status_label import AnalyzerStatusLabel, AnalyzerPeriodsLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_inspector import AnalyzerInspector
@@ -54,6 +55,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._last_bundle: AnalyzerFrameBundle | None = None
         self._last_mode = model.state.mode
         self._last_source_selection: AnalyzerSourceSelection | None = None
+        self._last_family_path_available = False
         self._last_waterfall: WaterfallLineFrame | None = None
         self._last_persistence: PersistenceDensityFrame | None = None
         self._last_identity = None
@@ -100,6 +102,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self.start_frequency = self.frequency_bar.start
         self.stop_frequency = self.frequency_bar.stop
         layout.addWidget(self.frequency_bar)
+        self.hackrf_bar = HackrfConfigurationBar(model, self)
+        layout.addWidget(self.hackrf_bar)
+        self.hackrf_bar.draft_changed.connect(self._update_primary_availability)
         self.source_summary = QLabel(self)
         self.source_summary.setObjectName("v2-analyzer-source-summary")
         self.source_summary.setProperty("ui2Role", "secondary")
@@ -198,6 +203,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.drawer.set_locale()
         self.sweep_preview.set_locale()
         self.frequency_bar.set_locale()
+        self.hackrf_bar.set_locale()
         self.visualization.spectrum_scene.set_locale(current_locale())
         self.visualization.waterfall_pane.set_locale(current_locale())
         # Frequency ticks already carry their units. Avoid a redundant caption
@@ -256,6 +262,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self._terminal_released = True
 
     def _toggle_settings(self) -> None:
+        if self.model.state.hackrf_controls_available:
+            self.hackrf_bar.center.setFocus()
+            return
         self.display_controls.hide()
         if self.drawer.isVisible():
             self._hide_settings()
@@ -350,6 +359,11 @@ class AnalyzerWorkspaceV2(QWidget):
             self.model.stop()
         elif state.live.primary_action is LiveAction.DISCOVER:
             self.model.discover_devices()
+        elif state.hackrf_controls_available:
+            if state.rtbw_profile_ready and not self.hackrf_bar.dirty:
+                self.model.start()
+            else:
+                self.hackrf_bar.center.setFocus()
         elif not state.live.has_applied_configuration or self.drawer.dirty or self.drawer.pending:
             if not self.drawer.isVisible():
                 self._toggle_settings()
@@ -395,15 +409,17 @@ class AnalyzerWorkspaceV2(QWidget):
             return
         if state.running or state.stop_required:
             self._execute()
-        elif (state.live.primary_action is LiveAction.START and state.live.has_applied_configuration
+        elif (state.live.primary_action is LiveAction.START and state.rtbw_profile_ready
+              and not self.hackrf_bar.dirty
               and not self.drawer.dirty and not self.drawer.pending):
             self._execute()
 
     def _update_primary_availability(self) -> None:
         """Known-invalid Sweep plans disable Start; pending drafts can still resolve on click."""
         state = self.model.state
-        ready = (state.ad936x_controls_available and state.live.has_applied_configuration and not self.drawer.dirty
-                 and not self.drawer.pending and state.live.primary_action is LiveAction.START
+        ready = (state.rtbw_profile_ready and
+                 (not self.hackrf_bar.dirty if state.hackrf_controls_available else not self.drawer.dirty and not self.drawer.pending)
+                 and state.live.primary_action is LiveAction.START
                  and state.live.primary_action_enabled)
         invalid_sweep = ready and state.mode is AnalyzerMode.SWEEP and self.sweep_preview.has_error
         enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
@@ -411,7 +427,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.primary.setEnabled(enabled)
         hint = (text("analyzer.source.family_path_pending")
                 if state.source_selection is not None and state.source_selection.selected is not None
-                and not state.ad936x_controls_available
+                and not state.ad936x_controls_available and not state.hackrf_controls_available
                 else self.sweep_preview.summary.text() if invalid_sweep
                 else "" if ready or state.running or state.stop_required
                 else text("analyzer.start_requires_configuration"))
@@ -424,20 +440,23 @@ class AnalyzerWorkspaceV2(QWidget):
         self._refresh_preview()
         self._sync_source(state)
         selection = state.source_selection
-        if selection is not self._last_source_selection:
+        if selection is not self._last_source_selection or state.hackrf_controls_available != self._last_family_path_available:
             self._last_source_selection = selection
+            self._last_family_path_available = state.hackrf_controls_available
             selected = selection.selected if selection is not None else None
             if selected is None:
                 self.source_summary.hide()
             else:
                 from ..state.source_selection_readout import source_selection_readout
-                self.source_summary.setText(source_selection_readout(selected))
+                self.source_summary.setText(source_selection_readout(selected, family_path_available=state.hackrf_controls_available))
                 self.source_summary.show()
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(self.mode.findData(state.mode))
         for control in (self.source, self.discover, self.mode):
             control.setEnabled(not state.controls_locked)
         self.frequency_bar.apply_view_state(state, has_frame=state.bundle is not None)
+        self.frequency_bar.setVisible(not state.hackrf_controls_available)
+        self.hackrf_bar.apply_view_state(state)
         key = ("analyzer.applying" if state.configuration_pending
                else "analyzer.starting" if state.starting else "analyzer.stopping" if state.stopping
                else "analyzer.stop" if state.running or state.stop_required
@@ -461,7 +480,11 @@ class AnalyzerWorkspaceV2(QWidget):
             self.rx.setToolTip(receiver_detail)
         if self.rx.accessibleName() != receiver_detail:
             self.rx.setAccessibleName(receiver_detail)
+        hackrf = getattr(state.live.snapshot, "hackrf_request", None) if state.hackrf_controls_available else None
         _set_text_if_changed(self.applied,
+            text("hackrf.profile", center=f"{hackrf.center_frequency_hz / 1e6:g}", rate=f"{hackrf.sample_rate_hz / 1e6:g}",
+                 bandwidth=f"{hackrf.baseband_filter_hz / 1e6:g}", fft=hackrf.fft_size, lna=hackrf.lna_gain_db,
+                 vga=hackrf.vga_gain_db, generation=hackrf.configuration_generation) if hackrf is not None else
             text("live.configuration.no_applied") if configuration is None else
             configuration_prefix(getattr(state.live.snapshot, "applied", None)) + " " +
             f"{configuration.center_hz / 1e6:g} MHz · Fs {configuration.sample_rate_hz / 1e6:g} MS/s · "
