@@ -122,7 +122,7 @@ class LibhackrfReadOnlyPort:
                 if dll is not None and self._device.value:
                     try:
                         status = dll.hackrf_close(self._device)
-                    except Exception:  # noqa: BLE001 - foreign exception has no ownership guarantee.
+                    except Exception:  # Foreign exception has no ownership guarantee.
                         self._device_close_ambiguous = True
                         raise
                     # Official libhackrf frees the device even on an error

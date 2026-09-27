@@ -1,5 +1,36 @@
 # APP-06 — общий UI V2 для Pluto, HackRF и tinySA
 
+## Текущий APP-06A/B family cleanup — 2026-09-27
+
+Читайте [APP_06A_FAMILY_CLEANUP_AND_HACKRF_CLOSE_2026-09-27.md](APP_06A_FAMILY_CLEANUP_AND_HACKRF_CLOSE_2026-09-27.md).
+7dd6271/8cffdcd/fe1dd69: retained read-only provider для HackRF/tinySA
+capabilities и identity preflight; lazy SDK port, no new factory/permit
+поверх failed cleanup, explicit close. Это per-instance, не global arbiter.
+
+ВАЖНАЯ поправка: official hackrf_close consumes device pointer даже при
+error return. Python/native больше не повторяют SDK close; first error
+видим, retry продолжает оставшиеся phases. Foreign close exception —
+quarantine без повторного вызова/нового probe, не promised recovery.
+Это supersedes прежнюю unsafe keep-handle-for-destructor assumption и
+incorrect fake semantics; отрицательный close НЕ доказывает device leak.
+
+Clean fe1dd69 official StageOnly35/35CTest42.08s;73 focused PASS11.968s;
+fullV2 fe1dd69/stagedd8194e…894/66skip/0fail250.548s/outside[] PASS.
+Scoped mypy6 files/new Ruff/diff PASS; historical lint24→10, не lint-clean.
+После gates только unused-noqa comment fix. CanonicalB218/EXEaec7a85
+не заменены; старый C7f303 native не current candidate. No new EXE.
+Physical staged wrong-identity open refusal и20MS/s RX30s PASS:
+ingress20.00127MS/s/9766.25 analyticalFFT/s,18428 reduced frames, Stop
+complete/worker joined/queues0. Не UI LPS/FPS/RF duty/ADCreadback/frozen proof.
+tinySA — injected capability lifecycle, не новый physical serial gate.
+
+NEXT common existing-model catalog/runtime availability + explicit identity
+join/no-I/O admission; official shared-DLL frozen closure; единый UI V2
+owner/router/family controls/source epochs; APP-06D actual high-Fs cells.
+APP-05 timebox ended~08:44MSK/not restarted, performance debts OPEN.
+APP-06A/B PARTIAL,C/D/APP-07/release OPEN; APP-00…APP-14 goal active.
+Main dirty Legacy/DFL preserved; no agents/firmware/TX/firewall changes.
+
 ## Текущий coherent catalog checkpoint — 2026-09-27
 
 Читайте [APP_06A_COHERENT_CATALOG_CHECKPOINT_2026-09-27.md](APP_06A_COHERENT_CATALOG_CHECKPOINT_2026-09-27.md).
@@ -204,9 +235,10 @@ modules outside[]. These do not close common device routing.
   это ещё не одна общая Analyzer задача. Максимум UI10001 points, приборный
   dBm сохранять; host FFT/RTBW/IQ не выдумывать. Наличие Ultra не доказывает
   аппаратную проверку Standard. Текущий physical tinySA port не подтверждён.
-- Сейчас read-only inventory подтвердил USB AD9364; ip:pluto.local — его
-  alias, а не доказательство отдельного RJ45 AD9363. Не объявлять Ethernet
-  matrix проверенной по USB или по номинальному1Gbit link.
+- Исторический read-only inventory имел USB route и ip:pluto.local с похожей
+  моделью. При пустом serial это НЕ доказанный alias/physical AD9364 key и
+  НЕ доказательство отдельного RJ45 AD9363. Не объявлять Ethernet matrix
+  проверенной по USB, model similarity или номинальному1Gbit link.
 
 ## Пакеты реализации и порядок
 

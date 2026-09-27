@@ -1,5 +1,12 @@
 # APP-06A: coherent Pluto observation and capability catalog
 
+SDK correction 2026-09-27: читать также
+[family cleanup checkpoint](APP_06A_FAMILY_CLEANUP_AND_HACKRF_CLOSE_2026-09-27.md).
+Ниже описан исторический fake cleanup repro, но его keep-pointer-on-error
+assumption неверна для official hackrf_close: SDK consumes pointer даже на
+error return. Реальная lifecycle задача — pending error/remaining resources;
+retry с тем же pointer небезопасен. Новый Python/native код это исправляет.
+
 Дата: 2026-09-27. Product source: `b7446bf5b1d299b0fc55e8d1729463172ce0a1f0`.
 Final tested source: `9a8a5c1c8891a9e4e4d8aa5590109628cd3de661`;
 второй commit меняет только terminal-cleanup test fixture, не product/native.
