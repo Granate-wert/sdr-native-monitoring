@@ -21,6 +21,7 @@ from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from .analyzer_hackrf_configuration import HackrfConfigurationBar
+from .analyzer_tinysa_configuration import TinySaConfigurationBar
 from .analyzer_status_label import AnalyzerStatusLabel, AnalyzerPeriodsLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_inspector import AnalyzerInspector
@@ -105,6 +106,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self.hackrf_bar = HackrfConfigurationBar(model, self)
         layout.addWidget(self.hackrf_bar)
         self.hackrf_bar.draft_changed.connect(self._update_primary_availability)
+        self.tinysa_bar = TinySaConfigurationBar(model, self)
+        layout.addWidget(self.tinysa_bar)
+        self.tinysa_bar.draft_changed.connect(self._update_primary_availability)
         self.source_summary = QLabel(self)
         self.source_summary.setObjectName("v2-analyzer-source-summary")
         self.source_summary.setProperty("ui2Role", "secondary")
@@ -204,6 +208,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.sweep_preview.set_locale()
         self.frequency_bar.set_locale()
         self.hackrf_bar.set_locale()
+        self.tinysa_bar.set_locale()
         self.visualization.spectrum_scene.set_locale(current_locale())
         self.visualization.waterfall_pane.set_locale(current_locale())
         # Frequency ticks already carry their units. Avoid a redundant caption
@@ -262,6 +267,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self._terminal_released = True
 
     def _toggle_settings(self) -> None:
+        if self.model.state.tinysa_controls_available:
+            self.tinysa_bar.start.setFocus()
+            return
         if self.model.state.hackrf_controls_available:
             self.hackrf_bar.center.setFocus()
             return
@@ -357,6 +365,12 @@ class AnalyzerWorkspaceV2(QWidget):
         state = self.model.state
         if state.running or state.stop_required:
             self.model.stop()
+        elif state.tinysa_controls_available:
+            try:
+                self.model.start(self.tinysa_bar.request())
+            except (ValueError, TypeError):
+                self.error.setText(text("tinysa.common.invalid"))
+                self.error.show()
         elif state.live.primary_action is LiveAction.DISCOVER:
             self.model.discover_devices()
         elif state.hackrf_controls_available:
@@ -409,6 +423,8 @@ class AnalyzerWorkspaceV2(QWidget):
             return
         if state.running or state.stop_required:
             self._execute()
+        elif state.tinysa_controls_available and self.tinysa_bar.valid:
+            self._execute()
         elif (state.live.primary_action is LiveAction.START and state.rtbw_profile_ready
               and not self.hackrf_bar.dirty
               and not self.drawer.dirty and not self.drawer.pending):
@@ -421,13 +437,16 @@ class AnalyzerWorkspaceV2(QWidget):
                  (not self.hackrf_bar.dirty if state.hackrf_controls_available else not self.drawer.dirty and not self.drawer.pending)
                  and state.live.primary_action is LiveAction.START
                  and state.live.primary_action_enabled)
-        invalid_sweep = ready and state.mode is AnalyzerMode.SWEEP and self.sweep_preview.has_error
+        if state.tinysa_controls_available:
+            ready = self.tinysa_bar.valid
+        invalid_sweep = ready and state.mode is AnalyzerMode.SWEEP and state.ad936x_controls_available and self.sweep_preview.has_error
         enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
                    and (state.running or state.stop_required or (ready and not invalid_sweep)))
         self.primary.setEnabled(enabled)
-        hint = (text("analyzer.source.family_path_pending")
+        hint = (text("tinysa.common.invalid") if state.tinysa_controls_available and not ready else
+                text("analyzer.source.family_path_pending")
                 if state.source_selection is not None and state.source_selection.selected is not None
-                and not state.ad936x_controls_available and not state.hackrf_controls_available
+                and not state.ad936x_controls_available and not state.hackrf_controls_available and not state.tinysa_controls_available
                 else self.sweep_preview.summary.text() if invalid_sweep
                 else "" if ready or state.running or state.stop_required
                 else text("analyzer.start_requires_configuration"))
@@ -440,23 +459,25 @@ class AnalyzerWorkspaceV2(QWidget):
         self._refresh_preview()
         self._sync_source(state)
         selection = state.source_selection
-        if selection is not self._last_source_selection or state.hackrf_controls_available != self._last_family_path_available:
+        family_available = state.hackrf_controls_available or state.tinysa_controls_available
+        if selection is not self._last_source_selection or family_available != self._last_family_path_available:
             self._last_source_selection = selection
-            self._last_family_path_available = state.hackrf_controls_available
+            self._last_family_path_available = family_available
             selected = selection.selected if selection is not None else None
             if selected is None:
                 self.source_summary.hide()
             else:
                 from ..state.source_selection_readout import source_selection_readout
-                self.source_summary.setText(source_selection_readout(selected, family_path_available=state.hackrf_controls_available))
+                self.source_summary.setText(source_selection_readout(selected, family_path_available=family_available))
                 self.source_summary.show()
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(self.mode.findData(state.mode))
         for control in (self.source, self.discover, self.mode):
             control.setEnabled(not state.controls_locked)
         self.frequency_bar.apply_view_state(state, has_frame=state.bundle is not None)
-        self.frequency_bar.setVisible(not state.hackrf_controls_available)
+        self.frequency_bar.setVisible(state.ad936x_controls_available)
         self.hackrf_bar.apply_view_state(state)
+        self.tinysa_bar.apply_view_state(state)
         key = ("analyzer.applying" if state.configuration_pending
                else "analyzer.starting" if state.starting else "analyzer.stopping" if state.stopping
                else "analyzer.stop" if state.running or state.stop_required
@@ -482,6 +503,7 @@ class AnalyzerWorkspaceV2(QWidget):
             self.rx.setAccessibleName(receiver_detail)
         hackrf = getattr(state.live.snapshot, "hackrf_request", None) if state.hackrf_controls_available else None
         _set_text_if_changed(self.applied,
+            text("tinysa.common.numerical") if state.tinysa_controls_available else
             text("hackrf.profile", center=f"{hackrf.center_frequency_hz / 1e6:g}", rate=f"{hackrf.sample_rate_hz / 1e6:g}",
                  bandwidth=f"{hackrf.baseband_filter_hz / 1e6:g}", fft=hackrf.fft_size, lna=hackrf.lna_gain_db,
                  vga=hackrf.vga_gain_db, generation=hackrf.configuration_generation) if hackrf is not None else

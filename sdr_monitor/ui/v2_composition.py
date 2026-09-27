@@ -96,7 +96,9 @@ def build_v2_shell(services=None):
     from ..application.analyzer_rtbw_router import AnalyzerRtbwRouter
     router = (AnalyzerRtbwRouter(services.live_sdr, sources, getattr(services, "analyzer_hackrf", None))
               if sources is not None else None)
-    analyzer = AnalyzerSessionApplicationService(router or services.live_sdr, display,
+    from ..application.analyzer_sweep_router import AnalyzerSweepRouter
+    sweep_router = AnalyzerSweepRouter(display, sources, getattr(services, "analyzer_tinysa", None))
+    analyzer = AnalyzerSessionApplicationService(router or services.live_sdr, sweep_router,
                                                  start_live=router.start if router else start_live)
     live_application = LiveSessionApplicationService(
         services.live_sdr,
@@ -107,7 +109,7 @@ def build_v2_shell(services=None):
         rtbw=router,
     )
     analyzer_presenter = ContinuousSweepPresenter(
-        AnalyzerContinuousSweepApplicationService(live_application, display),
+        AnalyzerContinuousSweepApplicationService(live_application, sweep_router),
         snapshot_preparer=SweepSnapshotPreparer(allocation_budget),
         snapshot_admitter=source_admission.sweep,
     )
@@ -123,7 +125,8 @@ def build_v2_shell(services=None):
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),
         diagnostics_presenter_factory=lambda: DiagnosticsPresenter(DiagnosticsControlApplicationService(services.diagnostics)),
         replay_presenter_factory=make_replay_presenter,
-        tinysa_activation_presenter_factory=make_tinysa_activation_presenter,
-        tinysa_analyzer_binding_factory=make_tinysa_analyzer_binding,
+        # Real common instrument graphs cannot expose a second serial owner.
+        tinysa_activation_presenter_factory=(None if getattr(services, "analyzer_tinysa", None) is not None else make_tinysa_activation_presenter),
+        tinysa_analyzer_binding_factory=(None if getattr(services, "analyzer_tinysa", None) is not None else make_tinysa_analyzer_binding),
     )
     return AppShellV2(context=composition.context)

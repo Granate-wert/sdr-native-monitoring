@@ -15,6 +15,7 @@ from .analyzer_session import AnalyzerMode, AnalyzerPhase, AnalyzerSessionState
 from ..domain.live import LiveSnapshot
 from ..domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
 
 
 class AnalyzerContinuousSweepDisplayPort(Protocol):
@@ -29,7 +30,7 @@ class AnalyzerContinuousSweepControlPort(Protocol):
     @property
     def analyzer_state(self) -> AnalyzerSessionState | None: ...
 
-    def start_sweep(self, request: ContinuousSweepPlanRequest) -> AnalyzerSessionState: ...
+    def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> AnalyzerSessionState: ...
 
     def stop(self) -> LiveSnapshot: ...
 
@@ -59,7 +60,16 @@ class AnalyzerContinuousSweepApplicationService:
     def stop_required(self) -> bool:
         return self._owns_sweep_attempt
 
-    def start(self, request: ContinuousSweepPlanRequest) -> None:
+    @property
+    def instrument_run_identity(self) -> TinySaSweepRunIdentity | None:
+        value = getattr(self._display, "instrument_run_identity", None)
+        state = self._application.analyzer_state
+        if (isinstance(value, TinySaSweepRunIdentity) and state is not None
+                and state.operation_id == self._attempt_id and state.sweep_epoch == value.request.epoch):
+            return value
+        return None
+
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> None:
         with self._operation_lock:
             if self._closed:
                 raise RuntimeError("continuous Sweep application is closed")

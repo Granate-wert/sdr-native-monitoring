@@ -24,6 +24,9 @@ class ContinuousSweepDisplayMetrics:
     native_queue_depth: int = 0
     native_queue_capacity: int = 0
     has_error: bool = False
+    # Explicit one-shot instrument lifecycle, not native Sweep completion.
+    acquisition_finished: bool = False
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -129,7 +129,10 @@ class AnalyzerFrameBundle:
                 acquisition_epoch=self.spectrum.epoch,
                 # Segment generation/revision provenance stays on each
                 # publication; it is not a single configuration identity.
-                config_generation=None, clock_domain=None,
+                config_generation=(self.spectrum.instrument.configuration_generation
+                                   if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument else None),
+                clock_domain=(self.spectrum.instrument.clock_domain
+                              if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument else None),
                 accumulation_id=f"epoch:{self.spectrum.epoch}",
                 source_frame_sequence=base.source_frame_sequence,
                 unit=base.unit, frequencies_hz=base.frequencies_hz,

@@ -114,6 +114,15 @@ class AnalyzerInspector(QScrollArea):
             self.detail.clear()
             return
         snapshot = state.sweep_snapshot if state.mode is AnalyzerMode.SWEEP else None
+        instrument = getattr(getattr(snapshot, "line", None), "instrument", None)
+        if instrument is not None:
+            self._report = None
+            self.summary.setText(text("tinysa.common.trace", points=instrument.points,
+                                      elapsed=f"{instrument.host_elapsed_s:.2f}"))
+            self.segment.clear()
+            self.segment.setEnabled(False)
+            self.detail.setText(text("tinysa.common.numerical"))
+            return
         try:
             self._report = inspect_sweep(snapshot)
         except ValueError:

@@ -23,6 +23,7 @@ from ...services.native_continuous_sweep import (
 )
 from ..performance import BoundedRenderMetrics, RenderPerformanceSnapshot
 from ...domain.analyzer import AnalyzerFrameBundle
+from ...domain.tinysa_analyzer import TinySaSweepRunIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,7 @@ class ContinuousSweepPresenter(QObject):
         self._projection_in_flight = False
         self._projection_poll_pending = False
         self._stop_failed = False
+        self._instrument_run_identity: TinySaSweepRunIdentity | None = None
         self._start_completed.connect(self._finish_start, Qt.ConnectionType.QueuedConnection)
         self._stop_completed.connect(self._finish_stop, Qt.ConnectionType.QueuedConnection)
         self._poll_completed.connect(self._finish_poll, Qt.ConnectionType.QueuedConnection)
@@ -96,6 +98,10 @@ class ContinuousSweepPresenter(QObject):
     def prepares_snapshots(self) -> bool:
         """Composition-selected presentation channel; immutable for this owner."""
         return self._snapshot_preparer is not None
+
+    @property
+    def instrument_run_identity(self) -> TinySaSweepRunIdentity | None:
+        return self._instrument_run_identity
 
     @property
     def is_starting(self) -> bool:
@@ -121,6 +127,7 @@ class ContinuousSweepPresenter(QObject):
         if self._stop_failed:
             raise RuntimeError("previous continuous Sweep cleanup is unresolved; retry Stop")
         self._stop_requested.clear()
+        self._instrument_run_identity = None
         future = self._stop_executor.submit(self._service.start, native_config)
         self._start_future = future
         self.starting_changed.emit(True)
@@ -135,6 +142,8 @@ class ContinuousSweepPresenter(QObject):
             future.result()
         except Exception as caught:
             error = caught
+        identity = getattr(self._service, "instrument_run_identity", None)
+        self._instrument_run_identity = identity if isinstance(identity, TinySaSweepRunIdentity) else None
         if error is None and not self._closing:
             # Publish Running while Starting still holds the observer lock.
             # No synchronous listener can see an unlocked idle gap between
@@ -350,7 +359,17 @@ class ContinuousSweepPresenter(QObject):
         if future is not self._poll_future or not future.done():
             return
         try:
-            self._emit_snapshot(future.result())
+            publication = future.result()
+            self._emit_snapshot(publication)
+            snapshot = publication.snapshot if isinstance(publication, (_PreparedPublication, _CancelledPreview)) else publication
+            if snapshot.metrics.error:
+                # Failed close is retained for explicit Stop, not auto-retried.
+                self._timer.stop()
+                self._stop_failed = True
+                self.task_failed.emit(snapshot.metrics.error)
+            elif snapshot.metrics.acquisition_finished:
+                # Normal one-pass completion uses this same async Stop/join.
+                self.stop()
         except Exception as error:
             # A publication error does not mean acquisition has stopped.
             # Latch admission before any externally visible callback, then

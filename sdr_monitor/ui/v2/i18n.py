@@ -23,6 +23,15 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
+        "tinysa.common.start": MappingProxyType({UiLocale.RU: "Начало", UiLocale.EN: "Start frequency"}),
+        "tinysa.common.stop": MappingProxyType({UiLocale.RU: "Конец (не включён)", UiLocale.EN: "Stop (exclusive)"}),
+        "tinysa.common.points": MappingProxyType({UiLocale.RU: "Точки (2–10001)", UiLocale.EN: "Points (2–10001)"}),
+        "tinysa.common.deadline": MappingProxyType({UiLocale.RU: "Таймаут ответа", UiLocale.EN: "Response deadline"}),
+        "tinysa.common.seconds": MappingProxyType({UiLocale.RU: " с", UiLocale.EN: " s"}),
+        "tinysa.common.scope": MappingProxyType({UiLocale.RU: "Один проход по «Старт» → завершение и закрытие порта. Значения прибора в dBm; его текущие input/RBW/atten/LNA/accuracy/spur/repeat сохранены, не считываются и не изменяются этим путём. Перед запуском проверьте вход и диапазон на приборе. Stop отменяет чтение и ждёт закрытия; немедленная остановка внутреннего RF-скана не подтверждена. Нет RTBW, I/Q, host FFT или progressive RF по serial-пакетам.", UiLocale.EN: "One pass on Start → completion and port close. Device dBm; current input/RBW/atten/LNA/accuracy/spur/repeat are preserved, not read back or changed by this path. Check input/range on the instrument first. Stop cancels reading and awaits close; immediate internal RF stop is not proven. No RTBW, I/Q, host FFT or progressive RF inferred from serial chunks."}),
+        "tinysa.common.invalid": MappingProxyType({UiLocale.RU: "Проверьте частоты: один доступный входной диапазон, начало < конец, шаг ≥ 1 Гц, не более 10001 точки.", UiLocale.EN: "Check frequencies: one declared input range, start < stop, step ≥ 1 Hz, at most 10001 points."}),
+        "tinysa.common.trace": MappingProxyType({UiLocale.RU: "tinySA · {points} точек · dBm прибора · встроенная калибровка (RF-точность не проверена) · время ответа хоста {elapsed} с · качество/RBW/RF-время неизвестны", UiLocale.EN: "tinySA · {points} points · device dBm · built-in calibration (RF accuracy unverified) · host response {elapsed} s · quality/RBW/RF time unknown"}),
+        "tinysa.common.numerical": MappingProxyType({UiLocale.RU: "Измеренный dBm tinySA; нет FFT/Fs/ENBW хост-DSP. Дополнительная коррекция не применена. RBW и RF-время не считывались.", UiLocale.EN: "Measured tinySA dBm; no host-DSP FFT/Fs/ENBW. No external correction applied. RBW and RF time were not read back."}),
         "hackrf.center": MappingProxyType({UiLocale.RU: "Центр", UiLocale.EN: "Center"}),
         "hackrf.rate": MappingProxyType({UiLocale.RU: "Fs (запрос)", UiLocale.EN: "Fs (requested)"}),
         "hackrf.filter": MappingProxyType({UiLocale.RU: "Фильтр", UiLocale.EN: "Filter"}),

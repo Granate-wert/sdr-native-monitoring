@@ -12,6 +12,8 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.device_capabilities import DeviceFamily
+from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability
+from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
 
 from ..state.live_view_state import LiveAction, LiveViewState
 from ..state.prepared_sweep import PreparedSweepSnapshot
@@ -30,7 +32,7 @@ class SweepPresentationPort(Protocol):
     starting_changed: _SignalPort
     stopping_changed: _SignalPort
 
-    def start(self, request: ContinuousSweepPlanRequest) -> None: ...
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> None: ...
     def stop(self) -> None: ...
     def can_close(self) -> bool: ...
 
@@ -68,6 +70,16 @@ class AnalyzerViewState:
                 or (self.hackrf_controls_available and getattr(self.live.snapshot, "hackrf_request", None) is not None))
 
     @property
+    def tinysa_controls_available(self) -> bool:
+        selection = self.source_selection
+        source = selection.selected if selection is not None else None
+        return bool(source is not None and source.family is DeviceFamily.TINYSA
+                    and selection is not None and not selection.release_pending
+                    and source.binding.snapshot is not None and source.binding.calibration_identity is not None
+                    and source.runtime is not None and source.runtime.availability is AdapterRuntimeAvailability.AVAILABLE
+                    and source.binding.snapshot.model_id in {"tinysa_basic", "tinysa_ultra"})
+
+    @property
     def controls_locked(self) -> bool:
         return (self.live.busy or self.starting or self.stopping or self.running
                 or self.stop_required or self.configuration_pending)
@@ -97,6 +109,8 @@ class AnalyzerViewModel:
         self._publication_pending = False
         self._disposed = False
         self._live_identity: tuple[object, ...] | None = None
+        self._instrument_request: TinySaSweepRequest | None = None
+        self._instrument_epoch: int | None = None
         self._connections = (
             (getattr(sweep, "prepared_snapshot_ready") if self._expects_prepared else sweep.snapshot_ready,
              self._on_sweep_snapshot),
@@ -156,19 +170,26 @@ class AnalyzerViewModel:
             self._publish()
         return True
 
-    def start(self, request: ContinuousSweepPlanRequest | None = None) -> bool:
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | None = None) -> bool:
         state = self.state
+        instrument = state.tinysa_controls_available and self._mode is AnalyzerMode.SWEEP
         if (self._disposed or state.controls_locked or
-                not state.rtbw_profile_ready or
-                state.live.primary_action is not LiveAction.START or
-                not state.live.primary_action_enabled or
-                (self._mode is AnalyzerMode.SWEEP and not state.ad936x_controls_available)):
+                not instrument and (not state.rtbw_profile_ready or
+                    state.live.primary_action is not LiveAction.START or not state.live.primary_action_enabled or
+                    (self._mode is AnalyzerMode.SWEEP and not state.ad936x_controls_available))):
             return False
         self._error = None
         if self._mode is AnalyzerMode.RTBW:
             return self.live.execute_primary_action()
-        if not isinstance(request, ContinuousSweepPlanRequest):
+        if instrument:
+            selection = state.source_selection
+            if (not isinstance(request, TinySaSweepRequest) or selection is None
+                    or request.source is not selection.selected or request.selection_revision != selection.revision):
+                return False
+        elif not isinstance(request, ContinuousSweepPlanRequest):
             return False
+        self._instrument_request = request if isinstance(request, TinySaSweepRequest) else None
+        self._instrument_epoch = None
         # Latch before dispatch: reentrant callbacks cannot change the mode.
         self._starting = True
         self._publish()
@@ -288,6 +309,35 @@ class AnalyzerViewModel:
             self._on_error("Invalid Sweep Analyzer bundle")
             return
         bundle = prepared.analyzer_bundle if prepared is not None else value.analyzer_bundle
+        if bundle is not None:
+            from sdr_monitor.domain.sweep_lines import SweepLineFrame
+            frame = bundle.spectrum
+            provenance = frame.instrument if isinstance(frame, SweepLineFrame) else None
+            request = self._instrument_request
+            if self.state.tinysa_controls_available:
+                selection = self.state.source_selection
+                run = getattr(self._sweep, "instrument_run_identity", None)
+                if (request is None or provenance is None or selection is None or not isinstance(frame, SweepLineFrame)
+                        or not isinstance(run, TinySaSweepRunIdentity)
+                        or run.request.source is not request.source
+                        or frame.epoch != run.request.epoch
+                        or provenance.configuration_generation != run.configuration_generation
+                        or selection.selected is not request.source
+                        or provenance.selection_revision != selection.revision
+                        or frame.source_id != request.source.device_id or frame.unit != "dBm"
+                        or provenance.device_identity_key != request.source.binding.identity_key
+                        or request.source.binding.calibration_identity is None
+                        or provenance.firmware_fingerprint != request.source.binding.calibration_identity.firmware_fingerprint
+                        or frame.epoch < request.epoch
+                        or (provenance.start_hz, provenance.stop_hz, provenance.points) !=
+                           (request.start_hz, request.stop_hz, request.points)
+                        or self._instrument_epoch is not None and frame.epoch != self._instrument_epoch):
+                    self._on_error("Rejected stale/foreign instrument Sweep publication")
+                    return
+                self._instrument_epoch = frame.epoch
+            elif provenance is not None:
+                self._on_error("Rejected instrument publication for another source")
+                return
         if bundle is None and value.presentation_omission is None:
             return  # Counters alone must not erase the last measurement.
         self._bundle = bundle

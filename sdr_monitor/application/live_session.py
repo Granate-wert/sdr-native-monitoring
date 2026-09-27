@@ -26,6 +26,7 @@ from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET, LiveSessionState, LiveEr
 from ..domain.analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ..domain.analyzer import AnalyzerFrameBundle, bundle_from_live
+from ..domain.tinysa_analyzer import TinySaSweepRequest
 
 
 class LiveSessionPort(Protocol):
@@ -99,7 +100,7 @@ class LiveSessionApplicationService:
     def _lifecycle_snapshot(self, snapshot: LiveSnapshot) -> LiveSnapshot:
         if self._analyzer is None:
             return snapshot
-        required = self._analyzer.stop_required
+        required = self._analyzer.stop_required or bool(self._sources and self._sources.current().release_pending)
         if self._analyzer.state.phase is AnalyzerPhase.ERROR and self._control_error is not None:
             message, kind = self._control_error
             snapshot = replace(snapshot, state=LiveSessionState.ERROR, error=message, error_kind=kind)
@@ -107,7 +108,7 @@ class LiveSessionApplicationService:
 
     def _failed_lifecycle_snapshot(self, error: Exception) -> LiveSnapshot:
         snapshot = error.snapshot if isinstance(error, AnalyzerLiveRejected) else replace(
-            self._rtbw.current_snapshot() if self._rtbw is not None else self._port.latest_snapshot(), state=LiveSessionState.ERROR,
+            self.current_snapshot(), state=LiveSessionState.ERROR,
             error=str(error), error_kind=LiveErrorKind.INTERNAL,
         )
         if snapshot.error is None:
@@ -167,7 +168,7 @@ class LiveSessionApplicationService:
                     error_kind=LiveErrorKind.CONNECTION_FAILED if selection.refusal else None,
                     stop_required=selection.release_pending)
                 self._empty_source_snapshot = selection, snapshot
-            return self._empty_source_snapshot[1]
+            return self._lifecycle_snapshot(self._empty_source_snapshot[1])
         self._empty_source_snapshot = None
         return self._lifecycle_snapshot(self._port.latest_snapshot())
 
@@ -254,15 +255,21 @@ class LiveSessionApplicationService:
         with self._analyzer.idle_control_operation():
             return self._lifecycle_snapshot(self._rtbw.stage_hackrf(patch))
 
-    def start_sweep(self, request: ContinuousSweepPlanRequest) -> AnalyzerSessionState:
-        self._require_native_family()
+    def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> AnalyzerSessionState:
         if self._analyzer is None:
             raise RuntimeError("Shared analyzer is unavailable in this composition")
         self._configuration_admission(idle_only=True)
-        snapshot = self._port.latest_snapshot()
-        if snapshot.applied is None:
-            raise RuntimeError("Sweep requires an applied Live profile")
-        self.preflight_sweep(snapshot.applied.applied, request)
+        if isinstance(request, TinySaSweepRequest):
+            selection = self.current_source_selection()
+            if (selection is None or selection.selected is not request.source
+                    or selection.revision != request.selection_revision or selection.release_pending):
+                raise RuntimeError("Instrument Sweep selection changed")
+        else:
+            self._require_native_family()
+            snapshot = self._port.latest_snapshot()
+            if snapshot.applied is None:
+                raise RuntimeError("Sweep requires an applied Live profile")
+            self.preflight_sweep(snapshot.applied.applied, request)
         self._analyzer.select_mode(AnalyzerMode.SWEEP)
         self._control_error = None
         try:

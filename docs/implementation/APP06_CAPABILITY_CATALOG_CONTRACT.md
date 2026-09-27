@@ -237,7 +237,7 @@ UI V2 has explicit HackRF profile staging and Start/Stop on the SAME Analyzer
 canvas, amp/bias OFF and CPU only. Source changes discard drafts/history; late
 foreign selection/preparation and older profile acknowledgements are rejected.
 HackRF host Sweep, persistence and I/Q recording are not integrated in this
-common path. TinySA remains selection-only here. These gaps are visible, not
+common path. TinySA was selection-only at that checkpoint (superseded below). These gaps are visible, not
 converted into hardware-impossible claims or synthetic host FFT.
 
 ## Retained tinySA acquisition preparation (2026-09-27)
@@ -282,15 +282,55 @@ Only explicit close resumes cleanup, not commands. The command allowlist, no
 rollback/retry/persistent writes, and ACK-not-readback semantics are unchanged.
 This is NOT new common-Analyzer settings/RBW/LNA/attenuation admission.
 
-The V2 tinySA path is STILL selection-only: the new retained acquisition is a
+At the preparation-only checkpoint the V2 tinySA path was STILL selection-only: the new retained acquisition was a
 backend integration prerequisite, not the common Sweep request/router/canvas
-wiring. Production Start has not been enabled by this preparation API. Actual
+wiring. Production Start was not enabled by this preparation API. Actual
 Analyzer composition, firmware/input-aware controls, epoch/unit/late-frame guards,
 bounded repeat scheduling and physical visible/frozen cells remain mandatory.
 
+## Common tinySA one-pass Analyzer integration (2026-09-27)
+
+Production DI now supplies TinySaCommonAnalyzerService from the SAME retained
+catalog and NativeLive graph exclusion. AnalyzerSweepRouter dispatches BELOW
+the existing AnalyzerSessionApplicationService, not another controller. Native
+Sweep remains native; an immutable TinySaSweepRequest references the EXACT
+selected choice/revision. Start rechecks catalog binding/runtime and pure model/
+single-input-range admission, reserves the same provider's inert owner, then
+claims the graph BEFORE serial effects. No native profile, LO segments, host
+FFT, sample rate or host IQ is fabricated for the instrument.
+
+Current instrument mode is explicitly ONE PASS PER START, option 0. An off-Qt
+worker emits a complete SweepLineFrame only after exact parser/identity/endpoint
+and confirmed-close gates. Instrument quality is explicitly UNKNOWN, not a
+clean native/reference bitmask. Original device dBm, stop-exclusive grid,
+observed zero, opaque device/firmware axes and host completion semantics survive
+the common Spectrum/Waterfall/preparation path. Single configuration generation
+and controller epoch are captured in a typed run identity; GUI admission checks
+source/selection/epoch/generation/grid/unit, not arrival order. Cancellation
+before a complete response publishes an explicit all-unknown terminal gap, not
+interpolated serial-chunk measurements. RF timestamp/accuracy/duty remain unknown.
+
+Successful normal one-shot completion invokes the same nonblocking Stop/join
+path. No repeated scan, reopen, restart or retry occurs. Acquisition errors stop
+polling and remain visible; FAILED close is not automatically retried. Explicit
+Stop cancels/joins (bounded 3 seconds), closes the same retained object and only
+then releases graph exclusion. Failed join/close/release retains the obligation;
+Discover/native RX/configure/recording cannot steal this graph. Closing a serial
+port does NOT prove immediate termination of the instrument's internal RF scan.
+
+The SAME Analyzer has instrument frequency/points/deadline drafts, RU/EN labels,
+2..10001 cap, source reset and explicit unsupported RTBW. Current input/RBW/
+atten/LNA/accuracy/spur/repeat remain PRESERVED and NOT READ BACK/CHANGED by
+this path; the user must check the physical input/range. Firmware-aware settings
+admission, repeated-pass scheduling, Ultra upper-band/current-input qualification,
+Basic physical evidence and frozen packaging remain OPEN. Production common
+instrument graphs do not expose the old independent tinySA source/analyzer
+workspace, avoiding a second serial owner. Isolated compatibility/test graphs
+retain their old factories; no process-global SDK arbitration is claimed.
+
 ## Required further work
 
-TinySA family-specific settings/device-dBm trace acquisition and advanced HackRF
+TinySA firmware/input-aware settings/repeated Sweep and advanced HackRF
 DSP controls/strategies remain. Common source-process HackRF RTBW integration is
 not frozen executable or performance acceptance.
 Official shared-DLL/frozen packaging and actual high-Fs device/transport cells

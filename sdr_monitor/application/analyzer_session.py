@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.tinysa_analyzer import TinySaSweepRequest
 from ..domain.live import LiveSnapshot, LiveSessionState, LiveAdmissionRejected
 
 
@@ -46,7 +47,7 @@ class AnalyzerLivePort(Protocol):
 
 
 class AnalyzerSweepPort(Protocol):
-    def start(self, request: ContinuousSweepPlanRequest) -> None: ...
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> None: ...
     def stop(self) -> None: ...
 
 
@@ -136,7 +137,7 @@ class AnalyzerSessionApplicationService:
             self._state = replace(self._state, mode=mode)
             return self._state
 
-    def start(self, request: ContinuousSweepPlanRequest | None = None) -> AnalyzerSessionState:
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | None = None) -> AnalyzerSessionState:
         with self._lock:
             if self._state.phase is not AnalyzerPhase.IDLE or self._idle_control_active:
                 raise RuntimeError("analyzer is not idle")
@@ -145,7 +146,7 @@ class AnalyzerSessionApplicationService:
                 raise ValueError("Sweep requires its request; RTBW uses the applied profile")
             sweep_epoch = None
             if request is not None:
-                if not isinstance(request, ContinuousSweepPlanRequest):
+                if not isinstance(request, (ContinuousSweepPlanRequest, TinySaSweepRequest)):
                     raise TypeError("Sweep requires an immutable plan request")
                 if type(request.epoch) is not int or not 0 <= request.epoch <= (1 << 64) - 1:
                     raise ValueError("Sweep epoch must fit an unsigned 64-bit integer")

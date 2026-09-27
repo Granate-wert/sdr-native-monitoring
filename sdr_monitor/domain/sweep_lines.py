@@ -16,6 +16,7 @@ import numpy as np
 from .sweep import SweepBinQuality, SweepPlan
 from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, validate_acquisition, validate_position
 from .sweep_statistics import SweepStatisticsFrame
+from .tinysa_analyzer import TinySaSweepProvenance
 
 
 _VALIDATION_BATCH = 65_536
@@ -52,6 +53,7 @@ class SweepQualitySchema(StrEnum):
 
     REFERENCE_V1 = "sweep-reference-v1"
     NATIVE_V5 = "sdr-native-quality-v5"
+    INSTRUMENT_V1 = "instrument-quality-unknown-v1"
 
 
 class SweepLineGapReason(StrEnum):
@@ -122,6 +124,7 @@ class SweepLineFrame:
     segment_acquisition: tuple["SweepSegmentAcquisition", ...] | None = None
     statistics: SweepStatisticsFrame | None = None
     last_admitted_segment: SweepSegmentPosition | None = None
+    instrument: TinySaSweepProvenance | None = None
 
     def __post_init__(self) -> None:
         validate_position(self.last_admitted_segment, tuple(
@@ -219,6 +222,22 @@ class SweepLineFrame:
                 raise TypeError("Sweep requires an explicit statistics contract")
             self.statistics.validate_parent(self.source_id, self.epoch, self.sequence,
                                             self.unit, self.frequencies_hz)
+        if self.instrument is not None:
+            p = self.instrument
+            if not isinstance(p, TinySaSweepProvenance):
+                raise TypeError("instrument Sweep requires typed provenance")
+            expected = p.start_hz + np.arange(p.points, dtype=np.float64) * ((p.stop_hz - p.start_hz) // p.points)
+            if (self.quality_schema is not SweepQualitySchema.INSTRUMENT_V1 or self.unit != "dBm"
+                    or not np.array_equal(self.frequencies_hz, expected)
+                    or np.any(self.quality_flags) or np.any(self.source_segment_indices != -1)
+                    or self.segment_config_generations or self.missing_segment_indices
+                    or self.segment_acquisition is not None or self.last_admitted_segment is not None
+                    or self.analysis_bins_per_usable_window or self.statistics is not None):
+                raise ValueError("instrument Sweep cannot fabricate SDR segments/FFT/quality or another grid/unit")
+            if self.is_complete and p.observed_zero_db is None:
+                raise ValueError("completed tinySA trace requires observed zero offset")
+        elif self.quality_schema is SweepQualitySchema.INSTRUMENT_V1:
+            raise ValueError("instrument quality requires instrument provenance")
 
     @property
     def is_complete(self) -> bool:
