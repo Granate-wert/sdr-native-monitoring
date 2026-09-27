@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace sdr_hackrf {
@@ -72,6 +73,14 @@ struct HackrfFixedBandDspDeliveryAssessment {
     std::uint32_t presentation_high_water{};
 };
 
+// Presentation-only drain. The newest already-computed frame crosses the
+// Python boundary once; older frames remain accounted as display coalescing,
+// never as missing I/Q or analytical FFT work.
+struct HackrfLatestSpectrumFrameDrain {
+    std::optional<sdr_core::SpectrumFrame> frame;
+    std::uint32_t coalesced_frames{};
+};
+
 [[nodiscard]] HackrfFixedBandDspDeliveryAssessment
 assess_hackrf_fixed_band_dsp_delivery(const HackrfFixedBandDspMetrics& metrics) noexcept;
 
@@ -93,6 +102,7 @@ public:
     [[nodiscard]] std::vector<sdr_core::SpectrumFrame> poll_spectrum_frames(
         std::size_t max_items = 0U
     );
+    [[nodiscard]] HackrfLatestSpectrumFrameDrain drain_latest_spectrum_frame();
     [[nodiscard]] HackrfFixedBandDspMetrics metrics() const;
     [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
         std::size_t max_items = 0U

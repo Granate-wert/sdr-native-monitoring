@@ -53,6 +53,8 @@ class HackrfRuntimeControlPort(Protocol):
 
     def poll_spectrum_frames(self, max_items: int = 0) -> list[object]: ...
 
+    def drain_latest_spectrum_frame(self) -> object: ...
+
     def metrics(self) -> object: ...
 
     def stop(self, timeout_ms: int) -> object: ...
@@ -197,6 +199,28 @@ class HackrfProductLiveCoordinator:
             return tuple(control.poll_spectrum_frames(max_items))
         except Exception:
             return ()
+
+    def drain_latest_spectrum_frame(self) -> tuple[object | None, int]:
+        """Marshal at most one reduced frame; keep coalescing separate from FFT loss."""
+
+        with self._lock:
+            control = self._control if self._state is HackrfProductLiveState.ACTIVE else None
+        if control is None:
+            return None, 0
+        try:
+            result = control.drain_latest_spectrum_frame()
+            missing = object()
+            frame = getattr(result, "frame", missing)
+            coalesced = getattr(result, "coalesced_frames", None)
+            if frame is missing:
+                raise ValueError("missing frame field")
+            if type(coalesced) is not int or not 0 <= coalesced < 256:
+                raise ValueError("invalid coalescing count")
+            if frame is None and coalesced:
+                raise ValueError("coalescing without a frame")
+            return frame, coalesced
+        except Exception:  # noqa: BLE001 - retain owned native control; caller fails closed.
+            raise RuntimeError("HackRF native latest-frame drain failed") from None
 
     def metrics(self) -> object | None:
         """Return scalar native metrics for an active owner, never raw I/Q."""

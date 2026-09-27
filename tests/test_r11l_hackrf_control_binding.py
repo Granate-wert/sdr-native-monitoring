@@ -28,6 +28,8 @@ sys.modules[spec.name] = native
 spec.loader.exec_module(native)
 
 assert hasattr(native, "HackrfRuntimeDspControl")
+assert native.HACKRF_UI_BRIDGE_CONTRACT_VERSION == 1
+assert hasattr(native.HackrfRuntimeDspControl, "drain_latest_spectrum_frame")
 assert hasattr(native, "_make_test_hackrf_runtime_dsp_control")
 forbidden = ("start", "configure", "retune", "set_sample_rate", "raw_iq", "ci8")
 for name in forbidden:
@@ -71,6 +73,23 @@ finally:
     if control.metrics().lifecycle_open:
         result = control.stop(1000)
         assert result.complete()
+
+control = native._make_test_hackrf_runtime_dsp_control(4)
+try:
+    deadline = time.monotonic() + 1.0
+    while control.metrics().processing.dsp.dsp.fft_frames_computed < 4 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    latest = control.drain_latest_spectrum_frame()
+    assert latest.frame is not None
+    assert latest.coalesced_frames == 3, latest.coalesced_frames
+    assert latest.frame.frame_sequence == 3
+    assert latest.frame.source.source_id == "hackrf-r11l-test-fixture"
+    assert latest.frame.dropped_fft_frames_before == 0
+    empty = control.drain_latest_spectrum_frame()
+    assert empty.frame is None and empty.coalesced_frames == 0
+    assert control.metrics().processing.dsp.dsp.fft_frames_computed == 4
+finally:
+    assert control.stop(1000).complete()
 '''
         completed = subprocess.run(
             [sys.executable, "-c", script, str(module_path)],

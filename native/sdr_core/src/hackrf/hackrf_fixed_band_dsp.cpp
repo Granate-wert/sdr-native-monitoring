@@ -213,6 +213,23 @@ std::vector<sdr_core::SpectrumFrame> HackrfFixedBandDsp::poll_spectrum_frames(
     return result;
 }
 
+HackrfLatestSpectrumFrameDrain HackrfFixedBandDsp::drain_latest_spectrum_frame() {
+    HackrfLatestSpectrumFrameDrain result;
+    sdr_core::SpectrumFrame frame;
+    std::uint32_t consumed = 0U;
+    // A producer can refill concurrently; one bridge call must never chase it
+    // indefinitely or delay the GUI. The next poll handles any newer frames.
+    while (consumed < impl_->config.presentation_capacity &&
+           impl_->presentation.try_pop(frame)) {
+        if (result.frame.has_value()) {
+            ++result.coalesced_frames;
+        }
+        result.frame = std::move(frame);
+        ++consumed;
+    }
+    return result;
+}
+
 std::vector<sdr_core::PersistenceSnapshot> HackrfFixedBandDsp::poll_persistence_snapshots(
     const std::size_t max_items
 ) {

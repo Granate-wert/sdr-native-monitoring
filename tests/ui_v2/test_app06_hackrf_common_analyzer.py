@@ -72,6 +72,13 @@ class Control:
         self.frame_change = None
         self.metrics_change = None
         self.metrics_thread_names = []
+        self.drain_coalesced = 0
+
+    def drain_latest_spectrum_frame(self):
+        frame = None
+        for _ in range(self.drain_coalesced + 1):
+            frame = self.poll_spectrum_frames(1)[0]
+        return SimpleNamespace(frame=frame, coalesced_frames=self.drain_coalesced)
 
     def poll_spectrum_frames(self, _count):
         request = self.request
@@ -129,6 +136,8 @@ class Factory:
 
 def graph():
     native = _Native()
+    native.HACKRF_UI_BRIDGE_CONTRACT_VERSION = 1
+    native.HackrfRuntimeDspControl = Control
     native.routes = ("usb:fixture",)
     live = NativeLiveSessionService(native)
     snapshot, identity, _ = _observed()
@@ -190,6 +199,60 @@ class HackrfCommonOwnerTests(unittest.TestCase):
         self.assertEqual(self.g.observation.probes, 0)
         self.assertEqual(self.g.factory.controls, [])
         self.assertEqual(snapshot.hackrf_request.sample_rate_hz, 20e6)
+
+    def test_old_or_malformed_bridge_is_refused_before_identity_or_sdk(self):
+        for version in (None, True, 0, 2):
+            with self.subTest(version=version):
+                self.g.native.HACKRF_UI_BRIDGE_CONTRACT_VERSION = version
+                with self.assertRaisesRegex(LiveAdmissionRejected, "latest-frame bridge"):
+                    stage(self.g)
+                self.assertEqual(self.g.observation.probes, 0)
+                self.assertEqual(self.g.factory.controls, [])
+        self.g.native.HACKRF_UI_BRIDGE_CONTRACT_VERSION = 1
+        self.g.native.HackrfRuntimeDspControl = SimpleNamespace()
+        with self.assertRaisesRegex(LiveAdmissionRejected, "latest-frame bridge"):
+            stage(self.g)
+
+    def test_latest_native_drain_accounts_coalescing_without_iq_or_fft_loss(self):
+        stage(self.g)
+        self.g.application.start()
+        self.g.factory.controls[0].drain_coalesced = 3
+        self.wait(lambda: self.g.application.current_snapshot().performance.bridge_frames_coalesced > 0)
+        performance = self.g.application.current_snapshot().performance
+        self.assertEqual(performance.bridge_native_frames_polled,
+                         performance.bridge_frames_coalesced + performance.bridge_frames_published)
+        self.assertEqual(performance.fft_frames_dropped, 0)
+        self.assertEqual(performance.iq_samples_dropped, 0)
+        self.assertEqual(self.g.application.current_snapshot().hackrf_request.averaging_frames, 1)
+
+    def test_malformed_drain_fails_closed_and_retains_owner_until_explicit_stop(self):
+        stage(self.g)
+        self.g.application.start()
+        control = self.g.factory.controls[0]
+        control.drain_latest_spectrum_frame = lambda: SimpleNamespace(frame=None, coalesced_frames=1)
+        self.wait(lambda: self.g.application.current_snapshot().stop_required)
+        self.assertIsNotNone(self.g.live._external_analyzer_owner)
+        self.assertEqual(control.stops, [])
+        self.assertIsNone(self.g.application.stop().error)
+
+    def test_latest_drain_rejects_invalid_counts_without_releasing_control(self):
+        stage(self.g)
+        self.g.application.start()
+        # Stop the bridge only, while retaining the exact native control/lease.
+        self.g.hackrf._cancel.set()
+        self.g.hackrf._poller.join(1)
+        control = self.g.factory.controls[0]
+        for result in (SimpleNamespace(frame=object(), coalesced_frames=True),
+                       SimpleNamespace(frame=object(), coalesced_frames=-1),
+                       SimpleNamespace(frame=object(), coalesced_frames=256),
+                       SimpleNamespace(coalesced_frames=0),
+                       SimpleNamespace(frame=None, coalesced_frames=1)):
+            with self.subTest(result=result):
+                control.drain_latest_spectrum_frame = lambda result=result: result
+                with self.assertRaisesRegex(RuntimeError, "latest-frame drain failed"):
+                    self.g.coordinator.drain_latest_spectrum_frame()
+                self.assertEqual(control.stops, [])
+                self.assertTrue(self.g.coordinator.snapshot().active)
 
     def test_start_publishes_common_bundle_waterfall_and_explicit_stop_same_owner(self):
         stage(self.g)

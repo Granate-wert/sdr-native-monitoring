@@ -240,6 +240,13 @@ void bind_hackrf(py::module_& module) {
         .def_readonly("source", &sdr_hackrf::HackrfRuntimeDspMetrics::source)
         .def_readonly("processing", &sdr_hackrf::HackrfRuntimeDspMetrics::processing);
 
+    py::class_<sdr_hackrf::HackrfLatestSpectrumFrameDrain>(
+        module, "HackrfLatestSpectrumFrameDrain"
+    )
+        .def_readonly("frame", &sdr_hackrf::HackrfLatestSpectrumFrameDrain::frame)
+        .def_readonly("coalesced_frames", &sdr_hackrf::HackrfLatestSpectrumFrameDrain::coalesced_frames);
+    module.attr("HACKRF_UI_BRIDGE_CONTRACT_VERSION") = 1;
+
     py::class_<sdr_hackrf::HackrfRuntimeDspSession>(module, "HackrfRuntimeDspControl")
         .def("poll_persistence_snapshots",
             &sdr_hackrf::HackrfRuntimeDspSession::poll_persistence_snapshots,
@@ -252,6 +259,9 @@ void bind_hackrf(py::module_& module) {
             },
             py::arg("max_items") = 0U
         )
+        .def("drain_latest_spectrum_frame",
+            &sdr_hackrf::HackrfRuntimeDspSession::drain_latest_spectrum_frame,
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "metrics",
             [](const sdr_hackrf::HackrfRuntimeDspSession& value) {

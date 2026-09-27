@@ -109,6 +109,11 @@ class HackrfAnalyzerService:
         return self._generation
 
     def _admit(self, request: HackrfLiveRequest) -> None:
+        bridge = getattr(self._native, "HACKRF_UI_BRIDGE_CONTRACT_VERSION", None)
+        control_type = getattr(self._native, "HackrfRuntimeDspControl", None)
+        if (type(bridge) is not int or bridge != 1
+                or not callable(getattr(control_type, "drain_latest_spectrum_frame", None))):
+            raise LiveAdmissionRejected("HackRF UI requires native latest-frame bridge protocol1")
         if request.persistence_enabled and not self._persistence_available():
             raise LiveAdmissionRejected("HackRF persistence requires native persistence protocol1")
         if request.averaging_frames != 1 and not self._detector_groups_available():
@@ -275,13 +280,15 @@ class HackrfAnalyzerService:
         last_metrics = last_frame
         previous: tuple[int, int, int, int] | None = None
         try:
-            while not self._cancel.wait(0.001):
-                frames = self._coordinator.poll_spectrum_frames(32)
-                if frames:
+            # GUI consumes latest at a much lower rate. Four milliseconds
+            # bounds bridge/GIL pressure without changing native FFT/persistence.
+            while not self._cancel.wait(0.004):
+                frame, coalesced = self._coordinator.drain_latest_spectrum_frame()
+                if frame is not None:
                     context = self.current_snapshot()
-                    spectrum = self._convert(frames[-1], context)
-                    self._polled += len(frames)
-                    self._coalesced += len(frames) - 1
+                    spectrum = self._convert(frame, context)
+                    self._polled += coalesced + 1
+                    self._coalesced += coalesced
                     if spectrum.sequence > self._last_native_sequence:
                         with self._lock:
                             if self._cancel.is_set():

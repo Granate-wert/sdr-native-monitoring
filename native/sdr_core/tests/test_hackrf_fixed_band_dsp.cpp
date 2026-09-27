@@ -393,6 +393,38 @@ void test_detector_group_sequence_retains_native_output_identity_across_polls() 
            "preserving output identity changed the analytical FFT count");
 }
 
+void test_latest_drain_preserves_identity_and_separate_coalescing() {
+    auto config = dsp_config(4U);
+    config.persistence.enabled = true;
+    config.persistence.mode = sdr_core::PersistenceMode::ExponentialDecay;
+    config.persistence.power_bins = 16U;
+    sdr_hackrf::HackrfFixedBandDsp dsp(config);
+    sdr_hackrf::HackrfRxIngress ingress(ingress_config(2048U));
+    const auto empty = dsp.drain_latest_spectrum_frame();
+    expect(!empty.frame.has_value() && empty.coalesced_frames == 0U,
+           "empty latest drain fabricated a frame or coalescing");
+    push_one(ingress, dsp, constant_ci8(1024U), 1000000000LL);
+    const auto before = dsp.metrics();
+    const auto latest = dsp.drain_latest_spectrum_frame();
+    expect(latest.frame.has_value() && latest.coalesced_frames == 3U,
+           "latest drain did not coalesce the bounded four-frame queue");
+    expect(latest.frame->frame_sequence == 3U &&
+           latest.frame->source.source_id == config.source.source_id &&
+           latest.frame->config_generation == 9U,
+           "latest drain changed native output identity");
+    expect(latest.frame->dropped_fft_frames_before == 0U,
+           "bridge coalescing became an analytical FFT drop");
+    const auto after = dsp.metrics();
+    expect(before.persistence_updates == 4U && after.persistence_updates == 4U &&
+           after.dsp.fft_frames_computed == 4U && after.dsp.fft_frames_dropped == 0U,
+           "presentation drain altered native FFT or upstream persistence");
+    expect(after.presentation.popped - before.presentation.popped == 4U &&
+           after.presentation.dropped == before.presentation.dropped,
+           "bridge drain was misreported as producer queue overflow");
+    expect(!dsp.drain_latest_spectrum_frame().frame.has_value(),
+           "latest drain retained a stale frame");
+}
+
 }  // namespace
 
 int main() {
@@ -405,6 +437,7 @@ int main() {
         test_real_transfer_sized_burst_capacity_keeps_analysis_loss_free();
         test_persistence_precedes_presentation_and_is_bounded();
         test_detector_group_sequence_retains_native_output_identity_across_polls();
+        test_latest_drain_preserves_identity_and_separate_coalescing();
         std::cout << "R11-I HackRF fixed-band CPU DSP OK\n";
         return 0;
     } catch (const std::exception& error) {

@@ -63,6 +63,7 @@ public:
     [[nodiscard]] std::vector<sdr_core::SpectrumFrame> poll_spectrum_frames(
         std::size_t max_items = 0U
     );
+    [[nodiscard]] HackrfLatestSpectrumFrameDrain drain_latest_spectrum_frame();
     [[nodiscard]] HackrfAcquisitionDspMetrics metrics() const;
     [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
         std::size_t max_items = 0U
