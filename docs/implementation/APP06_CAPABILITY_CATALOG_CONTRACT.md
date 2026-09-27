@@ -328,9 +328,46 @@ instrument graphs do not expose the old independent tinySA source/analyzer
 workspace, avoiding a second serial owner. Isolated compatibility/test graphs
 retain their old factories; no process-global SDK arbitration is claimed.
 
+## Explicit repeated tinySA Sweep on the same Analyzer (2026-09-27)
+
+The one-pass default above remains unchanged. A separate, unchecked-by-default
+V2 control explicitly requests host repeated passes until Stop. This is NOT the
+instrument's `repeat` averaging setting or continuous scanraw option 2/3. Every
+measurement still uses buffered option 0; existing input/RBW/atten/LNA/accuracy/
+spur/averaging settings are preserved, not changed or read back.
+
+One request holds ONE same serial object and the same graph claim throughout
+the loop. Open/reset occurs once. Every pass must consume a complete bounded
+binary frame AND its bounded ASCII completion prompt, then recheck the endpoint,
+before publication. Only after a cancellable inter-pass wait (UI default 0.1 s)
+may the same owner issue fresh version/identity, zero and measurement commands
+for the next pass. No input discard, reopen, command retry or replacement owner
+is allowed between passes. Invalid/incomplete framing, changed identity, transport
+or callback failure exits and closes once; failed close retains the same owner.
+The legacy closed one-shot collection keeps its mandatory `port_closed` field
+and positional field order; an open-port pass uses a distinct result type and
+does NOT claim port closure.
+
+Each complete pass reaches the SAME Spectrum/Waterfall/preparation path with
+increasing sequence, a single run epoch/configuration generation, device dBm
+and existing UNKNOWN quality. Older prepared sequences cannot replace newer
+ones. The producer holds one latest snapshot, not an unbounded queue or a
+lossless all-pass history guarantee. Waterfall uses the existing bounded history.
+The completed-line rate is HOST publication cadence, not device RF timing,
+FFT throughput, visual FPS or raw transport loss. Open-pass elapsed time includes
+zero/scan transaction and host collection, excluding version and inter-pass wait.
+
+Explicit Stop cancels and joins before closing/releasing the same graph claim.
+Stop between completed passes keeps the last complete trace without a fake gap;
+Stop during a consumed unfinished measurement emits a terminal unknown gap with
+the next sequence. Failed join/close keeps the owner and blocks another Start.
+Port closure still does NOT prove immediate termination of internal instrument
+RF scanning. Cancel-to-next-Start physical resynchronization, Basic/Ultra upper
+input/settings qualification and frozen executable acceptance remain separate.
+
 ## Required further work
 
-TinySA firmware/input-aware settings/repeated Sweep and advanced HackRF
+TinySA firmware/input-aware settings/physical resynchronization and advanced HackRF
 DSP controls/strategies remain. Common source-process HackRF RTBW integration is
 not frozen executable or performance acceptance.
 Official shared-DLL/frozen packaging and actual high-Fs device/transport cells

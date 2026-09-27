@@ -111,6 +111,7 @@ class AnalyzerViewModel:
         self._live_identity: tuple[object, ...] | None = None
         self._instrument_request: TinySaSweepRequest | None = None
         self._instrument_epoch: int | None = None
+        self._instrument_sequence: int | None = None
         self._connections = (
             (getattr(sweep, "prepared_snapshot_ready") if self._expects_prepared else sweep.snapshot_ready,
              self._on_sweep_snapshot),
@@ -190,6 +191,7 @@ class AnalyzerViewModel:
             return False
         self._instrument_request = request if isinstance(request, TinySaSweepRequest) else None
         self._instrument_epoch = None
+        self._instrument_sequence = None
         # Latch before dispatch: reentrant callbacks cannot change the mode.
         self._starting = True
         self._publish()
@@ -331,10 +333,12 @@ class AnalyzerViewModel:
                         or frame.epoch < request.epoch
                         or (provenance.start_hz, provenance.stop_hz, provenance.points) !=
                            (request.start_hz, request.stop_hz, request.points)
-                        or self._instrument_epoch is not None and frame.epoch != self._instrument_epoch):
+                        or self._instrument_epoch is not None and frame.epoch != self._instrument_epoch
+                        or self._instrument_sequence is not None and frame.sequence < self._instrument_sequence):
                     self._on_error("Rejected stale/foreign instrument Sweep publication")
                     return
                 self._instrument_epoch = frame.epoch
+                self._instrument_sequence = frame.sequence
             elif provenance is not None:
                 self._on_error("Rejected instrument publication for another source")
                 return

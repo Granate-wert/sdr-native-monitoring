@@ -16,6 +16,8 @@ class TinySaSweepRequest:
     points: int = 3100
     timeout_s: float = 60.0
     epoch: int = 0
+    repeat_until_stop: bool = False
+    interval_s: float = 0.1
 
     def __post_init__(self) -> None:
         source = self.source
@@ -38,6 +40,10 @@ class TinySaSweepRequest:
         if (isinstance(self.timeout_s, bool) or not isinstance(self.timeout_s, (int, float))
                 or not math.isfinite(self.timeout_s) or not 0.05 <= self.timeout_s <= 120):
             raise ValueError("tinySA Sweep deadline must be in [0.05, 120] seconds")
+        if (type(self.repeat_until_stop) is not bool or isinstance(self.interval_s, bool)
+                or not isinstance(self.interval_s, (int, float)) or not math.isfinite(self.interval_s)
+                or not 0.05 <= self.interval_s <= 60):
+            raise ValueError("tinySA explicit repeat/interval is invalid")
 
 
 @dataclass(frozen=True, slots=True)

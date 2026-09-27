@@ -1,8 +1,8 @@
-"""One instrument pass beneath the common Analyzer owner and renderer.
+"""One-shot or explicit repeated instrument Sweep beneath the SAME Analyzer.
 
 No alternate backend/provider, continuous reopen loop, fake Live profile or
-serial work on Qt. A complete pass ends through the SAME explicit Stop/join
-path. A failed close retains both the exact serial owner and graph token.
+serial work on Qt. One-shot completion or explicit repeated Stop uses the
+SAME Stop/join path. Failed close retains the exact serial owner and graph token.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .source_capability_admission import admit_source_request
 from .source_capability_catalog import SourceCapabilityCatalog
 from .tinysa_capability_adapter import TinySaModel
 from .tinysa_owned_acquisition import TinySaOwnedAcquisition
-from .tinysa_serial_trace_collector import TinySaScanRawRequest, TinySaTraceCollectionCancelled
+from .tinysa_serial_trace_collector import TinySaScanRawRequest, TinySaTraceCollectionCancelled, TinySaTracePass
 
 
 class InstrumentExclusionPort(Protocol):
@@ -46,6 +46,8 @@ class TinySaCommonAnalyzerService:
         self._generation = 0
         self._request: TinySaSweepRequest | None = None
         self._run_identity: TinySaSweepRunIdentity | None = None
+        self._completed = self._gapped = self._sequence = 0
+        self._first_completion: float | None = None
         self._snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
 
     @property
@@ -82,6 +84,8 @@ class TinySaCommonAnalyzerService:
             self._request = request
             self._generation += 1
             self._run_identity = TinySaSweepRunIdentity(request, self._generation)
+            self._completed = self._gapped = self._sequence = 0
+            self._first_completion = None
             with self._lock:
                 self._snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
             try:
@@ -106,7 +110,7 @@ class TinySaCommonAnalyzerService:
             identity.firmware_fingerprint, request.start_hz, request.stop_hz, request.points, zero, elapsed)
         grid = request.start_hz + np.arange(request.points, dtype=np.float64) * (
             (request.stop_hz - request.start_hz) // request.points)
-        return SweepLineFrame(0, request.epoch, self._clock_ns(), request.source.device_id,
+        return SweepLineFrame(self._sequence, request.epoch, self._clock_ns(), request.source.device_id,
             SweepLineState.GAP if cancelled else SweepLineState.COMPLETE, grid, values,
             np.zeros(request.points, dtype=np.uint16), np.full(request.points, -1, dtype=np.int32),
             (), (), (SweepLineGapReason.CANCELLATION,) if cancelled else (), "dBm",
@@ -117,20 +121,50 @@ class TinySaCommonAnalyzerService:
         assert owner is not None
         started = self._clock()
         try:
+            request = self._request
+            assert request is not None
+            if request.repeat_until_stop:
+                owner.collect_repeated(scan, self._publish_pass, interval_s=request.interval_s)
+                return  # Repeated collection normally exits by explicit Stop.
             result = owner.collect(scan)
             line = self._line(result.trace.values_dbm, zero=result.trace.scanraw_zero_offset_db,
                               elapsed=self._clock() - started)
             snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(
                 completed_lines=1, acquisition_finished=True))
         except TinySaTraceCollectionCancelled:
+            if self._completed and not owner.measurement_pending:
+                return  # Stop between passes keeps the last complete trace, no fake gap.
+            elapsed = owner.current_pass_elapsed_s
             line = self._line(np.full(scan.points, np.nan, dtype=np.float32), zero=None,
-                              elapsed=self._clock() - started, cancelled=True)
-            snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(gapped_lines=1))
+                              elapsed=elapsed if elapsed is not None else self._clock() - started, cancelled=True)
+            self._gapped += 1
+            snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(
+                completed_lines=self._completed, gapped_lines=self._gapped))
         except Exception:  # noqa: BLE001 - never publish serial routes/vendor exception strings.
-            snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics(
-                has_error=True, error="tinySA acquisition failed; Stop/release required"))
+            with self._lock:
+                previous = self._snapshot
+            snapshot = replace(previous, metrics=replace(previous.metrics,
+                has_error=True, acquisition_finished=False, error="tinySA acquisition failed; Stop/release required"))
         with self._lock:
             self._snapshot = snapshot
+
+    def _publish_pass(self, result: TinySaTracePass) -> None:
+        """One latest immutable response; no accumulation or queue on the producer."""
+        if self._sequence >= (1 << 64) - 1 or not result.prompt_confirmed:
+            raise RuntimeError("tinySA repeated publication contract exhausted")
+        line = self._line(result.trace.values_dbm, zero=result.trace.scanraw_zero_offset_db,
+                          elapsed=result.elapsed_seconds)
+        now = self._clock()
+        self._completed += 1
+        first = self._first_completion
+        rate = ((self._completed - 1) / (now - first)
+                if first is not None and now > first else 0.0)
+        if first is None:
+            self._first_completion = now
+        with self._lock:
+            self._snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(
+                completed_lines=self._completed, completed_line_lps=rate))
+        self._sequence += 1
 
     def poll_latest(self) -> ContinuousSweepDisplaySnapshot:
         with self._lock:

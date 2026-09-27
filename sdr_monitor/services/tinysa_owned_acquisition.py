@@ -1,4 +1,4 @@
-"""Retained one-shot serial owner for the common Analyzer's tinySA path.
+"""Retained serial owner for one-shot or explicit repeated tinySA acquisition.
 
 Construction is inert. One opened Python serial object supplies the fresh
 version, observed zero offset and complete scanraw response. A failed close
@@ -9,6 +9,7 @@ an independent capability catalog. A caller still owns Start/Stop admission.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -26,9 +27,11 @@ from .tinysa_serial_trace_collector import (
     TinySaTraceCollection,
     TinySaTraceCollectionCancelled,
     TinySaTraceCollectionError,
+    TinySaTracePass,
     TinySaTraceSerialPort,
     _is_serial_port,
     _make_serial,
+    collect_tinysa_open_pass,
     collect_tinysa_scanraw_trace,
 )
 from .tinysa_serial_version_probe import _parse_version
@@ -40,9 +43,9 @@ class TinySaEndpointResolver(Protocol):
 
 
 class TinySaOwnedAcquisition:
-    """One reserved, finite measurement with mandatory same-owner cleanup.
+    """One reserved session of finite passes with mandatory same-owner cleanup.
 
-    ``collect`` runs on the existing control/acquisition worker, never Qt.
+    ``collect`` and ``collect_repeated`` run off Qt on the acquisition worker.
     Cancellation is cooperative, checked around each bounded PySerial read.
     The production serial factory has 50-ms reads and a 1-s write timeout;
     injected factories must uphold that contract. Close must be called after
@@ -71,6 +74,8 @@ class TinySaOwnedAcquisition:
         self._commands = 0
         self._operation_thread: int | None = None
         self._current_endpoint: TinySaTransportEndpoint | None = None
+        self._measurement_pending = False
+        self._pass_started_ns: int | None = None
 
     @property
     def cleanup_pending(self) -> bool:
@@ -103,6 +108,16 @@ class TinySaOwnedAcquisition:
     def cancel(self) -> None:
         """No transport command or close from the cancelling caller."""
         self._cancel.set()
+
+    @property
+    def measurement_pending(self) -> bool:
+        """A consumed scan command without a complete admitted response."""
+        return self._measurement_pending
+
+    @property
+    def current_pass_elapsed_s(self) -> float | None:
+        start = self._pass_started_ns
+        return None if start is None else max(0.0, (self._monotonic_ns() - start) / 1e9)
 
     def _cancelled(self) -> None:
         if self._cancel.is_set():
@@ -139,12 +154,60 @@ class TinySaOwnedAcquisition:
             result = collect_tinysa_scanraw_trace(self._endpoint.route, request,
                 serial_factory=lambda _: self, cancel_requested=self._cancel.is_set,
                 monotonic_ns=self._monotonic_ns)
+            self._measurement_pending = False
             self._endpoint_matches()  # Changed/removed endpoint cannot publish a result.
             return result
         except TinySaTraceCollectionCancelled:
             raise
         except Exception:  # noqa: BLE001 - redact injected resolver/factory failures too.
             raise TinySaTraceCollectionError("tinySA owned trace collection failed closed") from None
+        finally:
+            self._operation_thread = None
+            self._operations.release()
+
+    def collect_repeated(self, request: TinySaScanRawRequest, publish: Callable[[TinySaTracePass], None], *,
+                         interval_s: float = 0.1) -> None:
+        """Explicit host loop on ONE serial object; no firmware continuous option.
+
+        Every pass consumes its prompt before the next fresh version/zero/scan.
+        Failure or cancellation exits and closes once; a failed close retains
+        the owner. Publication is reduced data, not an unbounded command queue.
+        """
+        self._admit(request)
+        if (not callable(publish) or isinstance(interval_s, bool) or not isinstance(interval_s, (int, float))
+                or not math.isfinite(interval_s) or not 0.05 <= interval_s <= 60):
+            raise ValueError("tinySA repeated pass interval is invalid")
+        if not self._operations.acquire(blocking=False):
+            raise TinySaTraceCollectionError("tinySA acquisition operation is already pending")
+        try:
+            self._operation_thread = threading.get_ident()
+            if self._used or self._closing or self._closed:
+                raise TinySaTraceCollectionError("tinySA acquisition requires explicit close/new Start")
+            self._request = request
+            try:
+                self.open()
+                while True:
+                    self._cancelled()
+                    self._pass_started_ns = self._monotonic_ns()
+                    result = collect_tinysa_open_pass(self, request, cancel_requested=self._cancel.is_set,
+                                                     monotonic_ns=self._monotonic_ns)
+                    self._measurement_pending = False
+                    self._endpoint_matches()
+                    if not result.prompt_confirmed:
+                        raise TinySaTraceCollectionError("tinySA completed pass lacks its prompt")
+                    publish(result)
+                    if self._cancel.wait(interval_s):
+                        self._cancelled()
+                    # No discard/reset. Only a completed prompt permits the
+                    # next transaction on the SAME object and pinned endpoint.
+                    self._commands = 0
+                    self._verify_version(self._active_port(), self._endpoint_matches())
+            finally:
+                self._close_owned()
+        except TinySaTraceCollectionCancelled:
+            raise
+        except Exception:  # noqa: BLE001 - never expose route/vendor/callback details.
+            raise TinySaTraceCollectionError("tinySA repeated acquisition failed closed") from None
         finally:
             self._operation_thread = None
             self._operations.release()
@@ -169,6 +232,11 @@ class TinySaOwnedAcquisition:
         self._cancelled()
         # Discard a stale startup prompt before the fresh version query.
         port.reset_input_buffer()
+        self._verify_version(port, current)
+        self._ready = True
+
+    def _verify_version(self, port: TinySaTraceSerialPort, current: TinySaTransportEndpoint) -> None:
+        self._cancelled()
         if port.write(b"version\r") != len(b"version\r"):
             raise TinySaTraceCollectionError("tinySA version write was incomplete")
         port.flush()
@@ -179,7 +247,6 @@ class TinySaOwnedAcquisition:
             raise TinySaTraceCollectionError("tinySA model/firmware identity changed before measurement")
         self._cancelled()
         self._endpoint_matches()  # Same route/USB serial before zero/scan writes.
-        self._ready = True
 
     def _read_version(self, port: TinySaTraceSerialPort) -> bytes:
         deadline = self._monotonic() + 2.0
@@ -221,6 +288,8 @@ class TinySaOwnedAcquisition:
             raise TinySaTraceCollectionError("tinySA acquisition command is outside the exact request")
         self._endpoint_matches()
         port = self._active_port()
+        if self._commands == 1:
+            self._measurement_pending = True  # Partial writes are consumed too.
         self._commands += 1  # Even a partial write is consumed, never retried.
         return port.write(data)
 

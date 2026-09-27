@@ -1,7 +1,7 @@
 """Instrument-only draft for the common Analyzer; no SDK work on Qt."""
 
 from PySide6.QtCore import QSignalBlocker, Signal
-from PySide6.QtWidgets import QDoubleSpinBox, QGridLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QGridLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
 
@@ -45,6 +45,9 @@ class TinySaConfigurationBar(QWidget):
         for numeric in (self.points, self.deadline):
             numeric.valueChanged.connect(self._changed)
         layout.addLayout(row)
+        self.repeat = QCheckBox(self)
+        self.repeat.toggled.connect(self._changed)
+        layout.addWidget(self.repeat)
         self.summary = QLabel(self)
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
@@ -62,6 +65,9 @@ class TinySaConfigurationBar(QWidget):
             label.setText(text(key))
             field.setAccessibleName(text(key))
         self.summary.setText(text("tinysa.common.scope"))
+        self.repeat.setText(text("tinysa.common.repeat"))
+        self.repeat.setAccessibleName(text("tinysa.common.repeat"))
+        self.repeat.setToolTip(text("tinysa.common.repeat.help"))
 
     def apply_view_state(self, state: AnalyzerViewState) -> None:
         available = state.tinysa_controls_available
@@ -76,8 +82,11 @@ class TinySaConfigurationBar(QWidget):
                         field.setValue(int(value))
                     else:
                         field.setValue(float(value))
+            with QSignalBlocker(self.repeat):
+                self.repeat.setChecked(False)
         for field in self._fields:
             field.setEnabled(available and not state.controls_locked)
+        self.repeat.setEnabled(available and not state.controls_locked)
 
     def request(self) -> TinySaSweepRequest:
         state = self._model.state
@@ -85,7 +94,8 @@ class TinySaConfigurationBar(QWidget):
         if not state.tinysa_controls_available or selection is None or selection.selected is None:
             raise ValueError("Instrument selection is not ready")
         return TinySaSweepRequest(selection.selected, selection.revision,
-            round(self.start.value() * 1e6), round(self.stop.value() * 1e6), self.points.value(), self.deadline.value())
+            round(self.start.value() * 1e6), round(self.stop.value() * 1e6), self.points.value(), self.deadline.value(),
+            repeat_until_stop=self.repeat.isChecked())
 
     @property
     def valid(self) -> bool:

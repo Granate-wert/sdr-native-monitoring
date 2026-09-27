@@ -350,6 +350,11 @@ class TinySaActualCompositionTests(unittest.TestCase):
                             guard._on_sweep_snapshot(prepare_sweep_snapshot(refused, refused.analyzer_bundle))
                             self.assertIs(guard.state.bundle.spectrum, line)
                             self.assertIn("Rejected stale/foreign", guard.state.error)
+                    newer = replace(snapshot, line=replace(line, sequence=line.sequence + 1))
+                    guard._on_sweep_snapshot(prepare_sweep_snapshot(newer, newer.analyzer_bundle))
+                    self.assertIs(guard.state.bundle.spectrum, newer.line)
+                    guard._on_sweep_snapshot(accepted)
+                    self.assertIs(guard.state.bundle.spectrum, newer.line)
                 finally:
                     guard.dispose()
             self.assertEqual(errors, [])
