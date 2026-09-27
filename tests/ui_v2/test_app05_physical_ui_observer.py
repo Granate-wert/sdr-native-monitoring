@@ -129,6 +129,7 @@ class PhysicalUiObserverTests(unittest.TestCase):
 
     def test_parser_defaults_do_not_enable_opt_in_split_lane(self):
         args = observer.parser().parse_args(["--uri", "usb:3.12.5", "--output", "unused.json"])
+        self.assertEqual(args.backend, "cpu")
         self.assertFalse(args.split_persistence)
         self.assertFalse(args.visual_substages)
         self.assertFalse(args.hide_persistence)
@@ -140,6 +141,12 @@ class PhysicalUiObserverTests(unittest.TestCase):
         self.assertFalse(args.teardown_timing)
         self.assertFalse(args.terminal_native_cancel_witness)
         self.assertFalse(args.process_resources)
+
+    def test_explicit_cuda_changes_only_observer_requested_backend(self):
+        args = observer.parser().parse_args(["--uri", "usb:3.12.5", "--output", "unused.json", "--backend", "cuda"])
+        self.assertEqual(args.backend, "cuda")
+        self.assertFalse(args.split_persistence)
+        self.assertEqual(args.buffer_samples, 262144)
 
     def test_terminal_native_cancel_witness_is_scalar_bounded_and_opt_in(self):
         args = observer.parser().parse_args([

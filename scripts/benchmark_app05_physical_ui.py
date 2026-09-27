@@ -706,6 +706,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--center-mhz", type=float, default=2400.0)
     result.add_argument("--sample-rate-msps", type=float, default=3.0)
     result.add_argument("--fft", type=int, default=4096)
+    result.add_argument("--backend", choices=("cpu", "cuda"), default="cpu",
+                        help="Explicit DSP backend in the ordinary V2 drawer; CPU is unchanged default")
     result.add_argument("--buffer-samples", type=int, default=262144,
                         help="native RX refill geometry; 262144 is the product default")
     result.add_argument("--hide-persistence", action="store_true",
@@ -1183,11 +1185,11 @@ def main() -> int:
                         workspace.drawer._center.setValue(args.center_mhz)
                         workspace.drawer._sample_rate.setValue(args.sample_rate_msps)
                         workspace.drawer._fft.setValue(args.fft)
-                        cpu_index = workspace.drawer._backend.findData(BackendKind.CPU.value)
-                        if cpu_index < 0:
-                            fail("selected device did not publish CPU backend")
+                        backend_index = workspace.drawer._backend.findData(BackendKind(args.backend).value)
+                        if backend_index < 0:
+                            fail(f"selected device did not publish {args.backend.upper()} backend")
                         else:
-                            workspace.drawer._backend.setCurrentIndex(cpu_index)
+                            workspace.drawer._backend.setCurrentIndex(backend_index)
                             if not workspace.drawer._apply.isEnabled():
                                 fail("V2 drawer refused the requested configuration")
                             else:
@@ -1408,7 +1410,7 @@ def main() -> int:
             if not hide_show_result["passed"]:
                 failed_checks = ", ".join(name for name, accepted in checks.items() if not accepted)
                 failure = ((failure + "; ") if failure else "") + f"Hide/Show gate: {failed_checks}"
-        report = dict(schema="app05-physical-visible-v2-v10", result="pass" if phase == "done" and
+        report = dict(schema="app05-physical-visible-v2-v11", result="pass" if phase == "done" and
                       failure is None and measurement_valid and observer.unique_paints >= 2
                       and budget.reserved_bytes == 0 and not workers else "fail",
                       failure=failure, phase=phase, source="physical-pluto-rx", uri=args.uri,
@@ -1431,7 +1433,7 @@ def main() -> int:
                                      c_stdio_bracket=args.c_stdio_bracket,
                                      terminal_native_cancel_witness=args.terminal_native_cancel_witness,
                                      render_mode=args.render_mode, display_fps=args.display_fps,
-                                     backend="cpu", warmup_s=args.warmup,
+                                     backend=args.backend, warmup_s=args.warmup,
                                      measurement_s=args.duration),
                       measured_elapsed_s=measured_elapsed_s,
                       native_sequence_interval=None if initial_sequence is None or final_sequence is None
