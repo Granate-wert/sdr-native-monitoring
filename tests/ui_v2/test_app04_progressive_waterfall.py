@@ -282,8 +282,12 @@ class SweepWaterfallPaneTests(unittest.TestCase):
                     display_rows=21, capacity_rows=300,
                     timestamps_ns=np.arange(21, dtype=np.int64), timestamps_known=True,
                 )
-                self.assertEqual(axis.tickValues(300.0, 0.0, 270.0),
-                                 pg.AxisItem.tickValues(axis, 300.0, 0.0, 270.0))
+                # RTBW has its own source-age ladder; Sweep sequence/status
+                # promotion must not leak into it after switching modes.
+                ticks = [value for _, values in axis.tickValues(300.0, 0.0, 270.0)
+                         for value in values]
+                self.assertEqual(ticks, [latest])
+                self.assertEqual(axis.tickStrings(ticks, 1.0, 1.0), ["−0 мс"])
 
     def test_sweep_auto_ticks_default_axis_width_keep_terminal_without_overlap(self):
         harness = product_fixture.AnalyzerWorkspaceProductTests("runTest")

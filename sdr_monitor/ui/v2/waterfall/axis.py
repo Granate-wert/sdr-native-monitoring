@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import ceil, floor, isfinite, log10
+
 import pyqtgraph as pg
 import numpy as np
 from PySide6.QtCore import QRectF
@@ -26,6 +28,12 @@ class WaterfallTimeAxis(pg.AxisItem):
         self._gap_rows: frozenset[int] = frozenset()
         self._sweep_stamps: tuple[SweepRowStamp | None, ...] = ()
         self._has_sweep_stamps = False
+        self._age_ticks: dict[float, int] = {}
+        self._age_step_ns: int | None = None
+        self._producer_interval_ns = 1_000_000_000 // self._rows_per_second
+        # Numerical labels must not repeatedly shrink/expand the plot gutter.
+        # A genuinely wider value/font may still expand it once.
+        self.setStyle(autoReduceTextSpace=False)
 
     def set_locale(self, locale: UiLocale) -> None:
         self._locale = UiLocale(locale)
@@ -61,11 +69,17 @@ class WaterfallTimeAxis(pg.AxisItem):
             timestamps if timestamps_known and timestamps.size == self._display_rows
             else np.empty(0, dtype=np.int64)
         )
+        self._producer_interval_ns = _typical_interval_ns(
+            self._timestamps_ns, max(1, int(1_000_000_000 // self._rows_per_second)),
+        )
         self._gap_rows = _gap_rows(
             self._timestamps_ns,
             direction=self._direction,
-            interval_ns=max(1, int(1_000_000_000 // self._rows_per_second)),
+            interval_ns=self._producer_interval_ns,
         )
+        self._age_ticks.clear()
+        if not self._timestamps_ns.size:
+            self._age_step_ns = None
         self.picture = None
         self.update()
 
@@ -104,6 +118,10 @@ class WaterfallTimeAxis(pg.AxisItem):
         new rows are anchored at the bottom. Promotion changes only the axis
         proposal; overlap culling still decides what can be painted.
         """
+        self._age_ticks.clear()
+        if (not self._has_sweep_stamps and self._timestamps_ns.size
+                and self.orientation in ("left", "right") and not self.logMode):
+            return self._relative_time_ticks(minVal, maxVal, size)
         levels = super().tickValues(minVal, maxVal, size)
         if (not self._has_sweep_stamps or not self._display_rows
                 or self._sweep_stamps[-1] is None
@@ -125,6 +143,48 @@ class WaterfallTimeAxis(pg.AxisItem):
                         for step, values in levels[1:])
         return promoted
 
+    def _relative_time_ticks(self, minimum: float, maximum: float, size: float):
+        """Stable age text, placed using source time rather than fixed rows.
+
+        Interpolate only between adjacent observed rows without a producer
+        pause. A tick inside a missing-time interval is omitted, not invented.
+        No wall-clock timer advances this axis after Stop/freeze.
+        """
+        if not all(isfinite(value) for value in (minimum, maximum, size)) or size <= 0:
+            return []
+        timestamps = self._timestamps_ns
+        newest = int(timestamps[-1])
+        span_ns = newest - int(timestamps[0])
+        if span_ns < 0 or np.any(np.diff(timestamps) < 0):
+            return []
+        # Reserve the configured history span even while the ring fills. This
+        # avoids rescaling the tick ladder on every incoming row. Longer real
+        # history may expand the scale; hysteresis avoids a boundary flip-flop.
+        row_span = min(float(self._capacity_rows), abs(maximum - minimum))
+        extent_ns = max(span_ns, int(row_span * 1_000_000_000 / self._rows_per_second), 1)
+        tick_intervals = max(1, min(19, int(size // 52)))
+        target_ns = extent_ns / tick_intervals
+        step_ns = self._age_step_ns
+        if step_ns is None or target_ns > step_ns * 1.05 or target_ns < step_ns * 0.4:
+            step_ns = _nice_age_step_ns(target_ns)
+            self._age_step_ns = step_ns
+        minimum, maximum = min(minimum, maximum), max(minimum, maximum)
+        values: list[float] = []
+        max_gap_ns = self._producer_interval_ns * 2
+        for age_ns in range(0, span_ns + 1, step_ns):
+            source_row = _source_row_at_time(timestamps, newest - age_ns, max_gap_ns)
+            if source_row is None:
+                continue
+            row = self._row_origin + (
+                self._display_rows - 1 - source_row
+                if self._direction is WaterfallDirection.NEWEST_AT_TOP else source_row
+            )
+            if minimum <= row <= maximum:
+                values.append(row)
+                self._age_ticks[row] = age_ns
+        # Spacing is a row-coordinate hint for pyqtgraph, not a time estimate.
+        return [(max(1.0, abs(maximum - minimum) / tick_intervals), sorted(values))]
+
     def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:
         del scale, spacing
         if self._display_rows == 0 or self._capacity_rows == 0:
@@ -132,6 +192,11 @@ class WaterfallTimeAxis(pg.AxisItem):
         return [self._format_tick(value) for value in values]
 
     def _format_tick(self, row: float) -> str:
+        if row in self._age_ticks:
+            label = _format_age_seconds(self._age_ticks[row] / 1_000_000_000, self._locale)
+            index = int(round(row)) - self._row_origin
+            # Mark only an exact observed gap boundary, not an interpolated row.
+            return f"{label} ⏸" if row == round(row) and index in self._gap_rows else label
         index = int(round(row)) - self._row_origin
         if not 0 <= index < self._display_rows:
             return ""
@@ -169,6 +234,44 @@ def _format_age_seconds(age_seconds: float, locale: UiLocale = UiLocale.RU) -> s
     if age_seconds < 60.0:
         return text("waterfall.age.seconds", locale, value=age_seconds)
     return text("waterfall.age.minutes", locale, value=age_seconds / 60.0)
+
+
+def _nice_age_step_ns(target_ns: float) -> int:
+    """1/2/5 time ladder, with millisecond minimum and integral ns storage."""
+    target_ns = max(1_000_000.0, target_ns)
+    power = 10 ** floor(log10(target_ns))
+    fraction = target_ns / power
+    factor = 1 if fraction <= 1 else 2 if fraction <= 2 else 5 if fraction <= 5 else 10
+    return max(1_000_000, int(ceil(factor * power)))
+
+
+def _source_row_at_time(timestamps: np.ndarray, target_ns: int, max_gap_ns: int) -> float | None:
+    """Map a source-time anchor to observed rows; do not fill temporal gaps."""
+    index = int(np.searchsorted(timestamps, target_ns, side="left"))
+    if index < timestamps.size and int(timestamps[index]) == target_ns:
+        return float(index)
+    if index == 0 or index == timestamps.size:
+        return None
+    before, after = int(timestamps[index - 1]), int(timestamps[index])
+    interval = after - before
+    if interval <= 0 or interval > max_gap_ns:
+        return None
+    return index - 1 + (target_ns - before) / interval
+
+
+def _typical_interval_ns(timestamps: np.ndarray, configured_ns: int) -> int:
+    """Lower median observed row step, not a device acquisition duty cycle.
+
+    A presentation cap is not a promise that the producer supplies that many
+    rows. The lower median also keeps a single long pause from setting the
+    baseline in a two-interval history.
+    """
+    intervals = np.diff(timestamps)
+    positive = intervals[intervals > 0]
+    if not positive.size:
+        return configured_ns
+    middle = (positive.size - 1) // 2
+    return max(configured_ns, int(np.partition(positive, middle)[middle]))
 
 
 def _gap_rows(timestamps_ns: np.ndarray, *, direction: WaterfallDirection, interval_ns: int) -> frozenset[int]:
