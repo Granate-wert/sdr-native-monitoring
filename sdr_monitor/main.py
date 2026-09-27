@@ -11,11 +11,15 @@ import sys
 import tempfile
 import time
 import types
-from pathlib import Path
 from collections.abc import Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ._version import __version__
 from .activity_log import install_activity_file_logging, log_event
+
+if TYPE_CHECKING:
+    from .services.native_live import NativeLiveSessionService
 
 _LOG_NAME = "sdr_native_monitoring"
 
@@ -135,17 +139,16 @@ def _offscreen_default_shell_verdict() -> dict[str, object]:
     return _run_offscreen_shell(default_composition=True)
 
 
-def _native_startup_owner_state(live_service: object) -> dict[str, bool]:
+def _native_startup_owner_state(live_service: NativeLiveSessionService) -> dict[str, bool]:
     """Current retained observation/stream owners; missing fields fail loudly."""
-    observer = getattr(live_service, "_observation_owner")
+    observer = live_service._observation_owner
     return {
-        "native_device_constructed": bool(getattr(observer, "cleanup_pending")
-                                          or getattr(live_service, "_native_uri") is not None),
-        "native_engine_constructed": bool(getattr(live_service, "_engine") is not None
-                                          or getattr(live_service, "_poller") is not None
-                                          or getattr(live_service, "_sweep_lease_active")
-                                          or getattr(live_service, "_stream_release_failed")
-                                          or getattr(live_service, "_external_analyzer_owner") is not None),
+        "native_device_constructed": bool(observer.cleanup_pending or live_service._native_uri is not None),
+        "native_engine_constructed": bool(live_service._engine is not None
+                                          or live_service._poller is not None
+                                          or live_service._sweep_lease_active
+                                          or live_service._stream_release_failed
+                                          or live_service._external_analyzer_owner is not None),
     }
 
 
