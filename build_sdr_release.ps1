@@ -4,10 +4,22 @@ param(
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')][string]$OutputTag,
     [switch]$SkipNative,
     [switch]$SkipFreeze,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    # Explicit opt-in package. The canonical CPU module is never activated.
+    [string]$HackrfIncludeDirectory = "",
+    [string]$HackrfLibrary = ""
 )
 
 $ErrorActionPreference = "Stop"
+$hackrfRequested = [bool]($HackrfIncludeDirectory -or $HackrfLibrary)
+if ($hackrfRequested) {
+    if ($Lane -ne 'CPU' -or -not $OutputTag -or $SkipNative -or $SkipFreeze -or $SkipTests) {
+        throw 'Official HackRF package requires a tagged full CPU pipeline (no skip modes)'
+    }
+    if (-not $HackrfIncludeDirectory -or -not $HackrfLibrary) { throw 'Both HackrfIncludeDirectory and HackrfLibrary are required' }
+    if (-not (Test-Path -LiteralPath (Join-Path $HackrfIncludeDirectory 'hackrf.h') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $HackrfLibrary -PathType Leaf)) { throw 'Official HackRF header/import library is missing' }
+}
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = if ($env:SDR_PYTHON_EXECUTABLE) { $env:SDR_PYTHON_EXECUTABLE } else { (& py -3.13 -c "import sys; print(sys.executable)").Trim() }
 if (-not $python -or -not (Test-Path -LiteralPath $python)) { throw "Python 3.13 was not resolved" }
@@ -20,6 +32,7 @@ if (-not $SkipFreeze) {
 
 $releaseRoot = Join-Path $repoRoot ("dist\SDRNativeMonitoring-" + $Lane)
 if ($OutputTag) { $releaseRoot = "$releaseRoot-$OutputTag" }
+if ($hackrfRequested -and (Test-Path -LiteralPath $releaseRoot)) { throw 'Official HackRF output must be a new tagged directory; existing packages are preserved' }
 $packageDir = Join-Path $releaseRoot "SDRNativeMonitoring"
 $buildRoot = Join-Path $repoRoot ("build\sdr-release-" + $Lane)
 if ($OutputTag) { $buildRoot = "$buildRoot-$OutputTag" }
@@ -36,18 +49,26 @@ if ($bindSource) {
 }
 
 if (-not $SkipNative) {
-    & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane $Lane -PythonExecutable $python -SkipTests:$SkipTests
+    if ($hackrfRequested) {
+        & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane CPU -PythonExecutable $python -StageOnly -HackrfIncludeDirectory $HackrfIncludeDirectory -HackrfLibrary $HackrfLibrary
+    } else {
+        & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane $Lane -PythonExecutable $python -SkipTests:$SkipTests
+    }
     if ($LASTEXITCODE -ne 0) { throw "native $Lane build failed" }
 }
 if ($bindSource) {
     & $python $snapshotTool --root $repoRoot --verify $sourceSnapshotPath
     if ($LASTEXITCODE -ne 0) { throw "source changed during native build" }
 }
-$nativeModules = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "sdr_monitor") -Filter "_sdr_native*.pyd" -File)
+$freezeNativeDirectory = if ($hackrfRequested) { Join-Path $repoRoot 'native\sdr_core\out\build\windows-msvc-cpu-hackrf\python' } else { Join-Path $repoRoot 'sdr_monitor' }
+$freezeNativeManifestPath = Join-Path $freezeNativeDirectory 'native_build_manifest.json'
+$nativeModules = @(Get-ChildItem -LiteralPath $freezeNativeDirectory -Filter "_sdr_native*.pyd" -File)
 if ($nativeModules.Count -ne 1) { throw "Expected one ABI-specific _sdr_native extension before freeze, found $($nativeModules.Count)" }
 $freezeNativeHash = (Get-FileHash -LiteralPath $nativeModules[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $libiioRuntimeNames = @("libiio.dll", "libserialport-0.dll", "libusb-1.0.dll", "libxml2-2.dll", "libiconv-2.dll", "liblzma-5.dll", "zlib1.dll")
 $libiioPyInstallerArgs = @()
+$officialPyInstallerArgs = @()
+$sharedRuntimeReportPath = Join-Path $buildRoot 'shared_runtime_inputs.json'
 if (-not $SkipFreeze) {
     $libiioRuntimeDir = if ($env:SDR_LIBIIO_RUNTIME_DIR) { $env:SDR_LIBIIO_RUNTIME_DIR } else { Join-Path $env:ProgramFiles "IIO Oscilloscope\bin" }
     if (-not (Test-Path -LiteralPath $libiioRuntimeDir -PathType Container)) { throw "R12-I requires a local libiio runtime directory: $libiioRuntimeDir" }
@@ -60,9 +81,19 @@ if (-not $SkipFreeze) {
     }
     # Pluto and official HackRF share a Windows dependency basename. Never
     # let PyInstaller silently select/overwrite a different SDK's libusb.
-    $freezeNativeManifestPath = Join-Path $repoRoot 'sdr_monitor\native_build_manifest.json'
     & $python (Join-Path $repoRoot 'scripts\preflight_sdr_shared_runtime.py') --module $nativeModules[0].FullName --manifest $freezeNativeManifestPath --libiio-directory $libiioRuntimeDir --lane $Lane
     if ($LASTEXITCODE -ne 0) { throw 'Shared Pluto/HackRF runtime admission failed before freeze' }
+    if ($hackrfRequested) {
+        # libusb appears ONCE, from the explicitly hash-matched libiio bundle.
+        foreach ($name in @('hackrf.dll', 'pthreadVC3.dll')) {
+            $officialPyInstallerArgs += '--add-binary'
+            $officialPyInstallerArgs += "$(Join-Path $freezeNativeDirectory $name);sdr_monitor"
+        }
+        # Do not let analysis collect the active baseline module/manifest.
+        $officialPyInstallerArgs += @('--exclude-module', 'sdr_monitor._sdr_native', '--add-data', "$freezeNativeManifestPath;sdr_monitor")
+        & $python (Join-Path $repoRoot 'scripts\preflight_sdr_shared_runtime.py') --module $nativeModules[0].FullName --manifest $freezeNativeManifestPath --libiio-directory $libiioRuntimeDir --lane CPU --output $sharedRuntimeReportPath
+        if ($LASTEXITCODE -ne 0) { throw 'Official shared-runtime input report failed' }
+    }
     # Codex helper runtimes can put Poppler/ICU and libheif DLL directories on
     # PATH. They are not product dependencies: collecting their ICU shadows
     # Windows ICU and breaks Qt's unversioned ucnv_* imports. Isolate only the
@@ -72,7 +103,7 @@ if (-not $SkipFreeze) {
         $env:PATH = ($freezeOriginalPath.Split(';') | Where-Object { $_ -notmatch '[\\/]codex-runtimes[\\/]' }) -join ';'
         # Preserve stdout for --version and frozen metadata/smoke commands.
         # Hide only a console owned by this GUI launch, never a caller's shell.
-        & $python -m PyInstaller --noconfirm --clean --onedir --hide-console hide-early --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main --add-binary ("$($nativeModules[0].FullName);sdr_monitor") @libiioPyInstallerArgs (Join-Path $repoRoot "main_sdr.py")
+        & $python -m PyInstaller --noconfirm --clean --onedir --hide-console hide-early --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main --add-binary ("$($nativeModules[0].FullName);sdr_monitor") @libiioPyInstallerArgs @officialPyInstallerArgs (Join-Path $repoRoot "main_sdr.py")
     } finally {
         $env:PATH = $freezeOriginalPath
     }
@@ -88,12 +119,14 @@ if ($bindSource) {
         throw "packaged native artifact differs from the native build output"
     }
     Copy-Item -LiteralPath $sourceSnapshotPath -Destination (Join-Path $packageDir 'source_inputs.json')
+    if ($hackrfRequested) { Copy-Item -LiteralPath $sharedRuntimeReportPath -Destination (Join-Path $packageDir 'shared_runtime_inputs.json') }
     $provenance = [ordered]@{
         schema = 'sdr-pipeline-provenance-v1'
         evidence_kind = 'pipeline-bound-not-binary-attested'
         source_sha256 = (Get-Content -LiteralPath $sourceSnapshotPath -Raw | ConvertFrom-Json).source_sha256
         native_sha256 = $freezeNativeHash
         lane = $Lane
+        hackrf_official_requested = $hackrfRequested
         native_build_and_tests_executed = $true
         source_verified_after_native_and_freeze = $true
     }
@@ -104,7 +137,7 @@ if ($bindSource) {
 $preflight = Join-Path $repoRoot "scripts\preflight_sdr_release.py"
 $version = (& $python -c "from sdr_monitor._version import __version__; print(__version__)").Trim()
 & $python $preflight --dist-dir $packageDir --manifest (Join-Path $packageDir "release_manifest.json") --lane $Lane --version $version
-if ($LASTEXITCODE -ne 0) { throw "standalone release manifest generation failed" }
+if ($LASTEXITCODE -ne 0) { throw "standalone frozen package preflight failed" }
 $manifestPath = Join-Path $packageDir "release_manifest.json"
 & $python $preflight --dist-dir $packageDir --manifest $manifestPath --lane $Lane --version $version --verify-existing
 if ($LASTEXITCODE -ne 0) { throw "standalone release manifest verification failed" }
@@ -123,4 +156,8 @@ if ($LASTEXITCODE -ne 0) { throw "standalone frozen libiio runtime-loader verifi
 $tinysaRuntimeVerifier = Join-Path $repoRoot "scripts\verify_sdr_frozen_tinysa_runtime.py"
 & $python $tinysaRuntimeVerifier --package-dir $packageDir
 if ($LASTEXITCODE -ne 0) { throw "standalone frozen tinySA UI/serial runtime verification failed" }
+if ($hackrfRequested) {
+    & $python (Join-Path $repoRoot 'scripts\verify_sdr_frozen_shared_runtime.py') --package-dir $packageDir --manifest $manifestPath --version $version
+    if ($LASTEXITCODE -ne 0) { throw 'standalone official HackRF/shared-DLL frozen verification failed' }
+}
 Write-Host "SDR Native Monitoring $Lane release ready: $packageDir"

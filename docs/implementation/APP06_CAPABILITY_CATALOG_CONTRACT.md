@@ -537,12 +537,47 @@ root/fake-serial tests do NOT qualify physical RF accuracy, Basic/Ultra settings
 cancel-to-next-Start, current EXE/frozen/DWM/DPI/soak or tinySA scanning speed.
 Naturally slow instrument scans remain separate from UI/processing delays.
 
+## Explicit official CPU package and shared-DLL qualification (2026-09-27)
+
+`build_sdr_release.ps1` accepts explicit HackrfIncludeDirectory/HackrfLibrary
+ONLY in a tagged full CPU pipeline. Untagged/CUDA/skip/incomplete requests refuse;
+existing tagged outputs are preserved. It invokes the official native StageOnly
+lane, freezes THAT extension and its sibling factory2 SDK manifest, and excludes
+the active baseline extension from analysis. No canonical activation, system-DLL
+replacement, SDK search or installed application promotion is performed.
+
+The explicitly selected app-local libiio bundle must contain exactly the same
+libusb bytes as the official SDK. libusb is added once; the two additional SDK
+DLLs and manifest come from the same staged native directory. Source snapshots
+before/after native build and freeze bind the full pipeline to the selected
+native hash. The package includes a shared-runtime input report and all-file
+release manifest. A mismatched/duplicate/misplaced native/manifest/DLL payload
+refuses qualification even if its files are otherwise listed in that manifest.
+
+The hidden exclusive frozen diagnostic loads native exports and libiio VERSION
+metadata only. It does NOT construct the HackRF factory, call SDK init/enumerate,
+open an IIO context/serial device, create a GUI/Live engine or attempt RX. A bounded
+Windows inventory enumerates all current-process modules, not the first matching
+basename. Required libiio/hackrf/libusb/pthread must each have one package-local
+loaded module; any loaded optional libiio transport dependency must also be
+package-local and unique. Optional transports may remain lazy. The external
+verifier removes developer SDK PATH entries, supplies a deliberately invalid
+external LIBIIO_DLL_PATH and rechecks the package/loaded paths and current file
+hashes. Truncated/missing/oversized/unstable inventories fail closed.
+
+This is package closure/load-only qualification, NOT in-memory attestation,
+arbitrary process-global SDK arbitration, RF/device access, ABI compatibility
+under active RX, stable physical identity, UI rendering/DPI/throughput/soak or
+APP-06D/release acceptance. The existing owner/quarantine/explicit Start rules
+remain unchanged. Baseline CPU/CUDA builds remain without official HackRF unless
+the explicit supported package lane is chosen.
+
 ## Required further work
 
 TinySA physical resynchronization/Basic and current-input upper-band qualification,
 the full correction-profile authoring/export workflow and advanced HackRF DSP controls/strategies remain.
 Common source-process HackRF RTBW and tinySA runtime settings integration is
 not frozen executable or performance acceptance.
-Official shared-DLL/frozen packaging and actual high-Fs device/transport cells
-also remain separate acceptance gates. APP-05 performance debts, APP-06A/B,
+Official shared-DLL/frozen qualification and actual high-Fs device/transport cells
+remain separate acceptance gates. APP-05 performance debts, APP-06A/B,
 APP-06C/D, APP-07 and release acceptance are not closed by this source packet.

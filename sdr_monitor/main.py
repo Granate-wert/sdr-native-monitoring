@@ -39,6 +39,7 @@ def _arguments(argv: list[str]) -> argparse.Namespace:
     verification.add_argument("--offscreen-default-shell-smoke", action="store_true", help=argparse.SUPPRESS)
     verification.add_argument("--verify-packaged-libiio-runtime", action="store_true", help=argparse.SUPPRESS)
     verification.add_argument("--verify-packaged-tinysa-runtime", action="store_true", help=argparse.SUPPRESS)
+    verification.add_argument("--verify-packaged-shared-runtime", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -324,6 +325,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if arguments.verify_packaged_tinysa_runtime:
         print(json.dumps(_packaged_tinysa_runtime_verdict(), sort_keys=True))
+        return 0
+    if arguments.verify_packaged_shared_runtime:
+        from .frozen_shared_runtime import packaged_shared_runtime_verdict
+
+        native = importlib.import_module("sdr_monitor._sdr_native")
+        print(json.dumps(packaged_shared_runtime_verdict(native), sort_keys=True))
         return 0
     logger = _configure_logging()
     handler = install_activity_file_logging(logger)

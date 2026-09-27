@@ -7,7 +7,7 @@ param(
     [switch]$SkipTests,
     # Test an alternate lane without replacing the approved application module.
     [switch]$StageOnly,
-    # Explicit opt-in SDK; this first integration lane is staging-only.
+    # Explicit opt-in SDK; canonical activation remains disabled.
     [string]$HackrfIncludeDirectory = "",
     [string]$HackrfLibrary = ""
 )
@@ -17,7 +17,7 @@ if ($StageOnly -and $Clean) { throw "StageOnly cannot be combined with Clean (wh
 $hackrfRequested = [bool]($HackrfIncludeDirectory -or $HackrfLibrary)
 if ($hackrfRequested) {
     if (-not $StageOnly -or $Lane -ne "CPU" -or $Configuration -ne "Release") {
-        throw "Official HackRF SDK currently requires StageOnly CPU Release; package activation is not accepted yet"
+        throw "Official HackRF SDK currently requires StageOnly CPU Release; direct canonical activation remains disabled"
     }
     if (-not $HackrfIncludeDirectory -or -not $HackrfLibrary) {
         throw "Both HackrfIncludeDirectory and HackrfLibrary are required"
