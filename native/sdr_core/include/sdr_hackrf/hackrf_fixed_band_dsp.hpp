@@ -44,6 +44,16 @@ struct HackrfFixedBandDspMetrics {
     std::uint64_t source_timestamp_regressions{};
     std::uint64_t source_estimated_timestamp_blocks{};
     sdr_core::DspBackendMetrics dsp;
+    // Optional profiling-build-only cumulative steady-clock worker durations.
+    // Stage values are non-overlapping subsets of locked_push_ns. They exclude
+    // USB callback time, worker pop/wait, Python bridge, Qt and GPU/DWM; do
+    // not interpret them as RF duty or latency. Ordinary builds report false
+    // and zeros without calling a clock in the hot path.
+    bool stage_timing_available{};
+    std::uint64_t locked_push_ns{};
+    std::uint64_t dsp_push_poll_ns{};
+    std::uint64_t persistence_call_ns{};
+    std::uint64_t publication_queue_ns{};
     // These are delivery-only counters for the final bounded fresh-window
     // presentation queue.  They never describe an input or analytical FFT
     // loss and must not be folded into SpectrumFrame::dropped_fft_frames_before.

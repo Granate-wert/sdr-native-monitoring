@@ -45,6 +45,26 @@ def counter_delta(before, after, name):
     return last - first
 
 
+def worker_stage_delta(before, after):
+    """Keep absent/unprofiled timings distinct from measured zero duration."""
+    names = ("locked_push_ns", "dsp_push_poll_ns", "persistence_call_ns", "publication_queue_ns")
+    before_available = getattr(before, "stage_timing_available", False)
+    after_available = getattr(after, "stage_timing_available", False)
+    if type(before_available) is not bool or type(after_available) is not bool or before_available != after_available:
+        raise ValueError("native stage timing availability changed")
+    if not after_available:
+        if any(getattr(after, name, 0) != 0 for name in names):
+            raise ValueError("unavailable native stage timing contains nonzero counters")
+        return {"available": False}
+    result = {"available": True}
+    result.update({name: counter_delta(before, after, name) for name in names})
+    attributed = sum(result[name] for name in names[1:])
+    if attributed > result["locked_push_ns"]:
+        raise ValueError("native stage durations exceed locked push")
+    result["unattributed_locked_ns"] = result["locked_push_ns"] - attributed
+    return result
+
+
 def identity_negative_gate(native, permit):
     """Wrong expected identity must fail at open, before native RF/start stages.
 
@@ -147,7 +167,7 @@ def main():
     if preflight.permit is None:
         raise RuntimeError("current physical identity admission rejected")
     report = {
-        "schema": "app06-hackrf-native-maxfs-v3",
+        "schema": "app06-hackrf-native-maxfs-v4",
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "native_manifest": manifest,
@@ -194,11 +214,19 @@ def main():
         started = time.monotonic()
         previous = None
         frames_seen = invalid = flagged = coalesced = density_snapshots = 0
+        density_poll_ns = latest_drain_ns = 0
+        density_poll_calls = latest_drain_calls = 0
         while time.monotonic() - started < args.seconds:
             if args.latest_bridge:
                 if request.persistence_enabled:
+                    call_started = time.perf_counter_ns()
                     density_snapshots += len(control.poll_persistence_snapshots(2))
+                    density_poll_ns += time.perf_counter_ns() - call_started
+                    density_poll_calls += 1
+                call_started = time.perf_counter_ns()
                 drained = control.drain_latest_spectrum_frame()
+                latest_drain_ns += time.perf_counter_ns() - call_started
+                latest_drain_calls += 1
                 coalesced += drained.coalesced_frames
                 frames = () if drained.frame is None else (drained.frame,)
             else:
@@ -225,6 +253,7 @@ def main():
         after = control.metrics()
         samples = counter_delta(before.source, after.source, "samples_admitted")
         fft = counter_delta(before.processing.dsp.dsp, after.processing.dsp.dsp, "fft_frames_computed")
+        native_stage = worker_stage_delta(before.processing.dsp, after.processing.dsp)
         report.update(
             elapsed_s=elapsed,
             samples_admitted=samples,
@@ -253,6 +282,14 @@ def main():
                                                  "source_samples_missing"),
             device_overrun_counter_available=after.source.device_overrun_counter_available,
             worker_failures=after.processing.worker_failures,
+            native_worker_stage=native_stage,
+            bridge_call_stage={
+                "density_poll_ns": density_poll_ns,
+                "density_poll_calls": density_poll_calls,
+                "latest_drain_ns": latest_drain_ns,
+                "latest_drain_calls": latest_drain_calls,
+                "scope": "Synchronous Python bridge call time; excludes poll sleep, Qt scheduling, paint and DWM.",
+            },
         )
     finally:
         if control is not None:

@@ -3,12 +3,17 @@
 #include "sdr_core/errors.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <mutex>
 #include <utility>
 
 namespace sdr_hackrf {
 namespace {
+
+#ifndef SDR_CORE_PROFILING_ENABLED
+#define SDR_CORE_PROFILING_ENABLED 0
+#endif
 
 [[noreturn]] void invalid(const char* const message) {
     throw sdr_core::ConfigurationError(message);
@@ -21,6 +26,17 @@ namespace {
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
     return right > maximum - left ? maximum : left + right;
 }
+
+#if SDR_CORE_PROFILING_ENABLED
+[[nodiscard]] std::uint64_t elapsed_ns(
+    const std::chrono::steady_clock::time_point before,
+    const std::chrono::steady_clock::time_point after
+) noexcept {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(after - before).count()
+    );
+}
+#endif
 
 }  // namespace
 
@@ -94,6 +110,10 @@ struct HackrfFixedBandDsp::Impl final {
     mutable std::mutex mutex;
     std::uint64_t iq_blocks_processed{};
     std::uint64_t iq_samples_processed{};
+    std::uint64_t locked_push_ns{};
+    std::uint64_t dsp_push_poll_ns{};
+    std::uint64_t persistence_call_ns{};
+    std::uint64_t publication_queue_ns{};
     std::uint64_t source_sequence_discontinuities{};
     std::uint64_t source_sample_index_discontinuities{};
     std::uint64_t source_blocks_missing{};
@@ -129,6 +149,9 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
     }
 
     std::lock_guard lock(impl_->mutex);
+#if SDR_CORE_PROFILING_ENABLED
+    const auto locked_started = std::chrono::steady_clock::now();
+#endif
     const auto sequence_discontinuous = impl_->source_seen
                                             ? block.source_sequence != impl_->expected_source_sequence
                                             : block.source_sequence != 0U;
@@ -138,8 +161,17 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
     const auto timestamp_regressed = impl_->source_seen &&
                                      block.timestamp_ns < impl_->last_timestamp_ns;
 
+#if SDR_CORE_PROFILING_ENABLED
+    const auto dsp_started = std::chrono::steady_clock::now();
+#endif
     impl_->dsp->push_iq(block);
     auto frames = impl_->dsp->poll_spectrum(0U, false);
+#if SDR_CORE_PROFILING_ENABLED
+    impl_->dsp_push_poll_ns = saturating_add(
+        impl_->dsp_push_poll_ns,
+        elapsed_ns(dsp_started, std::chrono::steady_clock::now())
+    );
+#endif
 
     if (sequence_discontinuous) {
         ++impl_->source_sequence_discontinuities;
@@ -194,11 +226,34 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
         }
         // SAME canonical accumulation on detector outputs, BEFORE the lossy
         // presentation boundary. No raw IQ/Python/UI frame averaging.
-        if (auto density = impl_->persistence.update(frame)) {
+#if SDR_CORE_PROFILING_ENABLED
+        const auto persistence_started = std::chrono::steady_clock::now();
+#endif
+        auto density = impl_->persistence.update(frame);
+#if SDR_CORE_PROFILING_ENABLED
+        impl_->persistence_call_ns = saturating_add(
+            impl_->persistence_call_ns,
+            elapsed_ns(persistence_started, std::chrono::steady_clock::now())
+        );
+        const auto publication_started = std::chrono::steady_clock::now();
+#endif
+        if (density) {
             static_cast<void>(impl_->persistence_queue.try_push(std::move(*density)));
         }
         static_cast<void>(impl_->presentation.try_push(std::move(frame)));
+#if SDR_CORE_PROFILING_ENABLED
+        impl_->publication_queue_ns = saturating_add(
+            impl_->publication_queue_ns,
+            elapsed_ns(publication_started, std::chrono::steady_clock::now())
+        );
+#endif
     }
+#if SDR_CORE_PROFILING_ENABLED
+    impl_->locked_push_ns = saturating_add(
+        impl_->locked_push_ns,
+        elapsed_ns(locked_started, std::chrono::steady_clock::now())
+    );
+#endif
 }
 
 std::vector<sdr_core::SpectrumFrame> HackrfFixedBandDsp::poll_spectrum_frames(
@@ -247,6 +302,11 @@ HackrfFixedBandDspMetrics HackrfFixedBandDsp::metrics() const {
     HackrfFixedBandDspMetrics result;
     result.iq_blocks_processed = impl_->iq_blocks_processed;
     result.iq_samples_processed = impl_->iq_samples_processed;
+    result.stage_timing_available = SDR_CORE_PROFILING_ENABLED != 0;
+    result.locked_push_ns = impl_->locked_push_ns;
+    result.dsp_push_poll_ns = impl_->dsp_push_poll_ns;
+    result.persistence_call_ns = impl_->persistence_call_ns;
+    result.publication_queue_ns = impl_->publication_queue_ns;
     result.source_sequence_discontinuities = impl_->source_sequence_discontinuities;
     result.source_sample_index_discontinuities =
         impl_->source_sample_index_discontinuities;

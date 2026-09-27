@@ -418,6 +418,21 @@ void test_latest_drain_preserves_identity_and_separate_coalescing() {
     expect(before.persistence_updates == 4U && after.persistence_updates == 4U &&
            after.dsp.fft_frames_computed == 4U && after.dsp.fft_frames_dropped == 0U,
            "presentation drain altered native FFT or upstream persistence");
+    if (after.stage_timing_available) {
+        expect(after.dsp_push_poll_ns > 0U &&
+               after.locked_push_ns >= after.dsp_push_poll_ns +
+                   after.persistence_call_ns + after.publication_queue_ns,
+               "native stage timing did not stay inside the locked DSP push");
+    } else {
+        expect(after.locked_push_ns == 0U && after.dsp_push_poll_ns == 0U &&
+               after.persistence_call_ns == 0U && after.publication_queue_ns == 0U,
+               "ordinary native build unexpectedly profiled the hot path");
+    }
+    expect(after.locked_push_ns == before.locked_push_ns &&
+           after.dsp_push_poll_ns == before.dsp_push_poll_ns &&
+           after.persistence_call_ns == before.persistence_call_ns &&
+           after.publication_queue_ns == before.publication_queue_ns,
+           "presentation-only drain changed producer-stage duration counters");
     expect(after.presentation.popped - before.presentation.popped == 4U &&
            after.presentation.dropped == before.presentation.dropped,
            "bridge drain was misreported as producer queue overflow");

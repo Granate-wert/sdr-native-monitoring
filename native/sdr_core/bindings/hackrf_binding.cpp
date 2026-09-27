@@ -160,6 +160,11 @@ void bind_hackrf(py::module_& module) {
     )
         .def_readonly("iq_blocks_processed", &sdr_hackrf::HackrfFixedBandDspMetrics::iq_blocks_processed)
         .def_readonly("iq_samples_processed", &sdr_hackrf::HackrfFixedBandDspMetrics::iq_samples_processed)
+        .def_readonly("stage_timing_available", &sdr_hackrf::HackrfFixedBandDspMetrics::stage_timing_available)
+        .def_readonly("locked_push_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::locked_push_ns)
+        .def_readonly("dsp_push_poll_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::dsp_push_poll_ns)
+        .def_readonly("persistence_call_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::persistence_call_ns)
+        .def_readonly("publication_queue_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::publication_queue_ns)
         .def_readonly(
             "source_sequence_discontinuities",
             &sdr_hackrf::HackrfFixedBandDspMetrics::source_sequence_discontinuities

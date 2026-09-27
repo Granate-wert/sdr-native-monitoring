@@ -7,6 +7,8 @@ param(
     [switch]$SkipTests,
     # Test an alternate lane without replacing the approved application module.
     [switch]$StageOnly,
+    # Diagnostic stage timing stays outside the active/frozen product module.
+    [switch]$Profile,
     # Explicit opt-in SDK; canonical activation remains disabled.
     [string]$HackrfIncludeDirectory = "",
     [string]$HackrfLibrary = ""
@@ -15,6 +17,10 @@ param(
 $ErrorActionPreference = "Stop"
 if ($StageOnly -and $Clean) { throw "StageOnly cannot be combined with Clean (which removes active artifacts)" }
 $hackrfRequested = [bool]($HackrfIncludeDirectory -or $HackrfLibrary)
+if ($Profile -and (-not $StageOnly -or -not $hackrfRequested -or $Lane -ne "CPU" -or
+        $Configuration -ne "Release")) {
+    throw "Official HackRF profiling requires StageOnly CPU Release with explicit SDK paths"
+}
 if ($hackrfRequested) {
     if (-not $StageOnly -or $Lane -ne "CPU" -or $Configuration -ne "Release") {
         throw "Official HackRF SDK currently requires StageOnly CPU Release; direct canonical activation remains disabled"
@@ -162,10 +168,15 @@ $env:SDR_PYBIND11_CMAKE_DIR = [System.IO.Path]::GetFullPath($pybindCmakeDir)
 if ($hackrfRequested) {
     $env:SDR_HACKRF_INCLUDE_DIR = $HackrfIncludeDirectory
     $env:SDR_HACKRF_LIBRARY = $HackrfLibrary
-    $configurePreset = "windows-msvc-cpu-hackrf"
-    $buildPreset = "windows-msvc-cpu-hackrf-release"
-    $testPreset = "windows-msvc-cpu-hackrf"
-    $artifactDir = Join-Path $sourceDir "out\build\windows-msvc-cpu-hackrf\python"
+    $configurePreset = if ($Profile) { "windows-msvc-cpu-hackrf-profile" } else { "windows-msvc-cpu-hackrf" }
+    $buildPreset = if ($Profile) { "windows-msvc-cpu-hackrf-profile-release" } else { "windows-msvc-cpu-hackrf-release" }
+    $testPreset = $configurePreset
+    $artifactSubdir = if ($Profile) {
+        "out\build\hackrf-profile\python"
+    } else {
+        "out\build\windows-msvc-cpu-hackrf\python"
+    }
+    $artifactDir = Join-Path $sourceDir $artifactSubdir
 } elseif ($Lane -eq "CUDA") {
     if ($Configuration -eq "Debug") { throw "CUDA lane supports Release only" }
     $configurePreset = "windows-msvc-cuda"
@@ -188,7 +199,11 @@ if ($hackrfRequested) {
 Push-Location $sourceDir
 try {
     Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset, "-DSDR_CORE_PYTHON_OUTPUT_DIR=$artifactDir", "-DSDR_MSVC_SHOWINCLUDES_PREFIX=$dependencyPrefix")
-    $nativeBuildDir = Join-Path $sourceDir "out/build/$configurePreset"
+    $nativeBuildDir = if ($Profile) {
+        Join-Path $sourceDir 'out/build/hackrf-profile'
+    } else {
+        Join-Path $sourceDir "out/build/$configurePreset"
+    }
     $ninja = Join-Path $ninjaDir 'ninja.exe'
     $dependencyObject = 'CMakeFiles/sdr_core.dir/src/core/sweep_line_assembler.cpp.obj'
     $dependencyPattern = 'include[\\/]sdr_core[\\/]types\.hpp'
@@ -234,6 +249,7 @@ $manifest = [ordered]@{
     artifact_sha256 = $artifactSha256
 }
 if ($hackrfRequested) {
+    $manifest['profiling_enabled'] = [bool]$Profile
     $runtimeHashes = [ordered]@{}
     foreach ($runtimeName in @('hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll')) {
         $stagedRuntime = Join-Path $artifactDir $runtimeName

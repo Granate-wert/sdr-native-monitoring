@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.probe_app06_hackrf_native_maxfs import counter_delta, identity_negative_gate
+from scripts.probe_app06_hackrf_native_maxfs import counter_delta, identity_negative_gate, worker_stage_delta
 from tests.test_r11n_hackrf_native_factory import _NativeFactory, _permit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +55,28 @@ class NativeMaxFsProbeTests(unittest.TestCase):
         for first, last in ((10, 4), (False, 4), (4, True), (4, 4.0)):
             with self.subTest(first=first, last=last), self.assertRaises(ValueError):
                 counter_delta(SimpleNamespace(count=first), SimpleNamespace(count=last), "count")
+
+    def test_worker_stage_deltas_keep_absence_and_partition_separate(self):
+        names = ("locked_push_ns", "dsp_push_poll_ns", "persistence_call_ns", "publication_queue_ns")
+        absent = SimpleNamespace(stage_timing_available=False, **dict.fromkeys(names, 0))
+        self.assertEqual(worker_stage_delta(absent, absent), {"available": False})
+        before = SimpleNamespace(stage_timing_available=True, locked_push_ns=10,
+                                 dsp_push_poll_ns=5, persistence_call_ns=3,
+                                 publication_queue_ns=1)
+        after = SimpleNamespace(stage_timing_available=True, locked_push_ns=110,
+                                dsp_push_poll_ns=55, persistence_call_ns=33,
+                                publication_queue_ns=11)
+        self.assertEqual(worker_stage_delta(before, after), {
+            "available": True, "locked_push_ns": 100, "dsp_push_poll_ns": 50,
+            "persistence_call_ns": 30, "publication_queue_ns": 10,
+            "unattributed_locked_ns": 10,
+        })
+        with self.assertRaisesRegex(ValueError, "availability changed"):
+            worker_stage_delta(absent, after)
+        with self.assertRaisesRegex(ValueError, "exceed locked push"):
+            worker_stage_delta(before, SimpleNamespace(stage_timing_available=True,
+                               locked_push_ns=20, dsp_push_poll_ns=55,
+                               persistence_call_ns=33, publication_queue_ns=11))
 
     def test_rx_switch_is_required_before_importing_native_or_sdk(self):
         result = subprocess.run(

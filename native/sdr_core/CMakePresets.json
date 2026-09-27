@@ -54,6 +54,16 @@
       }
     },
     {
+      "name": "windows-msvc-cpu-hackrf-profile",
+      "displayName": "Windows MSVC CPU + official HackRF profiling (staging only)",
+      "inherits": "windows-msvc-cpu-hackrf",
+      "binaryDir": "${sourceDir}/out/build/hackrf-profile",
+      "cacheVariables": {
+        "SDR_CORE_ENABLE_PROFILING": "ON",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/hackrf-profile/python"
+      }
+    },
+    {
       "name": "windows-msvc-cpu-debug",
       "displayName": "Windows MSVC CPU + Pluto Debug",
       "inherits": "windows-msvc-cpu",
@@ -164,6 +174,10 @@
   ],
   "buildPresets": [
     {
+      "name": "windows-msvc-cpu-hackrf-profile-release",
+      "configurePreset": "windows-msvc-cpu-hackrf-profile"
+    },
+    {
       "name": "windows-msvc-cpu-hackrf-release",
       "configurePreset": "windows-msvc-cpu-hackrf"
     },
@@ -205,6 +219,13 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "windows-msvc-cpu-hackrf-profile",
+      "configurePreset": "windows-msvc-cpu-hackrf-profile",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
     {
       "name": "windows-msvc-cpu-hackrf",
       "configurePreset": "windows-msvc-cpu-hackrf",
