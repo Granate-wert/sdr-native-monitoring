@@ -12,6 +12,8 @@ import json
 import os
 import re
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .libiio_runtime import LIBIIO_RUNTIME_COMPONENTS, configure_frozen_libiio_runtime
@@ -24,6 +26,31 @@ REQUIRED_LOADED = frozenset(("libiio.dll", *HACKRF_COMPONENTS))
 def file_sha256(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+@contextmanager
+def hold_package_libiio_metadata(path: Path) -> Iterator[None]:
+    """Own one DLL load reference while native's temporary metadata ref closes.
+
+    No SDK symbol is called here. Never retry an ambiguous FreeLibrary failure.
+    This owner belongs only to the short-lived frozen diagnostic process.
+    """
+    if os.name != "nt":
+        raise RuntimeError("metadata DLL ownership requires Windows")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LoadLibraryExW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32]
+    kernel.LoadLibraryExW.restype = ctypes.c_void_p
+    kernel.FreeLibrary.argtypes = [ctypes.c_void_p]
+    kernel.FreeLibrary.restype = ctypes.c_int
+    # DLL_LOAD_DIR | DEFAULT_DIRS; use only the already validated absolute path.
+    handle = kernel.LoadLibraryExW(str(path.resolve(strict=True)), None, 0x1100)
+    if not handle:
+        raise RuntimeError("package-local metadata DLL load failed")
+    try:
+        yield
+    finally:
+        if not kernel.FreeLibrary(handle):
+            raise RuntimeError("metadata DLL reference release was not confirmed")
 
 
 def windows_loaded_module_paths() -> tuple[Path, ...]:
@@ -141,12 +168,13 @@ def packaged_shared_runtime_verdict(native: object) -> dict[str, object]:
     if (not callable(runtime_info) or not callable(build_info)
             or build_info().get("pluto_compiled") is not True or build_info().get("cuda_compiled") is not False):
         raise RuntimeError("compiled libiio runtime metadata is unavailable")
-    runtime = runtime_info()  # Loads metadata only; no IIO context is created.
-    if (not runtime.available or not runtime.library_path
-            or Path(runtime.library_path).resolve(strict=True) != components[0]):
-        raise RuntimeError("libiio metadata did not use its package-local DLL")
     files = {name: file_sha256(directory / name) for name in SHARED_COMPONENTS}
-    loaded = validate_loaded_shared_runtime(directory, windows_loaded_module_paths())
+    with hold_package_libiio_metadata(components[0]):
+        runtime = runtime_info()  # Loads metadata only; no IIO context is created.
+        if (not runtime.available or not runtime.library_path
+                or Path(runtime.library_path).resolve(strict=True) != components[0]):
+            raise RuntimeError("libiio metadata did not use its package-local DLL")
+        loaded = validate_loaded_shared_runtime(directory, windows_loaded_module_paths())
     return {
         "schema": "sdr-frozen-shared-runtime-v1",
         "native_module": "sdr_monitor._sdr_native",
@@ -157,6 +185,7 @@ def packaged_shared_runtime_verdict(native: object) -> dict[str, object]:
         "hackrf_factory_contract_version": 2,
         "cuda_compiled": False,
         "libiio_available": True,
+        "metadata_hold_released": True,
         "runtime_file_sha256": files,
         "loaded_shared_modules": loaded,
         "factory_constructed": False,

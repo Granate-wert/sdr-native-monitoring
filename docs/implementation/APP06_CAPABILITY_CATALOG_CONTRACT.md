@@ -570,7 +570,11 @@ The hidden exclusive frozen diagnostic loads native exports and libiio VERSION
 metadata only. It does NOT construct the HackRF factory, call SDK init/enumerate,
 open an IIO context/serial device, create a GUI/Live engine or attempt RX. A bounded
 Windows inventory enumerates all current-process modules, not the first matching
-basename. Required libiio/hackrf/libusb/pthread must each have one package-local
+basename. Because the native metadata API normally unloads its temporary libiio
+reference on return, the diagnostic owns one explicit absolute load-only DLL
+reference during metadata/inventory and confirms its release before success.
+It never changes native metadata lifetime, creates an IIO context or retries an
+ambiguous unload. Required libiio/hackrf/libusb/pthread must each have one package-local
 loaded module; any loaded optional libiio transport dependency must also be
 package-local and unique. Optional transports may remain lazy. The external
 verifier removes developer SDK PATH entries, supplies a deliberately invalid

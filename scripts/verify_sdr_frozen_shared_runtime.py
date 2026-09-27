@@ -68,7 +68,7 @@ def verify_frozen_shared_runtime(package_dir: Path, manifest_path: Path, version
     expected = {
         "schema": "sdr-frozen-shared-runtime-v1", "native_module": "sdr_monitor._sdr_native",
         "hackrf_official_compiled": True, "hackrf_factory_contract_version": 2, "cuda_compiled": False,
-        "libiio_available": True, "factory_constructed": False, "sdk_initialized": False,
+        "libiio_available": True, "metadata_hold_released": True, "factory_constructed": False, "sdk_initialized": False,
         "discovery_attempted": False, "rx_attempted": False,
     }
     if not isinstance(verdict, dict) or any(type(verdict.get(k)) is not type(v) or verdict.get(k) != v

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -64,6 +65,9 @@ def native_fixture(module: Path) -> SimpleNamespace:
 
 
 class SharedRuntimeDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(runtime, "hold_package_libiio_metadata", return_value=nullcontext()))
+
     def test_exact_manifest_sdk_and_all_loaded_modules_without_hardware_entrypoints(self):
         with tempfile.TemporaryDirectory() as tmp:
             module, _, _ = package_fixture(Path(tmp))
@@ -172,6 +176,9 @@ class SharedRuntimeDiagnosticTests(unittest.TestCase):
 
 
 class FrozenSharedRuntimeVerifierTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(runtime, "hold_package_libiio_metadata", return_value=nullcontext()))
+
     def test_input_report_mismatch_refuses_even_if_final_release_records_every_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             package = Path(tmp).resolve()
@@ -204,7 +211,7 @@ class FrozenSharedRuntimeVerifierTests(unittest.TestCase):
                 self.assertEqual(run.call_args.args[0][1], "--verify-packaged-shared-runtime")
                 self.assertNotIn(str(ROOT), run.call_args.kwargs["env"]["PATH"])
                 self.assertIn("external-runtime", run.call_args.kwargs["env"]["LIBIIO_DLL_PATH"])
-                for update in ({"sdk_initialized": True}, {"rx_attempted": True},
+                for update in ({"sdk_initialized": True}, {"rx_attempted": True}, {"metadata_hold_released": False},
                                {"hackrf_factory_contract_version": True}, {"native_source_commit": "x"},
                                {"native_sha256": "0" * 64}, {"runtime_file_sha256": {}},
                                {"loaded_shared_modules": []}):
@@ -254,6 +261,39 @@ class FrozenSharedRuntimeVerifierTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "artifact_sha256"):
                     verify_frozen_shared_runtime(package, release, "0.16.10")
                 run.assert_not_called()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows metadata DLL ownership injection")
+class MetadataHoldTests(unittest.TestCase):
+    def test_load_only_absolute_reference_releases_once_on_success_and_body_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "libiio.dll"
+            path.touch()
+            kernel = SimpleNamespace(LoadLibraryExW=Mock(return_value=123), FreeLibrary=Mock(return_value=1))
+            with patch.object(runtime.ctypes, "WinDLL", return_value=kernel):
+                with runtime.hold_package_libiio_metadata(path):
+                    kernel.FreeLibrary.assert_not_called()
+                kernel.LoadLibraryExW.assert_called_once_with(str(path.resolve()), None, 0x1100)
+                kernel.FreeLibrary.assert_called_once_with(123)
+                kernel.FreeLibrary.reset_mock()
+                with self.assertRaisesRegex(ValueError, "body"), runtime.hold_package_libiio_metadata(path):
+                    raise ValueError("body")
+                kernel.FreeLibrary.assert_called_once_with(123)
+
+    def test_failed_load_or_release_is_not_success_and_no_handle_retry_occurs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "libiio.dll"
+            path.touch()
+            kernel = SimpleNamespace(LoadLibraryExW=Mock(return_value=0), FreeLibrary=Mock(return_value=0))
+            with patch.object(runtime.ctypes, "WinDLL", return_value=kernel):
+                with self.assertRaisesRegex(RuntimeError, "load failed"), runtime.hold_package_libiio_metadata(path):
+                    self.fail("body must not run")
+                kernel.FreeLibrary.assert_not_called()
+                kernel.LoadLibraryExW.return_value = 123
+                with (self.assertRaisesRegex(RuntimeError, "release was not confirmed"),
+                      runtime.hold_package_libiio_metadata(path)):
+                    pass
+                kernel.FreeLibrary.assert_called_once_with(123)
 
 
 class OfficialPackagePipelineTests(unittest.TestCase):
