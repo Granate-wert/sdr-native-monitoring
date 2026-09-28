@@ -106,6 +106,47 @@ int main() {
     require(std::fabs(after_half_life->count_scale - 0.5) < 1e-12,
             "count scale must carry elapsed exponential decay");
 
+    // A sustained high-rate hot bin rounds in float, while raw_weight_ is
+    // double. Every published probability must stay inside the public [0,1]
+    // contract without relaxing the renderer's malformed-input validation.
+    sdr_core::PersistenceAccumulator sustained(exponential);
+    auto hot = frame(1, 1, -80.0F);
+    std::uint64_t sustained_snapshots = 0U;
+    double theoretical_weight = 0.0;
+    double theoretical_decay_scale = 1.0;
+    bool old_normalization_would_reject = false;
+    for (std::uint64_t index = 1U; index <= 30'000U; ++index) {
+        hot.frame_sequence = index;
+        hot.timestamp_ns = 1 + static_cast<std::int64_t>(index - 1U) * 409'600LL;
+        if (index > 1U) {
+            theoretical_decay_scale *= std::exp(
+                -std::log(2.0) * 409'600.0 / 1.0e9
+            );
+            if (theoretical_decay_scale < 1.0e-6) {
+                theoretical_weight *= theoretical_decay_scale;
+                theoretical_decay_scale = 1.0;
+            }
+        }
+        theoretical_weight += static_cast<double>(
+            static_cast<float>(1.0 / theoretical_decay_scale)
+        );
+        const auto published = sustained.update(hot);
+        if (!published) continue;
+        ++sustained_snapshots;
+        const auto maximum = *std::max_element(
+            published->density->begin(), published->density->end()
+        );
+        old_normalization_would_reject |= static_cast<float>(
+            maximum / theoretical_weight
+        ) > 1.0F;
+        require(static_cast<float>(maximum * published->probability_scale) <= 1.0F,
+                "exponential probability exceeded one after float accumulation");
+    }
+    require(sustained_snapshots >= 100U,
+            "sustained probability regression did not exercise snapshots");
+    require(old_normalization_would_reject,
+            "sustained regression never reproduced the old normalization rejection");
+
     // The accumulator may choose a cache-friendly internal layout, but each
     // immutable publication remains renderer-ready [power, frequency].
     auto distinct = frame(1, 1, -90.0F);

@@ -205,7 +205,26 @@ PersistenceSnapshot PersistenceAccumulator::make_snapshot(
     result.processed_frames = processed_frames_;
     result.exponential_decay =
         config_.mode == PersistenceMode::ExponentialDecay;
-    result.probability_scale = raw_weight_ > 0.0 ? 1.0 / raw_weight_ : 0.0;
+    // The theoretical weight is accumulated in double while histogram cells
+    // are float. After thousands of decay updates a hot cell can round a few
+    // ppm ABOVE that weight. Scaling by the theoretical weight then emits a
+    // probability > 1, which the strict UI contract correctly rejects.
+    // Inspect the already-copied snapshot only at publication cadence; the
+    // per-FFT update loop and its cost remain unchanged.
+    double probability_weight = raw_weight_;
+    if (result.exponential_decay && !density->empty()) {
+        const double observed_max = static_cast<double>(
+            *std::max_element(density->begin(), density->end())
+        );
+        if (observed_max > probability_weight) {
+            // Leave a float-rounding margin when the observed cell, rather
+            // than the exact theoretical weight, controls normalization.
+            probability_weight = observed_max /
+                (1.0 - 2.0 * std::numeric_limits<float>::epsilon());
+        }
+    }
+    result.probability_scale = probability_weight > 0.0
+        ? 1.0 / probability_weight : 0.0;
     result.count_scale = result.exponential_decay ? decay_scale_ : 1.0;
     // Frequency axes are immutable SpectrumFrame data and remain valid through
     // the shared owner, so publication need not copy 4096 doubles per update.
