@@ -115,7 +115,9 @@ int main() {
     double theoretical_weight = 0.0;
     double theoretical_decay_scale = 1.0;
     bool old_normalization_would_reject = false;
-    for (std::uint64_t index = 1U; index <= 30'000U; ++index) {
+    // Continue past the decay-scale rebase (about 20 half-lives), so the
+    // tracked maximum is checked both before and after full-grid rescaling.
+    for (std::uint64_t index = 1U; index <= 60'000U; ++index) {
         hot.frame_sequence = index;
         hot.timestamp_ns = 1 + static_cast<std::int64_t>(index - 1U) * 409'600LL;
         if (index > 1U) {
@@ -136,13 +138,21 @@ int main() {
         const auto maximum = *std::max_element(
             published->density->begin(), published->density->end()
         );
+        const auto maximum_double = static_cast<double>(maximum);
+        const double expected_weight = maximum_double > theoretical_weight
+            ? maximum_double / (1.0 - 2.0 * std::numeric_limits<float>::epsilon())
+            : theoretical_weight;
+        const double expected_scale = 1.0 / expected_weight;
+        require(std::fabs(published->probability_scale - expected_scale) <=
+                    expected_scale * 1.0e-12,
+                "tracked exponential maximum differs from snapshot scan");
         old_normalization_would_reject |= static_cast<float>(
             maximum / theoretical_weight
         ) > 1.0F;
         require(static_cast<float>(maximum * published->probability_scale) <= 1.0F,
                 "exponential probability exceeded one after float accumulation");
     }
-    require(sustained_snapshots >= 100U,
+    require(sustained_snapshots >= 300U,
             "sustained probability regression did not exercise snapshots");
     require(old_normalization_would_reject,
             "sustained regression never reproduced the old normalization rejection");

@@ -65,6 +65,9 @@ private:
     std::uint64_t ring_count_{};
     double raw_weight_{};
     double decay_scale_{1.0};
+    // Exponential cells only increase between rare full-grid rebases. Track
+    // their maximum in the existing update pass, not a second snapshot scan.
+    float max_raw_density_{};
     std::uint64_t processed_frames_{};
     std::uint64_t update_sequence_{};
     std::int64_t last_timestamp_ns_{};

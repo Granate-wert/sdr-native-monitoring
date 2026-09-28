@@ -32,6 +32,7 @@ void PersistenceAccumulator::reset() {
     ring_count_ = 0U;
     raw_weight_ = 0.0;
     decay_scale_ = 1.0;
+    max_raw_density_ = 0.0F;
     processed_frames_ = 0U;
     update_sequence_ = 0U;
     last_timestamp_ns_ = 0;
@@ -98,6 +99,7 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
         ring_count_ = 0U;
         raw_weight_ = 0.0;
         decay_scale_ = 1.0;
+        max_raw_density_ = 0.0F;
         processed_frames_ = 0U;
         update_sequence_ = 0U;
         last_timestamp_ns_ = 0;
@@ -116,9 +118,12 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
         // bins), not O(power bins * frequency bins); this rare full pass
         // keeps the raw increment finite and preserves the visible epoch.
         if (!std::isfinite(decay_scale_) || decay_scale_ < decay_rebase_threshold) {
+            float rebased_maximum = 0.0F;
             for (float& value : density_) {
                 value = static_cast<float>(static_cast<double>(value) * decay_scale_);
+                rebased_maximum = std::max(rebased_maximum, value);
             }
+            max_raw_density_ = rebased_maximum;
             raw_weight_ *= decay_scale_;
             decay_scale_ = 1.0;
         }
@@ -158,14 +163,18 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
         );
         raw_weight_ = static_cast<double>(ring_count_);
     } else {
+        float observed_maximum = max_raw_density_;
         for (std::uint32_t column = 0U; column < frequency_bins_; ++column) {
             const auto row = bin_for((*frame.values)[column]);
             if (row != invalid_bin) {
-                density_[
+                auto& cell = density_[
                     static_cast<std::size_t>(row) * frequency_bins_ + column
-                ] += increment;
+                ];
+                cell += increment;
+                observed_maximum = std::max(observed_maximum, cell);
             }
         }
+        max_raw_density_ = observed_maximum;
         raw_weight_ += static_cast<double>(increment);
     }
 
@@ -209,13 +218,11 @@ PersistenceSnapshot PersistenceAccumulator::make_snapshot(
     // are float. After thousands of decay updates a hot cell can round a few
     // ppm ABOVE that weight. Scaling by the theoretical weight then emits a
     // probability > 1, which the strict UI contract correctly rejects.
-    // Inspect the already-copied snapshot only at publication cadence; the
-    // per-FFT update loop and its cost remain unchanged.
+    // The maximum is maintained during the existing update pass, including
+    // its rare full-grid rebase, to avoid a second scan of each snapshot.
     double probability_weight = raw_weight_;
-    if (result.exponential_decay && !density->empty()) {
-        const double observed_max = static_cast<double>(
-            *std::max_element(density->begin(), density->end())
-        );
+    if (result.exponential_decay) {
+        const double observed_max = static_cast<double>(max_raw_density_);
         if (observed_max > probability_weight) {
             // Leave a float-rounding margin when the observed cell, rather
             // than the exact theoretical weight, controls normalization.
