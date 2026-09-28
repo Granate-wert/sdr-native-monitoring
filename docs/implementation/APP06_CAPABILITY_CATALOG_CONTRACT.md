@@ -1345,3 +1345,27 @@ reject inconsistent frozen timing summaries. CTest and full UI V2 source
 gates are separate from physical/frozen performance qualification. Do not
 attribute the prior ~180-ms segment cadence to one phase until the exact
 new native artifact is staged, frozen and tested on hardware.
+
+### Exact frozen Pluto Sweep phase attribution (APP-06D, 2026-09-28)
+
+Exact source `99d30d3` StageOnly official native and full UI V2 gates passed;
+the separate frozen diagnostic with the same new native module passed static
+shared-runtime/hash checks. Two local-Discover physical USB Pluto UI V2
+100–420-MHz/61.44-MS/s/FFT4096/50-MHz RF-BW runs at unchanged
+262144-sample buffers and two post-retune discarded blocks gave 10 complete
+segments and live partial Spectrum/Waterfall before explicit Stop. Across
+11 started native phase calls, current-generation FFT wait averaged
+~108–110 ms, Start ~39 ms and Configure ~18–19 ms; ten Stops averaged
+<1 ms. Host partial interval remained ~181 ms. Both runs had 30 full
+262144-sample I/Q blocks and 1270 analytical FFT frames with zero reported
+short reads/refill errors/acquisition queue drops; these host counters do not
+prove USB losslessness, hardware ADC continuity, RF settling or duty/Pd.
+Quick1 and averaged16 output FFT choices had essentially the same cadence.
+Host poll-return→Spectrum paint still had a ~69–70-ms maximum in these
+short runs, so the separate APP-05 ≤50-ms target remains open. The exact
+stage totals include a Stop-cancelled next pass and are not an exact
+per-accepted-segment decomposition or a product LPS guarantee. The next
+candidate is an explicit smaller diagnostic buffer at unchanged Fs/FFT and
+discard policy, followed by RF quality checks; a real stream-preserving
+retune needs separate design/proof. No default acquisition/render algorithm,
+approved EXE or system setting was changed in this instrumentation packet.
