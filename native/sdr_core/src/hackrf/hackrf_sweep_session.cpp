@@ -303,7 +303,8 @@ HackrfSweepSessionMetrics HackrfSweepSession::metrics() const noexcept {
 }
 
 HackrfSweepStopResult HackrfSweepSession::stop(
-    const std::chrono::milliseconds callback_timeout
+    const std::chrono::milliseconds callback_timeout,
+    const bool preserve_ready_for_owned_drain
 ) noexcept {
     std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
     if (!impl_->running.load(std::memory_order_acquire)) {
@@ -344,7 +345,7 @@ HackrfSweepStopResult HackrfSweepSession::stop(
         return impl_->stop_result;
     }
     impl_->gate_readable.store(true, std::memory_order_release);
-    {
+    if (!preserve_ready_for_owned_drain) {
         std::lock_guard consumer_lock(impl_->consumer_mutex);
         const auto written = impl_->write_sequence.load(std::memory_order_acquire);
         const auto read = impl_->read_sequence.load(std::memory_order_relaxed);
@@ -381,6 +382,22 @@ HackrfSweepStopResult HackrfSweepSession::stop(
     }
     impl_->running.store(false, std::memory_order_release);
     return impl_->stop_result;
+}
+
+std::uint64_t HackrfSweepSession::discard_ready_after_stop() noexcept {
+    std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
+    if (impl_->running.load(std::memory_order_acquire) ||
+        impl_->callbacks_active.load(std::memory_order_acquire) != 0U) {
+        return 0U;
+    }
+    std::lock_guard consumer_lock(impl_->consumer_mutex);
+    const auto written = impl_->write_sequence.load(std::memory_order_acquire);
+    const auto read = impl_->read_sequence.load(std::memory_order_relaxed);
+    const auto abandoned = written - read;
+    impl_->read_sequence.store(written, std::memory_order_release);
+    impl_->blocks_abandoned.fetch_add(abandoned, std::memory_order_relaxed);
+    impl_->stop_result.abandoned_blocks += abandoned;
+    return abandoned;
 }
 
 bool HackrfSweepSession::running() const noexcept {

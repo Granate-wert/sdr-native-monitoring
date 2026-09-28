@@ -146,6 +146,22 @@ or RF qualification must precede any claim of usable physical coverage.
 The adapter has no Python/UI V2 Start route yet and does not change the
 table's `mode_runtime_unavailable` result for HackRF Sweep.
 
+The next bounded **native runtime owner** now connects that same official
+Sweep callback, copied-block queue and numerical analysis on one worker.
+Its public drain returns only one ordered reduced publication at a time:
+an older terminal `SweepLineFrame` cannot be overtaken by a newer
+`SweepProgressFrame`. At most one latest partial and one latest terminal are
+retained; superseded publications are counted, not mislabeled as RF/USB
+loss. A native preview cadence of 1–100 Hz limits snapshot construction;
+it is not analytical FFT rate, GUI frame rate or DWM FPS. Explicit Stop
+quiesces the callback, preserves and drains already copied blocks, then
+finalizes the line before joining the worker and releasing its owner.
+An abnormal worker exit accounts remaining queue blocks only after join.
+The source's old standalone Stop retains its default discard policy.
+The optional, explicit-confirmation runtime diagnostic is not a Python
+factory or selectable UI route; old packaged modules cannot activate Sweep
+through this addition.
+
 This foundation does **not** change the table's HackRF Sweep
 `mode_runtime_unavailable` result, enable hardware Sweep, alter RTBW Fs/FFT/
 gain/detector/grouping, or qualify UI latency/RF coverage. Its native tests

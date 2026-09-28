@@ -100,6 +100,7 @@ add_library(sdr_hackrf STATIC
     src/hackrf/hackrf_sweep_sequence.cpp
     src/hackrf/hackrf_sweep_session.cpp
     src/hackrf/hackrf_sweep_analysis.cpp
+    src/hackrf/hackrf_sweep_runtime_analysis_session.cpp
 )
 add_library(sdr_core::sdr_hackrf ALIAS sdr_hackrf)
 target_include_directories(
@@ -163,6 +164,15 @@ if(SDR_CORE_ENABLE_HACKRF_OFFICIAL)
     sdr_core_apply_platform_defaults(sdr_core_app06c_hackrf_sweep_source)
     sdr_core_apply_sanitizers(sdr_core_app06c_hackrf_sweep_source)
 
+    # Explicit operator-only SAME-owner source -> native FFT -> publication
+    # observation. No implicit CTest hardware operation or product activation.
+    add_executable(sdr_core_app06c_hackrf_sweep_runtime
+        tests/hardware_app06c_hackrf_sweep_runtime.cpp)
+    target_link_libraries(sdr_core_app06c_hackrf_sweep_runtime
+        PRIVATE sdr_core::sdr_hackrf_official)
+    sdr_core_apply_platform_defaults(sdr_core_app06c_hackrf_sweep_runtime)
+    sdr_core_apply_sanitizers(sdr_core_app06c_hackrf_sweep_runtime)
+
     if(WIN32)
         # Keep the accepted libhackrf bundle app-local. A system-wide libusb
         # may otherwise win normal DLL search order and lack entry points used
@@ -181,6 +191,7 @@ if(SDR_CORE_ENABLE_HACKRF_OFFICIAL)
                 sdr_core_r11h_hackrf_rx
                 sdr_core_r13d_hackrf_fft
                 sdr_core_app06c_hackrf_sweep_source
+                sdr_core_app06c_hackrf_sweep_runtime
             )
                 add_custom_command(
                     TARGET ${runtime_target} POST_BUILD
@@ -436,6 +447,12 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_hackrf_sweep_analysis_test)
     add_test(NAME sdr_core.hackrf_sweep_analysis COMMAND sdr_core_hackrf_sweep_analysis_test)
     set_tests_properties(sdr_core.hackrf_sweep_analysis PROPERTIES TIMEOUT 120)
+    add_executable(sdr_core_hackrf_sweep_runtime_analysis_test tests/test_hackrf_sweep_runtime_analysis_session.cpp)
+    target_link_libraries(sdr_core_hackrf_sweep_runtime_analysis_test PRIVATE sdr_core::sdr_hackrf)
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_sweep_runtime_analysis_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_sweep_runtime_analysis_test)
+    add_test(NAME sdr_core.hackrf_sweep_runtime_analysis COMMAND sdr_core_hackrf_sweep_runtime_analysis_test)
+    set_tests_properties(sdr_core.hackrf_sweep_runtime_analysis PROPERTIES TIMEOUT 120)
     add_executable(
         sdr_core_hackrf_live_factory_test tests/test_hackrf_live_factory.cpp
     )
@@ -777,6 +794,7 @@ if(SDR_CORE_BUILD_TESTS)
             sdr_core_hackrf_sweep_sequence_test
             sdr_core_hackrf_sweep_session_test
             sdr_core_hackrf_sweep_analysis_test
+            sdr_core_hackrf_sweep_runtime_analysis_test
             sdr_core_hackrf_live_factory_test
             sdr_core_hackrf_rx_session_test
             sdr_core_hackrf_fixed_band_dsp_test

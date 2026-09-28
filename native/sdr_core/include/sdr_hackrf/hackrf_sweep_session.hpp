@@ -119,8 +119,12 @@ public:
     // Live, this returns queue/callback counters and no sequence snapshot.
     [[nodiscard]] HackrfSweepSessionMetrics metrics() const noexcept;
     [[nodiscard]] HackrfSweepStopResult stop(
-        std::chrono::milliseconds callback_timeout
+        std::chrono::milliseconds callback_timeout,
+        bool preserve_ready_for_owned_drain = false
     ) noexcept;
+    // Only after complete Stop/callback quiescence and after the single
+    // consumer has joined. Accounts remaining copied blocks as abandoned.
+    [[nodiscard]] std::uint64_t discard_ready_after_stop() noexcept;
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] std::uint16_t observed_usb_api_version() const noexcept;
     [[nodiscard]] std::uint32_t transfer_bytes() const noexcept;
