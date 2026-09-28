@@ -1045,3 +1045,21 @@ continuity, DWM FPS, global 50-ms or long-soak acceptance. The next bounded
 candidate must preserve every detector contribution and compare histogram
 cost, live Spectrum freshness and loss counters on matched UI V2 profiles;
 prior tiled/transposed layout and parallel worker experiments were rejected.
+
+An APP-06D diagnostic-only follow-up at exact source `15e72d1` retained the
+same product algorithm and added an optional varying-spectrum native benchmark
+fixture. Three local histogram arithmetic candidates showed no gain or
+regressed that fixture and were fully reverted. The ordinary official native
+module passed 35/35 CTest/preflight at the exact source; no new EXE was built
+or promoted. Two separate 20-s visible Windows UI V2 root sessions used real
+USB HackRF RX at requested 20 MS/s, FFT16384/hop8192/group1 with 256 then 64
+power bins, explicit Stage/Start/Stop/Close and zero reported I/Q ingress loss.
+A bounded `update_sequence` observer measured native-poll-return to first
+ImageItem-paint-return median/p95 of about 108/137 ms (64 bins, 265 matched
+paints) and 133/205 ms (256 bins, 235 matched paints); the projection function
+itself measured about 21/32 versus 41/44 ms. The observer begins after native
+polling, ends before DWM scanout, and adds diagnostic overhead. Sequential
+nonrandomized runs do not establish the causal bin-count delta or sustained
+performance. This is neither a global 50-ms/DWM/FPS/RF-duty/lossless transport
+acceptance nor a frozen-EXE qualification. APP-06A/B/C/D, genuine Ethernet and
+tinySA physical cells, APP-05 timing debt, APP-07 and release remain open.
