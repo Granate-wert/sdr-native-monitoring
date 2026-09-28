@@ -1018,3 +1018,30 @@ bridge or GUI stage. These short, sequential UI readouts are not DWM FPS,
 RF duty/Pd, ADC/USB continuity, sustained performance, global 50-ms or
 release acceptance. The tagged EXE was closed after each Stop; the older
 separate user process was not touched.
+
+### HackRF persistence worker substage diagnosis (2026-09-28)
+
+Commit `55f0bab` adds profiling-build-only counters that partition the
+existing native persistence call into histogram-update and snapshot-build
+time/count. An ordinary build exposes zero counters and makes no added
+steady-clock call in the hot path. This is instrumentation, not a new density
+algorithm, queue, source owner, calibration, GUI path or RF setting. Both
+official StageOnly profiling and ordinary modules passed 35/35 native tests
+and preflight; the exact clean-source full UI V2 gate with the ordinary
+module passed 1006 tests / 66 skipped / zero failed, with no product imports
+outside the checkout. No new EXE was built or promoted.
+
+In one bounded 20-s source-process USB HackRF diagnostic at requested
+20 MS/s, FFT16384/hop8192/group1 and 256-bin decay, locked native processing
+took 19.999 s. DSP push/poll took 14.522 s; persistence took 5.423 s, split
+into 4.532 s histogram updates and 0.886 s constructing 299 snapshots.
+The ready queue reached 24/24; software ingress recorded 187 lost I/Q
+blocks / 24,510,464 samples (186 queue-full, one lock-contention), with
+18.788 admitted MS/s and 2284 analytical FFT/s. Explicit Stop joined the
+worker and released RX. Thus snapshot copying is material, but reducing its
+15-Hz cadence alone cannot remove the dominant histogram load. This one
+profiled run is not a matched frozen GUI cause proof, RF duty/ADC/USB
+continuity, DWM FPS, global 50-ms or long-soak acceptance. The next bounded
+candidate must preserve every detector contribution and compare histogram
+cost, live Spectrum freshness and loss counters on matched UI V2 profiles;
+prior tiled/transposed layout and parallel worker experiments were rejected.
