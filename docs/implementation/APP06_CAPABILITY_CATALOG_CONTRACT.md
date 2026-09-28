@@ -948,3 +948,43 @@ overlay correction also held in this short 256-bin cell, while high-density
 throughput is plainly **not accepted**. The snapshot maximum scan is bounded
 to publication cadence but adds a histogram read; its cost needs matched
 old/new stage timing and loss tests, not inference from unmatched runs.
+
+### Incremental exponential maximum and bounded 256-bin comparison (2026-09-28)
+
+Product commit `a2cb8ba` preserves the probability correction while removing
+one extra full-histogram read from each exponential snapshot. The existing
+per-FFT accumulator pass tracks the maximum of float cells; the rare full-grid
+decay rebase recomputes it, and reset or geometry change clears it. The
+snapshot still copies the full row-major grid, the probability margin and
+strict UI density validation remain unchanged, and no FFT/Fs/hop/group,
+snapshot cadence, detector, RF setting or presentation owner was altered.
+The sustained C++ oracle now runs across a decay rebase and checks the tracked
+maximum against a scan of each published snapshot. An independent read-only
+review found no actionable defect in this change; the retained full-grid
+snapshot and rebase under the HackRF processing lock remain a throughput risk.
+
+In the same standalone FFT16384/2500-frame/15-Hz synthetic benchmark, the
+256-bin median changed from about 0.3034 s (prior maximum scan) to 0.2832 s
+(tracked maximum) over ten repetitions; the 64-bin median changed from about
+0.1445 to 0.1390 s over eight repetitions. These are accumulator-only wall
+times, not GUI-frame latency, ADC/USB throughput or a physical acceptance.
+The exact clean `a2cb8ba` StageOnly build passed 35/35 native CTest with
+module SHA-256 `329fd61f2453c91885bdccfc57106c472c39da44dfbf48ff1911d6d918959e0d`;
+the exact full UI V2 source gate passed 1006 tests, 66 skipped, zero failed,
+with no product imports outside the checkout. The ordinary native module and
+installed/static EXE were not replaced.
+
+Four sequential, explicit Start/Stop, approximately 20-s visible current-source
+USB HackRF cells used requested 20 MS/s, FFT16384/hop8192/group1 and 256-bin
+decay. Candidate/baseline/candidate/baseline lost respectively 44/39/116/200
+I/Q blocks. All four had zero sampled invalid density rows after first-frame
+admission, retained visible Spectrum/Waterfall/heat overlay, and normal Stop
+and Close. Their upload counts were 221/230/224/236 and paint counts
+490/515/513/533; these are instrumented Qt-object counts, not DWM FPS. The
+large within-variant loss variation prevents attributing a loss reduction or
+increase to this small CPU change. It does **not** make 256-bin capture
+lossless or meet APP-05/APP-06D timing targets. Next qualification must
+isolate native lock, ingress queue, snapshot copy, bridge, projection and
+actual GUI paint on an exact frozen build, followed by sustained common-family
+physical runs. Genuine Ethernet and tinySA cells, APP-07 and release remain
+open.
