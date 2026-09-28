@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 from scripts.benchmark_app05_physical_sweep_ui import (
-    applied_matches_request, first_progressive_pair, parser, stage_rows, sweep_key,
+    applied_matches_request, discovered_usb_device_id, first_progressive_pair, parser, stage_rows, sweep_key,
     terminal_gap_paints, uploaded_waterfall_key, waterfall_update_key,
 )
 
@@ -28,11 +28,23 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         self.assertEqual((args.sample_rate_msps, args.fft), (61.44, 4096))
         self.assertIsNone(args.rf_bandwidth_mhz)
         self.assertEqual(args.speed_profile, "averaged")
+        self.assertFalse(args.select_discovered_usb)
         self.assertEqual(args.run_timeout, 35.0)
         self.assertEqual(args.theme, "dark")
         selected = parser().parse_args(["--uri", "usb:3.4.5", "--output", "evidence.json",
                                         "--rf-bandwidth-mhz", "50", "--speed-profile", "quick"])
         self.assertEqual((selected.rf_bandwidth_mhz, selected.speed_profile), (50, "quick"))
+
+    def test_discovered_usb_selection_requires_one_exact_ad936x_route(self):
+        choices = (SimpleNamespace(uri="usb:3.4.5", alternate_uris=(), device_id="pluto:one"),
+                   SimpleNamespace(uri="usb:3.6.7", alternate_uris=(), device_id="pluto:two"))
+        self.assertEqual(discovered_usb_device_id(choices, "usb:3.4.5"), "pluto:one")
+        self.assertIsNone(discovered_usb_device_id(choices, "usb:3.9.9"))
+        with self.assertRaises(ValueError):
+            discovered_usb_device_id(choices + (choices[0],), "usb:3.4.5")
+        with self.assertRaises(ValueError):
+            discovered_usb_device_id((SimpleNamespace(uri="usb:3.4.5", alternate_uris=(),
+                                                       device_id="hackrf:one"),), "usb:3.4.5")
 
     def test_frame_key_keeps_source_epoch_pass_and_revision(self):
         progress = SimpleNamespace(source_id="s", epoch=3, sequence=7, revision=2)

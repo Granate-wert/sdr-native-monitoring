@@ -32,6 +32,8 @@ if str(ROOT) not in sys.path:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--uri", required=True, help="explicit physical Pluto usb: or ip: URI")
+    result.add_argument("--select-discovered-usb", action="store_true",
+                        help="local USB Discover, then select exactly one candidate matching --uri")
     result.add_argument("--output", type=Path, required=True, help="new JSON evidence path")
     result.add_argument("--start-mhz", type=float, default=2300.0)
     result.add_argument("--stop-mhz", type=float, default=2600.0)
@@ -105,6 +107,23 @@ def applied_matches_request(applied: object, *, sample_rate_msps: float, fft: in
                      (type(getattr(configuration, "analog_bandwidth_hz", None)) in (int, float)
                       and math.isclose(configuration.analog_bandwidth_hz, rf_bandwidth_mhz * 1e6,
                                        rel_tol=0.0, abs_tol=1.0))))
+
+
+def discovered_usb_device_id(devices: tuple[object, ...], uri: str) -> str | None:
+    """Return the one explicitly requested discovered USB route, never a nearby device."""
+    if not uri.startswith("usb:"):
+        raise ValueError("local USB selection requires a usb: URI")
+    matches = []
+    for device in devices:
+        routes = (getattr(device, "uri", None), *(getattr(device, "alternate_uris", ()) or ()))
+        if uri in routes:
+            identifier = getattr(device, "device_id", None)
+            if not isinstance(identifier, str) or not identifier.startswith("pluto:"):
+                raise ValueError("discovered matching route is not an AD936x source")
+            matches.append(identifier)
+    if len(matches) > 1:
+        raise ValueError("multiple discovered sources match the explicit USB route")
+    return matches[0] if matches else None
 
 
 def uploaded_waterfall_key(*, attempted: tuple[str, int, int, str, int] | None,
@@ -203,6 +222,8 @@ def main() -> int:
     args = parser().parse_args()
     if sys.platform != "win32" or not args.uri.startswith(("usb:", "ip:")):
         raise SystemExit("physical Sweep gate requires Windows and an explicit usb:/ip: URI")
+    if args.select_discovered_usb and not args.uri.startswith("usb:"):
+        raise SystemExit("local USB Discover requires an explicit usb: URI")
     if (not all(map(math.isfinite, (args.start_mhz, args.stop_mhz, args.sample_rate_msps,
                                     args.run_timeout)))
             or (args.rf_bandwidth_mhz is not None
@@ -294,6 +315,8 @@ def main() -> int:
     terminal_gap_curve_paints: list[dict[str, object]] = []
     curve_profile_active = False
     capture_status = None
+    discovered_route_summary: list[dict[str, object]] = []
+    settled_discovery_count = None
 
     original_render = AnalyzerWorkspaceV2._render
     original_poll_latest = NativeContinuousSweepDisplayService.poll_latest
@@ -522,7 +545,7 @@ def main() -> int:
             nonlocal first_pair, stop_intent_ns, stop_click_return_ns
             nonlocal stop_ack_ns, terminal_snapshot, error, last_logged_phase
             nonlocal last_tick_ns, max_tick_gap_ms
-            nonlocal capture_status
+            nonlocal capture_status, settled_discovery_count
             now = perf_counter_ns()
             if last_tick_ns is not None:
                 max_tick_gap_ms = max(max_tick_gap_ms, (now - last_tick_ns) / 1e6)
@@ -538,9 +561,37 @@ def main() -> int:
                 fail("bounded Sweep observer identity/event capacity exceeded")
             try:
                 if phase == "select":
-                    page.drawer._uri.setText(args.uri)
-                    page.drawer._use_uri.click()
-                    phase = "wait_selected"
+                    if args.select_discovered_usb:
+                        if not page.model.discover_devices(local_only=True):
+                            fail("local USB Discover was not admitted")
+                        else:
+                            phase = "wait_discovery"
+                    else:
+                        page.drawer._uri.setText(args.uri)
+                        page.drawer._use_uri.click()
+                        phase = "wait_selected"
+                elif phase == "wait_discovery":
+                    if state.live.error_label and not state.live.busy:
+                        fail(f"local USB Discover rejected ({state.live.error_kind}): "
+                             f"{state.live.error_label}")
+                    elif not state.live.busy and not state.live.discovery_pending and state.live.discovery_count is not None:
+                        settled_discovery_count = state.live.discovery_count
+                        native_descriptors = services.live_sdr.discovered_devices()
+                        discovered_route_summary.extend(
+                            dict(kind=type(device).__name__, uri=getattr(device, "uri", None),
+                                 alternate_uris=list(getattr(device, "alternate_uris", ()) or ()))
+                            for device in native_descriptors[:32]
+                        )
+                        print(f"APP05_SWEEP_DISCOVERY {discovered_route_summary}", file=sys.stderr, flush=True)
+                        identifier = discovered_usb_device_id(native_descriptors, args.uri)
+                        if identifier is None:
+                            fail("requested USB route was not found in local Discover")
+                        elif identifier not in {choice.device_id for choice in page.model.live.devices}:
+                            fail("requested USB route was not published in the UI V2 source catalog")
+                        elif not page.model.select_device(identifier):
+                            fail("selected discovered USB route was not admitted")
+                        else:
+                            phase = "wait_selected"
                 elif phase == "wait_selected":
                     snapshot = state.live.snapshot
                     if state.live.error_label and not state.live.busy:
@@ -698,6 +749,8 @@ def main() -> int:
                       settings_namespace=settings_namespace,
                       requested=dict(start_mhz=args.start_mhz, stop_mhz=args.stop_mhz,
                                      sample_rate_msps=args.sample_rate_msps, fft=args.fft,
+                                     selection_route=("local_usb_discover" if args.select_discovered_usb
+                                                      else "manual_uri"),
                                      rf_bandwidth_mhz=args.rf_bandwidth_mhz,
                                      run_timeout_s=args.run_timeout, profile=args.speed_profile, window_mhz=36,
                                      overlap_mhz=2, theme=args.theme),
@@ -730,6 +783,8 @@ def main() -> int:
                           progress_key=sweep_key(terminal_snapshot.progress),
                           metrics=asdict(terminal_snapshot.metrics)),
                       paint_events=events, paint_overflow=overflow,
+                      settled_discovery_count=settled_discovery_count,
+                      discovered_route_summary=discovered_route_summary,
                       host_poll_events=sorted(poll_events.values(), key=lambda item: item["returned_ns"]),
                       host_preparation_events=[dict(key=list(key), when_ns=when)
                                                for key, when in preparation_events.items()],

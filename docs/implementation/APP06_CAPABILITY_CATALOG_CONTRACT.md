@@ -1289,3 +1289,37 @@ a 61.44-MS/s Sweep timing result. The same diagnostic EXE separately showed
 working USB Pluto 20-MS/s RTBW Live with package-local IIO/USB DLLs; that does
 not explain the Python-process discrepancy or the approximately 180-ms Sweep
 cadence. APP-05 timing and APP-06 physical acceptance remain open.
+
+### Frozen Pluto Sweep stage split (APP-06D follow-up, 2026-09-28)
+
+The diagnostic observer gained an **opt-in** local USB Discover selection:
+it requires the one descriptor that exactly matches the explicitly requested
+USB URI and confirms its presence in the UI V2 catalog. Package-local IIO
+reported the attached AD9364 Pluto at `usb:2.4.5`, whereas system
+`iio_info` had reported `usb:3.4.5`; manual use of the latter in the frozen
+package failed before RX. This is a route-enumeration discrepancy, not a
+reason to infer a product failure or to substitute a nearby device silently.
+
+One separately frozen observer EXE with the previously qualified native
+module passed two bounded physical UI V2 runs at requested/applied
+61.44 MS/s, FFT4096, 50-MHz RF bandwidth and 100–420-MHz ten-segment Sweep,
+one `quick` and one `averaged`. Both delivered nine exact-identity partial
+Spectrum/Waterfall updates and one numerical complete pass **before Stop**;
+Stop produced a painted terminal gap and the process closed. Each had 22/22
+matched host-poll→prepare→model→canvas-paint events and no observer overflow.
+Estimated native first-sample interval averaged ~183.7 ms and ~181.5 ms;
+host poll-return→paint averaged ~6.8 ms for Waterfall and ~30.6–30.7 ms for
+Spectrum. Spectrum maxima ~65–70 ms, so the separate APP-05 relevant-paint
+target remains open. Those small-run stage timings do not start at analytical
+ready, prove actual RF acquisition time, or include desktop scanout.
+
+The current default uses 262144 complex samples per acquisition buffer and
+discards two such blocks after each segment restart. A stop/configure/start
+and buffer/refill/discard bottleneck is now a concrete **unisolated**
+hypothesis; neither the 61.44-MS/s setting nor a single pass proves lossless
+USB, RF settling/coverage, sustained LPS or pulse-detection probability.
+Both runs emitted post-Stop IIO `READ ... -9` stderr, still unexplained.
+No product/native acquisition, DSP, UI rendering or release EXE changed in
+this observer packet. APP-05/06D, genuine Ethernet/tinySA and release
+qualification remain open; private raw traces and the detailed report are
+local-only.
