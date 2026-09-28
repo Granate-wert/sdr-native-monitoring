@@ -1498,3 +1498,27 @@ This **does not** establish lossless transport, continuous RF duty, measured
 Pd, visible frozen UI behavior, harmlessness of all `-9` reports or release
 acceptance. No product acquisition path, default buffer, firmware, driver,
 firewall, native module or release EXE was changed by this diagnostic packet.
+
+### 30-second sequential cross-family control (APP-06D, 2026-09-28)
+
+On tracked-clean source `f73a5e8`, one source-Python Windows diagnostic using
+the already frozen official native/shared-DLL package completed explicit
+HackRF RX → Pluto UI V2 RTBW → HackRF RX, approximately 30 measured seconds
+per phase. HackRF before/after reported host-admitted ~19.996 MS/s and
+~9764 analytical FFT/s, zero invalid reduced frames, software drops or
+worker failures, and clean Stop/release. Pluto applied 61.44-MS/s sample
+clock/56-MHz RF BW/FFT4096, but host-admitted only ~6.882 MS/s; reported
+source/acquisition/FFT drops were zero and its Hide→Show/Stop/close checks
+passed. The same package-local shared-libusb path/file hash was observed
+before and after. The Pluto Show→fresh Qt paint-return was ~152.6 ms,
+**not** an APP-05 ≤50-ms or DWM pass. HackRF hardware overrun counters were
+unavailable; no lossless transport, RF duty/Pd, simultaneous RX, visible
+release EXE or long-soak claim follows from this control.
+
+Current hardware inventory exposes a COM31 USB-CDC candidate with the
+tinySA-associated VID/PID, but its one bounded read-only `version` command
+timed out during write; model/firmware/sweep remain unverified. The Realtek
+USB FE Ethernet adapter is disconnected, so genuine 1-Gbit Pluto Ethernet
+is likewise unverified. No retry, USB reset, device setting or system/network
+change was attempted. Both required physical cells stay OPEN; neither may
+be silently removed from the Supported matrix.
