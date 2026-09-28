@@ -80,6 +80,23 @@ class SharedCaptureScheduleTests(unittest.TestCase):
                          (("a", "b"), ("c", "d")))
         self.assertEqual(len(schedule.pane_revisits), 4)
 
+    def test_nonadjacent_capture_pair_is_not_falsely_refused(self) -> None:
+        # The broad b pane separates narrow a/c in start order. Captures a+c
+        # and b+d are valid, but no contiguous two-and-two partition is.
+        requests = (
+            pane("a", "rx1", 100_000_000, 101_000_000),
+            pane("b", "rx1", 101_000_000, 121_000_000),
+            pane("c", "rx1", 102_000_000, 103_000_000),
+            pane("d", "rx1", 120_000_000, 121_000_000),
+        )
+        schedule = compile_pane_schedule((group("device-1", "rx1"),), requests,
+                                         {"capture": profile(20_000_000)})
+        captures = schedule.resources[0].jobs
+        self.assertEqual(tuple(tuple(crop.pane_id for crop in job.crops) for job in captures),
+                         (("a", "c"), ("b", "d")))
+        self.assertEqual(tuple((job.start_hz, job.stop_hz) for job in captures),
+                         ((100_000_000, 103_000_000), (101_000_000, 121_000_000)))
+
     def test_shared_capture_outside_usable_window_refuses_before_owner(self) -> None:
         with self.assertRaisesRegex(PaneScheduleError, "shared-capture pane spans"):
             compile_pane_schedule(

@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import combinations
 import math
 
 from .receiver_topology import (
@@ -430,26 +431,30 @@ def _shared_jobs(
         ordered = sorted(buckets[bucket_key], key=lambda item: (item.request.start_hz, item.request.stop_hz, item.request.pane_id))
         usable = ordered[0].profile.usable_capture_span_hz
 
-        def partition(start: int) -> tuple[tuple[_ResolvedPane, ...], ...] | None:
-            if start == len(ordered):
+        def partition(remaining: tuple[_ResolvedPane, ...]) -> tuple[tuple[_ResolvedPane, ...], ...] | None:
+            if not remaining:
                 return ()
             best: tuple[tuple[_ResolvedPane, ...], ...] | None = None
-            # At most four requests exist. Prefer fewer captures/retunes, then
-            # the largest earlier group. Greedy maximal packing can strand a
-            # singleton even when two valid two-pane captures exist.
-            for end in range(len(ordered), start + 1, -1):
-                component = tuple(ordered[start:end])
-                if max(item.request.stop_hz for item in component) - component[0].request.start_hz > usable:
-                    continue
-                tail = partition(end)
-                if tail is None:
-                    continue
-                candidate = (component, *tail)
-                if best is None or len(candidate) < len(best):
-                    best = candidate
+            # At most four requests exist. Anchor each group on the earliest
+            # remaining pane, but also try non-adjacent peers: an intervening
+            # broad pane may need a different capture while two narrow outer
+            # panes still fit together. Prefer fewer captures/retunes, then
+            # the largest earlier group and stable frequency/pane ordering.
+            for size in range(len(remaining), 1, -1):
+                for peers in combinations(remaining[1:], size - 1):
+                    component = (remaining[0], *peers)
+                    if max(item.request.stop_hz for item in component) - component[0].request.start_hz > usable:
+                        continue
+                    selected = {item.request.pane_id for item in component}
+                    tail = partition(tuple(item for item in remaining if item.request.pane_id not in selected))
+                    if tail is None:
+                        continue
+                    candidate = (component, *tail)
+                    if best is None or len(candidate) < len(best):
+                        best = candidate
             return best
 
-        groups = partition(0)
+        groups = partition(tuple(ordered))
         if groups is None:
             raise PaneScheduleError("shared-capture pane spans cannot form bounded captures with at least two panes each")
         for component in groups:
