@@ -938,3 +938,13 @@ was built from `85b2e97`. Default256-bin loss, other devices, extended soak,
 active shared-DLL/RF duty, UI timing, APP-05 debts, APP-06/07 and release
 qualification remain open. The canonical installed module and static EXE
 were not changed.
+
+An additional 20-s current-source visible-root run at the same requested
+Fs/FFT/hop/group but **256 power bins** used the identical fixed native bytes
+under doc-only HEAD `e24f015` with an exact restaged manifest. All 20 sampled
+post-first-frame UI density observations remained valid, but explicit Stop
+reported **10,485,760 lost I/Q samples / 80 blocks**. Thus the numerical
+overlay correction also held in this short 256-bin cell, while high-density
+throughput is plainly **not accepted**. The snapshot maximum scan is bounded
+to publication cadence but adds a histogram read; its cost needs matched
+old/new stage timing and loss tests, not inference from unmatched runs.
