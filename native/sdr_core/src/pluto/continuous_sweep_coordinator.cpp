@@ -24,6 +24,37 @@ namespace {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 }
 
+struct StageTimingCounters {
+    using Clock = std::chrono::steady_clock;
+
+    void reset() noexcept {
+        count.store(0U, std::memory_order_relaxed);
+        total_ns.store(0U, std::memory_order_relaxed);
+        max_ns.store(0U, std::memory_order_relaxed);
+    }
+
+    void record(const Clock::time_point started) noexcept {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now() - started).count();
+        const auto nanoseconds = elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0U;
+        total_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
+        auto previous_max = max_ns.load(std::memory_order_relaxed);
+        while (previous_max < nanoseconds && !max_ns.compare_exchange_weak(
+                   previous_max, nanoseconds, std::memory_order_relaxed)) {}
+        count.fetch_add(1U, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] ContinuousSweepStageTiming snapshot() const noexcept {
+        return {count.load(std::memory_order_relaxed),
+                total_ns.load(std::memory_order_relaxed),
+                max_ns.load(std::memory_order_relaxed)};
+    }
+
+    std::atomic<std::uint64_t> count{};
+    std::atomic<std::uint64_t> total_ns{};
+    std::atomic<std::uint64_t> max_ns{};
+};
+
 [[nodiscard]] sdr_core::SourceDescriptor planned_source(
     const ContinuousSweepCoordinatorConfig& config
 ) {
@@ -325,6 +356,10 @@ public:
         line_relay_queue_high_water_.store(0U, std::memory_order_relaxed);
         output_snapshots_superseded_.store(0U, std::memory_order_relaxed);
         segment_reconfigurations_.store(0U, std::memory_order_relaxed);
+        segment_stop_timing_.reset();
+        segment_configure_timing_.reset();
+        segment_start_timing_.reset();
+        segment_frame_wait_timing_.reset();
         segment_frame_timeouts_.store(0U, std::memory_order_relaxed);
         terminal_control_gaps_.store(0U, std::memory_order_relaxed);
         expected_stop_requests_.store(0U, std::memory_order_relaxed);
@@ -433,6 +468,10 @@ public:
             line_relay_queue_high_water_.load(std::memory_order_relaxed);
         result.output_snapshots_superseded = output_snapshots_superseded_.load(std::memory_order_relaxed);
         result.segment_reconfigurations = segment_reconfigurations_.load(std::memory_order_relaxed);
+        result.segment_stop_timing = segment_stop_timing_.snapshot();
+        result.segment_configure_timing = segment_configure_timing_.snapshot();
+        result.segment_start_timing = segment_start_timing_.snapshot();
+        result.segment_frame_wait_timing = segment_frame_wait_timing_.snapshot();
         result.segment_frame_timeouts = segment_frame_timeouts_.load(std::memory_order_relaxed);
         result.terminal_control_gaps = terminal_control_gaps_.load(std::memory_order_relaxed);
         result.expected_cancellations = expected_cancellations_.load(std::memory_order_relaxed);
@@ -583,7 +622,9 @@ private:
     void apply_segment(const FixedBandConfig& config) {
         const auto current = engine_.state();
         if (current == sdr_core::EngineState::Running) {
+            const auto started = StageTimingCounters::Clock::now();
             engine_.stop();
+            segment_stop_timing_.record(started);
         } else if (current != sdr_core::EngineState::Created && current != sdr_core::EngineState::Stopped &&
                    current != sdr_core::EngineState::Configured) {
             invalid("fixed-band engine entered an unusable state during continuous sweep");
@@ -591,9 +632,15 @@ private:
         if (stop_requested_.load(std::memory_order_acquire)) return;
         // Do not use the convenience reconfigure() here: it automatically
         // resumes RX even if the coordinator accepted Stop during readback.
+        const auto configure_started = StageTimingCounters::Clock::now();
         static_cast<void>(engine_.configure(config));
+        segment_configure_timing_.record(configure_started);
         segment_reconfigurations_.fetch_add(1U, std::memory_order_relaxed);
-        if (!stop_requested_.load(std::memory_order_acquire)) engine_.start();
+        if (!stop_requested_.load(std::memory_order_acquire)) {
+            const auto start_started = StageTimingCounters::Clock::now();
+            engine_.start();
+            segment_start_timing_.record(start_started);
+        }
     }
 
     [[nodiscard]] FixedBandConfig single_window_fixed_config() const {
@@ -899,7 +946,9 @@ private:
                             current_applied_segments_[segment_index] = applied;
                         }
                     }
+                    const auto wait_started = StageTimingCounters::Clock::now();
                     const auto frame = wait_for_current_frame(applied.config_generation);
+                    segment_frame_wait_timing_.record(wait_started);
                     if (stop_requested_.load(std::memory_order_acquire)) {
                         gap_reason = sdr_core::SweepLineGapReason::Cancellation;
                         terminal = true;
@@ -1062,6 +1111,10 @@ private:
     std::atomic<std::uint32_t> line_relay_queue_high_water_{};
     std::atomic<std::uint64_t> output_snapshots_superseded_{};
     std::atomic<std::uint64_t> segment_reconfigurations_{};
+    StageTimingCounters segment_stop_timing_;
+    StageTimingCounters segment_configure_timing_;
+    StageTimingCounters segment_start_timing_;
+    StageTimingCounters segment_frame_wait_timing_;
     std::atomic<std::uint64_t> segment_frame_timeouts_{};
     std::atomic<std::uint64_t> terminal_control_gaps_{};
     std::atomic<std::uint64_t> expected_stop_requests_{};

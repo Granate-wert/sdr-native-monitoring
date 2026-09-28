@@ -1323,3 +1323,25 @@ No product/native acquisition, DSP, UI rendering or release EXE changed in
 this observer packet. APP-05/06D, genuine Ethernet/tinySA and release
 qualification remain open; private raw traces and the detailed report are
 local-only.
+
+### Native multi-segment Sweep phase timers (APP-06D diagnostic, 2026-09-28)
+
+The coordinator now exposes four additive, scalar host `steady_clock`
+phase summaries for **multi-segment** Sweep: successful engine Stop,
+Configure and Start calls, plus each wait for a current-generation FFT frame.
+Each summary has count, total nanoseconds and maximum nanoseconds; the
+coordinator's configured epoch resets all four. A post-Stop snapshot is the
+consistent comparison point, since a live relaxed read can straddle updates.
+Single-window RTBW-style Sweep remains on its separate continuous path and
+reports zero for these phase timers. The native/Python binding and physical
+observer require the new timing ABI explicitly before RX when that diagnostic
+option is requested. No raw I/Q/FFT array, RF timestamp, hidden restart or
+new product setting is added. Clock reads do not change Fs, FFT, detector,
+buffer geometry, discard count or render cadence. These are host stage
+durations, **not** RF dwell, transport utilization or an APP-05 paint SLA.
+
+The source-side regression checks assert counter reset/phase presence and
+reject inconsistent frozen timing summaries. CTest and full UI V2 source
+gates are separate from physical/frozen performance qualification. Do not
+attribute the prior ~180-ms segment cadence to one phase until the exact
+new native artifact is staged, frozen and tested on hardware.

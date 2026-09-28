@@ -51,6 +51,15 @@ struct ContinuousSweepCoordinatorConfig {
 
 void validate(const ContinuousSweepCoordinatorConfig& value);
 
+// Multi-segment coordinator wall-clock stages, not RF dwell or ADC timestamps.
+// A live metrics() call is an independent relaxed snapshot of these counters;
+// a post-Stop snapshot is required for exact count/total consistency.
+struct ContinuousSweepStageTiming {
+    std::uint64_t count{};
+    std::uint64_t total_ns{};
+    std::uint64_t max_ns{};
+};
+
 struct ContinuousSweepCoordinatorMetrics {
     sdr_core::EngineState state{sdr_core::EngineState::Created};
     bool has_error{};
@@ -64,6 +73,13 @@ struct ContinuousSweepCoordinatorMetrics {
     std::uint32_t line_relay_queue_high_water{};
     std::uint64_t output_snapshots_superseded{};
     std::uint64_t segment_reconfigurations{};
+    // Stop/configure/start are successful lifecycle calls for multi-segment
+    // Sweep. Frame wait includes polling for the current-generation FFT.
+    // These counters do not change the device, DSP or publication policy.
+    ContinuousSweepStageTiming segment_stop_timing;
+    ContinuousSweepStageTiming segment_configure_timing;
+    ContinuousSweepStageTiming segment_start_timing;
+    ContinuousSweepStageTiming segment_frame_wait_timing;
     std::uint64_t segment_frame_timeouts{};
     std::uint64_t terminal_control_gaps{};
     // A benchmark's explicit stop is itself a visible control boundary. This

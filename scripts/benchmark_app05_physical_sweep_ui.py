@@ -34,6 +34,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--uri", required=True, help="explicit physical Pluto usb: or ip: URI")
     result.add_argument("--select-discovered-usb", action="store_true",
                         help="local USB Discover, then select exactly one candidate matching --uri")
+    result.add_argument("--require-native-stage-timings", action="store_true",
+                        help="require new stop/configure/start/frame-wait native timing counters")
     result.add_argument("--output", type=Path, required=True, help="new JSON evidence path")
     result.add_argument("--start-mhz", type=float, default=2300.0)
     result.add_argument("--stop-mhz", type=float, default=2600.0)
@@ -124,6 +126,28 @@ def discovered_usb_device_id(devices: tuple[object, ...], uri: str) -> str | Non
     if len(matches) > 1:
         raise ValueError("multiple discovered sources match the explicit USB route")
     return matches[0] if matches else None
+
+
+def native_stage_summary(metrics: object) -> dict[str, object]:
+    """Bounded post-Stop scalar timing/quality snapshot; no native arrays or RF time."""
+    stages = {}
+    for name in ("segment_stop_timing", "segment_configure_timing",
+                 "segment_start_timing", "segment_frame_wait_timing"):
+        timing = getattr(metrics, name)
+        values = {field: int(getattr(timing, field)) for field in ("count", "total_ns", "max_ns")}
+        if (min(values.values()) < 0 or values["total_ns"] < values["max_ns"]
+                or (values["count"] == 0 and (values["total_ns"] or values["max_ns"]))):
+            raise ValueError("native Sweep timing counter is inconsistent")
+        stages[name] = values
+    scalars = {name: int(getattr(metrics, name)) for name in (
+        "segment_reconfigurations", "segment_frame_timeouts", "completed_lines", "gapped_lines",
+        "device_iq_samples", "device_iq_blocks", "analytical_fft_frames", "source_short_reads",
+        "source_refill_errors", "source_estimated_dropped_samples", "acquisition_queue_blocks_dropped",
+        "fft_frames_dropped",
+    )}
+    if min(scalars.values()) < 0 or stages["segment_configure_timing"]["count"] != scalars["segment_reconfigurations"]:
+        raise ValueError("native Sweep timing count differs from successful reconfigurations")
+    return {"stages": stages, "scalars": scalars}
 
 
 def uploaded_waterfall_key(*, attempted: tuple[str, int, int, str, int] | None,
@@ -276,6 +300,8 @@ def main() -> int:
     script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     try:
         import sdr_monitor._sdr_native as native
+        if args.require_native_stage_timings and not hasattr(native, "ContinuousSweepStageTiming"):
+            raise SystemExit("required native Sweep stage-timing ABI is unavailable before RX")
         native_path = Path(native.__file__).resolve()
         native_binary = dict(path=str(native_path), sha256=hashlib.sha256(native_path.read_bytes()).hexdigest())
     except (ImportError, OSError, TypeError):
@@ -317,9 +343,12 @@ def main() -> int:
     capture_status = None
     discovered_route_summary: list[dict[str, object]] = []
     settled_discovery_count = None
+    native_stage_metrics = None
+    native_stage_metrics_error = None
 
     original_render = AnalyzerWorkspaceV2._render
     original_poll_latest = NativeContinuousSweepDisplayService.poll_latest
+    original_display_stop = NativeContinuousSweepDisplayService.stop
     original_poll_and_prepare = ContinuousSweepPresenter._poll_and_prepare
     original_set_sweep_line = WaterfallPane.set_sweep_line
     original_curve_paint = pg.PlotCurveItem.paint
@@ -356,6 +385,17 @@ def main() -> int:
                                 sample_rate_hz=item.sample_rate_hz, fft_size=item.fft_size,
                                 quality_flags=item.quality_flags)
         return snapshot
+
+    def observed_display_stop(service):
+        nonlocal native_stage_metrics, native_stage_metrics_error
+        result = original_display_stop(service)
+        if (args.require_native_stage_timings and native_stage_metrics is None
+                and native_stage_metrics_error is None):
+            try:
+                native_stage_metrics = native_stage_summary(service._coordinator.metrics())
+            except (AttributeError, TypeError, ValueError, RuntimeError) as caught:
+                native_stage_metrics_error = type(caught).__name__
+        return result
 
     def observed_poll_and_prepare(presenter, *prepare_args, **prepare_kwargs):
         nonlocal overflow
@@ -511,6 +551,7 @@ def main() -> int:
            if args.profile_terminal_gap else nullcontext()),
           patch.object(AnalyzerWorkspaceV2, "_render", observed_render),
           patch.object(NativeContinuousSweepDisplayService, "poll_latest", observed_poll_latest),
+          patch.object(NativeContinuousSweepDisplayService, "stop", observed_display_stop),
           patch.object(ContinuousSweepPresenter, "_poll_and_prepare", observed_poll_and_prepare),
           patch.object(WaterfallPane, "set_sweep_line", observed_set_sweep_line)):
         app = QApplication.instance() or QApplication([])
@@ -740,6 +781,11 @@ def main() -> int:
                           rf_bandwidth_mhz=args.rf_bandwidth_mhz)),
                       stopped_and_closed=phase == "done" and composition.can_close(),
                       bounded_presentation=budget.reserved_bytes == 0 and not workers and overflow == 0)
+        if args.require_native_stage_timings:
+            checks["native_stage_metrics_observed"] = bool(
+                native_stage_metrics is not None and native_stage_metrics_error is None
+                and native_stage_metrics["stages"]["segment_frame_wait_timing"]["count"] >= preview.segment_count
+            ) if preview is not None else False
         report = dict(schema="app05-physical-sweep-ui-v2",
                       result="pass" if all(checks.values()) and not error else "fail",
                       error=error, phase=phase, checks=checks, source="physical-pluto-rx", uri=args.uri,
@@ -751,6 +797,7 @@ def main() -> int:
                                      sample_rate_msps=args.sample_rate_msps, fft=args.fft,
                                      selection_route=("local_usb_discover" if args.select_discovered_usb
                                                       else "manual_uri"),
+                                     require_native_stage_timings=args.require_native_stage_timings,
                                      rf_bandwidth_mhz=args.rf_bandwidth_mhz,
                                      run_timeout_s=args.run_timeout, profile=args.speed_profile, window_mhz=36,
                                      overlap_mhz=2, theme=args.theme),
@@ -782,6 +829,8 @@ def main() -> int:
                           line_key=sweep_key(terminal_snapshot.line),
                           progress_key=sweep_key(terminal_snapshot.progress),
                           metrics=asdict(terminal_snapshot.metrics)),
+                      native_stage_metrics=native_stage_metrics,
+                      native_stage_metrics_error=native_stage_metrics_error,
                       paint_events=events, paint_overflow=overflow,
                       settled_discovery_count=settled_discovery_count,
                       discovered_route_summary=discovered_route_summary,

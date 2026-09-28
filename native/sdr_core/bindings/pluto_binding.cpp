@@ -926,6 +926,11 @@ void bind_pluto(py::module_& module) {
         .def_readonly("segment_frame_timeout_ms", &sdr_pluto::ContinuousSweepCoordinatorConfig::segment_frame_timeout_ms)
         .def_readonly("segments", &sdr_pluto::ContinuousSweepCoordinatorConfig::segments);
 
+    py::class_<sdr_pluto::ContinuousSweepStageTiming>(module, "ContinuousSweepStageTiming")
+        .def_readonly("count", &sdr_pluto::ContinuousSweepStageTiming::count)
+        .def_readonly("total_ns", &sdr_pluto::ContinuousSweepStageTiming::total_ns)
+        .def_readonly("max_ns", &sdr_pluto::ContinuousSweepStageTiming::max_ns);
+
     py::class_<sdr_pluto::ContinuousSweepCoordinatorMetrics>(module, "ContinuousSweepCoordinatorMetrics")
         .def_readonly("state", &sdr_pluto::ContinuousSweepCoordinatorMetrics::state)
         .def_readonly("has_error", &sdr_pluto::ContinuousSweepCoordinatorMetrics::has_error)
@@ -937,6 +942,10 @@ void bind_pluto(py::module_& module) {
         .def_readonly("line_relay_queue_high_water", &sdr_pluto::ContinuousSweepCoordinatorMetrics::line_relay_queue_high_water)
         .def_readonly("output_snapshots_superseded", &sdr_pluto::ContinuousSweepCoordinatorMetrics::output_snapshots_superseded)
         .def_readonly("segment_reconfigurations", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_reconfigurations)
+        .def_readonly("segment_stop_timing", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_stop_timing)
+        .def_readonly("segment_configure_timing", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_configure_timing)
+        .def_readonly("segment_start_timing", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_start_timing)
+        .def_readonly("segment_frame_wait_timing", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_frame_wait_timing)
         .def_readonly("segment_frame_timeouts", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_frame_timeouts)
         .def_readonly("terminal_control_gaps", &sdr_pluto::ContinuousSweepCoordinatorMetrics::terminal_control_gaps)
         .def_readonly("expected_cancellations", &sdr_pluto::ContinuousSweepCoordinatorMetrics::expected_cancellations)

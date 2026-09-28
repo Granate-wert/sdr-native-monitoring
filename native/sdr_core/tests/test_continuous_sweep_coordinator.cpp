@@ -369,7 +369,17 @@ int main() {
                      (3'000'000.0 / 1024.0)) > 1e-9 ||
             evidence_metrics.completed_line_analysis_geometry_mismatches != 0U) return 11;
         coordinator.stop();
-        if (coordinator.state() != sdr_core::EngineState::Stopped || coordinator.metrics().has_error) return 3;
+        const auto stopped_metrics = coordinator.metrics();
+        const auto valid_timing = [](const sdr_pluto::ContinuousSweepStageTiming& timing) {
+            return timing.count >= 4U && timing.total_ns >= timing.max_ns && timing.max_ns > 0U;
+        };
+        if (coordinator.state() != sdr_core::EngineState::Stopped || stopped_metrics.has_error ||
+            stopped_metrics.segment_configure_timing.count != stopped_metrics.segment_reconfigurations ||
+            !valid_timing(stopped_metrics.segment_configure_timing) ||
+            !valid_timing(stopped_metrics.segment_start_timing) ||
+            !valid_timing(stopped_metrics.segment_frame_wait_timing) ||
+            stopped_metrics.segment_stop_timing.count < 3U ||
+            stopped_metrics.segment_stop_timing.total_ns < stopped_metrics.segment_stop_timing.max_ns) return 3;
 
         // A span already inside one usable 36 MHz-style window must keep the
         // receiver configured while it emits consecutive lines.  Retuning for
@@ -382,6 +392,10 @@ int main() {
         const auto single_window_metrics = single_window.metrics();
         single_window.stop();
         if (single_window_metrics.segment_reconfigurations != 1U ||
+            single_window_metrics.segment_stop_timing.count != 0U ||
+            single_window_metrics.segment_configure_timing.count != 0U ||
+            single_window_metrics.segment_start_timing.count != 0U ||
+            single_window_metrics.segment_frame_wait_timing.count != 0U ||
             single_window_metrics.device_iq_samples == 0U ||
             single_window_metrics.analytical_fft_frames < single_window_metrics.completed_lines ||
             single_window_metrics.line_relay_queue_capacity < 134U ||
@@ -467,7 +481,9 @@ int main() {
         auto restarted_config = coordinator_config();
         restarted_config.epoch = early->epoch + 1;
         progressive.configure(restarted_config);
-        if (progressive.poll_progress() || !progressive.poll_lines(0).empty()) return 29;
+        if (progressive.poll_progress() || !progressive.poll_lines(0).empty() ||
+            progressive.metrics().segment_configure_timing.count != 0U ||
+            progressive.metrics().segment_frame_wait_timing.count != 0U) return 29;
         _putenv_s("SDR_MOCK_LIBIIO_REFILL_DELAY_MS", "100");
         progressive.start();
         std::optional<sdr_core::SweepProgressFrame> restarted_preview;

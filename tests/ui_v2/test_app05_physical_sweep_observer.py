@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import unittest
 
 from scripts.benchmark_app05_physical_sweep_ui import (
-    applied_matches_request, discovered_usb_device_id, first_progressive_pair, parser, stage_rows, sweep_key,
+    applied_matches_request, discovered_usb_device_id, first_progressive_pair, native_stage_summary, parser,
+    stage_rows, sweep_key,
     terminal_gap_paints, uploaded_waterfall_key, waterfall_update_key,
 )
 
@@ -29,6 +30,7 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         self.assertIsNone(args.rf_bandwidth_mhz)
         self.assertEqual(args.speed_profile, "averaged")
         self.assertFalse(args.select_discovered_usb)
+        self.assertFalse(args.require_native_stage_timings)
         self.assertEqual(args.run_timeout, 35.0)
         self.assertEqual(args.theme, "dark")
         selected = parser().parse_args(["--uri", "usb:3.4.5", "--output", "evidence.json",
@@ -45,6 +47,26 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             discovered_usb_device_id((SimpleNamespace(uri="usb:3.4.5", alternate_uris=(),
                                                        device_id="hackrf:one"),), "usb:3.4.5")
+
+    def test_native_stage_summary_requires_consistent_successful_phase_counts(self):
+        timing = SimpleNamespace(count=10, total_ns=1000, max_ns=200)
+        raw = SimpleNamespace(segment_stop_timing=timing, segment_configure_timing=timing,
+                              segment_start_timing=timing, segment_frame_wait_timing=timing,
+                              segment_reconfigurations=10, segment_frame_timeouts=0,
+                              completed_lines=1, gapped_lines=1, device_iq_samples=100,
+                              device_iq_blocks=2, analytical_fft_frames=3, source_short_reads=0,
+                              source_refill_errors=0, source_estimated_dropped_samples=0,
+                              acquisition_queue_blocks_dropped=0, fft_frames_dropped=0)
+        summary = native_stage_summary(raw)
+        self.assertEqual(summary["stages"]["segment_frame_wait_timing"]["count"], 10)
+        self.assertEqual(summary["scalars"]["device_iq_samples"], 100)
+        raw.segment_reconfigurations = 9
+        with self.assertRaises(ValueError):
+            native_stage_summary(raw)
+        raw.segment_reconfigurations = 10
+        raw.segment_frame_wait_timing = SimpleNamespace(count=10, total_ns=100, max_ns=200)
+        with self.assertRaises(ValueError):
+            native_stage_summary(raw)
 
     def test_frame_key_keeps_source_epoch_pass_and_revision(self):
         progress = SimpleNamespace(source_id="s", epoch=3, sequence=7, revision=2)
