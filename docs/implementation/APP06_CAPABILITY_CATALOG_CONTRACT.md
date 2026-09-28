@@ -1387,3 +1387,28 @@ accuracy, pulse-detection probability or lossless USB. The observer remains
 diagnostic-only, with no hidden retry, firmware/system change or default
 speed-preset change. Physical candidate results require a separate exact
 frozen build and paired baseline at the same Fs/FFT/span.
+
+### Exact frozen Pluto Sweep buffer candidate (APP-06D, 2026-09-28)
+
+The same separately frozen UI V2 diagnostic EXE (source `4c91c2a`) passed
+eight short physical USB AD9364 Pluto 100–420-MHz ten-segment Sweep/Stop/close
+runs. Applied CPU Fs 61.44 MS/s, analog bandwidth 50 MHz, FFT4096/hop2048,
+36-MHz usable window, 2-MHz overlap and two post-start discarded blocks were
+fixed; only the observer's explicit buffer override and output averaging
+profile changed. Paired `quick` mean segment intervals were 180.775 ms at the
+unchanged 262144-sample product default, 120.031 ms at 131072 and 90.726 ms
+at 65536. The last is ~49.8% shorter in this short host-cadence witness but
+also reduces analytical FFTs per admitted segment from 127 to 31. `averaged16`
+showed ~180.8 versus ~89.2 ms for default versus 65536. Every run produced
+the same complete 21334-bin frequency span, all ten segment indices, no
+missing bins/segment gap reason, progressive Spectrum/Waterfall and an
+explicitly painted Stop gap. Native host counters reported no short read,
+refill error or queue drop; all eight processes closed. This is **not** a
+stationary RF/amplitude/seam/sensitivity/settling proof, sustained LPS,
+lossless USB or weak-pulse Pd; the union quality mask `0x2801` only reports
+Uncalibrated + StitchOverlap + TimestampEstimated. Spectrum poll-return to
+paint maxima remained 67–86 ms, so APP-05 paint latency remains open. The
+product default, detector, UI rendering and approved release EXE were not
+changed. An FFT/hop/averaging- and settled-time-aware buffer policy plus
+controlled RF and continuous frozen-GUI tests are required before adoption;
+private raw scalar reports remain local-only.
