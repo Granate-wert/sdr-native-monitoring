@@ -1428,3 +1428,49 @@ native completed-line metrics from painted complete-pass cadence and records
 any UI/native supersession; it does not equate either to analytical FFT LPS,
 ADC continuity, RF duty/Pd, DWM scanout or long-soak acceptance. No product
 buffer, retune path, UI or detector default is changed by this observer mode.
+
+### Exact frozen multi-pass Pluto buffer witness (APP-06D, 2026-09-28)
+
+On exact source `5f5c319` with one newly frozen diagnostic EXE, six physical
+USB Pluto 20-second UI V2 Sweep runs used the same applied 61.44-MS/s,
+FFT4096/hop2048, 50-MHz RF filter, 100–420-MHz ten-segment geometry, 36-MHz
+usable window, 2-MHz overlap and two post-start discarded blocks. Both
+repeats painted 11 complete lines at the unchanged product default 262144
+samples, 16 at diagnostic 131072 and 22 at diagnostic 65536. The six
+Start→Stop painted-complete cadences were ~0.55/~0.80/~1.10 LPS; native
+completed-line counts matched each UI count, with zero reported native/UI
+supersession, source short reads/refill errors/estimated drops or FFT/queue
+drops. All 98 painted lines had 21334 finite dBFS/bin values, complete
+ten-segment coverage and no declared in-line gap. Each run's single native
+gap was explicit Stop; all six processes closed. This bounded UI witness
+demonstrates a real cadence tradeoff, **not** RF-equivalent output, long-soak,
+lossless USB or measured pulse Pd. One admitted buffer's nominal sample
+duration shrinks from 4.267 to 2.133 to 1.067 ms as size shrinks; a faster
+revisit can reduce ideal overlap for very short pulses despite improving it
+for longer ones. The private report derives a duration-dependent *idealized*
+overlap proxy but does not claim ADC timing, detector sensitivity or RF
+settling. Spectrum poll-return→paint maxima still reached ~69–75 ms, beyond
+the separate APP-05 ≤50-ms target. Intermittent post-Stop IIO `READ … -9`
+stderr recurred in two runs, unresolved. No product default, UI/render,
+active native module or approved Windows EXE was changed. Controlled RF,
+FFT-dependent geometry, real Ethernet, long soak and full release gates
+remain mandatory before adoption.
+
+### Same-package FFT-size controls (APP-06D, 2026-09-28)
+
+Six additional ~10-second frozen USB Pluto UI V2 Sweep runs used the same
+diagnostic EXE and applied 61.44-MS/s/50-MHz/100–420-MHz geometry while
+crossing FFT1024/4096/16384 with buffers 262144/65536. At the unchanged
+default buffer, each FFT size painted five complete lines (~0.50 Start→Stop
+LPS). The smaller buffer painted 11/11/10 (~1.10/1.10/0.99 LPS) respectively;
+all native line counts matched painted counts without reported supersession,
+source/queue drop or incomplete segment. Output bins were 5334/21334/85334
+and analytical FFT counts changed sharply. This bounded result is consistent
+with segment acquisition/reconfiguration dominating **this** wide-span
+short-run cadence, not a general theorem that FFT cost or UI output size is
+irrelevant. Together with the ~20-second matrix, 145 complete lines were
+numerically qualified in twelve runs. These are not sustained Spectrozir
+comparisons, RF calibration, weak-pulse Pd or desktop-scanout measurements.
+Post-Stop IIO `-9` stderr appeared in four of six additional controls and
+remains a separate unresolved lifecycle symptom. No product default, active
+module or release EXE was changed.
