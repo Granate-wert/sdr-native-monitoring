@@ -857,10 +857,43 @@ A rejected frequency-tiled density layout regressed the same synthetic
 FFT16384/256-bin/15-Hz benchmark and was removed. A cadence-parameterized
 standalone benchmark shows snapshot copying costs time, but reducing the
 product's 15-Hz cadence cannot eliminate the per-detector-frame accumulation.
-The next candidate is an explicitly bounded, per-session persistence worker
-with exact reduced-output accounting, backpressure or visible gap counters,
+At that checkpoint, the proposed next candidate was an explicitly bounded,
+per-session persistence worker with exact reduced-output accounting,
+backpressure or visible gap counters,
 joined Stop and exception quarantine. It is not implemented or accepted by
 this diagnostic package. FFT/group/Fs, persistence resolution, calibration,
 quality/loss semantics and common UI V2 owner remain unchanged. Physical
 tinySA/Ethernet, sustained current-source frozen UI, independent review,
 APP-05 timing debts, APP-07 and release remain open.
+
+An opt-in bounded parallel persistence worker was evaluated but **rejected and
+removed** before product activation. It passed focused native/factory/pybind
+contracts, yet in matched 20/20/45-s physical source-process A/B pairs at
+requested 20 MS/s, FFT16384/group1/256-bin density it did not materially
+change admitted or analytical FFT rate. Its 45-s run delivered fewer fresh
+Spectrum frames to Python (8072 vs 8743) and superseded more in the bounded
+presentation queue (78327 vs 76499), despite draining every accepted density
+input and reporting no software I/Q drop in those B runs. The inline A path
+reported one lock-contention I/Q block per run. These finite observations do
+not prove a general scheduler verdict, USB/ADC continuity or visible UI/DWM
+timing. The experimental native module was StageOnly from uncommitted source,
+not a release/EXE candidate; its staged path was subsequently rebuilt from
+clean committed source with 35/35 native tests. The canonical active module,
+product UI default and RF settings remain unchanged. Required Spectrum/overlay publication and Qt freshness now
+take priority over this rejected worker design.
+
+A further visible check used the **previous** exact `26070a6` diagnostic
+EXE, not a rebuilt current-source application. With an explicitly staged
+USB HackRF profile (requested 20 MS/s, FFT16384/hop8192/group1, exponential
+density with 64 bins), Spectrum and Waterfall updated during Live, but the
+retained Stop frame reported 55,967,744 dropped samples / 427 blocks / 0 FFT.
+The density image was not visible in one early screenshot and was visible
+after the Display panel opened and on a later screenshot. This does not
+isolate producer, coherent-layer, projection, upload or repaint cause and
+is not a timing or lossless-throughput acceptance. The quality mask 0x2001
+still denotes uncalibrated/estimated timestamp, not an I/Q-loss flag;
+separate loss metadata must remain visible. The existing Analyzer guard
+retains last coherent density for an ahead-of-spectrum endpoint. Before
+changing that guard or the worker architecture, measure density publication,
+coherence withholding, projection request/completion, ImageItem upload and
+actual paint on a matched current-source frozen build.
