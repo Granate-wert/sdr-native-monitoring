@@ -285,6 +285,7 @@ if(SDR_CORE_BUILD_PYTHON)
         bindings/aux_contracts_binding.cpp
         bindings/dsp_binding.cpp
         bindings/hackrf_binding.cpp
+        bindings/hackrf_sweep_binding.cpp
         bindings/lifecycle_binding.cpp
         bindings/synthetic_binding.cpp
     )

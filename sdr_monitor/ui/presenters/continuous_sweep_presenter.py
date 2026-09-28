@@ -24,6 +24,7 @@ from ...services.native_continuous_sweep import (
 from ..performance import BoundedRenderMetrics, RenderPerformanceSnapshot
 from ...domain.analyzer import AnalyzerFrameBundle
 from ...domain.tinysa_analyzer import TinySaSweepRunIdentity
+from ...domain.hackrf_sweep import HackrfSweepRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +77,8 @@ class ContinuousSweepPresenter(QObject):
         self._render_budget_ms = float(render_budget_ms)
         self._render_metrics = BoundedRenderMetrics(capacity=512)
         self._timer = QTimer(self)
-        self._timer.setInterval(max(1, round(1000.0 / max_poll_hz)))
+        self._default_poll_interval_ms = max(1, round(1000.0 / max_poll_hz))
+        self._timer.setInterval(self._default_poll_interval_ms)
         self._timer.timeout.connect(self._poll)
         self._closed = False
         self._closing = False
@@ -104,6 +106,11 @@ class ContinuousSweepPresenter(QObject):
         return self._instrument_run_identity
 
     @property
+    def sweep_run_epoch(self) -> int | None:
+        value = getattr(self._service, "sweep_run_epoch", None)
+        return value if type(value) is int else None
+
+    @property
     def is_starting(self) -> bool:
         """True until Qt has processed Start completion."""
         return self._start_future is not None
@@ -128,6 +135,11 @@ class ContinuousSweepPresenter(QObject):
             raise RuntimeError("previous continuous Sweep cleanup is unresolved; retry Stop")
         self._stop_requested.clear()
         self._instrument_run_identity = None
+        # Requested UI poll ceiling, not an analytical FFT/line or RF-duty rate.
+        # Restore the ordinary shared cadence on every non-HackRF next Start.
+        self._timer.setInterval(max(1, round(1000.0 / native_config.preview_rate_hz))
+                                if isinstance(native_config, HackrfSweepRequest)
+                                else self._default_poll_interval_ms)
         future = self._stop_executor.submit(self._service.start, native_config)
         self._start_future = future
         self.starting_changed.emit(True)

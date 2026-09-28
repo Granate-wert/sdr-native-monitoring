@@ -116,6 +116,7 @@ class V2LiveProductComposition:
         *,
         sweep_presenter: SweepPresenterLifecyclePort | None = None,
         analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
+        hackrf_sweep_composed: bool = False,
         projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
         persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
         allocation_budget: PresentationAllocationBudget | None = None,
@@ -137,7 +138,8 @@ class V2LiveProductComposition:
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.analyzer_view_model = (
-            AnalyzerViewModel(self.view_model, analyzer_presenter)
+            AnalyzerViewModel(self.view_model, analyzer_presenter,
+                              hackrf_sweep_composed=hackrf_sweep_composed)
             if analyzer_presenter is not None else None
         )
         self._unsubscribe_projection = (
@@ -441,6 +443,7 @@ def compose_v2_live_product(
     *,
     sweep_presenter: SweepPresenterLifecyclePort | None = None,
     analyzer_presenter: AnalyzerPresenterLifecyclePort | None = None,
+    hackrf_sweep_composed: bool = False,
     projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
     persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
     allocation_budget: PresentationAllocationBudget | None = None,
@@ -458,6 +461,7 @@ def compose_v2_live_product(
         presenter,
         sweep_presenter=sweep_presenter,
         analyzer_presenter=analyzer_presenter,
+        hackrf_sweep_composed=hackrf_sweep_composed,
         projection_submit=projection_submit,
         persistence_submit=persistence_submit,
         allocation_budget=allocation_budget,

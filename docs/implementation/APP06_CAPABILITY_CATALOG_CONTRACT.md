@@ -1,5 +1,10 @@
 # APP-06A: common catalog joins and pre-SDK request compatibility
 
+This file is a cumulative implementation record. The early family table and
+its `mode_runtime_unavailable` HackRF Sweep result describe the original
+APP-06A slice, not the later optional APP-06C runtime route documented below.
+Neither route availability nor a successful source test is APP-06 acceptance.
+
 This is source-level integration into the existing backend for **UI V2**.
 It is not completed multi-family Analyzer selection, a common hardware owner,
 frozen-package qualification, calibration acceptance or APP-06 completion.
@@ -1178,3 +1183,40 @@ promoted into product code. This is neither a global 50-ms/DWM/FPS/RF-duty/
 lossless transport acceptance nor a frozen-EXE qualification. APP-06A/B/C/D,
 genuine Ethernet/tinySA physical cells, APP-05 timing debt, APP-07 and release
 remain open.
+
+### Optional common-Analyzer HackRF Sweep route (APP-06C, 2026-09-28)
+
+An exact, already-loaded official HackRF module may now expose paired optional
+Sweep bridge/factory protocol 1. The module and sibling manifest must agree,
+the module hash and official factory protocol 2 must match, and the required
+runtime DLLs must be qualified before the route is composed. An old or
+SDK-OFF module remains selectable for its supported modes but cannot Start
+HackRF Sweep. Discovery, draft editing and mode selection do not activate RX.
+
+The new immutable `HackrfSweepRequest` captures the exact selected catalog
+choice and revision. It admits whole-MHz bounds, a 20–320 MHz span divisible
+by 20 MHz, FFT 1024/2048/4096, LNA 0–40 dB in 8-dB steps, VGA 0–62 dB in
+2-dB steps and a requested UI poll ceiling of 1–100 Hz. The native factory
+pins requested 20 MS/s, a 15-MHz filter, interleaved 20-MHz retunes, Hann
+window, Sample detector and dBFS/bin. The UI poll ceiling does not change
+native analytical FFT throughput or prove RF duty or visualization FPS.
+
+The common Analyzer application assigns a positive acquisition/configuration
+epoch, checks source identity and runtime compatibility before claiming RX,
+and dispatches a single same-owner native Sweep session. Ordered native
+partial/terminal publications enter the existing Spectrum/Waterfall bundle
+path, with source/epoch/unit/generation guards. A separate compact family
+control bar appears on the **same** Analyzer tab; switching RTBW/Sweep intent
+does not retune or Start hardware. A benign Live-state notification cannot
+silently revert a selected HackRF Sweep to RTBW. Explicit Stop retains the
+same owner until release is confirmed; a factory failure with uncertain SDK
+effects remains blocked, never falls back to another handle or auto-restarts.
+
+Numerical complete-line LPS is derived from the native completed-line count;
+native publication supersession is reported separately from I/Q/USB loss.
+This route does not validate RF-flatness or edge coverage, perform I/Q
+recording, enable TX/amplifier/bias, or assert lossless transport, pulse
+detection probability, DWM FPS, GUI latency or long-soak performance. Wide
+partial-preview physical observation, exact frozen EXE UI qualification,
+genuine Ethernet/tinySA cells and sustained cross-family acceptance remain
+open; APP-06A/B/C/D are still partial.

@@ -21,6 +21,7 @@ from ..domain.device_capabilities import (
     DeviceFamily,
 )
 from ..domain.live import LiveConfiguration
+from ..domain.hackrf_sweep import HackrfSweepRequest
 from .ad936x_capability_adapter import AD936X_LIBIIO_ADAPTER_ID
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID
 from .hackrf_live_admission import HackrfLiveAdmissionReason, HackrfLiveRequest, admit_hackrf_live
@@ -89,11 +90,13 @@ def _ad936x_live_reason(snapshot: DeviceCapabilitySnapshot, request: LiveConfigu
 def admit_source_request(
     inventory: DeviceCapabilityInventory, source_id: str, mode: str, request: object,
     *, applied_live: LiveConfiguration | None = None,
+    hackrf_sweep_runtime_available: bool = False,
 ) -> SourceRequestAdmission:
     """Pure typed compatibility. Missing evidence never becomes unsupported.
 
     TinySA settings/current input and SDK ownership remain subsequent gates.
-    HackRF Sweep is a missing host strategy, not an impossible device feature.
+    HackRF Sweep needs an explicitly composed and versioned runtime. The
+    default remains unavailable so old/SDK-OFF modules cannot gain the route.
     """
     try:
         binding = inventory.binding_for_source(source_id)
@@ -134,7 +137,19 @@ def admit_source_request(
         return SourceRequestAdmission()
     if snapshot.family is DeviceFamily.HACKRF and snapshot.adapter_id == HACKRF_LIBHACKRF_ADAPTER_ID:
         if mode == "sweep":
-            return SourceRequestAdmission(SourceRequestAdmissionReason.MODE_RUNTIME_UNAVAILABLE)
+            if not hackrf_sweep_runtime_available:
+                return SourceRequestAdmission(SourceRequestAdmissionReason.MODE_RUNTIME_UNAVAILABLE)
+            if not isinstance(request, HackrfSweepRequest):
+                return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_TYPE)
+            if request.source.device_id != source_id or request.source.binding is not binding:
+                return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_SOURCE)
+            if (snapshot.model_id != "hackrf_one" or snapshot.raw_iq_available is not True
+                    or AcquisitionKind.COMPLEX_IQ not in snapshot.acquisition_kinds
+                    or not snapshot.tuning_ranges_hz):
+                return SourceRequestAdmission(SourceRequestAdmissionReason.CAPABILITY_UNVERIFIED)
+            if not _contains(snapshot.tuning_ranges_hz, request.start_hz, request.stop_hz):
+                return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
+            return SourceRequestAdmission()
         if not isinstance(request, HackrfLiveRequest):
             return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_TYPE)
         if request.source_id != binding.source_id:

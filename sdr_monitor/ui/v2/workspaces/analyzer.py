@@ -51,6 +51,7 @@ from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from .analyzer_hackrf_configuration import HackrfConfigurationBar
+from .analyzer_hackrf_sweep import HackrfSweepConfigurationBar
 from .analyzer_inspector import AnalyzerInspector
 from .analyzer_status_label import AnalyzerPeriodsLabel, AnalyzerStatusLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
@@ -127,6 +128,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self.hackrf_bar = HackrfConfigurationBar(model, self)
         layout.addWidget(self.hackrf_bar)
         self.hackrf_bar.draft_changed.connect(self._update_primary_availability)
+        self.hackrf_sweep_bar = HackrfSweepConfigurationBar(model, self)
+        layout.addWidget(self.hackrf_sweep_bar)
+        self.hackrf_sweep_bar.draft_changed.connect(self._update_primary_availability)
         self.tinysa_bar = TinySaConfigurationBar(model, self)
         layout.addWidget(self.tinysa_bar)
         self.tinysa_bar.draft_changed.connect(self._update_primary_availability)
@@ -234,6 +238,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.sweep_preview.set_locale()
         self.frequency_bar.set_locale()
         self.hackrf_bar.set_locale()
+        self.hackrf_sweep_bar.set_locale()
         self.tinysa_bar.set_locale()
         self.visualization.spectrum_scene.set_locale(current_locale())
         self.visualization.waterfall_pane.set_locale(current_locale())
@@ -308,7 +313,8 @@ class AnalyzerWorkspaceV2(QWidget):
                 drawer.setFocus()
             return
         if self.model.state.hackrf_controls_available:
-            self.hackrf_bar.center.setFocus()
+            (self.hackrf_sweep_bar.start_mhz if self.model.state.mode is AnalyzerMode.SWEEP
+             else self.hackrf_bar.center).setFocus()
             return
         self.display_controls.hide()
         if self.drawer.isVisible():
@@ -414,6 +420,12 @@ class AnalyzerWorkspaceV2(QWidget):
                 self.error.show()
         elif state.live.primary_action is LiveAction.DISCOVER:
             self.model.discover_devices(local_only=True)
+        elif state.hackrf_sweep_controls_available and state.mode is AnalyzerMode.SWEEP:
+            try:
+                self.model.start(self.hackrf_sweep_bar.request())
+            except (ValueError, TypeError):
+                self.error.setText(text("hackrf.sweep.invalid"))
+                self.error.show()
         elif state.hackrf_controls_available:
             if state.rtbw_profile_ready and not self.hackrf_bar.dirty:
                 self.model.start()
@@ -465,6 +477,8 @@ class AnalyzerWorkspaceV2(QWidget):
             return
         if (state.running or state.stop_required
                 or state.tinysa_controls_available and self.tinysa_bar.valid
+                or state.hackrf_sweep_controls_available and state.mode is AnalyzerMode.SWEEP
+                   and self.hackrf_sweep_bar.valid
                 or (state.live.primary_action is LiveAction.START and state.rtbw_profile_ready
                     and not self.hackrf_bar.dirty
                     and not self.drawer.dirty and not self.drawer.pending)):
@@ -479,11 +493,16 @@ class AnalyzerWorkspaceV2(QWidget):
                  and state.live.primary_action_enabled)
         if state.tinysa_controls_available:
             ready = self.tinysa_bar.valid
+        elif state.hackrf_sweep_controls_available and state.mode is AnalyzerMode.SWEEP:
+            ready = (self.hackrf_sweep_bar.valid and state.live.primary_action is LiveAction.START
+                     and state.live.primary_action_enabled)
         invalid_sweep = ready and state.mode is AnalyzerMode.SWEEP and state.ad936x_controls_available and self.sweep_preview.has_error
         enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
                    and (state.running or state.stop_required or (ready and not invalid_sweep)))
         self.primary.setEnabled(enabled)
         hint = (self.tinysa_bar.validation_message if state.tinysa_controls_available and not ready else
+                text("hackrf.sweep.invalid") if state.hackrf_sweep_controls_available
+                    and state.mode is AnalyzerMode.SWEEP and not self.hackrf_sweep_bar.valid else
                 text("analyzer.source.family_path_pending")
                 if state.source_selection is not None and state.source_selection.selected is not None
                 and not state.ad936x_controls_available and not state.hackrf_controls_available and not state.tinysa_controls_available
@@ -517,6 +536,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.frequency_bar.apply_view_state(state, has_frame=state.bundle is not None)
         self.frequency_bar.setVisible(state.ad936x_controls_available)
         self.hackrf_bar.apply_view_state(state)
+        self.hackrf_sweep_bar.apply_view_state(state)
         self.tinysa_bar.apply_view_state(state)
         key = ("analyzer.applying" if state.configuration_pending
                else "analyzer.starting" if state.starting else "analyzer.stopping" if state.stopping
@@ -542,8 +562,13 @@ class AnalyzerWorkspaceV2(QWidget):
         if self.rx.accessibleName() != receiver_detail:
             self.rx.setAccessibleName(receiver_detail)
         hackrf = getattr(state.live.snapshot, "hackrf_request", None) if state.hackrf_controls_available else None
+        hackrf_sweep = state.hackrf_sweep_request if state.mode is AnalyzerMode.SWEEP else None
         _set_text_if_changed(self.applied,
             tinysa_settings_readout(getattr(state.bundle, "spectrum", None)) if state.tinysa_controls_available else
+            text("hackrf.sweep.profile", start=hackrf_sweep.start_hz // 1_000_000,
+                 stop=hackrf_sweep.stop_hz // 1_000_000, fft=hackrf_sweep.fft_size,
+                 lna=hackrf_sweep.lna_gain, vga=hackrf_sweep.vga_gain,
+                 preview=hackrf_sweep.preview_rate_hz) if hackrf_sweep is not None else
             text("hackrf.profile", center=f"{hackrf.center_frequency_hz / 1e6:g}", rate=f"{hackrf.sample_rate_hz / 1e6:g}",
                  bandwidth=f"{hackrf.baseband_filter_hz / 1e6:g}", fft=hackrf.fft_size, lna=hackrf.lna_gain_db,
                  vga=hackrf.vga_gain_db, generation=hackrf.configuration_generation) + "\n" +

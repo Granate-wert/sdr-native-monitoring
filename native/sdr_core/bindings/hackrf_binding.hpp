@@ -14,4 +14,8 @@ void bind_hackrf(pybind11::module_& module);
 // preserves the R11-L control facade's no-device source boundary.
 void bind_hackrf_factory(pybind11::module_& module);
 
+// The reduced HackRF Sweep publication bridge requires the canonical sweep
+// frame Python types, so bind it after the Pluto/common frame bindings.
+void bind_hackrf_sweep(pybind11::module_& module);
+
 }  // namespace sdr_core::python

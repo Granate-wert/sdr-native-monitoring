@@ -264,6 +264,8 @@ if ($hackrfRequested) {
     $manifest['hackrf_factory_contract_version'] = 2
     $manifest['hackrf_dsp_profile_contract_version'] = 1
     $manifest['hackrf_persistence_contract_version'] = 1
+    $manifest['hackrf_sweep_bridge_contract_version'] = 1
+    $manifest['hackrf_sweep_factory_contract_version'] = 1
     $manifest['hackrf_runtime_sha256'] = $runtimeHashes
     $manifest['hackrf_header_sha256'] = (Get-FileHash -LiteralPath $hackrfHeader -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifest['hackrf_library_sha256'] = (Get-FileHash -LiteralPath $HackrfLibrary -Algorithm SHA256).Hash.ToLowerInvariant()

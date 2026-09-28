@@ -22,7 +22,7 @@ from sdr_monitor.domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveR
 from sdr_monitor.domain.identity import as_source_id
 
 from ..i18n import text
-from ..view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState
+from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 
 
 class HackrfConfigurationBar(QWidget):
@@ -160,14 +160,15 @@ class HackrfConfigurationBar(QWidget):
         self.summary.setText(text("hackrf.scope"))
 
     def apply_view_state(self, state: AnalyzerViewState) -> None:
-        available = state.hackrf_controls_available
+        selected = state.hackrf_controls_available
+        available = selected and getattr(state, "mode", AnalyzerMode.RTBW) is AnalyzerMode.RTBW
         self.setVisible(available)
         snapshot = state.live.snapshot
         key = (state.source_selection.revision if state.source_selection else None,
-               getattr(snapshot, "generation", None), available)
+               getattr(snapshot, "generation", None), selected)
         if key != self._key:
             self._key = key
-            self._base = getattr(snapshot, "hackrf_request", None) if available else None
+            self._base = getattr(snapshot, "hackrf_request", None) if selected else None
             self._reset()
         for field in self._fields:
             field.setEnabled(available and not state.controls_locked)

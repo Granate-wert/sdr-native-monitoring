@@ -84,6 +84,16 @@ def verify_frozen_shared_runtime(package_dir: Path, manifest_path: Path, version
             or type(verdict.get("hackrf_persistence_contract_version")) is not type(persistence_version)
             or verdict.get("hackrf_persistence_contract_version") != persistence_version):
         raise ValueError("frozen optional persistence contract differs from its native manifest")
+    sweep_bridge = native_manifest.get("hackrf_sweep_bridge_contract_version")
+    sweep_factory = native_manifest.get("hackrf_sweep_factory_contract_version")
+    if ((sweep_bridge is not None or sweep_factory is not None)
+            and (type(sweep_bridge) is not int or sweep_bridge != 1
+                 or type(sweep_factory) is not int or sweep_factory != 1)
+            or type(verdict.get("hackrf_sweep_bridge_contract_version")) is not type(sweep_bridge)
+            or verdict.get("hackrf_sweep_bridge_contract_version") != sweep_bridge
+            or type(verdict.get("hackrf_sweep_factory_contract_version")) is not type(sweep_factory)
+            or verdict.get("hackrf_sweep_factory_contract_version") != sweep_factory):
+        raise ValueError("frozen optional Sweep bridge/factory contract differs from its native manifest")
     if (Path(verdict.get("native_path", "")).resolve() != native
             or verdict.get("native_sha256") != _file_sha256(native)
             or verdict.get("native_source_commit") != native_manifest.get("source_commit")

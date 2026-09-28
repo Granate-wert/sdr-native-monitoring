@@ -12,6 +12,7 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
+from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
 from sdr_monitor.domain.tinysa_correction import tinysa_correction_signature
 
@@ -32,7 +33,7 @@ class SweepPresentationPort(Protocol):
     starting_changed: _SignalPort
     stopping_changed: _SignalPort
 
-    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> None: ...
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> None: ...
     def stop(self) -> None: ...
     def can_close(self) -> bool: ...
 
@@ -51,6 +52,8 @@ class AnalyzerViewState:
     sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
     prepared_sweep: PreparedSweepSnapshot | None = None
     source_selection: AnalyzerSourceSelection | None = None
+    hackrf_sweep_composed: bool = False
+    hackrf_sweep_request: HackrfSweepRequest | None = None
 
     @property
     def ad936x_controls_available(self) -> bool:
@@ -63,6 +66,10 @@ class AnalyzerViewState:
                     and selection.selected.family is DeviceFamily.HACKRF and not selection.release_pending
                     and getattr(self.live.snapshot, "source_choice", None) is selection.selected
                     and getattr(self.live.snapshot, "selection_revision", None) == selection.revision)
+
+    @property
+    def hackrf_sweep_controls_available(self) -> bool:
+        return self.hackrf_sweep_composed and self.hackrf_controls_available
 
     @property
     def rtbw_profile_ready(self) -> bool:
@@ -94,9 +101,11 @@ class AnalyzerViewModel:
     Widgets subscribe to this object; rebuilding text must not recreate it.
     """
 
-    def __init__(self, live: LiveViewModel, sweep: SweepPresentationPort) -> None:
+    def __init__(self, live: LiveViewModel, sweep: SweepPresentationPort, *,
+                 hackrf_sweep_composed: bool = False) -> None:
         self.live = live
         self._sweep = sweep
+        self._hackrf_sweep_composed = bool(hackrf_sweep_composed)
         self._mode = AnalyzerMode.RTBW
         self._starting = self._stopping = self._running = False
         self._configuration_pending = False
@@ -110,9 +119,12 @@ class AnalyzerViewModel:
         self._publication_pending = False
         self._disposed = False
         self._live_identity: tuple[object, ...] | None = None
+        self._mode_source_choice: object | None = None
+        self._mode_source_revision: int | None = None
         self._instrument_request: TinySaSweepRequest | None = None
         self._instrument_epoch: int | None = None
         self._instrument_sequence: int | None = None
+        self._hackrf_sweep_request: HackrfSweepRequest | None = None
         self._connections = (
             (getattr(sweep, "prepared_snapshot_ready") if self._expects_prepared else sweep.snapshot_ready,
              self._on_sweep_snapshot),
@@ -140,6 +152,8 @@ class AnalyzerViewModel:
             self._sweep_snapshot,
             self._prepared_sweep,
             selection,
+            self._hackrf_sweep_composed,
+            self._hackrf_sweep_request if self._mode is AnalyzerMode.SWEEP else None,
         )
 
     def subscribe(self, callback: Callable[[AnalyzerViewState], None]) -> Callable[[], None]:
@@ -161,38 +175,51 @@ class AnalyzerViewModel:
                 and selection.selected.family is DeviceFamily.TINYSA and mode is not AnalyzerMode.SWEEP):
             return False
         if (selection is not None and selection.selected is not None
-                and selection.selected.family is DeviceFamily.HACKRF and mode is not AnalyzerMode.RTBW):
-            return False  # Host Sweep runtime missing, not a hardware-impossible claim.
+                and selection.selected.family is DeviceFamily.HACKRF and mode is AnalyzerMode.SWEEP
+                and not self.state.hackrf_sweep_controls_available):
+            return False
         if mode is not self._mode:
             self._mode = mode
             self._bundle = None  # Never label a prior-mode frame as current.
             self._sweep_snapshot = None
             self._prepared_sweep = None
             self._error = None
+            self._hackrf_sweep_request = None
             self._publish()
         return True
 
-    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | None = None) -> bool:
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest | None = None) -> bool:
         state = self.state
         instrument = state.tinysa_controls_available and self._mode is AnalyzerMode.SWEEP
-        if (self._disposed or state.controls_locked or
-                not instrument and (not state.rtbw_profile_ready or
-                    state.live.primary_action is not LiveAction.START or not state.live.primary_action_enabled or
-                    (self._mode is AnalyzerMode.SWEEP and not state.ad936x_controls_available))):
+        hackrf_sweep = state.hackrf_sweep_controls_available and self._mode is AnalyzerMode.SWEEP
+        if self._disposed or state.controls_locked:
             return False
         self._error = None
         if self._mode is AnalyzerMode.RTBW:
+            if (not state.rtbw_profile_ready or state.live.primary_action is not LiveAction.START
+                    or not state.live.primary_action_enabled):
+                return False
             return self.live.execute_primary_action()
         if instrument:
             selection = state.source_selection
             if (not isinstance(request, TinySaSweepRequest) or selection is None
                     or request.source is not selection.selected or request.selection_revision != selection.revision):
                 return False
-        elif not isinstance(request, ContinuousSweepPlanRequest):
-            return False
+        elif hackrf_sweep:
+            selection = state.source_selection
+            if (not isinstance(request, HackrfSweepRequest) or selection is None
+                    or request.source is not selection.selected or request.selection_revision != selection.revision
+                    or state.live.primary_action is not LiveAction.START or not state.live.primary_action_enabled):
+                return False
+        else:
+            if (not state.ad936x_controls_available or not state.rtbw_profile_ready
+                    or state.live.primary_action is not LiveAction.START or not state.live.primary_action_enabled
+                    or not isinstance(request, ContinuousSweepPlanRequest)):
+                return False
         self._instrument_request = request if isinstance(request, TinySaSweepRequest) else None
         self._instrument_epoch = None
         self._instrument_sequence = None
+        self._hackrf_sweep_request = request if isinstance(request, HackrfSweepRequest) else None
         # Latch before dispatch: reentrant callbacks cannot change the mode.
         self._starting = True
         self._publish()
@@ -274,12 +301,14 @@ class AnalyzerViewModel:
             return
         snapshot = state.snapshot
         selection = getattr(self.live, "source_selection", None)
-        if (selection is not None and selection.selected is not None
-                and selection.selected.family is DeviceFamily.TINYSA):
-            self._mode = AnalyzerMode.SWEEP  # Local supported-mode intent, no retune.
-        elif (selection is not None and selection.selected is not None
-              and selection.selected.family is DeviceFamily.HACKRF):
-            self._mode = AnalyzerMode.RTBW
+        selected = selection.selected if selection is not None else None
+        revision = selection.revision if selection is not None else None
+        if selected is not self._mode_source_choice or revision != self._mode_source_revision:
+            self._mode_source_choice, self._mode_source_revision = selected, revision
+            if selected is not None and selected.family is DeviceFamily.TINYSA:
+                self._mode = AnalyzerMode.SWEEP  # Local supported-mode intent, no retune.
+            elif selected is not None and selected.family is DeviceFamily.HACKRF:
+                self._mode = AnalyzerMode.RTBW
         identity = (getattr(snapshot, "session_id", None), getattr(snapshot, "generation", None),
                     getattr(getattr(snapshot, "device", None), "device_id", None),
                     selection.revision if selection is not None else None)
@@ -312,6 +341,19 @@ class AnalyzerViewModel:
             self._prepared_sweep = None
             self._on_error("Invalid Sweep Analyzer bundle")
             return
+        if self._hackrf_sweep_request is not None:
+            hackrf_request = self._hackrf_sweep_request
+            selection = self.state.source_selection
+            run_epoch = getattr(self._sweep, "sweep_run_epoch", None)
+            if (selection is None or selection.selected is not hackrf_request.source
+                    or selection.revision != hackrf_request.selection_revision
+                    or type(run_epoch) is not int or run_epoch < 1
+                    or any(frame is not None and (
+                        frame.source_id != hackrf_request.source.device_id or frame.epoch != run_epoch
+                        or frame.unit != "dBFS/bin"
+                    ) for frame in (value.line, value.progress))):
+                self._on_error("Rejected stale/foreign HackRF Sweep publication")
+                return
         bundle = prepared.analyzer_bundle if prepared is not None else value.analyzer_bundle
         if bundle is not None:
             from sdr_monitor.domain.sweep_lines import SweepLineFrame

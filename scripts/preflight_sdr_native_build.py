@@ -214,6 +214,12 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
                 type(manifest["hackrf_persistence_contract_version"]) is not int
                 or manifest["hackrf_persistence_contract_version"] != 1):
             raise ContractSurfaceError("HackRF optional persistence staging requires contract version1")
+        sweep_bridge = manifest.get("hackrf_sweep_bridge_contract_version")
+        sweep_factory = manifest.get("hackrf_sweep_factory_contract_version")
+        if (sweep_bridge is not None or sweep_factory is not None) and (
+                type(sweep_bridge) is not int or sweep_bridge != 1
+                or type(sweep_factory) is not int or sweep_factory != 1):
+            raise ContractSurfaceError("HackRF optional Sweep bridge/factory staging requires paired contract version1")
         hashes = manifest.get("hackrf_runtime_sha256")
         if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
             raise ContractSurfaceError("HackRF staging requires the complete app-local runtime manifest")
@@ -250,6 +256,18 @@ def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> N
                 type(observed) is not int or observed != 1
                 or type(declared) is not int or declared != observed):
             raise ContractSurfaceError("HackRF optional persistence contract does not match its native manifest")
+        observed_bridge = getattr(module, "HACKRF_SWEEP_BRIDGE_CONTRACT_VERSION", missing)
+        declared_bridge = manifest.get("hackrf_sweep_bridge_contract_version", missing)
+        observed_factory = getattr(module, "HACKRF_SWEEP_FACTORY_CONTRACT_VERSION", missing)
+        declared_factory = manifest.get("hackrf_sweep_factory_contract_version", missing)
+        if not (observed_bridge is missing and declared_bridge is missing
+                and observed_factory is missing and declared_factory is missing) and (
+                type(observed_bridge) is not int or observed_bridge != 1
+                or type(declared_bridge) is not int or declared_bridge != observed_bridge
+                or type(observed_factory) is not int or observed_factory != 1
+                or type(declared_factory) is not int or declared_factory != observed_factory
+                or not callable(getattr(module, "create_hackrf_sweep_runtime_control", None))):
+            raise ContractSurfaceError("HackRF optional Sweep bridge/factory contract does not match its native manifest")
 
 
 def validate_active_artifact(

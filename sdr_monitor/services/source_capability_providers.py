@@ -209,8 +209,10 @@ def _qualified_hackrf_sdk_directory(native: object) -> Path | None:
             return None
         hashes = manifest.get("hackrf_runtime_sha256")
         from .hackrf_dsp_contract import hackrf_dsp_profile_contract_version, hackrf_persistence_contract_version
+        from .hackrf_sweep_contract import hackrf_sweep_contract_version
         hackrf_dsp_profile_contract_version(native, manifest)
         hackrf_persistence_contract_version(native, manifest)
+        hackrf_sweep_contract_version(native, manifest)
         if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
             return None
         for name, expected in hashes.items():

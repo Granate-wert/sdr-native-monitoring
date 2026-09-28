@@ -48,6 +48,7 @@ PYBIND11_MODULE(_sdr_native, module) {
 #if SDR_CORE_PLUTO_COMPILED
     sdr_core::python::bind_pluto(module);
 #endif
+    sdr_core::python::bind_hackrf_sweep(module);
 
     module.def("build_info", []() {
         const auto info = sdr_core::build_info();

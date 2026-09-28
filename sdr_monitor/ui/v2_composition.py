@@ -97,7 +97,8 @@ def build_v2_shell(services=None):
     router = (AnalyzerRtbwRouter(services.live_sdr, sources, getattr(services, "analyzer_hackrf", None))
               if sources is not None else None)
     from ..application.analyzer_sweep_router import AnalyzerSweepRouter
-    sweep_router = AnalyzerSweepRouter(display, sources, getattr(services, "analyzer_tinysa", None))
+    hackrf_sweep = getattr(services, "analyzer_hackrf_sweep", None)
+    sweep_router = AnalyzerSweepRouter(display, sources, getattr(services, "analyzer_tinysa", None), hackrf_sweep)
     analyzer = AnalyzerSessionApplicationService(router or services.live_sdr, sweep_router,
                                                  start_live=router.start if router else start_live)
     live_application = LiveSessionApplicationService(
@@ -121,6 +122,7 @@ def build_v2_shell(services=None):
         allocation_budget=allocation_budget,
         async_shutdown=True,
         analyzer_presenter=analyzer_presenter,
+        hackrf_sweep_composed=hackrf_sweep is not None,
         sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep, analyzer=analyzer)),
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),
         diagnostics_presenter_factory=lambda: DiagnosticsPresenter(DiagnosticsControlApplicationService(services.diagnostics)),

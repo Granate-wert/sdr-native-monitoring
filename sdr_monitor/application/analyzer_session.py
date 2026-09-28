@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.tinysa_analyzer import TinySaSweepRequest
 from ..domain.live import LiveSnapshot, LiveSessionState, LiveAdmissionRejected
 
@@ -47,7 +48,7 @@ class AnalyzerLivePort(Protocol):
 
 
 class AnalyzerSweepPort(Protocol):
-    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> None: ...
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> None: ...
     def stop(self) -> None: ...
 
 
@@ -137,7 +138,7 @@ class AnalyzerSessionApplicationService:
             self._state = replace(self._state, mode=mode)
             return self._state
 
-    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | None = None) -> AnalyzerSessionState:
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest | None = None) -> AnalyzerSessionState:
         with self._lock:
             if self._state.phase is not AnalyzerPhase.IDLE or self._idle_control_active:
                 raise RuntimeError("analyzer is not idle")
@@ -146,11 +147,15 @@ class AnalyzerSessionApplicationService:
                 raise ValueError("Sweep requires its request; RTBW uses the applied profile")
             sweep_epoch = None
             if request is not None:
-                if not isinstance(request, (ContinuousSweepPlanRequest, TinySaSweepRequest)):
+                if not isinstance(request, (ContinuousSweepPlanRequest, TinySaSweepRequest, HackrfSweepRequest)):
                     raise TypeError("Sweep requires an immutable plan request")
                 if type(request.epoch) is not int or not 0 <= request.epoch <= (1 << 64) - 1:
                     raise ValueError("Sweep epoch must fit an unsigned 64-bit integer")
-                sweep_epoch = max(request.epoch, self._last_sweep_epoch + 1)
+                # The HackRF owned native Sweep contract requires a positive
+                # acquisition/configuration generation. Other family epochs
+                # retain their established zero-based semantics.
+                sweep_epoch = max(request.epoch, self._last_sweep_epoch + 1,
+                                  1 if isinstance(request, HackrfSweepRequest) else 0)
                 if sweep_epoch > (1 << 64) - 1:
                     raise OverflowError("Sweep epoch space exhausted; no new acquisition was dispatched")
                 request = replace(request, epoch=sweep_epoch)

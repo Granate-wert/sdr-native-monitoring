@@ -25,6 +25,7 @@ from ..domain.live_configuration_patch import LiveConfigurationPatch
 from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET, LiveSessionState, LiveErrorKind
 from ..domain.analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.analyzer import AnalyzerFrameBundle, bundle_from_live
 from ..domain.tinysa_analyzer import TinySaSweepRequest
 
@@ -255,15 +256,15 @@ class LiveSessionApplicationService:
         with self._analyzer.idle_control_operation():
             return self._lifecycle_snapshot(self._rtbw.stage_hackrf(patch))
 
-    def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> AnalyzerSessionState:
+    def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> AnalyzerSessionState:
         if self._analyzer is None:
             raise RuntimeError("Shared analyzer is unavailable in this composition")
         self._configuration_admission(idle_only=True)
-        if isinstance(request, TinySaSweepRequest):
+        if isinstance(request, (TinySaSweepRequest, HackrfSweepRequest)):
             selection = self.current_source_selection()
             if (selection is None or selection.selected is not request.source
                     or selection.revision != request.selection_revision or selection.release_pending):
-                raise RuntimeError("Instrument Sweep selection changed")
+                raise RuntimeError("Sweep source selection changed")
         else:
             self._require_native_family()
             snapshot = self._port.latest_snapshot()

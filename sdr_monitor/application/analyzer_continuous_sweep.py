@@ -15,6 +15,7 @@ from .analyzer_session import AnalyzerMode, AnalyzerPhase, AnalyzerSessionState
 from ..domain.live import LiveSnapshot
 from ..domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
 
 
@@ -30,7 +31,7 @@ class AnalyzerContinuousSweepControlPort(Protocol):
     @property
     def analyzer_state(self) -> AnalyzerSessionState | None: ...
 
-    def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> AnalyzerSessionState: ...
+    def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> AnalyzerSessionState: ...
 
     def stop(self) -> LiveSnapshot: ...
 
@@ -69,7 +70,16 @@ class AnalyzerContinuousSweepApplicationService:
             return value
         return None
 
-    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest) -> None:
+    @property
+    def sweep_run_epoch(self) -> int | None:
+        """Epoch assigned by the shared owner, never a UI-invented RF epoch."""
+        state = self._application.analyzer_state
+        if (state is not None and state.mode is AnalyzerMode.SWEEP
+                and state.operation_id == self._attempt_id):
+            return state.sweep_epoch
+        return None
+
+    def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> None:
         with self._operation_lock:
             if self._closed:
                 raise RuntimeError("continuous Sweep application is closed")
