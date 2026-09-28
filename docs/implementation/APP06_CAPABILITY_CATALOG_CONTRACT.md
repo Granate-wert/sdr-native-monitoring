@@ -1220,3 +1220,32 @@ detection probability, DWM FPS, GUI latency or long-soak performance. Wide
 partial-preview physical observation, exact frozen EXE UI qualification,
 genuine Ethernet/tinySA cells and sustained cross-family acceptance remain
 open; APP-06A/B/C/D are still partial.
+
+### Exact frozen visible cross-family follow-up (APP-06C/D, 2026-09-28)
+
+An exact-source `74946ad` CPU onedir diagnostic EXE was built under a
+process-local clean `PATH` and passed strict 656-file frozen/package checks.
+The earlier inherited-`PATH` candidate was rejected for unrelated Poppler
+ICU DLL inputs; no post-freeze repair or static/current promotion occurred.
+The candidate EXE SHA-256 is
+`A531548965A0939A02BE88B7C93D82C2889505461DBF06F9AD587F9D008B4469`.
+
+One visible Windows UI V2 session explicitly ran USB Pluto RTBW, switched
+after Stop to USB HackRF Sweep 100–420 MHz with two separate Start/Stop
+epochs, switched back after Stop to USB Pluto RTBW, then ran USB Pluto
+Sweep 100–420 MHz. Both source switches cleared the old plot; all five
+explicit acquisitions used common Analyzer Spectrum/Waterfall. HackRF showed
+partial and complete 64-segment lines before Stop; a mid-pass Stop retained
+an explicitly gapped cancellation frame. The Pluto Sweep used a staged
+61.44-MS/s, 50-MHz-RF-BW profile and 36-MHz window/2-MHz overlap plan
+over ten segments; it showed partial coverage before pass completion and
+an explicitly gapped 8/10 cancellation frame. The diagnostic process was
+normally closed after explicit Stops.
+
+The Pluto Sweep UI reported about 180 ms between new Qt frames and no
+complete-pass period; this is a timing debt, not acceptance. HackRF's
+short 24–29-ms complete-pass UI estimates are not sustained or RF-qualified
+LPS. Configured/staged Fs, UI FFT counts, readbacks and software counters
+do not prove ADC delivery, lossless USB, RF duty/Pd, usable RF coverage or
+DWM FPS. Genuine Ethernet, qualified tinySA, high-load/soak, DWM FHD/QHD/DPI
+and end-to-end timing remain open; APP-06A/B/C/D are still partial.
