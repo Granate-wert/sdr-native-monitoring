@@ -81,6 +81,24 @@ inheriting a previous block's frequency; and pass admitted CI8 to the common
 analytical DSP and progressive Analyzer presentation. It must not feed these
 headered bytes into the current fixed-centre RTBW ingress.
 
+The next native `HackrfSweepSequenceGate` layer precomputes the pinned
+firmware's one-block-per-tune `LINEAR` or `INTERLEAVED` header sequence from
+up to ten sorted, disjoint MHz ranges and a whole-step width. In interleaved
+mode the reported headers alternate between the step origin and origin plus
+one-quarter step; the configured RF LO offset is **not** added to the header.
+This is checked against the pinned `usb_api_sweep.c` recurrence, not inferred
+from screen pixels. Callback transfers must be block-aligned and bounded;
+each block is offered synchronously to a same-owner sink so a failed handoff
+marks the very next block as gapped, even within one transfer. The gate keeps
+separate scan and continuity epochs, known skipped-header indices and
+unlocated rejection counters; these are **not** RF duty, USB-lossless or
+physical sample-loss measurements. The epochs are host-inferred logical
+provenance: the firmware header has no unique sweep counter, so an early
+repeated origin after other progress is marked as gapped but cannot itself
+prove a new physical sweep. It does not inspect RF settling or decide
+which FFT bins form a trustworthy usable subband. Both admission layers must
+remain upstream of any I/Q-to-spectrum publication.
+
 This foundation does **not** change the table's HackRF Sweep
 `mode_runtime_unavailable` result, enable hardware Sweep, alter RTBW Fs/FFT/
 gain/detector/grouping, or qualify UI latency/RF coverage. Its native tests
