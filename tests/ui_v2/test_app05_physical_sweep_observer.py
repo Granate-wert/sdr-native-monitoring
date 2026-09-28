@@ -2,10 +2,11 @@
 
 from types import SimpleNamespace
 import unittest
+import numpy as np
 
 from scripts.benchmark_app05_physical_sweep_ui import (
-    applied_matches_request, discovered_usb_device_id, first_progressive_pair, native_stage_summary, parser,
-    stage_rows, sweep_key,
+    applied_matches_request, complete_quality_summary, discovered_usb_device_id, first_progressive_pair,
+    native_plan_geometry, native_stage_summary, parser, stage_rows, sweep_key,
     terminal_gap_paints, uploaded_waterfall_key, waterfall_update_key,
 )
 
@@ -31,6 +32,7 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         self.assertEqual(args.speed_profile, "averaged")
         self.assertFalse(args.select_discovered_usb)
         self.assertFalse(args.require_native_stage_timings)
+        self.assertIsNone(args.acquisition_buffer_samples)
         self.assertEqual(args.run_timeout, 35.0)
         self.assertEqual(args.theme, "dark")
         selected = parser().parse_args(["--uri", "usb:3.4.5", "--output", "evidence.json",
@@ -67,6 +69,39 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         raw.segment_frame_wait_timing = SimpleNamespace(count=10, total_ns=100, max_ns=200)
         with self.assertRaises(ValueError):
             native_stage_summary(raw)
+
+    def test_native_plan_geometry_requires_same_buffer_and_discard_for_all_segments(self):
+        def segment(buffer_samples):
+            fixed = SimpleNamespace(device=SimpleNamespace(buffer_samples=buffer_samples,
+                                                           sample_rate_hz=61.44e6),
+                                    discard_blocks_after_start=2,
+                                    dsp=SimpleNamespace(fft_size=4096))
+            return SimpleNamespace(fixed_band=fixed)
+        summary = native_plan_geometry(SimpleNamespace(segments=(segment(65_536), segment(65_536))))
+        self.assertEqual((summary["buffer_samples"], summary["discard_blocks_after_start"]), (65_536, 2))
+        with self.assertRaises(ValueError):
+            native_plan_geometry(SimpleNamespace(segments=(segment(65_536), segment(262_144))))
+
+    def test_complete_quality_summary_keeps_only_scalar_coverage_and_seams(self):
+        line = SimpleNamespace(state=SimpleNamespace(value="complete"),
+                               frequencies_hz=np.array([1., 2., 3., 4.]),
+                               values_db=np.array([-90., -91., -92., -93.]),
+                               quality_flags=np.array([0x2001] * 4, dtype=np.uint16),
+                               source_segment_indices=np.array([0, 0, 1, 1]),
+                               missing_segment_indices=(), gap_reasons=(), unit="dBFS/bin",
+                               segment_acquisition=(object(), object()))
+        summary = complete_quality_summary(line)
+        self.assertEqual((summary["bin_count"], summary["finite_bins"],
+                          summary["seam_boundary_count"], summary["acquisition_records"]), (4, 4, 1, 2))
+        self.assertEqual(summary["quality_mask_or"], 0x2001)
+        self.assertEqual(summary["seam_jump_max_db"], 1.0)
+        line.state.value = "gap"
+        with self.assertRaises(ValueError):
+            complete_quality_summary(line)
+        line.state.value = "complete"
+        line.values_db[2] = np.nan
+        with self.assertRaises(ValueError):
+            complete_quality_summary(line)
 
     def test_frame_key_keeps_source_epoch_pass_and_revision(self):
         progress = SimpleNamespace(source_id="s", epoch=3, sequence=7, revision=2)

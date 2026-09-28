@@ -10,11 +10,12 @@ from __future__ import annotations
 import argparse
 import cProfile
 from contextlib import nullcontext
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import io
 import json
 import math
+import numpy as np
 from pathlib import Path
 import pstats
 import subprocess
@@ -36,6 +37,8 @@ def parser() -> argparse.ArgumentParser:
                         help="local USB Discover, then select exactly one candidate matching --uri")
     result.add_argument("--require-native-stage-timings", action="store_true",
                         help="require new stop/configure/start/frame-wait native timing counters")
+    result.add_argument("--acquisition-buffer-samples", type=int,
+                        help="diagnostic next-Start override; default 262144, retain two discarded blocks")
     result.add_argument("--output", type=Path, required=True, help="new JSON evidence path")
     result.add_argument("--start-mhz", type=float, default=2300.0)
     result.add_argument("--stop-mhz", type=float, default=2600.0)
@@ -150,6 +153,57 @@ def native_stage_summary(metrics: object) -> dict[str, object]:
     return {"stages": stages, "scalars": scalars}
 
 
+def native_plan_geometry(config: object) -> dict[str, object]:
+    """Inspect the exact admitted native request before RX without changing it."""
+    segments = tuple(config.segments)
+    if not segments or len(segments) > 64:
+        raise ValueError("native Sweep segment count is outside the bounded plan")
+    shapes = {
+        (int(segment.fixed_band.device.buffer_samples),
+         int(segment.fixed_band.discard_blocks_after_start),
+         int(segment.fixed_band.dsp.fft_size),
+         float(segment.fixed_band.device.sample_rate_hz))
+        for segment in segments
+    }
+    if len(shapes) != 1:
+        raise ValueError("native Sweep segment acquisition geometry is inconsistent")
+    buffer_samples, discard_blocks, fft_size, sample_rate_hz = shapes.pop()
+    return dict(segment_count=len(segments), buffer_samples=buffer_samples,
+                discard_blocks_after_start=discard_blocks, fft_size=fft_size,
+                sample_rate_hz=sample_rate_hz)
+
+
+def complete_quality_summary(frame: object) -> dict[str, object]:
+    """Reduce one complete line to scalar coverage/seam evidence, never raw bins."""
+    state = getattr(frame.state, "value", frame.state)
+    if state != "complete":
+        raise ValueError("only a complete numerical Sweep line can be assessed")
+    frequencies = np.asarray(frame.frequencies_hz)
+    values = np.asarray(frame.values_db)
+    quality = np.asarray(frame.quality_flags)
+    segments = np.asarray(frame.source_segment_indices)
+    if not (frequencies.ndim == values.ndim == quality.ndim == segments.ndim == 1
+            and frequencies.size >= 2
+            and frequencies.size == values.size == quality.size == segments.size):
+        raise ValueError("complete Sweep line has invalid scalar assessment geometry")
+    if not np.all(np.isfinite(frequencies)) or not np.all(np.isfinite(values)):
+        raise ValueError("complete Sweep line contains nonfinite frequencies or power")
+    boundaries = np.flatnonzero(segments[1:] != segments[:-1])
+    jumps = np.abs(values[boundaries + 1].astype(np.float64) - values[boundaries].astype(np.float64))
+    return dict(bin_count=int(values.size), finite_bins=int(np.count_nonzero(np.isfinite(values))),
+                source_segment_indices=[int(item) for item in np.unique(segments)],
+                missing_segment_indices=list(frame.missing_segment_indices),
+                gap_reasons=[str(item) for item in frame.gap_reasons],
+                quality_mask_or=int(np.bitwise_or.reduce(quality)),
+                seam_boundary_count=int(boundaries.size),
+                seam_jump_mean_db=(float(np.mean(jumps)) if jumps.size else None),
+                seam_jump_max_db=(float(np.max(jumps)) if jumps.size else None),
+                first_frequency_hz=float(frequencies[0]),
+                last_frequency_hz=float(frequencies[-1]),
+                unit=str(frame.unit),
+                acquisition_records=len(frame.segment_acquisition or ()))
+
+
 def uploaded_waterfall_key(*, attempted: tuple[str, int, int, str, int] | None,
                            uploaded: tuple[str, int, int, str, int] | None,
                            stamp: object | None, uploads: int, upload_count: int
@@ -248,6 +302,10 @@ def main() -> int:
         raise SystemExit("physical Sweep gate requires Windows and an explicit usb:/ip: URI")
     if args.select_discovered_usb and not args.uri.startswith("usb:"):
         raise SystemExit("local USB Discover requires an explicit usb: URI")
+    if (args.acquisition_buffer_samples is not None and
+            (args.acquisition_buffer_samples < 4096 or args.acquisition_buffer_samples > 262_144
+             or args.acquisition_buffer_samples & (args.acquisition_buffer_samples - 1))):
+        raise SystemExit("diagnostic acquisition buffer must be a power of two in [4096, 262144]")
     if (not all(map(math.isfinite, (args.start_mhz, args.stop_mhz, args.sample_rate_msps,
                                     args.run_timeout)))
             or (args.rf_bandwidth_mhz is not None
@@ -343,11 +401,16 @@ def main() -> int:
     capture_status = None
     discovered_route_summary: list[dict[str, object]] = []
     settled_discovery_count = None
+    native_plan_summary = None
+    complete_quality = None
+    complete_quality_error = None
     native_stage_metrics = None
     native_stage_metrics_error = None
 
     original_render = AnalyzerWorkspaceV2._render
+    original_sweep_request = AnalyzerWorkspaceV2._sweep_request
     original_poll_latest = NativeContinuousSweepDisplayService.poll_latest
+    original_display_start = NativeContinuousSweepDisplayService.start
     original_display_stop = NativeContinuousSweepDisplayService.stop
     original_poll_and_prepare = ContinuousSweepPresenter._poll_and_prepare
     original_set_sweep_line = WaterfallPane.set_sweep_line
@@ -360,10 +423,16 @@ def main() -> int:
                 yield key, frame
 
     def observed_poll_latest(service, *poll_args, **poll_kwargs):
-        nonlocal overflow
+        nonlocal overflow, complete_quality, complete_quality_error
         began_ns = perf_counter_ns()
         snapshot = original_poll_latest(service, *poll_args, **poll_kwargs)
         returned_ns = perf_counter_ns()
+        if (snapshot.line is not None and getattr(snapshot.line.state, "value", snapshot.line.state) == "complete"
+                and complete_quality is None and complete_quality_error is None):
+            try:
+                complete_quality = complete_quality_summary(snapshot.line)
+            except (AttributeError, TypeError, ValueError) as caught:
+                complete_quality_error = type(caught).__name__
         with stage_lock:
             for key, frame in snapshot_keys(snapshot):
                 if key not in poll_events:
@@ -385,6 +454,25 @@ def main() -> int:
                                 sample_rate_hz=item.sample_rate_hz, fft_size=item.fft_size,
                                 quality_flags=item.quality_flags)
         return snapshot
+
+    def observed_sweep_request(workspace):
+        request = original_sweep_request(workspace)
+        if args.acquisition_buffer_samples is None:
+            return request
+        return replace(request, acquisition_buffer_samples=args.acquisition_buffer_samples)
+
+    def observed_display_start(service, config):
+        nonlocal native_plan_summary
+        native_plan_summary = native_plan_geometry(config)
+        expected_buffer = (args.acquisition_buffer_samples if args.acquisition_buffer_samples is not None
+                           else 262_144)
+        if (native_plan_summary["buffer_samples"] != expected_buffer
+                or native_plan_summary["discard_blocks_after_start"] != 2
+                or native_plan_summary["fft_size"] != args.fft
+                or not math.isclose(native_plan_summary["sample_rate_hz"], args.sample_rate_msps * 1e6,
+                                    rel_tol=0.0, abs_tol=1.0)):
+            raise ValueError("native Sweep buffer/discard/Fs/FFT plan differs before RX")
+        return original_display_start(service, config)
 
     def observed_display_stop(service):
         nonlocal native_stage_metrics, native_stage_metrics_error
@@ -550,7 +638,9 @@ def main() -> int:
           (patch.object(pg.PlotCurveItem, "paint", observed_curve_paint)
            if args.profile_terminal_gap else nullcontext()),
           patch.object(AnalyzerWorkspaceV2, "_render", observed_render),
+          patch.object(AnalyzerWorkspaceV2, "_sweep_request", observed_sweep_request),
           patch.object(NativeContinuousSweepDisplayService, "poll_latest", observed_poll_latest),
+          patch.object(NativeContinuousSweepDisplayService, "start", observed_display_start),
           patch.object(NativeContinuousSweepDisplayService, "stop", observed_display_stop),
           patch.object(ContinuousSweepPresenter, "_poll_and_prepare", observed_poll_and_prepare),
           patch.object(WaterfallPane, "set_sweep_line", observed_set_sweep_line)):
@@ -779,6 +869,15 @@ def main() -> int:
                       exact_applied_configuration=bool(applied is not None and applied_matches_request(
                           applied, sample_rate_msps=args.sample_rate_msps, fft=args.fft,
                           rf_bandwidth_mhz=args.rf_bandwidth_mhz)),
+                      exact_native_plan=native_plan_summary is not None,
+                      complete_quality=bool(complete_quality is not None and complete_quality_error is None
+                                            and preview is not None
+                                            and complete_quality["finite_bins"] == complete_quality["bin_count"]
+                                            and complete_quality["source_segment_indices"] ==
+                                            list(range(preview.segment_count))
+                                            and complete_quality["acquisition_records"] == preview.segment_count
+                                            and not complete_quality["missing_segment_indices"]
+                                            and not complete_quality["gap_reasons"]),
                       stopped_and_closed=phase == "done" and composition.can_close(),
                       bounded_presentation=budget.reserved_bytes == 0 and not workers and overflow == 0)
         if args.require_native_stage_timings:
@@ -798,6 +897,9 @@ def main() -> int:
                                      selection_route=("local_usb_discover" if args.select_discovered_usb
                                                       else "manual_uri"),
                                      require_native_stage_timings=args.require_native_stage_timings,
+                                     acquisition_buffer_samples=(args.acquisition_buffer_samples
+                                                                 if args.acquisition_buffer_samples is not None
+                                                                 else 262_144),
                                      rf_bandwidth_mhz=args.rf_bandwidth_mhz,
                                      run_timeout_s=args.run_timeout, profile=args.speed_profile, window_mhz=36,
                                      overlap_mhz=2, theme=args.theme),
@@ -807,6 +909,9 @@ def main() -> int:
                                                                  backend=applied.applied.backend.value),
                       preview=None if preview is None else dict(segments=preview.segment_count,
                                                                  output_bins=preview.reduced.output_bins),
+                      native_plan_geometry=native_plan_summary,
+                      complete_quality=complete_quality,
+                      complete_quality_error=complete_quality_error,
                       window=dict(logical_width=shell.width(), logical_height=shell.height(),
                                   dpr=shell.devicePixelRatioF(),
                                   screen_name=None if screen is None else screen.name()),

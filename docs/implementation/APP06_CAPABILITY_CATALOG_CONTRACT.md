@@ -1369,3 +1369,21 @@ candidate is an explicit smaller diagnostic buffer at unchanged Fs/FFT and
 discard policy, followed by RF quality checks; a real stream-preserving
 retune needs separate design/proof. No default acquisition/render algorithm,
 approved EXE or system setting was changed in this instrumentation packet.
+
+### Opt-in Sweep buffer candidate observer (APP-06D, 2026-09-28)
+
+The separately frozen physical observer may now override the immutable
+`ContinuousSweepPlanRequest.acquisition_buffer_samples` for its **next
+explicit Start only**. The public Analyzer/UI V2 controls and product default
+of 262144 samples are unchanged; the override accepts only an explicitly
+requested power of two in [4096, 262144]. Before RX, the observer checks
+that every native segment has the requested buffer, unchanged two-block
+post-start discard, requested Fs and FFT. A complete numerical line is
+reduced to scalar finite-bin count, source-segment coverage, quality-mask
+union and intersegment seam-jump summaries; no raw I/Q or spectrum arrays
+are saved in the diagnostic report. These checks can reject a missing or
+gapped line but **cannot** prove RF transient settling, absolute amplitude
+accuracy, pulse-detection probability or lossless USB. The observer remains
+diagnostic-only, with no hidden retry, firmware/system change or default
+speed-preset change. Physical candidate results require a separate exact
+frozen build and paired baseline at the same Fs/FFT/span.
