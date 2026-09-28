@@ -3,7 +3,7 @@
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import (
@@ -84,6 +84,36 @@ def setup_owner():
 
 
 class HackrfSweepDisplayTests(unittest.TestCase):
+    def test_completed_pass_rate_is_retained_between_native_progress_polls(self):
+        service, _, control, _, request, selection = setup_owner()
+        service.start(request, selection)
+        counter = control.metrics.return_value
+        with patch("sdr_monitor.services.hackrf_sweep_display.time.monotonic",
+                   side_effect=(0.0, 0.2, 0.3, 1.3)):
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 0.0)
+            counter["completed_lines"] = 4
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 20.0)
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 20.0)
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 0.0)
+        service.stop()
+
+    def test_duplicate_progress_still_refreshes_counter_and_stale_rate(self):
+        service, _, control, _, request, selection = setup_owner()
+        service.start(request, selection)
+        counter = control.metrics.return_value
+        service._last_progress = (1, 1)
+        control.poll_next_publication.return_value = SimpleNamespace(
+            source_id=request.source.device_id, epoch=request.epoch,
+            unit="dBFS/bin", line_sequence=1, revision=1)
+        with patch("sdr_monitor.services.hackrf_sweep_display.time.monotonic",
+                   side_effect=(0.0, 0.2, 0.3, 1.3)):
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 0.0)
+            counter["completed_lines"] = 4
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 20.0)
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 20.0)
+            self.assertEqual(service.poll_latest().metrics.completed_line_lps, 0.0)
+        service.stop()
+
     def test_start_poll_stop_and_retained_terminal_poll_contract(self):
         service, native, control, exclusion, request, selection = setup_owner()
         service.start(request, selection)

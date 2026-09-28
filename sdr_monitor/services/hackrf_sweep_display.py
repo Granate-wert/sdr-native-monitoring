@@ -22,6 +22,7 @@ from ..domain.live import LiveAdmissionRejected
 from .hackrf_activation_preflight import HackrfRuntimeIdentityProbe, _identity_key
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID, HackrfBoardKind
 from .hackrf_sweep_contract import hackrf_sweep_contract_version
+from .completed_line_rate import CompletedLineRateObservation
 from .libhackrf_runtime_identity import LibhackrfRuntimeIdentityPort
 from .native_continuous_sweep import _to_domain_line, _to_domain_progress
 from .readonly_observation_owner import RetainedReadOnlyObserver
@@ -47,8 +48,7 @@ class HackrfSweepDisplayService:
         self._request: HackrfSweepRequest | None = None
         self._last_progress: tuple[int, int] | None = None
         self._last_line = -1
-        self._last_metrics_at_s: float | None = None
-        self._last_completed = 0
+        self._completed_rate = CompletedLineRateObservation()
         self._last_snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
 
     def bind_selection(self, selection: AnalyzerSourceSelection) -> None:
@@ -123,7 +123,7 @@ class HackrfSweepDisplayService:
                 self._control = control
                 self._stopped = False
                 self._last_progress, self._last_line = None, -1
-                self._last_metrics_at_s, self._last_completed = None, 0
+                self._completed_rate.reset()
                 self._last_snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
             except Exception:  # noqa: BLE001 - factory may have partially effected; retain same owner obligation.
                 # A throwing factory may have partially effected; explicit Stop
@@ -151,26 +151,24 @@ class HackrfSweepDisplayService:
                         rev = item.revision
                         if type(seq) is not int or type(rev) is not int or seq < 0 or rev < 1:
                             raise ValueError("invalid Sweep progress sequence")
-                        if self._last_progress is not None and (seq, rev) <= self._last_progress:
-                            return ContinuousSweepDisplaySnapshot(None, self._last_snapshot.metrics)
-                        acquired = tuple(item.acquired_segment_generations)
-                        if any(type(pair) is not tuple or len(pair) != 2 or pair[1] != request.epoch
-                               for pair in acquired):
-                            raise ValueError("Sweep progress generation mismatch")
-                        progress = _to_domain_progress(item)
-                        self._last_progress = (seq, rev)
+                        if self._last_progress is None or (seq, rev) > self._last_progress:
+                            acquired = tuple(item.acquired_segment_generations)
+                            if any(type(pair) is not tuple or len(pair) != 2 or pair[1] != request.epoch
+                                   for pair in acquired):
+                                raise ValueError("Sweep progress generation mismatch")
+                            progress = _to_domain_progress(item)
+                            self._last_progress = (seq, rev)
                     elif hasattr(item, "completed_ns") or hasattr(item, "completed_at_ns"):
                         seq = getattr(item, "line_sequence", getattr(item, "sequence", None))
                         if type(seq) is not int or seq < 0:
                             raise ValueError("invalid Sweep terminal sequence")
-                        if seq <= self._last_line:
-                            return ContinuousSweepDisplaySnapshot(None, self._last_snapshot.metrics)
-                        generations = tuple(getattr(item, "segment_config_generations", ()))
-                        if any(type(pair) is not tuple or len(pair) != 2 or pair[1] != request.epoch
-                               for pair in generations):
-                            raise ValueError("Sweep terminal generation mismatch")
-                        line = _to_domain_line(item)
-                        self._last_line = seq
+                        if seq > self._last_line:
+                            generations = tuple(getattr(item, "segment_config_generations", ()))
+                            if any(type(pair) is not tuple or len(pair) != 2 or pair[1] != request.epoch
+                                   for pair in generations):
+                                raise ValueError("Sweep terminal generation mismatch")
+                            line = _to_domain_line(item)
+                            self._last_line = seq
                     else:
                         raise ValueError("unknown Sweep publication type")
                 metrics_raw = control.metrics()
@@ -185,12 +183,7 @@ class HackrfSweepDisplayService:
                 if completed < 0 or gapped < 0:
                     raise ValueError("native Sweep line counters are invalid")
                 now_s = time.monotonic()
-                rate = 0.0
-                if self._last_metrics_at_s is not None:
-                    elapsed = now_s - self._last_metrics_at_s
-                    if elapsed > 0:
-                        rate = max(0.0, (completed - self._last_completed) / elapsed)
-                self._last_metrics_at_s, self._last_completed = now_s, completed
+                rate = self._completed_rate.observe(completed, now_s)
                 failed = bool(metrics_raw.get("worker_failed", False))
                 metrics = ContinuousSweepDisplayMetrics(
                     completed_line_lps=rate, completed_lines=completed, gapped_lines=gapped,

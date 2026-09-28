@@ -20,6 +20,7 @@ from ..domain.sweep_progress import SweepProgressFrame
 from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
 from ..domain.sweep_statistics import SweepStatisticsFrame
 from .ad936x_identity_admission import create_identity_bound_owner
+from .completed_line_rate import CompletedLineRateObservation
 
 
 class ContinuousSweepDisplayPort(Protocol):
@@ -73,8 +74,7 @@ class NativeContinuousSweepDisplayService:
         self._stop_required = False
         self._started = False
         self._has_started = False
-        self._last_completed = 0
-        self._last_metrics_at_s: float | None = None
+        self._completed_rate = CompletedLineRateObservation()
         self._ui_superseded = 0
         self._terminal_watermark: tuple[str, int, int] | None = None
         self._progress_watermark: tuple[str, int, int, int] | None = None
@@ -101,8 +101,7 @@ class NativeContinuousSweepDisplayService:
             self._active_identity = (sources[0], epoch)
             self._started = True
             self._has_started = True
-            self._last_completed = 0
-            self._last_metrics_at_s = None
+            self._completed_rate.reset()
             self._ui_superseded = 0
             self._terminal_watermark = None
             self._progress_watermark = None
@@ -200,13 +199,7 @@ class NativeContinuousSweepDisplayService:
     def _metrics(self, now_s: float) -> ContinuousSweepDisplayMetrics:
         native = self._coordinator.metrics()
         completed = int(getattr(native, "completed_lines", 0) or 0)
-        rate = 0.0
-        if self._last_metrics_at_s is not None:
-            elapsed = now_s - self._last_metrics_at_s
-            if elapsed > 0.0:
-                rate = max(0.0, (completed - self._last_completed) / elapsed)
-        self._last_completed = completed
-        self._last_metrics_at_s = now_s
+        rate = self._completed_rate.observe(completed, now_s)
         queue = getattr(native, "output_queue", None)
         return ContinuousSweepDisplayMetrics(
             completed_line_lps=rate,
