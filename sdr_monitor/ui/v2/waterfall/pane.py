@@ -72,12 +72,16 @@ class WaterfallPane(QWidget):
         self,
         *,
         settings: QSettings | None = None,
+        settings_prefix: str = _SETTINGS_PREFIX,
         theme: ThemeId = ThemeId.DARK,
         locale: UiLocale = UiLocale.RU,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        if not isinstance(settings_prefix, str) or not settings_prefix.strip():
+            raise ValueError("waterfall settings prefix must be non-empty")
         self._settings = settings or QSettings()
+        self._settings_prefix = settings_prefix
         self._theme = theme
         self._locale = locale
         self._config = WaterfallDisplayConfig()
@@ -176,10 +180,11 @@ class WaterfallPane(QWidget):
         """Restore controls only from the view that temporarily hosted them."""
         if self._toolbar.parentWidget() is not host:
             return False
-        if host.layout() is not None:
-            host.layout().removeWidget(self._toolbar)
+        host_layout = host.layout()
+        if host_layout is not None:
+            host_layout.removeWidget(self._toolbar)
         layout = self.layout()
-        if layout is not None:
+        if isinstance(layout, QVBoxLayout):
             layout.insertWidget(0, self._toolbar)
             return True
         return False
@@ -818,28 +823,29 @@ class WaterfallPane(QWidget):
             self._follow_spectrum.setChecked(self._config.follow_spectrum_levels)
 
     def _restore_settings(self) -> None:
-        if str(self._settings.value(f"{_SETTINGS_PREFIX}/version", "")) != "1":
+        if str(self._settings.value(f"{self._settings_prefix}/version", "")) != "1":
             self._sync_controls()
             return
         try:
             self._config = WaterfallDisplayConfig(
-                history_seconds=_read_int(self._settings, "history_seconds", self._config.history_seconds),
-                rows_per_second=_read_int(self._settings, "rows_per_second", self._config.rows_per_second),
+                history_seconds=_read_int(self._settings, self._settings_prefix, "history_seconds", self._config.history_seconds),
+                rows_per_second=_read_int(self._settings, self._settings_prefix, "rows_per_second", self._config.rows_per_second),
                 palette=WaterfallPalette(
-                    str(self._settings.value(f"{_SETTINGS_PREFIX}/palette", self._config.palette.value))
+                    str(self._settings.value(f"{self._settings_prefix}/palette", self._config.palette.value))
                 ),
-                level_min=_read_float(self._settings, "level_min", self._config.level_min),
-                level_max=_read_float(self._settings, "level_max", self._config.level_max),
+                level_min=_read_float(self._settings, self._settings_prefix, "level_min", self._config.level_min),
+                level_max=_read_float(self._settings, self._settings_prefix, "level_max", self._config.level_max),
                 direction=WaterfallDirection(
-                    str(self._settings.value(f"{_SETTINGS_PREFIX}/direction", self._config.direction.value))
+                    str(self._settings.value(f"{self._settings_prefix}/direction", self._config.direction.value))
                 ),
                 follow_spectrum_levels=_read_bool(
                     self._settings,
+                    self._settings_prefix,
                     "follow_spectrum_levels",
                     self._config.follow_spectrum_levels,
                 ),
             )
-            self._render_visible = _read_bool(self._settings, "visible", True)
+            self._render_visible = _read_bool(self._settings, self._settings_prefix, "visible", True)
         except (TypeError, ValueError):
             self._config = WaterfallDisplayConfig()
             self._render_visible = True
@@ -855,17 +861,17 @@ class WaterfallPane(QWidget):
             self._settings_timer.start(_SETTINGS_DEBOUNCE_MS)
 
     def _write_settings(self) -> None:
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/version", "1")
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/history_seconds", self._config.history_seconds)
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/rows_per_second", self._config.rows_per_second)
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/palette", self._config.palette.value)
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/level_min", self._config.level_min)
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/level_max", self._config.level_max)
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/direction", self._config.direction.value)
+        self._settings.setValue(f"{self._settings_prefix}/version", "1")
+        self._settings.setValue(f"{self._settings_prefix}/history_seconds", self._config.history_seconds)
+        self._settings.setValue(f"{self._settings_prefix}/rows_per_second", self._config.rows_per_second)
+        self._settings.setValue(f"{self._settings_prefix}/palette", self._config.palette.value)
+        self._settings.setValue(f"{self._settings_prefix}/level_min", self._config.level_min)
+        self._settings.setValue(f"{self._settings_prefix}/level_max", self._config.level_max)
+        self._settings.setValue(f"{self._settings_prefix}/direction", self._config.direction.value)
         self._settings.setValue(
-            f"{_SETTINGS_PREFIX}/follow_spectrum_levels", self._config.follow_spectrum_levels
+            f"{self._settings_prefix}/follow_spectrum_levels", self._config.follow_spectrum_levels
         )
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/visible", self._render_visible)
+        self._settings.setValue(f"{self._settings_prefix}/visible", self._render_visible)
         self._settings.sync()
 
     def _set_metrics(self, **updates: int) -> None:
@@ -909,16 +915,16 @@ def _secondary_label(text: str, accessible_name: str, parent: QWidget) -> QLabel
     return label
 
 
-def _read_int(settings: QSettings, key: str, default: int) -> int:
-    return int(cast(str | int, settings.value(f"{_SETTINGS_PREFIX}/{key}", default)))
+def _read_int(settings: QSettings, prefix: str, key: str, default: int) -> int:
+    return int(cast(str | int, settings.value(f"{prefix}/{key}", default)))
 
 
-def _read_float(settings: QSettings, key: str, default: float) -> float:
-    return float(cast(str | int | float, settings.value(f"{_SETTINGS_PREFIX}/{key}", default)))
+def _read_float(settings: QSettings, prefix: str, key: str, default: float) -> float:
+    return float(cast(str | int | float, settings.value(f"{prefix}/{key}", default)))
 
 
-def _read_bool(settings: QSettings, key: str, default: bool) -> bool:
-    value = settings.value(f"{_SETTINGS_PREFIX}/{key}", default)
+def _read_bool(settings: QSettings, prefix: str, key: str, default: bool) -> bool:
+    value = settings.value(f"{prefix}/{key}", default)
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes"}

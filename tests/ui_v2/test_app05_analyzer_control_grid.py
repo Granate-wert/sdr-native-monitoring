@@ -11,7 +11,7 @@ from sdr_monitor.domain.analyzer import bundle_from_sweep
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from sdr_monitor.ui.v2.i18n import text
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
-from sdr_monitor.ui.v2.workspaces import analyzer
+from sdr_monitor.ui.v2.workspaces import analyzer_pane
 from tests import test_app02_analyzer_workspace_product as product
 from tests.ui_v2.test_app04_progressive_waterfall import progress, terminal
 
@@ -36,7 +36,7 @@ class AnalyzerControlGridTests(unittest.TestCase):
         page._render(state)
         scene = page.visualization.spectrum_scene
         equal = Mock(wraps=np.array_equal)
-        with patch.object(analyzer, "np", SimpleNamespace(array_equal=equal)), \
+        with patch.object(analyzer_pane, "np", SimpleNamespace(array_equal=equal)), \
              patch.object(scene, "set_frame", wraps=scene.set_frame) as frames, \
              patch.object(page.visualization.waterfall_pane, "clear_history") as clear:
             for next_state in (replace(state, stopping=True),
@@ -57,7 +57,7 @@ class AnalyzerControlGridTests(unittest.TestCase):
                         bundle=bundle_from_sweep(progress()), running=True)
         page._render(state)
         equal = Mock(wraps=np.array_equal)
-        with patch.object(analyzer, "np", SimpleNamespace(array_equal=equal)), \
+        with patch.object(analyzer_pane, "np", SimpleNamespace(array_equal=equal)), \
              patch.object(page.visualization.waterfall_pane, "clear_history") as clear:
             next_bundle = bundle_from_sweep(state.bundle.spectrum)
             page._render(replace(state, bundle=next_bundle))
@@ -93,7 +93,7 @@ class AnalyzerControlGridTests(unittest.TestCase):
         equal = Mock(wraps=np.array_equal)
         try:
             with patch.object(presenter._service, "poll_latest", return_value=final), \
-                 patch.object(analyzer, "np", SimpleNamespace(array_equal=equal)):
+                 patch.object(analyzer_pane, "np", SimpleNamespace(array_equal=equal)):
                 page.primary.click()
                 f.wait(presenter.can_close)
             delivered = [s for s in states if s.bundle is not None and s.bundle.spectrum is final.line]

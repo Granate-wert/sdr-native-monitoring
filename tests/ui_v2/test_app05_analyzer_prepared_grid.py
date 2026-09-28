@@ -11,7 +11,7 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplayMetrics, C
 from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2.state.prepared_sweep import SweepSnapshotPreparer, prepare_sweep_snapshot
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
-from sdr_monitor.ui.v2.workspaces import analyzer
+from sdr_monitor.ui.v2.workspaces import analyzer_pane
 from tests import test_app02_analyzer_workspace_product as product
 from tests.ui_v2.test_app04_progressive_waterfall import progress, terminal
 from tests.ui_v2.test_app05_prepared_live import measurement
@@ -45,7 +45,7 @@ class AnalyzerPreparedGridTests(unittest.TestCase):
         self.page._render(first)
         pane = self.page.visualization.waterfall_pane
         equal = Mock(wraps=np.array_equal)
-        with patch.object(analyzer, "np", SimpleNamespace(array_equal=equal)), \
+        with patch.object(analyzer_pane, "np", SimpleNamespace(array_equal=equal)), \
              patch.object(pane, "clear_history", wraps=pane.clear_history) as cleared:
             self.page._render(second)
             self.assertEqual(equal.call_count, 0)
@@ -96,7 +96,7 @@ class AnalyzerPreparedGridTests(unittest.TestCase):
         third = self.state(progress(3), preparer=other)
         pane = self.page.visualization.waterfall_pane
         equal = Mock(wraps=np.array_equal)
-        with patch.object(analyzer, "np", SimpleNamespace(array_equal=equal)), \
+        with patch.object(analyzer_pane, "np", SimpleNamespace(array_equal=equal)), \
              patch.object(pane, "clear_history", wraps=pane.clear_history) as cleared:
             self.page._render(second)
             self.page._render(replace(third, prepared_sweep=None))
@@ -112,7 +112,7 @@ class AnalyzerPreparedGridTests(unittest.TestCase):
         f.presenter._poll_timer.stop()
         equal = Mock(wraps=np.array_equal)
         sources = []
-        with patch.object(analyzer, "np", SimpleNamespace(array_equal=equal)):
+        with patch.object(analyzer_pane, "np", SimpleNamespace(array_equal=equal)):
             for number in range(1, 5):
                 snapshot = measurement(f, number)
                 f.presenter._emit_snapshot(snapshot)
@@ -130,7 +130,7 @@ class AnalyzerPreparedGridTests(unittest.TestCase):
         uncached = prepare_sweep_snapshot(second.sweep_snapshot, second.bundle)
         self.assertIsNone(uncached.spectrum.measurement_grid)
         equal = Mock(wraps=np.array_equal)
-        with patch.object(analyzer, "np", SimpleNamespace(array_equal=equal)):
+        with patch.object(analyzer_pane, "np", SimpleNamespace(array_equal=equal)):
             self.page._render(replace(second, prepared_sweep=uncached))
             self.assertEqual(equal.call_count, 1)
         shifted = progress(3).frequencies_hz.copy()

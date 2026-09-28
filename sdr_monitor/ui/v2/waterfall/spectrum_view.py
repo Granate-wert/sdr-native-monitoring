@@ -22,11 +22,15 @@ class SpectrumWaterfallView(QWidget):
         self,
         *,
         settings: QSettings | None = None,
+        settings_prefix: str = _SETTINGS_PREFIX,
         theme: ThemeId = ThemeId.DARK,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        if not isinstance(settings_prefix, str) or not settings_prefix.strip():
+            raise ValueError("waterfall settings prefix must be non-empty")
         self._settings = settings or QSettings()
+        self._settings_prefix = settings_prefix
         self._theme = theme
         self._restored_sizes: list[int] | None = self._read_splitter_sizes()
         self._initial_sizes_applied = False
@@ -70,7 +74,7 @@ class SpectrumWaterfallView(QWidget):
         if not requested and self._waterfall.has_embedded_display_controls:
             controls = self._waterfall.take_display_controls()
             layout = self.layout()
-            if layout is not None:
+            if isinstance(layout, QVBoxLayout):
                 layout.insertWidget(0, controls)
                 self._standalone_controls_hosted = True
         elif requested and self._standalone_controls_hosted:
@@ -120,7 +124,8 @@ class SpectrumWaterfallView(QWidget):
         self._splitter = V2Splitter(Qt.Orientation.Vertical, theme=self._theme, parent=self)
         self._spectrum = SpectrumScene(theme=self._theme, parent=self._splitter)
         self._spectrum.set_frequency_axis_visible(False)
-        self._waterfall = WaterfallPane(settings=self._settings, theme=self._theme, parent=self._splitter)
+        self._waterfall = WaterfallPane(settings=self._settings, settings_prefix=self._settings_prefix,
+                                        theme=self._theme, parent=self._splitter)
         self._waterfall.setMinimumHeight(120)
         self._spectrum.setMinimumHeight(180)
         self._splitter.addWidget(self._spectrum)
@@ -142,9 +147,9 @@ class SpectrumWaterfallView(QWidget):
         self._waterfall.follow_spectrum_levels(lower, upper, unit_label=unit_label)
 
     def _read_splitter_sizes(self) -> list[int] | None:
-        if str(self._settings.value(f"{_SETTINGS_PREFIX}/version", "")) != "1":
+        if str(self._settings.value(f"{self._settings_prefix}/version", "")) != "1":
             return None
-        raw = self._settings.value(f"{_SETTINGS_PREFIX}/splitter_sizes")
+        raw = self._settings.value(f"{self._settings_prefix}/splitter_sizes")
         if not isinstance(raw, (list, tuple)) or len(raw) != 2:
             return None
         try:
@@ -158,8 +163,8 @@ class SpectrumWaterfallView(QWidget):
             self._settings_timer.start(_SETTINGS_DEBOUNCE_MS)
 
     def _write_splitter_settings(self) -> None:
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/version", "1")
-        self._settings.setValue(f"{_SETTINGS_PREFIX}/splitter_sizes", self._splitter.sizes())
+        self._settings.setValue(f"{self._settings_prefix}/version", "1")
+        self._settings.setValue(f"{self._settings_prefix}/splitter_sizes", self._splitter.sizes())
         self._settings.sync()
 
 

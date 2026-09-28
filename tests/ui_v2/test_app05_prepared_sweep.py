@@ -79,7 +79,7 @@ class PreparedSweepTests(unittest.TestCase):
                        side_effect=AssertionError("GUI grid validation fallback used")), \
                  patch("sdr_monitor.ui.v2.spectrum.scene.finite_value_extent",
                        side_effect=AssertionError("GUI Auto-Y reduction fallback used")), \
-                 patch("sdr_monitor.ui.v2.workspaces.analyzer.waterfall_line_from_sweep",
+                 patch("sdr_monitor.ui.v2.workspaces.analyzer_pane.waterfall_line_from_sweep",
                        side_effect=AssertionError("GUI projection fallback used")):
                 page.primary.click()
                 harness.wait(lambda: page.visualization.waterfall_pane.history_rows > 0)

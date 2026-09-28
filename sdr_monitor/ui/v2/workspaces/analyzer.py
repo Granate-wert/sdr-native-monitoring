@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from time import monotonic
-
-import numpy as np
 from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -18,8 +16,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
-from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.live import LiveSpectrumFrame
@@ -29,11 +25,7 @@ from ..design import ThemeId, stylesheet_for_theme
 from ..design.icons import V2IconId
 from ..i18n import current_locale, text
 from ..shell.contracts import WorkspaceDefinition
-from ..spectrum import PersistenceDensityFrame
-from ..spectrum.allocation_budget import PresentationBudgetExceeded
-from ..spectrum.contracts import PreparedSpectrumFrame, TraceKind
 from ..spectrum.projection import SpectrumProjector
-from ..state.analyzer_layers import persistence_density_from_sweep, waterfall_line_from_sweep
 from ..state.analyzer_readouts import (
     analyzer_periods,
     analyzer_quality_detail,
@@ -46,13 +38,13 @@ from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_su
 from ..state.live_view_state import LiveAction
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 from ..view_models.calibration_view_model import CalibrationProfileViewModel
-from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
 from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
 from .analyzer_hackrf_configuration import HackrfConfigurationBar
 from .analyzer_hackrf_sweep import HackrfSweepConfigurationBar
 from .analyzer_inspector import AnalyzerInspector
+from .analyzer_pane import AnalyzerPaneViewV2
 from .analyzer_status_label import AnalyzerPeriodsLabel, AnalyzerStatusLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_tinysa_configuration import TinySaConfigurationBar
@@ -73,16 +65,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self.model = model
         self._terminal_released = False
         self._theme = ThemeId.DARK
-        self._last_bundle: AnalyzerFrameBundle | None = None
-        self._last_mode = model.state.mode
         self._last_source_selection: AnalyzerSourceSelection | None = None
         self._last_family_path_available = False
-        self._last_waterfall: WaterfallLineFrame | None = None
-        self._last_persistence: PersistenceDensityFrame | None = None
-        self._last_identity = None
-        self._last_sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
-        self._last_statistics_key: tuple[str, int, int] | None = None
-        self._sweep_waterfall_error = False
         self._status_cadence = AnalyzerStatusCadence()
         self._text_bindings: list[tuple[QLabel | QPushButton, str]] = []
         self.setProperty("ui2Root", True)
@@ -160,10 +144,10 @@ class AnalyzerWorkspaceV2(QWidget):
         self.error.setProperty("ui2Tone", "error")
         self.error.setWordWrap(True)
         layout.addWidget(self.error)
-        self.visualization = SpectrumWaterfallView(parent=self)
-        if projector is not None:
-            self.visualization.spectrum_scene.set_projection_port(projector)
-            self.visualization.waterfall_pane._renderer.allocation_budget = projector.allocation_budget
+        self.visualization = AnalyzerPaneViewV2(
+            model.state.mode, projector=projector,
+            on_frame_applied=self._on_visual_frame_applied, parent=self,
+        )
         self.frequency_bar.viewport_span_requested.connect(self._change_viewport_span)
         self.visualization.spectrum_scene.view_box.sigXRangeChanged.connect(self._viewport_changed)
         self._acquisition_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self.visualization.spectrum_scene)
@@ -213,6 +197,41 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def _viewport_changed(self, _view, bounds) -> None:
         self.frequency_bar.set_viewport_span(float(bounds[1] - bounds[0]))
+
+    def _on_visual_frame_applied(self) -> None:
+        # A new frame may retain exactly the old ViewBox range, in which case
+        # Qt emits no sigXRangeChanged. Update the no-frame placeholder too.
+        lower, upper = self.visualization.spectrum_scene.view_box.viewRange()[0]
+        self.frequency_bar.set_viewport_span(float(upper - lower))
+
+    @property
+    def _last_bundle(self):
+        """Compatibility observation of the primary pane's admitted frame."""
+        return self.visualization.last_bundle
+
+    @property
+    def _last_waterfall(self):
+        return self.visualization._last_waterfall
+
+    @property
+    def _last_persistence(self):
+        return self.visualization._last_persistence
+
+    @property
+    def _last_identity(self):
+        return self.visualization._last_identity
+
+    @property
+    def _last_sweep_snapshot(self):
+        return self.visualization._last_sweep_snapshot
+
+    @property
+    def _last_statistics_key(self):
+        return self.visualization.last_statistics_key
+
+    @property
+    def _sweep_waterfall_error(self):
+        return self.visualization.sweep_waterfall_error
 
     def set_locale(self) -> None:
         """Translate controls in place; preserve canvas, source and local range."""
@@ -290,13 +309,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.tinysa_bar.settings_drawer.release_profiles()
         # Terminal cleanup may be retried after a partial failure. Do not let
         # Qt paint a PlotItem whose axes have already been retired.
-        self.visualization.hide()
-        self.visualization.spectrum_scene.set_presentation_active(False)
-        self.visualization.spectrum_scene.clear_measurement()
-        self.visualization.waterfall_pane.release_presentation_after_shutdown()
-        self.visualization.spectrum_scene.release_graphics_after_shutdown()
-        self._last_bundle = self._last_waterfall = self._last_persistence = None
-        self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
+        self.visualization.release_presentation_after_shutdown()
         self._terminal_released = True
 
     def _toggle_settings(self) -> None:
@@ -593,116 +606,8 @@ class AnalyzerWorkspaceV2(QWidget):
             self.applied.setToolTip(detail)
         if self.applied.accessibleDescription() != detail:
             self.applied.setAccessibleDescription(detail)
-        identity = getattr(state.bundle, "identity", None)
-        previous = self._last_identity
+        self.visualization.apply_analyzer_state(state)
         scene = self.visualization.spectrum_scene
-        prepared_spectrum = (state.prepared_sweep.spectrum if state.prepared_sweep is not None else
-                             state.live.prepared_spectrum if state.mode is AnalyzerMode.RTBW else None)
-        if state.bundle is not None and state.bundle is not self._last_bundle and prepared_spectrum is not None:
-            # Reject foreign preparation before clearing the accepted history.
-            if (not isinstance(prepared_spectrum, PreparedSpectrumFrame)
-                    or prepared_spectrum.view.source_frame is not state.bundle):
-                raise ValueError("prepared spectrum must belong to the exact publication")
-        prepared_grid = None if prepared_spectrum is None else prepared_spectrum.measurement_grid
-        previous_grid = scene.measurement_grid
-        fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch", "config_generation",
-                  "clock_domain", "accumulation_id", "unit")
-        # Lifecycle/error/locale publications can carry the exact bundle already
-        # applied below. They are not new measurements: do not re-scan its entire
-        # frequency grid on the GUI thread. New prepared bundles can share an
-        # owned baseline only after exact worker-side content comparison. Raw
-        # array identity/read-only flags never authorize this fast path. On a
-        # miss compare against the owned old grid, not a mutable producer alias.
-        changed_identity = (state.bundle is not self._last_bundle
-                            and identity is not None and previous is not None and (
-            any(getattr(identity, name) != getattr(previous, name) for name in fields)
-            or not (prepared_grid is not None and prepared_grid is previous_grid
-                    or np.array_equal(
-                        prepared_grid if prepared_grid is not None else identity.frequencies_hz,
-                        previous_grid if previous_grid is not None else previous.frequencies_hz))
-        ))
-        if (state.mode is not self._last_mode or changed_identity
-                or state.bundle is None and self._last_bundle is not None):
-            self.visualization.spectrum_scene.clear_measurement()
-            self.visualization.waterfall_pane.clear_history(reset_kind=True)
-            if self._sweep_waterfall_error:
-                self.visualization.spectrum_scene.set_warning(None)
-                self._sweep_waterfall_error = False
-            self._last_bundle = self._last_waterfall = self._last_persistence = None
-            self._last_sweep_snapshot = None
-            self._last_statistics_key = None
-            self._last_mode = state.mode
-        self._last_identity = identity
-        bundle = state.bundle
-        if bundle is not None and bundle is not self._last_bundle:
-            scene.set_frame(bundle, prepared=prepared_spectrum)
-            self._last_bundle = bundle
-            # The new frame may have exactly the old ViewBox X range, in
-            # which case Qt emits no sigXRangeChanged. The field must still
-            # leave its no-frame placeholder on the first publication.
-            lower, upper = scene.view_box.viewRange()[0]
-            self.frequency_bar.set_viewport_span(float(upper - lower))
-        if state.mode is AnalyzerMode.SWEEP:
-            statistics = bundle.sweep_statistics if bundle is not None else None
-            statistics_key = ((statistics.source_id, statistics.epoch, statistics.update_sequence)
-                   if statistics is not None else None)
-            if statistics is not None and statistics_key != self._last_statistics_key:
-                scene = self.visualization.spectrum_scene
-                scene.set_trace(TraceKind.AVERAGE, statistics)
-                scene.set_persistence_frame(persistence_density_from_sweep(statistics))
-                self._last_statistics_key = statistics_key
-            elif statistics is None and self._last_statistics_key is not None:
-                self.visualization.spectrum_scene.clear_trace(TraceKind.AVERAGE)
-                self.visualization.spectrum_scene.clear_persistence_display()
-                self._last_statistics_key = None
-        if state.mode is AnalyzerMode.RTBW:
-            density = state.live.persistence_frame
-            if isinstance(density, PersistenceDensityFrame) and density is not self._last_persistence:
-                self.visualization.spectrum_scene.set_persistence_frame(density)
-                self._last_persistence = density
-            elif (density is None and self._last_persistence is not None
-                  and "persistence_pending" not in getattr(bundle, "coherence_issues", ())):
-                self.visualization.spectrum_scene.clear_persistence_display()
-                self._last_persistence = None
-            row = state.live.waterfall_line
-            if isinstance(row, WaterfallLineFrame) and row is not self._last_waterfall:
-                self.visualization.waterfall_pane.set_line(row)
-                self._last_waterfall = row
-        elif state.sweep_snapshot is not None and state.sweep_snapshot is not self._last_sweep_snapshot:
-            snapshot = state.sweep_snapshot
-            self.visualization.spectrum_scene.sweep_coverage.accept(snapshot)
-            # Preserve terminal N and progressive N+1 from the same backend
-            # poll, even though only N+1 is current on the upper spectrum.
-            try:
-                prepared = state.prepared_sweep
-                if prepared is not None:
-                    if prepared.snapshot is not snapshot:
-                        raise ValueError("Prepared Sweep snapshot identity mismatch")
-                    if prepared.memory_limited:
-                        raise PresentationBudgetExceeded(prepared.waterfall_error)
-                    if prepared.waterfall_error is not None:
-                        raise ValueError(prepared.waterfall_error)
-                    rows = prepared.waterfall_rows
-                else:
-                    # Unprepared injected/fake ports retain the public legacy
-                    # adapter seam; normal V2 composition always prepares in
-                    # its existing single-flight worker, never in this branch.
-                    rows = tuple(waterfall_line_from_sweep(frame)
-                                 for frame in (snapshot.line, snapshot.progress) if frame is not None)
-            except PresentationBudgetExceeded:
-                self.visualization.spectrum_scene.set_warning(text("analyzer.memory_limited"))
-                self._sweep_waterfall_error = True
-            except (ValueError, TypeError) as error:
-                self.visualization.waterfall_pane.clear_history()
-                self.visualization.spectrum_scene.set_warning(text("waterfall.sweep.invalid", reason=str(error)))
-                self._sweep_waterfall_error = True
-            else:
-                for update in rows:
-                    self.visualization.waterfall_pane.set_sweep_line(update)
-                if self._sweep_waterfall_error:
-                    self.visualization.spectrum_scene.set_warning(None)
-                    self._sweep_waterfall_error = False
-            self._last_sweep_snapshot = snapshot
         if self._status_cadence.admit(state, monotonic()):
             _set_text_if_changed(self.periods, analyzer_periods(state, scene.paint_cadence.period_ms()))
             description = text("analyzer.periods.scope")
