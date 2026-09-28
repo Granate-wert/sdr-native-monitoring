@@ -829,3 +829,38 @@ FPS or 50-ms acceptance follows. `QualityFlag::IqDropped` is per affected input 
 lost-sample metadata persists; a later mask0x00002001 does not erase loss.
 Further exact stage isolation and sustained current-source frozen testing
 remain required; the active installed/canonical EXE is unchanged.
+
+### HackRF profiling boundary and unresolved 256-bin throughput (2026-09-28)
+
+The native HackRF DSP now exposes cumulative worker-stage durations only in
+an explicit StageOnly profiling build. Ordinary builds have no added hot-path
+clock calls and report `stage_timing_available=false` with zero durations.
+The separate profiling preset cannot activate the installed module or build
+an EXE; timing fields are not RF duty, input-to-paint latency, ADC/USB
+throughput or GUI FPS. Full UI V2 source tests passed 1006/66 skipped/zero
+failed with the exact ordinary staged build, and both ordinary and profiled
+native candidates passed 35/35 CTest. The active canonical module/EXE was
+not changed by this diagnostic package.
+
+At requested20 MS/s, FFT16384/hop8192/group1, one approximately20-s
+source-process run per OFF/64/256 setting measured DSP push/poll at about
+14.6–14.7 s. Native persistence added about 0/2.58/4.33 s respectively,
+raising the 256-bin locked worker time to about19.06 s of20 s. The 64-bin
+run reported one lock-contention I/Q block drop. The 256-bin profiled run
+reported no software loss **in that run only**; earlier alternating ordinary
+256-bin runs still had120–124 queue-full drops. Profiling perturbs scheduling,
+so these cannot be merged into a lossless acceptance claim. Python bridge
+poll durations were much smaller than native persistence but exclude Qt and
+DWM work; no GUI freshness bottleneck has been ruled out.
+
+A rejected frequency-tiled density layout regressed the same synthetic
+FFT16384/256-bin/15-Hz benchmark and was removed. A cadence-parameterized
+standalone benchmark shows snapshot copying costs time, but reducing the
+product's 15-Hz cadence cannot eliminate the per-detector-frame accumulation.
+The next candidate is an explicitly bounded, per-session persistence worker
+with exact reduced-output accounting, backpressure or visible gap counters,
+joined Stop and exception quarantine. It is not implemented or accepted by
+this diagnostic package. FFT/group/Fs, persistence resolution, calibration,
+quality/loss semantics and common UI V2 owner remain unchanged. Physical
+tinySA/Ethernet, sustained current-source frozen UI, independent review,
+APP-05 timing debts, APP-07 and release remain open.
