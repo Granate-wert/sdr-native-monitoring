@@ -428,14 +428,26 @@ void test_latest_drain_preserves_identity_and_separate_coalescing() {
                after.locked_push_ns >= after.dsp_push_poll_ns +
                    after.persistence_call_ns + after.publication_queue_ns,
                "native stage timing did not stay inside the locked DSP push");
+        expect(after.persistence_snapshot_count > 0U &&
+               after.persistence_histogram_update_ns > 0U &&
+               after.persistence_snapshot_build_ns > 0U &&
+               after.persistence_call_ns >= after.persistence_histogram_update_ns +
+                   after.persistence_snapshot_build_ns,
+               "persistence timing did not partition the outer call");
     } else {
         expect(after.locked_push_ns == 0U && after.dsp_push_poll_ns == 0U &&
-               after.persistence_call_ns == 0U && after.publication_queue_ns == 0U,
+               after.persistence_call_ns == 0U && after.publication_queue_ns == 0U &&
+               after.persistence_histogram_update_ns == 0U &&
+               after.persistence_snapshot_build_ns == 0U &&
+               after.persistence_snapshot_count == 0U,
                "ordinary native build unexpectedly profiled the hot path");
     }
     expect(after.locked_push_ns == before.locked_push_ns &&
            after.dsp_push_poll_ns == before.dsp_push_poll_ns &&
            after.persistence_call_ns == before.persistence_call_ns &&
+           after.persistence_histogram_update_ns == before.persistence_histogram_update_ns &&
+           after.persistence_snapshot_build_ns == before.persistence_snapshot_build_ns &&
+           after.persistence_snapshot_count == before.persistence_snapshot_count &&
            after.publication_queue_ns == before.publication_queue_ns,
            "presentation-only drain changed producer-stage duration counters");
     expect(after.presentation.popped - before.presentation.popped == 4U &&

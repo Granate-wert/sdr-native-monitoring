@@ -36,6 +36,15 @@ struct PersistenceSnapshot {
     QualityFlag quality_flags{QualityFlag::None};
 };
 
+struct PersistenceProfilingTiming {
+    bool available{};
+    // Cumulative successful-update work. Snapshot construction is separately
+    // timed and does not overlap histogram_update_ns.
+    std::uint64_t histogram_update_ns{};
+    std::uint64_t snapshot_build_ns{};
+    std::uint64_t snapshot_count{};
+};
+
 class PersistenceAccumulator final {
 public:
     explicit PersistenceAccumulator(PersistenceConfig config);
@@ -48,6 +57,7 @@ public:
     [[nodiscard]] std::uint64_t processed_frames() const noexcept {
         return processed_frames_;
     }
+    [[nodiscard]] PersistenceProfilingTiming profiling_timing() const noexcept;
 
 private:
     [[nodiscard]] std::uint32_t bin_for(float value) const noexcept;
@@ -72,6 +82,9 @@ private:
     std::uint64_t update_sequence_{};
     std::int64_t last_timestamp_ns_{};
     std::int64_t last_snapshot_timestamp_ns_{};
+    std::uint64_t histogram_update_ns_{};
+    std::uint64_t snapshot_build_ns_{};
+    std::uint64_t snapshot_count_{};
 };
 
 }  // namespace sdr_core

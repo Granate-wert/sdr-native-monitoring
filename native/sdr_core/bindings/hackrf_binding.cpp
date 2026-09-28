@@ -164,6 +164,9 @@ void bind_hackrf(py::module_& module) {
         .def_readonly("locked_push_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::locked_push_ns)
         .def_readonly("dsp_push_poll_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::dsp_push_poll_ns)
         .def_readonly("persistence_call_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::persistence_call_ns)
+        .def_readonly("persistence_histogram_update_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::persistence_histogram_update_ns)
+        .def_readonly("persistence_snapshot_build_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::persistence_snapshot_build_ns)
+        .def_readonly("persistence_snapshot_count", &sdr_hackrf::HackrfFixedBandDspMetrics::persistence_snapshot_count)
         .def_readonly("publication_queue_ns", &sdr_hackrf::HackrfFixedBandDspMetrics::publication_queue_ns)
         .def_readonly(
             "source_sequence_discontinuities",

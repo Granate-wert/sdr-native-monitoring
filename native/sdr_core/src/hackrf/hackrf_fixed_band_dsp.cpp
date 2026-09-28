@@ -306,6 +306,10 @@ HackrfFixedBandDspMetrics HackrfFixedBandDsp::metrics() const {
     result.locked_push_ns = impl_->locked_push_ns;
     result.dsp_push_poll_ns = impl_->dsp_push_poll_ns;
     result.persistence_call_ns = impl_->persistence_call_ns;
+    const auto persistence_timing = impl_->persistence.profiling_timing();
+    result.persistence_histogram_update_ns = persistence_timing.histogram_update_ns;
+    result.persistence_snapshot_build_ns = persistence_timing.snapshot_build_ns;
+    result.persistence_snapshot_count = persistence_timing.snapshot_count;
     result.publication_queue_ns = impl_->publication_queue_ns;
     result.source_sequence_discontinuities = impl_->source_sequence_discontinuities;
     result.source_sample_index_discontinuities =

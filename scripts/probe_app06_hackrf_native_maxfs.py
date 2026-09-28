@@ -48,20 +48,27 @@ def counter_delta(before, after, name):
 def worker_stage_delta(before, after):
     """Keep absent/unprofiled timings distinct from measured zero duration."""
     names = ("locked_push_ns", "dsp_push_poll_ns", "persistence_call_ns", "publication_queue_ns")
+    nested = ("persistence_histogram_update_ns", "persistence_snapshot_build_ns",
+              "persistence_snapshot_count")
     before_available = getattr(before, "stage_timing_available", False)
     after_available = getattr(after, "stage_timing_available", False)
     if type(before_available) is not bool or type(after_available) is not bool or before_available != after_available:
         raise ValueError("native stage timing availability changed")
     if not after_available:
-        if any(getattr(after, name, 0) != 0 for name in names):
+        if any(getattr(after, name, 0) != 0 for name in names + nested):
             raise ValueError("unavailable native stage timing contains nonzero counters")
         return {"available": False}
     result = {"available": True}
-    result.update({name: counter_delta(before, after, name) for name in names})
+    result.update({name: counter_delta(before, after, name) for name in names + nested})
     attributed = sum(result[name] for name in names[1:])
     if attributed > result["locked_push_ns"]:
         raise ValueError("native stage durations exceed locked push")
     result["unattributed_locked_ns"] = result["locked_push_ns"] - attributed
+    nested_duration = (result["persistence_histogram_update_ns"] +
+                       result["persistence_snapshot_build_ns"])
+    if nested_duration > result["persistence_call_ns"]:
+        raise ValueError("persistence durations exceed outer call")
+    result["unattributed_persistence_ns"] = result["persistence_call_ns"] - nested_duration
     return result
 
 

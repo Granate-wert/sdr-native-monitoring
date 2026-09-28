@@ -58,25 +58,41 @@ class NativeMaxFsProbeTests(unittest.TestCase):
 
     def test_worker_stage_deltas_keep_absence_and_partition_separate(self):
         names = ("locked_push_ns", "dsp_push_poll_ns", "persistence_call_ns", "publication_queue_ns")
-        absent = SimpleNamespace(stage_timing_available=False, **dict.fromkeys(names, 0))
+        nested = ("persistence_histogram_update_ns", "persistence_snapshot_build_ns",
+                  "persistence_snapshot_count")
+        absent = SimpleNamespace(stage_timing_available=False, **dict.fromkeys(names + nested, 0))
         self.assertEqual(worker_stage_delta(absent, absent), {"available": False})
         before = SimpleNamespace(stage_timing_available=True, locked_push_ns=10,
                                  dsp_push_poll_ns=5, persistence_call_ns=3,
-                                 publication_queue_ns=1)
+                                 publication_queue_ns=1, persistence_histogram_update_ns=1,
+                                 persistence_snapshot_build_ns=1, persistence_snapshot_count=1)
         after = SimpleNamespace(stage_timing_available=True, locked_push_ns=110,
                                 dsp_push_poll_ns=55, persistence_call_ns=33,
-                                publication_queue_ns=11)
+                                publication_queue_ns=11, persistence_histogram_update_ns=19,
+                                persistence_snapshot_build_ns=8, persistence_snapshot_count=4)
         self.assertEqual(worker_stage_delta(before, after), {
             "available": True, "locked_push_ns": 100, "dsp_push_poll_ns": 50,
             "persistence_call_ns": 30, "publication_queue_ns": 10,
-            "unattributed_locked_ns": 10,
+            "unattributed_locked_ns": 10, "persistence_histogram_update_ns": 18,
+            "persistence_snapshot_build_ns": 7, "persistence_snapshot_count": 3,
+            "unattributed_persistence_ns": 5,
         })
         with self.assertRaisesRegex(ValueError, "availability changed"):
             worker_stage_delta(absent, after)
         with self.assertRaisesRegex(ValueError, "exceed locked push"):
             worker_stage_delta(before, SimpleNamespace(stage_timing_available=True,
                                locked_push_ns=20, dsp_push_poll_ns=55,
-                               persistence_call_ns=33, publication_queue_ns=11))
+                               persistence_call_ns=33, publication_queue_ns=11,
+                               persistence_histogram_update_ns=19,
+                               persistence_snapshot_build_ns=8,
+                               persistence_snapshot_count=4))
+        with self.assertRaisesRegex(ValueError, "exceed outer call"):
+            worker_stage_delta(before, SimpleNamespace(stage_timing_available=True,
+                               locked_push_ns=110, dsp_push_poll_ns=55,
+                               persistence_call_ns=33, publication_queue_ns=11,
+                               persistence_histogram_update_ns=29,
+                               persistence_snapshot_build_ns=18,
+                               persistence_snapshot_count=4))
 
     def test_rx_switch_is_required_before_importing_native_or_sdk(self):
         result = subprocess.run(

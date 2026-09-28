@@ -1,6 +1,7 @@
 #include "sdr_core/persistence.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -8,8 +9,28 @@
 namespace sdr_core {
 
 namespace {
+#ifndef SDR_CORE_PROFILING_ENABLED
+#define SDR_CORE_PROFILING_ENABLED 0
+#endif
 constexpr std::uint32_t invalid_bin = std::numeric_limits<std::uint32_t>::max();
 constexpr double decay_rebase_threshold = 1.0e-6;
+#if SDR_CORE_PROFILING_ENABLED
+[[nodiscard]] std::uint64_t elapsed_ns(
+    const std::chrono::steady_clock::time_point start
+) noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start
+    ).count());
+}
+
+[[nodiscard]] std::uint64_t saturating_add(
+    const std::uint64_t left,
+    const std::uint64_t right
+) noexcept {
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    return right > maximum - left ? maximum : left + right;
+}
+#endif
 }
 
 PersistenceAccumulator::PersistenceAccumulator(PersistenceConfig config) {
@@ -37,6 +58,15 @@ void PersistenceAccumulator::reset() {
     update_sequence_ = 0U;
     last_timestamp_ns_ = 0;
     last_snapshot_timestamp_ns_ = 0;
+}
+
+PersistenceProfilingTiming PersistenceAccumulator::profiling_timing() const noexcept {
+    return {
+        .available = SDR_CORE_PROFILING_ENABLED != 0,
+        .histogram_update_ns = histogram_update_ns_,
+        .snapshot_build_ns = snapshot_build_ns_,
+        .snapshot_count = snapshot_count_,
+    };
 }
 
 std::uint32_t PersistenceAccumulator::bin_for(const float value) const noexcept {
@@ -70,6 +100,9 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
     if (bins == 0U || frame.frequencies_hz->size() != bins) {
         return std::nullopt;
     }
+#if SDR_CORE_PROFILING_ENABLED
+    const auto histogram_started = std::chrono::steady_clock::now();
+#endif
     const bool changed_identity = source_.has_value() && (
         source_->source_id != frame.source.source_id ||
         source_->source_type != frame.source.source_type ||
@@ -181,6 +214,11 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
     ++processed_frames_;
     ++update_sequence_;
     last_timestamp_ns_ = frame.timestamp_ns;
+#if SDR_CORE_PROFILING_ENABLED
+    histogram_update_ns_ = saturating_add(
+        histogram_update_ns_, elapsed_ns(histogram_started)
+    );
+#endif
     const auto period_ns = static_cast<std::int64_t>(
         std::max(1.0, 1.0e9 / config_.snapshot_rate_hz)
     );
@@ -190,7 +228,17 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
         return std::nullopt;
     }
     last_snapshot_timestamp_ns_ = frame.timestamp_ns;
-    return make_snapshot(frame);
+#if SDR_CORE_PROFILING_ENABLED
+    const auto snapshot_started = std::chrono::steady_clock::now();
+#endif
+    auto snapshot = make_snapshot(frame);
+#if SDR_CORE_PROFILING_ENABLED
+    snapshot_build_ns_ = saturating_add(
+        snapshot_build_ns_, elapsed_ns(snapshot_started)
+    );
+    snapshot_count_ = saturating_add(snapshot_count_, 1U);
+#endif
+    return snapshot;
 }
 
 PersistenceSnapshot PersistenceAccumulator::make_snapshot(

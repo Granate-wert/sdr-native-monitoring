@@ -53,6 +53,12 @@ struct HackrfFixedBandDspMetrics {
     std::uint64_t locked_push_ns{};
     std::uint64_t dsp_push_poll_ns{};
     std::uint64_t persistence_call_ns{};
+    // Profiling-only nested partition of persistence_call_ns. The histogram
+    // and snapshot durations do not overlap; the difference is call/clock
+    // overhead, not an unobserved RF interval.
+    std::uint64_t persistence_histogram_update_ns{};
+    std::uint64_t persistence_snapshot_build_ns{};
+    std::uint64_t persistence_snapshot_count{};
     std::uint64_t publication_queue_ns{};
     // These are delivery-only counters for the final bounded fresh-window
     // presentation queue.  They never describe an input or analytical FFT
