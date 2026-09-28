@@ -99,6 +99,33 @@ prove a new physical sweep. It does not inspect RF settling or decide
 which FFT bins form a trustworthy usable subband. Both admission layers must
 remain upstream of any I/Q-to-spectrum publication.
 
+The next source-owner layer is still **not** a selectable HackRF Sweep mode.
+An explicit native `HackrfSweepSession` now uses the same official one-device
+port implementation selected through a Sweep-typed factory with mandatory
+serial words. Before configuring RF it validates the plan and bounded queue,
+opens exactly one matching HackRF One, reads USB API >=0x0104 and checks the
+SDK transfer size against complete 16,384-byte blocks. It applies the
+requested Fs/filter/LNA/VGA, explicitly keeps amplifier and bias tee off,
+initializes firmware Sweep for exactly **one block per tune**, and calls
+`hackrf_start_rx_sweep()` rather than the fixed-centre RX start. Header order
+is checked in the callback; only admitted CI8 and its reported-header/
+logical-epoch metadata are copied into a preallocated bounded queue. Queue
+pressure and callback contention are explicit gaps, not silent stale bins.
+The queue maximum is 256 blocks of 16,374 CI8 bytes; it is not an unbounded
+raw-I/Q recording or a promise of continuous samples.
+
+The source owner does not perform FFT, choose RF-settled/usable bins, stitch
+overlap, publish common Spectrum/Waterfall frames, expose a Python/UI V2
+Start route, or establish RF coverage. Live gate metrics are deliberately
+unavailable until callback quiescence; zero must not mean "no loss". Stop
+distinguishes complete handle release from a clean vendor RF-off result and
+retains the first error. In pinned libhackrf, a failed RF-off command can
+follow successful transfer cancellation, making a second SDK Stop impossible;
+the Sweep owner closes the **same** handle instead. Catastrophic SDK thread-
+join failure remains an unproven callback-lifetime case and is fail-stop.
+The existing fixed-band RTBW session has not yet adopted this Stop-error
+recovery path; its separate failure injection and repair remain open.
+
 This foundation does **not** change the table's HackRF Sweep
 `mode_runtime_unavailable` result, enable hardware Sweep, alter RTBW Fs/FFT/
 gain/detector/grouping, or qualify UI latency/RF coverage. Its native tests

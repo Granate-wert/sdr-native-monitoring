@@ -16,7 +16,7 @@ constexpr int wrong_device_kind_status = -30'002;
 constexpr int invalid_state_status = -30'003;
 constexpr int wrong_device_identity_status = -30'004;
 
-class OfficialHackrfRxPort final : public HackrfRxRuntimePort {
+class OfficialHackrfRxPort final : public HackrfSweepRuntimePort {
 public:
     explicit OfficialHackrfRxPort(std::optional<std::array<std::uint32_t, 4>> expected_serial_words)
         : expected_serial_words_(expected_serial_words) {}
@@ -41,6 +41,7 @@ public:
         initialized_ = status == HACKRF_SUCCESS;
         if (initialized_) {
             device_close_consumed_ = false;
+            stop_attempted_ = false;
         }
         return status;
     }
@@ -100,6 +101,33 @@ public:
         return static_cast<std::uint32_t>(size);
     }
 
+    int read_usb_api_version(std::uint16_t& version) noexcept override {
+        if (device_ == nullptr || streaming_) {
+            return invalid_state_status;
+        }
+        version = 0U;
+        return hackrf_usb_api_version_read(device_, &version);
+    }
+
+    int initialize_sweep(const HackrfSweepSequencePlan& plan) noexcept override {
+        if (device_ == nullptr || streaming_ || plan.ranges.empty() ||
+            plan.ranges.size() > hackrf_sweep_max_ranges) {
+            return invalid_state_status;
+        }
+        std::array<std::uint16_t, 2U * hackrf_sweep_max_ranges> ranges{};
+        for (std::size_t index = 0U; index < plan.ranges.size(); ++index) {
+            ranges[2U * index] = plan.ranges[index].start_mhz;
+            ranges[2U * index + 1U] = plan.ranges[index].stop_mhz;
+        }
+        const auto style = plan.style == HackrfSweepStyle::Interleaved
+            ? INTERLEAVED : LINEAR;
+        return hackrf_init_sweep(
+            device_, ranges.data(), static_cast<int>(plan.ranges.size()),
+            static_cast<std::uint32_t>(hackrf_sweep_block_bytes),
+            plan.step_width_hz, plan.offset_hz, style
+        );
+    }
+
     int set_sample_rate(const double value) noexcept override {
         return device_ != nullptr ? hackrf_set_sample_rate(device_, value)
                                   : invalid_state_status;
@@ -139,13 +167,27 @@ public:
     }
 
     int start_rx(HackrfRxBytesCallback callback, void* context) noexcept override {
+        return start_stream(callback, context, false);
+    }
+
+    int start_rx_sweep(HackrfRxBytesCallback callback, void* context) noexcept override {
+        return start_stream(callback, context, true);
+    }
+
+    int start_stream(HackrfRxBytesCallback callback, void* context,
+                     const bool sweep) noexcept {
         if (device_ == nullptr || streaming_ || callback == nullptr) {
             return invalid_state_status;
         }
         callback_ = callback;
         callback_context_ = context;
-        const auto status = hackrf_start_rx(device_, &OfficialHackrfRxPort::trampoline, this);
+        const auto status = sweep
+            ? hackrf_start_rx_sweep(device_, &OfficialHackrfRxPort::trampoline, this)
+            : hackrf_start_rx(device_, &OfficialHackrfRxPort::trampoline, this);
         streaming_ = status == HACKRF_SUCCESS;
+        if (streaming_) {
+            stop_attempted_ = false;
+        }
         if (!streaming_) {
             callback_ = nullptr;
             callback_context_ = nullptr;
@@ -157,6 +199,7 @@ public:
         if (!streaming_ || device_ == nullptr) {
             return invalid_state_status;
         }
+        stop_attempted_ = true;
         const auto status = hackrf_stop_rx(device_);
         if (status == HACKRF_SUCCESS) {
             streaming_ = false;
@@ -167,7 +210,7 @@ public:
     }
 
     int close_device() noexcept override {
-        if (streaming_) {
+        if (streaming_ && !stop_attempted_) {
             return invalid_state_status;
         }
         if (device_ == nullptr) {
@@ -178,7 +221,11 @@ public:
         }
         const auto status = hackrf_close(device_);
         device_ = nullptr;
+        streaming_ = false;
+        callback_ = nullptr;
+        callback_context_ = nullptr;
         device_close_consumed_ = true;
+        stop_attempted_ = false;
         return status;
     }
 
@@ -223,6 +270,7 @@ private:
     void* callback_context_{};
     bool initialized_{};
     bool streaming_{};
+    bool stop_attempted_{};
     bool device_close_consumed_{};
     std::optional<std::array<std::uint32_t, 4>> expected_serial_words_;
 };
@@ -231,6 +279,11 @@ private:
 
 std::unique_ptr<HackrfRxRuntimePort> make_official_hackrf_rx_port(
     std::optional<std::array<std::uint32_t, 4>> expected_serial_words) {
+    return std::make_unique<OfficialHackrfRxPort>(expected_serial_words);
+}
+
+std::unique_ptr<HackrfSweepRuntimePort> make_official_hackrf_sweep_port(
+    std::array<std::uint32_t, 4> expected_serial_words) {
     return std::make_unique<OfficialHackrfRxPort>(expected_serial_words);
 }
 

@@ -17,6 +17,8 @@ struct State {
     hackrf_device* live_device{};
     int close_status{};
     int identity_status{};
+    int stop_status{};
+    std::size_t transfer_buffer_size{32U};
     int close_calls{};
     int exit_calls{};
     int configure_calls{};
@@ -88,6 +90,26 @@ void test_session_stop_recovery_releases_library_without_reclosing_device() {
     expect(state.close_calls == 1 && state.invalid_close_calls == 0, "session no double close");
     expect(state.exit_calls == 1 && state.stop_calls == 1, "completed Stop/exit not repeated");
 }
+
+void test_sweep_stop_command_error_closes_without_impossible_sdk_retry() {
+    state = {};
+    state.stop_status = -1002;
+    state.transfer_buffer_size = 262'144U;
+    auto profile = sdr_hackrf::HackrfSweepProfile{};
+    profile.sequence.ranges = {{100U, 120U}};
+    auto session = sdr_hackrf::HackrfSweepSession::start(
+        sdr_hackrf::make_official_hackrf_sweep_port(
+            std::array<std::uint32_t, 4>{0U, 0U, 0U, 0U}
+        ), profile
+    );
+    const auto result = session->stop(std::chrono::milliseconds(100));
+    expect(result.complete() && !result.clean() && result.stop_rx_status == -1002,
+           "Sweep RF-off error was masked or stranded the owner");
+    session.reset();
+    expect(state.stop_calls == 1 && state.close_calls == 1 &&
+               state.exit_calls == 1 && state.invalid_close_calls == 0,
+           "failed Stop retried consumed SDK state or double-closed");
+}
 }  // namespace
 
 extern "C" {
@@ -104,7 +126,13 @@ int hackrf_board_partid_serialno_read(hackrf_device*, read_partid_serialno_t* ou
     std::fill(std::begin(output->serial_no), std::end(output->serial_no), 0U);
     return state.identity_status;
 }
-std::size_t hackrf_get_transfer_buffer_size(hackrf_device*) { return 32; }
+int hackrf_usb_api_version_read(hackrf_device*, std::uint16_t* output) {
+    *output = 0x0104U;
+    return 0;
+}
+std::size_t hackrf_get_transfer_buffer_size(hackrf_device*) {
+    return state.transfer_buffer_size;
+}
 int hackrf_set_sample_rate(hackrf_device*, double) { ++state.configure_calls; return 0; }
 int hackrf_set_baseband_filter_bandwidth(hackrf_device*, std::uint32_t) { ++state.configure_calls; return 0; }
 int hackrf_set_freq(hackrf_device*, std::uint64_t) { ++state.configure_calls; return 0; }
@@ -113,7 +141,16 @@ int hackrf_set_antenna_enable(hackrf_device*, std::uint8_t) { ++state.configure_
 int hackrf_set_lna_gain(hackrf_device*, std::uint32_t) { ++state.configure_calls; return 0; }
 int hackrf_set_vga_gain(hackrf_device*, std::uint32_t) { ++state.configure_calls; return 0; }
 int hackrf_start_rx(hackrf_device*, hackrf_sample_block_cb_fn, void*) { ++state.start_calls; return 0; }
-int hackrf_stop_rx(hackrf_device*) { ++state.stop_calls; return 0; }
+int hackrf_init_sweep(hackrf_device*, const std::uint16_t*, int,
+                      std::uint32_t, std::uint32_t, std::uint32_t, sweep_style) {
+    ++state.configure_calls;
+    return 0;
+}
+int hackrf_start_rx_sweep(hackrf_device*, hackrf_sample_block_cb_fn, void*) {
+    ++state.start_calls;
+    return 0;
+}
+int hackrf_stop_rx(hackrf_device*) { ++state.stop_calls; return state.stop_status; }
 int hackrf_close(hackrf_device* device) {
     ++state.close_calls;
     if (state.live_device == nullptr || device != state.live_device) {
@@ -133,6 +170,7 @@ int main() {
         test_consumed_close_error_is_returned_once_and_not_retried();
         test_identity_failure_destructor_never_recloses_consumed_pointer();
         test_session_stop_recovery_releases_library_without_reclosing_device();
+        test_sweep_stop_command_error_closes_without_impossible_sdk_retry();
         std::cout << "official close consumption/identity/session retry PASS\n";
         return 0;
     } catch (const std::exception& error) {

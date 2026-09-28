@@ -24,6 +24,7 @@ struct hackrf_transfer {
     int valid_length;
 };
 using hackrf_sample_block_cb_fn = int (*)(hackrf_transfer*);
+enum sweep_style { LINEAR = 0, INTERLEAVED = 1 };
 
 extern "C" {
 int hackrf_init();
@@ -32,6 +33,7 @@ hackrf_device_list_t* hackrf_device_list();
 void hackrf_device_list_free(hackrf_device_list_t*);
 int hackrf_device_list_open(hackrf_device_list_t*, int, hackrf_device**);
 int hackrf_board_partid_serialno_read(hackrf_device*, read_partid_serialno_t*);
+int hackrf_usb_api_version_read(hackrf_device*, std::uint16_t*);
 std::size_t hackrf_get_transfer_buffer_size(hackrf_device*);
 int hackrf_set_sample_rate(hackrf_device*, double);
 int hackrf_set_baseband_filter_bandwidth(hackrf_device*, std::uint32_t);
@@ -41,6 +43,9 @@ int hackrf_set_antenna_enable(hackrf_device*, std::uint8_t);
 int hackrf_set_lna_gain(hackrf_device*, std::uint32_t);
 int hackrf_set_vga_gain(hackrf_device*, std::uint32_t);
 int hackrf_start_rx(hackrf_device*, hackrf_sample_block_cb_fn, void*);
+int hackrf_init_sweep(hackrf_device*, const std::uint16_t*, int,
+                      std::uint32_t, std::uint32_t, std::uint32_t, sweep_style);
+int hackrf_start_rx_sweep(hackrf_device*, hackrf_sample_block_cb_fn, void*);
 int hackrf_stop_rx(hackrf_device*);
 int hackrf_close(hackrf_device*);
 }
