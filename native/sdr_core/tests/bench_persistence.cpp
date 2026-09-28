@@ -1,6 +1,7 @@
 #include "sdr_core/persistence.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -25,6 +26,20 @@ std::uint32_t parse_positive(const char* value, const char* label) {
         return static_cast<std::uint32_t>(parsed);
     } catch (...) {
         throw std::runtime_error(std::string(label) + " must be a positive uint32");
+    }
+}
+
+double parse_positive_rate(const char* value) {
+    try {
+        std::size_t consumed = 0U;
+        const auto rate = std::stod(value, &consumed);
+        if (consumed != std::string(value).size() ||
+            !std::isfinite(rate) || rate <= 0.0) {
+            throw std::out_of_range("rate");
+        }
+        return rate;
+    } catch (...) {
+        throw std::runtime_error("snapshot-rate-hz must be finite and positive");
     }
 }
 
@@ -54,6 +69,7 @@ int main(int argc, char** argv) {
         std::uint32_t frequency_bins = default_frequency_bins;
         std::uint32_t power_bins = default_power_bins;
         std::uint32_t frames = default_frames;
+        double snapshot_rate_hz = 30.0;
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
             if (argument == "--frequency-bins" && index + 1 < argc) {
@@ -62,8 +78,12 @@ int main(int argc, char** argv) {
                 power_bins = parse_positive(argv[++index], "power-bins");
             } else if (argument == "--frames" && index + 1 < argc) {
                 frames = parse_positive(argv[++index], "frames");
+            } else if (argument == "--snapshot-rate-hz" && index + 1 < argc) {
+                snapshot_rate_hz = parse_positive_rate(argv[++index]);
             } else {
-                throw std::runtime_error("usage: --frequency-bins N --power-bins N --frames N");
+                throw std::runtime_error(
+                    "usage: --frequency-bins N --power-bins N --frames N --snapshot-rate-hz RATE"
+                );
             }
         }
 
@@ -75,7 +95,7 @@ int main(int argc, char** argv) {
         config.power_min_db = -140.0;
         config.power_max_db = 20.0;
         config.power_bins = power_bins;
-        config.snapshot_rate_hz = 30.0;
+        config.snapshot_rate_hz = snapshot_rate_hz;
         sdr_core::PersistenceAccumulator accumulator(config);
         const auto first = make_frame(frequency_bins, 1'000'000LL, 0U);
         static_cast<void>(accumulator.update(first));
@@ -97,6 +117,7 @@ int main(int argc, char** argv) {
                   << "\"mode\":\"exponential-decay\","
                   << "\"frequency_bins\":" << frequency_bins << ','
                   << "\"power_bins\":" << power_bins << ','
+                  << "\"snapshot_rate_hz\":" << snapshot_rate_hz << ','
                   << "\"frames\":" << frames << ','
                   << "\"cells\":" << cells << ','
                   << "\"snapshots\":" << snapshots << ','
