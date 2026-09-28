@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--physical-size", nargs=2, type=int)
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--shared-views", type=int, choices=(1, 2, 3, 4), default=1)
+    parser.add_argument("--show-display", action="store_true")
     args = parser.parse_args()
     if not math.isfinite(args.scale) or args.scale <= 0:
         parser.error("--scale must be finite and positive")
@@ -60,6 +61,10 @@ def main() -> None:
         case.wait(lambda: all(pane.last_bundle is not None and
                               pane.spectrum_scene.displayed_frame is pane.last_bundle
                               for pane in case.page._panes[:args.shared_views]))
+        if args.show_display:
+            case.page.selected_view.setCurrentIndex(args.shared_views - 1)
+            case.page.display.click()
+            case.app.processEvents()
         for locale in (UiLocale.RU, UiLocale.EN):
             case.shell.select_appearance_locale(locale)
             for theme in (ThemeId.DARK, ThemeId.LIGHT, ThemeId.HIGH_CONTRAST):
@@ -70,6 +75,8 @@ def main() -> None:
                     case.shell.resize(width, height)
                     case.app.processEvents()
                     suffix = "" if args.shared_views == 1 else f"-views{args.shared_views}"
+                    if args.show_display:
+                        suffix += "-display"
                     name = f"analyzer-{locale.value}-{theme.value}-{width}x{height}{suffix}.png"
                     if not case.shell.grab().save(str(args.output / name)):
                         raise RuntimeError(f"failed to save {name}")
@@ -82,6 +89,7 @@ def main() -> None:
                                     "physical_client_target": args.physical_size,
                                     "requested_scale": args.scale,
                                     "shared_views": args.shared_views,
+                                    "display_overlay_open": args.show_display,
                                     "device_pixel_ratio": case.shell.devicePixelRatioF(),
                                     "fits_requested_client": case.shell.width() <= width and case.shell.height() <= height,
                                     "plot_area_fraction": fraction,

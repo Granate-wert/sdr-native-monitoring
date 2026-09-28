@@ -148,6 +148,27 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.selected_view.scope": MappingProxyType({
             UiLocale.RU: "Масштаб частоты и панель настройки отображения относятся только к выбранному окну. Старт, Стоп и настройка SDR общие для всех окон этого приёмника.",
             UiLocale.EN: "Frequency zoom and display controls affect only the selected view. Start, Stop and SDR settings are shared by every view of this receiver."}),
+        "analyzer.view_range.start": MappingProxyType({
+            UiLocale.RU: "Вид от, МГц", UiLocale.EN: "View start, MHz"}),
+        "analyzer.view_range.stop": MappingProxyType({
+            UiLocale.RU: "до, МГц", UiLocale.EN: "to, MHz"}),
+        "analyzer.view_range.apply": MappingProxyType({
+            UiLocale.RU: "Показать диапазон", UiLocale.EN: "Show range"}),
+        "analyzer.view_range.scope": MappingProxyType({
+            UiLocale.RU: "Только масштаб выбранного окна внутри уже полученного диапазона. Не меняет частоту SDR и не запускает перестройку.",
+            UiLocale.EN: "Selected-view zoom inside the already acquired span only. Does not tune or retune the SDR."}),
+        "analyzer.view_range.unavailable": MappingProxyType({
+            UiLocale.RU: "Нет актуального кадра для выбора диапазона.",
+            UiLocale.EN: "No current frame is available for a view range."}),
+        "analyzer.view_range.invalid": MappingProxyType({
+            UiLocale.RU: "Начало вида должно быть меньше конца.",
+            UiLocale.EN: "View start must be below view stop."}),
+        "analyzer.view_range.outside": MappingProxyType({
+            UiLocale.RU: "Диапазон вне текущего захвата. Нужна отдельная настройка RX; скрытой перестройки не будет.",
+            UiLocale.EN: "Range is outside this capture. It needs an explicit RX plan; no hidden retune will occur."}),
+        "analyzer.view_range.stale": MappingProxyType({
+            UiLocale.RU: "Источник, epoch или частотная сетка изменились. Откройте настройки вида заново.",
+            UiLocale.EN: "Source, epoch or frequency grid changed. Reopen the view settings."}),
         "analyzer.omitted_measurement": MappingProxyType({
             UiLocale.RU: "Источник {source} · epoch {epoch} · sequence {sequence} · {state} · {unit}",
             UiLocale.EN: "Source {source} · epoch {epoch} · sequence {sequence} · {state} · {unit}"}),

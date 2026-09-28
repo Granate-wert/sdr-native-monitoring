@@ -35,7 +35,7 @@ QWidget[ui2Root='true'] {{
 QWidget[ui2Root='true'] QWidget {{
     font-family: {typefaces.body_family}; font-size: {typefaces.body_px}px;
 }}
-QFrame[ui2Role='panel'], QFrame[ui2Role='card'] {{
+QFrame[ui2Role='panel'], QFrame[ui2Role='card'], QFrame[ui2Role='popover'] {{
     background: {colors.panel}; border: 1px solid {colors.border}; border-radius: {radius.card}px;
 }}
 QScrollArea[ui2Role='panel-scroll'], QWidget[ui2Role='panel-scroll-content'] {{
@@ -48,6 +48,14 @@ QWidget[ui2Root='true'] QLabel[ui2Role='section-heading'] {{
     color: {colors.primary_text}; font-size: {typefaces.section_title_px}px; font-weight: 600;
 }}
 QWidget[ui2Root='true'] QLabel[ui2Role='secondary'] {{ color: {colors.secondary_text}; font-size: {typefaces.secondary_px}px; }}
+QLabel[ui2Role='pane-badge'] {{
+    background: {colors.elevated}; color: {colors.primary_text};
+    border: 1px solid {colors.border}; border-radius: {radius.control}px;
+    font-weight: 600;
+}}
+QLabel[ui2Role='pane-badge'][ui2Selected='true'] {{
+    background: {colors.accent}; color: {colors.background}; border-color: {colors.accent};
+}}
 QListWidget[ui2Role='data-list'], QTableWidget[ui2Role='data-table'] {{
     background: {colors.control}; color: {colors.primary_text}; border: 1px solid {colors.border};
     selection-background-color: {colors.accent}; selection-color: {colors.background};
@@ -57,6 +65,7 @@ QTableWidget[ui2Role='data-table'] QHeaderView::section {{
     padding: 4px;
 }}
 QLabel[ui2Tone='warning'] {{ color: {colors.warning}; }}
+QLabel[ui2Tone='error'] {{ color: {colors.error}; }}
 QWidget[ui2Root='true'] QLabel[ui2Role='numeric'] {{
     color: {colors.primary_text}; font-family: {typefaces.numeric_family};
     font-size: {typefaces.measurement_px}px; font-weight: 600;

@@ -129,6 +129,23 @@ class AnalyzerPaneStateTests(unittest.TestCase):
         second_range = second.spectrum_scene.view_box.viewRange()[0]
         self.assertAlmostEqual(second_range[1] - second_range[0], 1_000_000.0, delta=1)
         self.assertEqual(tuple(first.spectrum_scene.view_box.viewRange()[0]), first_range)
+        fixture.page.display.click()
+        overlay = fixture.page._display_overlays[1]
+        grid = second.spectrum_scene.measurement_grid
+        assert grid is not None
+        overlay.range_start.setValue(float(grid[500]) / 1e6)
+        overlay.range_stop.setValue(float(grid[1500]) / 1e6)
+        overlay.apply_range.click()
+        selected_range = second.spectrum_scene.view_box.viewRange()[0]
+        self.assertAlmostEqual(selected_range[0], float(grid[500]), delta=1)
+        self.assertAlmostEqual(selected_range[1], float(grid[1500]), delta=1)
+        self.assertEqual(tuple(first.spectrum_scene.view_box.viewRange()[0]), first_range)
+        self.assertFalse(overlay.range_error.isVisible())
+        overlay.range_start.setValue(1.0)  # Beyond the current capture, not an RF command.
+        overlay.apply_range.click()
+        self.assertTrue(overlay.range_error.isVisible())
+        self.assertEqual(tuple(second.spectrum_scene.view_box.viewRange()[0]), tuple(selected_range))
+        fixture.page._hide_display()
         report = fixture.composition.memory_snapshot(fixture.page)
         owners = {owner.name: owner.bytes for owner in report.owners}
         self.assertGreater(owners["pane2.spectrum.sources"], 0)
@@ -161,6 +178,31 @@ class AnalyzerPaneStateTests(unittest.TestCase):
         self.assertIs(secondary.last_bundle, completed.bundle)
         self.assertEqual(primary.waterfall_pane.history_rows, 2)
         self.assertEqual(secondary.waterfall_pane.history_rows, 2)
+        fixture.page.selected_view.setCurrentIndex(1)
+        fixture.page.display.click()
+        overlay = fixture.page._display_overlays[1]
+        overlay.range_start.setValue(100.5)
+        overlay.range_stop.setValue(102.5)
+        overlay.apply_range.click()
+        selected_range = secondary.spectrum_scene.view_box.viewRange()[0]
+        self.assertAlmostEqual(selected_range[0], 100_500_000, delta=1)
+        self.assertAlmostEqual(selected_range[1], 102_500_000, delta=1)
+        self.assertNotEqual(primary.spectrum_scene.view_box.viewRange()[0], selected_range)
+        self.assertFalse(overlay.range_error.isVisible())
+        same_epoch = self._state(progress(2, revision=2), line=terminal(1))
+        fixture.page._render(same_epoch)
+        self.assertFalse(overlay.range_error.isVisible())
+        self.assertAlmostEqual(secondary.spectrum_scene.view_box.viewRange()[0][0],
+                               100_500_000, delta=1)
+        self.assertAlmostEqual(secondary.spectrum_scene.view_box.viewRange()[0][1],
+                               102_500_000, delta=1)
+        new_epoch = self._state(replace(progress(3), epoch=8))
+        fixture.page._render(new_epoch)
+        self.assertTrue(overlay.range_error.isVisible())
+        reset_range = tuple(secondary.spectrum_scene.view_box.viewRange()[0])
+        overlay.apply_range.click()
+        self.assertEqual(tuple(secondary.spectrum_scene.view_box.viewRange()[0]), reset_range)
+        fixture.page._hide_display()
         self.assertEqual(fixture.events, [])
 
     def test_projection_backpressure_is_joint_and_shared_views_are_bounded(self) -> None:
@@ -192,6 +234,8 @@ class AnalyzerPaneStateTests(unittest.TestCase):
             self.assertGreater(pane.spectrum_scene.view_box.sceneBoundingRect().width(), 100)
         page.selected_view.setCurrentIndex(2)
         self.assertIs(page._selected_pane(), page._panes[2])
+        self.assertTrue(page._panes[2]._pane_badge.property("ui2Selected"))
+        self.assertFalse(page._panes[0]._pane_badge.property("ui2Selected"))
         page.display.click()
         self.assertTrue(page._display_overlays[2].isVisible())
         self.assertFalse(page.display_controls.isVisible())

@@ -11,8 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import numpy as np
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import QLabel, QWidget
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
@@ -34,7 +34,10 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
                  on_frame_applied: Callable[[], None] | None = None,
                  settings: QSettings | None = None,
                  settings_prefix: str | None = None,
+                 pane_number: int = 1,
                  parent: QWidget | None = None) -> None:
+        if type(pane_number) is not int or not 1 <= pane_number <= 4:
+            raise ValueError("Analyzer pane number must be in [1, 4]")
         if settings_prefix is None:
             super().__init__(settings=settings, parent=parent)
         else:
@@ -49,9 +52,44 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self._sweep_waterfall_error = False
         self._terminal_released = False
         self._on_frame_applied = on_frame_applied
+        self.pane_number = pane_number
+        self._pane_badge = QLabel(str(pane_number), self)
+        self._pane_badge.setProperty("ui2Role", "pane-badge")
+        self._pane_badge.setProperty("ui2Selected", False)
+        self._pane_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._pane_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._pane_badge.setFixedSize(28, 24)
+        self._position_badge()
+        self.set_badge_locale()
         if projector is not None:
             self.spectrum_scene.set_projection_port(projector)
             self.waterfall_pane._renderer.allocation_budget = projector.allocation_budget
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._position_badge()
+        self._pane_badge.raise_()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_pane_badge"):
+            self._position_badge()
+
+    def _position_badge(self) -> None:
+        self._pane_badge.move(max(8, self.width() - self._pane_badge.width() - 8), 8)
+
+    def set_badge_locale(self) -> None:
+        label = f"{text('analyzer.shared_views.short')} {self.pane_number}"
+        self._pane_badge.setAccessibleName(label)
+        self._pane_badge.setToolTip(label)
+
+    def set_selected(self, selected: bool) -> None:
+        if self._pane_badge.property("ui2Selected") == bool(selected):
+            return
+        self._pane_badge.setProperty("ui2Selected", bool(selected))
+        self._pane_badge.style().unpolish(self._pane_badge)
+        self._pane_badge.style().polish(self._pane_badge)
+        self._pane_badge.update()
 
     @property
     def last_bundle(self) -> AnalyzerFrameBundle | None:

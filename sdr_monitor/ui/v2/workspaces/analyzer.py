@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import math
 from time import monotonic
 from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -71,6 +72,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._theme = ThemeId.DARK
         self._last_source_selection: AnalyzerSourceSelection | None = None
         self._last_family_path_available = False
+        self._range_anchors: dict[AnalyzerDisplayControls, tuple[object, ...]] = {}
         self._status_cadence = AnalyzerStatusCadence()
         self._text_bindings: list[tuple[QLabel | QPushButton, str]] = []
         self.setProperty("ui2Root", True)
@@ -172,8 +174,10 @@ class AnalyzerWorkspaceV2(QWidget):
         self._pane_grid.setSpacing(4)
         self.visualization = AnalyzerPaneViewV2(
             model.state.mode, projector=projector,
-            on_frame_applied=self._on_visual_frame_applied, parent=self._pane_host,
+            on_frame_applied=self._on_visual_frame_applied, pane_number=1,
+            parent=self._pane_host,
         )
+        self.visualization.set_selected(True)
         self._panes = [self.visualization]
         self._pane_grid.addWidget(self.visualization, 0, 0, 1, 2)
         self.frequency_bar.viewport_span_requested.connect(self._change_viewport_span)
@@ -189,6 +193,7 @@ class AnalyzerWorkspaceV2(QWidget):
         )
         self.display_controls.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.display_controls.close_requested.connect(self._hide_display)
+        self.display_controls.viewport_range_requested.connect(self._apply_selected_view_range)
         self._display_overlays = [self.display_controls]
         self.status = AnalyzerStatusLabel(self)
         self.status.setProperty("ui2Role", "secondary")
@@ -231,6 +236,7 @@ class AnalyzerWorkspaceV2(QWidget):
             pane = AnalyzerPaneViewV2(
                 self.model.state.mode, projector=projector,
                 settings_prefix=f"ui_v2/analyzer/shared_pane{index}/v1",
+                pane_number=index,
                 parent=self._pane_host,
             )
             pane.set_theme(self._theme)
@@ -245,6 +251,7 @@ class AnalyzerWorkspaceV2(QWidget):
             )
             overlay.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             overlay.close_requested.connect(self._hide_display)
+            overlay.viewport_range_requested.connect(self._apply_selected_view_range)
             overlay.set_locale(current_locale())
             for child in (overlay, *overlay.findChildren(QWidget)):
                 child.installEventFilter(self)
@@ -270,6 +277,7 @@ class AnalyzerWorkspaceV2(QWidget):
                      ((0, 0, 1, 1), (0, 1, 1, 1), (1, 0, 1, 1), (1, 1, 1, 1)))
         for pane, (row, column, row_span, column_span) in zip(self._panes[:count], positions, strict=True):
             self._pane_grid.addWidget(pane, row, column, row_span, column_span)
+            pane.set_selected(pane.pane_number == selected)
             pane.show()
             if pane is not self.visualization:
                 pane.apply_analyzer_state(self.model.state)
@@ -287,6 +295,8 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def _select_shared_view(self, _index: int) -> None:
         self._hide_display(restore_focus=False)
+        for pane in self._panes:
+            pane.set_selected(pane.pane_number == self.selected_view.currentData())
         self._selected_frame_applied(self.selected_view.currentData())
 
     def _selected_frame_applied(self, index: int) -> None:
@@ -302,6 +312,57 @@ class AnalyzerWorkspaceV2(QWidget):
         lower, upper = scene.view_box.viewRange()[0]
         center = (lower + upper) / 2
         scene.view_box.setXRange(center - span_hz / 2, center + span_hz / 2, padding=0)
+
+    def _prepare_view_range_controls(self, overlay: AnalyzerDisplayControls) -> None:
+        pane = self._selected_pane()
+        scene = pane.spectrum_scene
+        grid = scene.measurement_grid
+        available = scene.latest_frame is not None and grid is not None and len(grid) >= 2
+        overlay.set_range_available(available)
+        if available:
+            lower, upper = scene.view_box.viewRange()[0]
+            overlay.set_viewport_range(float(lower), float(upper))
+            anchor = self._view_range_identity(pane)
+            if anchor is not None:
+                self._range_anchors[overlay] = anchor
+        else:
+            self._range_anchors.pop(overlay, None)
+            overlay.set_range_error("analyzer.view_range.unavailable")
+
+    @staticmethod
+    def _view_range_identity(pane: AnalyzerPaneViewV2) -> tuple[object, ...] | None:
+        grid = pane.spectrum_scene.measurement_grid
+        identity = pane._last_identity
+        if grid is None or identity is None:
+            return None
+        fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch",
+                  "config_generation", "clock_domain", "accumulation_id", "unit")
+        return (id(grid), pane._last_mode, *(getattr(identity, name) for name in fields))
+
+    def _apply_selected_view_range(self, start_hz: float, stop_hz: float) -> None:
+        overlay = self._selected_overlay()
+        if self.sender() is not overlay:
+            return  # A hidden/deselected pane must not change another pane.
+        pane = self._selected_pane()
+        scene = pane.spectrum_scene
+        grid = scene.measurement_grid
+        if scene.latest_frame is None or grid is None or len(grid) < 2:
+            overlay.set_range_error("analyzer.view_range.unavailable")
+            return
+        if self._range_anchors.get(overlay) != self._view_range_identity(pane):
+            overlay.set_range_error("analyzer.view_range.stale")
+            return
+        if not math.isfinite(start_hz) or not math.isfinite(stop_hz) or stop_hz <= start_hz:
+            overlay.set_range_error("analyzer.view_range.invalid")
+            return
+        capture_start, capture_stop = float(grid[0]), float(grid[-1])
+        # Six decimals in MHz round to one hertz; tolerate only this UI
+        # quantization at the edge, never silently admit an out-of-band plan.
+        if start_hz < capture_start - 0.5 or stop_hz > capture_stop + 0.5:
+            overlay.set_range_error("analyzer.view_range.outside")
+            return
+        scene.view_box.setXRange(max(start_hz, capture_start), min(stop_hz, capture_stop), padding=0)
+        overlay.set_range_error(None)
 
     def _viewport_changed(self, view: object, bounds) -> None:
         if view is self._selected_pane().spectrum_scene.view_box:
@@ -376,6 +437,7 @@ class AnalyzerWorkspaceV2(QWidget):
         for pane in self._panes:
             pane.spectrum_scene.set_locale(current_locale())
             pane.waterfall_pane.set_locale(current_locale())
+            pane.set_badge_locale()
             # Frequency ticks carry units; avoid pyqtgraph's SI multiplier.
             for plot in (pane.spectrum_scene.plot_item, pane.waterfall_pane.plot_item):
                 plot.getAxis("bottom").showLabel(False)
@@ -467,6 +529,7 @@ class AnalyzerWorkspaceV2(QWidget):
             self._hide_display()
         else:
             self._position_settings()
+            self._prepare_view_range_controls(overlay)
             overlay.show()
             overlay.raise_()
             overlay.setFocus()
@@ -474,6 +537,7 @@ class AnalyzerWorkspaceV2(QWidget):
     def _hide_display(self, *, restore_focus: bool = True) -> None:
         for overlay in self._display_overlays:
             overlay.hide()
+        self._range_anchors.clear()
         if restore_focus:
             self.display.setFocus()
 
@@ -730,6 +794,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self.visualization.apply_analyzer_state(state)
         for pane in self._panes[1:self.shared_views.currentData()]:
             pane.apply_analyzer_state(state)
+        for overlay in self._display_overlays:
+            if overlay.isVisible() and self._range_anchors.get(overlay) != self._view_range_identity(self._selected_pane()):
+                overlay.set_range_error("analyzer.view_range.stale")
         self._selected_frame_applied(self.selected_view.currentData())
         scene = self.visualization.spectrum_scene
         if self._status_cadence.admit(state, monotonic()):

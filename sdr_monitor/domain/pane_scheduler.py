@@ -1,7 +1,7 @@
 """Bounded, Qt-free R10-E4 multi-pane capture planning.
 
-This module compiles immutable pane intent into either one shared capture with
-read-only crop metadata or a finite time-slice cycle.  It opens no device,
+This module compiles immutable pane intent into shared captures with read-only
+crop metadata or a finite time-slice cycle.  It opens no device,
 does not retune, and never carries raw I/Q or spectrum arrays.  The resulting
 control gaps are planned control boundaries, not estimates of ADC sample loss.
 """
@@ -418,27 +418,41 @@ def _shared_jobs(
 ) -> tuple[list[CaptureJob], int]:
     buckets: dict[tuple[object, ...], list[_ResolvedPane]] = {}
     for item in entries:
-        # A group contains non-overlapping RX-chain endpoint selections.  Same
-        # profile/overlap panes from RX1 and RX2 can therefore reuse one future
-        # common-LO/buffer capture exactly as same-endpoint panes can.  A job
-        # still retains endpoint identity on every crop for later E2 fan-out.
-        key = item.profile.compatibility_key
+        # Same-resource RX endpoints may share one common-LO/buffer capture,
+        # but a digital scan pair is not proof of an independent RF path. The
+        # job retains endpoint identity on each crop for future E2 fan-out.
+        # Equal policies are required before we share a capture epoch.
+        key = (item.profile.compatibility_key, item.request.scheduler_policy)
         buckets.setdefault(key, []).append(item)
 
     jobs: list[CaptureJob] = []
-    for key in sorted(buckets, key=repr):
-        ordered = sorted(buckets[key], key=lambda item: (item.request.start_hz, item.request.stop_hz, item.request.pane_id))
-        component: list[_ResolvedPane] = []
-        component_stop = -math.inf
-        for item in ordered:
-            if component and item.request.start_hz >= component_stop:
-                jobs.append(_make_shared_job(resource_id, component, capture_index))
-                capture_index += 1
-                component = []
-                component_stop = -math.inf
-            component.append(item)
-            component_stop = max(component_stop, item.request.stop_hz)
-        if component:
+    for bucket_key in sorted(buckets, key=repr):
+        ordered = sorted(buckets[bucket_key], key=lambda item: (item.request.start_hz, item.request.stop_hz, item.request.pane_id))
+        usable = ordered[0].profile.usable_capture_span_hz
+
+        def partition(start: int) -> tuple[tuple[_ResolvedPane, ...], ...] | None:
+            if start == len(ordered):
+                return ()
+            best: tuple[tuple[_ResolvedPane, ...], ...] | None = None
+            # At most four requests exist. Prefer fewer captures/retunes, then
+            # the largest earlier group. Greedy maximal packing can strand a
+            # singleton even when two valid two-pane captures exist.
+            for end in range(len(ordered), start + 1, -1):
+                component = tuple(ordered[start:end])
+                if max(item.request.stop_hz for item in component) - component[0].request.start_hz > usable:
+                    continue
+                tail = partition(end)
+                if tail is None:
+                    continue
+                candidate = (component, *tail)
+                if best is None or len(candidate) < len(best):
+                    best = candidate
+            return best
+
+        groups = partition(0)
+        if groups is None:
+            raise PaneScheduleError("shared-capture pane spans cannot form bounded captures with at least two panes each")
+        for component in groups:
             jobs.append(_make_shared_job(resource_id, component, capture_index))
             capture_index += 1
     return jobs, capture_index
@@ -450,7 +464,7 @@ def _make_shared_job(
     capture_index: int,
 ) -> CaptureJob:
     if len(component) < 2:
-        raise PaneScheduleError("shared-capture pane requires a compatible overlapping peer")
+        raise PaneScheduleError("shared-capture pane requires a compatible peer in one usable capture window")
     profile = component[0].profile
     policies = {item.request.scheduler_policy for item in component}
     if len(policies) != 1:
@@ -458,7 +472,7 @@ def _make_shared_job(
     start_hz = min(item.request.start_hz for item in component)
     stop_hz = max(item.request.stop_hz for item in component)
     if stop_hz - start_hz > profile.usable_capture_span_hz:
-        raise PaneScheduleError("compatible overlapping shared-capture panes exceed one usable capture window")
+        raise PaneScheduleError("compatible shared-capture panes exceed one usable capture window")
     crops = tuple(
         PaneCrop(
             item.request.pane_id,
