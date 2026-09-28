@@ -126,6 +126,26 @@ join failure remains an unproven callback-lifetime case and is fail-stop.
 The existing fixed-band RTBW session has not yet adopted this Stop-error
 recovery path; its separate failure injection and repair remain open.
 
+The next **native analysis-only** layer now consumes copied blocks from that
+same Sweep owner. It pins the currently examined interleaved 20 MS/s,
+15 MHz requested filter, 7.5 MHz LO offset and 20 MHz step profile. For each
+16,384-byte firmware block it transforms only the final `N` CI8 samples,
+never carrying FFT history across a retune; the admitted `N` range is
+1024–4096. It maps the pinned official host's two **separate 5 MHz numerical
+crops** per header into the canonical `ContinuousSweepLineAssembler`. The
+line publishes physical `Fs/N` and `N`, plus 5 MHz / `N/4` per-window
+analysis geometry; the upper requested stop is exclusive. On-demand native
+preview exposes acquired versus pending segments without finalizing a line.
+Missing callbacks/headers suppress the remainder of that logical scan and
+flush a terminal gap. The quality flags retain uncalibrated values, estimated
+host timestamp and unverified retune settling. `Complete` means all planned
+segments arrived numerically, **not** measured RF-flatness, filter-edge
+validity, lossless USB, RF duty, probability of detection or GUI publication.
+These edge bins still follow the host-compatible crop; a characterized guard
+or RF qualification must precede any claim of usable physical coverage.
+The adapter has no Python/UI V2 Start route yet and does not change the
+table's `mode_runtime_unavailable` result for HackRF Sweep.
+
 This foundation does **not** change the table's HackRF Sweep
 `mode_runtime_unavailable` result, enable hardware Sweep, alter RTBW Fs/FFT/
 gain/detector/grouping, or qualify UI latency/RF coverage. Its native tests
