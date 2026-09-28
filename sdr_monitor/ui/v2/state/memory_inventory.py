@@ -95,19 +95,22 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
           getattr(getattr(packet, "presentation", None), "waterfall_rows", ())))
     state = None if analyzer is None else analyzer.state
     add("sweep.prepared-rows", *getattr(getattr(state, "prepared_sweep", None), "waterfall_rows", ()))
-    projector = composition.spectrum_projector
     reserved = 0
-    if projector is not None:
+    projectors = tuple(getattr(composition, "_pane_projectors", ()))
+    if not projectors and composition.spectrum_projector is not None:
+        projectors = (composition.spectrum_projector,)
+    for index, projector in enumerate(projectors, start=1):
+        prefix = "viewport" if index == 1 else f"viewport.pane{index}"
         requests = (projector._active, projector._pending)
-        add("viewport.requests", *(view for request in requests if request is not None for _, view in request.traces),
+        add(prefix + ".requests", *(view for request in requests if request is not None for _, view in request.traces),
             *(value for request in requests if request is not None for value in
               (request.current, request.previous, request.prepared)))
-        add("viewport.density-requests", *(request.persistence for request in requests if request is not None))
-        projection = result("viewport.worker", projector._future)
-        add("viewport.result", *(trace for _, trace in getattr(projection, "traces", ())),
+        add(prefix + ".density-requests", *(request.persistence for request in requests if request is not None))
+        projection = result(prefix + ".worker", projector._future)
+        add(prefix + ".result", *(trace for _, trace in getattr(projection, "traces", ())),
             getattr(projection, "coverage", None), getattr(projection, "persistence", None))
         required = projector.required_result
-        add("viewport.required", *(trace for _, trace in getattr(required, "traces", ())),
+        add(prefix + ".required", *(trace for _, trace in getattr(required, "traces", ())),
             getattr(required, "coverage", None))
         # A completed result is already counted as an actual array; retaining
         # the reservation too would double-count it. Pending is still reserved.
@@ -117,29 +120,37 @@ def presentation_memory_snapshot(composition: Any, workspace: Any = None) -> Pre
             # mapping is still running. Do not count their old reservation.
             density = required.request.persistence
             active_reserve = 0 if density is None else persistence_image_reserve(density)
-        reserved = projector._pending_reserve + (active_reserve if projection is None else 0)
+        reserved += projector._pending_reserve + (active_reserve if projection is None else 0)
     if workspace is None:
         missing.append("workspace not supplied")
     else:
-        scene, pane = workspace.visualization.spectrum_scene, workspace.visualization.waterfall_pane
         add("workspace.latest", *(getattr(workspace, name) for name in
             ("_last_bundle", "_last_waterfall", "_last_persistence", "_last_identity", "_last_sweep_snapshot")))
-        add("spectrum.sources", scene._latest_view, scene._displayed_view, scene._prepared_spectrum,
-            scene._measurement_grid, *scene._trace_views.values(), *scene._envelopes.values())
-        coverage = scene.sweep_coverage
-        add("spectrum.coverage", coverage.state.current, coverage.state.previous,
-            coverage._display_previous, coverage.projection)
-        add("spectrum.plot-arrays", *(array for curve in (*scene._curves.values(), coverage.history)
-                                      for layer in (curve, getattr(curve, "curve", None))
-                                      for array in (getattr(layer, "xData", None), getattr(layer, "yData", None))))
-        density = scene._persistence
-        add("persistence", density._latest_view, density._pending_view, density._uploaded_density,
-            density._visual_buffer, density._row_scratch, density.image_item.image,
-            density._worker_request, density._worker_history)
-        ring = pane._renderer.buffer
-        add("waterfall", None if ring is None else ring._data,
-            None if ring is None else ring._timestamps_ns,
-            *(item.image for item in pane._image_items))
+        panes = tuple(getattr(workspace, "_panes", (workspace.visualization,)))
+        for index, view in enumerate(panes, start=1):
+            prefix = "" if index == 1 else f"pane{index}."
+            if index > 1:
+                add(f"workspace.pane{index}.latest", view.last_bundle,
+                    view._last_waterfall, view._last_persistence,
+                    view._last_identity, view._last_sweep_snapshot)
+            scene, pane = view.spectrum_scene, view.waterfall_pane
+            add(prefix + "spectrum.sources", scene._latest_view, scene._displayed_view,
+                scene._prepared_spectrum, scene._measurement_grid,
+                *scene._trace_views.values(), *scene._envelopes.values())
+            coverage = scene.sweep_coverage
+            add(prefix + "spectrum.coverage", coverage.state.current, coverage.state.previous,
+                coverage._display_previous, coverage.projection)
+            add(prefix + "spectrum.plot-arrays", *(array for curve in (*scene._curves.values(), coverage.history)
+                                            for layer in (curve, getattr(curve, "curve", None))
+                                            for array in (getattr(layer, "xData", None), getattr(layer, "yData", None))))
+            density = scene._persistence
+            add(prefix + "persistence", density._latest_view, density._pending_view,
+                density._uploaded_density, density._visual_buffer, density._row_scratch,
+                density.image_item.image, density._worker_request, density._worker_history)
+            ring = pane._renderer.buffer
+            add(prefix + "waterfall", None if ring is None else ring._data,
+                None if ring is None else ring._timestamps_ns,
+                *(item.image for item in pane._image_items))
     per_owner = tuple(ArrayOwnerBytes(name, sum(storage.values())) for name, storage in owners.items())
     unique = union_bytes(*owners.values())
     return PresentationMemorySnapshot(per_owner, unique, sum(item.bytes for item in per_owner) - unique,

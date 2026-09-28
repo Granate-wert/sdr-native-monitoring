@@ -134,6 +134,20 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.source_memory_limited": MappingProxyType({
             UiLocale.RU: "Кадр не показан: лимит памяти UI. График и история очищены; это не признак потери RF-данных.",
             UiLocale.EN: "Frame not displayed: UI memory limit. Plot and history cleared; this does not imply RF data loss."}),
+        "analyzer.shared_views.name": MappingProxyType({
+            UiLocale.RU: "Окна одного источника", UiLocale.EN: "Views of one source"}),
+        "analyzer.shared_views.short": MappingProxyType({
+            UiLocale.RU: "Окна", UiLocale.EN: "Views"}),
+        "analyzer.shared_views.scope": MappingProxyType({
+            UiLocale.RU: "1–4 вида публикаций одного источника: в RTBW — та же полоса, при сканировании — тот же диапазон. Дополнительные окна не открывают устройство и не добавляют перестроек или независимых RX. Масштаб, маркеры и история независимы.",
+            UiLocale.EN: "1–4 views of one source publication: the same RTBW band or the same Sweep span. Extra views do not open a device, add retunes or provide independent RX. Zoom, markers and history are independent."}),
+        "analyzer.selected_view.name": MappingProxyType({
+            UiLocale.RU: "Выбранное окно анализа", UiLocale.EN: "Selected Analyzer view"}),
+        "analyzer.selected_view.short": MappingProxyType({
+            UiLocale.RU: "Выбрано", UiLocale.EN: "Selected"}),
+        "analyzer.selected_view.scope": MappingProxyType({
+            UiLocale.RU: "Масштаб частоты и панель настройки отображения относятся только к выбранному окну. Старт, Стоп и настройка SDR общие для всех окон этого приёмника.",
+            UiLocale.EN: "Frequency zoom and display controls affect only the selected view. Start, Stop and SDR settings are shared by every view of this receiver."}),
         "analyzer.omitted_measurement": MappingProxyType({
             UiLocale.RU: "Источник {source} · epoch {epoch} · sequence {sequence} · {state} · {unit}",
             UiLocale.EN: "Source {source} · epoch {epoch} · sequence {sequence} · {state} · {unit}"}),

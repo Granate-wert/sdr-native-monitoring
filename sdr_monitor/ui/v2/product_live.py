@@ -6,6 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from time import time_ns
 from typing import Protocol
+from weakref import ref
 
 from .shell.close_lifecycle import CloseLifecycle, CloseState
 from .shell.contracts import ClosePort, V2ShellContext
@@ -135,6 +136,11 @@ class V2LiveProductComposition:
         self.spectrum_projector = (None if projection_submit is None else SpectrumProjector(
             projection_submit, allocation_budget=self.allocation_budget,
             persistence_submit=persistence_submit))
+        self._projection_submit = projection_submit
+        self._persistence_submit = persistence_submit
+        self._pane_projectors = ([] if self.spectrum_projector is None else [self.spectrum_projector])
+        self._projection_activity: dict[SpectrumProjector, bool] = {}
+        self._projection_activity_slots: dict[SpectrumProjector, Callable[[bool], None]] = {}
         self._calibration_presenter = calibration_presenter
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.analyzer_view_model = (
@@ -163,16 +169,14 @@ class V2LiveProductComposition:
             if self.spectrum_projector is not None else None)
         if self._live_preparation_signal is not None and self.spectrum_projector is not None:
             self._live_preparation_signal.connect(self.spectrum_projector.set_live_preparation_in_flight)
-        if self.spectrum_projector is not None and callable(self._projection_backpressure):
-            self.spectrum_projector.work_active_changed.connect(self._projection_backpressure)
         self._sweep_projection_backpressure = getattr(analyzer_presenter, "set_projection_in_flight", None)
-        if self.spectrum_projector is not None and callable(self._sweep_projection_backpressure):
-            self.spectrum_projector.work_active_changed.connect(self._sweep_projection_backpressure)
         self._sweep_preparation_signal = (
             getattr(analyzer_presenter, "poll_preparation_active_changed", None)
             if self.spectrum_projector is not None else None)
         if self._sweep_preparation_signal is not None and self.spectrum_projector is not None:
             self._sweep_preparation_signal.connect(self.spectrum_projector.set_preparation_in_flight)
+        if self.spectrum_projector is not None:
+            self._connect_projection_activity(self.spectrum_projector)
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
         self.calibration_view_model = (
             None if calibration_presenter is None else CalibrationProfileViewModel(calibration_presenter)
@@ -242,8 +246,16 @@ class V2LiveProductComposition:
         if self.analyzer_view_model is not None:
             # Product Analyzer replaces both old routes, not two pages hidden
             # inside a tab. Their application ownership remains unchanged.
+            # The context/workspace may outlive normal close while Qt wrapper
+            # deletion is pending. Its factory must not root the composition.
+            owner_ref = ref(self)
+            def shared_projector_factory() -> SpectrumProjector:
+                owner = owner_ref()
+                if owner is None:
+                    raise RuntimeError("Analyzer projection owner was released")
+                return owner.create_shared_pane_projector()
             workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector,
-                self.calibration_view_model),) + tuple(
+                self.calibration_view_model, shared_projector_factory=shared_projector_factory),) + tuple(
                 item for item in workspaces if item.workspace_id not in {"home", "live", "sweep"}
             )
         self.context = V2ShellContext(
@@ -262,30 +274,75 @@ class V2LiveProductComposition:
         )
 
     def _on_projection_control(self, state: AnalyzerViewState) -> None:
-        projector = self.spectrum_projector
-        if projector is not None:
+        for projector in self._pane_projectors:
             projector.set_suspended(state.live.busy or state.starting or state.stopping)
 
     def _commit_live_projection(self, _state: object) -> None:
-        if self.spectrum_projector is not None:
-            self.spectrum_projector.request_commit()
+        for projector in self._pane_projectors:
+            projector.request_commit()
+
+    def _connect_projection_activity(self, projector: SpectrumProjector) -> None:
+        self._projection_activity[projector] = False
+        def slot(active: bool, port: SpectrumProjector = projector) -> None:
+            self._projection_activity_changed(port, active)
+        self._projection_activity_slots[projector] = slot
+        projector.work_active_changed.connect(slot)
+
+    def _projection_activity_changed(self, projector: SpectrumProjector, active: bool) -> None:
+        """One idle pane must not release either presenter's shared preparation gate."""
+        previous = any(self._projection_activity.values())
+        self._projection_activity[projector] = bool(active)
+        current = any(self._projection_activity.values())
+        if current == previous:
+            return
+        if callable(self._projection_backpressure):
+            self._projection_backpressure(current)
+        if callable(self._sweep_projection_backpressure):
+            self._sweep_projection_backpressure(current)
+
+    def create_shared_pane_projector(self) -> SpectrumProjector:
+        """Give another view of this SAME Analyzer publication an independent lane.
+
+        This does not create a receiver, device owner or source subscription.
+        At most four panes can retain projection work. The workspace's single
+        model subscription decides which views receive the exact publication.
+        """
+        if (self._presentation_disposed or self._is_shutdown or self._projection_submit is None
+                or self.analyzer_view_model is None):
+            raise RuntimeError("shared pane projection is unavailable")
+        if len(self._pane_projectors) >= 4:
+            raise RuntimeError("at most four Analyzer pane projections are supported")
+        projector = SpectrumProjector(
+            self._projection_submit, allocation_budget=self.allocation_budget,
+            persistence_submit=self._persistence_submit,
+        )
+        self._pane_projectors.append(projector)
+        if self._live_preparation_signal is not None:
+            self._live_preparation_signal.connect(projector.set_live_preparation_in_flight)
+        if self._sweep_preparation_signal is not None:
+            self._sweep_preparation_signal.connect(projector.set_preparation_in_flight)
+        self._connect_projection_activity(projector)
+        self._on_projection_control(self.analyzer_view_model.state)
+        return projector
 
     def _disconnect_projection_delivery(self) -> None:
-        if self._live_preparation_signal is not None and self.spectrum_projector is not None:
-            self._live_preparation_signal.disconnect(self.spectrum_projector.set_live_preparation_in_flight)
+        if self._live_preparation_signal is not None:
+            for projector in self._pane_projectors:
+                self._live_preparation_signal.disconnect(projector.set_live_preparation_in_flight)
             self._live_preparation_signal = None
-        if self._sweep_preparation_signal is not None and self.spectrum_projector is not None:
-            self._sweep_preparation_signal.disconnect(self.spectrum_projector.set_preparation_in_flight)
+        if self._sweep_preparation_signal is not None:
+            for projector in self._pane_projectors:
+                self._sweep_preparation_signal.disconnect(projector.set_preparation_in_flight)
             self._sweep_preparation_signal = None
         if self._projection_delivery_signal is not None:
             self._projection_delivery_signal.disconnect(self._commit_live_projection)
             self._projection_delivery_signal = None
-        if self.spectrum_projector is not None and callable(self._projection_backpressure):
-            self.spectrum_projector.work_active_changed.disconnect(self._projection_backpressure)
-            self._projection_backpressure = None
-        if self.spectrum_projector is not None and callable(self._sweep_projection_backpressure):
-            self.spectrum_projector.work_active_changed.disconnect(self._sweep_projection_backpressure)
-            self._sweep_projection_backpressure = None
+        for projector, slot in self._projection_activity_slots.items():
+            projector.work_active_changed.disconnect(slot)
+        self._projection_activity_slots.clear()
+        self._projection_activity.clear()
+        self._projection_backpressure = None
+        self._sweep_projection_backpressure = None
 
     def can_close(self) -> bool:
         """Refuse a silent close while presenter work or a Live stream is active."""
@@ -335,8 +392,8 @@ class V2LiveProductComposition:
             # Only declared hooks; do not invent a port on dynamic mocks/adapters.
             if callable(getattr(type(presenter), "release_presentation_after_shutdown", None)):
                 getattr(presenter, "release_presentation_after_shutdown")()
-        if self.spectrum_projector is not None:
-            self.spectrum_projector.release_presentation_after_shutdown()
+        for projector in self._pane_projectors:
+            projector.release_presentation_after_shutdown()
         self.view_model.release_presentation_after_shutdown()
         if self.analyzer_view_model is not None:
             self.analyzer_view_model.release_presentation_after_shutdown()
@@ -367,8 +424,8 @@ class V2LiveProductComposition:
         if self._unsubscribe_projection is not None:
             self._unsubscribe_projection()
         self._disconnect_projection_delivery()
-        if self.spectrum_projector is not None:
-            self.spectrum_projector.dispose()
+        for projector in self._pane_projectors:
+            projector.dispose()
         for bound_model in (self.analyzer_view_model, self.view_model, self.sweep_view_model,
                       self.calibration_view_model):
             if bound_model is not None:
@@ -401,8 +458,8 @@ class V2LiveProductComposition:
             if self._unsubscribe_projection is not None:
                 attempt(self._unsubscribe_projection)
             attempt(self._disconnect_projection_delivery)
-            if self.spectrum_projector is not None:
-                attempt(self.spectrum_projector.dispose)
+            for projector in self._pane_projectors:
+                attempt(projector.dispose)
             if self.analyzer_view_model is not None:
                 attempt(self.analyzer_view_model.dispose)
             attempt(self.view_model.dispose)

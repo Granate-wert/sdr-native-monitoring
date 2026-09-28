@@ -384,6 +384,12 @@ class WaterfallPane(QWidget):
         self._set_metrics(local_history_clears=self._metrics.local_history_clears + 1)
         self._status.setText(text("waterfall.status.cleared", self._locale))
 
+    def drop_parked_history_storage(self) -> None:
+        """Discard a disabled shared view's ring capacity; keep widget reusable."""
+        self.clear_history(reset_kind=True)
+        self._renderer.reset()
+        self._grid_signature = None
+
     def release_presentation_after_shutdown(self) -> None:
         """Terminal window cleanup, not local Clear/hide/Stop history policy."""
         if self._graphics_terminal_released:

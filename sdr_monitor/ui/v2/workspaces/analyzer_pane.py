@@ -185,5 +185,15 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
         self._terminal_released = True
 
+    def clear_shared_view(self) -> None:
+        """Drop a parked pane's measurement roots without touching the RX owner."""
+        if self._terminal_released:
+            return
+        self.spectrum_scene.clear_measurement()
+        self.waterfall_pane.drop_parked_history_storage()
+        self._last_bundle = self._last_waterfall = self._last_persistence = None
+        self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
+        self._sweep_waterfall_error = False
+
 
 __all__ = ["AnalyzerPaneViewV2"]

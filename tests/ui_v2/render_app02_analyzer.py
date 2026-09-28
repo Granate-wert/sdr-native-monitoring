@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--physical-size", nargs=2, type=int)
     parser.add_argument("--scale", type=float, default=1.0)
+    parser.add_argument("--shared-views", type=int, choices=(1, 2, 3, 4), default=1)
     args = parser.parse_args()
     if not math.isfinite(args.scale) or args.scale <= 0:
         parser.error("--scale must be finite and positive")
@@ -39,6 +40,7 @@ def main() -> None:
         case.select_and_apply()
         case.page.primary.click()
         case.wait(lambda: case.live.is_running() and not case.composition.view_model.state.busy)
+        case.page.shared_views.setCurrentIndex(args.shared_views - 1)
         snapshot = case.live.latest_snapshot()
         config = snapshot.applied.applied
         indices = np.arange(config.fft_size)
@@ -55,7 +57,9 @@ def main() -> None:
         delivered = replace(snapshot, spectrum=frame)
         case.live._snapshot = delivered
         case.presenter.offer_snapshot_for_render(delivered)
-        case.wait(lambda: case.page._last_bundle is not None)
+        case.wait(lambda: all(pane.last_bundle is not None and
+                              pane.spectrum_scene.displayed_frame is pane.last_bundle
+                              for pane in case.page._panes[:args.shared_views]))
         for locale in (UiLocale.RU, UiLocale.EN):
             case.shell.select_appearance_locale(locale)
             for theme in (ThemeId.DARK, ThemeId.LIGHT, ThemeId.HIGH_CONTRAST):
@@ -65,16 +69,19 @@ def main() -> None:
                 for width, height in sizes:
                     case.shell.resize(width, height)
                     case.app.processEvents()
-                    name = f"analyzer-{locale.value}-{theme.value}-{width}x{height}.png"
+                    suffix = "" if args.shared_views == 1 else f"-views{args.shared_views}"
+                    name = f"analyzer-{locale.value}-{theme.value}-{width}x{height}{suffix}.png"
                     if not case.shell.grab().save(str(args.output / name)):
                         raise RuntimeError(f"failed to save {name}")
-                    plots = (case.page.visualization.spectrum_scene.view_box.sceneBoundingRect(),
-                             case.page.visualization.waterfall_pane.view_box.sceneBoundingRect())
+                    plots = tuple(rect for pane in case.page._panes[:args.shared_views]
+                                  for rect in (pane.spectrum_scene.view_box.sceneBoundingRect(),
+                                               pane.waterfall_pane.view_box.sceneBoundingRect()))
                     fraction = sum(rect.width() * rect.height() for rect in plots) / (case.shell.width() * case.shell.height())
                     records.append({"file": name, "locale": locale.value, "theme": theme.value,
                                     "requested_size": [width, height],
                                     "physical_client_target": args.physical_size,
                                     "requested_scale": args.scale,
+                                    "shared_views": args.shared_views,
                                     "device_pixel_ratio": case.shell.devicePixelRatioF(),
                                     "fits_requested_client": case.shell.width() <= width and case.shell.height() <= height,
                                     "plot_area_fraction": fraction,

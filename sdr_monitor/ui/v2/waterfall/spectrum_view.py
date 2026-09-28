@@ -65,6 +65,11 @@ class SpectrumWaterfallView(QWidget):
         self._spectrum.set_theme(theme)
         self._waterfall.set_theme(theme)
 
+    def set_compact_grid_geometry(self, compact: bool) -> None:
+        """Keep both plots inside a dense 3–4-view cell without changing history."""
+        self._spectrum.setMinimumHeight(140 if compact else 180)
+        self._waterfall.setMinimumHeight(80 if compact else 120)
+
     def set_waterfall_visible(self, visible: bool) -> None:
         """Change only layout/render visibility; retained rows stay local to the pane."""
 

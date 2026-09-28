@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from time import monotonic
 from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -60,9 +62,11 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def __init__(self, model: AnalyzerViewModel, *, projector: SpectrumProjector | None = None,
                  calibration_profiles: CalibrationProfileViewModel | None = None,
+                 shared_projector_factory: Callable[[], SpectrumProjector] | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.model = model
+        self._shared_projector_factory = shared_projector_factory
         self._terminal_released = False
         self._theme = ThemeId.DARK
         self._last_source_selection: AnalyzerSourceSelection | None = None
@@ -97,6 +101,24 @@ class AnalyzerWorkspaceV2(QWidget):
         self.mode.addItem(text("analyzer.mode.sweep"), AnalyzerMode.SWEEP)
         self.mode.currentIndexChanged.connect(self._select_mode)
         commands.addWidget(self.mode)
+        self.shared_views_label = QLabel(self)
+        self.shared_views_label.setProperty("ui2Role", "secondary")
+        commands.addWidget(self.shared_views_label)
+        self.shared_views = QComboBox(self)
+        self.shared_views.setProperty("ui2Role", "utility-select")
+        for count in range(1, 5):
+            self.shared_views.addItem(str(count), count)
+        self.shared_views.setEnabled(shared_projector_factory is not None)
+        self.shared_views.currentIndexChanged.connect(self._set_shared_view_count)
+        commands.addWidget(self.shared_views)
+        self.selected_view_label = QLabel(self)
+        self.selected_view_label.setProperty("ui2Role", "secondary")
+        commands.addWidget(self.selected_view_label)
+        self.selected_view = QComboBox(self)
+        self.selected_view.setProperty("ui2Role", "utility-select")
+        self.selected_view.addItem(str(1), 1)
+        self.selected_view.currentIndexChanged.connect(self._select_shared_view)
+        commands.addWidget(self.selected_view)
         self.settings = self._button("analyzer.settings", self._toggle_settings)
         commands.addWidget(self.settings)
         self.display = self._button("analyzer.display", self._toggle_display)
@@ -144,23 +166,30 @@ class AnalyzerWorkspaceV2(QWidget):
         self.error.setProperty("ui2Tone", "error")
         self.error.setWordWrap(True)
         layout.addWidget(self.error)
+        self._pane_host = QWidget(self)
+        self._pane_grid = QGridLayout(self._pane_host)
+        self._pane_grid.setContentsMargins(0, 0, 0, 0)
+        self._pane_grid.setSpacing(4)
         self.visualization = AnalyzerPaneViewV2(
             model.state.mode, projector=projector,
-            on_frame_applied=self._on_visual_frame_applied, parent=self,
+            on_frame_applied=self._on_visual_frame_applied, parent=self._pane_host,
         )
+        self._panes = [self.visualization]
+        self._pane_grid.addWidget(self.visualization, 0, 0, 1, 2)
         self.frequency_bar.viewport_span_requested.connect(self._change_viewport_span)
         self.visualization.spectrum_scene.view_box.sigXRangeChanged.connect(self._viewport_changed)
         self._acquisition_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self.visualization.spectrum_scene)
         self._acquisition_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         self._acquisition_shortcut.setAutoRepeat(False)
         self._acquisition_shortcut.activated.connect(self._execute_keyboard_primary)
-        layout.addWidget(self.visualization, 1)
+        layout.addWidget(self._pane_host, 1)
         self.display_controls = AnalyzerDisplayControls(
             self.visualization.spectrum_scene.take_display_controls(),
             self.visualization.waterfall_pane.take_display_controls(), parent=self,
         )
         self.display_controls.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.display_controls.close_requested.connect(self._hide_display)
+        self._display_overlays = [self.display_controls]
         self.status = AnalyzerStatusLabel(self)
         self.status.setProperty("ui2Role", "secondary")
         self.status.setWordWrap(True)
@@ -187,22 +216,101 @@ class AnalyzerWorkspaceV2(QWidget):
         self._text_bindings.append((button, key))
         return button
 
+    def _set_shared_view_count(self, _index: int) -> None:
+        """Show 1–4 views of the SAME source without extra RX commands."""
+        count = self.shared_views.currentData()
+        factory = self._shared_projector_factory
+        if self._terminal_released or type(count) is not int or not 1 <= count <= 4:
+            return
+        if count > 1 and factory is None:
+            return
+        while len(self._panes) < count:
+            index = len(self._panes) + 1
+            assert factory is not None
+            projector = factory()
+            pane = AnalyzerPaneViewV2(
+                self.model.state.mode, projector=projector,
+                settings_prefix=f"ui_v2/analyzer/shared_pane{index}/v1",
+                parent=self._pane_host,
+            )
+            pane.set_theme(self._theme)
+            pane.spectrum_scene.set_locale(current_locale())
+            pane.waterfall_pane.set_locale(current_locale())
+            for plot in (pane.spectrum_scene.plot_item, pane.waterfall_pane.plot_item):
+                plot.getAxis("bottom").showLabel(False)
+            pane.spectrum_scene.view_box.sigXRangeChanged.connect(self._viewport_changed)
+            overlay = AnalyzerDisplayControls(
+                pane.spectrum_scene.take_display_controls(),
+                pane.waterfall_pane.take_display_controls(), parent=self,
+            )
+            overlay.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            overlay.close_requested.connect(self._hide_display)
+            overlay.set_locale(current_locale())
+            for child in (overlay, *overlay.findChildren(QWidget)):
+                child.installEventFilter(self)
+            self._display_overlays.append(overlay)
+            self._panes.append(pane)
+        selected = min(self.selected_view.currentData(), count)
+        with QSignalBlocker(self.selected_view):
+            self.selected_view.clear()
+            for index in range(1, count + 1):
+                self.selected_view.addItem(str(index), index)
+            self.selected_view.setCurrentIndex(selected - 1)
+        self._hide_display(restore_focus=False)
+        for pane in self._panes:
+            self._pane_grid.removeWidget(pane)
+            if pane in self._panes[count:]:
+                pane.clear_shared_view()
+                pane.hide()
+            else:
+                pane.set_compact_grid_geometry(count >= 3)
+        positions = (((0, 0, 1, 2),) if count == 1 else
+                     ((0, 0, 1, 1), (0, 1, 1, 1)) if count == 2 else
+                     ((0, 0, 1, 1), (0, 1, 1, 1), (1, 0, 1, 2)) if count == 3 else
+                     ((0, 0, 1, 1), (0, 1, 1, 1), (1, 0, 1, 1), (1, 1, 1, 1)))
+        for pane, (row, column, row_span, column_span) in zip(self._panes[:count], positions, strict=True):
+            self._pane_grid.addWidget(pane, row, column, row_span, column_span)
+            pane.show()
+            if pane is not self.visualization:
+                pane.apply_analyzer_state(self.model.state)
+        self._pane_grid.setRowStretch(0, 1)
+        self._pane_grid.setRowStretch(1, 1 if count >= 3 else 0)
+        self._selected_frame_applied(selected)
+
+    def _selected_pane(self) -> AnalyzerPaneViewV2:
+        index = self.selected_view.currentData()
+        return self._panes[index - 1] if type(index) is int and 1 <= index <= len(self._panes) else self.visualization
+
+    def _selected_overlay(self) -> AnalyzerDisplayControls:
+        index = self.selected_view.currentData()
+        return self._display_overlays[index - 1] if type(index) is int and 1 <= index <= len(self._display_overlays) else self.display_controls
+
+    def _select_shared_view(self, _index: int) -> None:
+        self._hide_display(restore_focus=False)
+        self._selected_frame_applied(self.selected_view.currentData())
+
+    def _selected_frame_applied(self, index: int) -> None:
+        if index != self.selected_view.currentData():
+            return
+        lower, upper = self._selected_pane().spectrum_scene.view_box.viewRange()[0]
+        self.frequency_bar.set_viewport_span(float(upper - lower))
+
     def _change_viewport_span(self, span_hz: float) -> None:
-        scene = self.visualization.spectrum_scene
+        scene = self._selected_pane().spectrum_scene
         if scene.latest_frame is None:
             return
         lower, upper = scene.view_box.viewRange()[0]
         center = (lower + upper) / 2
         scene.view_box.setXRange(center - span_hz / 2, center + span_hz / 2, padding=0)
 
-    def _viewport_changed(self, _view, bounds) -> None:
-        self.frequency_bar.set_viewport_span(float(bounds[1] - bounds[0]))
+    def _viewport_changed(self, view: object, bounds) -> None:
+        if view is self._selected_pane().spectrum_scene.view_box:
+            self.frequency_bar.set_viewport_span(float(bounds[1] - bounds[0]))
 
     def _on_visual_frame_applied(self) -> None:
         # A new frame may retain exactly the old ViewBox range, in which case
         # Qt emits no sigXRangeChanged. Update the no-frame placeholder too.
-        lower, upper = self.visualization.spectrum_scene.view_box.viewRange()[0]
-        self.frequency_bar.set_viewport_span(float(upper - lower))
+        self._selected_frame_applied(1)
 
     @property
     def _last_bundle(self):
@@ -247,6 +355,12 @@ class AnalyzerWorkspaceV2(QWidget):
             widget.setAccessibleName(text(key))
         self.discover_network.setToolTip(text("analyzer.discover.usb_ip.warning"))
         self.mode.setAccessibleName(text("analyzer.mode"))
+        self.shared_views_label.setText(text("analyzer.shared_views.short"))
+        self.shared_views.setAccessibleName(text("analyzer.shared_views.name"))
+        self.shared_views.setToolTip(text("analyzer.shared_views.scope"))
+        self.selected_view_label.setText(text("analyzer.selected_view.short"))
+        self.selected_view.setAccessibleName(text("analyzer.selected_view.name"))
+        self.selected_view.setToolTip(text("analyzer.selected_view.scope"))
         self.rx.setToolTip(text("analyzer.rx.unavailable"))
         self.rx.setAccessibleName(text("analyzer.rx.unavailable"))
         self.mode.setItemText(0, text("analyzer.mode.rtbw"))
@@ -259,14 +373,14 @@ class AnalyzerWorkspaceV2(QWidget):
         self.hackrf_bar.set_locale()
         self.hackrf_sweep_bar.set_locale()
         self.tinysa_bar.set_locale()
-        self.visualization.spectrum_scene.set_locale(current_locale())
-        self.visualization.waterfall_pane.set_locale(current_locale())
-        # Frequency ticks already carry their units. Avoid a redundant caption
-        # (and pyqtgraph's automatic SI multiplier) in the shared Analyzer plot.
-        for plot in (self.visualization.spectrum_scene.plot_item,
-                     self.visualization.waterfall_pane.plot_item):
-            plot.getAxis("bottom").showLabel(False)
-        self.display_controls.set_locale(current_locale())
+        for pane in self._panes:
+            pane.spectrum_scene.set_locale(current_locale())
+            pane.waterfall_pane.set_locale(current_locale())
+            # Frequency ticks carry units; avoid pyqtgraph's SI multiplier.
+            for plot in (pane.spectrum_scene.plot_item, pane.waterfall_pane.plot_item):
+                plot.getAxis("bottom").showLabel(False)
+        for overlay in self._display_overlays:
+            overlay.set_locale(current_locale())
         self._reserve_primary_width()
         self._render(self.model.state)
 
@@ -287,7 +401,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self._theme = theme
         self.setStyleSheet(stylesheet_for_theme(theme))
         self._reserve_primary_width()
-        self.visualization.set_theme(theme)
+        for pane in self._panes:
+            pane.set_theme(theme)
         self.drawer.set_theme(theme)
 
     def closeEvent(self, event) -> None:
@@ -309,12 +424,13 @@ class AnalyzerWorkspaceV2(QWidget):
         self.tinysa_bar.settings_drawer.release_profiles()
         # Terminal cleanup may be retried after a partial failure. Do not let
         # Qt paint a PlotItem whose axes have already been retired.
-        self.visualization.release_presentation_after_shutdown()
+        for pane in self._panes:
+            pane.release_presentation_after_shutdown()
         self._terminal_released = True
 
     def _toggle_settings(self) -> None:
         if self.model.state.tinysa_controls_available:
-            self.display_controls.hide()
+            self._hide_display()
             self.drawer.hide()
             drawer = self.tinysa_bar.settings_drawer
             if drawer.isVisible():
@@ -329,7 +445,7 @@ class AnalyzerWorkspaceV2(QWidget):
             (self.hackrf_sweep_bar.start_mhz if self.model.state.mode is AnalyzerMode.SWEEP
              else self.hackrf_bar.center).setFocus()
             return
-        self.display_controls.hide()
+        self._hide_display()
         if self.drawer.isVisible():
             self._hide_settings()
         else:
@@ -346,23 +462,27 @@ class AnalyzerWorkspaceV2(QWidget):
     def _toggle_display(self) -> None:
         self.drawer.hide()
         self.tinysa_bar.settings_drawer.hide()
-        if self.display_controls.isVisible():
+        overlay = self._selected_overlay()
+        if overlay.isVisible():
             self._hide_display()
         else:
             self._position_settings()
-            self.display_controls.show()
-            self.display_controls.raise_()
-            self.display_controls.setFocus()
+            overlay.show()
+            overlay.raise_()
+            overlay.setFocus()
 
-    def _hide_display(self) -> None:
-        self.display_controls.hide()
-        self.display.setFocus()
+    def _hide_display(self, *, restore_focus: bool = True) -> None:
+        for overlay in self._display_overlays:
+            overlay.hide()
+        if restore_focus:
+            self.display.setFocus()
 
     def eventFilter(self, watched, event) -> bool:
         if (watched is self.drawer.scroll_area.widget()
                 and event.type() == QEvent.Type.LayoutRequest and self.drawer.isVisible()):
             self._position_settings()
-        if ((self.drawer.isVisible() or self.tinysa_bar.settings_drawer.isVisible() or self.display_controls.isVisible())
+        if ((self.drawer.isVisible() or self.tinysa_bar.settings_drawer.isVisible()
+             or any(overlay.isVisible() for overlay in self._display_overlays))
                 and event.type() in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress)
                 and event.key() == Qt.Key.Key_Escape):
             event.accept()
@@ -379,10 +499,10 @@ class AnalyzerWorkspaceV2(QWidget):
         self.tinysa_bar.settings_drawer.setGeometry(max(8, self.width() - width - 8), 84, width,
                                                    max(120, self.height() - 92))
         display_width = min(1180, max(320, self.width() - 16))
-        self.display_controls.setGeometry(max(8, self.width() - display_width - 8), 84,
-                                         display_width,
-                                         min(self.display_controls.sizeHint().height(),
-                                             max(120, self.height() - 92)))
+        for overlay in self._display_overlays:
+            overlay.setGeometry(max(8, self.width() - display_width - 8), 84,
+                                display_width,
+                                min(overlay.sizeHint().height(), max(120, self.height() - 92)))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -485,7 +605,8 @@ class AnalyzerWorkspaceV2(QWidget):
     def _execute_keyboard_primary(self) -> None:
         """Graph-local Space may only dispatch an already-enabled Start/Stop."""
         state = self.model.state
-        if (not self.primary.isEnabled() or self.drawer.isVisible() or self.display_controls.isVisible()
+        if (not self.primary.isEnabled() or self.drawer.isVisible()
+                or any(overlay.isVisible() for overlay in self._display_overlays)
                 or self.tinysa_bar.settings_drawer.isVisible()):
             return
         if (state.running or state.stop_required
@@ -607,6 +728,9 @@ class AnalyzerWorkspaceV2(QWidget):
         if self.applied.accessibleDescription() != detail:
             self.applied.setAccessibleDescription(detail)
         self.visualization.apply_analyzer_state(state)
+        for pane in self._panes[1:self.shared_views.currentData()]:
+            pane.apply_analyzer_state(state)
+        self._selected_frame_applied(self.selected_view.currentData())
         scene = self.visualization.spectrum_scene
         if self._status_cadence.admit(state, monotonic()):
             _set_text_if_changed(self.periods, analyzer_periods(state, scene.paint_cadence.period_ms()))
@@ -637,11 +761,13 @@ def _set_text_if_changed(widget: QLabel | QPushButton, value: str) -> None:
 
 def analyzer_workspace_definition(model: AnalyzerViewModel,
                                   projector: SpectrumProjector | None = None,
-                                  calibration_profiles: CalibrationProfileViewModel | None = None) -> WorkspaceDefinition:
+                                  calibration_profiles: CalibrationProfileViewModel | None = None,
+                                  *, shared_projector_factory: Callable[[], SpectrumProjector] | None = None) -> WorkspaceDefinition:
     return WorkspaceDefinition(
         workspace_id="analyzer", label=text("analyzer.title"), description=text("analyzer.description"),
         icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(
-            model, projector=projector, calibration_profiles=calibration_profiles),
+            model, projector=projector, calibration_profiles=calibration_profiles,
+            shared_projector_factory=shared_projector_factory),
         inspector_factory=lambda: AnalyzerInspector(model),
         label_key="analyzer.title", description_key="analyzer.description",
         terminal_cleanup=_release_analyzer_workspace,
