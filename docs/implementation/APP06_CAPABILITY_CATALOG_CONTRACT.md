@@ -1272,3 +1272,20 @@ Stop retained a gapped frame and made the live period unavailable; the
 diagnostic process was normally closed. This does not resolve the roughly
 180-ms new-Qt-frame period or qualify sustained LPS, RF coverage, ADC duty,
 lossless transport, DWM FPS, genuine Ethernet/tinySA or APP-06 completion.
+
+### Sweep stage-observer boundary (APP-06D follow-up, 2026-09-28)
+
+The opt-in physical UI V2 Sweep observer now records exact source/epoch/pass/
+state/revision joins across host poll return, presenter preparation, Qt model
+entry and Spectrum/Waterfall paint return. Optional requested RF bandwidth
+and speed preset must match the applied CPU configuration. Host poll return
+already follows native latest-slot coalescing and is **not** analytical-ready
+time; paint return is not DWM scanout. This observer-only change does not alter
+product acquisition, DSP or presentation algorithms.
+
+A separate Python-process physical attempt with the exact frozen native
+binary failed at USB Pluto selection before RX, so its empty trace is **not**
+a 61.44-MS/s Sweep timing result. The same diagnostic EXE separately showed
+working USB Pluto 20-MS/s RTBW Live with package-local IIO/USB DLLs; that does
+not explain the Python-process discrepancy or the approximately 180-ms Sweep
+cadence. APP-05 timing and APP-06 physical acceptance remain open.

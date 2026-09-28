@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 from scripts.benchmark_app05_physical_sweep_ui import (
-    applied_matches_request, first_progressive_pair, parser, sweep_key,
+    applied_matches_request, first_progressive_pair, parser, stage_rows, sweep_key,
     terminal_gap_paints, uploaded_waterfall_key, waterfall_update_key,
 )
 
@@ -26,8 +26,13 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         args = parser().parse_args(["--uri", "usb:3.12.5", "--output", "evidence.json"])
         self.assertEqual((args.start_mhz, args.stop_mhz), (2300.0, 2600.0))
         self.assertEqual((args.sample_rate_msps, args.fft), (61.44, 4096))
+        self.assertIsNone(args.rf_bandwidth_mhz)
+        self.assertEqual(args.speed_profile, "averaged")
         self.assertEqual(args.run_timeout, 35.0)
         self.assertEqual(args.theme, "dark")
+        selected = parser().parse_args(["--uri", "usb:3.4.5", "--output", "evidence.json",
+                                        "--rf-bandwidth-mhz", "50", "--speed-profile", "quick"])
+        self.assertEqual((selected.rf_bandwidth_mhz, selected.speed_profile), (50, "quick"))
 
     def test_frame_key_keeps_source_epoch_pass_and_revision(self):
         progress = SimpleNamespace(source_id="s", epoch=3, sequence=7, revision=2)
@@ -65,13 +70,30 @@ class PhysicalSweepObserverTests(unittest.TestCase):
 
     def test_applied_cpu_configuration_must_match_request(self):
         actual = SimpleNamespace(applied=SimpleNamespace(
-            sample_rate_hz=61_440_000.0, fft_size=4096, backend=SimpleNamespace(value="cpu")))
+            sample_rate_hz=61_440_000.0, analog_bandwidth_hz=50_000_000.0,
+            fft_size=4096, backend=SimpleNamespace(value="cpu")))
         self.assertTrue(applied_matches_request(actual, sample_rate_msps=61.44, fft=4096))
+        self.assertTrue(applied_matches_request(actual, sample_rate_msps=61.44, fft=4096,
+                                                rf_bandwidth_mhz=50.0))
+        self.assertFalse(applied_matches_request(actual, sample_rate_msps=61.44, fft=4096,
+                                                 rf_bandwidth_mhz=56.0))
         self.assertFalse(applied_matches_request(actual, sample_rate_msps=62.0, fft=4096))
         self.assertFalse(applied_matches_request(actual, sample_rate_msps=61.44, fft=8192))
         self.assertFalse(applied_matches_request(None, sample_rate_msps=61.44, fft=4096))
         actual.applied.backend.value = "cuda"
         self.assertFalse(applied_matches_request(actual, sample_rate_msps=61.44, fft=4096))
+
+    def test_host_to_paint_join_uses_exact_identity_and_monotone_stage_order(self):
+        key = ("s", 3, 7, "partial", 2)
+        painted = [dict(pane="spectrum", key=list(key), when_ns=8_000_000),
+                   dict(pane="waterfall", key=list(key), when_ns=9_000_000),
+                   dict(pane="spectrum", key=["s", 4, 7, "partial", 2], when_ns=9_000_000)]
+        polls = {key: dict(returned_ns=1_000_000)}
+        rows = stage_rows(painted, polls, {key: 2_000_000}, {key: 4_000_000})
+        self.assertEqual([row["pane"] for row in rows], ["spectrum", "waterfall"])
+        self.assertEqual(rows[0]["poll_return_to_paint_ms"], 7.0)
+        self.assertEqual(rows[1]["model_to_paint_ms"], 5.0)
+        self.assertEqual(stage_rows(painted, polls, {key: 0}, {key: 4_000_000}), [])
 
     def test_pair_requires_both_canvases_and_same_pass_before_terminal_model(self):
         paints, models = events()

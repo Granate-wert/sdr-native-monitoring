@@ -36,7 +36,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--start-mhz", type=float, default=2300.0)
     result.add_argument("--stop-mhz", type=float, default=2600.0)
     result.add_argument("--sample-rate-msps", type=float, default=61.44)
+    result.add_argument("--rf-bandwidth-mhz", type=float,
+                        help="explicit RF filter preset; otherwise retain the application's selection")
     result.add_argument("--fft", type=int, default=4096)
+    result.add_argument("--speed-profile", choices=("applied", "quick", "balanced", "averaged"),
+                        default="averaged", help="explicit Sweep acquisition profile")
     result.add_argument("--window-width", type=int, default=1400)
     result.add_argument("--window-height", type=int, default=850)
     result.add_argument("--run-timeout", type=float, default=35.0,
@@ -86,7 +90,8 @@ def waterfall_update_key(update: object) -> tuple[str, int, int, str, int] | Non
     return identity[0], identity[1], stamp.sequence, state, stamp.revision if state == "partial" else 0
 
 
-def applied_matches_request(applied: object, *, sample_rate_msps: float, fft: int) -> bool:
+def applied_matches_request(applied: object, *, sample_rate_msps: float, fft: int,
+                            rf_bandwidth_mhz: float | None = None) -> bool:
     """A PASS must describe the configuration actually accepted by the SDR."""
     configuration = getattr(applied, "applied", None)
     backend = getattr(getattr(configuration, "backend", None), "value", None)
@@ -95,7 +100,11 @@ def applied_matches_request(applied: object, *, sample_rate_msps: float, fft: in
                 and getattr(configuration, "fft_size", None) == fft
                 and type(actual_rate) in (int, float)
                 and math.isclose(actual_rate, sample_rate_msps * 1e6,
-                                 rel_tol=0.0, abs_tol=1.0))
+                                 rel_tol=0.0, abs_tol=1.0)
+                and (rf_bandwidth_mhz is None or
+                     (type(getattr(configuration, "analog_bandwidth_hz", None)) in (int, float)
+                      and math.isclose(configuration.analog_bandwidth_hz, rf_bandwidth_mhz * 1e6,
+                                       rel_tol=0.0, abs_tol=1.0))))
 
 
 def uploaded_waterfall_key(*, attempted: tuple[str, int, int, str, int] | None,
@@ -163,12 +172,42 @@ def terminal_gap_paints(events: list[dict[str, object]],
     return painted if set(painted) == {"spectrum", "waterfall"} else None
 
 
+def stage_rows(events: list[dict[str, object]],
+               polls: dict[tuple[str, int, int, str, int], dict[str, object]],
+               preparations: dict[tuple[str, int, int, str, int], int],
+               models: dict[tuple[str, int, int, str, int], int]) -> list[dict[str, object]]:
+    """Join one producer identity across host poll, preparation, model and paint.
+
+    Poll return is *after* native latest-slot coalescing and domain conversion;
+    it is deliberately not mislabeled as analytical-ready time.
+    """
+    rows = []
+    for event in events:
+        key = tuple(event["key"])
+        poll = polls.get(key)
+        prepared_ns = preparations.get(key)
+        model_ns = models.get(key)
+        painted_ns = event["when_ns"]
+        if (poll is None or prepared_ns is None or model_ns is None
+                or not poll["returned_ns"] <= prepared_ns <= model_ns <= painted_ns):
+            continue
+        rows.append(dict(pane=event["pane"], key=list(key),
+                         poll_return_to_prepare_ms=(prepared_ns - poll["returned_ns"]) / 1e6,
+                         prepare_to_model_ms=(model_ns - prepared_ns) / 1e6,
+                         model_to_paint_ms=(painted_ns - model_ns) / 1e6,
+                         poll_return_to_paint_ms=(painted_ns - poll["returned_ns"]) / 1e6))
+    return rows
+
+
 def main() -> int:
     args = parser().parse_args()
     if sys.platform != "win32" or not args.uri.startswith(("usb:", "ip:")):
         raise SystemExit("physical Sweep gate requires Windows and an explicit usb:/ip: URI")
     if (not all(map(math.isfinite, (args.start_mhz, args.stop_mhz, args.sample_rate_msps,
                                     args.run_timeout)))
+            or (args.rf_bandwidth_mhz is not None
+                and (not math.isfinite(args.rf_bandwidth_mhz)
+                     or not 0.2 <= args.rf_bandwidth_mhz <= 56.0))
             or not 0.001 <= args.start_mhz < args.stop_mhz <= 100_000.0
             or any(not math.isclose(value, round(value, 3), rel_tol=0.0, abs_tol=1e-9)
                    for value in (args.start_mhz, args.stop_mhz))
@@ -194,7 +233,9 @@ def main() -> int:
     from sdr_monitor.domain.live import BackendKind
     from sdr_monitor.domain.sweep_speed import SweepSpeedProfile
     from sdr_monitor.services import build_default_sdr_services
+    from sdr_monitor.services.native_continuous_sweep import NativeContinuousSweepDisplayService
     from sdr_monitor.services.native_live import NativeLiveSessionService
+    from sdr_monitor.ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
     from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
     from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
     from sdr_monitor.ui.v2.design import ThemeId
@@ -227,6 +268,11 @@ def main() -> int:
     complete_models: dict[tuple[str, int, int], int] = {}
     model_partial_keys: set[tuple[str, int, int, str, int]] = set()
     model_complete_keys: set[tuple[str, int, int, str, int]] = set()
+    poll_events: dict[tuple[str, int, int, str, int], dict[str, object]] = {}
+    preparation_events: dict[tuple[str, int, int, str, int], int] = {}
+    model_events: dict[tuple[str, int, int, str, int], int] = {}
+    acquisition_events: dict[tuple[str, int, int, int, int], dict[str, object]] = {}
+    stage_lock = threading.Lock()
     last_waterfall_update_key = None
     last_waterfall_upload_key = None
     waterfall_upload_count = 0
@@ -250,8 +296,57 @@ def main() -> int:
     capture_status = None
 
     original_render = AnalyzerWorkspaceV2._render
+    original_poll_latest = NativeContinuousSweepDisplayService.poll_latest
+    original_poll_and_prepare = ContinuousSweepPresenter._poll_and_prepare
     original_set_sweep_line = WaterfallPane.set_sweep_line
     original_curve_paint = pg.PlotCurveItem.paint
+
+    def snapshot_keys(snapshot):
+        for frame in (snapshot.line, snapshot.progress):
+            key = sweep_key(frame)
+            if key is not None:
+                yield key, frame
+
+    def observed_poll_latest(service, *poll_args, **poll_kwargs):
+        nonlocal overflow
+        began_ns = perf_counter_ns()
+        snapshot = original_poll_latest(service, *poll_args, **poll_kwargs)
+        returned_ns = perf_counter_ns()
+        with stage_lock:
+            for key, frame in snapshot_keys(snapshot):
+                if key not in poll_events:
+                    if len(poll_events) >= _MAX_IDENTITIES:
+                        overflow += 1
+                    else:
+                        poll_events[key] = dict(key=list(key), returned_ns=returned_ns,
+                                                poll_call_ms=(returned_ns - began_ns) / 1e6)
+                for item in frame.segment_acquisition or ():
+                    segment_key = (*key[:3], item.segment_index, item.config_generation)
+                    if segment_key not in acquisition_events:
+                        if len(acquisition_events) >= _MAX_IDENTITIES:
+                            overflow += 1
+                        else:
+                            acquisition_events[segment_key] = dict(
+                                key=list(segment_key), first_sample_timestamp_ns=item.timestamp_ns,
+                                frame_sequence=item.frame_sequence,
+                                first_sample_index=item.first_sample_index,
+                                sample_rate_hz=item.sample_rate_hz, fft_size=item.fft_size,
+                                quality_flags=item.quality_flags)
+        return snapshot
+
+    def observed_poll_and_prepare(presenter, *prepare_args, **prepare_kwargs):
+        nonlocal overflow
+        publication = original_poll_and_prepare(presenter, *prepare_args, **prepare_kwargs)
+        prepared_ns = perf_counter_ns()
+        snapshot = getattr(publication, "snapshot", publication)
+        with stage_lock:
+            for key, _frame in snapshot_keys(snapshot):
+                if key not in preparation_events:
+                    if len(preparation_events) >= _MAX_IDENTITIES:
+                        overflow += 1
+                    else:
+                        preparation_events[key] = prepared_ns
+        return publication
 
     def observed_curve_paint(curve, *paint_args, **paint_kwargs):
         started_ns = perf_counter_ns()
@@ -298,6 +393,12 @@ def main() -> int:
             now = perf_counter_ns()
             snapshot = state.sweep_snapshot
             if snapshot is not None:
+                for key, _frame in snapshot_keys(snapshot):
+                    if key not in model_events:
+                        if len(model_events) >= _MAX_IDENTITIES:
+                            overflow += 1
+                        else:
+                            model_events[key] = now
                 if snapshot.progress is not None:
                     key = sweep_key(snapshot.progress)
                     if key is not None:
@@ -386,6 +487,8 @@ def main() -> int:
           (patch.object(pg.PlotCurveItem, "paint", observed_curve_paint)
            if args.profile_terminal_gap else nullcontext()),
           patch.object(AnalyzerWorkspaceV2, "_render", observed_render),
+          patch.object(NativeContinuousSweepDisplayService, "poll_latest", observed_poll_latest),
+          patch.object(ContinuousSweepPresenter, "_poll_and_prepare", observed_poll_and_prepare),
           patch.object(WaterfallPane, "set_sweep_line", observed_set_sweep_line)):
         app = QApplication.instance() or QApplication([])
         app.setQuitOnLastWindowClosed(False)
@@ -440,9 +543,18 @@ def main() -> int:
                     phase = "wait_selected"
                 elif phase == "wait_selected":
                     snapshot = state.live.snapshot
-                    if snapshot is not None and snapshot.device is not None and not state.live.busy:
+                    if state.live.error_label and not state.live.busy:
+                        fail(f"device selection rejected ({state.live.error_kind}): "
+                             f"{state.live.error_label}")
+                    elif snapshot is not None and snapshot.device is not None and not state.live.busy:
                         page.drawer._sample_rate.setValue(args.sample_rate_msps)
                         page.drawer._fft.setValue(args.fft)
+                        if args.rf_bandwidth_mhz is not None:
+                            bandwidth_index = page.drawer._rf_bandwidth.findData(args.rf_bandwidth_mhz * 1e6)
+                            if bandwidth_index < 0:
+                                fail("selected device has no requested RF bandwidth preset")
+                                return
+                            page.drawer._rf_bandwidth.setCurrentIndex(bandwidth_index)
                         cpu = page.drawer._backend.findData(BackendKind.CPU.value)
                         if cpu < 0:
                             fail("selected device has no CPU backend")
@@ -454,8 +566,9 @@ def main() -> int:
                     applied = getattr(state.live.snapshot, "applied", None)
                     if applied is not None and not state.live.busy and not state.configuration_pending:
                         if not applied_matches_request(applied, sample_rate_msps=args.sample_rate_msps,
-                                                       fft=args.fft):
-                            fail("SDR applied Fs/FFT/backend differs from the requested CPU configuration")
+                                                       fft=args.fft,
+                                                       rf_bandwidth_mhz=args.rf_bandwidth_mhz):
+                            fail("SDR applied Fs/RF BW/FFT/backend differs from the requested CPU configuration")
                             return
                         page.mode.setCurrentIndex(page.mode.findData(AnalyzerMode.SWEEP))
                         page.start_frequency.setValue(args.start_mhz)
@@ -465,7 +578,8 @@ def main() -> int:
                             fail("Sweep frequency controls clamped the requested range")
                             return
                         page.drawer.sweep_profile.choice.setCurrentIndex(
-                            page.drawer.sweep_profile.choice.findData(SweepSpeedProfile.AVERAGED.value))
+                            page.drawer.sweep_profile.choice.findData(
+                                SweepSpeedProfile(args.speed_profile).value))
                         page.sweep_preview.resolve()
                         phase = "wait_preview"
                 elif phase == "wait_preview":
@@ -558,6 +672,7 @@ def main() -> int:
         first_pair = first_pair or first_progressive_pair(events, complete_models)
         terminal_key = sweep_key(None if terminal_snapshot is None else terminal_snapshot.line)
         gap_paints = terminal_gap_paints(events, terminal_key, stop_intent_ns)
+        joined_stages = stage_rows(events, poll_events, preparation_events, model_events)
         checks = dict(start_acknowledged=start_ack_ns is not None,
                       preview_valid=preview is not None,
                       partial_modeled=bool(model_partial_keys),
@@ -570,7 +685,8 @@ def main() -> int:
                       native_terminal_gap=bool(terminal_snapshot is not None
                                                and terminal_snapshot.metrics.terminal_control_gaps >= 1),
                       exact_applied_configuration=bool(applied is not None and applied_matches_request(
-                          applied, sample_rate_msps=args.sample_rate_msps, fft=args.fft)),
+                          applied, sample_rate_msps=args.sample_rate_msps, fft=args.fft,
+                          rf_bandwidth_mhz=args.rf_bandwidth_mhz)),
                       stopped_and_closed=phase == "done" and composition.can_close(),
                       bounded_presentation=budget.reserved_bytes == 0 and not workers and overflow == 0)
         report = dict(schema="app05-physical-sweep-ui-v2",
@@ -582,9 +698,11 @@ def main() -> int:
                       settings_namespace=settings_namespace,
                       requested=dict(start_mhz=args.start_mhz, stop_mhz=args.stop_mhz,
                                      sample_rate_msps=args.sample_rate_msps, fft=args.fft,
-                                     run_timeout_s=args.run_timeout, profile="averaged", window_mhz=36,
+                                     rf_bandwidth_mhz=args.rf_bandwidth_mhz,
+                                     run_timeout_s=args.run_timeout, profile=args.speed_profile, window_mhz=36,
                                      overlap_mhz=2, theme=args.theme),
                       applied=None if applied is None else dict(sample_rate_hz=applied.applied.sample_rate_hz,
+                                                                 analog_bandwidth_hz=applied.applied.analog_bandwidth_hz,
                                                                  fft_size=applied.applied.fft_size,
                                                                  backend=applied.applied.backend.value),
                       preview=None if preview is None else dict(segments=preview.segment_count,
@@ -612,12 +730,23 @@ def main() -> int:
                           progress_key=sweep_key(terminal_snapshot.progress),
                           metrics=asdict(terminal_snapshot.metrics)),
                       paint_events=events, paint_overflow=overflow,
+                      host_poll_events=sorted(poll_events.values(), key=lambda item: item["returned_ns"]),
+                      host_preparation_events=[dict(key=list(key), when_ns=when)
+                                               for key, when in preparation_events.items()],
+                      qt_model_events=[dict(key=list(key), when_ns=when)
+                                       for key, when in model_events.items()],
+                      producer_acquisition_events=list(acquisition_events.values()),
+                      paired_host_to_paint_rows=joined_stages,
+                      paired_host_to_paint_missing=len(events) - len(joined_stages),
                       terminal_gap_profile=terminal_gap_profile,
                       terminal_gap_curve_paints=terminal_gap_curve_paints,
                       qwidget_surface_capture=capture_status,
                       allocation_budget=asdict(budget), workers_after_close=workers,
-                      scope="One opt-in physical continuous-Sweep pass on visible Qt. Same-pass partial/final "
-                            "paint-return is not exact pixels, DWM/scanout, RF timestamp or sustained LPS. "
+                      scope="One opt-in physical continuous-Sweep pass on visible Qt. Native/latest poll return "
+                            "occurs AFTER analytical-ready and may omit coalesced revisions; it is NOT the "
+                            "APP-05 ready-to-paint SLA. First-sample timestamps are producer estimates, "
+                            "not clock-synchronized RF instants. Same-pass partial/final paint-return is "
+                            "not exact pixels, DWM/scanout, RF timestamp or sustained LPS. "
                             "Completed-line LPS is not analytical FFT LPS. No product source is modified.")
     with output.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, sort_keys=True)
