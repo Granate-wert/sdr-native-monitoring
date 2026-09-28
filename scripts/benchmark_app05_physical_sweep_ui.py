@@ -51,7 +51,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--window-width", type=int, default=1400)
     result.add_argument("--window-height", type=int, default=850)
     result.add_argument("--run-timeout", type=float, default=35.0,
-                        help="maximum time to observe a same-pass partial/final paint pair")
+                        help="maximum time to observe the requested painted passes")
+    result.add_argument("--min-complete-passes", type=int, default=1,
+                        help="minimum distinct same-epoch partial/final passes painted before Stop")
+    result.add_argument("--minimum-measure-seconds", type=float, default=0.0,
+                        help="minimum running observation time after Start; opt-in sustained witness")
     result.add_argument("--profile-terminal-gap", action="store_true",
                         help="diagnostic cProfile of one upper-plot gap paint; invalidates latency comparison")
     result.add_argument("--theme", choices=("dark", "light", "high_contrast"), default="dark")
@@ -204,6 +208,17 @@ def complete_quality_summary(frame: object) -> dict[str, object]:
                 acquisition_records=len(frame.segment_acquisition or ()))
 
 
+def complete_quality_covers_plan(summary: dict[str, object], segment_count: int) -> bool:
+    """A scalar line covers the exact planned segments without declared gaps."""
+    return bool(segment_count >= 1
+                and summary["finite_bins"] == summary["bin_count"]
+                and summary["source_segment_indices"] == list(range(segment_count))
+                and summary["acquisition_records"] == segment_count
+                and summary["seam_boundary_count"] == segment_count - 1
+                and not summary["missing_segment_indices"]
+                and not summary["gap_reasons"])
+
+
 def uploaded_waterfall_key(*, attempted: tuple[str, int, int, str, int] | None,
                            uploaded: tuple[str, int, int, str, int] | None,
                            stamp: object | None, uploads: int, upload_count: int
@@ -217,9 +232,9 @@ def uploaded_waterfall_key(*, attempted: tuple[str, int, int, str, int] | None,
     return uploaded if uploaded[2:] == visible_stamp else None
 
 
-def first_progressive_pair(events: list[dict[str, object]],
-                           complete_models: dict[tuple[str, int, int], int]) -> dict[str, object] | None:
-    """Require both canvases to paint the same partial then complete pass.
+def progressive_pairs(events: list[dict[str, object]],
+                      complete_models: dict[tuple[str, int, int], int]) -> list[dict[str, object]]:
+    """Return each distinct pass painted partial then complete on both canvases.
 
     A partial paint must precede the terminal model publication itself, not
     merely a later terminal paint. A completed pass from N+1 cannot be paired
@@ -232,8 +247,9 @@ def first_progressive_pair(events: list[dict[str, object]],
             continue
         identity = key[:3]
         stages = by_pass.setdefault(identity, {})
-        stages[(key[3], key[4], event["pane"])] = event
-    for identity, stages in by_pass.items():
+        stages.setdefault((key[3], key[4], event["pane"]), event)
+    pairs = []
+    for identity, stages in sorted(by_pass.items(), key=lambda item: complete_models.get(item[0], math.inf)):
         complete_ns = complete_models.get(identity)
         if complete_ns is None:
             continue
@@ -249,10 +265,30 @@ def first_progressive_pair(events: list[dict[str, object]],
             if (partial["spectrum"]["coverage_runs"] > 0
                     and all(partial[pane]["when_ns"] < complete_ns < finals[pane]["when_ns"]
                             for pane in partial)):
-                return dict(source_id=identity[0], epoch=identity[1], sequence=identity[2],
-                            revision=revision, partial=partial, complete=finals,
-                            complete_model_ns=complete_ns)
-    return None
+                pairs.append(dict(source_id=identity[0], epoch=identity[1], sequence=identity[2],
+                                  revision=revision, partial=partial, complete=finals,
+                                  complete_model_ns=complete_ns))
+                break
+    return pairs
+
+
+def first_progressive_pair(events: list[dict[str, object]],
+                           complete_models: dict[tuple[str, int, int], int]) -> dict[str, object] | None:
+    pairs = progressive_pairs(events, complete_models)
+    return pairs[0] if pairs else None
+
+
+def observation_ready(pair_count: int, elapsed_seconds: float, *, min_pairs: int,
+                      minimum_seconds: float) -> bool:
+    """Sustained requests cannot pass on their first complete line alone."""
+    return pair_count >= min_pairs and elapsed_seconds >= minimum_seconds
+
+
+def one_monotone_epoch(identities: list[tuple[str, int, int]]) -> bool:
+    """A counted run may not cross a hidden source/epoch change or duplicate a pass."""
+    return bool(identities and len({identity[:2] for identity in identities}) == 1
+                and [identity[2] for identity in identities]
+                == sorted({identity[2] for identity in identities}))
 
 
 def terminal_gap_paints(events: list[dict[str, object]],
@@ -302,12 +338,15 @@ def main() -> int:
         raise SystemExit("physical Sweep gate requires Windows and an explicit usb:/ip: URI")
     if args.select_discovered_usb and not args.uri.startswith("usb:"):
         raise SystemExit("local USB Discover requires an explicit usb: URI")
+    if ((args.min_complete_passes > 1 or args.minimum_measure_seconds > 0)
+            and not args.require_native_stage_timings):
+        raise SystemExit("sustained Sweep observation requires native phase/loss metrics before RX")
     if (args.acquisition_buffer_samples is not None and
             (args.acquisition_buffer_samples < 4096 or args.acquisition_buffer_samples > 262_144
              or args.acquisition_buffer_samples & (args.acquisition_buffer_samples - 1))):
         raise SystemExit("diagnostic acquisition buffer must be a power of two in [4096, 262144]")
     if (not all(map(math.isfinite, (args.start_mhz, args.stop_mhz, args.sample_rate_msps,
-                                    args.run_timeout)))
+                                    args.run_timeout, args.minimum_measure_seconds)))
             or (args.rf_bandwidth_mhz is not None
                 and (not math.isfinite(args.rf_bandwidth_mhz)
                      or not 0.2 <= args.rf_bandwidth_mhz <= 56.0))
@@ -319,6 +358,8 @@ def main() -> int:
                                 rel_tol=0.0, abs_tol=1e-9)
             or not 256 <= args.fft <= 262_144 or args.fft & (args.fft - 1)
             or not 1 <= args.run_timeout <= 120
+            or not 1 <= args.min_complete_passes <= 64
+            or not 0 <= args.minimum_measure_seconds <= args.run_timeout - 1.0
             or not 800 <= args.window_width <= 3840 or not 500 <= args.window_height <= 2160):
         raise SystemExit("invalid bounded physical Sweep request")
     output = args.output.resolve()
@@ -403,6 +444,7 @@ def main() -> int:
     settled_discovery_count = None
     native_plan_summary = None
     complete_quality = None
+    complete_quality_by_pass: dict[tuple[str, int, int], dict[str, object]] = {}
     complete_quality_error = None
     native_stage_metrics = None
     native_stage_metrics_error = None
@@ -427,10 +469,18 @@ def main() -> int:
         began_ns = perf_counter_ns()
         snapshot = original_poll_latest(service, *poll_args, **poll_kwargs)
         returned_ns = perf_counter_ns()
-        if (snapshot.line is not None and getattr(snapshot.line.state, "value", snapshot.line.state) == "complete"
-                and complete_quality is None and complete_quality_error is None):
+        complete_key = sweep_key(snapshot.line)
+        if (complete_key is not None and complete_key[3] == "complete"
+                and complete_key[:3] not in complete_quality_by_pass
+                and complete_quality_error is None):
             try:
-                complete_quality = complete_quality_summary(snapshot.line)
+                summary = complete_quality_summary(snapshot.line)
+                if len(complete_quality_by_pass) >= _MAX_IDENTITIES:
+                    overflow += 1
+                else:
+                    complete_quality_by_pass[complete_key[:3]] = summary
+                    if complete_quality is None:
+                        complete_quality = summary
             except (AttributeError, TypeError, ValueError) as caught:
                 complete_quality_error = type(caught).__name__
         with stage_lock:
@@ -785,8 +835,11 @@ def main() -> int:
                     elif not state.running:
                         fail("physical Sweep stopped before the partial/final witness")
                     else:
-                        first_pair = first_progressive_pair(events, complete_models)
-                        if first_pair is not None:
+                        pairs = progressive_pairs(events, complete_models)
+                        first_pair = pairs[0] if pairs else None
+                        if observation_ready(len(pairs), (now - start_ack_ns) / 1e9,
+                                             min_pairs=args.min_complete_passes,
+                                             minimum_seconds=args.minimum_measure_seconds):
                             phase = "stop"
                             deadline_ns = now + 15_000_000_000
                 elif phase == "stop":
@@ -851,7 +904,25 @@ def main() -> int:
         budget = composition.allocation_budget.snapshot()
         workers = [thread.name for thread in threading.enumerate()
                    if thread is not threading.main_thread()]
-        first_pair = first_pair or first_progressive_pair(events, complete_models)
+        all_pairs = progressive_pairs(events, complete_models)
+        first_pair = all_pairs[0] if all_pairs else None
+        qualified_pairs = [pair for pair in all_pairs if stop_intent_ns is not None
+                           and all(pair["complete"][pane]["when_ns"] < stop_intent_ns
+                                   for pane in ("spectrum", "waterfall"))]
+        qualifying_identities = [(pair["source_id"], pair["epoch"], pair["sequence"])
+                                 for pair in qualified_pairs]
+        complete_passes = [dict(source_id=pair["source_id"], epoch=pair["epoch"],
+                                sequence=pair["sequence"], revision=pair["revision"],
+                                complete_model_ns=pair["complete_model_ns"],
+                                complete_paint_ns=max(pair["complete"][pane]["when_ns"]
+                                                      for pane in ("spectrum", "waterfall")),
+                                quality=complete_quality_by_pass.get(identity))
+                           for pair, identity in zip(qualified_pairs, qualifying_identities, strict=True)]
+        measured_seconds = (None if start_ack_ns is None or stop_intent_ns is None
+                            else (stop_intent_ns - start_ack_ns) / 1e9)
+        steady_seconds = (None if len(complete_passes) < 2 else
+                          (complete_passes[-1]["complete_paint_ns"]
+                           - complete_passes[0]["complete_paint_ns"]) / 1e9)
         terminal_key = sweep_key(None if terminal_snapshot is None else terminal_snapshot.line)
         gap_paints = terminal_gap_paints(events, terminal_key, stop_intent_ns)
         joined_stages = stage_rows(events, poll_events, preparation_events, model_events)
@@ -872,12 +943,8 @@ def main() -> int:
                       exact_native_plan=native_plan_summary is not None,
                       complete_quality=bool(complete_quality is not None and complete_quality_error is None
                                             and preview is not None
-                                            and complete_quality["finite_bins"] == complete_quality["bin_count"]
-                                            and complete_quality["source_segment_indices"] ==
-                                            list(range(preview.segment_count))
-                                            and complete_quality["acquisition_records"] == preview.segment_count
-                                            and not complete_quality["missing_segment_indices"]
-                                            and not complete_quality["gap_reasons"]),
+                                            and complete_quality_covers_plan(
+                                                complete_quality, preview.segment_count)),
                       stopped_and_closed=phase == "done" and composition.can_close(),
                       bounded_presentation=budget.reserved_bytes == 0 and not workers and overflow == 0)
         if args.require_native_stage_timings:
@@ -885,6 +952,27 @@ def main() -> int:
                 native_stage_metrics is not None and native_stage_metrics_error is None
                 and native_stage_metrics["stages"]["segment_frame_wait_timing"]["count"] >= preview.segment_count
             ) if preview is not None else False
+        if args.min_complete_passes > 1 or args.minimum_measure_seconds > 0:
+            native_scalars = None if native_stage_metrics is None else native_stage_metrics["scalars"]
+            checks["sustained_painted_passes"] = bool(
+                measured_seconds is not None and observation_ready(
+                    len(qualified_pairs), measured_seconds, min_pairs=args.min_complete_passes,
+                    minimum_seconds=args.minimum_measure_seconds))
+            checks["sustained_one_source_epoch"] = one_monotone_epoch(qualifying_identities)
+            checks["sustained_complete_quality"] = bool(
+                preview is not None and complete_quality_error is None and complete_passes
+                and all(item["quality"] is not None
+                        and complete_quality_covers_plan(item["quality"], preview.segment_count)
+                        for item in complete_passes))
+            checks["sustained_native_no_reported_loss"] = bool(
+                native_scalars is not None and terminal_snapshot is not None
+                and native_scalars["completed_lines"] >= args.min_complete_passes
+                and native_scalars["gapped_lines"] == 1
+                and all(native_scalars[name] == 0 for name in (
+                    "segment_frame_timeouts", "source_short_reads", "source_refill_errors",
+                    "source_estimated_dropped_samples", "acquisition_queue_blocks_dropped",
+                    "fft_frames_dropped")))
+            checks["sustained_host_stage_joins"] = len(joined_stages) == len(events)
         report = dict(schema="app05-physical-sweep-ui-v2",
                       result="pass" if all(checks.values()) and not error else "fail",
                       error=error, phase=phase, checks=checks, source="physical-pluto-rx", uri=args.uri,
@@ -901,7 +989,10 @@ def main() -> int:
                                                                  if args.acquisition_buffer_samples is not None
                                                                  else 262_144),
                                      rf_bandwidth_mhz=args.rf_bandwidth_mhz,
-                                     run_timeout_s=args.run_timeout, profile=args.speed_profile, window_mhz=36,
+                                     run_timeout_s=args.run_timeout,
+                                     min_complete_passes=args.min_complete_passes,
+                                     minimum_measure_seconds=args.minimum_measure_seconds,
+                                     profile=args.speed_profile, window_mhz=36,
                                      overlap_mhz=2, theme=args.theme),
                       applied=None if applied is None else dict(sample_rate_hz=applied.applied.sample_rate_hz,
                                                                  analog_bandwidth_hz=applied.applied.analog_bandwidth_hz,
@@ -911,6 +1002,13 @@ def main() -> int:
                                                                  output_bins=preview.reduced.output_bins),
                       native_plan_geometry=native_plan_summary,
                       complete_quality=complete_quality,
+                      complete_passes=complete_passes,
+                      complete_pass_count_before_stop=len(complete_passes),
+                      measured_running_seconds=measured_seconds,
+                      painted_complete_lps=(None if measured_seconds is None or measured_seconds <= 0 else
+                                            len(complete_passes) / measured_seconds),
+                      steady_painted_complete_lps=(None if steady_seconds is None or steady_seconds <= 0 else
+                                                   (len(complete_passes) - 1) / steady_seconds),
                       complete_quality_error=complete_quality_error,
                       window=dict(logical_width=shell.width(), logical_height=shell.height(),
                                   dpr=shell.devicePixelRatioF(),
@@ -951,11 +1049,12 @@ def main() -> int:
                       terminal_gap_curve_paints=terminal_gap_curve_paints,
                       qwidget_surface_capture=capture_status,
                       allocation_budget=asdict(budget), workers_after_close=workers,
-                      scope="One opt-in physical continuous-Sweep pass on visible Qt. Native/latest poll return "
+                      scope="Opt-in physical continuous Sweep on visible Qt with an explicit bounded pass/time "
+                            "witness. Native/latest poll return "
                             "occurs AFTER analytical-ready and may omit coalesced revisions; it is NOT the "
                             "APP-05 ready-to-paint SLA. First-sample timestamps are producer estimates, "
                             "not clock-synchronized RF instants. Same-pass partial/final paint-return is "
-                            "not exact pixels, DWM/scanout, RF timestamp or sustained LPS. "
+                            "not exact pixels, DWM/scanout, RF timestamp or long-soak LPS. "
                             "Completed-line LPS is not analytical FFT LPS. No product source is modified.")
     with output.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, sort_keys=True)

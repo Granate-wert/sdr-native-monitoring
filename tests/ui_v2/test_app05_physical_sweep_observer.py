@@ -5,8 +5,10 @@ import unittest
 import numpy as np
 
 from scripts.benchmark_app05_physical_sweep_ui import (
-    applied_matches_request, complete_quality_summary, discovered_usb_device_id, first_progressive_pair,
-    native_plan_geometry, native_stage_summary, parser, stage_rows, sweep_key,
+    applied_matches_request, complete_quality_covers_plan, complete_quality_summary,
+    discovered_usb_device_id, first_progressive_pair, native_plan_geometry,
+    native_stage_summary, observation_ready, one_monotone_epoch, parser,
+    progressive_pairs, stage_rows, sweep_key,
     terminal_gap_paints, uploaded_waterfall_key, waterfall_update_key,
 )
 
@@ -34,10 +36,15 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         self.assertFalse(args.require_native_stage_timings)
         self.assertIsNone(args.acquisition_buffer_samples)
         self.assertEqual(args.run_timeout, 35.0)
+        self.assertEqual((args.min_complete_passes, args.minimum_measure_seconds), (1, 0.0))
         self.assertEqual(args.theme, "dark")
         selected = parser().parse_args(["--uri", "usb:3.4.5", "--output", "evidence.json",
                                         "--rf-bandwidth-mhz", "50", "--speed-profile", "quick"])
         self.assertEqual((selected.rf_bandwidth_mhz, selected.speed_profile), (50, "quick"))
+        sustained = parser().parse_args(["--uri", "usb:3.4.5", "--output", "evidence.json",
+                                         "--min-complete-passes", "10",
+                                         "--minimum-measure-seconds", "20"])
+        self.assertEqual((sustained.min_complete_passes, sustained.minimum_measure_seconds), (10, 20.0))
 
     def test_discovered_usb_selection_requires_one_exact_ad936x_route(self):
         choices = (SimpleNamespace(uri="usb:3.4.5", alternate_uris=(), device_id="pluto:one"),
@@ -95,6 +102,10 @@ class PhysicalSweepObserverTests(unittest.TestCase):
                           summary["seam_boundary_count"], summary["acquisition_records"]), (4, 4, 1, 2))
         self.assertEqual(summary["quality_mask_or"], 0x2001)
         self.assertEqual(summary["seam_jump_max_db"], 1.0)
+        self.assertTrue(complete_quality_covers_plan(summary, 2))
+        self.assertFalse(complete_quality_covers_plan(summary, 3))
+        self.assertFalse(complete_quality_covers_plan(summary | {"missing_segment_indices": [1]}, 2))
+        self.assertFalse(complete_quality_covers_plan(summary | {"seam_boundary_count": 0}, 2))
         line.state.value = "gap"
         with self.assertRaises(ValueError):
             complete_quality_summary(line)
@@ -180,6 +191,28 @@ class PhysicalSweepObserverTests(unittest.TestCase):
         paints, models = events()
         paints[0]["coverage_runs"] = 0
         self.assertIsNone(first_progressive_pair(paints, models))
+
+    def test_sustained_pairs_are_distinct_and_require_each_complete_paint(self):
+        first_events, first_models = events(sequence=7, partial_ns=10, model_ns=20,
+                                            complete_ns=30)
+        second_events, second_models = events(sequence=8, partial_ns=40, model_ns=50,
+                                              complete_ns=60)
+        pairs = progressive_pairs(first_events + second_events, first_models | second_models)
+        self.assertEqual([pair["sequence"] for pair in pairs], [7, 8])
+        self.assertTrue(one_monotone_epoch([("s", 3, 7), ("s", 3, 8)]))
+        self.assertFalse(one_monotone_epoch([("s", 3, 7), ("s", 4, 8)]))
+        self.assertFalse(one_monotone_epoch([("s", 3, 8), ("s", 3, 7)]))
+        self.assertFalse(one_monotone_epoch([("s", 3, 7), ("s", 3, 7)]))
+        self.assertFalse(observation_ready(len(pairs), 19.9, min_pairs=2, minimum_seconds=20))
+        self.assertTrue(observation_ready(len(pairs), 20.0, min_pairs=2, minimum_seconds=20))
+        self.assertFalse(observation_ready(1, 21.0, min_pairs=2, minimum_seconds=20))
+        self.assertEqual([pair["sequence"] for pair in progressive_pairs(
+            first_events + second_events[:-1], first_models | second_models)], [7])
+        # Even identical sequence numbers may not mix different RF epochs.
+        other_epoch = [dict(item, key=item["key"][:1] + [4] + item["key"][2:])
+                       if item["pane"] == "waterfall" else item for item in second_events]
+        self.assertEqual([pair["sequence"] for pair in progressive_pairs(
+            first_events + other_epoch, first_models | second_models)], [7])
 
     def test_terminal_gap_requires_exact_pass_and_both_post_stop_paints(self):
         gap = ("s", 3, 8, "gap", 0)

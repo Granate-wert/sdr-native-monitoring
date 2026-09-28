@@ -1412,3 +1412,19 @@ product default, detector, UI rendering and approved release EXE were not
 changed. An FFT/hop/averaging- and settled-time-aware buffer policy plus
 controlled RF and continuous frozen-GUI tests are required before adoption;
 private raw scalar reports remain local-only.
+
+### Bounded multi-pass frozen observer (APP-06D follow-up)
+
+The same diagnostic-only physical UI V2 observer may now require both a
+minimum number of distinct complete Sweep passes **painted** on Spectrum and
+Waterfall and a minimum running interval after explicit Start, before an
+explicit Stop. The default remains the earlier one-pass behavior. For an
+opt-in multi-pass request, native phase/loss counters must be available
+before RX; every counted pass must have one source/epoch, increasing pass
+identity and an individually complete finite segment/quality summary.
+Unexpected pre-Stop gaps, reported source/FFT/queue loss, missing host-to-paint
+joins or incomplete Stop/close fail that observer run. The report separates
+native completed-line metrics from painted complete-pass cadence and records
+any UI/native supersession; it does not equate either to analytical FFT LPS,
+ADC continuity, RF duty/Pd, DWM scanout or long-soak acceptance. No product
+buffer, retune path, UI or detector default is changed by this observer mode.
