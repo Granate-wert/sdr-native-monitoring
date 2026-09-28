@@ -988,3 +988,15 @@ isolate native lock, ingress queue, snapshot copy, bridge, projection and
 actual GUI paint on an exact frozen build, followed by sustained common-family
 physical runs. Genuine Ethernet and tinySA cells, APP-07 and release remain
 open.
+
+A subsequent full, tagged CPU package from doc-only source `9f301ca`
+retained the same native module SHA-256 above and passed 35/35 CTest, the
+355-file frozen package checks and shared Pluto/HackRF runtime admission.
+The diagnostic EXE SHA-256 is
+`a1528eb1a1922d8bff2ccba70bfef6ad87f569aa804d4bf98c9ef7d5b0b20d02`.
+The first package attempt was correctly refused before freeze because the
+system IIO directory carried different `libusb-1.0.dll` bytes; the successful
+attempt used the same previously hash-qualified seven-file input bundle as
+the prior combined build. No system DLL was replaced. This is frozen
+load-only/package evidence, **not** a current-EXE visible RX, DWM, sustained
+heavy-density or release acceptance; the static installation is untouched.
