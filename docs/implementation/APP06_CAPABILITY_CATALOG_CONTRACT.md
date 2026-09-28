@@ -897,3 +897,44 @@ retains last coherent density for an ahead-of-spectrum endpoint. Before
 changing that guard or the worker architecture, measure density publication,
 coherence withholding, projection request/completion, ImageItem upload and
 actual paint on a matched current-source frozen build.
+
+### Native exponential-density probability boundary (2026-09-28)
+
+Exact source `85b2e97` fixes one confirmed cause of intermittent HackRF UI V2
+persistence disappearance. The exponential histogram stores cells as `float`
+but accumulates its theoretical weight as `double`. After thousands of FFT
+contributions a hot cell can round slightly above the theoretical weight.
+The old native probability scale then yielded values such as `1.00000262`;
+the strict, intentionally unchanged UI `[0,1]` validation rejected the
+whole density layer as `persistence_values_invalid`. The result was an
+intermittent blank heat overlay even while coherent native density, Spectrum
+and Waterfall continued. Opening Display was not established as the cause.
+
+At the existing native snapshot cadence, the producer now checks the maximum
+of its already-copied exponential histogram and, only when it exceeds the
+theoretical weight, uses that maximum with a two-float-epsilon margin as the
+probability denominator. The per-FFT update loop, raw histogram and Spectrum
+scale, FFT/group/Fs, density geometry, snapshot cadence, common owner and
+strict UI rejection of genuinely invalid external density are unchanged.
+A deterministic 30,000-frame C++ regression proves the old normalization
+would have exceeded one and every revised publication remains within range.
+The exact clean-HEAD StageOnly native build passed 35/35 CTest (module SHA
+`8d6db58d92fb58a6d7e32fb446e43d39e12219d3855bbf90a8d21474e0d110a0`);
+the exact full UI V2 source gate passed 1006 tests, 66 skipped, zero failed,
+with no product imports outside the checkout.
+
+In one clean-source baseline visible Qt-root USB HackRF run at requested
+20 MS/s, FFT16384/hop8192/group1/64-bin decay, five of twelve one-second
+samples had a coherent native layer but an unavailable UI layer with
+`persistence_values_invalid`; sampled maxima reached `1.00000262`. On the
+exact fixed source, separate 18-s and 45-s visible-root runs had zero such
+samples after first-frame admission, continued heat uploads/paint and normal
+explicit Stop/Close. The 45-s run sampled 589 ImageItem uploads and 2021
+paint calls; these are instrumented Qt-object counts, **not** DWM FPS,
+end-to-end latency or an acceptance threshold. Both fixed runs reported zero
+software I/Q drops **in those runs only**. The baseline and fixed sessions
+were not a controlled long-duration throughput benchmark, and no frozen EXE
+was built from `85b2e97`. Default256-bin loss, other devices, extended soak,
+active shared-DLL/RF duty, UI timing, APP-05 debts, APP-06/07 and release
+qualification remain open. The canonical installed module and static EXE
+were not changed.
