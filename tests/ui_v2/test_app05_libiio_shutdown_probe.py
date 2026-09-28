@@ -1,11 +1,30 @@
 """Hardware-independent checks for the APP-05 subprocess teardown observer."""
 
 import unittest
+from pathlib import Path
+import sys
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from scripts.probe_app05_libiio_shutdown import child_complete, classify_stderr
+from scripts.probe_app05_libiio_shutdown import _load_native, child_complete, classify_stderr
 
 
 class LibiioShutdownProbeTests(unittest.TestCase):
+    def test_frozen_native_and_libiio_must_be_checkout_local_siblings(self):
+        with TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            module_dir = checkout / "module"
+            library_dir = checkout / "library"
+            module_dir.mkdir()
+            library_dir.mkdir()
+            module = module_dir / "_sdr_native.cp313-win_amd64.pyd"
+            library = library_dir / "libiio.dll"
+            module.write_bytes(b"not a native extension")
+            library.write_bytes(b"not libiio")
+            with patch.object(sys, "path", sys.path.copy()):
+                with self.assertRaisesRegex(ValueError, "checkout-local siblings"):
+                    _load_native(checkout, module, library)
+
     def test_read_errors_keep_the_last_flushed_stage(self):
         diagnostic = classify_stderr(
             "APP05_NATIVE_STAGE 100 child_begin\n"
@@ -34,6 +53,7 @@ class LibiioShutdownProbeTests(unittest.TestCase):
                       streaming_after_join=False, native_has_error=False,
                       diagnostic_events_lost=0, rx_blocks=10, rx_samples=40960,
                       native_event_codes=["fixed_band_started", "fixed_band_stopped"])
+        result["cycles"] = [result.copy()]
         self.assertTrue(child_complete("stream", 0, result, stages))
         self.assertFalse(child_complete("stream", 0, result, list(reversed(stages))))
         self.assertFalse(child_complete("stream", 1, result, stages))
@@ -42,6 +62,26 @@ class LibiioShutdownProbeTests(unittest.TestCase):
         self.assertFalse(child_complete("stream", 0, result | {"rx_samples": 0}, stages))
         self.assertFalse(child_complete("stream", 0, result | {
             "native_event_codes": ["acquisition_failure"]}, stages))
+
+    def test_same_engine_restart_requires_both_ordered_clean_cycles(self):
+        one_cycle = dict(error=None, connected_after_disconnect=False,
+                         state_after_join="EngineState.STOPPED",
+                         streaming_after_join=False, native_has_error=False,
+                         diagnostic_events_lost=0, rx_blocks=10, rx_samples=40960,
+                         native_event_codes=["fixed_band_started", "fixed_band_stopped"])
+        result = one_cycle | {"stream_cycles": 2,
+                              "cycles": [one_cycle.copy(), one_cycle.copy()]}
+        stages = ["engine_started", "request_stop_return", "join_return",
+                  "engine_reconfigured", "engine_started", "request_stop_return",
+                  "join_return", "engine_disconnect_return", "child_return"]
+        self.assertTrue(child_complete("stream", 0, result, stages))
+        self.assertFalse(child_complete("stream", 0, result,
+                                        stages[:4] + stages[7:]))
+        bad = result | {"cycles": [one_cycle.copy(), one_cycle | {"rx_blocks": 0}]}
+        self.assertFalse(child_complete("stream", 0, bad, stages))
+        bad = result | {"cycles": [one_cycle.copy(),
+                                   one_cycle | {"native_event_codes": ["acquisition_failure"]}]}
+        self.assertFalse(child_complete("stream", 0, bad, stages))
 
     def test_probe_and_configured_require_disconnect(self):
         self.assertTrue(child_complete(

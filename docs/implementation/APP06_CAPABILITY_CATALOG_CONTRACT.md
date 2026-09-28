@@ -1474,3 +1474,27 @@ comparisons, RF calibration, weak-pulse Pd or desktop-scanout measurements.
 Post-Stop IIO `-9` stderr appeared in four of six additional controls and
 remains a separate unresolved lifecycle symptom. No product default, active
 module or release EXE was changed.
+
+### Exact-binary libiio Stop/restart isolation (APP-06D diagnostic, 2026-09-28)
+
+The opt-in native teardown probe may load one explicitly selected frozen
+`_sdr_native`/`libiio.dll` sibling pair from this checkout, refusing a
+different loaded module or DLL path before RX. Its default source-module
+behavior is unchanged. One child can explicitly Configure/Start/Stop/Join,
+then Configure/Start/Stop/Join again on the **same** native engine; both
+cycles require ordered markers, nonzero admitted blocks and clean native
+state. Optional requested center/Fs/RF-BW checks compare actual Pluto
+readback before RX. Separate flushed C-stdio markers narrow the timing of
+libiio stderr without suppressing it or implying a precise USB timestamp.
+
+The exact frozen native/DLL pair identified for the Pluto UI V2 Sweep
+observer reports libiio `0.26 v0.26`. Six initial short high-Fs two-cycle
+native-only children completed all twelve RX cycles; paired
+`READ LINE/INTEGER: -9` occurred in two children around Stop/Join, while
+one subsequent same-owner Start/RX after a message succeeded. Two further
+children passed four cycles with applied 61.44-MS/s/50-MHz RF-BW/2.45-GHz
+readback and 27–28 admitted 262144-sample host blocks per ~1-second cycle.
+This **does not** establish lossless transport, continuous RF duty, measured
+Pd, visible frozen UI behavior, harmlessness of all `-9` reports or release
+acceptance. No product acquisition path, default buffer, firmware, driver,
+firewall, native module or release EXE was changed by this diagnostic packet.
