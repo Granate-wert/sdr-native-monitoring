@@ -70,6 +70,7 @@ int main(int argc, char** argv) {
         std::uint32_t power_bins = default_power_bins;
         std::uint32_t frames = default_frames;
         double snapshot_rate_hz = 30.0;
+        bool vary_values = false;
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
             if (argument == "--frequency-bins" && index + 1 < argc) {
@@ -80,9 +81,11 @@ int main(int argc, char** argv) {
                 frames = parse_positive(argv[++index], "frames");
             } else if (argument == "--snapshot-rate-hz" && index + 1 < argc) {
                 snapshot_rate_hz = parse_positive_rate(argv[++index]);
+            } else if (argument == "--vary-values") {
+                vary_values = true;
             } else {
                 throw std::runtime_error(
-                    "usage: --frequency-bins N --power-bins N --frames N --snapshot-rate-hz RATE"
+                    "usage: --frequency-bins N --power-bins N --frames N --snapshot-rate-hz RATE [--vary-values]"
                 );
             }
         }
@@ -98,11 +101,28 @@ int main(int argc, char** argv) {
         config.snapshot_rate_hz = snapshot_rate_hz;
         sdr_core::PersistenceAccumulator accumulator(config);
         const auto first = make_frame(frequency_bins, 1'000'000LL, 0U);
+        std::vector<sdr_core::SpectrumFrame> varied_frames;
+        if (vary_values) {
+            varied_frames.reserve(32U);
+            for (std::uint32_t phase = 0U; phase < 32U; ++phase) {
+                auto variant = first;
+                auto values = std::make_shared<std::vector<float>>(frequency_bins);
+                for (std::uint32_t column = 0U; column < frequency_bins; ++column) {
+                    // Deliberately avoid the power-bin boundaries of the
+                    // static fixture; changing spectra should exercise the
+                    // common interior-bin path as well as scattered writes.
+                    (*values)[column] = -119.83F +
+                        static_cast<float>((column * 17U + phase * 13U) % 96U) * 1.137F;
+                }
+                variant.values = std::move(values);
+                varied_frames.push_back(std::move(variant));
+            }
+        }
         static_cast<void>(accumulator.update(first));
         const auto started = std::chrono::steady_clock::now();
         std::uint64_t snapshots = 0U;
         for (std::uint32_t index = 1U; index <= frames; ++index) {
-            auto frame = first;
+            auto frame = vary_values ? varied_frames[index % varied_frames.size()] : first;
             frame.frame_sequence = index;
             frame.timestamp_ns = 1'000'000LL + static_cast<std::int64_t>(index) * 1'000'000LL;
             if (accumulator.update(frame).has_value()) {
@@ -118,6 +138,7 @@ int main(int argc, char** argv) {
                   << "\"frequency_bins\":" << frequency_bins << ','
                   << "\"power_bins\":" << power_bins << ','
                   << "\"snapshot_rate_hz\":" << snapshot_rate_hz << ','
+                  << "\"vary_values\":" << (vary_values ? "true" : "false") << ','
                   << "\"frames\":" << frames << ','
                   << "\"cells\":" << cells << ','
                   << "\"snapshots\":" << snapshots << ','
