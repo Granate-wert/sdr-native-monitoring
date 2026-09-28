@@ -1249,3 +1249,26 @@ LPS. Configured/staged Fs, UI FFT counts, readbacks and software counters
 do not prove ADC delivery, lossless USB, RF duty/Pd, usable RF coverage or
 DWM FPS. Genuine Ethernet, qualified tinySA, high-load/soak, DWM FHD/QHD/DPI
 and end-to-end timing remain open; APP-06A/B/C/D are still partial.
+
+### Host-observed Sweep completed-pass period (APP-06D, 2026-09-28)
+
+Source `62dfecb` uses one small rate observer for the Pluto and HackRF Sweep
+display services. It samples each native cumulative completed-line counter,
+holds a positive LPS estimate across UI polls with no new completed line,
+expires the estimate after at least one second or three observed pass periods
+(capped at 120 seconds), and resets it at an explicit new Start. A regression
+of count or monotonic observation time is rejected. The reciprocal UI period
+is a host-observed estimate, not one pass's producer timestamp, RF revisit,
+capture duty or pulse-detection probability.
+
+The exact tracked source passed 1005 UI V2 tests with 66 expected skips and
+no failure on the pinned Qt 6.11.1 interpreter. A separate official CPU
+onedir diagnostic package passed 40/40 native CTest and strict 658-file
+frozen checks using the already qualified shared libusb bundle; EXE SHA-256
+`846B16488CD623A8C3AB74FD649F1937DA040B32804D7F373F28EB4B8580FC36`.
+One short visible USB Pluto 100–420 MHz Sweep showed numeric complete-pass
+readouts of about 1801/1836 ms while partial coverage was visible. Explicit
+Stop retained a gapped frame and made the live period unavailable; the
+diagnostic process was normally closed. This does not resolve the roughly
+180-ms new-Qt-frame period or qualify sustained LPS, RF coverage, ADC duty,
+lossless transport, DWM FPS, genuine Ethernet/tinySA or APP-06 completion.
