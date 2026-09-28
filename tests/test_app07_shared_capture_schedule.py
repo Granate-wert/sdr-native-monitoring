@@ -5,6 +5,7 @@ import unittest
 
 from sdr_monitor.domain.pane_scheduler import (
     CaptureEpochCost,
+    CaptureMeasurementMode,
     PaneCaptureProfile,
     PaneScheduleError,
     compile_pane_schedule,
@@ -20,7 +21,7 @@ from sdr_monitor.domain.receiver_topology import (
 )
 
 
-def profile(usable_hz: float) -> PaneCaptureProfile:
+def profile(usable_hz: float, mode: CaptureMeasurementMode = CaptureMeasurementMode.SWEEP) -> PaneCaptureProfile:
     return PaneCaptureProfile(
         sample_rate_hz=61_440_000.0,
         analog_bandwidth_hz=56_000_000.0,
@@ -33,6 +34,7 @@ def profile(usable_hz: float) -> PaneCaptureProfile:
         calibration_profile_id=None,
         usable_capture_span_hz=usable_hz,
         epoch_cost=CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005),
+        measurement_mode=mode,
     )
 
 
