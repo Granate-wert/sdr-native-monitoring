@@ -96,6 +96,7 @@ add_library(sdr_hackrf STATIC
     src/hackrf/hackrf_rx_ingress.cpp
     src/hackrf/hackrf_rx_session.cpp
     src/hackrf/hackrf_runtime_dsp_session.cpp
+    src/hackrf/hackrf_sweep_block.cpp
 )
 add_library(sdr_core::sdr_hackrf ALIAS sdr_hackrf)
 target_include_directories(
@@ -397,6 +398,12 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_hackrf_rx_ingress_test)
     add_test(NAME sdr_core.hackrf_rx_ingress COMMAND sdr_core_hackrf_rx_ingress_test)
     set_tests_properties(sdr_core.hackrf_rx_ingress PROPERTIES TIMEOUT 120)
+    add_executable(sdr_core_hackrf_sweep_block_test tests/test_hackrf_sweep_block.cpp)
+    target_link_libraries(sdr_core_hackrf_sweep_block_test PRIVATE sdr_core::sdr_hackrf)
+    sdr_core_apply_platform_defaults(sdr_core_hackrf_sweep_block_test)
+    sdr_core_apply_sanitizers(sdr_core_hackrf_sweep_block_test)
+    add_test(NAME sdr_core.hackrf_sweep_block COMMAND sdr_core_hackrf_sweep_block_test)
+    set_tests_properties(sdr_core.hackrf_sweep_block PROPERTIES TIMEOUT 120)
     add_executable(
         sdr_core_hackrf_live_factory_test tests/test_hackrf_live_factory.cpp
     )
@@ -734,6 +741,7 @@ if(SDR_CORE_BUILD_TESTS)
             sdr_core_bounded_queue_test
             sdr_core_buffer_pool_test
             sdr_core_hackrf_rx_ingress_test
+            sdr_core_hackrf_sweep_block_test
             sdr_core_hackrf_live_factory_test
             sdr_core_hackrf_rx_session_test
             sdr_core_hackrf_fixed_band_dsp_test

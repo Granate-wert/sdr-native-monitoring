@@ -60,6 +60,34 @@ owners retain identity, geometry, backend, budget, epoch and cleanup gates.
 | HackRF | Existing `HackrfLiveRequest`; own LNA/VGA/filter and provenance gates | `mode_runtime_unavailable` in this integration slice | Missing host strategy is not a hardware-impossible claim; no Pluto gain translation |
 | tinySA Basic/Ultra | `device_mode_unsupported` for complex-I/Q RTBW | Existing bounded `TinySaScanRawRequest`, observed model and one valid input range | Device-reported dBm, no raw I/Q/host FFT; input/settings/readback still follow |
 
+## HackRF firmware Sweep: syntax boundary only (APP-06C partial)
+
+The pinned official libhackrf API has a distinct `hackrf_init_sweep()` /
+`hackrf_start_rx_sweep()` receive mode. Its callback data is not the fixed-centre
+CI8 stream consumed by the existing HackRF RTBW owner: each 16,384-byte block
+starts with `0x7f 0x7f` and an eight-byte little-endian reported tuned frequency,
+then interleaved CI8. The native `parse_hackrf_sweep_block()` extracts one
+aligned block without allocation or payload copy, and refuses wrong-size or
+wrong-marker input. The returned view borrows the callback memory.
+
+`syntax_valid()` means only that a block has this byte layout. The parser
+deliberately retains any 64-bit header value, including values outside a
+particular product, firmware or requested Sweep range. Neither the decoded
+frequency nor the CI8 span is authorized for spectrum publication by this
+parser. A future **same-owner** Sweep coordinator must first validate observed
+device/API capability, requested ranges and step plan, block order, retune
+settling, discontinuities, geometry and epoch; reject or mark gaps without
+inheriting a previous block's frequency; and pass admitted CI8 to the common
+analytical DSP and progressive Analyzer presentation. It must not feed these
+headered bytes into the current fixed-centre RTBW ingress.
+
+This foundation does **not** change the table's HackRF Sweep
+`mode_runtime_unavailable` result, enable hardware Sweep, alter RTBW Fs/FFT/
+gain/detector/grouping, or qualify UI latency/RF coverage. Its native tests
+cover malformed blocks, little-endian decoding, borrowed CI8, former RF
+boundary values and an aligned multi-block transfer; physical and frozen V2
+Sweep acceptance remains open.
+
 Missing identity, range or transport evidence is reported as unverified, not
 as a frequency error or confirmed unsupported hardware. tinySA input ranges
 are not stitched into one unsupported command. Existing product limits remain
