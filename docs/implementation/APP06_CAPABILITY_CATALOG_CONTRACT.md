@@ -998,5 +998,23 @@ The first package attempt was correctly refused before freeze because the
 system IIO directory carried different `libusb-1.0.dll` bytes; the successful
 attempt used the same previously hash-qualified seven-file input bundle as
 the prior combined build. No system DLL was replaced. This is frozen
-load-only/package evidence, **not** a current-EXE visible RX, DWM, sustained
-heavy-density or release acceptance; the static installation is untouched.
+package evidence; the static installation is untouched.
+
+The **same exact tagged EXE** then completed two separate visible USB HackRF
+RTBW sessions with explicit Stage/Start/Stop and normal Close: requested
+20 MS/s, FFT16384/hop8192/group1, LNA16/VGA20, amp/bias OFF. With 256-bin
+exponential persistence, Spectrum, Waterfall and heat density changed before
+Stop, but the live readout fell to about 17.7–18.1 admitted I/Q MS/s and
+2.0–2.2k analytical FFT/s; the sampled new-Qt-frame period was about
+74–80 ms. The final retained frame reported **96,993,280 lost samples /
+740 I/Q blocks / zero FFT**. In the separate persistence-OFF control, the
+same requested Fs/FFT/hop/group displayed moving Spectrum and Waterfall,
+about 20.0–20.3 admitted I/Q MS/s, 2.4k FFT/s and a roughly 20-ms new-Qt
+frame period; sampled and stopped status did not report I/Q loss. Both
+sessions showed quality mask `0x00002001`, which is not a loss indicator;
+loss belongs to separate counters. The contrast is strong evidence of
+heavy-density pressure, **not** isolation of the specific native lock,
+bridge or GUI stage. These short, sequential UI readouts are not DWM FPS,
+RF duty/Pd, ADC/USB continuity, sustained performance, global 50-ms or
+release acceptance. The tagged EXE was closed after each Stop; the older
+separate user process was not touched.
