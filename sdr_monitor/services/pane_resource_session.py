@@ -484,7 +484,15 @@ class PaneResourceSession:
                 runtime.rejected_publications += 1
                 return ()
             grid = bundle.frequencies_hz
-            if (len(grid) < 2 or any(crop.start_hz < float(grid[0]) or crop.stop_hz > float(grid[-1])
+            # Instrument Stop is the exclusive right edge of its reported
+            # sweep; its final point center is normally one step before Stop.
+            # An I/Q FFT has no such instrument boundary, so retain the
+            # stricter last-bin coverage check for those producers.
+            trace = (bundle.spectrum.instrument if admission.mode is CaptureMeasurementMode.INSTRUMENT_TRACE
+                     and isinstance(bundle.spectrum, SweepLineFrame) else None)
+            lower = float(trace.start_hz) if trace is not None else float(grid[0]) if len(grid) else 0.0
+            upper = float(trace.stop_hz) if trace is not None else float(grid[-1]) if len(grid) else 0.0
+            if (len(grid) < 2 or any(crop.start_hz < lower or crop.stop_hz > upper
                                      for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)):
                 runtime.rejected_publications += 1
                 return ()

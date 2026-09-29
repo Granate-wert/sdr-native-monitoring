@@ -47,6 +47,7 @@ recordings/
 !/docs/implementation/APP07_AD936X_PANE_OWNER_CONTRACT.md
 !/docs/implementation/APP07_MIXED_SOURCE_TRACE_CONTRACT.md
 !/docs/implementation/APP07_HACKRF_RTBW_PANE_OWNER_CONTRACT.md
+!/docs/implementation/APP07_THREE_OWNER_TRACE_CONTRACT.md
 /TZ_SDR_native_monitoring/
 
 # Local logs, screenshots and acceptance output

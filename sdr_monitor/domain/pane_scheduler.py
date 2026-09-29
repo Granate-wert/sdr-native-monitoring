@@ -9,12 +9,13 @@ control gaps are planned control boundaries, not estimates of ADC sample loss.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import combinations
 import math
 
 from .hackrf_live import HackrfLiveRequest
+from .tinysa_analyzer import TinySaSweepRequest
 from .receiver_topology import (
     AcquisitionGroup,
     PaneDisplayPolicy,
@@ -201,6 +202,39 @@ class SpectrumTracePaneProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class TinySaTracePaneProfile(SpectrumTracePaneProfile):
+    """Typed tinySA sweep intent on the SAME selected source/serial owner."""
+
+    request_template: TinySaSweepRequest = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        SpectrumTracePaneProfile.__post_init__(self)
+        request = self.request_template
+        if (not isinstance(request, TinySaSweepRequest)
+                or request.points != self.points
+                or request.stop_hz - request.start_hz > self.usable_capture_span_hz):
+            raise PaneScheduleError("tinySA pane profile must match its typed request points/span")
+
+    @property
+    def compatibility_key(self) -> tuple[object, ...]:
+        request = self.request_template
+        correction = request.external_correction
+        binding = request.source.binding
+        identity = binding.calibration_identity
+        snapshot = binding.snapshot
+        assert identity is not None and snapshot is not None  # validated by TinySaSweepRequest
+        return (self.measurement_mode, self.unit, self.points, self.usable_capture_span_hz,
+                self.settings_key, self.epoch_cost,
+                request.source.device_id, request.selection_revision,
+                binding.adapter_id, snapshot.model_id,
+                identity.device_identity_key, identity.firmware_fingerprint,
+                request.timeout_s, request.repeat_until_stop, request.interval_s,
+                request.settings, request.input_mode, request.readback_settings,
+                None if correction is None else correction.fingerprint,
+                request.frontend_chain, request.allow_correction_extrapolation)
+
+
+@dataclass(frozen=True, slots=True)
 class HackrfRtbwPaneProfile:
     """One complete HackRF RX/DSP intent; never collapse LNA/VGA into one gain.
 
@@ -252,7 +286,7 @@ class HackrfRtbwPaneProfile:
         return ("hackrf-rtbw", template, self.usable_capture_span_hz, self.epoch_cost)
 
 
-PaneProfile = PaneCaptureProfile | HackrfRtbwPaneProfile | SpectrumTracePaneProfile
+PaneProfile = PaneCaptureProfile | HackrfRtbwPaneProfile | SpectrumTracePaneProfile | TinySaTracePaneProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -851,6 +885,7 @@ __all__ = [
     "PaneCaptureProfile",
     "HackrfRtbwPaneProfile",
     "SpectrumTracePaneProfile",
+    "TinySaTracePaneProfile",
     "PaneProfile",
     "PaneControlGap",
     "PaneControlGapReason",
