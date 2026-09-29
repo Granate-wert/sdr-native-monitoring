@@ -3,7 +3,8 @@
 Current state: the final section documents the newer user-operated V2
 assignment editor and its bounded physical witness. Earlier "not yet present"
 statements below describe the historical intermediate checkpoints, not the
-current source. APP-07 is still partial and no frozen EXE is qualified here.
+current source. APP-07 is still partial: tagged frozen EXEs have passed bounded
+functional cells, but no EXE has release/soak/performance qualification here.
 
 `build_v2_analyzer_application_graph` is now the **same** graph assembly used
 by the current single-source UI V2 shell. It can also be called with a new
@@ -577,3 +578,51 @@ RF accuracy beyond the instrument's own dBm output, simultaneous
 instant-by-instant capture, extended soak, or release acceptance. Slower
 tinySA device sweeps are normal and are not an SDR-rate defect. APP-07 and
 the full APP-00…14 roadmap remain partial/open.
+
+### HackRF host Sweep in the same independent-source 2×2 (2026-09-30)
+
+Product commit `2ad0a106b9b3e239cf71c59df46b9e18f6c1560b` adds a typed
+HackRF Sweep pane profile and reuses the existing application service,
+resource lease, Sweep router and shared Spectrum/Waterfall delivery path.
+It does not make a separate HackRF SDK owner. The user-operated UI V2 pane
+editor now offers HackRF RTBW or host Sweep under one source assignment;
+Sweep uses fixed nominal 20 MS/s, FFT1024 or FFT4096, whole-MHz bounds and
+20–320 MHz spans in 20 MHz steps. Its frequency crop excludes two FFT bins
+at each nominal segment edge because the native Sweep line omits edge bins.
+This is a conservative display admission rule, not instrument calibration
+or an assertion of flatness. The scheduler can explicitly time-slice RTBW
+and Sweep on one HackRF receiver; no hidden restart or synthetic FFT overlap
+was introduced. AD936x wide Sweep remains refused by this particular pane
+admission packet, not globally removed from the application.
+
+The exact source gate passed 999 UI V2 tests, 66 expected skips and zero
+failures, plus focused owner/editor tests. A separate official CPU/HackRF
+diagnostic EXE passed 40/40 native CTest and the 658-file frozen/shared-DLL
+checks. The tagged EXE is
+`dist/SDRNativeMonitoring-CPU-APP07-HFSWEEP-20260930-2AD0A10-R3/SDRNativeMonitoring/SDRNativeMonitoring.exe`,
+SHA-256
+`a7290fae89d0c3608c116cc5a18a23a7b7c76f3b99266c37a6e229990cdd750e`.
+The same 658-file manifest verified after the visible run. It did not
+replace the approved current/static installation.
+
+Computer Use visibly staged **three independent resources** in one 2×2
+layout: pane 1 AD9364-class USB RX1 RTBW at 100–108 MHz/requested 20 MS/s/
+FFT4096; pane 2 HackRF USB RX1 host Sweep nominal 140–260 MHz/20 MS/s/
+FFT4096 (display crop about 140.01–259.99 MHz); pane 3 tinySA Ultra USB
+device sweep 200–210 MHz/101 points in device dBm; pane 4 Empty. Apply did
+not start RX. Explicit Start all reached running 3 with recent, changing
+data in all occupied Spectrum/Waterfall views. The HackRF pass numbering
+advanced while the other two sources stayed live. Stopping only pane 2
+reached running 2/stopped 1 and left AD9364 and tinySA updating; Stop all
+reached running 0/stopped 3/Stop-required 0. All stopped panes labelled
+their retained last frame as not new. The actual maximized 1440×912 window
+showed four 2×2 cells with the Empty slot truly unused; Close layout and
+normal EXE exit completed.
+
+This is a short **mixed-mode, mixed-source functional witness**, not a
+benchmark or release gate. It does not establish analytical FFT/s, native
+publication LPS, paint/DWM FPS, lossless transport, RF duty or pulse-detection
+probability, exact ADC sample rate, long soak, DPI matrix or sweep-bin RF
+flatness. The tinySA's naturally slow scan is not an SDR performance defect.
+APP-07 remains partial; sustained timing, density, failure recovery and
+independent review are still required.
