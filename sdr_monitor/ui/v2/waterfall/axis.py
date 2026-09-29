@@ -28,6 +28,7 @@ class WaterfallTimeAxis(pg.AxisItem):
         self._gap_rows: frozenset[int] = frozenset()
         self._sweep_stamps: tuple[SweepRowStamp | None, ...] = ()
         self._has_sweep_stamps = False
+        self._multiple_sweep_epochs = False
         self._age_ticks: dict[float, int] = {}
         self._age_step_ns: int | None = None
         self._producer_interval_ns = 1_000_000_000 // self._rows_per_second
@@ -60,6 +61,8 @@ class WaterfallTimeAxis(pg.AxisItem):
             len(sweep_stamps) == self._display_rows
             and any(stamp is not None for stamp in sweep_stamps)
         )
+        self._multiple_sweep_epochs = len({stamp.acquisition_epoch for stamp in sweep_stamps
+                                           if stamp is not None}) > 1
         self._row_origin = (
             0 if self._direction is WaterfallDirection.NEWEST_AT_TOP
             else self._capacity_rows - self._display_rows
@@ -211,7 +214,11 @@ class WaterfallTimeAxis(pg.AxisItem):
                 # remain readable under Windows fallback and are explained by
                 # the localized tooltip/accessibility description.
                 status = {SweepRowState.PARTIAL: "P", SweepRowState.COMPLETE: "C", SweepRowState.GAP: "G"}[stamp.state]
-                return f"#{stamp.sequence} {status}"
+                epoch = (f"E{stamp.acquisition_epoch} "
+                         if self._multiple_sweep_epochs and stamp.acquisition_epoch is not None else "")
+                return f"{epoch}#{stamp.sequence} {status}"
+            if self._has_sweep_stamps:
+                return text("waterfall.sweep.visit_gap", self._locale)
         if self._timestamps_ns.size:
             age_seconds = max(0.0, (int(self._timestamps_ns[-1]) - int(self._timestamps_ns[source_index])) / 1_000_000_000)
             label = _format_age_seconds(age_seconds, self._locale)

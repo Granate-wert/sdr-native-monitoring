@@ -72,7 +72,9 @@ class BoundedWaterfallRing:
         self._write_index = 0
         self._count = 0
         self._sweep_stamps: list[SweepRowStamp | None] = [None] * int(rows)
-        self._sweep_indices: dict[int, int] = {}
+        self._sweep_indices: dict[tuple[int | None, int], int] = {}
+        self._sweep_epoch: int | None = None
+        self._sweep_epoch_set = False
         self._latest_sweep_sequence: int | None = None
 
     @property
@@ -93,6 +95,8 @@ class BoundedWaterfallRing:
         self._count = 0
         self._sweep_stamps[:] = [None] * self.rows
         self._sweep_indices.clear()
+        self._sweep_epoch = None
+        self._sweep_epoch_set = False
         self._latest_sweep_sequence = None
 
     def append(self, values: np.ndarray, *, timestamp_ns: int, sweep_stamp: SweepRowStamp | None = None) -> None:
@@ -101,10 +105,12 @@ class BoundedWaterfallRing:
             raise ValueError("waterfall row width changed")
         evicted = self._sweep_stamps[self._write_index]
         if evicted is not None:
-            del self._sweep_indices[evicted.sequence]
+            del self._sweep_indices[(evicted.acquisition_epoch, evicted.sequence)]
         self._sweep_stamps[self._write_index] = sweep_stamp
         if sweep_stamp is not None:
-            self._sweep_indices[sweep_stamp.sequence] = self._write_index
+            self._sweep_indices[(sweep_stamp.acquisition_epoch, sweep_stamp.sequence)] = self._write_index
+            self._sweep_epoch = sweep_stamp.acquisition_epoch
+            self._sweep_epoch_set = True
             self._latest_sweep_sequence = sweep_stamp.sequence
         self._data[self._write_index, :] = row
         self._timestamps_ns[self._write_index] = timestamp_ns
@@ -115,13 +121,16 @@ class BoundedWaterfallRing:
         """Update an existing pass in place, including a retained late terminal.
 
         The bounded index contains only retained rows. Missing/evicted old
-        passes are never appended at the newest position. No synthetic rows,
-        interpolation, power statistics or acquisition timestamps are created.
+        passes are never appended at the newest position. No interpolation,
+        power statistics or acquisition timestamps are created. A new epoch
+        requires an explicit separator or a reset, not an arbitrary update.
         """
         row = np.asarray(values, dtype=np.float32)
         if row.ndim != 1 or row.size != self.columns:
             raise ValueError("waterfall row width changed")
-        index = self._sweep_indices.get(stamp.sequence)
+        if self._sweep_epoch_set and stamp.acquisition_epoch != self._sweep_epoch:
+            return "reject"
+        index = self._sweep_indices.get((stamp.acquisition_epoch, stamp.sequence))
         if index is not None:
             previous = self._sweep_stamps[index]
             if previous is None or not stamp.supersedes(previous):
@@ -133,6 +142,21 @@ class BoundedWaterfallRing:
             return "reject"
         self.append(row, timestamp_ns=0, sweep_stamp=stamp)
         return "append"
+
+    def append_sweep_separator(self, stamp: SweepRowStamp) -> bool:
+        """Keep rows but explicitly open a newer, known producer epoch.
+
+        The caller must prove same-pane/source/grid compatibility. One NaN
+        row with no stamp/time marks a scheduled absence, not a measured RF
+        gap or another pass. Late updates from retained old epochs are refused.
+        """
+        if (not self._count or not self._sweep_epoch_set or self._sweep_epoch is None
+                or stamp.acquisition_epoch is None or stamp.acquisition_epoch <= self._sweep_epoch):
+            return False
+        self.append(np.full(self.columns, np.nan, dtype=np.float32), timestamp_ns=0)
+        self._sweep_epoch = stamp.acquisition_epoch
+        self._latest_sweep_sequence = None
+        return True
 
     def chronological_sweep_stamps(self) -> tuple[SweepRowStamp | None, ...]:
         if self._count < self.rows or self._write_index == 0:
@@ -210,6 +234,11 @@ class BoundedWaterfallRenderer:
                 if position >= skip:
                     replacement.append(row, timestamp_ns=int(timestamps[position]), sweep_stamp=stamps[position])
                 position += 1
+        # Resizing must preserve the active segment/high-water mark, including
+        # when only a separator or an older retained partial row remains.
+        replacement._sweep_epoch = buffer._sweep_epoch
+        replacement._sweep_epoch_set = buffer._sweep_epoch_set
+        replacement._latest_sweep_sequence = buffer._latest_sweep_sequence
         self._buffer = replacement
 
     def append(self, values: np.ndarray, *, rows: int, timestamp_ns: int) -> None:
@@ -229,6 +258,9 @@ class BoundedWaterfallRenderer:
 
     def sweep_stamps(self) -> tuple[SweepRowStamp | None, ...]:
         return () if self._buffer is None else self._buffer.chronological_sweep_stamps()
+
+    def append_sweep_separator(self, *, stamp: SweepRowStamp) -> bool:
+        return self._buffer is not None and self._buffer.append_sweep_separator(stamp)
 
     def timestamps_ns(self) -> np.ndarray:
         return np.empty(0, dtype=np.int64) if self._buffer is None else self._buffer.chronological_timestamps_ns()

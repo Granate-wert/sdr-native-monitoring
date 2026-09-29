@@ -202,14 +202,15 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
             same_grid = False
             changed_identity = False
         preserve_scheduled_history = bool(
-            scheduled_visit_boundary and mode is AnalyzerMode.RTBW
-            and self._last_mode is AnalyzerMode.RTBW and changed_identity and same_grid
+            scheduled_visit_boundary and mode is self._last_mode and changed_identity and same_grid
             and previous is not None and identity is not None
             and previous.acquisition_epoch is not None
             and identity.acquisition_epoch is not None
             and previous.acquisition_epoch != identity.acquisition_epoch
             and all(getattr(previous, name) == getattr(identity, name)
                     for name in ("source_id", "receiver_id", "clock_domain", "unit"))
+            and (mode is not AnalyzerMode.SWEEP
+                 or self._sweep_value_context(bundle) == self._sweep_value_context(self._last_bundle))
         )
         reset = (mode is not self._last_mode or changed_identity
                  or bundle is None and self._last_bundle is not None
@@ -217,7 +218,7 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         if reset:
             scene.clear_measurement()
             if preserve_scheduled_history:
-                # The next admitted RTBW row places one visual absence marker.
+                # The next admitted row places one visual absence marker.
                 # Spectrum/persistence still reset at this producer boundary.
                 self._pending_waterfall_gap = True
             else:
@@ -237,6 +238,11 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
             if self._on_frame_applied is not None:
                 self._on_frame_applied()
         return bool(first_measurement or reset)
+
+    @staticmethod
+    def _sweep_value_context(bundle: AnalyzerFrameBundle | None) -> str | None:
+        instrument = None if bundle is None else getattr(bundle.spectrum, "instrument", None)
+        return None if instrument is None else instrument.value_context_key
 
     def _apply_sweep_statistics(self, bundle: AnalyzerFrameBundle | None) -> None:
         scene = self.spectrum_scene
@@ -283,7 +289,9 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         else:
             self._apply_sweep_statistics(bundle)
             if isinstance(prepared.waterfall, SweepWaterfallLine):
-                self.waterfall_pane.set_sweep_line(prepared.waterfall)
+                if self.waterfall_pane.set_sweep_line(
+                        prepared.waterfall, segment_boundary=self._pending_waterfall_gap):
+                    self._pending_waterfall_gap = False
         # Crop is a per-pane viewport, never an alteration of producer bins.
         crop = prepared.binding.crop
         if fresh_view:

@@ -336,28 +336,49 @@ class WaterfallPane(QWidget):
             return
         self._upload_tiles()
 
-    def set_sweep_line(self, update: SweepWaterfallLine) -> None:
-        """Replace partial passes in the same ring used by RTBW, never append revisions."""
+    def set_sweep_line(self, update: SweepWaterfallLine, *, segment_boundary: bool = False) -> bool:
+        """Replace passes; only a proven scheduled visit may keep same-grid history.
+
+        Return whether the publication was admitted, so a frozen/blocked pane
+        can carry its pending separator to the next actual admission. The
+        unqualified one-source default still clears on producer epoch change.
+        """
+        if type(segment_boundary) is not bool:
+            raise TypeError("waterfall segment boundary must be explicit bool")
         if not isinstance(update, SweepWaterfallLine):
             raise TypeError("Sweep Waterfall requires an explicit publication adapter")
         if self._frozen:
             self._set_metrics(rows_frozen_suppressed=self._metrics.rows_frozen_suppressed + 1)
-            return
+            return False
+        was_sweep = self._sweep_mode
         if not self._sweep_mode:
             self._sweep_mode = True
             self._sync_controls()
         line = update.row
-        if line.grid_signature != self._grid_signature:
-            self._begin_epoch(line.grid_signature)
+        signature = line.grid_signature
+        previous_signature = self._grid_signature
+        if not was_sweep or signature != previous_signature or segment_boundary:
+            compatible_handoff = (
+                segment_boundary and was_sweep and previous_signature is not None
+                and self.history_rows > 0
+                and replace(signature, configuration_generation=previous_signature.configuration_generation)
+                == previous_signature
+            )
+            if compatible_handoff and self._renderer.append_sweep_separator(stamp=update.stamp):
+                self._grid_signature = signature
+                self._epoch += 1
+                self._set_metrics(presentation_gap_rows=self._metrics.presentation_gap_rows + 1)
+            else:
+                self._begin_epoch(signature)
         rows, _ = self._config.dimensions(int(line.values.size))
         try:
             action = self._renderer.upsert_sweep(line.values, rows=rows, stamp=update.stamp)
         except PresentationBudgetExceeded:
             self._status.setText(text("waterfall.memory_limited"))
-            return
+            return False
         if action == "reject":
             self._set_metrics(sweep_updates_rejected=self._metrics.sweep_updates_rejected + 1)
-            return
+            return False
         if action == "append":
             self._set_metrics(rows_admitted=self._metrics.rows_admitted + 1)
         else:
@@ -367,8 +388,9 @@ class WaterfallPane(QWidget):
         self._update_status()
         if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
-            return
+            return True
         self._upload_tiles()
+        return True
 
     def set_linked_frequency_available(self, available: bool) -> None:
         """Only a real linked spectrum, not a default ViewBox, supplies an axis."""

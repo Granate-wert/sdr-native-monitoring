@@ -21,7 +21,6 @@ from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PreparedPa
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import current_locale, text
 from ..spectrum.projection import SpectrumProjector
-from ..view_models.analyzer_view_model import AnalyzerMode
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_pane import AnalyzerPaneViewV2
 
@@ -351,7 +350,6 @@ class IndependentPaneBoardV2(QWidget):
             return False
         scheduled_visit_boundary = (
             previous is not None and binding.pane_id in self._time_sliced_pane_ids
-            and binding.mode is AnalyzerMode.RTBW
             and prepared.delivery.host_activation_serial > previous[0]
         )
         pane.apply_prepared_pane_delivery(prepared,

@@ -144,6 +144,7 @@ def waterfall_line_from_sweep(frame: SweepLineFrame | SweepProgressFrame, *,
     stamp = SweepRowStamp(
         sequence=frame.sequence, revision=frame.revision if isinstance(frame, SweepProgressFrame) else 0,
         state=SweepRowState.PARTIAL if isinstance(frame, SweepProgressFrame) else SweepRowState(frame.state.value),
+        acquisition_epoch=frame.epoch,
     )
     context = (frame.instrument.value_context_key
                if isinstance(frame, SweepLineFrame) and frame.instrument is not None else None)
