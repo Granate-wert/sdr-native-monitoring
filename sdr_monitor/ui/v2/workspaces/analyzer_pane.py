@@ -25,6 +25,8 @@ from ..spectrum.projection import SpectrumProjector
 from ..state.analyzer_layers import persistence_density_from_sweep, waterfall_line_from_sweep
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewState
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
+from ..waterfall.contracts import SweepWaterfallLine
+from sdr_monitor.ui.v2_pane_presentation import PreparedPaneDelivery
 
 
 class AnalyzerPaneViewV2(SpectrumWaterfallView):
@@ -106,62 +108,13 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
     def apply_analyzer_state(self, state: AnalyzerViewState) -> None:
         if self._terminal_released:
             return
-        identity = getattr(state.bundle, "identity", None)
-        previous = self._last_identity
-        scene = self.spectrum_scene
         prepared_spectrum = (state.prepared_sweep.spectrum if state.prepared_sweep is not None else
                              state.live.prepared_spectrum if state.mode is AnalyzerMode.RTBW else None)
-        if state.bundle is not None and state.bundle is not self._last_bundle and prepared_spectrum is not None:
-            # Reject foreign preparation before clearing the accepted history.
-            if (not isinstance(prepared_spectrum, PreparedSpectrumFrame)
-                    or prepared_spectrum.view.source_frame is not state.bundle):
-                raise ValueError("prepared spectrum must belong to the exact publication")
-        prepared_grid = None if prepared_spectrum is None else prepared_spectrum.measurement_grid
-        previous_grid = scene.measurement_grid
-        fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch", "config_generation",
-                  "clock_domain", "accumulation_id", "unit")
-        # Lifecycle/error/locale publications can carry the exact bundle already
-        # applied below. They are not new measurements: do not re-scan its entire
-        # frequency grid on the GUI thread. New prepared bundles can share an
-        # owned baseline only after exact worker-side content comparison.
-        changed_identity = (state.bundle is not self._last_bundle
-                            and identity is not None and previous is not None and (
-            any(getattr(identity, name) != getattr(previous, name) for name in fields)
-            or not (prepared_grid is not None and prepared_grid is previous_grid
-                    or np.array_equal(
-                        prepared_grid if prepared_grid is not None else identity.frequencies_hz,
-                        previous_grid if previous_grid is not None else previous.frequencies_hz))
-        ))
-        if (state.mode is not self._last_mode or changed_identity
-                or state.bundle is None and self._last_bundle is not None):
-            scene.clear_measurement()
-            self.waterfall_pane.clear_history(reset_kind=True)
-            if self._sweep_waterfall_error:
-                scene.set_warning(None)
-                self._sweep_waterfall_error = False
-            self._last_bundle = self._last_waterfall = self._last_persistence = None
-            self._last_sweep_snapshot = None
-            self._last_statistics_key = None
-            self._last_mode = state.mode
-        self._last_identity = identity
+        self._accept_measurement(state.mode, state.bundle, prepared_spectrum)
+        scene = self.spectrum_scene
         bundle = state.bundle
-        if bundle is not None and bundle is not self._last_bundle:
-            scene.set_frame(bundle, prepared=prepared_spectrum)
-            self._last_bundle = bundle
-            if self._on_frame_applied is not None:
-                self._on_frame_applied()
         if state.mode is AnalyzerMode.SWEEP:
-            statistics = bundle.sweep_statistics if bundle is not None else None
-            statistics_key = ((statistics.source_id, statistics.epoch, statistics.update_sequence)
-                   if statistics is not None else None)
-            if statistics is not None and statistics_key != self._last_statistics_key:
-                scene.set_trace(TraceKind.AVERAGE, statistics)
-                scene.set_persistence_frame(persistence_density_from_sweep(statistics))
-                self._last_statistics_key = statistics_key
-            elif statistics is None and self._last_statistics_key is not None:
-                scene.clear_trace(TraceKind.AVERAGE)
-                scene.clear_persistence_display()
-                self._last_statistics_key = None
+            self._apply_sweep_statistics(bundle)
         if state.mode is AnalyzerMode.RTBW:
             density = state.live.persistence_frame
             if isinstance(density, PersistenceDensityFrame) and density is not self._last_persistence:
@@ -209,6 +162,98 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
                     scene.set_warning(None)
                     self._sweep_waterfall_error = False
             self._last_sweep_snapshot = snapshot
+
+    def _accept_measurement(self, mode: AnalyzerMode, bundle: AnalyzerFrameBundle | None,
+                            prepared_spectrum: PreparedSpectrumFrame | None) -> bool:
+        identity = getattr(bundle, "identity", None)
+        previous = self._last_identity
+        first_measurement = self._last_bundle is None and bundle is not None
+        scene = self.spectrum_scene
+        if bundle is not None and bundle is not self._last_bundle and prepared_spectrum is not None:
+            # Reject foreign preparation before clearing the accepted history.
+            if (not isinstance(prepared_spectrum, PreparedSpectrumFrame)
+                    or prepared_spectrum.view.source_frame is not bundle):
+                raise ValueError("prepared spectrum must belong to the exact publication")
+        prepared_grid = None if prepared_spectrum is None else prepared_spectrum.measurement_grid
+        previous_grid = scene.measurement_grid
+        fields = ("source_id", "session_id", "receiver_id", "acquisition_epoch", "config_generation",
+                  "clock_domain", "accumulation_id", "unit")
+        # Lifecycle/error/locale publications can carry the exact bundle already
+        # applied below. They are not new measurements: do not re-scan its entire
+        # frequency grid on the GUI thread. New prepared bundles can share an
+        # owned baseline only after exact worker-side content comparison.
+        changed_identity = (bundle is not self._last_bundle
+                            and identity is not None and previous is not None and (
+            any(getattr(identity, name) != getattr(previous, name) for name in fields)
+            or not (prepared_grid is not None and prepared_grid is previous_grid
+                    or np.array_equal(
+                        prepared_grid if prepared_grid is not None else identity.frequencies_hz,
+                        previous_grid if previous_grid is not None else previous.frequencies_hz))
+        ))
+        reset = (mode is not self._last_mode or changed_identity
+                 or bundle is None and self._last_bundle is not None)
+        if reset:
+            scene.clear_measurement()
+            self.waterfall_pane.clear_history(reset_kind=True)
+            if self._sweep_waterfall_error:
+                scene.set_warning(None)
+                self._sweep_waterfall_error = False
+            self._last_bundle = self._last_waterfall = self._last_persistence = None
+            self._last_sweep_snapshot = None
+            self._last_statistics_key = None
+            self._last_mode = mode
+        self._last_identity = identity
+        if bundle is not None and bundle is not self._last_bundle:
+            scene.set_frame(bundle, prepared=prepared_spectrum)
+            self._last_bundle = bundle
+            if self._on_frame_applied is not None:
+                self._on_frame_applied()
+        return bool(first_measurement or reset)
+
+    def _apply_sweep_statistics(self, bundle: AnalyzerFrameBundle | None) -> None:
+        scene = self.spectrum_scene
+        statistics = bundle.sweep_statistics if bundle is not None else None
+        statistics_key = ((statistics.source_id, statistics.epoch, statistics.update_sequence)
+                          if statistics is not None else None)
+        if statistics is not None and statistics_key != self._last_statistics_key:
+            scene.set_trace(TraceKind.AVERAGE, statistics)
+            scene.set_persistence_frame(persistence_density_from_sweep(statistics))
+            self._last_statistics_key = statistics_key
+        elif statistics is None and self._last_statistics_key is not None:
+            scene.clear_trace(TraceKind.AVERAGE)
+            scene.clear_persistence_display()
+            self._last_statistics_key = None
+
+    def apply_prepared_pane_delivery(self, prepared: PreparedPaneDelivery) -> None:
+        """Render an independent pane without inventing a Live/Sweep snapshot."""
+        if self._terminal_released:
+            return
+        if not isinstance(prepared, PreparedPaneDelivery) or prepared.binding.slot_number != self.pane_number:
+            raise ValueError("prepared pane delivery belongs to another visual slot")
+        bundle = prepared.bundle
+        fresh_view = self._accept_measurement(prepared.binding.mode, bundle, prepared.spectrum)
+        scene = self.spectrum_scene
+        if prepared.binding.mode is AnalyzerMode.RTBW:
+            density = prepared.persistence
+            if density is not None and density is not self._last_persistence:
+                scene.set_persistence_frame(density)
+                self._last_persistence = density
+            elif (density is None and self._last_persistence is not None
+                  and "persistence_pending" not in bundle.coherence_issues):
+                scene.clear_persistence_display()
+                self._last_persistence = None
+            if isinstance(prepared.waterfall, WaterfallLineFrame) and prepared.waterfall is not self._last_waterfall:
+                self.waterfall_pane.set_line(prepared.waterfall)
+                self._last_waterfall = prepared.waterfall
+        else:
+            self._apply_sweep_statistics(bundle)
+            if isinstance(prepared.waterfall, SweepWaterfallLine):
+                self.waterfall_pane.set_sweep_line(prepared.waterfall)
+        # Crop is a per-pane viewport, never an alteration of producer bins.
+        crop = prepared.binding.crop
+        if fresh_view:
+            scene.view_box.setLimits(xMin=crop.start_hz, xMax=crop.stop_hz)
+            scene.view_box.setXRange(crop.start_hz, crop.stop_hz, padding=0)
 
     def release_presentation_after_shutdown(self) -> None:
         """Retire only this pane after the application confirms terminal close."""

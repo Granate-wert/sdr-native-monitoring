@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import time
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import numpy as np
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.hackrf_live import HackrfLiveRequest
 from sdr_monitor.domain.live import LiveConfiguration
@@ -27,6 +32,10 @@ from sdr_monitor.services.source_capability_catalog import SourceCapabilityCatal
 from sdr_monitor.services.source_capability_providers import NativeLiveCapabilityProvider
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_composition import compose_v2_pane_resource_session
+from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PreparedPaneDelivery
+from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
+from sdr_monitor.ui.v2.workspaces.analyzer_pane import AnalyzerPaneViewV2
+from sdr_monitor.ui.v2.workspaces.independent_pane_board import IndependentPaneBoardV2
 
 from tests.test_app06_pluto_observation_catalog import _Native as _ObservedNative
 from tests.test_app07_ad936x_rtbw_pane_owner import _ReadbackEngine, _UnusedSweep
@@ -190,6 +199,8 @@ class ThreeConcreteOwnerTests(unittest.TestCase):
             "ad:physical": ad_graph, "hf:physical": hf_graph, "ts:physical": ts_graph,
         }, leases)
         assert session is not None
+        board = None
+        temporary = TemporaryDirectory()
         try:
             session.apply()
             for resource in ("ad:physical", "hf:physical", "ts:physical"):
@@ -215,16 +226,89 @@ class ThreeConcreteOwnerTests(unittest.TestCase):
             self.assertEqual(deliveries["ad:physical"][0].bundle.unit, "dBFS/bin")
             self.assertEqual(deliveries["hf:physical"][0].bundle.unit, "dBFS/bin")
             self.assertEqual(deliveries["ts:physical"][0].bundle.unit, "dBm")
+            application = QApplication.instance() or QApplication([])
+            preparer = PaneDeliveryPreparer(layout, groups, PresentationAllocationBudget())
+            settings = QSettings(str(Path(temporary.name) / "panes.ini"), QSettings.Format.IniFormat)
+            board = IndependentPaneBoardV2(preparer, settings=settings)
+            board.resize(1600, 920)
+            board.show()
+            application.processEvents()
+            self.assertEqual((board.width(), board.height()), (1600, 920))
+            prepared = tuple(preparer.prepare(deliveries[resource][0])
+                             for resource in ("ad:physical", "hf:physical", "ts:physical"))
+            for item in prepared:
+                self.assertTrue(board.apply_prepared(item))
+                self.assertFalse(board.apply_prepared(item))  # stale duplicate cannot repaint
+            application.processEvents()
+            self.assertEqual(board.empty_slots, (4,))
+            self.assertIsNone(board.pane(4))
+            self.assertEqual(len(board.findChildren(AnalyzerPaneViewV2)), 3)
+            for number, resource, pane_id in (
+                    (1, "ad:physical", "ad-pane"),
+                    (2, "hf:physical", "hf-pane"),
+                    (3, "ts:physical", "ts-pane")):
+                pane_view = board.pane(number)
+                assert pane_view is not None
+                self.assertIs(pane_view.last_bundle, deliveries[resource][0].bundle)
+                self.assertEqual(preparer.bindings[pane_id].slot_number, number)
+                self.assertEqual(pane_view.spectrum_scene.latest_frame.unit,
+                                 "dBm" if number == 3 else "dBFS/bin")
+                observed_start, observed_stop = pane_view.spectrum_scene.view_box.viewRange()[0]
+                crop = deliveries[resource][0].crop
+                self.assertAlmostEqual(observed_start, crop.start_hz, delta=1.0)
+                self.assertAlmostEqual(observed_stop, crop.stop_hz, delta=1.0)
+                self.assertGreaterEqual(pane_view.waterfall_pane.history_rows, 1)
+            self.assertIsNot(board.pane(1).last_bundle, board.pane(2).last_bundle)
+            self.assertIsNot(board.pane(2).last_bundle, board.pane(3).last_bundle)
+            # A newer frame may update the line, but must not reset this
+            # pane's user-chosen zoom or any neighboring pane's crop.
+            first_pane = board.pane(1)
+            assert first_pane is not None
+            first_pane.spectrum_scene.view_box.setXRange(102e6, 106e6, padding=0)
+            old_delivery = deliveries["ad:physical"][0]
+            new_frame = replace(old_delivery.bundle.spectrum,
+                                sequence=old_delivery.bundle.spectrum.sequence + 1)
+            new_bundle = replace(old_delivery.bundle, spectrum=new_frame, identity=None,
+                                 persistence=None, waterfall_line=None)
+            self.assertTrue(board.apply_prepared(preparer.prepare(replace(
+                old_delivery, bundle=new_bundle))))
+            zoom_start, zoom_stop = first_pane.spectrum_scene.view_box.viewRange()[0]
+            self.assertAlmostEqual(zoom_start, 102e6, delta=1.0)
+            self.assertAlmostEqual(zoom_stop, 106e6, delta=1.0)
+            second_pane = board.pane(2)
+            assert second_pane is not None
+            other_start, other_stop = second_pane.spectrum_scene.view_box.viewRange()[0]
+            self.assertAlmostEqual(other_start, 140e6, delta=1.0)
+            self.assertAlmostEqual(other_stop, 148e6, delta=1.0)
+            screenshot = os.environ.get("SDR_APP07_PANE_SCREENSHOT")
+            if screenshot:
+                application.processEvents()
+                self.assertTrue(board.grab().save(screenshot))
+            board.select_slot(3)
+            self.assertEqual(board.selected_slot, 3)
+            with self.assertRaisesRegex(ValueError, "exact slot"):
+                preparer.prepare(replace(deliveries["ad:physical"][0],
+                                         crop=deliveries["hf:physical"][0].crop))
+            with self.assertRaisesRegex(ValueError, "binding"):
+                PreparedPaneDelivery(preparer.bindings["hf-pane"],
+                                     deliveries["ad:physical"][0], prepared[0].spectrum,
+                                     prepared[0].waterfall, prepared[0].persistence)
             self.assertEqual(session.stop_selected("ts-pane"), ("ts-pane",))
             self.assertEqual(leases.active_resource_count, 2)
             self.assertTrue(ad_service.is_running() and hf.hackrf.is_running())
             self.assertFalse(ts.instrument.stop_required)
+            self.assertIsNotNone(board.pane(1).last_bundle)
+            self.assertIsNotNone(board.pane(2).last_bundle)
         finally:
             self.assertEqual(session.stop_all(), ())
             self.assertEqual(leases.active_resource_count, 0)
             ad_graph.live.shutdown()
             hf_graph.live.shutdown()
             ts_graph.live.shutdown()
+            if board is not None:
+                board.release_presentation_after_shutdown()
+                board.close()
+            temporary.cleanup()
 
 
 if __name__ == "__main__":

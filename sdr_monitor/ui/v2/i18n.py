@@ -138,6 +138,10 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Окна одного источника", UiLocale.EN: "Views of one source"}),
         "analyzer.shared_views.short": MappingProxyType({
             UiLocale.RU: "Окна", UiLocale.EN: "Views"}),
+        "analyzer.pane.empty": MappingProxyType({
+            UiLocale.RU: "Пустое окно — источник не назначен", UiLocale.EN: "Empty pane — no source assigned"}),
+        "analyzer.pane.slot": MappingProxyType({
+            UiLocale.RU: "Окно анализа {number}", UiLocale.EN: "Analyzer pane {number}"}),
         "analyzer.shared_views.scope": MappingProxyType({
             UiLocale.RU: "1–4 вида публикаций одного источника: в RTBW — та же полоса, при сканировании — тот же диапазон. Дополнительные окна не открывают устройство и не добавляют перестроек или независимых RX. Масштаб, маркеры и история независимы.",
             UiLocale.EN: "1–4 views of one source publication: the same RTBW band or the same Sweep span. Extra views do not open a device, add retunes or provide independent RX. Zoom, markers and history are independent."}),
