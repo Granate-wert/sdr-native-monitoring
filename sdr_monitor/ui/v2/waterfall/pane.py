@@ -58,6 +58,7 @@ class WaterfallPaneMetrics:
     hidden_uploads_suppressed: int = 0
     configuration_rejections: int = 0
     grid_epoch_resets: int = 0
+    presentation_gap_rows: int = 0
     local_history_clears: int = 0
     level_only_updates: int = 0
     palette_only_updates: int = 0
@@ -136,6 +137,11 @@ class WaterfallPane(QWidget):
     def render_visible(self) -> bool:
         """The persisted local paint preference, before a parent applies layout."""
         return self._render_visible
+
+    @property
+    def frozen(self) -> bool:
+        """A frozen pane has not admitted a pending scheduled-visit separator."""
+        return self._frozen
 
     @property
     def plot_item(self) -> pg.PlotItem:
@@ -246,19 +252,54 @@ class WaterfallPane(QWidget):
             self._waterfall_x_range_callback = None
         self._linked_frequency_source = None
 
-    def set_line(self, frame: object) -> None:
-        """Admit a declared row into the bounded display ring, or fail closed."""
+    def set_line(self, frame: object, *, segment_boundary: bool = False) -> None:
+        """Admit a declared row; an explicit same-grid handoff may retain history.
 
+        Only a caller that already checked pane/source identity may request a
+        display-only blank separator. The default producer-generation change
+        still resets the ring, and incompatible grids never share history.
+        """
+
+        if type(segment_boundary) is not bool:
+            raise TypeError("waterfall segment boundary must be explicit bool")
         line = adapt_waterfall_line(frame)
         if self._frozen:
             self._set_metrics(rows_frozen_suppressed=self._metrics.rows_frozen_suppressed + 1)
             return
         signature = line.grid_signature
+        was_sweep = self._sweep_mode
         if self._sweep_mode:
             self._sweep_mode = False
             self._sync_controls()
-        if signature != self._grid_signature:
-            self._begin_epoch(signature)
+        previous_signature = self._grid_signature
+        if signature != previous_signature or segment_boundary:
+            compatible_handoff = (
+                segment_boundary and not was_sweep and previous_signature is not None
+                and self.history_rows > 0
+                and replace(signature, configuration_generation=previous_signature.configuration_generation)
+                == previous_signature
+                and (not line.timestamp_known or self._last_seen_timestamp_ns is None
+                     or line.timestamp_ns > self._last_seen_timestamp_ns)
+            )
+            if compatible_handoff:
+                rows, _ = self._config.dimensions(signature.columns)
+                try:
+                    # This row is a visual absence marker, never an acquired
+                    # FFT or a fabricated RF-loss count. Its timestamp marks
+                    # the next visit boundary, not a measured gap duration.
+                    self._renderer.append(np.full(signature.columns, np.nan, dtype=np.float32),
+                                          rows=rows, timestamp_ns=line.timestamp_ns)
+                except PresentationBudgetExceeded:
+                    self._status.setText(text("waterfall.memory_limited"))
+                    return
+                self._grid_signature = signature
+                self._epoch += 1
+                self._last_admitted_timestamp_ns = None
+                self._last_seen_timestamp_ns = None
+                self._last_seen_sequence = None
+                self._set_metrics(presentation_gap_rows=self._metrics.presentation_gap_rows + 1)
+            else:
+                self._begin_epoch(signature)
         if line.timestamp_known and self._last_seen_timestamp_ns is not None and line.timestamp_ns < self._last_seen_timestamp_ns:
             self._set_metrics(rows_out_of_order_rejected=self._metrics.rows_out_of_order_rejected + 1)
             return

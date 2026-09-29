@@ -14,12 +14,14 @@ from PySide6.QtCore import QSettings, Signal, Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from sdr_monitor.domain.analyzer import AnalyzerPublicationKind
+from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PreparedPaneDelivery
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import current_locale, text
 from ..spectrum.projection import SpectrumProjector
+from ..view_models.analyzer_view_model import AnalyzerMode
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_pane import AnalyzerPaneViewV2
 
@@ -47,6 +49,15 @@ class IndependentPaneBoardV2(QWidget):
         self._display_overlays: dict[int, AnalyzerDisplayControls] = {}
         self._range_anchors: dict[int, tuple[object, ...]] = {}
         self._last_order: dict[int, tuple[int, int, int, int, int]] = {}
+        schedule = preparer.layout.schedule
+        resource_job_counts = ({} if schedule is None else
+                               {resource.physical_stream_resource_id: len(resource.jobs)
+                                for resource in schedule.resources})
+        self._time_sliced_pane_ids = (set() if schedule is None else {
+            estimate.pane_id for estimate in schedule.pane_revisits
+            if estimate.mode is ReceiverBindingMode.TIME_SLICED
+            and resource_job_counts[estimate.physical_stream_resource_id] > 1
+        })
         self._selected_slot = 1
         self._terminal_released = False
         projector_ids: set[int] = set()
@@ -288,7 +299,13 @@ class IndependentPaneBoardV2(QWidget):
         previous = self._last_order.get(binding.slot_number)
         if previous is not None and order <= previous:
             return False
-        pane.apply_prepared_pane_delivery(prepared)
+        scheduled_visit_boundary = (
+            previous is not None and binding.pane_id in self._time_sliced_pane_ids
+            and binding.mode is AnalyzerMode.RTBW
+            and prepared.delivery.host_activation_serial > previous[0]
+        )
+        pane.apply_prepared_pane_delivery(prepared,
+                                          scheduled_visit_boundary=scheduled_visit_boundary)
         self._last_order[binding.slot_number] = order
         return True
 

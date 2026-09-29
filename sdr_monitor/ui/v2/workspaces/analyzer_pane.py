@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QLabel, QWidget
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
+from sdr_monitor.domain.analyzer_identity import MeasurementIdentity
 
 from ..i18n import text
 from ..spectrum import PersistenceDensityFrame
@@ -48,11 +49,12 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self._last_mode = initial_mode
         self._last_waterfall: WaterfallLineFrame | None = None
         self._last_persistence: PersistenceDensityFrame | None = None
-        self._last_identity = None
+        self._last_identity: MeasurementIdentity | None = None
         self._last_sweep_snapshot: ContinuousSweepDisplaySnapshot | None = None
         self._last_statistics_key: tuple[str, int, int] | None = None
         self._sweep_waterfall_error = False
         self._terminal_released = False
+        self._pending_waterfall_gap = False
         self._on_frame_applied = on_frame_applied
         self.pane_number = pane_number
         self._pane_badge = QLabel(str(pane_number), self)
@@ -108,6 +110,8 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
     def apply_analyzer_state(self, state: AnalyzerViewState) -> None:
         if self._terminal_released:
             return
+        # The generic one-source path has no resource-schedule handoff proof.
+        self._pending_waterfall_gap = False
         prepared_spectrum = (state.prepared_sweep.spectrum if state.prepared_sweep is not None else
                              state.live.prepared_spectrum if state.mode is AnalyzerMode.RTBW else None)
         self._accept_measurement(state.mode, state.bundle, prepared_spectrum)
@@ -164,8 +168,11 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
             self._last_sweep_snapshot = snapshot
 
     def _accept_measurement(self, mode: AnalyzerMode, bundle: AnalyzerFrameBundle | None,
-                            prepared_spectrum: PreparedSpectrumFrame | None) -> bool:
-        identity = getattr(bundle, "identity", None)
+                            prepared_spectrum: PreparedSpectrumFrame | None, *,
+                            scheduled_visit_boundary: bool = False) -> bool:
+        if type(scheduled_visit_boundary) is not bool:
+            raise TypeError("scheduled visit boundary must be explicit bool")
+        identity = None if bundle is None else bundle.identity
         previous = self._last_identity
         first_measurement = self._last_bundle is None and bundle is not None
         scene = self.spectrum_scene
@@ -182,19 +189,40 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         # applied below. They are not new measurements: do not re-scan its entire
         # frequency grid on the GUI thread. New prepared bundles can share an
         # owned baseline only after exact worker-side content comparison.
-        changed_identity = (bundle is not self._last_bundle
-                            and identity is not None and previous is not None and (
-            any(getattr(identity, name) != getattr(previous, name) for name in fields)
-            or not (prepared_grid is not None and prepared_grid is previous_grid
-                    or np.array_equal(
-                        prepared_grid if prepared_grid is not None else identity.frequencies_hz,
-                        previous_grid if previous_grid is not None else previous.frequencies_hz))
-        ))
+        if bundle is not self._last_bundle and identity is not None and previous is not None:
+            same_grid = bool(
+                prepared_grid is not None and prepared_grid is previous_grid
+                or np.array_equal(
+                    prepared_grid if prepared_grid is not None else identity.frequencies_hz,
+                    previous_grid if previous_grid is not None else previous.frequencies_hz)
+            )
+            changed_identity = (any(getattr(identity, name) != getattr(previous, name)
+                                    for name in fields) or not same_grid)
+        else:
+            same_grid = False
+            changed_identity = False
+        preserve_scheduled_history = bool(
+            scheduled_visit_boundary and mode is AnalyzerMode.RTBW
+            and self._last_mode is AnalyzerMode.RTBW and changed_identity and same_grid
+            and previous is not None and identity is not None
+            and previous.acquisition_epoch is not None
+            and identity.acquisition_epoch is not None
+            and previous.acquisition_epoch != identity.acquisition_epoch
+            and all(getattr(previous, name) == getattr(identity, name)
+                    for name in ("source_id", "receiver_id", "clock_domain", "unit"))
+        )
         reset = (mode is not self._last_mode or changed_identity
-                 or bundle is None and self._last_bundle is not None)
+                 or bundle is None and self._last_bundle is not None
+                 or scheduled_visit_boundary and not preserve_scheduled_history)
         if reset:
             scene.clear_measurement()
-            self.waterfall_pane.clear_history(reset_kind=True)
+            if preserve_scheduled_history:
+                # The next admitted RTBW row places one visual absence marker.
+                # Spectrum/persistence still reset at this producer boundary.
+                self._pending_waterfall_gap = True
+            else:
+                self.waterfall_pane.clear_history(reset_kind=True)
+                self._pending_waterfall_gap = False
             if self._sweep_waterfall_error:
                 scene.set_warning(None)
                 self._sweep_waterfall_error = False
@@ -224,14 +252,18 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
             scene.clear_persistence_display()
             self._last_statistics_key = None
 
-    def apply_prepared_pane_delivery(self, prepared: PreparedPaneDelivery) -> None:
+    def apply_prepared_pane_delivery(self, prepared: PreparedPaneDelivery, *,
+                                     scheduled_visit_boundary: bool = False) -> None:
         """Render an independent pane without inventing a Live/Sweep snapshot."""
         if self._terminal_released:
             return
         if not isinstance(prepared, PreparedPaneDelivery) or prepared.binding.slot_number != self.pane_number:
             raise ValueError("prepared pane delivery belongs to another visual slot")
         bundle = prepared.bundle
-        fresh_view = self._accept_measurement(prepared.binding.mode, bundle, prepared.spectrum)
+        fresh_view = self._accept_measurement(
+            prepared.binding.mode, bundle, prepared.spectrum,
+            scheduled_visit_boundary=scheduled_visit_boundary,
+        )
         scene = self.spectrum_scene
         if prepared.binding.mode is AnalyzerMode.RTBW:
             density = prepared.persistence
@@ -243,7 +275,10 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
                 scene.clear_persistence_display()
                 self._last_persistence = None
             if isinstance(prepared.waterfall, WaterfallLineFrame) and prepared.waterfall is not self._last_waterfall:
-                self.waterfall_pane.set_line(prepared.waterfall)
+                self.waterfall_pane.set_line(prepared.waterfall,
+                                             segment_boundary=self._pending_waterfall_gap)
+                if not self.waterfall_pane.frozen:
+                    self._pending_waterfall_gap = False
                 self._last_waterfall = prepared.waterfall
         else:
             self._apply_sweep_statistics(bundle)
@@ -266,6 +301,7 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self.spectrum_scene.release_graphics_after_shutdown()
         self._last_bundle = self._last_waterfall = self._last_persistence = None
         self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
+        self._pending_waterfall_gap = False
         self._terminal_released = True
 
     def clear_shared_view(self) -> None:
@@ -277,6 +313,7 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self._last_bundle = self._last_waterfall = self._last_persistence = None
         self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
         self._sweep_waterfall_error = False
+        self._pending_waterfall_gap = False
 
 
 __all__ = ["AnalyzerPaneViewV2"]

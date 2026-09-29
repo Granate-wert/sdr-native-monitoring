@@ -136,6 +136,35 @@ class WaterfallPaneTests(unittest.TestCase):
         self.assertEqual(pane.grid_signature.last_edge_hz, 435_000_000.0)
         self.assertTrue(np.allclose(pane._renderer.tiles()[0], -80.0))
 
+    def test_explicit_same_grid_segment_keeps_history_with_blank_gap(self) -> None:
+        pane = self._pane()
+        pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000, generation=1))
+        pane.set_line(_line(-80.0, timestamp_ns=1_040_000_000, generation=1))
+        pane.set_line(_line(-70.0, timestamp_ns=2_000_000_000, generation=2), segment_boundary=True)
+        ordered = np.concatenate(pane._renderer.tiles(), axis=0)
+        self.assertEqual(pane.history_rows, 4)
+        np.testing.assert_array_equal(ordered[:, 0], np.array((-90, -80, np.nan, -70), dtype=np.float32))
+        self.assertTrue(np.isnan(ordered[2]).all())
+        self.assertEqual(pane.metrics.presentation_gap_rows, 1)
+        self.assertEqual(pane.metrics.grid_epoch_resets, 0)
+        self.assertEqual(pane.grid_signature.configuration_generation, 2)
+        pane.set_line(_line(-60.0, timestamp_ns=3_000_000_000, generation=3,
+                            stop_hz=435_000_000.0), segment_boundary=True)
+        self.assertEqual(pane.history_rows, 1)  # A changed physical grid still resets.
+        self.assertEqual(pane.metrics.grid_epoch_resets, 1)
+
+    def test_generation_change_without_handoff_or_backward_time_resets_history(self) -> None:
+        pane = self._pane()
+        pane.set_line(_line(-90.0, timestamp_ns=2_000_000_000, generation=1))
+        pane.set_line(_line(-80.0, timestamp_ns=3_000_000_000, generation=2))
+        self.assertEqual(pane.history_rows, 1)  # The generic caller did not opt in.
+        self.assertEqual(pane.metrics.presentation_gap_rows, 0)
+        pane.set_line(_line(-70.0, timestamp_ns=1_000_000_000, generation=3),
+                      segment_boundary=True)
+        self.assertEqual(pane.history_rows, 1)
+        self.assertEqual(pane.metrics.presentation_gap_rows, 0)
+        self.assertEqual(pane.metrics.grid_epoch_resets, 2)
+
     def test_levels_palette_follow_and_direction_only_change_presentation(self) -> None:
         pane = self._pane()
         pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000))

@@ -418,3 +418,28 @@ does **not** replace the absent physical tinySA cell. No new product EXE,
 source edit or performance/soak/RF-duty acceptance is claimed by this check.
 The earlier exact `5eaafd4` 3+Empty physical witness above remains the
 evidence for that short functional scenario until tinySA is reconnected.
+
+### Time-sliced RTBW pane waterfall continuity (source candidate)
+
+An independent pane now retains its own bounded Waterfall history across a
+**confirmed scheduled revisit** of one RX. This is deliberately narrower
+than turning off epoch resets: the compiled plan must mark that pane
+time-sliced on a resource with multiple capture jobs, the admitted delivery
+must advance the host activation serial and producer acquisition epoch, and
+the pane must retain the same source, receiver, clock domain, unit and exact
+physical frequency grid. A new producer session, configuration generation
+or persistence accumulation may legitimately accompany that new visit.
+The Spectrum measurement and persistence still reset at its epoch boundary.
+
+On the first admitted RTBW row of a qualified revisit, the Waterfall ring
+inserts one all-NaN **presentation-only** separator before the new row.
+That marker is neither an FFT nor a measured RF-loss count or gap duration;
+it consumes ordinary bounded display history. Freeze defers the separator
+until an actual row is admitted. Missing producer epoch progress, changed
+grid/source/receiver/unit/clock, Sweep mode and ordinary one-source panes
+retain their fail-closed history reset. Subsequent FFTs in one activation
+do not create more separators. The test suite covers these guards, two
+independent pane histories and the generic epoch reset. Current-source
+physical same-RX visual confirmation, new frozen EXE and sustained UI/RF
+qualification remain separate open gates; source tests alone do not prove
+that a gap stripe is legible at every 2×2 size or DPI.
