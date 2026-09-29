@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import DeviceFamily
@@ -45,6 +46,121 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 return
             sleep(0.01)
         self.fail("pane editor did not reach the expected state")
+
+    def test_shared_stop_dialog_accepts_equal_yes_value_not_only_same_object(self) -> None:
+        parent = QWidget()
+        try:
+            with patch.object(QMessageBox, "question", return_value=int(QMessageBox.StandardButton.Yes)):
+                self.assertTrue(IndependentPaneSessionV2._ask_shared_stop(
+                    parent, ("pane-1", "pane-2")))
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+                self.assertFalse(IndependentPaneSessionV2._ask_shared_stop(
+                    parent, ("pane-1", "pane-2")))
+        finally:
+            parent.close()
+
+    def test_shared_stop_real_qt_dialog_defaults_to_no_and_accepts_explicit_yes(self) -> None:
+        parent = QWidget()
+        observed_defaults = []
+        real_question = QMessageBox.question
+        try:
+            for response, expected in ((QMessageBox.StandardButton.No, False),
+                                       (QMessageBox.StandardButton.Yes, True)):
+                choose = QTimer(parent)
+                guard = QTimer(parent)
+                guard.setSingleShot(True)
+
+                def choose_button():
+                    box = self.app.activeModalWidget()
+                    if isinstance(box, QMessageBox):
+                        observed_defaults.append(box.standardButton(box.defaultButton()))
+                        choose.stop()
+                        box.button(response).click()
+
+                def cancel_on_timeout():
+                    box = self.app.activeModalWidget()
+                    if isinstance(box, QMessageBox):
+                        box.reject()
+
+                choose.timeout.connect(choose_button)
+                guard.timeout.connect(cancel_on_timeout)
+                choose.start(5)
+                guard.start(2000)
+                try:
+                    with patch.object(QMessageBox, "question", wraps=real_question) as question:
+                        self.assertEqual(IndependentPaneSessionV2._ask_shared_stop(
+                            parent, ("pane-1", "pane-2")), expected)
+                        question.assert_called_once()
+                finally:
+                    choose.stop()
+                    guard.stop()
+            self.assertEqual(observed_defaults, [QMessageBox.StandardButton.No] * 2)
+        finally:
+            parent.close()
+
+    def test_shared_hackrf_rtbw_sweep_stop_selected_needs_ack_and_releases_one_rx(self) -> None:
+        hf = hackrf_fixture()
+        fake = FakeHackrfSweep()
+        graph = build_v2_analyzer_application_graph(SimpleNamespace(
+            live_sdr=hf.live, device_catalog=hf.catalog,
+            analyzer_hackrf=hf.hackrf, analyzer_hackrf_sweep=fake))
+        choice = next(item for item in graph.live.discover(startup=True)
+                      if item.family is DeviceFamily.HACKRF)
+        pool = PaneProductGraphPool(lambda _resource: graph)
+        prepared = None
+        pane_ui = None
+        acknowledged = False
+        impacts = []
+
+        def confirm(impact):
+            impacts.append(impact)
+            return acknowledged
+
+        try:
+            prepared = prepare_user_pane_session((
+                PaneSlotDraft(1, choice.device_id, 100e6, 108e6),
+                PaneSlotDraft(2, choice.device_id, 140e6, 180e6,
+                              measurement_mode=CaptureMeasurementMode.SWEEP),
+                PaneSlotDraft(3), PaneSlotDraft(4),
+            ), pool_factory=lambda: pool)
+            apply_user_pane_session(prepared)
+            handle = prepared.handle
+            assert handle.layout.schedule is not None
+            self.assertEqual(len(handle.layout.schedule.resources), 1)
+            self.assertEqual(len(handle.layout.schedule.resources[0].jobs), 2)
+            pane_ui = IndependentPaneSessionV2(handle, confirm_shared_stop=confirm)
+            pane_ui.resize(1280, 700)
+            pane_ui.show()
+            self.app.processEvents()
+            pane_ui.start_all.click()
+            self._wait(lambda: pane_ui.board.pane(1).spectrum_scene.latest_frame is not None
+                       and pane_ui.board.pane(2).spectrum_scene.latest_frame is not None)
+            self.assertEqual(handle.pump.snapshot()[0].phase, PanePumpPhase.RUNNING)
+            pane_ui.stop_selected.click()
+            self.app.processEvents()
+            self.assertEqual(impacts, [("pane-1", "pane-2")])
+            self.assertEqual(handle.pump.snapshot()[0].phase, PanePumpPhase.RUNNING)
+            acknowledged = True
+            pane_ui.stop_selected.click()
+            self._wait(handle.can_close)
+            self.assertEqual(impacts[-1], ("pane-1", "pane-2"))
+            self.assertEqual(handle.pump.snapshot()[0].phase, PanePumpPhase.STOPPED)
+            self.assertEqual(handle.session.retained_resource_count, 0)
+            prepared.handle.shutdown_after_stop()
+            pane_ui.release_presentation_after_shutdown()
+            pane_ui.close()
+        finally:
+            if prepared is not None and not prepared.handle.shutdown_complete:
+                if prepared.handle.applied:
+                    for future in prepared.handle.pump.stop_all().values():
+                        future.result(timeout=5)
+                prepared.handle.shutdown_after_stop()
+            elif prepared is None and pool.staged_resource_ids:
+                pool.close()
+            if pane_ui is not None and prepared is not None and prepared.handle.shutdown_complete:
+                pane_ui.release_presentation_after_shutdown()
+                pane_ui.close()
+            graph.live.shutdown()
 
     def test_user_three_sources_and_empty_preview_apply_without_hidden_rx(self) -> None:
         native, ad_graph = _ad_graph(serial="")

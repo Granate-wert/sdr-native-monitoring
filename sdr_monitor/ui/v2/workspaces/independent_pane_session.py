@@ -184,7 +184,8 @@ class IndependentPaneSessionV2(QWidget):
             text("analyzer.independent.shared_stop.detail", panes=", ".join(impact)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
-        return answer is QMessageBox.StandardButton.Yes
+        # Compare the returned Qt button value, not Python wrapper identity.
+        return answer == QMessageBox.StandardButton.Yes
 
     def _render_failed(self, pane_id: str, _detail: str) -> None:
         self._error_key = "analyzer.independent.render_failed"
