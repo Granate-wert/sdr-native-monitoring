@@ -192,8 +192,42 @@ a test-script click before the close button's enable state settled; a bounded
 wait for the actual enabled action made the full explicit close path pass.
 This was not a product auto-retry or receiver failure.
 
-Still open: same-source frozen EXE build and visible qualification; physical
-one-RX multi-pane time-slicing under user controls; genuine Ethernet and
-10001-point tinySA cells; per-pane SDR wide Sweep and qualified RX2; recording
-conflict UX, localization/DPI/area/latency/load/soak gates and release.
+Still open: same-source frozen EXE build and visible qualification; genuine
+Ethernet and 10001-point tinySA cells; per-pane SDR wide Sweep and qualified
+RX2; recording conflict UX, localization/DPI/area/latency/load/soak gates
+and release.
 APP-07 and the full APP-00…14 objective remain **partial**.
+
+### Exact post-commit physical checks
+
+The exact pushed product source `36c3fd162c41ec1cfabea770f4a2ff79858f7863`
+was exercised again in the full Windows UI V2 AppShell with the same older
+official APP-06D native/SDK package. The in-tab editor selected USB Pluto
+100–108 MHz / requested 20 MS/s / FFT 4096, USB HackRF 140–148 MHz /
+requested 20 MS/s / FFT 4096, tinySA Ultra 200–210 MHz / 101 points, and
+an Empty fourth slot. Stage and Apply each left active RX count at zero.
+After the explicit Start, a 12.021-second observation admitted 309 / 313 /
+35 GUI bundles into the respective panes and showed three active resource
+owners. Selected tinySA Stop left the two SDR owners running; Stop all,
+Close layout, return to ordinary Analyzer, and normal shell close passed.
+The fourth slot had no graph or acquisition owner. A read-only, subsequent
+USB IIO inventory found one Pluto and reported `hw_model` Z7010-AD9364 and
+`ad9361-phy,model: ad9364`; its serial field was empty, so this is a
+contemporaneous device-model check, not serial-backed identity attestation.
+
+A separate 12.011-second user-editor check assigned that **one** USB Pluto
+RX to two disjoint 100–108 and 200–208 MHz panes, leaving slots 3–4 Empty.
+Preview showed one resource and two time-sliced jobs; Stage/Apply again
+started no RX. Explicit Start produced 27 and 26 GUI bundles respectively,
+then Stop all and Close layout completed. The screenshot showed both live
+spectra, but the two waterfalls were sparsely populated, so time-axis and
+waterfall cadence are still UX/performance debts. Paired libiio
+`READ LINE/INTEGER: -9` text appeared at shutdown in this extra check;
+earlier bounded diagnostics made cancellation a plausible cause, not a
+universal harmlessness proof. No USB reset, hidden restart or suppression
+was applied.
+
+These are short current-Python-source physical observations, **not** a
+current-source frozen EXE, lossless transport, RF duty/Pd, measured FFT/s,
+DWM FPS or sustained performance acceptance. The APP-07 release gate remains
+open; its physical one-RX multi-pane *functional* cell has bounded evidence.
