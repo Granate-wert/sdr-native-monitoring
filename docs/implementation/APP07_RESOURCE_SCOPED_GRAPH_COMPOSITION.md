@@ -472,3 +472,48 @@ physical repeat; the prior exact `5eaafd4` short 3+Empty witness above
 remains separate evidence. FHD/QHD/DPI legibility, measured timing
 distribution, RF duty/Pd, ADC readback, lossless transport, paint/DWM FPS,
 LPS and soak remain open. APP-07 and the release remain partial.
+
+### Responsive three-source + Empty geometry (2026-09-29)
+
+The UI V2 independent-pane surface now keeps its **same four slots and graph
+objects** while adapting the presentation to available logical width. At
+1200 logical pixels or more, the normal 2×2 grid remains. Below that, the
+existing cells reflow into one column inside a vertical scroll viewport;
+no owner, source assignment, capture, epoch or graph is recreated. The
+command/status rows remain outside the scroll viewport. The selected-slot
+actions show compact `Start/Stop N` labels, with full localized meanings in
+their accessible names and tooltips. The vertical scrollbar follows the
+current V2 theme. This is a visibility fallback, **not** simultaneous
+four-panel visibility on physically insufficient screen area.
+
+A fresh-process, inert Qt 6.11.1 matrix used source-like AD936x, HackRF and
+tinySA trace bindings with distinct 100–108, 140–148 and 200–210 MHz ranges;
+slot 4 stayed Empty. FHD logical viewport probes at 100/150/200/300% used
+1920×980, 1280×640, 960×460 and 640×280; QHD probes at 100/150/200/300%
+used 2560×1340, 1707×860, 1280×620 and 853×380. The first two FHD and
+first three QHD cases kept 2×2 without scrolling. FHD 200/300% and QHD
+300% used the one-column vertical fallback with no horizontal scrolling;
+all four slots remained reachable, the sampled timing text fit all three
+occupied panes, and the requested viewport was not enlarged. The compact
+FHD 300% case retained at least 140 logical pixels of Spectrum and 80 of
+Waterfall per occupied pane on the virtual canvas. A full applied fake-owner
+Qt session separately resized 1280×700 → 960×460 → 640×280 → 1280×700:
+commands stayed in bounds, the Empty fourth slot was reachable, no SDK/RX
+started and the three graph instances survived the reflow unchanged.
+
+The exact precommit UI V2 source gate passed **1057 tests, 66 expected
+skips, zero failures**, outside-checkout product imports `[]`, in 312.308 s;
+four historical NumPy invalid-comparison warnings remain. Scoped Ruff,
+isolated mypy, compileall and diff checks passed. The ordinary mypy run
+still reports 16 pre-existing errors in four imported files, with none in
+the edited board/session files. These are **synthetic/offscreen widget
+geometry** results, not a Windows per-monitor DPI, full AppShell area,
+visible EXE, physical RF, paint FPS/LPS or long-soak acceptance. The 65%
+measurement-area objective in the original review applies to the base
+single-pane 1366×768 view, not automatically to every 2×2 configuration.
+
+After this source gate, COM31 reappeared. A bounded read-only `version`
+request classified it as tinySA Ultra (`tinySA4_v1.4-200-g26fc821`);
+no measurement was started by that probe. A new exact-source frozen
+AD9364 + HackRF + tinySA + Empty physical repeat is the next separate
+qualification cell. APP-07 remains partial.

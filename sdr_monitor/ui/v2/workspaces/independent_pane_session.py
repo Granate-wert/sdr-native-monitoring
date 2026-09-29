@@ -14,7 +14,10 @@ from math import floor, isfinite
 from typing import Any
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
+    QSizePolicy, QVBoxLayout, QWidget,
+)
 
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.services.pane_resource_session import PaneHostTiming
@@ -22,6 +25,7 @@ from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
 
 from ..design import ThemeId, stylesheet_for_theme
+from ..design.tokens import tokens_for_theme
 from ..i18n import text
 from .independent_pane_board import IndependentPaneBoardV2
 from .independent_pane_delivery import IndependentPaneDeliveryPort
@@ -56,27 +60,50 @@ class IndependentPaneSessionV2(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        commands = QHBoxLayout()
+        commands = QVBoxLayout()
         commands.setSpacing(4)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(4)
         self.title = QLabel(self)
         self.title.setProperty("ui2Role", "secondary")
-        commands.addWidget(self.title, 1)
+        self.title.setMinimumWidth(0)
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        title_row.addWidget(self.title, 1)
+        self.close_layout = self._button(self._request_close_layout)
+        self.close_layout.setVisible(close_layout is not None)
+        title_row.addWidget(self.close_layout)
+        commands.addLayout(title_row)
+        control_row = QHBoxLayout()
+        control_row.setSpacing(4)
         self.start_selected = self._button(self._start_selected)
         self.start_all = self._button(self._start_all)
         self.stop_selected = self._button(self._stop_selected)
         self.stop_all = self._button(self._stop_all)
         for control in (self.start_selected, self.start_all, self.stop_selected, self.stop_all):
-            commands.addWidget(control)
-        self.close_layout = self._button(self._request_close_layout)
-        self.close_layout.setVisible(close_layout is not None)
-        commands.addWidget(self.close_layout)
+            control.setMinimumWidth(0)
+            control.setMaximumWidth(220)
+            control.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            control_row.addWidget(control, 1)
+        commands.addLayout(control_row)
         layout.addLayout(commands)
-        self.board = IndependentPaneBoardV2(handle.preparer, source_labels=handle.source_labels, parent=self)
+        self.board_scroll = QScrollArea(self)
+        self.board_scroll.setObjectName("independentPaneBoardScrollV2")
+        self.board_scroll.setProperty("ui2Role", "panel-scroll")
+        self.board_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.board_scroll.setWidgetResizable(True)
+        self.board_scroll.setMinimumSize(0, 0)
+        self.board_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.board = IndependentPaneBoardV2(
+            handle.preparer, source_labels=handle.source_labels, parent=self.board_scroll)
+        self.board_scroll.setWidget(self.board)
         self.board.selected_slot_changed.connect(self._refresh)
-        layout.addWidget(self.board, 1)
+        layout.addWidget(self.board_scroll, 1)
         self.status = QLabel(self)
         self.status.setProperty("ui2Role", "secondary")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setWordWrap(True)
+        self.status.setMinimumWidth(0)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.status)
         self.error = QLabel(self)
         self.error.setProperty("ui2Tone", "error")
@@ -213,6 +240,11 @@ class IndependentPaneSessionV2(QWidget):
     def _refresh(self, _selected_slot: int | None = None) -> None:
         if self._terminal_released:
             return
+        for control, key in ((self.start_selected, "analyzer.independent.start_slot"),
+                             (self.stop_selected, "analyzer.independent.stop_slot")):
+            label = text(key, number=self.board.selected_slot)
+            if control.text() != label:
+                control.setText(label)
         waiting: list[Future[Any]] = []
         for future in self._futures:
             if future.done():
@@ -250,6 +282,13 @@ class IndependentPaneSessionV2(QWidget):
 
     def set_theme(self, theme: ThemeId) -> None:
         self.setStyleSheet(stylesheet_for_theme(theme))
+        colors = tokens_for_theme(theme).colors
+        self.board_scroll.verticalScrollBar().setStyleSheet(f"""
+QScrollBar:vertical {{ background: {colors.panel}; width: 12px; border: 0; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {colors.border}; min-height: 24px; border-radius: 6px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: {colors.panel}; }}
+""")
         self.board.set_theme(theme)
 
     def set_locale(self) -> None:
@@ -263,6 +302,7 @@ class IndependentPaneSessionV2(QWidget):
         ):
             control.setText(text(key))
             control.setAccessibleName(text(key))
+            control.setToolTip(text(key))
         self.board.set_locale()
         self._refresh()
 

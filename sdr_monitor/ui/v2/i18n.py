@@ -213,10 +213,14 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.EN: "An owner did not confirm release. The current layout is retained; check Stop and retry explicit close."}),
         "analyzer.independent.start_selected": MappingProxyType({
             UiLocale.RU: "Старт выбранного", UiLocale.EN: "Start selected"}),
+        "analyzer.independent.start_slot": MappingProxyType({
+            UiLocale.RU: "Старт {number}", UiLocale.EN: "Start {number}"}),
         "analyzer.independent.start_all": MappingProxyType({
             UiLocale.RU: "Старт всех", UiLocale.EN: "Start all"}),
         "analyzer.independent.stop_selected": MappingProxyType({
             UiLocale.RU: "Стоп выбранного", UiLocale.EN: "Stop selected"}),
+        "analyzer.independent.stop_slot": MappingProxyType({
+            UiLocale.RU: "Стоп {number}", UiLocale.EN: "Stop {number}"}),
         "analyzer.independent.stop_all": MappingProxyType({
             UiLocale.RU: "Стоп всех", UiLocale.EN: "Stop all"}),
         "analyzer.independent.summary": MappingProxyType({

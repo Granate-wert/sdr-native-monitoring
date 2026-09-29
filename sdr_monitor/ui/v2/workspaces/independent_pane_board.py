@@ -63,13 +63,18 @@ class IndependentPaneBoardV2(QWidget):
         projector_ids: set[int] = set()
         self.setProperty("ui2Root", True)
         self.setObjectName("independentPaneBoardV2")
-        grid = QGridLayout(self)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(4)
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(4)
+        self._cells: dict[int, QFrame] = {}
+        self._stacked_layout = False
+        self._layout_ready = False
         slots = preparer.layout.slots
+        self._slot_count = len(slots)
         compact = len(slots) >= 3
         for slot in slots:
             cell = QFrame(self)
+            self._cells[slot.number] = cell
             cell.setProperty("ui2Role", "panel")
             cell.setObjectName(f"independentPaneCell{slot.number}")
             cell_layout = QVBoxLayout(cell)
@@ -143,26 +148,70 @@ class IndependentPaneBoardV2(QWidget):
                 self._panes[slot.number] = pane
             index = slot.number - 1
             if len(slots) == 1:
-                grid.addWidget(cell, 0, 0, 1, 2)
+                self._grid.addWidget(cell, 0, 0, 1, 2)
             elif len(slots) == 2:
-                grid.addWidget(cell, 0, index)
+                self._grid.addWidget(cell, 0, index)
             elif len(slots) == 3 and index == 2:
-                grid.addWidget(cell, 1, 0, 1, 2)
+                self._grid.addWidget(cell, 1, 0, 1, 2)
             else:
-                grid.addWidget(cell, index // 2, index % 2)
-        grid.setRowStretch(0, 1)
-        grid.setRowStretch(1, 1 if compact else 0)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+                self._grid.addWidget(cell, index // 2, index % 2)
+        self._grid.setRowStretch(0, 1)
+        self._grid.setRowStretch(1, 1 if compact else 0)
+        self._grid.setColumnStretch(0, 1)
+        self._grid.setColumnStretch(1, 1)
+        self._layout_ready = True
+        self._reflow_for_width()
         self.set_theme(ThemeId.DARK)
         self.set_locale()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        for overlay in self._display_overlays.values():
-            overlay.setGeometry(max(8, self.width() - min(800, self.width() - 16) - 8),
-                                32, min(800, self.width() - 16),
-                                min(510, max(180, self.height() - 40)))
+        if self._layout_ready:
+            self._reflow_for_width()
+            self._grid.activate()
+            for number, overlay in self._display_overlays.items():
+                self._position_overlay(number, overlay)
+
+    @property
+    def stacked_layout(self) -> bool:
+        """True when the same four slots are shown as a scrollable column."""
+        return self._stacked_layout
+
+    def _reflow_for_width(self) -> None:
+        # Below this width two graph pairs would clip their host timing/readout.
+        # Reposition existing cells only: no capture, graph or presentation reset.
+        stacked = self._slot_count > 1 and self.width() < 1200
+        if stacked == self._stacked_layout:
+            return
+        for cell in self._cells.values():
+            self._grid.removeWidget(cell)
+        for row in range(max(4, self._slot_count)):
+            self._grid.setRowStretch(row, 0)
+        self._grid.setColumnStretch(0, 1)
+        self._grid.setColumnStretch(1, 0 if stacked else 1)
+        for index, cell in enumerate(self._cells.values()):
+            if stacked:
+                self._grid.addWidget(cell, index, 0, 1, 2)
+                self._grid.setRowStretch(index, 1)
+            elif self._slot_count == 2:
+                self._grid.addWidget(cell, 0, index)
+            elif self._slot_count == 3 and index == 2:
+                self._grid.addWidget(cell, 1, 0, 1, 2)
+            else:
+                self._grid.addWidget(cell, index // 2, index % 2)
+        if not stacked:
+            self._grid.setRowStretch(0, 1)
+            self._grid.setRowStretch(1, 1 if self._slot_count >= 3 else 0)
+        self._stacked_layout = stacked
+        self.updateGeometry()
+
+    def _position_overlay(self, number: int, overlay: AnalyzerDisplayControls) -> None:
+        cell = self._cells[number]
+        width = min(800, max(180, min(self.width(), cell.width()) - 16))
+        height = min(510, max(180, cell.height() - 40))
+        x = max(8, min(cell.x() + 8, self.width() - width - 8))
+        y = max(8, min(cell.y() + 32, self.height() - height - 8))
+        overlay.setGeometry(x, y, width, height)
 
     def _toggle_display(self, number: int) -> None:
         overlay = self._display_overlays[number]
@@ -171,6 +220,7 @@ class IndependentPaneBoardV2(QWidget):
             other.hide()
         self._range_anchors.clear()
         if not visible:
+            self._position_overlay(number, overlay)
             pane = self._panes[number]
             grid = pane.spectrum_scene.measurement_grid
             available = pane.last_bundle is not None and grid is not None and len(grid) >= 2
