@@ -93,6 +93,7 @@ class PaneCaptureOwner(Protocol):
 
     def validate_endpoint(self, endpoint: ReceiverEndpoint) -> None: ...
     def validate_job(self, job: CaptureJob) -> None: ...
+    def release_control_claim(self) -> None: ...
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission: ...
     def stop_capture_and_wait(self) -> None: ...
     def poll_bundles(self) -> tuple[tuple[str, AnalyzerFrameBundle], ...]: ...
@@ -205,7 +206,8 @@ class PaneResourceSession:
             if owner.physical_stream_resource_id != resource_id:
                 raise PaneResourceError("owner physical resource identity differs from the admitted plan")
             if any(not callable(getattr(owner, name, None)) for name in (
-                    "validate_endpoint", "validate_job", "start_capture", "stop_capture_and_wait",
+                    "validate_endpoint", "validate_job", "release_control_claim", "start_capture",
+                    "stop_capture_and_wait",
                     "poll_bundles", "recording_active",
                     "recording_conflict", "receiver_identity", "control_transaction")):
                 raise PaneResourceError("receiver owner lacks a required lifecycle or recording guard")
@@ -547,6 +549,12 @@ class PaneResourceSession:
                         runtime.owner.stop_capture_and_wait()
                     except Exception:
                         raise PaneResourceError("receiver Stop did not confirm release; owner and lease retained") from None
+                try:
+                    runtime.owner.release_control_claim()
+                except Exception:
+                    with self._state_lock:
+                        runtime.stop_required = False  # Hardware Stop succeeded; keep only the claim/lease obligation.
+                    raise PaneResourceError("receiver control claim did not release; owner and lease retained") from None
                 with self._state_lock:
                     assert runtime.lease is not None
                     runtime.lease.release()

@@ -241,6 +241,44 @@ class Ad936xRtbwPaneOwnerTests(unittest.TestCase):
         self.assertEqual(session.stop_all(), ())
         service.stop_native_recording()
 
+    def test_ordinary_live_controls_cannot_bypass_active_pane_claim(self) -> None:
+        native, service, live, source_id = self.graph()
+        session, leases = self.session(live, source_id)
+        session.apply()
+        session.start_resource("physical-a")
+        requested = service.latest_snapshot().applied.applied
+        for command in (
+            lambda: live.discover(),
+            lambda: live.select_device(source_id),
+            lambda: live.apply_configuration(requested),
+            lambda: live.start(),
+            lambda: live.stop(),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "reserved by a pane capture"):
+                command()
+        self.assertEqual(native.engines[0].disconnect_calls, 0)
+        session.advance_resource("physical-a")
+        with self.assertRaisesRegex(RuntimeError, "reserved by a pane capture"):
+            live.stop()
+        self.assertEqual(session.stop_all(), ())
+        self.assertEqual(leases.active_resource_count, 0)
+        self.assertEqual(native.engines[-1].disconnect_calls, 1)
+        self.assertIs(live.apply_configuration(requested).state, LiveSessionState.CONNECTED)
+
+    def test_pane_claim_releases_after_failed_start_and_explicit_stop(self) -> None:
+        native, _service, live, source_id = self.graph(no_readback=True)
+        session, leases = self.session(live, source_id)
+        session.apply()
+        with self.assertRaisesRegex(PaneResourceError, "did not confirm admission"):
+            session.start_resource("physical-a")
+        with self.assertRaisesRegex(RuntimeError, "reserved by a pane capture"):
+            live.stop()
+        self.assertEqual(leases.active_resource_count, 1)
+        self.assertEqual(session.stop_all(), ())
+        self.assertEqual(leases.active_resource_count, 0)
+        self.assertEqual(native.engines[0].disconnect_calls, 1)
+        self.assertIs(live.current_snapshot().state, LiveSessionState.CONNECTED)
+
     def test_missing_rf_readback_retains_owner_for_explicit_stop(self) -> None:
         native, service, live, source_id = self.graph(no_readback=True)
         session, leases = self.session(live, source_id)

@@ -7,7 +7,10 @@ while presenters depend on the use-case interface rather than service modules.
 
 from __future__ import annotations
 
-from typing import ContextManager, Protocol
+from contextlib import contextmanager
+from functools import wraps
+from threading import RLock, local
+from typing import Concatenate, Iterator, ParamSpec, Protocol, TypeVar
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -29,6 +32,29 @@ from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.analyzer import AnalyzerFrameBundle, bundle_from_live
 from ..domain.recording import RecordingState
 from ..domain.tinysa_analyzer import TinySaSweepRequest
+
+
+_Args = ParamSpec("_Args")
+_Result = TypeVar("_Result")
+
+
+def _pane_exclusive_command(method: Callable[Concatenate[LiveSessionApplicationService, _Args], _Result]
+                            ) -> Callable[Concatenate[LiveSessionApplicationService, _Args], _Result]:
+    """Keep ordinary V2 controls outside an APP-07 pane-owned Live graph."""
+    @wraps(method)
+    def guarded(self: LiveSessionApplicationService, *args: _Args.args,
+                **kwargs: _Args.kwargs) -> _Result:
+        if not self._pane_application_lock.acquire(blocking=False):
+            raise RuntimeError("Another receiver control operation is pending")
+        try:
+            claim = self._pane_control_claim
+            if claim is not None and getattr(self._pane_control_thread, "claim", None) is not claim:
+                raise RuntimeError("Receiver is reserved by a pane capture; use its explicit Stop")
+            return method(self, *args, **kwargs)
+        finally:
+            self._pane_application_lock.release()
+
+    return guarded
 
 
 class LiveSessionPort(Protocol):
@@ -84,6 +110,9 @@ class LiveSessionApplicationService:
         self._rtbw = rtbw
         self._empty_source_snapshot: tuple[AnalyzerSourceSelection, LiveSnapshot] | None = None
         self._control_error: tuple[str, LiveErrorKind | None] | None = None
+        self._pane_application_lock = RLock()
+        self._pane_control_thread = local()
+        self._pane_control_claim: object | None = None
 
     @property
     def analyzer_state(self) -> AnalyzerSessionState | None:
@@ -122,7 +151,8 @@ class LiveSessionApplicationService:
         """Immutable low-rate control metadata; no SDK/catalog rebuild."""
         return self._sources.current() if self._sources is not None else None
 
-    def pane_control_transaction(self) -> ContextManager[None]:
+    @contextmanager
+    def pane_control_transaction(self, claim: object | None = None) -> Iterator[None]:
         """Use this graph's native recorder/receiver exclusion for APP-07.
 
         Inert/non-native graphs do not silently provide a no-op transaction.
@@ -132,7 +162,35 @@ class LiveSessionApplicationService:
         transaction = getattr(self._port, "pane_capture_control_transaction", None)
         if not callable(transaction):
             raise RuntimeError("Pane capture requires the native recording/control owner")
-        return transaction()
+        if not self._pane_application_lock.acquire(blocking=False):
+            raise RuntimeError("Another receiver control operation is pending")
+        try:
+            with transaction():
+                if claim is None:
+                    if self._pane_control_claim is not None:
+                        raise RuntimeError("Receiver is reserved by another pane capture")
+                elif self._pane_control_claim is None:
+                    self._pane_control_claim = claim
+                elif self._pane_control_claim is not claim:
+                    raise RuntimeError("Receiver is reserved by another pane capture")
+                prior = getattr(self._pane_control_thread, "claim", None)
+                self._pane_control_thread.claim = claim
+                try:
+                    yield
+                finally:
+                    self._pane_control_thread.claim = prior
+        finally:
+            self._pane_application_lock.release()
+
+    def release_pane_control(self, claim: object) -> None:
+        """Release only this owner after its explicit Stop confirmed release."""
+        with self._pane_application_lock:
+            if self._pane_control_claim is None:
+                return
+            if (self._pane_control_claim is not claim
+                    or getattr(self._pane_control_thread, "claim", None) is not claim):
+                raise RuntimeError("Foreign pane cannot release receiver control")
+            self._pane_control_claim = None
 
     def pane_recording_conflict(self) -> bool:
         """Unknown native recorder state is a refusal, never assumed idle."""
@@ -148,6 +206,7 @@ class LiveSessionApplicationService:
         if self._sources is not None:
             self._sources.require_ad936x_controls()
 
+    @_pane_exclusive_command
     def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]:
         if self._sources is not None:
             try:
@@ -157,6 +216,7 @@ class LiveSessionApplicationService:
                     self._rtbw.refresh_selection()
         return self._port.discover_startup_devices() if startup else self._port.discover_devices()
 
+    @_pane_exclusive_command
     def select_device(self, device_id: str) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
         if self._sources is not None:
@@ -168,6 +228,7 @@ class LiveSessionApplicationService:
             return self.current_snapshot()
         return self._port.select_device(device_id)
 
+    @_pane_exclusive_command
     def select_manual_uri(self, uri: str) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
         if self._sources is not None:
@@ -228,6 +289,7 @@ class LiveSessionApplicationService:
             raise RuntimeError("Sweep preflight is unavailable in this composition")
         return self._sweep_preflight(configuration, request)
 
+    @_pane_exclusive_command
     def apply_configuration(self, configuration: LiveConfiguration | LiveConfigurationPatch) -> LiveSnapshot:
         self._require_native_family()
         self._configuration_admission()
@@ -238,6 +300,7 @@ class LiveSessionApplicationService:
         self.preflight_configuration(configuration)
         return self._lifecycle_snapshot(self._port.apply_configuration(configuration))
 
+    @_pane_exclusive_command
     def reconfigure(self, configuration: LiveConfiguration, *, restart: bool = True) -> LiveSnapshot:
         """Preserve the stop → apply → optional-resume session transaction."""
 
@@ -254,11 +317,13 @@ class LiveSessionApplicationService:
             return self.start()
         return snapshot
 
+    @_pane_exclusive_command
     def start_with_configuration(self, configuration: LiveConfiguration) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
         snapshot = self.apply_configuration(configuration)
         return self.start() if snapshot.error is None else snapshot
 
+    @_pane_exclusive_command
     def start(self) -> LiveSnapshot:
         if self._rtbw is None or not self._rtbw.hackrf_selected:
             self._require_native_family()
@@ -272,6 +337,7 @@ class LiveSessionApplicationService:
             return self.current_snapshot()
         return self._port.start()
 
+    @_pane_exclusive_command
     def stage_hackrf_configuration(self, patch: HackrfConfigurationPatch) -> LiveSnapshot:
         self._configuration_admission(idle_only=True)
         if self._rtbw is None or self._analyzer is None:
@@ -279,6 +345,7 @@ class LiveSessionApplicationService:
         with self._analyzer.idle_control_operation():
             return self._lifecycle_snapshot(self._rtbw.stage_hackrf(patch))
 
+    @_pane_exclusive_command
     def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> AnalyzerSessionState:
         if self._analyzer is None:
             raise RuntimeError("Shared analyzer is unavailable in this composition")
@@ -302,6 +369,7 @@ class LiveSessionApplicationService:
             self._control_error = (str(error), LiveErrorKind.INTERNAL)
             raise
 
+    @_pane_exclusive_command
     def stop(self) -> LiveSnapshot:
         if self._analyzer is not None:
             try:
@@ -329,6 +397,7 @@ class LiveSessionApplicationService:
             return False
         return self._port.is_running()
 
+    @_pane_exclusive_command
     def shutdown(self, timeout_s: float = 5.0) -> None:
         errors: list[Exception] = []
         try:

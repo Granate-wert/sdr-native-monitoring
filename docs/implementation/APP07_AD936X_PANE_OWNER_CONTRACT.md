@@ -19,6 +19,15 @@ APP-07 is complete.
   `PaneResourceSession` holds that transaction across recording-conflict
   verification and Stage/Start or Stop/retune. It never holds the lock in the
   I/Q, FFT, native writer or presentation hot path.
+- On the first explicit pane Start, the same `LiveSessionApplicationService`
+  retains an owner-token claim. Ordinary V2 Discover/Select/Apply/Start/Stop,
+  Sweep Start and shutdown commands refuse while it is held. The pane's
+  transaction authorizes only its own token; confirmed explicit Stop releases
+  the claim before the external resource lease. A Start failure after the
+  claim is acquired, or an unconfirmed Stop, retains it for explicit cleanup.
+  Apply without Start still reserves only the
+  `PaneResourceSession` lease, so product composition must share that lease
+  authority before advertising an applied multi-pane plan.
 - Current `start_native_recording_now` is not yet subordinated to the pane
   resource lease between transactions. A production UI must arbitrate that
   command under the same resource owner before enabling multi-pane control;
@@ -50,13 +59,17 @@ current activation, source/session/generation/epoch/unit, receiver identity,
 Fs/FFT/hop and pane coverage before delivery. NaN gaps, native loss and
 quality metadata are not rewritten. Poll failure closes publication and
 retains the owner/lease until explicit Stop.
+Current native Live/RTBW `poll_frames()` is a non-destructive latest-snapshot
+read; the UI presenter and pane owner do not compete for a consumed queue item.
 
 ## Scope of evidence and remaining work
 
 Fake native module tests cover two separate application graphs, one receiver
 retuned between two bands, native-poller-to-pane publication, armed-recording
 conflicts, missing RF readback, source/RX2 mismatch, bounded LO quantization
-and control-lock collision. A bounded RX-only Pluto USB observation at
+and control-lock collision. Tests also cover normal V2 Live commands being
+refused across a pane retune and admitted again after explicit Stop. A bounded
+RX-only Pluto USB observation at
 61.44 MS/s delivered two successive RTBW panes under distinct producer epochs,
 with zero host-gate rejects and explicit Stop/release. It was not an EXE/UI
 observation and did not prove throughput continuity or RF duty. These checks

@@ -63,6 +63,7 @@ class Ad936xRtbwPaneOwner:
         self._source_id = source_id
         self._endpoint_id = receiver_endpoint_id
         self._live = live
+        self._control_claim = object()
 
     def validate_endpoint(self, endpoint: ReceiverEndpoint) -> None:
         if (endpoint.endpoint_id != self._endpoint_id
@@ -86,7 +87,10 @@ class Ad936xRtbwPaneOwner:
             raise ValueError("AD936x pane owner supports only one uncalibrated manual-gain RTBW RX")
 
     def control_transaction(self) -> ContextManager[None]:
-        return self._live.pane_control_transaction()
+        return self._live.pane_control_transaction(self._control_claim)
+
+    def release_control_claim(self) -> None:
+        self._live.release_pane_control(self._control_claim)
 
     def recording_active(self) -> bool:
         return self._live.pane_recording_conflict()

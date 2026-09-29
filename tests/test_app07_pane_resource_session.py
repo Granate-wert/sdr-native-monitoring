@@ -92,6 +92,9 @@ class FakeOwner:
     def validate_job(self, job) -> None:
         del job
 
+    def release_control_claim(self) -> None:
+        pass
+
     def poll_bundles(self) -> tuple[tuple[str, AnalyzerFrameBundle], ...]:
         if self.fail_poll:
             raise RuntimeError("raw native publication error")
