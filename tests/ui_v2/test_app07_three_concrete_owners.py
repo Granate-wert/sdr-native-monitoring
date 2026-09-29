@@ -33,9 +33,11 @@ from sdr_monitor.services.source_capability_providers import NativeLiveCapabilit
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_composition import compose_v2_pane_resource_session
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PreparedPaneDelivery
+from sdr_monitor.ui.v2_pane_delivery_queue import PaneFairDeliveryQueue
 from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2.workspaces.analyzer_pane import AnalyzerPaneViewV2
 from sdr_monitor.ui.v2.workspaces.independent_pane_board import IndependentPaneBoardV2
+from sdr_monitor.ui.v2.workspaces.independent_pane_delivery import IndependentPaneDeliveryPort
 
 from tests.test_app06_pluto_observation_catalog import _Native as _ObservedNative
 from tests.test_app07_ad936x_rtbw_pane_owner import _ReadbackEngine, _UnusedSweep
@@ -200,6 +202,7 @@ class ThreeConcreteOwnerTests(unittest.TestCase):
         }, leases)
         assert session is not None
         board = None
+        delivery_port = None
         temporary = TemporaryDirectory()
         try:
             session.apply()
@@ -236,10 +239,18 @@ class ThreeConcreteOwnerTests(unittest.TestCase):
             self.assertEqual((board.width(), board.height()), (1600, 920))
             prepared = tuple(preparer.prepare(deliveries[resource][0])
                              for resource in ("ad:physical", "hf:physical", "ts:physical"))
+            queue = PaneFairDeliveryQueue(("ad-pane", "hf-pane", "ts-pane"))
+            delivery_port = IndependentPaneDeliveryPort(board, queue)
+            rendered: list[str] = []
+            delivery_port.rendered.connect(rendered.append)
             for item in prepared:
-                self.assertTrue(board.apply_prepared(item))
-                self.assertFalse(board.apply_prepared(item))  # stale duplicate cannot repaint
-            application.processEvents()
+                self.assertTrue(queue.offer(item))
+                self.assertFalse(queue.offer(item))  # stale duplicate cannot queue
+            delivery_port.start()
+            self.wait(lambda: (application.processEvents() or True) and len(rendered) == 3)
+            delivery_port.stop()
+            self.assertEqual(rendered, ["ad-pane", "hf-pane", "ts-pane"])
+            self.assertEqual(queue.metrics().delivered, 3)
             self.assertEqual(board.empty_slots, (4,))
             self.assertIsNone(board.pane(4))
             self.assertEqual(len(board.findChildren(AnalyzerPaneViewV2)), 3)
@@ -270,8 +281,8 @@ class ThreeConcreteOwnerTests(unittest.TestCase):
                                 sequence=old_delivery.bundle.spectrum.sequence + 1)
             new_bundle = replace(old_delivery.bundle, spectrum=new_frame, identity=None,
                                  persistence=None, waterfall_line=None)
-            self.assertTrue(board.apply_prepared(preparer.prepare(replace(
-                old_delivery, bundle=new_bundle))))
+            self.assertTrue(queue.offer(preparer.prepare(replace(old_delivery, bundle=new_bundle))))
+            delivery_port.tick_once()
             zoom_start, zoom_stop = first_pane.spectrum_scene.view_box.viewRange()[0]
             self.assertAlmostEqual(zoom_start, 102e6, delta=1.0)
             self.assertAlmostEqual(zoom_stop, 106e6, delta=1.0)
@@ -306,6 +317,8 @@ class ThreeConcreteOwnerTests(unittest.TestCase):
             hf_graph.live.shutdown()
             ts_graph.live.shutdown()
             if board is not None:
+                if delivery_port is not None and delivery_port.running:
+                    delivery_port.stop()
                 board.release_presentation_after_shutdown()
                 board.close()
             temporary.cleanup()

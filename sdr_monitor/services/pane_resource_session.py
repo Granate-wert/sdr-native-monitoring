@@ -309,6 +309,11 @@ class PaneResourceSession:
             return sum(runtime.active for runtime in self._runtimes.values())
 
     @property
+    def schedule(self) -> PaneSchedule:
+        """Exact immutable plan whose resources this session owns."""
+        return self._schedule
+
+    @property
     def retained_resource_count(self) -> int:
         with self._state_lock:
             return sum(runtime.lease is not None for runtime in self._runtimes.values())

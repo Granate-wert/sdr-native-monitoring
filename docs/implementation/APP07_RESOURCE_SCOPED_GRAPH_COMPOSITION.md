@@ -58,10 +58,43 @@ small fake harness uses the synchronous renderer and makes no high-density
 paint-cadence or UI-latency claim.
 
 The board is **not yet wired into the user-facing Analyzer tab or a frozen
-EXE**. It owns no discovery, RF Start/Stop, worker/supervisor or scheduler
-timer. Fair coalescing, terminal Sweep preservation under pressure, selected
-Start/Stop and Stop-all UI, per-pane configuration, recording conflicts and
-safe product shutdown remain APP-07 work. USB Pluto and HackRF are enumerated
+EXE**. It owns no discovery or RF Start/Stop. Product-tab assignment,
+selected Start/Stop and Stop-all UI, recording conflicts and safe product
+shutdown remain APP-07 work. USB Pluto and HackRF are enumerated
 on the development host; a bounded version-only COM31 probe identified
 tinySA Ultra. That is source availability only, not concurrent three-device
 RX, UI frame-rate, RF duty or metrological acceptance.
+
+## Fair delivery and resource worker packet (2026-09-29, partial)
+
+The standalone 2×2 canvas now has an optional bounded handoff and explicit
+per-resource RX pump. `PaneFairDeliveryQueue` holds at most one latest packet
+plus one terminal Sweep packet per occupied pane, rotates pane service and
+counts supersession separately from any upstream RF, sample, scan or FFT
+loss. A late terminal for pass N is delivered before an already queued
+progressive pass N+1. `IndependentPaneDeliveryPort` uses one Qt timer and
+applies at most one packet per pane per tick; worker threads neither paint
+widgets nor post a Qt event per analytical FFT. Its cadence is a GUI
+presentation target, **not** measured DWM FPS, physical scan frequency or
+guaranteed frame latency.
+
+After a caller explicitly previews and applies one exact plan,
+`PaneResourcePump` can spawn one worker for each independently leased
+physical resource. It has separate explicit Start/Stop futures, serializes
+one resource's Start/poll/scheduled advance/Stop, and never invents a fourth
+worker for an Empty slot. One stopped resource leaves its peers running.
+For a shared one-RX time-sliced plan, elapsed slot duration alone cannot
+trigger a retune: an RTBW pane must receive at least one admitted frame, and
+a Sweep pane must receive a terminal Sweep publication first.
+Stop of one pane in a shared resource requires acknowledgement of all
+affected panes. Failed poll/Start/Stop retains the owner until explicit Stop
+or retry; there is no automatic reopen or hidden recovery. The control
+worker and Qt port are not yet attached to the shipped Analyzer tab.
+
+Fake-owner tests cover three independent resources plus Empty, exact
+resource/plan matching, selected versus Stop-all, missing terminal versus
+scheduled retune, and failure retention. A separate fake three-family graph
+test reaches the canvas through the same queue/timer, with AD936x and HackRF
+dBFS/bin versus tinySA dBm on different ranges. These are software boundary
+checks, **not** simultaneous physical AD9364/HackRF/tinySA acceptance, a
+current frozen EXE, fair-render load measurement or 2×2 end-user workflow.
