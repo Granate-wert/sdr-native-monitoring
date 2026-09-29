@@ -259,6 +259,33 @@ class PaneResourcePumpTests(unittest.TestCase):
             pump.join_after_stop(3)
         self.assertEqual(leases.active_resource_count, 0)
 
+    def test_stop_queued_before_start_execution_never_opens_rx_and_leaves_peer_live(self) -> None:
+        _, session, leases, owners, queue, pump = self.make_plan(2)
+        session.apply()
+        pump.activate()
+        try:
+            pump.start_resource("device-2").result(timeout=3)
+            first = pump._workers["device-1"]
+            with first._condition:  # Deterministically hold the command-dispatch boundary.
+                starting = pump.start_resource("device-1")
+                stopping = pump.stop_resource("device-1")
+                self.assertFalse(starting.cancel())
+                self.assertFalse(stopping.cancel())
+            with self.assertRaisesRegex(RuntimeError, "cancelled before RX"):
+                starting.result(timeout=3)
+            stopping.result(timeout=3)
+            self.assertEqual(owners["device-1"].events, [])
+            self.assertEqual(leases.active_resource_count, 1)
+            self.assertTrue(owners["device-2"].running)
+            owners["device-2"].publish(frame(owners["device-2"].admission_source_id, 7, 140e6, 148e6))
+            self.wait_until(lambda: queue.pending_count == 1)
+            self.assertEqual(tuple(item.delivery.pane_id for item in queue.drain()), ("b",))
+        finally:
+            for future in pump.stop_all().values():
+                future.result(timeout=3)
+            pump.join_after_stop(3)
+        self.assertEqual(leases.active_resource_count, 0)
+
     def test_pump_refuses_mismatched_compiled_plan_before_threads(self) -> None:
         layout, session, _, _, queue, _ = self.make_plan(1)
         altered_layout = compile_pane_layout(

@@ -863,6 +863,10 @@ class WaterfallPane(QWidget):
         self.set_levels(self._level_min.value(), self._level_max.value())
 
     def _sync_controls(self) -> None:
+        self._history_seconds.setAccessibleName(text(
+            "waterfall.history.blocks.name" if self._sweep_mode else "waterfall.history.name", self._locale))
+        self._rows_per_second.setAccessibleName(text(
+            "waterfall.rows_per_block.name" if self._sweep_mode else "waterfall.rows_per_second.name", self._locale))
         self._history_seconds.setPrefix(text(
             "waterfall.history.blocks" if self._sweep_mode else "waterfall.history.prefix", self._locale))
         self._history_seconds.setSuffix(text(

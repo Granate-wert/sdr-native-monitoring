@@ -32,6 +32,7 @@ from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer
 from tests.test_app07_shared_capture_schedule import group, pane, profile
 from tests.test_app07_mixed_source_trace import trace_bundle
 from tests.ui_v2.test_app04_progressive_waterfall import progress, terminal
+from tests.ui_v2.test_waterfall import _line
 
 
 class SweepSegmentRingTests(unittest.TestCase):
@@ -226,6 +227,35 @@ class SweepVisitPresentationTests(unittest.TestCase):
         finally:
             standalone.release_presentation_after_shutdown()
             standalone.close()
+
+    def test_capacity_accessibility_follows_mode_locale_clear_and_frozen_history(self):
+        settings = QSettings(str(Path(self.temp.name) / "accessible.ini"), QSettings.Format.IniFormat)
+        view = WaterfallPane(settings=settings)
+        try:
+            for locale in (UiLocale.RU, UiLocale.EN):
+                view.clear_history(reset_kind=True)
+                view.set_locale(locale)
+                self.assertEqual(view._history_seconds.accessibleName(), text("waterfall.history.name", locale))
+                self.assertEqual(view._rows_per_second.accessibleName(), text("waterfall.rows_per_second.name", locale))
+                view.set_sweep_line(waterfall_line_from_sweep(progress()))
+                self.assertEqual(view._history_seconds.accessibleName(), text("waterfall.history.blocks.name", locale))
+                self.assertEqual(view._rows_per_second.accessibleName(), text("waterfall.rows_per_block.name", locale))
+                before = view._renderer.sweep_stamps()
+                view.set_frozen(True)
+                other = UiLocale.EN if locale is UiLocale.RU else UiLocale.RU
+                view.set_locale(other)
+                self.assertEqual(view._renderer.sweep_stamps(), before)
+                self.assertEqual(view._history_seconds.accessibleName(), text("waterfall.history.blocks.name", other))
+                self.assertEqual(view._rows_per_second.accessibleName(), text("waterfall.rows_per_block.name", other))
+                view.clear_history()  # Local Clear is not a change to RTBW mode.
+                self.assertEqual(view._history_seconds.accessibleName(), text("waterfall.history.blocks.name", other))
+                view.set_frozen(False)
+                view.set_line(_line(-80, timestamp_ns=1))
+                self.assertEqual(view._history_seconds.accessibleName(), text("waterfall.history.name", other))
+                self.assertEqual(view._rows_per_second.accessibleName(), text("waterfall.rows_per_second.name", other))
+        finally:
+            view.release_presentation_after_shutdown()
+            view.close()
 
     def test_instrument_display_context_changes_do_not_join_raw_and_corrected_history(self):
         settings = QSettings(str(Path(self.temp.name) / "context.ini"), QSettings.Format.IniFormat)
