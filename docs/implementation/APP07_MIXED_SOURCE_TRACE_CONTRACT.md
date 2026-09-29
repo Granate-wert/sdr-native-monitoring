@@ -42,7 +42,9 @@ activation. This is fake-owner contract proof,
 not three physical devices, three concurrent product SDK contexts, or a
 visible UI frame-rate test.
 
-APP-07 still requires concrete HackRF and tinySA pane owners, product
+The HackRF RTBW pane owner now exists for one selected common Live graph; see
+`APP07_HACKRF_RTBW_PANE_OWNER_CONTRACT.md`. APP-07 still requires a concrete
+tinySA pane owner, resource-scoped parallel product graphs, and product
 composition with per-pane source/range/mode controls, an actual Empty pane,
 independent fair projection and Stop/error handling, and a current-source
 Windows EXE. The requested physical 3+1 matrix must then show concurrent

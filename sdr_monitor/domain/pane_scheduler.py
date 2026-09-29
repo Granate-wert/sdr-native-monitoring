@@ -9,11 +9,12 @@ control gaps are planned control boundaries, not estimates of ADC sample loss.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import combinations
 import math
 
+from .hackrf_live import HackrfLiveRequest
 from .receiver_topology import (
     AcquisitionGroup,
     PaneDisplayPolicy,
@@ -199,7 +200,59 @@ class SpectrumTracePaneProfile:
                 self.settings_key, self.epoch_cost)
 
 
-PaneProfile = PaneCaptureProfile | SpectrumTracePaneProfile
+@dataclass(frozen=True, slots=True)
+class HackrfRtbwPaneProfile:
+    """One complete HackRF RX/DSP intent; never collapse LNA/VGA into one gain.
+
+    The planned capture supplies its own center frequency. The remaining
+    typed request fields are immutable sharing/retune compatibility facts.
+    Hardware setters succeeding are not an ADC sample-rate readback.
+    """
+
+    request_template: HackrfLiveRequest
+    usable_capture_span_hz: float
+    epoch_cost: CaptureEpochCost
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_template, HackrfLiveRequest):
+            raise PaneScheduleError("HackRF pane requires a typed native RX/DSP request")
+        _positive_finite(self.usable_capture_span_hz, "usable HackRF capture span")
+        if self.usable_capture_span_hz > min(
+                self.request_template.sample_rate_hz, self.request_template.baseband_filter_hz):
+            raise PaneScheduleError("HackRF usable span exceeds its Fs or selected baseband filter")
+        if not isinstance(self.epoch_cost, CaptureEpochCost):
+            raise PaneScheduleError("HackRF pane requires a declared epoch cost")
+
+    @property
+    def measurement_mode(self) -> CaptureMeasurementMode:
+        return CaptureMeasurementMode.RTBW
+
+    @property
+    def unit(self) -> str:
+        return "dBFS/bin"
+
+    @property
+    def sample_rate_hz(self) -> float:
+        return self.request_template.sample_rate_hz
+
+    @property
+    def fft_size(self) -> int:
+        return self.request_template.fft_size
+
+    @property
+    def hop_size(self) -> int:
+        return self.request_template.hop_size
+
+    @property
+    def compatibility_key(self) -> tuple[object, ...]:
+        # RF center and producer generation belong to each activation, not
+        # the profile shared by several panes on the same capture.
+        template = replace(self.request_template, center_frequency_hz=1.0,
+                           configuration_generation=1)
+        return ("hackrf-rtbw", template, self.usable_capture_span_hz, self.epoch_cost)
+
+
+PaneProfile = PaneCaptureProfile | HackrfRtbwPaneProfile | SpectrumTracePaneProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -796,6 +849,7 @@ __all__ = [
     "CaptureEpochCost",
     "CaptureJob",
     "PaneCaptureProfile",
+    "HackrfRtbwPaneProfile",
     "SpectrumTracePaneProfile",
     "PaneProfile",
     "PaneControlGap",
