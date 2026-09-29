@@ -44,9 +44,11 @@ visible UI frame-rate test.
 
 The HackRF RTBW and tinySA trace pane owners now exist over the same family
 application graphs; see `APP07_HACKRF_RTBW_PANE_OWNER_CONTRACT.md` and
-`APP07_THREE_OWNER_TRACE_CONTRACT.md`. APP-07 still requires resource-scoped
-parallel product graphs and product
-composition with per-pane source/range/mode controls, an actual Empty pane,
+`APP07_THREE_OWNER_TRACE_CONTRACT.md`. The ordinary V2 graph builder and a
+resource-scoped three-family session composer are also present; see
+`APP07_RESOURCE_SCOPED_GRAPH_COMPOSITION.md`. APP-07 still requires these
+graphs to be owned by the actual product tab with per-pane source/range/mode
+controls, an actual visible Empty pane,
 independent fair projection and Stop/error handling, and a current-source
 Windows EXE. The requested physical 3+1 matrix must then show concurrent
 AD936x/HackRF/tinySA activity without a slow instrument stalling either SDR,

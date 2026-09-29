@@ -6,6 +6,7 @@ import numpy as np
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, RtbwFrameMetadata, bundle_from_sweep
 from sdr_monitor.domain.live import LiveSpectrumFrame
+from sdr_monitor.domain.device_capabilities import stable_identity_key
 from sdr_monitor.domain.pane_scheduler import (
     CaptureEpochCost, CaptureMeasurementMode, PaneCaptureProfile, PaneLayoutSlot,
     PaneScheduleError, SpectrumTracePaneProfile, compile_pane_layout, compile_pane_schedule,
@@ -126,7 +127,11 @@ class MixedSourcePaneTests(unittest.TestCase):
         leases = ReceiverLeaseManager(max_active_resources=4)
         session = PaneResourceSession(layout.schedule, groups,
                                       {"pluto": pluto, "hackrf": hackrf, "tinysa": tinysa},
-                                      leases, now_s=lambda: 10.0)
+                                      leases, now_s=lambda: 10.0,
+                                      source_identity_keys={
+                                          source: stable_identity_key("fake:" + source)
+                                          for source in ("pluto:source", "hackrf:source", "tinysa:source")
+                                      })
         session.apply()
         activations = {resource: session.start_resource(resource) for resource in ("pluto", "hackrf", "tinysa")}
         self.assertEqual(session.active_resource_count, 3)

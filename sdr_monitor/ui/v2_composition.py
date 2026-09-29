@@ -12,7 +12,7 @@ def build_v2_shell(services=None):
 
     from ..services import build_default_sdr_services
     from ..application import (
-        LiveSessionApplicationService, SweepControlApplicationService,
+        SweepControlApplicationService,
         CalibrationControlApplicationService, DiagnosticsControlApplicationService,
         ReplayControlApplicationService,
     )
@@ -65,50 +65,19 @@ def build_v2_shell(services=None):
     # Their documented construction opens no device; all discovery,
     # configuration and RX remain explicit presenter commands from Live V2.
     services = build_default_sdr_services() if services is None else services
-    from ..services.native_continuous_sweep_factory import (
-        NativeContinuousSweepPlanFactory, NativeLiveContinuousSweepDisplayService,
-    )
-    from ..services.native_live import NativeLiveSessionService
-    from ..services.source_capability_catalog import SourceCapabilityCatalog
-    from ..application.analyzer_session import AnalyzerSessionApplicationService
     from ..application.analyzer_continuous_sweep import AnalyzerContinuousSweepApplicationService
     from ..ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
+    from ..ui.v2_application_graph import build_v2_analyzer_application_graph
     from ..ui.v2.state.prepared_sweep import SweepSnapshotPreparer
     from ..ui.v2.state.prepared_live import LiveSnapshotPreparer
     from ..ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
     from ..ui.v2.state.source_admission import PresentationSourceAdmission
     allocation_budget = PresentationAllocationBudget()
     source_admission = PresentationSourceAdmission(allocation_budget)
-    display = getattr(services, "analyzer_display", None)
-    if display is None:
-        display = NativeLiveContinuousSweepDisplayService(services.live_sdr)
-    # Never silently fall back to non-atomic Start for a physical native port.
-    # Injected non-native in-memory ports are a non-hardware test composition.
-    start_live = (services.live_sdr.start_admitted
-                  if isinstance(services.live_sdr, NativeLiveSessionService)
-                  else services.live_sdr.start)
-    catalog = getattr(services, "device_catalog", None)
-    from ..application.analyzer_sources import AnalyzerSourceSelectionApplicationService
-    sources = (AnalyzerSourceSelectionApplicationService(catalog, services.live_sdr,
-               control_transaction=lambda: analyzer.idle_control_operation())
-               if isinstance(catalog, SourceCapabilityCatalog) and isinstance(services.live_sdr, NativeLiveSessionService)
-               else None)
-    from ..application.analyzer_rtbw_router import AnalyzerRtbwRouter
-    router = (AnalyzerRtbwRouter(services.live_sdr, sources, getattr(services, "analyzer_hackrf", None))
-              if sources is not None else None)
-    from ..application.analyzer_sweep_router import AnalyzerSweepRouter
-    hackrf_sweep = getattr(services, "analyzer_hackrf_sweep", None)
-    sweep_router = AnalyzerSweepRouter(display, sources, getattr(services, "analyzer_tinysa", None), hackrf_sweep)
-    analyzer = AnalyzerSessionApplicationService(router or services.live_sdr, sweep_router,
-                                                 start_live=router.start if router else start_live)
-    live_application = LiveSessionApplicationService(
-        services.live_sdr,
-        sweep_preflight=NativeContinuousSweepPlanFactory.preflight_profile,
-        analyzer=analyzer,
-        catalog_close=catalog.close if isinstance(catalog, SourceCapabilityCatalog) else None,
-        sources=sources,
-        rtbw=router,
-    )
+    graph = build_v2_analyzer_application_graph(services)
+    live_application = graph.live
+    analyzer = graph.analyzer
+    sweep_router = graph.sweep_router
     analyzer_presenter = ContinuousSweepPresenter(
         AnalyzerContinuousSweepApplicationService(live_application, sweep_router),
         snapshot_preparer=SweepSnapshotPreparer(allocation_budget),
@@ -122,7 +91,7 @@ def build_v2_shell(services=None):
         allocation_budget=allocation_budget,
         async_shutdown=True,
         analyzer_presenter=analyzer_presenter,
-        hackrf_sweep_composed=hackrf_sweep is not None,
+        hackrf_sweep_composed=getattr(services, "analyzer_hackrf_sweep", None) is not None,
         sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep, analyzer=analyzer)),
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),
         diagnostics_presenter_factory=lambda: DiagnosticsPresenter(DiagnosticsControlApplicationService(services.diagnostics)),

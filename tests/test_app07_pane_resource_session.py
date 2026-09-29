@@ -7,6 +7,7 @@ from threading import Event, RLock, Thread
 import numpy as np
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, RtbwFrameMetadata, bundle_from_sweep
+from sdr_monitor.domain.device_capabilities import stable_identity_key
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, compile_pane_schedule
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
@@ -169,7 +170,26 @@ class PaneResourceSessionTests(unittest.TestCase):
                 mode=CaptureMeasurementMode.SWEEP):
         schedule = compile_pane_schedule(groups, requests, {"capture": profile(usable_hz, mode)})
         return PaneResourceSession(schedule, groups, owners, self.leases,
+                                   source_identity_keys={endpoint.source_id: stable_identity_key(endpoint.source_id)
+                                                         for group in groups for endpoint in group.endpoints},
                                    now_s=lambda: self.clock[0])
+
+    def test_parallel_alias_or_missing_canonical_identity_refuses_before_lease(self) -> None:
+        groups = (group("device-a", "rx-a"), group("device-b", "rx-b"))
+        requests = (
+            pane("first", "rx-a", 100e6, 108e6, ReceiverBindingMode.DEDICATED_PARALLEL),
+            pane("second", "rx-b", 120e6, 128e6, ReceiverBindingMode.DEDICATED_PARALLEL),
+        )
+        schedule = compile_pane_schedule(groups, requests, {"capture": profile(36_000_000)})
+        owners = {"device-a": FakeOwner("device-a"), "device-b": FakeOwner("device-b")}
+        with self.assertRaisesRegex(PaneResourceError, "canonical source identities"):
+            PaneResourceSession(schedule, groups, owners, self.leases)
+        same_physical = stable_identity_key("same physical device via USB and IP")
+        with self.assertRaisesRegex(PaneResourceError, "alias one physical receiver"):
+            PaneResourceSession(schedule, groups, owners, self.leases, source_identity_keys={
+                "device-a:source": same_physical, "device-b:source": same_physical,
+            })
+        self.assertEqual(self.leases.active_resource_count, 0)
 
     def test_two_resources_start_in_parallel_and_keep_publications_isolated(self) -> None:
         groups = (group("device-a", "rx-a"), group("device-b", "rx-b"))

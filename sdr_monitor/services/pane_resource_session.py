@@ -205,6 +205,7 @@ class PaneResourceSession:
         owners: Mapping[str, PaneCaptureOwner],
         lease_manager: ReceiverLeaseManager,
         *,
+        source_identity_keys: Mapping[str, str] | None = None,
         now_s: Callable[[], float] = monotonic,
     ) -> None:
         resource_ids = {item.physical_stream_resource_id for item in schedule.resources}
@@ -276,6 +277,20 @@ class PaneResourceSession:
             runtimes[resource_id] = _Runtime(group, planned, owner)
         if pane_ids != {item.pane_id for item in schedule.pane_revisits}:
             raise PaneResourceError("pane delivery and planned revisit identities differ")
+        # Operational IDs are routes scoped to an adapter. USB and IP entries
+        # for the SAME physical receiver can have different source IDs. A
+        # multi-resource session must therefore receive canonical observed
+        # identities from the selected capability bindings, not infer physical
+        # independence from its acquisition-group labels.
+        if len(runtimes) > 1:
+            identities = dict(source_identity_keys or {})
+            if identities.keys() != source_ids or any(
+                    not isinstance(key, str) or not key.startswith("sha256:")
+                    or len(key) != 71 or any(character not in "0123456789abcdef" for character in key[7:])
+                    for key in identities.values()):
+                raise PaneResourceError("parallel receivers require exact canonical source identities")
+            if len(set(identities.values())) != len(identities):
+                raise PaneResourceError("two operational sources alias one physical receiver")
         self._runtimes = runtimes
         self._schedule = schedule
         self._pane_resources = pane_resources

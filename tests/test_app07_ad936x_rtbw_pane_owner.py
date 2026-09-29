@@ -10,6 +10,7 @@ import numpy as np
 from sdr_monitor.application.analyzer_session import AnalyzerSessionApplicationService
 from sdr_monitor.application.live_session import LiveSessionApplicationService
 from sdr_monitor.domain.live import LiveConfiguration, LiveSessionState
+from sdr_monitor.domain.device_capabilities import stable_identity_key
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, compile_pane_schedule
 from sdr_monitor.domain.receiver_topology import (
     AcquisitionGroup, ReceiverBindingMode, ReceiverChainSelection, ReceiverEndpoint,
@@ -201,7 +202,10 @@ class Ad936xRtbwPaneOwnerTests(unittest.TestCase):
                                                 source_id=source_b, receiver_endpoint_id="rx-b"),
         }
         leases = ReceiverLeaseManager()
-        session = PaneResourceSession(schedule, groups, owners, leases)
+        session = PaneResourceSession(schedule, groups, owners, leases, source_identity_keys={
+            source_a: stable_identity_key("fake physical A"),
+            source_b: stable_identity_key("fake physical B"),
+        })
         session.apply()
         session.start_resource("physical-a")
         session.start_resource("physical-b")
