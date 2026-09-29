@@ -112,9 +112,11 @@ class PaneCaptureProfile:
     usable_capture_span_hz: float
     epoch_cost: CaptureEpochCost
     measurement_mode: CaptureMeasurementMode = CaptureMeasurementMode.RTBW
+    unit: str = "dBFS/bin"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "measurement_mode", CaptureMeasurementMode(self.measurement_mode))
+        object.__setattr__(self, "unit", _required_text(self.unit, "measurement unit"))
         _positive_finite(self.sample_rate_hz, "sample rate")
         _positive_finite(self.analog_bandwidth_hz, "analog bandwidth")
         _positive_finite(self.usable_capture_span_hz, "usable capture span")
@@ -144,6 +146,7 @@ class PaneCaptureProfile:
 
         return (
             self.measurement_mode,
+            self.unit,
             self.sample_rate_hz,
             self.analog_bandwidth_hz,
             self.gain_mode,

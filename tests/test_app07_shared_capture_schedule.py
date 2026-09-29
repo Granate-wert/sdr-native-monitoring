@@ -120,6 +120,16 @@ class SharedCaptureScheduleTests(unittest.TestCase):
                 {"capture": profile(36_000_000)},
             )
 
+    def test_different_measurement_units_cannot_share_a_capture(self) -> None:
+        absolute = replace(pane("absolute", "rx1", 100e6, 108e6), profile_id="absolute")
+        with self.assertRaises(PaneScheduleError):
+            compile_pane_schedule(
+                (group("device-1", "rx1"),),
+                (pane("relative", "rx1", 120e6, 128e6), absolute),
+                {"capture": profile(36e6),
+                 "absolute": replace(profile(36e6), unit="dBm")},
+            )
+
     def test_separate_resource_keys_produce_separate_parallel_plans(self) -> None:
         schedule = compile_pane_schedule(
             (group("device-a", "rx-a"), group("device-b", "rx-b")),

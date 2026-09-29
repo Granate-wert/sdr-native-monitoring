@@ -7,7 +7,7 @@ while presenters depend on the use-case interface rather than service modules.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import ContextManager, Protocol
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -27,6 +27,7 @@ from ..domain.analyzer_resources import AnalyzerGeometryPreflight, estimate_anal
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.analyzer import AnalyzerFrameBundle, bundle_from_live
+from ..domain.recording import RecordingState
 from ..domain.tinysa_analyzer import TinySaSweepRequest
 
 
@@ -120,6 +121,28 @@ class LiveSessionApplicationService:
     def current_source_selection(self) -> AnalyzerSourceSelection | None:
         """Immutable low-rate control metadata; no SDK/catalog rebuild."""
         return self._sources.current() if self._sources is not None else None
+
+    def pane_control_transaction(self) -> ContextManager[None]:
+        """Use this graph's native recorder/receiver exclusion for APP-07.
+
+        Inert/non-native graphs do not silently provide a no-op transaction.
+        The transaction is acquired by the caller around the entire staged
+        configuration and Start or Stop, not around the FFT hot path.
+        """
+        transaction = getattr(self._port, "pane_capture_control_transaction", None)
+        if not callable(transaction):
+            raise RuntimeError("Pane capture requires the native recording/control owner")
+        return transaction()
+
+    def pane_recording_conflict(self) -> bool:
+        """Unknown native recorder state is a refusal, never assumed idle."""
+        getter = getattr(self._port, "native_recording_health", None)
+        if not callable(getter):
+            raise RuntimeError("Pane capture requires native recording state")
+        state = getattr(getter(), "state", None)
+        if not isinstance(state, RecordingState):
+            raise RuntimeError("Pane capture could not verify native recording state")
+        return state not in (RecordingState.IDLE, RecordingState.COMPLETED)
 
     def _require_native_family(self) -> None:
         if self._sources is not None:

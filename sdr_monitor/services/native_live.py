@@ -337,6 +337,21 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         return self._observation_owner.cleanup_pending
 
     @contextmanager
+    def pane_capture_control_transaction(self):
+        """Share the native recorder's low-rate exclusion with APP-07 control.
+
+        The caller still needs its own resource lease and Analyzer admission.
+        This reentrant, fail-fast scope covers Stage/Start and Stop/retune; it
+        never enters the I/Q, FFT, writer or frame-publication hot paths.
+        """
+        if not self._recording_transaction_lock.acquire(blocking=False):
+            raise LiveAdmissionRejected("Receiver recording/control operation is pending")
+        try:
+            yield
+        finally:
+            self._recording_transaction_lock.release()
+
+    @contextmanager
     def capability_control_transaction(self):
         """Shared no-queue control exclusion for the composed V2 catalog.
 

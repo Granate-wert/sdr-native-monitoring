@@ -21,7 +21,7 @@ from sdr_monitor.domain.pane_scheduler import (
     CaptureJob, CaptureMeasurementMode, PaneControlGap, PaneCrop, PaneRevisitEstimate, PaneSchedule,
     ResourcePaneSchedule,
 )
-from sdr_monitor.domain.receiver_topology import AcquisitionGroup
+from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 
 from .receiver_lease_manager import ReceiverLease, ReceiverLeaseManager
@@ -91,8 +91,11 @@ class PaneCaptureOwner(Protocol):
 
     physical_stream_resource_id: str
 
+    def validate_endpoint(self, endpoint: ReceiverEndpoint) -> None: ...
+    def validate_job(self, job: CaptureJob) -> None: ...
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission: ...
     def stop_capture_and_wait(self) -> None: ...
+    def poll_bundles(self) -> tuple[tuple[str, AnalyzerFrameBundle], ...]: ...
     def recording_active(self) -> bool: ...
     def recording_conflict(self, job: CaptureJob) -> bool: ...
     def receiver_identity(self, endpoint_id: str) -> str | int | None: ...
@@ -202,7 +205,8 @@ class PaneResourceSession:
             if owner.physical_stream_resource_id != resource_id:
                 raise PaneResourceError("owner physical resource identity differs from the admitted plan")
             if any(not callable(getattr(owner, name, None)) for name in (
-                    "start_capture", "stop_capture_and_wait", "recording_active",
+                    "validate_endpoint", "validate_job", "start_capture", "stop_capture_and_wait",
+                    "poll_bundles", "recording_active",
                     "recording_conflict", "receiver_identity", "control_transaction")):
                 raise PaneResourceError("receiver owner lacks a required lifecycle or recording guard")
             if any(endpoint.selection is ReceiverChainSelection.BOTH for endpoint in group.endpoints):
@@ -220,6 +224,8 @@ class PaneResourceSession:
                 raise PaneResourceError("receiver endpoint identity is duplicated between resources")
             endpoints.update(by_endpoint)
             try:
+                for endpoint in group.endpoints:
+                    owner.validate_endpoint(endpoint)
                 mapped = {endpoint_id: owner.receiver_identity(endpoint_id) for endpoint_id in by_endpoint}
             except Exception:
                 raise PaneResourceError("producer receiver identity could not be confirmed") from None
@@ -235,6 +241,10 @@ class PaneResourceSession:
             for job in planned.jobs:
                 if job.physical_stream_resource_id != resource_id or not set(job.receiver_endpoint_ids) <= set(by_endpoint):
                     raise PaneResourceError("capture job crosses its admitted physical resource")
+                try:
+                    owner.validate_job(job)
+                except Exception:
+                    raise PaneResourceError("receiver owner refuses a scheduled capture job") from None
                 for crop in job.crops:
                     if crop.receiver_endpoint_id not in by_endpoint or crop.pane_id in pane_ids:
                         raise PaneResourceError("pane crop has a foreign endpoint or duplicate pane identity")
@@ -460,6 +470,39 @@ class PaneResourceSession:
                 self._pane_last_received[delivery.pane_id] = now
             return deliveries
 
+    def poll_resource(self, resource_id: str) -> tuple[PaneDelivery, ...]:
+        """Drain one already-owned producer on a worker, bound to its token.
+
+        The resource control lock prevents Stop/retune while reading its
+        bounded presentation queue. An old queued measurement can still be
+        returned after Start, so ``accept_frame`` enforces producer identity
+        and epoch independently of this host-side serialization.
+        """
+        runtime = self._required_runtime(resource_id)
+        with runtime.control_lock:
+            with self._state_lock:
+                activation = runtime.current_activation
+                if not runtime.active or runtime.stop_required or activation is None:
+                    return ()
+            try:
+                publications = runtime.owner.poll_bundles()
+                if (not isinstance(publications, tuple) or len(publications) > 64
+                        or any(not isinstance(item, tuple) or len(item) != 2
+                               or not isinstance(item[0], str)
+                               or not isinstance(item[1], AnalyzerFrameBundle)
+                               for item in publications)):
+                    raise ValueError("malformed bounded pane publication batch")
+            except Exception:
+                with self._state_lock:
+                    runtime.active = False
+                    runtime.current_activation = None
+                    runtime.stop_required = True
+                raise PaneResourceError("receiver publication failed; explicit Stop is required") from None
+            delivered: list[PaneDelivery] = []
+            for endpoint_id, bundle in publications:
+                delivered.extend(self.accept_frame(activation, endpoint_id, bundle))
+            return tuple(delivered)
+
     def pane_age_s(self, pane_id: str) -> float | None:
         with self._state_lock:
             resource_id = self._pane_resources.get(pane_id)
@@ -570,6 +613,7 @@ class PaneResourceSession:
                 or admission.source_id != runtime.group.endpoints[0].source_id
                 or admission.receiver_endpoint_ids != job.receiver_endpoint_ids
                 or admission.mode is not job.profile.measurement_mode
+                or admission.unit != job.profile.unit
                 or (runtime.new_epoch_required and admission.session_id == runtime.last_admission_session_id
                     and runtime.last_admission_epoch is not None
                     and admission.acquisition_epoch <= runtime.last_admission_epoch)

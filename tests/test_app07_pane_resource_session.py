@@ -83,6 +83,21 @@ class FakeOwner:
         self.stop_cost_s = 0.0
         self.stop_entered: Event | None = None
         self.stop_release: Event | None = None
+        self.publications: list[tuple[str, AnalyzerFrameBundle]] = []
+        self.fail_poll = False
+
+    def validate_endpoint(self, endpoint) -> None:
+        del endpoint
+
+    def validate_job(self, job) -> None:
+        del job
+
+    def poll_bundles(self) -> tuple[tuple[str, AnalyzerFrameBundle], ...]:
+        if self.fail_poll:
+            raise RuntimeError("raw native publication error")
+        values = tuple(self.publications)
+        self.publications.clear()
+        return values
 
     def start_capture(self, job) -> PaneCaptureAdmission:
         self.events.append(("start", job.capture_id))
@@ -192,6 +207,40 @@ class PaneResourceSessionTests(unittest.TestCase):
         self.assertIsNone(session.pane_age_s("first"))
         self.assertEqual(session.stop_all(), ())
         self.assertEqual(self.leases.active_resource_count, 0)
+
+    def test_owner_poll_routes_current_bundle_without_reopening_capture(self) -> None:
+        groups = (group("device-a", "rx-a"),)
+        requests = (pane("low", "rx-a", 100e6, 108e6),
+                    pane("high", "rx-a", 120e6, 128e6))
+        owner = FakeOwner("device-a")
+        session = self.session(groups, requests, {"device-a": owner})
+        session.apply()
+        session.start_resource("device-a")
+        measurement = frame("device-a:source", 7, 100e6, 128e6)
+        owner.publications.append(("rx-a", measurement))
+        deliveries = session.poll_resource("device-a")
+        self.assertEqual(tuple(item.pane_id for item in deliveries), ("high", "low"))
+        self.assertTrue(all(item.bundle is measurement for item in deliveries))
+        self.assertEqual([item[0] for item in owner.events], ["start"])
+        self.assertEqual(session.poll_resource("device-a"), ())
+        self.assertEqual(session.stop_all(), ())
+        owner.publications.append(("rx-a", measurement))
+        self.assertEqual(session.poll_resource("device-a"), ())
+
+    def test_poll_failure_quarantines_publication_and_retains_owner_for_stop(self) -> None:
+        groups = (group("device-a", "rx-a"),)
+        requests = (pane("one", "rx-a", 100e6, 108e6,
+                         ReceiverBindingMode.DEDICATED_PARALLEL),)
+        owner = FakeOwner("device-a")
+        session = self.session(groups, requests, {"device-a": owner})
+        session.apply()
+        session.start_resource("device-a")
+        owner.fail_poll = True
+        with self.assertRaisesRegex(PaneResourceError, "publication failed"):
+            session.poll_resource("device-a")
+        self.assertEqual(session.active_resource_count, 0)
+        self.assertEqual(session.retained_resource_count, 1)
+        self.assertEqual(session.stop_all(), ())
 
     def test_one_resource_time_slices_nonadjacent_shared_pairs_with_epoch_gate(self) -> None:
         groups = (group("device-a", "rx-a"),)
@@ -335,11 +384,9 @@ class PaneResourceSessionTests(unittest.TestCase):
         owner.admission_unit = "dBm"
         session = self.session(groups, requests, {"device-a": owner})
         session.apply()
-        activation = session.start_resource("device-a")
-        self.assertEqual(session.accept_frame(
-            activation, "rx-a", frame("device-a:source", 7, 100e6, 108e6),
-        ), ())
-        self.assertEqual(session.rejected_publications("device-a"), 1)
+        with self.assertRaisesRegex(PaneResourceError, "did not confirm admission"):
+            session.start_resource("device-a")
+        self.assertEqual(session.retained_resource_count, 1)
         self.assertEqual(session.stop_all(), ())
 
     def test_owner_receipt_with_wrong_applied_fs_is_rejected_before_publication(self) -> None:
