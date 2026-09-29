@@ -195,7 +195,8 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 second = pane_ui.board._timing_labels[2].text()
                 self.assertIn("Возраст: <1 с", first)
                 self.assertIn("возврат 2.40 с", first)
-                self.assertIn("план макс.", first)
+                self.assertIn("модель 0.16 с", first)
+                self.assertNotIn("макс.", first)
                 self.assertIn("Возраст: 3 с", second)
                 self.assertIn("возврат 2.50 с", second)
                 for number, summary in ((1, first), (2, second)):
@@ -218,7 +219,10 @@ class IndependentPaneSetupTests(unittest.TestCase):
                     set_active_locale(UiLocale.EN)
                     pane_ui.set_locale()
                     self.assertIn("Data age", pane_ui.board._timing_labels[1].text())
-                    self.assertIn("model max", pane_ui.board._timing_labels[1].text())
+                    self.assertIn("revisit 2.40 s / model 0.16 s",
+                                  pane_ui.board._timing_labels[1].text())
+                    self.assertIn("not a guaranteed device maximum",
+                                  pane_ui.board._timing_labels[1].toolTip())
                     for label in pane_ui.board._timing_labels.values():
                         self.assertLessEqual(label.fontMetrics().horizontalAdvance(label.text()), label.width())
                 finally:

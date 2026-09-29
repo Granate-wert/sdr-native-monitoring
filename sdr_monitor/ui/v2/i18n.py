@@ -239,8 +239,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Нет принятого кадра · ресурс без чередования",
             UiLocale.EN: "No accepted frame · resource not time-sliced"}),
         "analyzer.independent.timing.sliced": MappingProxyType({
-            UiLocale.RU: "Возраст: {age} · возврат {observed} (план макс. {modeled})",
-            UiLocale.EN: "Data age: {age} · revisit {observed} (model max {modeled})"}),
+            UiLocale.RU: "Возраст: {age} · возврат {observed} / модель {modeled}",
+            UiLocale.EN: "Data age: {age} · revisit {observed} / model {modeled}"}),
         "analyzer.independent.timing.sliced_no_frame": MappingProxyType({
             UiLocale.RU: "Нет принятого кадра · модель возврата {modeled}",
             UiLocale.EN: "No accepted frame · modeled revisit {modeled}"}),
@@ -256,8 +256,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.independent.timing.age_over_limit": MappingProxyType({
             UiLocale.RU: "≥999 с", UiLocale.EN: "≥999 s"}),
         "analyzer.independent.timing.scope": MappingProxyType({
-            UiLocale.RU: "Возраст — от последнего кадра, принятого host-маршрутизатором. Для чередуемого ресурса возврат — последний интервал между первыми принятыми кадрами двух посещений этого окна; максимум по плану — модель, не гарантия фактического срока. Для отдельного SDR или медленного прибора tinySA такой возврат не вычисляется. Это не частота FFT, отрисовки/DWM, АЦП, непрерывность RF или вероятность обнаружения импульса.",
-            UiLocale.EN: "Age is since the last host-router-accepted frame. For a time-sliced resource, revisit is the last interval between first accepted frames in two visits to this pane; modeled maximum is not a real-time guarantee. No such revisit is computed for a dedicated SDR or slow tinySA instrument. These are not FFT, paint/DWM or ADC rates, RF continuity or pulse-detection probability."}),
+            UiLocale.RU: "Возраст — от последнего кадра, принятого host-маршрутизатором. Для чередуемого ресурса возврат — последний интервал между первыми принятыми кадрами двух посещений этого окна. Модель — расчёт по заданным затратам на переключение и активный участок, а не гарантированный максимум на устройстве; фактический возврат может быть медленнее. Для отдельного SDR или медленного прибора tinySA такой возврат не вычисляется. Это не частота FFT, отрисовки/DWM, АЦП, непрерывность RF или вероятность обнаружения импульса.",
+            UiLocale.EN: "Age is since the last host-router-accepted frame. For a time-sliced resource, revisit is the last interval between first accepted frames in two visits to this pane. The model uses configured control and active costs, not a guaranteed device maximum; the actual revisit can be slower. No such revisit is computed for a dedicated SDR or slow tinySA instrument. These are not FFT, paint/DWM or ADC rates, RF continuity or pulse-detection probability."}),
         "analyzer.independent.shared_stop.title": MappingProxyType({
             UiLocale.RU: "Общий приёмник", UiLocale.EN: "Shared receiver"}),
         "analyzer.independent.shared_stop.detail": MappingProxyType({

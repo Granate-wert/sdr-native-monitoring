@@ -297,7 +297,11 @@ grid. A dedicated AD936x or HackRF capture and a tinySA instrument trace
 show the age of the latest frame **accepted by the host router** and state
 that the resource is not time-sliced. For disjoint panes sharing one RX, the
 row additionally shows the last *observed* revisit interval and the
-schedule's modeled maximum. The model is not a real-time guarantee. Empty
+schedule's estimate from configured control/active costs. The internal
+`maximum_revisit_s` is the maximum *within that deterministic model*, not
+an upper bound on a physical device; actual Stop/retune/Start and first-frame
+latencies can make it slower. The compact UI now labels the two values
+`revisit / model` rather than `revisit / model max`. Empty
 panes have neither a timing row nor a receiver.
 
 An observed visit starts at the first accepted frame from a new confirmed
@@ -348,3 +352,40 @@ These are short qualitative Windows observations, not a frame-period,
 paint/DWM FPS, LPS, RF duty/Pd, lossless USB or long-soak result. The small
 observed window still leaves shallow graphs in 2×2; FHD/QHD/DPI and area
 qualification remain open. APP-07 and release remain partial/open.
+
+### One physical RX, two disjoint panes in the same frozen EXE (2026-09-29)
+
+The exact `5eaafd4` diagnostic EXE above was separately launched through
+Computer Use. USB Discover found three candidates; the user-facing editor
+assigned the **same** AD936x USB RX1 to pane 1 at 100–108 MHz and pane 2 at
+200–208 MHz, both requested 20 MS/s and FFT4096; panes 3–4 were Empty.
+Stage/Preview showed one resource, two time-sliced capture jobs and RF gaps.
+Apply opened the 2×2 board without starting RX. Explicit Start all yielded
+`running 1`; both occupied spectrum plots changed while their separate
+frequency axes remained in the assigned ranges. The host timing rows sampled
+an age below one second and last observed revisits around 0.43–0.45 s per
+pane, versus the **modeled** 0.16 s. This directly demonstrates that the
+model is not a physical maximum. Stop all yielded `running 0 / stopped 1 /
+Stop required 0`; both retained frames were marked not new. Close layout and
+normal EXE close completed. The EXE still contains the old `model max`
+wording; the following source-only wording repair has not been built into
+that exact binary.
+
+The source-only UI V2 wording repair uses `revisit / model` in RU and EN and
+expands the tooltip to state that configured control/active costs are not a
+device guarantee. No Fs, FFT, scheduling, native DSP or RX control changed.
+The 0.43–0.45 s figures are short host first-accepted-frame revisit samples,
+not an RF duty, ADC, paint/DWM, LPS or long-soak measurement. A sustained
+device/profile-specific timing model and runtime feasibility policy remain
+open; the UI must not present optimistic admission estimates as deadlines.
+
+The same-RX test verified two changing **spectra**, not durable per-pane
+waterfall history. Source inspection found that `AnalyzerPaneViewV2`
+currently clears waterfall history when the producer session/epoch changes,
+and `WaterfallPane` resets its ring when the incoming grid signature's
+configuration generation changes. Scheduled Stop/retune/Start changes both.
+Retaining a time-sliced pane's history across such visits, with explicit RF
+gap separation and without merging different grids/units/sources, is an
+open APP-07 correctness item. The generic single-source epoch-reset tests
+must stay valid; this needs an explicit independent-pane policy and a
+physical recheck rather than disabling all epoch resets.
