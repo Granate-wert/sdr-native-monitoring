@@ -15,10 +15,12 @@ from typing import Mapping
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.hackrf_live import HackrfLiveRequest
+from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.identity import SourceId
 from sdr_monitor.domain.live import BackendKind, LiveConfiguration
 from sdr_monitor.domain.pane_scheduler import (
-    CaptureEpochCost, HackrfRtbwPaneProfile, PaneCaptureProfile, PaneLayout,
+    CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
+    HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
     PaneLayoutSlot, PaneProfile, TinySaTracePaneProfile, compile_pane_layout,
 )
 from sdr_monitor.domain.receiver_topology import (
@@ -44,14 +46,21 @@ class PaneSlotDraft:
     fft_size: int = 4096
     points: int = 101
     network_discovery: bool = False
+    measurement_mode: CaptureMeasurementMode | None = None
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
             raise PaneUserPlanError("pane number must be in [1, 4]")
         if type(self.network_discovery) is not bool:
             raise PaneUserPlanError("pane network discovery intent must be explicit")
+        if self.measurement_mode is not None:
+            try:
+                object.__setattr__(self, "measurement_mode", CaptureMeasurementMode(self.measurement_mode))
+            except ValueError:
+                raise PaneUserPlanError("pane measurement mode is not supported") from None
         if self.source_id is None:
-            if self.start_hz is not None or self.stop_hz is not None:
+            if (self.start_hz is not None or self.stop_hz is not None
+                    or self.measurement_mode is not None):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
         if (not isinstance(self.source_id, str) or not self.source_id.strip()
@@ -82,8 +91,9 @@ def compile_user_pane_plan(
 ) -> PaneUserPlan:
     """Compile explicit source assignments; reject unsupported family modes.
 
-    AD936x/HackRF panes are current RX1 RTBW owners. tinySA panes are device
-    dBm traces.  A repeated source shares a capture only if *all* its panes
+    AD936x panes retain their qualified RX1 RTBW owner. HackRF RX1 can use
+    RTBW or its existing bounded host Sweep owner; tinySA panes are device
+    dBm traces. A repeated source shares a capture only if *all* its panes
     have one compatible profile and fit its usable span; otherwise it receives
     bounded, visibly time-sliced jobs.  This does not claim continuous RF duty.
     """
@@ -125,6 +135,8 @@ def compile_user_pane_plan(
         assert draft.start_hz is not None and draft.stop_hz is not None
         center = (draft.start_hz + draft.stop_hz) / 2.0
         if choice.family is DeviceFamily.AD936X:
+            if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
+                raise PaneUserPlanError("AD936x wide Sweep is not yet a qualified pane owner")
             if draft.sample_rate_hz not in {20_000_000.0, 61_440_000.0}:
                 raise PaneUserPlanError("AD936x pane supports the listed 20 or 61.44 MS/s profiles")
             usable = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 36_000_000.0
@@ -132,15 +144,34 @@ def compile_user_pane_plan(
                 draft.sample_rate_hz, usable, "manual", 20.0,
                 draft.fft_size, draft.fft_size // 2, "hann", "sample", None, usable, cost)
         elif choice.family is DeviceFamily.HACKRF:
-            if draft.sample_rate_hz not in {16_000_000.0, 20_000_000.0}:
-                raise PaneUserPlanError("HackRF pane supports the listed 16 or 20 MS/s profiles")
-            hackrf_request = HackrfLiveRequest(
-                center, draft.sample_rate_hz,
-                14_000_000 if draft.sample_rate_hz == 16_000_000.0 else 15_000_000,
-                16, 20, fft_size=draft.fft_size, hop_size=draft.fft_size // 2,
-                detector="peak", source_id=SourceId(source_id))
-            profile = HackrfRtbwPaneProfile(hackrf_request, 10_000_000.0, cost)
+            if draft.measurement_mode is CaptureMeasurementMode.SWEEP:
+                if draft.sample_rate_hz != 20_000_000.0:
+                    raise PaneUserPlanError("HackRF host Sweep uses its fixed 20 MS/s profile")
+                try:
+                    sweep_request = HackrfSweepRequest(
+                        choice, selection_revisions[source_id],
+                        int(draft.start_hz), int(draft.stop_hz), draft.fft_size,
+                        16, 20, 50)
+                except (TypeError, ValueError):
+                    raise PaneUserPlanError("HackRF Sweep requires whole MHz, a 20..320 MHz span and FFT <=4096") from None
+                if sweep_request.start_hz != draft.start_hz or sweep_request.stop_hz != draft.stop_hz:
+                    raise PaneUserPlanError("HackRF Sweep endpoints must be exact whole MHz")
+                sweep_cost = CaptureEpochCost(0.01, 0.01, 1.0, 0.005, 0.005)
+                profile = HackrfSweepPaneProfile(sweep_request, sweep_cost)
+            else:
+                if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
+                    raise PaneUserPlanError("HackRF pane mode is not supported")
+                if draft.sample_rate_hz not in {16_000_000.0, 20_000_000.0}:
+                    raise PaneUserPlanError("HackRF pane supports the listed 16 or 20 MS/s profiles")
+                hackrf_request = HackrfLiveRequest(
+                    center, draft.sample_rate_hz,
+                    14_000_000 if draft.sample_rate_hz == 16_000_000.0 else 15_000_000,
+                    16, 20, fft_size=draft.fft_size, hop_size=draft.fft_size // 2,
+                    detector="peak", source_id=SourceId(source_id))
+                profile = HackrfRtbwPaneProfile(hackrf_request, 10_000_000.0, cost)
         else:
+            if draft.measurement_mode not in (None, CaptureMeasurementMode.INSTRUMENT_TRACE):
+                raise PaneUserPlanError("tinySA pane is a device trace, not an SDR receiver")
             if type(draft.start_hz) not in {int, float} or type(draft.stop_hz) not in {int, float}:
                 raise PaneUserPlanError("tinySA range must be numeric")
             if not float(draft.start_hz).is_integer() or not float(draft.stop_hz).is_integer():
@@ -181,9 +212,14 @@ def compile_user_pane_plan(
             slots_list.append(PaneLayoutSlot(draft.number))
             continue
         assert draft.start_hz is not None and draft.stop_hz is not None
+        profile = profiles[f"pane-{draft.number}"]
+        crop_start = (profile.pane_crop_start_hz if isinstance(profile, HackrfSweepPaneProfile)
+                      else draft.start_hz)
+        crop_stop = (profile.pane_crop_stop_hz if isinstance(profile, HackrfSweepPaneProfile)
+                     else draft.stop_hz)
         slots_list.append(PaneLayoutSlot(draft.number, SweepPaneRequest(
             f"pane-{draft.number}", endpoints[draft.source_id],
-            draft.start_hz, draft.stop_hz, profile_id=f"pane-{draft.number}",
+            crop_start, crop_stop, profile_id=f"pane-{draft.number}",
             requested_binding_mode=modes[draft.source_id])))
     slots = tuple(slots_list)
     layout = compile_pane_layout(slots, tuple(groups), profiles)

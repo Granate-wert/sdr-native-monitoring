@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import DeviceFamily
+from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.services.pane_resource_session import PaneHostTiming
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
@@ -27,6 +28,7 @@ from sdr_monitor.ui.v2.workspaces.independent_pane_setup import IndependentPaneS
 
 from tests.ui_v2.test_app07_pane_graph_pool import _ad_graph
 from tests.ui_v2.test_app06_hackrf_common_analyzer import graph as hackrf_fixture
+from tests.ui_v2.test_app06_hackrf_sweep_common_analyzer import FakeHackrfSweep
 from tests.ui_v2.test_app06_tinysa_common_analyzer import graph as tinysa_fixture
 
 
@@ -280,6 +282,87 @@ class IndependentPaneSetupTests(unittest.TestCase):
                     pane_ui.close()
             elif pools:
                 pools[0].close()
+            graph.live.shutdown()
+
+    def test_user_hackrf_sweep_uses_same_tab_graph_and_explicit_start_stop(self) -> None:
+        hf = hackrf_fixture()
+        fake = FakeHackrfSweep()
+        graph = build_v2_analyzer_application_graph(SimpleNamespace(
+            live_sdr=hf.live, device_catalog=hf.catalog,
+            analyzer_hackrf=hf.hackrf, analyzer_hackrf_sweep=fake))
+        choice = next(item for item in graph.live.discover(startup=True)
+                      if item.family is DeviceFamily.HACKRF)
+        pools = []
+        installed = []
+        editor = IndependentPaneSetupV2(install=installed.append, uninstall=lambda: None)
+        pane_ui = None
+
+        def stage(drafts):
+            pool = PaneProductGraphPool(lambda _resource: graph)
+            pools.append(pool)
+            return prepare_user_pane_session(drafts, pool_factory=lambda: pool)
+
+        try:
+            editor.update_sources(AnalyzerSourceSelection(revision=1, choices=(choice,)))
+            editor.show()
+            self.app.processEvents()
+            row = editor._rows[0]
+            row.source.setCurrentIndex(row.source.findData(choice.device_id))
+            row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.SWEEP.value))
+            self.assertIs(editor._selected_mode(row), CaptureMeasurementMode.SWEEP)
+            self.assertFalse(row.rate.isEnabled())
+            self.assertEqual(row.rate.currentData(), 20_000_000.0)
+            self.assertEqual(tuple(row.fft.itemData(i) for i in range(row.fft.count())),
+                             (1024, 4096))
+            editor.prepare.click()  # 140–148 MHz cannot be a host Sweep.
+            self.assertIsNone(editor._future)
+            self.assertTrue(editor.error.isVisible())
+            self.assertFalse(pools)
+            self.assertEqual(fake.events, [])
+            row.start.setValue(100.0)
+            row.stop.setValue(220.0)
+            with patch("sdr_monitor.ui.v2.workspaces.independent_pane_setup.prepare_user_pane_session",
+                       side_effect=stage):
+                editor.prepare.click()
+                self._wait(lambda: editor._prepared is not None)
+            self.assertEqual(fake.events, [])
+            editor.apply.click()
+            self._wait(lambda: bool(installed))
+            handle = installed[0]
+            self.assertEqual(handle.layout.empty_slots, (2, 3, 4))
+            self.assertEqual(fake.events, [])  # Apply reserved but did not Start.
+            pane_ui = IndependentPaneSessionV2(handle)
+            pane_ui.resize(1280, 700)
+            pane_ui.show()
+            self.app.processEvents()
+            pane_ui.start_all.click()
+            self._wait(lambda: pane_ui.board.pane(1).spectrum_scene.latest_frame is not None)
+            self.assertIsNotNone(fake.request)
+            self.assertEqual((fake.request.start_hz, fake.request.stop_hz),
+                             (100_000_000, 220_000_000))
+            self.assertEqual(handle.queue.pane_ids, ("pane-1",))
+            self.assertIsNone(pane_ui.board.pane(4))
+            pane_ui.stop_all.click()
+            self._wait(handle.can_close)
+            self.assertIn("stop", fake.events)
+            editor.close_applied_layout(handle)
+            self._wait(lambda: handle.shutdown_complete and editor.can_close)
+            pane_ui.release_presentation_after_shutdown()
+            pane_ui.close()
+        finally:
+            if installed and not installed[0].shutdown_complete:
+                for future in installed[0].pump.stop_all().values():
+                    future.result(timeout=5)
+                installed[0].shutdown_after_stop()
+            elif not installed:
+                for pool in pools:
+                    if pool.staged_resource_ids:
+                        pool.close()
+            if pane_ui is not None and installed and installed[0].shutdown_complete:
+                pane_ui.release_presentation_after_shutdown()
+                pane_ui.close()
+            editor.release_after_shutdown()
+            editor.close()
             graph.live.shutdown()
 
 

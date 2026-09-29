@@ -15,6 +15,7 @@ from itertools import combinations
 import math
 
 from .hackrf_live import HackrfLiveRequest
+from .hackrf_sweep import HackrfSweepRequest
 from .tinysa_analyzer import TinySaSweepRequest
 from .receiver_topology import (
     AcquisitionGroup,
@@ -286,7 +287,69 @@ class HackrfRtbwPaneProfile:
         return ("hackrf-rtbw", template, self.usable_capture_span_hz, self.epoch_cost)
 
 
-PaneProfile = PaneCaptureProfile | HackrfRtbwPaneProfile | SpectrumTracePaneProfile | TinySaTracePaneProfile
+@dataclass(frozen=True, slots=True)
+class HackrfSweepPaneProfile:
+    """One typed, bounded host Sweep on the selected HackRF owner.
+
+    HackRF's native Sweep contract fixes its sample rate at 20 MS/s but does
+    not report an RTBW hop. Keep that value unknown rather than fabricating
+    an overlap or treating each Sweep line as one FFT frame.
+    """
+
+    request_template: HackrfSweepRequest
+    epoch_cost: CaptureEpochCost
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_template, HackrfSweepRequest):
+            raise PaneScheduleError("HackRF Sweep pane requires a typed bounded request")
+        if not isinstance(self.epoch_cost, CaptureEpochCost):
+            raise PaneScheduleError("HackRF Sweep pane requires a declared epoch cost")
+
+    @property
+    def usable_capture_span_hz(self) -> float:
+        return float(self.request_template.stop_hz - self.request_template.start_hz)
+
+    @property
+    def measurement_mode(self) -> CaptureMeasurementMode:
+        return CaptureMeasurementMode.SWEEP
+
+    @property
+    def unit(self) -> str:
+        return "dBFS/bin"
+
+    @property
+    def sample_rate_hz(self) -> float:
+        return 20_000_000.0
+
+    @property
+    def fft_size(self) -> int:
+        return self.request_template.fft_size
+
+    @property
+    def pane_crop_start_hz(self) -> float:
+        # Native HackRF Sweep excludes the first bin of each 5 MHz crop.
+        # Reserve one additional bin against cross-language float rounding.
+        return self.request_template.start_hz + 2.0 * self.sample_rate_hz / self.fft_size
+
+    @property
+    def pane_crop_stop_hz(self) -> float:
+        return self.request_template.stop_hz - 2.0 * self.sample_rate_hz / self.fft_size
+
+    @property
+    def hop_size(self) -> None:
+        return None
+
+    @property
+    def compatibility_key(self) -> tuple[object, ...]:
+        request = self.request_template
+        return ("hackrf-sweep", request.source.device_id, request.selection_revision,
+                request.start_hz, request.stop_hz, request.fft_size,
+                request.lna_gain, request.vga_gain, request.preview_rate_hz,
+                self.epoch_cost)
+
+
+PaneProfile = (PaneCaptureProfile | HackrfRtbwPaneProfile | HackrfSweepPaneProfile
+               | SpectrumTracePaneProfile | TinySaTracePaneProfile)
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,6 +947,7 @@ __all__ = [
     "CaptureJob",
     "PaneCaptureProfile",
     "HackrfRtbwPaneProfile",
+    "HackrfSweepPaneProfile",
     "SpectrumTracePaneProfile",
     "TinySaTracePaneProfile",
     "PaneProfile",

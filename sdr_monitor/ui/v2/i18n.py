@@ -150,8 +150,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Назначьте источник и диапазон каждому окну. Пустое окно не создаёт приёмник. Сначала выполните «Обнаружить USB» или явное «USB + IP» выше. Подготовка проверит источники заново; IP-поиск может быть долгим. Применение не запускает RX.",
             UiLocale.EN: "Assign a source and range to each pane. Empty creates no receiver. First use Discover USB or explicit USB + IP above. Stage rechecks sources; IP discovery may take time. Apply does not start RX."}),
         "analyzer.pane.setup.mode_help": MappingProxyType({
-            UiLocale.RU: "AD936x/HackRF: RX1 RTBW, диапазон не шире полезного окна (20 MS/s → 10 МГц; AD936x 61,44 MS/s → 36 МГц). tinySA: встроенная трасса сканирования в dBm. Один RX в нескольких окнах: общий захват при совместимых полосах, иначе чередование с паузами RF. Запрос Fs не является считыванием АЦП.",
-            UiLocale.EN: "AD936x/HackRF: RX1 RTBW within the usable window (20 MS/s → 10 MHz; AD936x 61.44 MS/s → 36 MHz). tinySA: device Sweep trace in dBm. One RX in several panes shares compatible capture or time-slices with RF gaps. Requested Fs is not ADC readback."}),
+            UiLocale.RU: "AD936x: RX1 RTBW не шире полезного окна (20 MS/s → 10 МГц; 61,44 MS/s → 36 МГц). HackRF: RX1 RTBW либо программное сканирование с диапазоном 20–320 МГц кратно 20 МГц и целыми границами МГц. tinySA: встроенная трасса в dBm. Один RX в нескольких окнах разделяется или чередуется с RF-паузами. Запрос Fs не является считыванием АЦП.",
+            UiLocale.EN: "AD936x: RX1 RTBW within its usable window (20 MS/s → 10 MHz; 61.44 MS/s → 36 MHz). HackRF: RX1 RTBW or host Sweep with a whole-MHz, 20–320 MHz span in 20 MHz steps. tinySA: device trace in dBm. One RX in several panes shares or time-slices with RF gaps. Requested Fs is not ADC readback."}),
         "analyzer.pane.setup.slot": MappingProxyType({UiLocale.RU: "Окно", UiLocale.EN: "Pane"}),
         "analyzer.pane.setup.source": MappingProxyType({UiLocale.RU: "Источник", UiLocale.EN: "Source"}),
         "analyzer.pane.setup.start": MappingProxyType({UiLocale.RU: "От", UiLocale.EN: "Start"}),
@@ -159,6 +159,11 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.rate": MappingProxyType({UiLocale.RU: "Fs запрос", UiLocale.EN: "Requested Fs"}),
         "analyzer.pane.setup.fft": MappingProxyType({UiLocale.RU: "FFT", UiLocale.EN: "FFT"}),
         "analyzer.pane.setup.points": MappingProxyType({UiLocale.RU: "Точки", UiLocale.EN: "Points"}),
+        "analyzer.pane.setup.mode_points": MappingProxyType({UiLocale.RU: "Режим / точки", UiLocale.EN: "Mode / points"}),
+        "analyzer.pane.setup.mode_empty": MappingProxyType({UiLocale.RU: "—", UiLocale.EN: "—"}),
+        "analyzer.pane.setup.mode_rtbw": MappingProxyType({UiLocale.RU: "RTBW", UiLocale.EN: "RTBW"}),
+        "analyzer.pane.setup.mode_sweep": MappingProxyType({UiLocale.RU: "Сканирование", UiLocale.EN: "Sweep"}),
+        "analyzer.pane.setup.mode_instrument_trace": MappingProxyType({UiLocale.RU: "Трасса", UiLocale.EN: "Trace"}),
         "analyzer.pane.setup.empty": MappingProxyType({UiLocale.RU: "Пустое окно", UiLocale.EN: "Empty pane"}),
         "analyzer.pane.setup.prepare": MappingProxyType({
             UiLocale.RU: "Подготовить · показать влияние", UiLocale.EN: "Stage · show impact"}),

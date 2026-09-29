@@ -38,7 +38,9 @@ class FakeHackrfSweep:
     def start(self, request, selection) -> None:
         self.request, self.selection = request, selection
         self.events.append("start")
-        frequencies = _readonly([100e6, 140e6, 180e6, 220e6], np.float64)
+        first = request.start_hz + 20_000_000.0 / request.fft_size
+        last = request.stop_hz - 20_000_000.0 / request.fft_size
+        frequencies = _readonly(np.linspace(first, last, 4), np.float64)
         progress = SweepProgressFrame(
             source_id=request.source.device_id, sequence=1, epoch=request.epoch, revision=1,
             unit="dBFS/bin", frequencies_hz=frequencies,
@@ -54,6 +56,10 @@ class FakeHackrfSweep:
             quality_flags=np.zeros(4, np.uint16), source_segment_indices=np.array([0, 0, 1, 1], np.int32),
             missing_segment_indices=(), segment_config_generations=((0, request.epoch), (1, request.epoch)),
             gap_reasons=(), unit="dBFS/bin", quality_schema=SweepQualitySchema.NATIVE_V5,
+            analysis_window_hz=5_000_000.0,
+            analysis_bins_per_usable_window=request.fft_size // 4,
+            physical_fft_bin_width_hz=20_000_000.0 / request.fft_size,
+            physical_fft_size=request.fft_size,
         )
         metrics = ContinuousSweepDisplayMetrics()
         self._publications = [ContinuousSweepDisplaySnapshot(None, metrics, progress),

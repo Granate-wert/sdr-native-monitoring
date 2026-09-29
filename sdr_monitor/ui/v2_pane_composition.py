@@ -14,7 +14,7 @@ from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
 from sdr_monitor.services.ad936x_rtbw_pane_owner import Ad936xRtbwPaneOwner
-from sdr_monitor.services.hackrf_rtbw_pane_owner import HackrfRtbwPaneOwner
+from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.services.tinysa_trace_pane_owner import TinySaTracePaneOwner
@@ -85,8 +85,9 @@ def compose_v2_pane_resource_session(
         elif selected.family is DeviceFamily.HACKRF and isinstance(endpoint, ReceiverEndpoint):
             if graph.services.analyzer_hackrf is None:
                 raise PaneResourceError("selected HackRF graph has no common native RX owner")
-            owners[resource_id] = HackrfRtbwPaneOwner(
-                graph.live, physical_stream_resource_id=resource_id,
+            owners[resource_id] = HackrfPaneOwner(
+                graph.live, graph.sweep_router, physical_stream_resource_id=resource_id,
+                sweep_available=getattr(graph.services, "analyzer_hackrf_sweep", None) is not None,
                 source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)
         elif selected.family is DeviceFamily.TINYSA and isinstance(endpoint, SpectrumTraceEndpoint):
             instrument = graph.services.analyzer_tinysa

@@ -83,7 +83,10 @@ class PaneCaptureAdmission:
         elif (self.sample_rate_hz is None or not isfinite(self.sample_rate_hz)
               or self.sample_rate_hz <= 0
               or type(self.fft_size) is not int or self.fft_size < 2
-              or type(self.hop_size) is not int or not 1 <= self.hop_size <= self.fft_size
+              or (self.mode is CaptureMeasurementMode.RTBW and (
+                  type(self.hop_size) is not int or not 1 <= self.hop_size <= self.fft_size))
+              or (self.mode is CaptureMeasurementMode.SWEEP and self.hop_size is not None
+                  and (type(self.hop_size) is not int or not 1 <= self.hop_size <= self.fft_size))
               or self.trace_points is not None or self.instrument_model_id is not None
               or self.instrument_identity_key is not None
               or self.firmware_fingerprint is not None):

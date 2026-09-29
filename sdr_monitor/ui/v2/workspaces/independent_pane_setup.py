@@ -9,11 +9,12 @@ from typing import Any
 from PySide6.QtCore import QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QPushButton, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import DeviceFamily
+from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, PaneUserPlanError
@@ -53,8 +54,13 @@ class _SlotRow:
         self.points.setRange(2, 10001)
         self.points.setValue(101)
         self.points.setProperty("ui2Role", "utility-select")
-        self.mode = QLabel(parent)
-        self.mode.setProperty("ui2Role", "secondary")
+        self.mode = QComboBox(parent)
+        self.mode.setProperty("ui2Role", "utility-select")
+        self.mode_points = QStackedWidget(parent)
+        self.mode_points.addWidget(self.mode)
+        self.mode_points.addWidget(self.points)
+        self._last_mode: CaptureMeasurementMode | None = None
+        self._rtbw_rate: float | None = None
 
 
 class IndependentPaneSetupV2(QWidget):
@@ -103,10 +109,12 @@ class IndependentPaneSetupV2(QWidget):
             grid.addWidget(header, 0, column)
         for row_index, row in enumerate(self._rows, 1):
             for column, widget in enumerate((row.number_label, row.source, row.start,
-                                             row.stop, row.rate, row.fft, row.points)):
+                                             row.stop, row.rate, row.fft, row.mode_points)):
                 grid.addWidget(widget, row_index, column)
             row.source.currentIndexChanged.connect(
                 lambda _index, target=row: self._source_changed(target))
+            row.mode.currentIndexChanged.connect(
+                lambda _index, target=row: self._mode_changed(target))
         layout.addLayout(grid)
         self.mode_help = QLabel(self)
         self.mode_help.setProperty("ui2Role", "secondary")
@@ -190,11 +198,26 @@ class IndependentPaneSetupV2(QWidget):
                 row.rate.addItem(label, value)
             index = row.rate.findData(previous_rate)
             row.rate.setCurrentIndex(index if index >= 0 else row.rate.count() - 1)
-        row.rate.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
-                            and not self.blocks_single_source)
-        row.fft.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
-                           and not self.blocks_single_source)
-        row.points.setEnabled(family is DeviceFamily.TINYSA and not self.blocks_single_source)
+        previous_mode = row.mode.currentData()
+        with QSignalBlocker(row.mode):
+            row.mode.clear()
+            modes: tuple[CaptureMeasurementMode | None, ...]
+            if family is DeviceFamily.HACKRF:
+                modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
+            elif family is DeviceFamily.AD936X:
+                modes = (CaptureMeasurementMode.RTBW,)
+            elif family is DeviceFamily.TINYSA:
+                modes = (CaptureMeasurementMode.INSTRUMENT_TRACE,)
+            else:
+                modes = (None,)
+            for mode in modes:
+                label = (text("analyzer.pane.setup.mode_empty") if mode is None else
+                         text("analyzer.pane.setup.mode_" + mode.value))
+                row.mode.addItem(label, mode)
+            index = row.mode.findData(previous_mode)
+            row.mode.setCurrentIndex(max(index, 0))
+        row.mode_points.setCurrentWidget(row.points if family is DeviceFamily.TINYSA else row.mode)
+        self._mode_changed(row)
         row.start.setEnabled(family is not None and not self.blocks_single_source)
         row.stop.setEnabled(family is not None and not self.blocks_single_source)
         if family is not None and not preserve_range:
@@ -213,8 +236,50 @@ class IndependentPaneSetupV2(QWidget):
                 row.number, source_id, row.start.value() * 1_000_000,
                 row.stop.value() * 1_000_000,
                 sample_rate_hz=row.rate.currentData(), fft_size=row.fft.currentData(),
-                points=row.points.value(), network_discovery=network))
+                points=row.points.value(), network_discovery=network,
+                measurement_mode=self._selected_mode(row)))
         return tuple(drafts)
+
+    @staticmethod
+    def _selected_mode(row: _SlotRow) -> CaptureMeasurementMode | None:
+        # Qt stores StrEnum item data as plain str on Windows and offscreen.
+        value = row.mode.currentData()
+        return None if value is None else CaptureMeasurementMode(value)
+
+    def _mode_changed(self, row: _SlotRow) -> None:
+        source_id = row.source.currentData()
+        choice = next((item for item in self._choices if item.device_id == source_id), None)
+        family = None if choice is None else choice.family
+        mode = self._selected_mode(row)
+        if (row._last_mode is CaptureMeasurementMode.RTBW
+                and mode is CaptureMeasurementMode.SWEEP):
+            row._rtbw_rate = row.rate.currentData()
+        if mode is CaptureMeasurementMode.SWEEP:
+            with QSignalBlocker(row.rate):
+                row.rate.setCurrentIndex(row.rate.findData(20_000_000.0))
+        elif (row._last_mode is CaptureMeasurementMode.SWEEP
+              and mode is CaptureMeasurementMode.RTBW and row._rtbw_rate is not None):
+            index = row.rate.findData(row._rtbw_rate)
+            if index >= 0:
+                with QSignalBlocker(row.rate):
+                    row.rate.setCurrentIndex(index)
+        previous_fft = row.fft.currentData()
+        sizes = (1024, 4096) if mode is CaptureMeasurementMode.SWEEP else (1024, 4096, 16384)
+        if row.fft.count() != len(sizes) or any(row.fft.itemData(i) != value
+                                                 for i, value in enumerate(sizes)):
+            with QSignalBlocker(row.fft):
+                row.fft.clear()
+                for value in sizes:
+                    row.fft.addItem(str(value), value)
+                index = row.fft.findData(previous_fft)
+                row.fft.setCurrentIndex(index if index >= 0 else row.fft.findData(4096))
+        blocked = self.blocks_single_source
+        row.rate.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
+                            and mode is not CaptureMeasurementMode.SWEEP and not blocked)
+        row.fft.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
+        row.points.setEnabled(family is DeviceFamily.TINYSA and not blocked)
+        row.mode.setEnabled(family is DeviceFamily.HACKRF and not blocked)
+        row._last_mode = mode
 
     def _begin_prepare(self) -> None:
         if self.blocks_single_source or self._released:
@@ -227,6 +292,17 @@ class IndependentPaneSetupV2(QWidget):
         except PaneUserPlanError:
             self._set_error("analyzer.pane.setup.invalid")
             return
+        for draft in drafts:
+            choice = next((item for item in self._choices if item.device_id == draft.source_id), None)
+            if choice is not None and choice.family is DeviceFamily.HACKRF \
+                    and draft.measurement_mode is CaptureMeasurementMode.SWEEP:
+                assert draft.start_hz is not None and draft.stop_hz is not None
+                span = draft.stop_hz - draft.start_hz
+                if (draft.start_hz % 1_000_000 or draft.stop_hz % 1_000_000
+                        or span < 20_000_000 or span > 320_000_000
+                        or span % 20_000_000 or draft.fft_size not in (1024, 2048, 4096)):
+                    self._set_error("hackrf.sweep.invalid")
+                    return
         if not any(item.source_id is not None for item in drafts):
             self._set_error("analyzer.pane.setup.no_source")
             return
@@ -380,7 +456,7 @@ class IndependentPaneSetupV2(QWidget):
                 "analyzer.pane.setup.slot", "analyzer.pane.setup.source",
                 "analyzer.pane.setup.start", "analyzer.pane.setup.stop",
                 "analyzer.pane.setup.rate", "analyzer.pane.setup.fft",
-                "analyzer.pane.setup.points"), strict=True):
+                "analyzer.pane.setup.mode_points"), strict=True):
             header.setText(text(key))
         for button, key in ((self.prepare, "analyzer.pane.setup.prepare"),
                             (self.apply, "analyzer.pane.setup.apply"),
