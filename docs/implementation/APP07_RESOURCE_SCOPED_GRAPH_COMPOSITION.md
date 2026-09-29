@@ -255,3 +255,66 @@ RX was sent. This is a package and idle-load witness, **not** a frozen 2×2
 physical pass or release acceptance; the earlier source-Python live frames
 must not be attributed to the EXE. The tagged candidate remains separate
 from the approved static/current installation.
+
+### Visible mixed-source 2×2 on that frozen EXE (2026-09-29)
+
+A later Computer Use session successfully targeted the same exact
+`8c894af` diagnostic EXE. Local USB Discover returned three choices.
+Within the existing Analyzer tab the user editor assigned AD936x USB
+100–108 MHz / requested 20 MS/s / FFT 4096, HackRF USB 140–148 MHz /
+requested 20 MS/s / FFT 4096, and a tinySA candidate 200–210 MHz /
+101 points. Slot 4 remained Empty. Stage verified the instrument as
+tinySA Ultra and Preview reported three independent physical resources,
+one job each; Apply displayed three labeled spectrum/waterfall pairs and
+the empty fourth cell without starting RX.
+
+Explicit Start all reached `running 3 / Stop required 0`. The visible
+AD936x and HackRF spectra/waterfalls and tinySA dBm spectrum/pass-history
+all populated before Stop. A second observation roughly four seconds
+later showed changing SDR traces and additional tinySA passes. Selecting
+pane 3 and using Stop selected gave `running 2 / stopped 1`; both SDR
+traces continued to change on a further observation. Stop all reached
+`running 0 / stopped 3 / Stop required 0`; Close layout returned to the
+ordinary empty Analyzer and normal window Close removed the process.
+No alternate source or hidden restart was used. A subsequent read-only
+system IIO inventory found exactly one USB Pluto at `usb:3.4.5` with
+`hw_model` Z7010-AD9364 and `ad9361-phy,model: ad9364`; its serial field
+was empty, so this is a same-day single-device model check, not strict
+serial-backed process identity.
+
+This closes the short **functional** frozen-EXE mixed-source 3+Empty
+cell that was open in the earlier paragraph. It does not establish
+sustained performance, DWM FPS, LPS, RF duty/Pd, lossless transport,
+high-Fs operation, in-memory DLL attestation or release acceptance.
+Computer Use screenshots were inspected directly, not archived as
+independent image artifacts. This frozen EXE predates the per-pane timing
+row described below.
+
+### Per-pane host timing for scheduled resources (2026-09-29)
+
+Each occupied pane now has a compact timing row in the same UI V2 Analyzer
+grid. A dedicated AD936x or HackRF capture and a tinySA instrument trace
+show the age of the latest frame **accepted by the host router** and state
+that the resource is not time-sliced. For disjoint panes sharing one RX, the
+row additionally shows the last *observed* revisit interval and the
+schedule's modeled maximum. The model is not a real-time guarantee. Empty
+panes have neither a timing row nor a receiver.
+
+An observed visit starts at the first accepted frame from a new confirmed
+capture activation. Later FFT, partial Sweep and repeated tinySA
+publications within that activation do not manufacture extra visits.
+Rejected old tokens/cross-source frames do not update timing. Before a
+second accepted visit, the observed interval is explicitly unmeasured;
+after Stop, the retained plot is labeled as not new. A backward/invalid
+host clock cannot publish a negative or cross-clock interval. Ages update
+in coarse buckets to avoid rapidly changing text; the row remains outside
+the plots. The RU/EN tooltip distinguishes these host observations from
+GUI/DWM paint cadence, ADC rate, RF duty and pulse-detection probability.
+
+This is software-level observability, not a new device command, RF timing
+instrument or proof that the displayed graph has the same age as the most
+recent host-admitted frame. The earlier physical 3+Empty and one-RX/two-
+range runs predate this UI change; the separately frozen EXE above is also
+stale with respect to this change. APP-07 remains partial pending an exact
+new EXE physical/visible check and the remaining topology, performance and
+release gates.

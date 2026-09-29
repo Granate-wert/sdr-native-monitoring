@@ -162,6 +162,19 @@ class PaneDelivery:
         return self.crop.pane_id
 
 
+@dataclass(frozen=True, slots=True)
+class PaneHostTiming:
+    """Host-observed data age and last interval between accepted visits.
+
+    A visit begins with the first accepted frame from a new capture activation.
+    Further FFT or partial Sweep publications in that activation are not new
+    visits. Neither value is an RF duty, ADC, paint or pulse-detection metric.
+    """
+
+    frame_age_s: float | None
+    last_revisit_s: float | None
+
+
 @dataclass(slots=True)
 class _Runtime:
     group: AcquisitionGroup
@@ -312,6 +325,9 @@ class PaneResourceSession:
         self._apply_lock = Lock()
         self._state_lock = RLock()
         self._pane_last_received: dict[str, float] = {}
+        self._pane_last_visit_activation: dict[str, PaneActivation] = {}
+        self._pane_last_visit_received: dict[str, float] = {}
+        self._pane_last_revisit_s: dict[str, float] = {}
         self._applied = False
 
     @property
@@ -538,7 +554,23 @@ class PaneResourceSession:
                                            runtime.activation_serial, crop, bundle, now)
                                for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)
             for delivery in deliveries:
-                self._pane_last_received[delivery.pane_id] = now
+                pane_id = delivery.pane_id
+                previous_frame = self._pane_last_received.get(pane_id)
+                if previous_frame is not None and now < previous_frame:
+                    # A non-monotonic injected/host clock invalidates the old
+                    # interval; never publish a negative or cross-clock rate.
+                    self._pane_last_visit_activation.pop(pane_id, None)
+                    self._pane_last_visit_received.pop(pane_id, None)
+                    self._pane_last_revisit_s.pop(pane_id, None)
+                if self._pane_last_visit_activation.get(pane_id) is not activation:
+                    previous_visit = self._pane_last_visit_received.get(pane_id)
+                    if previous_visit is not None and now > previous_visit:
+                        self._pane_last_revisit_s[pane_id] = now - previous_visit
+                    else:
+                        self._pane_last_revisit_s.pop(pane_id, None)
+                    self._pane_last_visit_activation[pane_id] = activation
+                    self._pane_last_visit_received[pane_id] = now
+                self._pane_last_received[pane_id] = now
             return deliveries
 
     def poll_resource(self, resource_id: str) -> tuple[PaneDelivery, ...]:
@@ -575,15 +607,29 @@ class PaneResourceSession:
             return tuple(delivered)
 
     def pane_age_s(self, pane_id: str) -> float | None:
+        return self.pane_host_timing(pane_id).frame_age_s
+
+    def pane_host_timing(self, pane_id: str) -> PaneHostTiming:
+        """One bounded host-clock snapshot; no UI-paint or RF continuity claim."""
         with self._state_lock:
             resource_id = self._pane_resources.get(pane_id)
             if resource_id is None:
                 raise PaneResourceError("unknown pane identity")
             if not self._runtimes[resource_id].active:
-                return None
+                return PaneHostTiming(None, None)
             received = self._pane_last_received.get(pane_id)
             now = self._clock_sample_s()
-            return None if received is None or now is None or now < received else now - received
+            if received is None or now is None:
+                return PaneHostTiming(None, None)
+            if now < received:
+                # The next clock reading must not resurrect a pre-reset age
+                # or revisit interval merely by advancing past the old time.
+                self._pane_last_received.pop(pane_id, None)
+                self._pane_last_visit_activation.pop(pane_id, None)
+                self._pane_last_visit_received.pop(pane_id, None)
+                self._pane_last_revisit_s.pop(pane_id, None)
+                return PaneHostTiming(None, None)
+            return PaneHostTiming(now - received, self._pane_last_revisit_s.get(pane_id))
 
     def stop_impact(self, pane_id: str) -> tuple[str, ...]:
         with self._state_lock:
@@ -713,5 +759,5 @@ class PaneResourceSession:
 
 __all__ = [
     "PaneActivation", "PaneCaptureAdmission", "PaneCaptureOwner", "PaneDelivery", "PaneResourceError",
-    "PaneResourcePreview", "PaneResourceSession",
+    "PaneHostTiming", "PaneResourcePreview", "PaneResourceSession",
 ]

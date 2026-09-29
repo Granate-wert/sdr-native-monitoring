@@ -10,11 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import Future
+from math import floor, isfinite
 from typing import Any
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
+from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
+from sdr_monitor.services.pane_resource_session import PaneHostTiming
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
 
@@ -49,6 +52,7 @@ class IndependentPaneSessionV2(QWidget):
             item.pane_id: item.physical_stream_resource_id
             for item in schedule.pane_revisits
         }
+        self._pane_revisits = {item.pane_id: item for item in schedule.pane_revisits}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -160,6 +164,52 @@ class IndependentPaneSessionV2(QWidget):
         self._error_pane = pane_id
         self._refresh()
 
+    @staticmethod
+    def _age_text(age_s: float | None) -> str | None:
+        if age_s is None or not isfinite(age_s) or age_s < 0:
+            return None
+        if age_s < 1:
+            return text("analyzer.independent.timing.under_one")
+        if age_s >= 999:
+            return text("analyzer.independent.timing.age_over_limit")
+        return text("analyzer.independent.timing.seconds", value=floor(age_s))
+
+    @staticmethod
+    def _interval_text(interval_s: float) -> str:
+        if interval_s < 0.01:
+            return text("analyzer.independent.timing.under_hundredth")
+        return text("analyzer.independent.timing.seconds", value=f"{interval_s:.2f}")
+
+    def _timing_text(self, pane_id: str, phase: PanePumpPhase) -> str:
+        if phase is not PanePumpPhase.RUNNING:
+            key = {
+                PanePumpPhase.IDLE: "stopped",
+                PanePumpPhase.STARTING: "starting",
+                PanePumpPhase.STOPPING: "stopping",
+                PanePumpPhase.STOP_REQUIRED: "stop_required",
+                PanePumpPhase.STOPPED: "stopped",
+            }[phase]
+            return text(f"analyzer.independent.timing.{key}")
+        try:
+            timing = self.handle.session.pane_host_timing(pane_id)
+        except (RuntimeError, ValueError):
+            timing = PaneHostTiming(None, None)
+            self._error_key = "analyzer.independent.operation_failed"
+        estimate = self._pane_revisits[pane_id]
+        age = self._age_text(timing.frame_age_s)
+        if estimate.mode is ReceiverBindingMode.TIME_SLICED:
+            modeled = self._interval_text(estimate.maximum_revisit_s)
+            if age is None:
+                return text("analyzer.independent.timing.sliced_no_frame", modeled=modeled)
+            observed = timing.last_revisit_s
+            if observed is None or not isfinite(observed) or observed <= 0:
+                return text("analyzer.independent.timing.sliced_first", age=age, modeled=modeled)
+            return text("analyzer.independent.timing.sliced",
+                        age=age, observed=self._interval_text(observed), modeled=modeled)
+        if age is None:
+            return text("analyzer.independent.timing.continuous_no_frame")
+        return text("analyzer.independent.timing.continuous", age=age)
+
     def _refresh(self, _selected_slot: int | None = None) -> None:
         if self._terminal_released:
             return
@@ -187,6 +237,12 @@ class IndependentPaneSessionV2(QWidget):
                        failed=failed, stopped=stopped)
         if self.status.text() != summary:
             self.status.setText(summary)
+        scope = text("analyzer.independent.timing.scope")
+        for slot in self.handle.layout.slots:
+            if slot.request is not None:
+                pane_id = slot.request.pane_id
+                self.board.set_pane_timing(slot.number,
+                    self._timing_text(pane_id, states[self._pane_resources[pane_id]]), scope)
         detail = ("" if self._error_key is None else text(self._error_key, pane=self._error_pane or ""))
         if self.error.text() != detail:
             self.error.setText(detail)

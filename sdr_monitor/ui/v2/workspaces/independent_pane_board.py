@@ -42,6 +42,7 @@ class IndependentPaneBoardV2(QWidget):
         self._panes: dict[int, AnalyzerPaneViewV2] = {}
         self._headers: dict[int, QPushButton] = {}
         self._empty_slots: dict[int, QLabel] = {}
+        self._timing_labels: dict[int, QLabel] = {}
         self._display_buttons: dict[int, QPushButton] = {}
         self._display_overlays: dict[int, AnalyzerDisplayControls] = {}
         self._range_anchors: dict[int, tuple[object, ...]] = {}
@@ -118,6 +119,15 @@ class IndependentPaneBoardV2(QWidget):
                     lambda checked=False, number=slot.number: self._toggle_display(number))
                 header.addWidget(display)
                 self._display_buttons[slot.number] = display
+                timing = QLabel(cell)
+                timing.setObjectName(f"independentPaneTiming{slot.number}")
+                timing.setProperty("ui2Role", "secondary")
+                timing.setTextFormat(Qt.TextFormat.PlainText)
+                timing.setMinimumWidth(0)
+                timing.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                timing.hide()
+                cell_layout.addWidget(timing)
+                self._timing_labels[slot.number] = timing
                 cell_layout.addWidget(pane, 1)
                 self._panes[slot.number] = pane
             index = slot.number - 1
@@ -212,6 +222,18 @@ class IndependentPaneBoardV2(QWidget):
 
     def pane(self, slot_number: int) -> AnalyzerPaneViewV2 | None:
         return self._panes.get(slot_number)
+
+    def set_pane_timing(self, slot_number: int, summary: str, explanation: str) -> None:
+        """Show a compact, truthful host-timing row for one occupied pane."""
+        if self._terminal_released or slot_number not in self._timing_labels:
+            raise ValueError("timing requires one active occupied pane")
+        label = self._timing_labels[slot_number]
+        if label.text() != summary:
+            label.setText(summary)
+        if label.toolTip() != explanation:
+            label.setToolTip(explanation)
+            label.setAccessibleDescription(explanation)
+        label.setVisible(bool(summary))
 
     def select_slot(self, number: int) -> None:
         if self._terminal_released or type(number) is not int or number not in self._headers:

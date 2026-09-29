@@ -276,6 +276,54 @@ class PaneResourceSessionTests(unittest.TestCase):
         owner.publications.append(("rx-a", measurement))
         self.assertEqual(session.poll_resource("device-a"), ())
 
+    def test_host_revisit_counts_accepted_visits_not_frames_or_stale_tokens(self) -> None:
+        groups = (group("device-a", "rx-a"),)
+        requests = (pane("a-low", "rx-a", 100e6, 108e6, ReceiverBindingMode.TIME_SLICED),
+                    pane("b-high", "rx-a", 140e6, 148e6, ReceiverBindingMode.TIME_SLICED))
+        owner = FakeOwner("device-a")
+        session = self.session(groups, requests, {"device-a": owner})
+        session.apply()
+        first = session.start_resource("device-a")
+        self.assertIsNone(session.pane_host_timing("a-low").frame_age_s)
+        self.clock[0] = 10.1
+        self.assertEqual(len(session.accept_frame(first, "rx-a",
+                                                  frame("device-a:source", 7, 100e6, 108e6))), 1)
+        self.clock[0] = 10.3
+        self.assertEqual(len(session.accept_frame(first, "rx-a",
+                                                  frame("device-a:source", 7, 100e6, 108e6))), 1)
+        self.assertIsNone(session.pane_host_timing("a-low").last_revisit_s)
+        self.clock[0] = 10.6
+        second = session.advance_resource("device-a")
+        self.clock[0] = 10.7
+        self.assertEqual(len(session.accept_frame(second, "rx-a",
+                                                  frame("device-a:source", 8, 140e6, 148e6))), 1)
+        self.clock[0] = 11.2
+        third = session.advance_resource("device-a")
+        self.assertEqual(session.accept_frame(first, "rx-a",
+                                              frame("device-a:source", 7, 100e6, 108e6)), ())
+        self.clock[0] = 11.3
+        self.assertEqual(len(session.accept_frame(third, "rx-a",
+                                                  frame("device-a:source", 9, 100e6, 108e6))), 1)
+        timing = session.pane_host_timing("a-low")
+        self.assertAlmostEqual(timing.last_revisit_s, 1.2)
+        self.assertAlmostEqual(timing.frame_age_s, 0.0)
+        self.clock[0] = 11.5
+        self.assertEqual(len(session.accept_frame(third, "rx-a",
+                                                  frame("device-a:source", 9, 100e6, 108e6))), 1)
+        self.assertAlmostEqual(session.pane_host_timing("a-low").last_revisit_s, 1.2)
+        self.clock[0] = 10.0
+        self.assertIsNone(session.pane_host_timing("a-low").frame_age_s)
+        self.assertIsNone(session.pane_host_timing("a-low").last_revisit_s)
+        self.clock[0] = 12.0
+        self.assertIsNone(session.pane_host_timing("a-low").frame_age_s)
+        self.assertEqual(len(session.accept_frame(third, "rx-a",
+                                                  frame("device-a:source", 9, 100e6, 108e6))), 1)
+        self.assertIsNone(session.pane_host_timing("a-low").last_revisit_s)
+        self.assertEqual(session.stop_all(), ())
+        self.assertIsNone(session.pane_host_timing("a-low").frame_age_s)
+        with self.assertRaises(PaneResourceError):
+            session.pane_host_timing("missing")
+
     def test_poll_failure_quarantines_publication_and_retains_owner_for_stop(self) -> None:
         groups = (group("device-a", "rx-a"),)
         requests = (pane("one", "rx-a", 100e6, 108e6,
