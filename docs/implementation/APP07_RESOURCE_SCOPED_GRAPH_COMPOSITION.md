@@ -626,3 +626,48 @@ probability, exact ADC sample rate, long soak, DPI matrix or sweep-bin RF
 flatness. The tinySA's naturally slow scan is not an SDR performance defect.
 APP-07 remains partial; sustained timing, density, failure recovery and
 independent review are still required.
+
+### Explicit shared-RX Stop confirmation (2026-09-30)
+
+Product commit `06d7721c5f82c8bbf94ebdc6e14ad2b9546ccb7f` fixes the
+selected-pane Stop dialog for a resource serving more than one pane.
+The Qt return is compared to Yes **by value**, not Python object identity.
+No remains the default. No new receiver, hidden restart, scheduler policy,
+Fs/FFT/detector setting or RF-continuity claim is introduced.
+
+Three regression tests cover an equivalent integer Yes return, actual Qt
+No-default/explicit-Yes button activation, and the actual pane widget with
+fake RTBW/Sweep owners: refusal preserves RX; acknowledgement stops both
+affected panes and releases the one resource. The real-modal test fails
+under the old identity expression, so this is not merely a permissive mock.
+Exact tracked-clean full UI V2:1068 total/1002 passed/66 skipped/zero failed,
+380.168s, no deferred compiled test and no product import outside the
+checkout. Four historical NaN warnings remain; scoped checks passed.
+
+The new tagged diagnostic full official CPU/HackRF pipeline passed40/40
+CTest, source-snapshot, shared-runtime and658-file frozen verification.
+EXE:
+`dist/SDRNativeMonitoring-CPU-APP07-SHAREDSTOP-20260930-06D7721-R1/SDRNativeMonitoring/SDRNativeMonitoring.exe`,
+SHA-256:
+`cdc7913dd0db6fe5f4aa482851cd646c5ff09fdb6418204da4e494dfe7657f15`.
+The unchanged native SHA34128b77… was used; the current/static installation
+was not replaced.
+
+On that exact EXE, visible Computer Use staged one physical USB HackRF RX1
+with two time-sliced jobs: pane1 RTBW100–108MHz/requested20MS/s/FFT4096;
+pane2 host Sweep140–180MHz/fixed20MS/s/FFT4096; panes3/4 Empty. Stage
+announced the affected panes and RF gaps; Apply did not start RX. Explicit
+Start all produced changing spectra/running1. Stop selected showed both
+affected panes, No left the resource running, and explicit Yes stopped
+the common RX: running0/stopped1/Stop-required0, both last frames labelled
+retained/not new. Close layout and normal EXE exit completed; the same
+658-file frozen package verified afterward. The previous exact2ad EXE
+still failed the affirmative action in the matching short scenario.
+
+This qualifies this shared command's short **functional** behavior, not
+click-to-idle timing, DWM/FPS/LPS, RF duty/Pd, lossless transport, prolonged
+soak or release readiness. The time-sliced Sweep Waterfall still resets
+history on each job epoch, unlike the separately qualified RTBW history
+with absence separators. Extending its same-grid/provenance/gap policy is
+the next bounded APP-07 task; no continuous RF coverage may be fabricated.
+APP-07 and the overall roadmap remain partial/open.
