@@ -3,6 +3,9 @@
 This contract describes the currently implemented, opt-in application/backend
 seam. It is **not** an enabled multi-device UI feature or a declaration that
 APP-07 is complete.
+The separate `APP07_MIXED_SOURCE_TRACE_CONTRACT.md` records the required
+AD936x + HackRF + tinySA + Empty 2×2 target and the source-neutral trace
+planning boundary; neither document claims product multi-source activation.
 
 ## Ownership and control
 

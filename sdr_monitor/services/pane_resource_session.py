@@ -17,11 +17,12 @@ from time import monotonic
 from typing import Callable, ContextManager, Iterator, Mapping, Protocol
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.pane_scheduler import (
     CaptureJob, CaptureMeasurementMode, PaneControlGap, PaneCrop, PaneRevisitEstimate, PaneSchedule,
-    ResourcePaneSchedule,
+    ResourcePaneSchedule, SpectrumTracePaneProfile,
 )
-from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint
+from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 
 from .receiver_lease_manager import ReceiverLease, ReceiverLeaseManager
@@ -50,6 +51,10 @@ class PaneCaptureAdmission:
     sample_rate_hz: float | None = None
     fft_size: int | None = None
     hop_size: int | None = None
+    trace_points: int | None = None
+    instrument_model_id: str | None = None
+    instrument_identity_key: str | None = None
+    firmware_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if not all(isinstance(value, str) and value for value in (self.capture_id, self.source_id, self.unit)):
@@ -65,14 +70,26 @@ class PaneCaptureAdmission:
         if self.config_generation is not None and (
                 type(self.config_generation) is not int or self.config_generation < 0):
             raise ValueError("capture admission generation must be a non-negative integer")
-        if (self.sample_rate_hz is None or not isfinite(self.sample_rate_hz)
-                or self.sample_rate_hz <= 0
-                or type(self.fft_size) is not int or self.fft_size < 2
-                or type(self.hop_size) is not int or not 1 <= self.hop_size <= self.fft_size):
-            raise ValueError("capture admission requires applied Fs/FFT/hop")
+        if self.mode is CaptureMeasurementMode.INSTRUMENT_TRACE:
+            if (self.sample_rate_hz is not None or self.fft_size is not None or self.hop_size is not None
+                    or type(self.trace_points) is not int or not 2 <= self.trace_points <= 10001
+                    or self.instrument_model_id not in {"tinysa_basic", "tinysa_ultra"}
+                    or self.config_generation is None
+                    or any(not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71
+                           or any(character not in "0123456789abcdef" for character in value[7:])
+                           for value in (self.instrument_identity_key, self.firmware_fingerprint))):
+                raise ValueError("instrument trace admission requires identity/points without I/Q geometry")
+        elif (self.sample_rate_hz is None or not isfinite(self.sample_rate_hz)
+              or self.sample_rate_hz <= 0
+              or type(self.fft_size) is not int or self.fft_size < 2
+              or type(self.hop_size) is not int or not 1 <= self.hop_size <= self.fft_size
+              or self.trace_points is not None or self.instrument_model_id is not None
+              or self.instrument_identity_key is not None
+              or self.firmware_fingerprint is not None):
+            raise ValueError("I/Q capture admission requires applied Fs/FFT/hop without trace identity")
         if self.mode is CaptureMeasurementMode.RTBW and (self.session_id is None or not self.session_id):
             raise ValueError("RTBW admission requires a producer session")
-        if self.mode is CaptureMeasurementMode.SWEEP and self.session_id is not None:
+        if self.mode is not CaptureMeasurementMode.RTBW and self.session_id is not None:
             raise ValueError("Sweep admission cannot claim an RTBW session")
 
 
@@ -91,7 +108,7 @@ class PaneCaptureOwner(Protocol):
 
     physical_stream_resource_id: str
 
-    def validate_endpoint(self, endpoint: ReceiverEndpoint) -> None: ...
+    def validate_endpoint(self, endpoint: ReceiverEndpoint | SpectrumTraceEndpoint) -> None: ...
     def validate_job(self, job: CaptureJob) -> None: ...
     def release_control_claim(self) -> None: ...
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission: ...
@@ -211,7 +228,8 @@ class PaneResourceSession:
                     "poll_bundles", "recording_active",
                     "recording_conflict", "receiver_identity", "control_transaction")):
                 raise PaneResourceError("receiver owner lacks a required lifecycle or recording guard")
-            if any(endpoint.selection is ReceiverChainSelection.BOTH for endpoint in group.endpoints):
+            if any(isinstance(endpoint, ReceiverEndpoint)
+                   and endpoint.selection is ReceiverChainSelection.BOTH for endpoint in group.endpoints):
                 raise PaneResourceError("one spectrum bundle cannot represent both digital RX channels")
             group_sources = {endpoint.source_id for endpoint in group.endpoints}
             if len(group_sources) != 1 or source_ids.intersection(group_sources):
@@ -219,6 +237,9 @@ class PaneResourceSession:
             source_ids.update(group_sources)
             by_endpoint = {endpoint.endpoint_id: endpoint for endpoint in group.endpoints}
             planned = next(item for item in schedule.resources if item.physical_stream_resource_id == resource_id)
+            trace_endpoint = isinstance(group.endpoints[0], SpectrumTraceEndpoint)
+            if any(isinstance(job.profile, SpectrumTracePaneProfile) != trace_endpoint for job in planned.jobs):
+                raise PaneResourceError("instrument trace and I/Q receiver jobs cannot share an endpoint type")
             if (len(by_endpoint) > 1 and any(job.profile.measurement_mode is CaptureMeasurementMode.SWEEP
                                              for job in planned.jobs)):
                 raise PaneResourceError("Sweep producer cannot identify two RX channels in one resource")
@@ -231,7 +252,7 @@ class PaneResourceSession:
                 mapped = {endpoint_id: owner.receiver_identity(endpoint_id) for endpoint_id in by_endpoint}
             except Exception:
                 raise PaneResourceError("producer receiver identity could not be confirmed") from None
-            if (any(job.profile.measurement_mode is CaptureMeasurementMode.SWEEP for job in planned.jobs)
+            if (any(job.profile.measurement_mode is not CaptureMeasurementMode.RTBW for job in planned.jobs)
                     and any(value is not None for value in mapped.values())):
                 raise PaneResourceError("Sweep publication has no producer RX identity")
             known = [value for value in mapped.values() if value is not None]
@@ -431,7 +452,16 @@ class PaneResourceSession:
                     or endpoint is None or endpoint_id not in job.receiver_endpoint_ids
                     or endpoint.physical_stream_resource_id != resource_id
                     or not isinstance(bundle, AnalyzerFrameBundle) or identity is None
-                    or identity.source_id != admission.source_id or bundle.mode != admission.mode
+                    or identity.source_id != admission.source_id
+                    or (admission.mode is CaptureMeasurementMode.INSTRUMENT_TRACE
+                        and (bundle.mode != "sweep" or not isinstance(bundle.spectrum, SweepLineFrame)
+                             or bundle.spectrum.instrument is None
+                             or bundle.spectrum.instrument.points != admission.trace_points
+                             or bundle.spectrum.instrument.model_id != admission.instrument_model_id
+                             or bundle.spectrum.instrument.device_identity_key != admission.instrument_identity_key
+                             or bundle.spectrum.instrument.firmware_fingerprint != admission.firmware_fingerprint))
+                    or (admission.mode is not CaptureMeasurementMode.INSTRUMENT_TRACE
+                        and bundle.mode != admission.mode)
                     or identity.unit != admission.unit
                     or (admission.session_id is not None and identity.session_id != admission.session_id)
                     or (admission.config_generation is not None
@@ -625,9 +655,14 @@ class PaneResourceSession:
                 or (runtime.new_epoch_required and admission.session_id == runtime.last_admission_session_id
                     and runtime.last_admission_epoch is not None
                     and admission.acquisition_epoch <= runtime.last_admission_epoch)
-                or admission.sample_rate_hz != job.profile.sample_rate_hz
-                or admission.fft_size != job.profile.fft_size
-                or admission.hop_size != job.profile.hop_size):
+                or (isinstance(job.profile, SpectrumTracePaneProfile)
+                    and (admission.trace_points != job.profile.points
+                         or admission.sample_rate_hz is not None or admission.fft_size is not None
+                         or admission.hop_size is not None))
+                or (not isinstance(job.profile, SpectrumTracePaneProfile)
+                    and (admission.sample_rate_hz != job.profile.sample_rate_hz
+                         or admission.fft_size != job.profile.fft_size
+                         or admission.hop_size != job.profile.hop_size))):
             raise PaneResourceError("owner admission differs from the scheduled capture")
 
     def _required_runtime(self, resource_id: str) -> _Runtime:

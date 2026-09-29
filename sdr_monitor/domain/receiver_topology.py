@@ -251,12 +251,27 @@ class ReceiverEndpoint:
 
 
 @dataclass(frozen=True, slots=True)
+class SpectrumTraceEndpoint:
+    """One instrument-reported spectrum, without an invented I/Q RX chain."""
+
+    endpoint_id: str
+    source_id: str
+    physical_stream_resource_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "endpoint_id", _required_text(self.endpoint_id, "trace endpoint id"))
+        object.__setattr__(self, "source_id", _required_text(self.source_id, "trace source id"))
+        object.__setattr__(self, "physical_stream_resource_id", _required_text(
+            self.physical_stream_resource_id, "trace instrument resource id"))
+
+
+@dataclass(frozen=True, slots=True)
 class AcquisitionGroup:
     """Compatible endpoints sharing exactly one physical stream resource."""
 
     group_id: str
     physical_stream_resource_id: str
-    endpoints: tuple[ReceiverEndpoint, ...]
+    endpoints: tuple[ReceiverEndpoint | SpectrumTraceEndpoint, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "group_id", _required_text(self.group_id, "acquisition group id"))
@@ -269,8 +284,15 @@ class AcquisitionGroup:
             raise ValueError("acquisition group endpoint ids must be unique")
         if any(endpoint.physical_stream_resource_id != resource_id for endpoint in endpoints):
             raise ValueError("acquisition group endpoints must share one physical stream resource")
+        if any(isinstance(endpoint, SpectrumTraceEndpoint) for endpoint in endpoints):
+            if len(endpoints) != 1 or not isinstance(endpoints[0], SpectrumTraceEndpoint):
+                raise ValueError("one spectrum-trace instrument cannot claim I/Q receiver chains")
+            object.__setattr__(self, "endpoints", endpoints)
+            return
         occupied: set[ReceiverChain] = set()
         for endpoint in endpoints:
+            if not isinstance(endpoint, ReceiverEndpoint):
+                raise ValueError("I/Q acquisition group requires receiver endpoints")
             overlap = occupied.intersection(endpoint.selection.chains)
             if overlap:
                 raise ValueError("acquisition group receiver-chain selections overlap")
@@ -364,6 +386,7 @@ __all__ = [
     "ReceiverTopologyInventory",
     "ReceiverTopologySnapshot",
     "SchedulerPolicyKind",
+    "SpectrumTraceEndpoint",
     "StreamScanElement",
     "SweepPaneRequest",
 ]

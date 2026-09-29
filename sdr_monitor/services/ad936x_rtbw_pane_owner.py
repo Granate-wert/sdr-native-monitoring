@@ -16,8 +16,8 @@ from sdr_monitor.application.analyzer_session import AnalyzerPhase
 from sdr_monitor.application.live_session import LiveSessionApplicationService
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.live import LiveConfiguration, LiveSessionState
-from sdr_monitor.domain.pane_scheduler import CaptureJob, CaptureMeasurementMode
-from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint
+from sdr_monitor.domain.pane_scheduler import CaptureJob, CaptureMeasurementMode, PaneCaptureProfile
+from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
 from .pane_resource_session import PaneCaptureAdmission
 
@@ -65,8 +65,9 @@ class Ad936xRtbwPaneOwner:
         self._live = live
         self._control_claim = object()
 
-    def validate_endpoint(self, endpoint: ReceiverEndpoint) -> None:
-        if (endpoint.endpoint_id != self._endpoint_id
+    def validate_endpoint(self, endpoint: ReceiverEndpoint | SpectrumTraceEndpoint) -> None:
+        if (not isinstance(endpoint, ReceiverEndpoint)
+                or endpoint.endpoint_id != self._endpoint_id
                 or endpoint.source_id != self._source_id
                 or endpoint.physical_stream_resource_id != self.physical_stream_resource_id
                 or endpoint.selection is not ReceiverChainSelection.RX1):
@@ -75,7 +76,8 @@ class Ad936xRtbwPaneOwner:
     def validate_job(self, job: CaptureJob) -> None:
         """Pure fixed refusal before the session reserves a receiver lease."""
         profile = job.profile
-        if (job.physical_stream_resource_id != self.physical_stream_resource_id
+        if (not isinstance(profile, PaneCaptureProfile)
+                or job.physical_stream_resource_id != self.physical_stream_resource_id
                 or job.receiver_endpoint_ids != (self._endpoint_id,)
                 or profile.measurement_mode is not CaptureMeasurementMode.RTBW
                 or profile.unit != "dBFS/bin"
@@ -115,6 +117,8 @@ class Ad936xRtbwPaneOwner:
                 or before.device.device_id != self._source_id or before.applied is None):
             raise RuntimeError("Selected AD936x Live graph is not idle with the expected staged source")
         profile = job.profile
+        if not isinstance(profile, PaneCaptureProfile):
+            raise RuntimeError("AD936x pane requires an I/Q capture profile")
         gain_db = profile.manual_gain_db
         if gain_db is None:
             raise RuntimeError("AD936x pane requires an explicit manual gain")

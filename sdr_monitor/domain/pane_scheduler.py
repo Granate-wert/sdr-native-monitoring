@@ -20,6 +20,7 @@ from .receiver_topology import (
     PaneSchedulerPolicy,
     ReceiverBindingMode,
     SchedulerPolicyKind,
+    SpectrumTraceEndpoint,
     SweepPaneRequest,
 )
 
@@ -43,6 +44,7 @@ class CaptureMeasurementMode(StrEnum):
 
     RTBW = "rtbw"
     SWEEP = "sweep"
+    INSTRUMENT_TRACE = "instrument_trace"
 
 
 def _required_text(value: object, label: str) -> str:
@@ -116,6 +118,8 @@ class PaneCaptureProfile:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "measurement_mode", CaptureMeasurementMode(self.measurement_mode))
+        if self.measurement_mode is CaptureMeasurementMode.INSTRUMENT_TRACE:
+            raise PaneScheduleError("instrument traces must not invent I/Q Fs/FFT/hop")
         object.__setattr__(self, "unit", _required_text(self.unit, "measurement unit"))
         _positive_finite(self.sample_rate_hz, "sample rate")
         _positive_finite(self.analog_bandwidth_hz, "analog bandwidth")
@@ -159,6 +163,43 @@ class PaneCaptureProfile:
             self.usable_capture_span_hz,
             self.epoch_cost,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SpectrumTracePaneProfile:
+    """Device-reported spectrum trace: no I/Q sample rate, FFT or RX chain."""
+
+    points: int
+    usable_capture_span_hz: float
+    settings_key: str
+    epoch_cost: CaptureEpochCost
+    unit: str = "dBm"
+
+    def __post_init__(self) -> None:
+        if type(self.points) is not int or not 2 <= self.points <= 10001:
+            raise PaneScheduleError("instrument trace points must be in [2, 10001]")
+        _positive_finite(self.usable_capture_span_hz, "usable trace span")
+        settings_key = _required_text(self.settings_key, "instrument settings identity")
+        if len(settings_key) > 160 or any(ord(character) < 32 for character in settings_key):
+            raise PaneScheduleError("instrument settings identity must be bounded printable text")
+        object.__setattr__(self, "settings_key", settings_key)
+        object.__setattr__(self, "unit", _required_text(self.unit, "measurement unit"))
+        if self.unit != "dBm":
+            raise PaneScheduleError("current instrument trace producer publishes only dBm")
+        if not isinstance(self.epoch_cost, CaptureEpochCost):
+            raise PaneScheduleError("instrument trace requires a declared epoch cost")
+
+    @property
+    def measurement_mode(self) -> CaptureMeasurementMode:
+        return CaptureMeasurementMode.INSTRUMENT_TRACE
+
+    @property
+    def compatibility_key(self) -> tuple[object, ...]:
+        return (self.measurement_mode, self.unit, self.points, self.usable_capture_span_hz,
+                self.settings_key, self.epoch_cost)
+
+
+PaneProfile = PaneCaptureProfile | SpectrumTracePaneProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +256,7 @@ class CaptureJob:
     start_hz: float
     stop_hz: float
     profile_ids: tuple[str, ...]
-    profile: PaneCaptureProfile
+    profile: PaneProfile
     crops: tuple[PaneCrop, ...]
     scheduler_policy: PaneSchedulerPolicy
 
@@ -374,11 +415,53 @@ class PaneSchedule:
 
 
 @dataclass(frozen=True, slots=True)
+class PaneLayoutSlot:
+    """Visible slot 1..4; None is truly empty and schedules no source."""
+
+    number: int
+    request: SweepPaneRequest | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.number) is not int or not 1 <= self.number <= _MAX_PANES:
+            raise PaneScheduleError("pane slot number must be in [1, 4]")
+        if self.request is not None and not isinstance(self.request, SweepPaneRequest):
+            raise PaneScheduleError("pane slot requires an immutable request or explicit Empty")
+
+
+@dataclass(frozen=True, slots=True)
+class PaneLayout:
+    """One fixed visual grid and its active-only capture schedule."""
+
+    slots: tuple[PaneLayoutSlot, ...]
+    schedule: PaneSchedule | None
+
+    def __post_init__(self) -> None:
+        slots = tuple(self.slots)
+        if (not slots or len(slots) > _MAX_PANES
+                or any(not isinstance(slot, PaneLayoutSlot) for slot in slots)
+                or tuple(slot.number for slot in slots) != tuple(range(1, len(slots) + 1))):
+            raise PaneScheduleError("pane layout must contain ordered contiguous slots 1..4")
+        occupied = {slot.request.pane_id for slot in slots if slot.request is not None}
+        if len(occupied) != sum(slot.request is not None for slot in slots):
+            raise PaneScheduleError("occupied pane slots require unique pane identities")
+        if (self.schedule is None and occupied
+                or self.schedule is not None and (
+                    not isinstance(self.schedule, PaneSchedule)
+                    or occupied != {item.pane_id for item in self.schedule.pane_revisits})):
+            raise PaneScheduleError("pane layout schedule must match exactly its occupied slots")
+        object.__setattr__(self, "slots", slots)
+
+    @property
+    def empty_slots(self) -> tuple[int, ...]:
+        return tuple(slot.number for slot in self.slots if slot.request is None)
+
+
+@dataclass(frozen=True, slots=True)
 class _ResolvedPane:
     request: SweepPaneRequest
     group: AcquisitionGroup
     profile_id: str
-    profile: PaneCaptureProfile
+    profile: PaneProfile
 
 
 def _validate_groups(groups: Sequence[AcquisitionGroup]) -> dict[str, AcquisitionGroup]:
@@ -400,7 +483,7 @@ def _validate_groups(groups: Sequence[AcquisitionGroup]) -> dict[str, Acquisitio
 def _resolve_panes(
     groups: Sequence[AcquisitionGroup],
     requests: Sequence[SweepPaneRequest],
-    profiles: Mapping[str, PaneCaptureProfile],
+    profiles: Mapping[str, PaneProfile],
     config: PaneSchedulerConfig,
 ) -> tuple[_ResolvedPane, ...]:
     endpoints = _validate_groups(groups)
@@ -419,6 +502,9 @@ def _resolve_panes(
         profile = profiles.get(request.profile_id)
         if profile is None:
             raise PaneScheduleError("pane request refers to an unknown capture profile")
+        endpoint = next(item for item in group.endpoints if item.endpoint_id == request.receiver_endpoint_id)
+        if isinstance(endpoint, SpectrumTraceEndpoint) != isinstance(profile, SpectrumTracePaneProfile):
+            raise PaneScheduleError("instrument trace and I/Q receiver profiles must not be interchanged")
         if request.stop_hz - request.start_hz > profile.usable_capture_span_hz:
             raise PaneScheduleError("pane RF span exceeds the profile usable capture span")
         resolved.append(_ResolvedPane(request, group, request.profile_id, profile))
@@ -659,7 +745,7 @@ def _revisit_estimates(schedule: ResourcePaneSchedule) -> tuple[PaneRevisitEstim
 def compile_pane_schedule(
     groups: Sequence[AcquisitionGroup],
     requests: Sequence[SweepPaneRequest],
-    profiles: Mapping[str, PaneCaptureProfile],
+    profiles: Mapping[str, PaneProfile],
     config: PaneSchedulerConfig | None = None,
 ) -> PaneSchedule:
     """Compile finite shared-capture/time-slice control plans without RX I/O.
@@ -685,14 +771,38 @@ def compile_pane_schedule(
     return PaneSchedule(tuple(resources), tuple(sorted(revisits, key=lambda item: item.pane_id)))
 
 
+def compile_pane_layout(
+    slots: Sequence[PaneLayoutSlot],
+    groups: Sequence[AcquisitionGroup],
+    profiles: Mapping[str, PaneProfile],
+    config: PaneSchedulerConfig | None = None,
+) -> PaneLayout:
+    """Compile only occupied slots; Empty never opens, retunes or publishes."""
+
+    ordered = tuple(slots)
+    if (not ordered or len(ordered) > _MAX_PANES
+            or any(not isinstance(slot, PaneLayoutSlot) for slot in ordered)
+            or tuple(slot.number for slot in ordered) != tuple(range(1, len(ordered) + 1))):
+        raise PaneScheduleError("pane layout must contain ordered contiguous slots 1..4")
+    requests = tuple(slot.request for slot in ordered if slot.request is not None)
+    if len({request.pane_id for request in requests}) != len(requests):
+        raise PaneScheduleError("occupied pane slots require unique pane identities")
+    schedule = compile_pane_schedule(groups, requests, profiles, config) if requests else None
+    return PaneLayout(ordered, schedule)
+
+
 __all__ = [
     "CaptureMeasurementMode",
     "CaptureEpochCost",
     "CaptureJob",
     "PaneCaptureProfile",
+    "SpectrumTracePaneProfile",
+    "PaneProfile",
     "PaneControlGap",
     "PaneControlGapReason",
     "PaneCrop",
+    "PaneLayout",
+    "PaneLayoutSlot",
     "PaneRevisitEstimate",
     "PaneSchedule",
     "PaneScheduleError",
@@ -700,4 +810,5 @@ __all__ = [
     "PaneSchedulerConfig",
     "ResourcePaneSchedule",
     "compile_pane_schedule",
+    "compile_pane_layout",
 ]
