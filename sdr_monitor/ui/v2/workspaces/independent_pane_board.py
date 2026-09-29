@@ -7,7 +7,7 @@ thread and present them here through the exact PaneDeliveryPreparer binding.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import math
 
 from PySide6.QtCore import QSettings, Signal, Qt
@@ -31,12 +31,14 @@ class IndependentPaneBoardV2(QWidget):
 
     def __init__(self, preparer: PaneDeliveryPreparer, *,
                  projector_factory: Callable[[], SpectrumProjector] | None = None,
+                 source_labels: Mapping[str, str] | None = None,
                  settings: QSettings | None = None,
                  parent: QWidget | None = None) -> None:
         if not isinstance(preparer, PaneDeliveryPreparer):
             raise TypeError("independent pane board requires a qualified presentation plan")
         super().__init__(parent)
         self._preparer = preparer
+        self._source_labels = {} if source_labels is None else dict(source_labels)
         self._panes: dict[int, AnalyzerPaneViewV2] = {}
         self._headers: dict[int, QPushButton] = {}
         self._empty_slots: dict[int, QLabel] = {}
@@ -87,7 +89,7 @@ class IndependentPaneBoardV2(QWidget):
                 caption.setProperty("ui2Role", "secondary")
                 caption.setMinimumWidth(0)
                 caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-                caption.setText(self._binding_label(binding))
+                caption.setText(self._binding_label(binding, self._source_labels.get(binding.source_id)))
                 caption.setToolTip(self._binding_label(binding))
                 header.addWidget(caption, 1)
                 cell_layout.addLayout(header)
@@ -192,8 +194,11 @@ class IndependentPaneBoardV2(QWidget):
         overlay.set_range_error(None)
 
     @staticmethod
-    def _binding_label(binding) -> str:
-        return (f"{binding.source_id} / {binding.receiver_endpoint_id} · "
+    def _binding_label(binding, source_label: str | None = None) -> str:
+        endpoint = ("RX1" if source_label is not None and binding.receiver_endpoint_id.endswith(":rx1") else
+                    "trace" if source_label is not None and binding.receiver_endpoint_id.endswith(":trace") else
+                    binding.receiver_endpoint_id)
+        return (f"{source_label or binding.source_id} / {endpoint} · "
                 f"{binding.crop.start_hz / 1e6:g}–{binding.crop.stop_hz / 1e6:g} MHz · "
                 f"{binding.mode.value.upper()} · {binding.unit}")
 

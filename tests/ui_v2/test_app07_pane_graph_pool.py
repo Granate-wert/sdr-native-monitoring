@@ -195,6 +195,17 @@ class PaneProductGraphPoolTests(unittest.TestCase):
         pool.close()
         self.assertEqual(pool.cleanup_pending_resource_ids, ())
 
+    def test_network_stage_is_explicit_and_uses_full_discovery_only_when_requested(self) -> None:
+        _, graph = _ad_graph(uri="ip:pluto-app07-network")
+        source_id = graph.live.discover(startup=True)[0].device_id
+        pool = PaneProductGraphPool(lambda _resource: graph)
+        try:
+            with patch.object(graph.live, "discover", wraps=graph.live.discover) as scan:
+                pool.stage("network", source_id, include_network=True)
+                scan.assert_called_once_with(startup=False)
+        finally:
+            pool.close()
+
 
 if __name__ == "__main__":
     unittest.main()

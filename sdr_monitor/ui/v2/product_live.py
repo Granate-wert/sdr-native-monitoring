@@ -262,6 +262,9 @@ class V2LiveProductComposition:
                 owner = owner_ref()
                 if owner is not None:
                     owner._analyzer_workspace_ref = ref(widget)
+                    widget.enable_independent_pane_setup(
+                        install=owner.install_independent_pane_session,
+                        uninstall=owner.uninstall_independent_pane_session)
                     if owner._pane_handle is not None:
                         widget.install_independent_pane_session(owner._pane_handle)
             workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector,
@@ -367,9 +370,11 @@ class V2LiveProductComposition:
         tinysa_can_close = self._tinysa is None or self._tinysa.can_close()
         analyzer_can_close = self.analyzer_presenter is None or self.analyzer_presenter.can_close()
         panes_can_close = self._pane_handle is None or self._pane_handle.can_close()
+        widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
+        pane_setup_can_close = widget is None or widget.independent_setup_can_close
         return (live_can_close and sweep_can_close and calibration_can_close
                 and diagnostics_can_close and replay_can_close and tinysa_can_close
-                and analyzer_can_close and panes_can_close)
+                and analyzer_can_close and panes_can_close and pane_setup_can_close)
 
     def install_independent_pane_session(self, handle: PaneProductSessionHandle) -> None:
         """Attach an externally previewed/applied plan to this Analyzer tab."""

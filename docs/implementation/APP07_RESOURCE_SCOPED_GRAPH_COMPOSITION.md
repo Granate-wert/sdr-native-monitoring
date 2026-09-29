@@ -1,5 +1,10 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
+Current state: the final section documents the newer user-operated V2
+assignment editor and its bounded physical witness. Earlier "not yet present"
+statements below describe the historical intermediate checkpoints, not the
+current source. APP-07 is still partial and no frozen EXE is qualified here.
+
 `build_v2_analyzer_application_graph` is now the **same** graph assembly used
 by the current single-source UI V2 shell. It can also be called with a new
 `SdrApplicationServices` bundle for each independent physical resource. Graph
@@ -142,3 +147,53 @@ result. The native package predates the current Python change, and neither
 test was the final frozen EXE with a complete in-tab assignment UI.
 APP-07 remains partial until that user workflow and a same-source frozen
 physical qualification are complete.
+
+## User-operated V2 source assignment (2026-09-29, partial)
+
+The same Analyzer tab now has an explicit **Pane sources** editor with four
+ordered slots. Each slot may be Empty or select an actually discovered source
+and an independent frequency span. AD936x and HackRF currently expose their
+qualified RX1 RTBW pane owners, with requested Fs/FFT choices; tinySA exposes
+the device-reported dBm Sweep trace with 2..10001 requested points. The
+editor does **not** silently convert an SDR wide Sweep into RTBW, claim RX2,
+enable an amplifier/bias tee, or infer ADC readback from requested Fs.
+
+One source ID is staged into **one** product graph, regardless of how many
+panes use it. Compatible nearby panes share one capture with separate crops;
+incompatible or disjoint panes receive bounded time-sliced capture jobs and
+the Preview explicitly warns about RF gaps. Different physical sources use
+distinct graphs/workers in parallel. The plan compiler rejects spans outside
+its declared usable window; a current device snapshot additionally constrains
+the tuning range when one exists. No missing capability fact is invented.
+
+User actions are separated: Discover USB (or explicit USB + IP), edit slots,
+**Stage/show impact**, **Apply layout**, then **Start selected/all**. Stage
+rechecks the selected source on a control worker. The preview lists the
+affected panes, capture-job count, sharing/time-slicing and recording
+conflicts before Apply. Apply stages the initial AD configuration and reserves
+exact leases, but does not Start RX. The old single-source commands are
+disabled while a preview is pending. A failed Stage/Apply retains an owner
+until explicit Discard/Stop/close; no retry, restart or RF recovery is hidden.
+The user can return to the ordinary Analyzer only after explicit Stop of all
+resources and **Close layout**, which releases graph owners off the Qt thread.
+Human-readable selected-source labels are shown in pane headers while the
+exact opaque source/endpoint identity remains available in a tooltip.
+
+A visible Windows current-Python-source + older hash-checked APP-06D native
+package diagnostic exercised the *user editor* with USB Pluto, USB HackRF,
+COM31 tinySA Ultra and an Empty fourth slot, on 100–108, 140–148 and
+200–210 MHz respectively. Stage and Apply had zero active RX; after explicit
+Start all, three different graphs updated concurrently. A 12-second bounded
+run presented about 300/304/34 Pluto/HackRF/tinySA bundles respectively.
+Stopping selected tinySA left both SDR workers running; Stop all, Close
+layout and normal AppShell close confirmed. Counts are GUI-admitted bundles,
+not FFT/s, losslessness, RF duty or DWM FPS. The first diagnostic run exposed
+a test-script click before the close button's enable state settled; a bounded
+wait for the actual enabled action made the full explicit close path pass.
+This was not a product auto-retry or receiver failure.
+
+Still open: same-source frozen EXE build and visible qualification; physical
+one-RX multi-pane time-slicing under user controls; genuine Ethernet and
+10001-point tinySA cells; per-pane SDR wide Sweep and qualified RX2; recording
+conflict UX, localization/DPI/area/latency/load/soak gates and release.
+APP-07 and the full APP-00…14 objective remain **partial**.

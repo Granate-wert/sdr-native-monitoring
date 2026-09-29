@@ -52,6 +52,7 @@ from .analyzer_status_label import AnalyzerPeriodsLabel, AnalyzerStatusLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_tinysa_configuration import TinySaConfigurationBar
 from .independent_pane_session import IndependentPaneSessionV2
+from .independent_pane_setup import IndependentPaneSetupV2
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 
 
@@ -72,6 +73,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self._shared_projector_factory = shared_projector_factory
         self._terminal_released = False
         self._independent_session: IndependentPaneSessionV2 | None = None
+        self._independent_setup: IndependentPaneSetupV2 | None = None
+        self._independent_setup_button: QPushButton | None = None
         self._theme = ThemeId.DARK
         self._last_source_selection: AnalyzerSourceSelection | None = None
         self._last_family_path_available = False
@@ -84,6 +87,7 @@ class AnalyzerWorkspaceV2(QWidget):
         layout.setContentsMargins(8, 0, 8, 0)
         layout.setSpacing(4)
         commands = QHBoxLayout()
+        self._commands = commands
         self.source = QComboBox(self)
         self.source.setProperty("ui2Role", "utility-select")
         self.source.setAccessibleName(text("live.device_selector.name"))
@@ -224,6 +228,46 @@ class AnalyzerWorkspaceV2(QWidget):
         self._text_bindings.append((button, key))
         return button
 
+    def enable_independent_pane_setup(
+        self, *, install: Callable[[PaneProductSessionHandle], None],
+        uninstall: Callable[[], None],
+    ) -> None:
+        """Install the user editor on this existing Analyzer, without RX I/O."""
+        if self._terminal_released or self._independent_setup is not None:
+            raise RuntimeError("independent pane setup is unavailable")
+        button = self._button("analyzer.pane.setup.open", self._toggle_independent_setup)
+        self._commands.insertWidget(self._commands.indexOf(self.settings), button)
+        setup = IndependentPaneSetupV2(
+            install=install, uninstall=uninstall,
+            can_prepare=lambda: (not self._terminal_released and not self.model.state.controls_locked
+                                 and self._independent_session is None),
+            parent=self)
+        layout = self.layout()
+        assert isinstance(layout, QVBoxLayout)
+        layout.insertWidget(layout.indexOf(self._pane_host), setup)
+        setup.update_sources(self.model.state.source_selection)
+        setup.set_theme(self._theme)
+        setup.state_changed.connect(lambda: self._render(self.model.state))
+        self._independent_setup = setup
+        self._independent_setup_button = button
+        self._render(self.model.state)
+
+    def _toggle_independent_setup(self) -> None:
+        setup = self._independent_setup
+        if setup is None or self._independent_session is not None:
+            return
+        if setup.isVisible() and not setup.blocks_single_source:
+            setup.hide()
+        else:
+            self._hide_display(restore_focus=False)
+            self.drawer.hide()
+            self.tinysa_bar.settings_drawer.hide()
+            setup.show()
+
+    @property
+    def independent_setup_can_close(self) -> bool:
+        return self._independent_setup is None or self._independent_setup.can_close
+
     def install_independent_pane_session(self, handle: PaneProductSessionHandle) -> None:
         """Show independent source panes on THIS Analyzer tab after Apply.
 
@@ -236,11 +280,18 @@ class AnalyzerWorkspaceV2(QWidget):
                 or not handle.applied or state.running or state.stop_required
                 or state.starting or state.stopping or state.live.busy):
             raise RuntimeError("independent panes require an idle Analyzer and applied plan")
-        widget = IndependentPaneSessionV2(handle, parent=self)
+        widget = IndependentPaneSessionV2(
+            handle, close_layout=(None if self._independent_setup is None
+                                  else self._independent_setup.close_applied_layout),
+            parent=self)
         self._hide_display(restore_focus=False)
         self.drawer.hide()
         self.tinysa_bar.settings_drawer.hide()
         self._independent_session = widget
+        if self._independent_setup is not None:
+            self._independent_setup.hide()
+        if self._independent_setup_button is not None:
+            self._independent_setup_button.hide()
         self._single_source_controls = (
             self.source, self.rx, self.discover, self.discover_network, self.mode,
             self.shared_views_label, self.shared_views, self.selected_view_label,
@@ -280,6 +331,10 @@ class AnalyzerWorkspaceV2(QWidget):
         self._independent_session = None
         for control in self._single_source_controls:
             control.show()
+        if self._independent_setup_button is not None:
+            self._independent_setup_button.show()
+        if self._independent_setup is not None:
+            self._independent_setup.hide()
         self._render(self.model.state)
 
     def _set_shared_view_count(self, _index: int) -> None:
@@ -506,6 +561,8 @@ class AnalyzerWorkspaceV2(QWidget):
             overlay.set_locale(current_locale())
         if self._independent_session is not None:
             self._independent_session.set_locale()
+        if self._independent_setup is not None:
+            self._independent_setup.set_locale()
         self._reserve_primary_width()
         self._render(self.model.state)
 
@@ -530,9 +587,14 @@ class AnalyzerWorkspaceV2(QWidget):
             pane.set_theme(theme)
         if self._independent_session is not None:
             self._independent_session.set_theme(theme)
+        if self._independent_setup is not None:
+            self._independent_setup.set_theme(theme)
         self.drawer.set_theme(theme)
 
     def closeEvent(self, event) -> None:
+        if not self.independent_setup_can_close:
+            event.ignore()
+            return
         if self._independent_session is not None and not self._independent_session.handle.can_close():
             event.ignore()
             return
@@ -549,6 +611,8 @@ class AnalyzerWorkspaceV2(QWidget):
             return
         if self._independent_session is not None:
             self._independent_session.release_presentation_after_shutdown()
+        if self._independent_setup is not None:
+            self._independent_setup.release_after_shutdown()
         self._unsubscribe()
         self._unsubscribe_devices()
         self.sweep_preview.cancel()
@@ -676,6 +740,8 @@ class AnalyzerWorkspaceV2(QWidget):
                 self.mode.setCurrentIndex(self.mode.findData(self.model.state.mode))
 
     def _execute(self) -> None:
+        if self._independent_setup is not None and self._independent_setup.blocks_single_source:
+            return
         state = self.model.state
         if state.running or state.stop_required:
             self.model.stop()
@@ -766,6 +832,7 @@ class AnalyzerWorkspaceV2(QWidget):
                      and state.live.primary_action_enabled)
         invalid_sweep = ready and state.mode is AnalyzerMode.SWEEP and state.ad936x_controls_available and self.sweep_preview.has_error
         enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
+                   and not (self._independent_setup is not None and self._independent_setup.blocks_single_source)
                    and (state.running or state.stop_required or (ready and not invalid_sweep)))
         self.primary.setEnabled(enabled)
         hint = (self.tinysa_bar.validation_message if state.tinysa_controls_available and not ready else
@@ -788,6 +855,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self._refresh_preview()
         self._sync_source(state)
         selection = state.source_selection
+        if self._independent_setup is not None:
+            self._independent_setup.update_sources(selection)
         family_available = state.hackrf_controls_available or state.tinysa_controls_available
         if selection is not self._last_source_selection or family_available != self._last_family_path_available:
             self._last_source_selection = selection
@@ -801,13 +870,20 @@ class AnalyzerWorkspaceV2(QWidget):
                 self.source_summary.show()
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(self.mode.findData(state.mode))
+        pane_stage_blocks = (self._independent_setup is not None
+                             and self._independent_setup.blocks_single_source)
         for control in (self.source, self.discover, self.discover_network, self.mode):
-            control.setEnabled(not state.controls_locked)
+            control.setEnabled(not state.controls_locked and not pane_stage_blocks)
+        if self._independent_setup_button is not None:
+            self._independent_setup_button.setEnabled(not state.controls_locked or pane_stage_blocks)
         self.frequency_bar.apply_view_state(state, has_frame=state.bundle is not None)
         self.frequency_bar.setVisible(state.ad936x_controls_available)
         self.hackrf_bar.apply_view_state(state)
         self.hackrf_sweep_bar.apply_view_state(state)
         self.tinysa_bar.apply_view_state(state)
+        for control in (self.frequency_bar, self.hackrf_bar, self.hackrf_sweep_bar,
+                        self.tinysa_bar, self.settings, self.drawer):
+            control.setEnabled(not pane_stage_blocks)
         key = ("analyzer.applying" if state.configuration_pending
                else "analyzer.starting" if state.starting else "analyzer.stopping" if state.stopping
                else "analyzer.stop" if state.running or state.stop_required

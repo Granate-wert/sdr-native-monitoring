@@ -29,6 +29,7 @@ class IndependentPaneSessionV2(QWidget):
 
     def __init__(self, handle: PaneProductSessionHandle, *,
                  confirm_shared_stop: Callable[[tuple[str, ...]], bool] | None = None,
+                 close_layout: Callable[[PaneProductSessionHandle], None] | None = None,
                  parent: QWidget | None = None) -> None:
         if not isinstance(handle, PaneProductSessionHandle) or not handle.applied:
             raise ValueError("independent pane UI needs one explicitly applied product plan")
@@ -37,6 +38,7 @@ class IndependentPaneSessionV2(QWidget):
         self.setProperty("ui2Root", True)
         self.handle = handle
         self._confirm_shared_stop = confirm_shared_stop or self._ask_shared_stop
+        self._close_layout = close_layout
         self._futures: list[Future[Any]] = []
         self._error_key: str | None = None
         self._error_pane: str | None = None
@@ -61,8 +63,11 @@ class IndependentPaneSessionV2(QWidget):
         self.stop_all = self._button(self._stop_all)
         for control in (self.start_selected, self.start_all, self.stop_selected, self.stop_all):
             commands.addWidget(control)
+        self.close_layout = self._button(self._request_close_layout)
+        self.close_layout.setVisible(close_layout is not None)
+        commands.addWidget(self.close_layout)
         layout.addLayout(commands)
-        self.board = IndependentPaneBoardV2(handle.preparer, parent=self)
+        self.board = IndependentPaneBoardV2(handle.preparer, source_labels=handle.source_labels, parent=self)
         self.board.selected_slot_changed.connect(self._refresh)
         layout.addWidget(self.board, 1)
         self.status = QLabel(self)
@@ -139,6 +144,10 @@ class IndependentPaneSessionV2(QWidget):
             self._error_key = "analyzer.independent.operation_failed"
         self._refresh()
 
+    def _request_close_layout(self) -> None:
+        if self._close_layout is not None and self.handle.can_close():
+            self._close_layout(self.handle)
+
     def _ask_shared_stop(self, impact: tuple[str, ...]) -> bool:
         answer = QMessageBox.question(self, text("analyzer.independent.shared_stop.title"),
             text("analyzer.independent.shared_stop.detail", panes=", ".join(impact)),
@@ -169,6 +178,7 @@ class IndependentPaneSessionV2(QWidget):
         self.stop_selected.setEnabled(selected_phase is not None and selected_phase is not PanePumpPhase.STOPPED)
         self.start_all.setEnabled(any(phase is PanePumpPhase.IDLE for phase in states.values()))
         self.stop_all.setEnabled(any(phase is not PanePumpPhase.STOPPED for phase in states.values()))
+        self.close_layout.setEnabled(self._close_layout is not None and self.handle.can_close())
         running = sum(phase is PanePumpPhase.RUNNING for phase in states.values())
         starting = sum(phase in {PanePumpPhase.STARTING, PanePumpPhase.STOPPING} for phase in states.values())
         failed = sum(phase is PanePumpPhase.STOP_REQUIRED for phase in states.values())
@@ -193,6 +203,7 @@ class IndependentPaneSessionV2(QWidget):
             (self.start_all, "analyzer.independent.start_all"),
             (self.stop_selected, "analyzer.independent.stop_selected"),
             (self.stop_all, "analyzer.independent.stop_all"),
+            (self.close_layout, "analyzer.pane.setup.close_layout"),
         ):
             control.setText(text(key))
             control.setAccessibleName(text(key))

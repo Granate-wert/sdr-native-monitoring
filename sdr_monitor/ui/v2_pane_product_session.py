@@ -8,6 +8,8 @@ commands. No constructor performs RF/serial work or silently starts RX.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview, PaneResourceSession
@@ -24,7 +26,8 @@ class PaneProductSessionHandle:
 
     def __init__(self, pool: PaneProductGraphPool, layout: PaneLayout,
                  groups: tuple[AcquisitionGroup, ...], session: PaneResourceSession, *,
-                 allocation_budget: PresentationAllocationBudget | None = None) -> None:
+                 allocation_budget: PresentationAllocationBudget | None = None,
+                 source_labels: Mapping[str, str] | None = None) -> None:
         if (not isinstance(pool, PaneProductGraphPool) or not isinstance(layout, PaneLayout)
                 or layout.schedule is None or pool.composed_session is not session
                 or session.schedule is not layout.schedule):
@@ -32,6 +35,14 @@ class PaneProductSessionHandle:
         self.pool = pool
         self.layout = layout
         self.session = session
+        exact_sources = {endpoint.source_id for group in groups for endpoint in group.endpoints}
+        labels = {} if source_labels is None else dict(source_labels)
+        if (not set(labels) <= exact_sources or any(
+                not isinstance(value, str) or not value or len(value) > 160
+                or any(ord(character) < 32 for character in value)
+                for value in labels.values())):
+            raise ValueError("pane display labels require selected, bounded source facts")
+        self.source_labels = labels
         self.preparer = PaneDeliveryPreparer(layout, groups,
             allocation_budget if allocation_budget is not None else PresentationAllocationBudget())
         self.queue = PaneFairDeliveryQueue(tuple(slot.request.pane_id for slot in layout.slots

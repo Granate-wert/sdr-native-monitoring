@@ -1,7 +1,7 @@
 """Source-keyed V2 application graph ownership for an independent pane plan.
 
 Construction is inert. Each explicit Stage creates a distinct current V2
-service graph, runs bounded local discovery and selects one exact source on
+service graph, runs explicit local (or opt-in network) discovery and selects one exact source on
 the caller's control worker. No RX is started here. A source assigned to
 multiple panes must reuse ONE resource/graph in the compiled plan; two
 operational routes are never accepted as proof of distinct physical devices.
@@ -62,8 +62,15 @@ class PaneProductGraphPool:
     def composed_session(self) -> PaneResourceSession | None:
         return self._session
 
-    def stage(self, resource_id: str, source_id: str) -> AnalyzerSourceChoice:
-        """Explicit local Discover→Select on a new independent graph."""
+    def stage(self, resource_id: str, source_id: str, *,
+              include_network: bool = False) -> AnalyzerSourceChoice:
+        """Explicit Discover→Select on a new independent graph.
+
+        Network discovery is opt-in per selected source.  It may be slow and
+        remains on the caller's off-Qt control worker; no hidden retry occurs.
+        """
+        if type(include_network) is not bool:
+            raise ValueError("network discovery intent must be explicit")
         if (not isinstance(resource_id, str) or not resource_id.strip()
                 or not isinstance(source_id, str) or not source_id.strip()):
             raise ValueError("pane resource and source identity are required")
@@ -88,7 +95,7 @@ class PaneProductGraphPool:
                 # retained owner and shutdown would steal that resource.
                 raise PaneGraphPoolError("parallel pane resources reused one application owner")
         try:
-            choices = graph.live.discover(startup=True)
+            choices = graph.live.discover(startup=not include_network)
             if not any(isinstance(choice, AnalyzerSourceChoice) and choice.device_id == source_id
                        for choice in choices):
                 raise PaneGraphPoolError("pane source is absent from current local discovery")

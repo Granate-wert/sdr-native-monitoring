@@ -144,6 +144,73 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Окно анализа {number}", UiLocale.EN: "Analyzer pane {number}"}),
         "analyzer.independent.title": MappingProxyType({
             UiLocale.RU: "Независимые источники · 1–4 окна", UiLocale.EN: "Independent sources · 1–4 panes"}),
+        "analyzer.pane.setup.open": MappingProxyType({
+            UiLocale.RU: "Источники окон", UiLocale.EN: "Pane sources"}),
+        "analyzer.pane.setup.description": MappingProxyType({
+            UiLocale.RU: "Назначьте источник и диапазон каждому окну. Пустое окно не создаёт приёмник. Сначала выполните «Обнаружить USB» или явное «USB + IP» выше. Подготовка проверит источники заново; IP-поиск может быть долгим. Применение не запускает RX.",
+            UiLocale.EN: "Assign a source and range to each pane. Empty creates no receiver. First use Discover USB or explicit USB + IP above. Stage rechecks sources; IP discovery may take time. Apply does not start RX."}),
+        "analyzer.pane.setup.mode_help": MappingProxyType({
+            UiLocale.RU: "AD936x/HackRF: RX1 RTBW, диапазон не шире полезного окна (20 MS/s → 10 МГц; AD936x 61,44 MS/s → 36 МГц). tinySA: встроенная трасса сканирования в dBm. Один RX в нескольких окнах: общий захват при совместимых полосах, иначе чередование с паузами RF. Запрос Fs не является считыванием АЦП.",
+            UiLocale.EN: "AD936x/HackRF: RX1 RTBW within the usable window (20 MS/s → 10 MHz; AD936x 61.44 MS/s → 36 MHz). tinySA: device Sweep trace in dBm. One RX in several panes shares compatible capture or time-slices with RF gaps. Requested Fs is not ADC readback."}),
+        "analyzer.pane.setup.slot": MappingProxyType({UiLocale.RU: "Окно", UiLocale.EN: "Pane"}),
+        "analyzer.pane.setup.source": MappingProxyType({UiLocale.RU: "Источник", UiLocale.EN: "Source"}),
+        "analyzer.pane.setup.start": MappingProxyType({UiLocale.RU: "От", UiLocale.EN: "Start"}),
+        "analyzer.pane.setup.stop": MappingProxyType({UiLocale.RU: "До", UiLocale.EN: "Stop"}),
+        "analyzer.pane.setup.rate": MappingProxyType({UiLocale.RU: "Fs запрос", UiLocale.EN: "Requested Fs"}),
+        "analyzer.pane.setup.fft": MappingProxyType({UiLocale.RU: "FFT", UiLocale.EN: "FFT"}),
+        "analyzer.pane.setup.points": MappingProxyType({UiLocale.RU: "Точки", UiLocale.EN: "Points"}),
+        "analyzer.pane.setup.empty": MappingProxyType({UiLocale.RU: "Пустое окно", UiLocale.EN: "Empty pane"}),
+        "analyzer.pane.setup.prepare": MappingProxyType({
+            UiLocale.RU: "Подготовить · показать влияние", UiLocale.EN: "Stage · show impact"}),
+        "analyzer.pane.setup.preparing": MappingProxyType({
+            UiLocale.RU: "Проверка источников и плана… RX не запускается.",
+            UiLocale.EN: "Checking sources and plan… RX is not started."}),
+        "analyzer.pane.setup.apply": MappingProxyType({UiLocale.RU: "Применить раскладку", UiLocale.EN: "Apply layout"}),
+        "analyzer.pane.setup.applying": MappingProxyType({
+            UiLocale.RU: "Применение настроек и резервирование ресурсов… RX не запускается.",
+            UiLocale.EN: "Applying settings and reserving resources… RX is not started."}),
+        "analyzer.pane.setup.discard": MappingProxyType({UiLocale.RU: "Отменить подготовку", UiLocale.EN: "Discard Stage"}),
+        "analyzer.pane.setup.preview_intro": MappingProxyType({
+            UiLocale.RU: "Влияние раскладки до применения:", UiLocale.EN: "Layout impact before Apply:"}),
+        "analyzer.pane.setup.parallel": MappingProxyType({
+            UiLocale.RU: "независимый ресурс", UiLocale.EN: "independent resource"}),
+        "analyzer.pane.setup.shared": MappingProxyType({
+            UiLocale.RU: "общий захват", UiLocale.EN: "shared capture"}),
+        "analyzer.pane.setup.time_sliced": MappingProxyType({
+            UiLocale.RU: "чередование по времени, RF-паузы", UiLocale.EN: "time-sliced, RF gaps"}),
+        "analyzer.pane.setup.preview_resource": MappingProxyType({
+            UiLocale.RU: "{source} → окна {panes}: {mode}; заданий захвата {jobs}",
+            UiLocale.EN: "{source} → panes {panes}: {mode}; capture jobs {jobs}"}),
+        "analyzer.pane.setup.recording_conflict": MappingProxyType({
+            UiLocale.RU: "конфликт с записью", UiLocale.EN: "recording conflict"}),
+        "analyzer.pane.setup.preview_scope": MappingProxyType({
+            UiLocale.RU: "Это план, не измерение скорости или непрерывности RF. Применить ≠ Старт; для изменения работающей раскладки сначала выполните Стоп.",
+            UiLocale.EN: "This is a plan, not measured speed or RF continuity. Apply is not Start; Stop the active layout before editing it."}),
+        "analyzer.pane.setup.invalid": MappingProxyType({
+            UiLocale.RU: "Проверьте источник, диапазон и параметры окна; раскладка не подготовлена.",
+            UiLocale.EN: "Check each pane's source, range and parameters; no layout was staged."}),
+        "analyzer.pane.setup.base_busy": MappingProxyType({
+            UiLocale.RU: "Сначала остановите и освободите текущий одиночный приём. Многоконная подготовка не начата.",
+            UiLocale.EN: "Stop and release the current single-source acquisition first. Multi-pane Stage did not begin."}),
+        "analyzer.pane.setup.no_source": MappingProxyType({
+            UiLocale.RU: "Назначьте хотя бы один источник; все окна пока пустые.",
+            UiLocale.EN: "Assign at least one source; all panes are Empty."}),
+        "analyzer.pane.setup.stage_failed": MappingProxyType({
+            UiLocale.RU: "Свежая проверка источника или плана не прошла. При необходимости повторите обнаружение; RX не запущен. Если закрытие владельца не подтвердилось, нажмите «Отменить подготовку».",
+            UiLocale.EN: "Fresh source or plan check failed. Rediscover if needed; RX was not started. If owner close did not confirm, use Discard Stage."}),
+        "analyzer.pane.setup.operation_failed": MappingProxyType({
+            UiLocale.RU: "Операция не подтвердилась. Владелец сохранён; проверьте состояние и выполните явное закрытие.",
+            UiLocale.EN: "Operation did not confirm. Owner is retained; inspect state and close explicitly."}),
+        "analyzer.pane.setup.attach_failed": MappingProxyType({
+            UiLocale.RU: "Раскладка применена, но не присоединена к интерфейсу. RX не запускался; нажмите «Отменить подготовку» для освобождения ресурсов.",
+            UiLocale.EN: "Layout applied but UI attachment failed. RX was not started; use Discard Stage to release resources."}),
+        "analyzer.pane.setup.close_layout": MappingProxyType({
+            UiLocale.RU: "Закрыть раскладку", UiLocale.EN: "Close layout"}),
+        "analyzer.pane.setup.close_failed.title": MappingProxyType({
+            UiLocale.RU: "Раскладка не закрыта", UiLocale.EN: "Layout not closed"}),
+        "analyzer.pane.setup.close_failed.detail": MappingProxyType({
+            UiLocale.RU: "Один из владельцев не подтвердил освобождение. Текущая раскладка сохранена; проверьте Stop и повторите явное закрытие.",
+            UiLocale.EN: "An owner did not confirm release. The current layout is retained; check Stop and retry explicit close."}),
         "analyzer.independent.start_selected": MappingProxyType({
             UiLocale.RU: "Старт выбранного", UiLocale.EN: "Start selected"}),
         "analyzer.independent.start_all": MappingProxyType({
