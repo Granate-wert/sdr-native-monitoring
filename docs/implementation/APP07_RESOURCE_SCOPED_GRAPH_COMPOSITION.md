@@ -231,3 +231,27 @@ These are short current-Python-source physical observations, **not** a
 current-source frozen EXE, lossless transport, RF duty/Pd, measured FFT/s,
 DWM FPS or sustained performance acceptance. The APP-07 release gate remains
 open; its physical one-RX multi-pane *functional* cell has bounded evidence.
+
+### Exact-source Windows package boundary (2026-09-29)
+
+A separate tagged official CPU/HackRF onedir package was built from exact
+source `8c894afcf2d5d98ffa707f7585a7da7b387ccdd0` (product code is
+unchanged from the physical user-editor witness). The native StageOnly build
+passed 40/40 CTest. The 658-file package, one shared libusb, source/native
+manifest, default/inert frozen UI V2 shell, libiio and tinySA load-only
+checks all passed. The first build attempt refused a different system
+libusb before freeze; the successful tag selected the already hash-checked
+common runtime in a process-local environment, without replacing a system
+DLL. The diagnostic EXE SHA-256 is
+`829181b979569a91a953a3e4665e99cc791f1d76e602e6fc7f61595d431a4998`;
+the staged/package native SHA-256 is
+`34128b77888cb1b8a9a2178f51ecd953dd3f7811ecfd7276e68d6b0f2fdb4f95`.
+An exact-source UI V2 gate passed 1050 tests / 66 expected skips / 0 failures.
+
+The EXE launched to one responding UI V2 window and loaded its package-local
+native/HackRF/libusb modules. Computer Use could not activate that returned
+window on either the initial or one refreshed attempt, so no UI operation or
+RX was sent. This is a package and idle-load witness, **not** a frozen 2×2
+physical pass or release acceptance; the earlier source-Python live frames
+must not be attributed to the EXE. The tagged candidate remains separate
+from the approved static/current installation.
