@@ -517,3 +517,63 @@ request classified it as tinySA Ultra (`tinySA4_v1.4-200-g26fc821`);
 no measurement was started by that probe. A new exact-source frozen
 AD9364 + HackRF + tinySA + Empty physical repeat is the next separate
 qualification cell. APP-07 remains partial.
+
+### Exact frozen three-family 2×2 physical repeat (2026-09-29)
+
+The committed UI V2 source `4a777e3412c4c48d2e0a00d8f3577d71b12d32e9`
+was packaged as a separate official CPU/HackRF diagnostic EXE at
+`dist/SDRNativeMonitoring-CPU-APP07-GEOM-20260929-4A777E3/SDRNativeMonitoring/SDRNativeMonitoring.exe`.
+The EXE SHA-256 is
+`de189ed7c39b4c33966d063ceaa1cb618154d2f69bce4b55c16452c1ce3cae7b`.
+The pipeline passed 40/40 native CTest, unchanged source-snapshot checks,
+and its 658-file frozen/native/shared-runtime verifiers. The approved
+static/current installation was not replaced. After the physical run,
+the same 658-file package manifest verified again.
+
+Computer Use controlled this exact EXE in a visible Windows UI V2 window.
+Local-only USB Discover found three candidates. The applied four-slot plan
+used **one separate physical resource per occupied slot**:
+
+| Slot | Source and receiver | Requested range | Presentation |
+| --- | --- | --- | --- |
+| 1 | Pluto-class AD936x USB, RX1 (`de052fa5`) | 100–108 MHz | RTBW, dBFS/bin, requested 20 MS/s, FFT 4096 |
+| 2 | HackRF One USB, RX1 (`812715f0`) | 140–148 MHz | RTBW, dBFS/bin, requested 20 MS/s, FFT 4096 |
+| 3 | tinySA Ultra USB (`b49b5c53`) | 200–210 MHz | device sweep, 101 points, calibrated device dBm |
+| 4 | Empty | — | no source or acquisition job |
+
+The read-only local IIO context query after normal shutdown identified the
+first Pluto-class device as `Z7010-AD9364` with
+`ad9361-phy,model: ad9364` at `usb:3.8.5`. The tinySA read-only `version`
+query identified `tinySA4_v1.4-200-g26fc821`; no firmware or device
+settings were changed by these identity probes. The UI source IDs are
+short discovery identifiers, not unique serial-number or RF-path proof.
+
+Stage/Preview showed three independent resources and one job per resource;
+Apply remained at `running 0` until the explicit Start all. The visible
+session then reached `running 3 / starting 0 / Stop required 0` with the
+three different frequency axes. Both SDR Spectrum/Waterfall pairs changed
+while live; the tinySA produced its own dBm trace and successive device
+sweep rows. The Empty fourth cell never acquired a frame. All occupied
+panes reported recent data (`<1 s`) during a short observation. Explicit
+Stop selected on slot 3 reached `running 2 / stopped 1` while both SDR
+plots continued changing; tinySA correctly retained its last frame as
+**not new**. Explicit Stop all reached `running 0 / stopped 3 /
+Stop required 0`, and all three frames were marked retained/not new.
+
+At the actual 1440×912 maximized window, all four cells appeared in 2×2.
+Restoring that same stopped window to 1154×760 reflowed the **same** cells
+into one scrollable column; dragging the board scrollbar exposed the tinySA
+trace and Empty fourth cell. Maximizing again restored 2×2 with all three
+retained frames and no new RX. Close layout returned to the ordinary
+Analyzer; normal EXE Close left no process window. This is a visible
+responsive-window witness at two sizes, **not** Windows per-monitor
+100/150/200/300% DPI qualification. The offscreen DPI matrix above remains
+separate evidence.
+
+This closes the short three-family independent-source **functional** 2×2
+cell. It does not establish FFT/LPS or paint/DWM rates, acquisition
+continuity, RF duty/Pd, lossless USB, exact physical sampling, calibrated
+RF accuracy beyond the instrument's own dBm output, simultaneous
+instant-by-instant capture, extended soak, or release acceptance. Slower
+tinySA device sweeps are normal and are not an SDR-rate defect. APP-07 and
+the full APP-00…14 roadmap remain partial/open.
