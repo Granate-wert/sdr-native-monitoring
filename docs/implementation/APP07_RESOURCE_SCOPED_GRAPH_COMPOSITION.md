@@ -389,3 +389,32 @@ gap separation and without merging different grids/units/sources, is an
 open APP-07 correctness item. The generic single-source epoch-reset tests
 must stay valid; this needs an explicit independent-pane policy and a
 physical recheck rather than disabling all epoch resets.
+
+### Later 2×2 device-availability recheck (2026-09-29)
+
+The exact existing `5eaafd4` diagnostic EXE (SHA-256
+`0b9f7451c31fd0a677f3cb94dbef7f508a2973f73c1c688d51fcfb94b939695a`)
+was relaunched visibly for a requested AD9364 + HackRF + tinySA + Empty
+recheck. Windows serial enumeration did not include the former tinySA COM31;
+local-only USB Discover in the EXE returned **two** choices, AD936x USB and
+HackRF USB. A read-only `iio_info` inventory found one USB Pluto context at
+`usb:3.8.5`, reporting `Z7010-AD9364` and `ad9361-phy,model: ad9364`; its
+serial field was empty, so the silicon check is not serial-backed process
+identity. The requested *three-device repeat could not be performed* in
+this session. It must not be reported as a new 3+Empty acceptance.
+
+The available partial physical cell used the in-tab 2×2 editor: pane 1
+AD936x RX1, 100–108 MHz, requested 20 MS/s and FFT 4096; pane 2 HackRF
+RX1, 140–148 MHz, requested 20 MS/s and FFT 4096; panes 3 and 4 Empty.
+Stage preview showed two independent resources and one capture job each;
+Apply did not start RX. Explicit Start all reached `running 2` and both
+assigned Spectrum/Waterfall pairs populated with separate frequency axes
+and host data-age labels `<1 s`. Stop selected on pane 1 changed its label
+to retained/not new while pane 2 remained fresh and `running 1`; Stop all
+reached `running 0 / stopped 2 / Stop required 0`. Close layout returned to
+the ordinary Analyzer, and the EXE was closed normally. A current working-
+tree synthetic three-family + Empty focused suite passed 10/10 tests; it
+does **not** replace the absent physical tinySA cell. No new product EXE,
+source edit or performance/soak/RF-duty acceptance is claimed by this check.
+The earlier exact `5eaafd4` 3+Empty physical witness above remains the
+evidence for that short functional scenario until tinySA is reconnected.
