@@ -419,7 +419,7 @@ source edit or performance/soak/RF-duty acceptance is claimed by this check.
 The earlier exact `5eaafd4` 3+Empty physical witness above remains the
 evidence for that short functional scenario until tinySA is reconnected.
 
-### Time-sliced RTBW pane waterfall continuity (source candidate)
+### Time-sliced RTBW pane waterfall continuity (2026-09-29)
 
 An independent pane now retains its own bounded Waterfall history across a
 **confirmed scheduled revisit** of one RX. This is deliberately narrower
@@ -439,7 +439,36 @@ until an actual row is admitted. Missing producer epoch progress, changed
 grid/source/receiver/unit/clock, Sweep mode and ordinary one-source panes
 retain their fail-closed history reset. Subsequent FFTs in one activation
 do not create more separators. The test suite covers these guards, two
-independent pane histories and the generic epoch reset. Current-source
-physical same-RX visual confirmation, new frozen EXE and sustained UI/RF
-qualification remain separate open gates; source tests alone do not prove
-that a gap stripe is legible at every 2×2 size or DPI.
+independent pane histories and the generic epoch reset.
+
+Exact product `b4a067bd10a54560386db2b5767391f63389b1fc` passed the
+postcommit UI V2 source gate: 1054 tests, 66 expected skips, zero failures,
+no product imports outside the checkout. A separate tagged official
+CPU/HackRF build passed 40/40 native CTest and its 658-file frozen/source/
+native/shared-runtime checks. Its EXE is
+`dist/SDRNativeMonitoring-CPU-APP07-WF-20260929-B4A067B/SDRNativeMonitoring/SDRNativeMonitoring.exe`,
+SHA-256 `dba197f0b19f6446e7b733b3e589278e67470c61a9625eafef6c6238ab220d72`.
+It did not replace the approved static/current installation.
+
+Computer Use operated that exact EXE visibly with one discovered AD936x USB
+RX1 assigned to 100–108 and 200–208 MHz, requested 20 MS/s and FFT4096 in
+both panes; panes 3–4 were Empty. Stage showed one resource/two time-sliced
+jobs with RF gaps, and Apply did not start RX. Explicit Start all showed
+`running 1`, two changing Spectrum traces and two Waterfall histories that
+grew across multiple alternations instead of resetting to one row. Thin
+blank horizontal separation was visible in the short 2×2 observation; the
+EXE did not expose an exact per-pane separator count. Host age stayed below
+one second and sampled revisits were about 0.43–0.46 s, versus the configured
+0.16 s model, which is not a device maximum. Explicit Stop all reached
+`running 0 / Stop required 0 / stopped 1`; both panes marked their retained
+frame not new. Close layout and normal EXE close completed, and the
+658-file manifest reverified afterward.
+
+This closes a **short same-RX frozen-UI waterfall continuity cell**, not
+sustained correctness or speed acceptance. The visible separation is a
+presentation marker, not a timestamped RF-gap duration or loss count. The
+currently absent tinySA serial port prevented a new three-family 3+Empty
+physical repeat; the prior exact `5eaafd4` short 3+Empty witness above
+remains separate evidence. FHD/QHD/DPI legibility, measured timing
+distribution, RF duty/Pd, ADC readback, lossless transport, paint/DWM FPS,
+LPS and soak remain open. APP-07 and the release remain partial.
