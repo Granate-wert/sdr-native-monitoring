@@ -6,6 +6,7 @@ import time
 import unittest
 from dataclasses import replace
 from threading import Lock
+from unittest.mock import patch
 
 import numpy as np
 
@@ -18,7 +19,7 @@ from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2_pane_delivery_queue import PaneFairDeliveryQueue
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer
-from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase, PaneResourcePump
+from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase, PaneResourcePump, _ResourceWorker
 
 from tests.test_app07_pane_resource_session import FakeOwner, frame, live_frame
 from tests.test_app07_shared_capture_schedule import group, pane, profile
@@ -111,6 +112,25 @@ class PaneResourcePumpTests(unittest.TestCase):
             pump.join_after_stop(3)
         self.assertEqual(leases.active_resource_count, 0)
         self.assertTrue(all(item.phase is PanePumpPhase.STOPPED for item in pump.snapshot()))
+
+    def test_partial_thread_launch_failure_releases_all_prestart_leases(self) -> None:
+        _, session, leases, owners, _, pump = self.make_plan()
+        session.apply()
+        original_launch = _ResourceWorker.launch
+
+        def launch_or_fail(worker: _ResourceWorker) -> None:
+            if worker.resource.physical_stream_resource_id == "device-2":
+                raise RuntimeError("test-only Thread.start refusal")
+            original_launch(worker)
+
+        with patch.object(_ResourceWorker, "launch", launch_or_fail):
+            with self.assertRaisesRegex(RuntimeError, "all leases released"):
+                pump.activate()
+        self.assertEqual(leases.active_resource_count, 0)
+        self.assertEqual(session.active_resource_count, 0)
+        self.assertTrue(all(item.phase is PanePumpPhase.STOPPED for item in pump.snapshot()))
+        self.assertTrue(all(not owner.running for owner in owners.values()))
+        pump.join_after_stop(3)
 
     def test_shared_resource_requires_impact_ack_and_terminal_before_retune(self) -> None:
         layout, session, leases, owners, queue, pump = self.make_plan(2, time_sliced=True)

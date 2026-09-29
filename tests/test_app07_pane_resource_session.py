@@ -191,6 +191,32 @@ class PaneResourceSessionTests(unittest.TestCase):
             })
         self.assertEqual(self.leases.active_resource_count, 0)
 
+    def test_unknown_identity_only_admitted_for_one_source_per_distinct_family(self) -> None:
+        from sdr_monitor.domain.device_capabilities import DeviceFamily
+
+        groups = (group("device-a", "rx-a"), group("device-b", "rx-b"))
+        requests = (
+            pane("first", "rx-a", 100e6, 108e6, ReceiverBindingMode.DEDICATED_PARALLEL),
+            pane("second", "rx-b", 120e6, 128e6, ReceiverBindingMode.DEDICATED_PARALLEL),
+        )
+        schedule = compile_pane_schedule(groups, requests, {"capture": profile(36_000_000)})
+        owners = {"device-a": FakeOwner("device-a"), "device-b": FakeOwner("device-b")}
+        identity = {"device-a:source": None, "device-b:source": stable_identity_key("hackrf")}
+        same_family = {"device-a:source": DeviceFamily.AD936X,
+                       "device-b:source": DeviceFamily.AD936X}
+        with self.assertRaisesRegex(PaneResourceError, "unique selected family"):
+            PaneResourceSession(schedule, groups, owners, self.leases,
+                                source_identity_keys=identity, source_families=same_family)
+        identity["device-b:source"] = None
+        with self.assertRaisesRegex(PaneResourceError, "unique selected family"):
+            PaneResourceSession(schedule, groups, owners, self.leases,
+                                source_identity_keys=identity, source_families=same_family)
+        distinct_family = {**same_family, "device-b:source": DeviceFamily.HACKRF}
+        session = PaneResourceSession(schedule, groups, owners, self.leases,
+                                      source_identity_keys=identity, source_families=distinct_family)
+        self.assertEqual(len(session.preview()), 2)
+        self.assertEqual(self.leases.active_resource_count, 0)
+
     def test_two_resources_start_in_parallel_and_keep_publications_isolated(self) -> None:
         groups = (group("device-a", "rx-a"), group("device-b", "rx-b"))
         requests = (

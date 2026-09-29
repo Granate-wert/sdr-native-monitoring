@@ -62,9 +62,11 @@ class _ResourceWorker:
         self._terminal_seen = False
         self._slot_deadline_s: float | None = None
         self._thread = Thread(target=self._run, name=f"pane-rx-{resource.physical_stream_resource_id}")
+        self._launched = False
 
     def launch(self) -> None:
         self._thread.start()
+        self._launched = True
 
     def snapshot(self) -> PanePumpResourceState:
         with self._condition:
@@ -84,6 +86,24 @@ class _ResourceWorker:
             return future
 
     def request_stop(self) -> Future[None]:
+        if not self._launched:
+            # Activation may have failed after session.apply reserved this
+            # lease but before its worker thread started. Apply is off Qt;
+            # release that never-started resource on the same control worker.
+            unlaunched_future: Future[None] = Future()
+            unlaunched_future.set_running_or_notify_cancel()
+            try:
+                self.session.stop_resource(self.resource.physical_stream_resource_id)
+            except Exception:
+                with self._condition:
+                    self._state = replace(self._state, phase=PanePumpPhase.STOP_REQUIRED,
+                                          error="Receiver lease release failed; explicit Stop required")
+                unlaunched_future.set_exception(RuntimeError("unlaunched pane receiver did not release"))
+            else:
+                with self._condition:
+                    self._state = replace(self._state, phase=PanePumpPhase.STOPPED, error=None)
+                unlaunched_future.set_result(None)
+            return unlaunched_future
         with self._condition:
             if self._state.phase is PanePumpPhase.STOPPED:
                 done: Future[None] = Future()
@@ -102,6 +122,8 @@ class _ResourceWorker:
     def join_after_stop(self, timeout_s: float | None) -> None:
         if self.snapshot().phase is not PanePumpPhase.STOPPED:
             raise RuntimeError("pane resource has not confirmed explicit Stop")
+        if not self._launched:
+            return
         self._thread.join(timeout_s)
         if self._thread.is_alive():
             raise TimeoutError("pane resource worker has not joined")
@@ -248,14 +270,39 @@ class PaneResourcePump:
         }
         self._started = False
 
+    @property
+    def activated(self) -> bool:
+        return self._started
+
     def activate(self) -> None:
         """Spawn workers only after external preview/apply reserved all leases."""
         if (self._started or self._session.retained_resource_count != len(self._workers)
                 or self._session.active_resource_count != 0):
             raise RuntimeError("pane pump needs an applied session with all resource leases")
         self._started = True
-        for worker in self._workers.values():
-            worker.launch()
+        try:
+            for worker in self._workers.values():
+                worker.launch()
+        except Exception:
+            # No explicit Start has been exposed yet. Roll back all reserved
+            # leases, including workers whose Thread.start failed, before
+            # returning control to the caller. A failed Stop remains retained
+            # and can be retried through stop_all; it is never silently freed.
+            futures = tuple(worker.request_stop() for worker in self._workers.values())
+            failures = False
+            for future in futures:
+                try:
+                    future.result(timeout=5.0)
+                except Exception:
+                    failures = True
+            if not failures:
+                try:
+                    self.join_after_stop(5.0)
+                except Exception:
+                    failures = True
+            if failures:
+                raise RuntimeError("pane worker activation failed; explicit Stop is required") from None
+            raise RuntimeError("pane worker activation failed; all leases released") from None
 
     def snapshot(self) -> tuple[PanePumpResourceState, ...]:
         return tuple(worker.snapshot() for worker in self._workers.values())

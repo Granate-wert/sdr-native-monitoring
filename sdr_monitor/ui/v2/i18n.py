@@ -142,6 +142,30 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Пустое окно — источник не назначен", UiLocale.EN: "Empty pane — no source assigned"}),
         "analyzer.pane.slot": MappingProxyType({
             UiLocale.RU: "Окно анализа {number}", UiLocale.EN: "Analyzer pane {number}"}),
+        "analyzer.independent.title": MappingProxyType({
+            UiLocale.RU: "Независимые источники · 1–4 окна", UiLocale.EN: "Independent sources · 1–4 panes"}),
+        "analyzer.independent.start_selected": MappingProxyType({
+            UiLocale.RU: "Старт выбранного", UiLocale.EN: "Start selected"}),
+        "analyzer.independent.start_all": MappingProxyType({
+            UiLocale.RU: "Старт всех", UiLocale.EN: "Start all"}),
+        "analyzer.independent.stop_selected": MappingProxyType({
+            UiLocale.RU: "Стоп выбранного", UiLocale.EN: "Stop selected"}),
+        "analyzer.independent.stop_all": MappingProxyType({
+            UiLocale.RU: "Стоп всех", UiLocale.EN: "Stop all"}),
+        "analyzer.independent.summary": MappingProxyType({
+            UiLocale.RU: "Ресурсы: работают {running} · запускаются {starting} · требуют Stop {failed} · остановлены {stopped}",
+            UiLocale.EN: "Resources: running {running} · starting {starting} · Stop required {failed} · stopped {stopped}"}),
+        "analyzer.independent.shared_stop.title": MappingProxyType({
+            UiLocale.RU: "Общий приёмник", UiLocale.EN: "Shared receiver"}),
+        "analyzer.independent.shared_stop.detail": MappingProxyType({
+            UiLocale.RU: "Остановка выбранного окна остановит все окна этого RX: {panes}. Продолжить?",
+            UiLocale.EN: "Stopping the selected pane will stop every pane on this RX: {panes}. Continue?"}),
+        "analyzer.independent.operation_failed": MappingProxyType({
+            UiLocale.RU: "Команда не подтверждена. Проверьте состояние ресурса и выполните явный Stop.",
+            UiLocale.EN: "Command did not confirm. Check the resource state and use explicit Stop."}),
+        "analyzer.independent.render_failed": MappingProxyType({
+            UiLocale.RU: "Кадр окна {pane} отклонён при отображении. Ресурс сохранён; требуется явный Stop.",
+            UiLocale.EN: "Pane {pane} frame failed presentation. Resource retained; explicit Stop required."}),
         "analyzer.shared_views.scope": MappingProxyType({
             UiLocale.RU: "1–4 вида публикаций одного источника: в RTBW — та же полоса, при сканировании — тот же диапазон. Дополнительные окна не открывают устройство и не добавляют перестроек или независимых RX. Масштаб, маркеры и история независимы.",
             UiLocale.EN: "1–4 views of one source publication: the same RTBW band or the same Sweep span. Extra views do not open a device, add retunes or provide independent RX. Zoom, markers and history are independent."}),

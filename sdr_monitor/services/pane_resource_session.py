@@ -17,6 +17,7 @@ from time import monotonic
 from typing import Callable, ContextManager, Iterator, Mapping, Protocol
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.pane_scheduler import (
     CaptureJob, CaptureMeasurementMode, PaneControlGap, PaneCrop, PaneRevisitEstimate, PaneSchedule,
@@ -205,7 +206,8 @@ class PaneResourceSession:
         owners: Mapping[str, PaneCaptureOwner],
         lease_manager: ReceiverLeaseManager,
         *,
-        source_identity_keys: Mapping[str, str] | None = None,
+        source_identity_keys: Mapping[str, str | None] | None = None,
+        source_families: Mapping[str, DeviceFamily] | None = None,
         now_s: Callable[[], float] = monotonic,
     ) -> None:
         resource_ids = {item.physical_stream_resource_id for item in schedule.resources}
@@ -278,19 +280,28 @@ class PaneResourceSession:
         if pane_ids != {item.pane_id for item in schedule.pane_revisits}:
             raise PaneResourceError("pane delivery and planned revisit identities differ")
         # Operational IDs are routes scoped to an adapter. USB and IP entries
-        # for the SAME physical receiver can have different source IDs. A
-        # multi-resource session must therefore receive canonical observed
-        # identities from the selected capability bindings, not infer physical
-        # independence from its acquisition-group labels.
+        # for the SAME physical receiver can have different source IDs. Within
+        # one family, independent resources therefore need distinct observed
+        # canonical identities. An unidentifiable source is safe only when its
+        # selected device family occurs exactly once in this plan: one physical
+        # device cannot simultaneously be an AD936x, HackRF and tinySA.
         if len(runtimes) > 1:
             identities = dict(source_identity_keys or {})
             if identities.keys() != source_ids or any(
-                    not isinstance(key, str) or not key.startswith("sha256:")
+                    key is not None and (not isinstance(key, str) or not key.startswith("sha256:")
                     or len(key) != 71 or any(character not in "0123456789abcdef" for character in key[7:])
-                    for key in identities.values()):
+                    ) for key in identities.values()):
                 raise PaneResourceError("parallel receivers require exact canonical source identities")
-            if len(set(identities.values())) != len(identities):
+            known_keys = tuple(key for key in identities.values() if key is not None)
+            if len(set(known_keys)) != len(known_keys):
                 raise PaneResourceError("two operational sources alias one physical receiver")
+            if any(key is None for key in identities.values()):
+                families = dict(source_families or {})
+                if (families.keys() != source_ids
+                        or any(not isinstance(family, DeviceFamily) for family in families.values())
+                        or any(sum(other is families[source_id] for other in families.values()) != 1
+                               for source_id, key in identities.items() if key is None)):
+                    raise PaneResourceError("unidentified parallel receiver needs a unique selected family")
         self._runtimes = runtimes
         self._schedule = schedule
         self._pane_resources = pane_resources

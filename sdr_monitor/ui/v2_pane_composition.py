@@ -28,12 +28,12 @@ def compose_v2_pane_resource_session(
     graphs: Mapping[str, V2AnalyzerApplicationGraph],
     leases: ReceiverLeaseManager,
 ) -> PaneResourceSession | None:
-    """Bind exact canonical sources to one owner/lease per physical resource.
+    """Bind selected sources to one owner/lease per physical resource.
 
     Different operational IDs can be aliases for one device (for example
-    AD936x USB/IP). Their selected capability identity must be known and
-    distinct before parallel admission. A graph, its native port or catalog
-    must not be reused for a second purportedly independent resource.
+    AD936x USB/IP). Same-family parallel sources need distinct observed
+    identities. A source lacking that identity is admitted only if its family
+    occurs once in the plan. A graph, native port or catalog must not be reused.
     """
     if not isinstance(layout, PaneLayout) or not isinstance(leases, ReceiverLeaseManager):
         raise TypeError("pane product composition needs a compiled layout and receiver lease manager")
@@ -63,7 +63,8 @@ def compose_v2_pane_resource_session(
             raise PaneResourceError("parallel panes cannot share one family or recording owner")
 
     owners: dict[str, PaneCaptureOwner] = {}
-    identities: dict[str, str] = {}
+    identities: dict[str, str | None] = {}
+    families: dict[str, DeviceFamily] = {}
     for group in groups:
         resource_id = group.physical_stream_resource_id
         graph = graphs[resource_id]
@@ -71,11 +72,12 @@ def compose_v2_pane_resource_session(
         selected = None if selection is None else selection.selected
         if (selection is None or selected is None or selection.release_pending
                 or graph.sources is None or graph.sources.current() is not selection
-                or selected.binding.identity_key is None or len(group.endpoints) != 1
+                or len(group.endpoints) != 1
                 or group.endpoints[0].source_id != selected.device_id):
-            raise PaneResourceError("pane source lacks one current selected canonical binding")
+            raise PaneResourceError("pane source lacks one current selected binding")
         endpoint = group.endpoints[0]
         identities[selected.device_id] = selected.binding.identity_key
+        families[selected.device_id] = selected.family
         if selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):
             owners[resource_id] = Ad936xRtbwPaneOwner(
                 graph.live, physical_stream_resource_id=resource_id,
@@ -96,7 +98,7 @@ def compose_v2_pane_resource_session(
         else:
             raise PaneResourceError("pane endpoint does not match a qualified selected source family")
     return PaneResourceSession(layout.schedule, groups, owners, leases,
-                               source_identity_keys=identities)
+                               source_identity_keys=identities, source_families=families)
 
 
 __all__ = ["compose_v2_pane_resource_session"]

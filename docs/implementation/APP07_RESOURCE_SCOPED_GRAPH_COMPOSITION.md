@@ -10,13 +10,16 @@ command. Reusing one bundle/graph does not create another receiver.
 `PaneLayout`, exact acquisition groups, separately selected V2 graphs and one
 shared receiver lease manager. It uses the existing AD936x RTBW, HackRF RTBW
 and tinySA trace pane owners, not another SDK or renderer. It derives physical
-identity keys from the **selected capability bindings** and refuses unknown
-identity, duplicate source/physical identity, reused native/catalog/family
-owner, wrong endpoint/family or missing graph before creating a lease or
-starting a receiver. An all-Empty layout returns no capture session. The
-`PaneResourceSession` itself also requires unique canonical identities for
-any multi-resource plan; distinct operational USB/IP IDs alone are not proof
-of independent devices.
+identity keys and family from the **selected capability bindings**. Known
+duplicate physical identities, reused native/catalog/family owners, wrong
+endpoint/family or missing graphs refuse before a lease or RX Start. An
+all-Empty layout returns no capture session. A selected source without a
+canonical serial-backed identity may join a multi-resource plan **only when
+its device family occurs exactly once**. This permits one route-scoped Pluto
+alongside independently identified HackRF and tinySA, but never treats two
+unidentified AD936x USB/IP routes as two physical receivers. Multiple sources
+from one family still require distinct observed canonical identities;
+different operational IDs alone never establish that fact.
 
 The fake-SDK/serial three-family 3+1 test now uses this product graph builder
 and composition seam: AD936x and HackRF RTBW publish dBFS/bin on different
@@ -26,11 +29,10 @@ active. Separate tests cover inert graph construction and refusal of two
 AD936x routes with one canonical physical identity. This is **not** a visible
 mixed-source UI, physical three-device RX proof or a frozen Windows EXE.
 
-Still required: expose independently selected resource graphs through one
-Analyzer tab, bind per-pane source/range/mode/Empty and prepared fair rendering,
-own explicit selected/Stop-all/close and recording conflicts, then qualify a
-current EXE on physical AD9364 + HackRF + verified tinySA. The existing
-`shared_views` remains correctly labeled as views of one source.
+Still required for the end-user workflow: in-tab per-pane source/range/mode/
+Empty editing, explicit Stage/impact Preview/Apply, then a current frozen EXE
+on physical AD9364 + HackRF + verified tinySA. The existing `shared_views`
+remains correctly labeled as views of one source.
 
 ## Independent UI V2 canvas packet (2026-09-29, partial)
 
@@ -57,13 +59,13 @@ not a physical RF screenshot or release asset. The board accepts a distinct
 small fake harness uses the synchronous renderer and makes no high-density
 paint-cadence or UI-latency claim.
 
-The board is **not yet wired into the user-facing Analyzer tab or a frozen
-EXE**. It owns no discovery or RF Start/Stop. Product-tab assignment,
-selected Start/Stop and Stop-all UI, recording conflicts and safe product
-shutdown remain APP-07 work. USB Pluto and HackRF are enumerated
-on the development host; a bounded version-only COM31 probe identified
-tinySA Ultra. That is source availability only, not concurrent three-device
-RX, UI frame-rate, RF duty or metrological acceptance.
+The board owns no discovery or RF Start/Stop. It can now be attached to the
+existing Analyzer tab by an externally previewed/applied
+`PaneProductSessionHandle` and exposes selected/all Start/Stop there. The
+in-tab assignment/Apply controller and current frozen EXE remain open. Its
+earlier fake-only screenshot is superseded for the narrow three-family
+receive/render question by the physical witness below, not by release
+acceptance.
 
 ## Fair delivery and resource worker packet (2026-09-29, partial)
 
@@ -89,7 +91,10 @@ a Sweep pane must receive a terminal Sweep publication first.
 Stop of one pane in a shared resource requires acknowledgement of all
 affected panes. Failed poll/Start/Stop retains the owner until explicit Stop
 or retry; there is no automatic reopen or hidden recovery. The control
-worker and Qt port are not yet attached to the shipped Analyzer tab.
+workers and Qt port now have an opt-in attachment in the same UI V2 Analyzer
+tab. The default single-source view is unchanged until an explicit applied
+independent plan is installed. The source/range editor which would let a
+normal user create that plan is not yet present.
 
 Fake-owner tests cover three independent resources plus Empty, exact
 resource/plan matching, selected versus Stop-all, missing terminal versus
@@ -97,4 +102,43 @@ scheduled retune, and failure retention. A separate fake three-family graph
 test reaches the canvas through the same queue/timer, with AD936x and HackRF
 dBFS/bin versus tinySA dBm on different ranges. These are software boundary
 checks, **not** simultaneous physical AD9364/HackRF/tinySA acceptance, a
-current frozen EXE, fair-render load measurement or 2×2 end-user workflow.
+current frozen EXE, fair-render load measurement or complete 2×2 end-user
+workflow. A partial worker-launch failure now releases every pre-Start lease;
+a failed release remains retained for explicit Stop retry.
+
+## Physical three-family 2×2 witness (2026-09-29, bounded)
+
+An explicit diagnostic runner used current checkout Python product code with
+the older official, hash-checked APP-06D native/SDK siblings in **one Windows
+process**. It staged three separately selected application graphs and applied
+one exact 3+Empty plan: AD936x USB RX1 100–108 MHz, 20 MS/s RTBW/FFT 4096;
+HackRF USB RX1 140–148 MHz, 20 MS/s RTBW/FFT 4096; tinySA Ultra serial
+200–210 MHz, 101-point repeated instrument Sweep; slot 4 Empty. The current
+USB Pluto exposed no stable serial-backed capability identity, so the
+unique-family-only admission above was exercised. The tinySA was version-
+confirmed before any scan.
+
+In a visible Windows Qt **standalone pane widget**, after about 12 seconds
+of simultaneous RX, the test observed 302 distinct presented Pluto bundles,
+311 HackRF bundles and 33 tinySA traces in their respective graph pairs;
+the instrument pane retained dBm and the two SDR panes dBFS/bin. The Empty
+slot had no graph or worker. Stopping the selected tinySA pane via its button
+left both SDR resources running, and each produced another publication after
+that Stop. Stop-all and graph/serial/native owner shutdown confirmed for all
+three. This is a real physical source/render witness, not a single-source
+clone; a screenshot and raw JSON are retained as private local evidence.
+
+A second visible Windows run installed the same externally applied handle
+into the **full UI V2 AppShell's existing Analyzer tab**. After 12 seconds
+it presented 304 Pluto, 303 HackRF and 34 tinySA bundles in three distinct
+graph pairs while slot 4 remained Empty. Selected tinySA Stop again left
+both SDRs running with subsequent publications; normal AppShell close
+released the pane owners. This confirms the opt-in same-tab composition,
+not a user-operable source-assignment workflow.
+
+The measured counts are **not** analytical FFT/s, ADC/USB losslessness,
+tinySA maximum-point throughput, RF duty/Pd, DWM frame cadence or a soak
+result. The native package predates the current Python change, and neither
+test was the final frozen EXE with a complete in-tab assignment UI.
+APP-07 remains partial until that user workflow and a same-source frozen
+physical qualification are complete.

@@ -51,6 +51,8 @@ from .analyzer_pane import AnalyzerPaneViewV2
 from .analyzer_status_label import AnalyzerPeriodsLabel, AnalyzerStatusLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_tinysa_configuration import TinySaConfigurationBar
+from .independent_pane_session import IndependentPaneSessionV2
+from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 
 
 class AnalyzerWorkspaceV2(QWidget):
@@ -69,6 +71,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self.model = model
         self._shared_projector_factory = shared_projector_factory
         self._terminal_released = False
+        self._independent_session: IndependentPaneSessionV2 | None = None
         self._theme = ThemeId.DARK
         self._last_source_selection: AnalyzerSourceSelection | None = None
         self._last_family_path_available = False
@@ -220,6 +223,64 @@ class AnalyzerWorkspaceV2(QWidget):
         button.clicked.connect(callback)
         self._text_bindings.append((button, key))
         return button
+
+    def install_independent_pane_session(self, handle: PaneProductSessionHandle) -> None:
+        """Show independent source panes on THIS Analyzer tab after Apply.
+
+        The external product controller owns Stage/preview/Apply and terminal
+        graph close. Installing this view never opens or starts a receiver.
+        """
+        state = self.model.state
+        if (self._terminal_released or self._independent_session is not None
+                or not isinstance(handle, PaneProductSessionHandle)
+                or not handle.applied or state.running or state.stop_required
+                or state.starting or state.stopping or state.live.busy):
+            raise RuntimeError("independent panes require an idle Analyzer and applied plan")
+        widget = IndependentPaneSessionV2(handle, parent=self)
+        self._hide_display(restore_focus=False)
+        self.drawer.hide()
+        self.tinysa_bar.settings_drawer.hide()
+        self._independent_session = widget
+        self._single_source_controls = (
+            self.source, self.rx, self.discover, self.discover_network, self.mode,
+            self.shared_views_label, self.shared_views, self.selected_view_label,
+            self.selected_view, self.settings, self.display, self.primary,
+            self.frequency_bar, self.hackrf_bar, self.hackrf_sweep_bar,
+            self.tinysa_bar, self.source_summary, self.applied, self.sweep_preview,
+            self.error, self._pane_host, self.status, self.periods,
+        )
+        for control in self._single_source_controls:
+            control.hide()
+        widget.setParent(self)
+        layout = self.layout()
+        assert isinstance(layout, QVBoxLayout)
+        layout.insertWidget(layout.indexOf(self._pane_host) + 1, widget, 1)
+        widget.set_theme(self._theme)
+        widget.set_locale()
+        widget.show()
+
+    @property
+    def independent_pane_session(self) -> IndependentPaneSessionV2 | None:
+        return self._independent_session
+
+    def uninstall_independent_pane_session(self) -> None:
+        """Return to the old single-source controls only after full Stop/close."""
+        widget = self._independent_session
+        if widget is None:
+            return
+        if not widget.handle.shutdown_complete:
+            raise RuntimeError("independent pane owners must close before returning to one source")
+        widget.release_presentation_after_shutdown()
+        layout = self.layout()
+        assert isinstance(layout, QVBoxLayout)
+        layout.removeWidget(widget)
+        widget.hide()
+        widget.setParent(None)
+        widget.deleteLater()
+        self._independent_session = None
+        for control in self._single_source_controls:
+            control.show()
+        self._render(self.model.state)
 
     def _set_shared_view_count(self, _index: int) -> None:
         """Show 1–4 views of the SAME source without extra RX commands."""
@@ -443,6 +504,8 @@ class AnalyzerWorkspaceV2(QWidget):
                 plot.getAxis("bottom").showLabel(False)
         for overlay in self._display_overlays:
             overlay.set_locale(current_locale())
+        if self._independent_session is not None:
+            self._independent_session.set_locale()
         self._reserve_primary_width()
         self._render(self.model.state)
 
@@ -465,9 +528,14 @@ class AnalyzerWorkspaceV2(QWidget):
         self._reserve_primary_width()
         for pane in self._panes:
             pane.set_theme(theme)
+        if self._independent_session is not None:
+            self._independent_session.set_theme(theme)
         self.drawer.set_theme(theme)
 
     def closeEvent(self, event) -> None:
+        if self._independent_session is not None and not self._independent_session.handle.can_close():
+            event.ignore()
+            return
         self.sweep_preview.cancel()
         self._unsubscribe()
         self._unsubscribe_devices()
@@ -479,6 +547,8 @@ class AnalyzerWorkspaceV2(QWidget):
         """Explicit parent-shell terminal hook; never used for Stop/hide."""
         if self._terminal_released:
             return
+        if self._independent_session is not None:
+            self._independent_session.release_presentation_after_shutdown()
         self._unsubscribe()
         self._unsubscribe_devices()
         self.sweep_preview.cancel()
@@ -713,6 +783,8 @@ class AnalyzerWorkspaceV2(QWidget):
     def _render(self, state: AnalyzerViewState) -> None:
         if self._terminal_released:
             return
+        if self._independent_session is not None:
+            return  # The old single-source views are hidden, not re-projected.
         self._refresh_preview()
         self._sync_source(state)
         selection = state.source_selection
@@ -829,12 +901,19 @@ def _set_text_if_changed(widget: QLabel | QPushButton, value: str) -> None:
 def analyzer_workspace_definition(model: AnalyzerViewModel,
                                   projector: SpectrumProjector | None = None,
                                   calibration_profiles: CalibrationProfileViewModel | None = None,
-                                  *, shared_projector_factory: Callable[[], SpectrumProjector] | None = None) -> WorkspaceDefinition:
+                                  *, shared_projector_factory: Callable[[], SpectrumProjector] | None = None,
+                                  on_created: Callable[[AnalyzerWorkspaceV2], None] | None = None) -> WorkspaceDefinition:
+    def make_workspace() -> AnalyzerWorkspaceV2:
+        widget = AnalyzerWorkspaceV2(model, projector=projector,
+            calibration_profiles=calibration_profiles,
+            shared_projector_factory=shared_projector_factory)
+        if on_created is not None:
+            on_created(widget)
+        return widget
+
     return WorkspaceDefinition(
         workspace_id="analyzer", label=text("analyzer.title"), description=text("analyzer.description"),
-        icon=V2IconId.NAVIGATION, workspace_factory=lambda: AnalyzerWorkspaceV2(
-            model, projector=projector, calibration_profiles=calibration_profiles,
-            shared_projector_factory=shared_projector_factory),
+        icon=V2IconId.NAVIGATION, workspace_factory=make_workspace,
         inspector_factory=lambda: AnalyzerInspector(model),
         label_key="analyzer.title", description_key="analyzer.description",
         terminal_cleanup=_release_analyzer_workspace,

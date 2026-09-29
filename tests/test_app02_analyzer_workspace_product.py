@@ -292,6 +292,83 @@ class AnalyzerWorkspaceProductTests(unittest.TestCase):
         self.wait(lambda: not self.live.is_running() and not self.composition.view_model.state.busy)
         self.assertEqual(self.events, ["rtbw-start", "rtbw-stop"])
 
+    def test_independent_three_source_plan_uses_same_analyzer_tab_and_close_guard(self):
+        """Three fake resources + Empty are not four shared_views clones."""
+        from sdr_monitor.domain.device_capabilities import stable_identity_key
+        from sdr_monitor.domain.pane_scheduler import PaneLayoutSlot, compile_pane_layout
+        from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
+        from sdr_monitor.services.pane_resource_session import PaneResourceSession
+        from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
+        from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
+        from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
+        from tests.test_app07_pane_resource_session import FakeOwner, frame
+        from tests.test_app07_shared_capture_schedule import group, pane, profile
+
+        groups = tuple(group(f"device-{index}", f"rx-{index}") for index in range(1, 4))
+        slots = tuple(PaneLayoutSlot(index, pane(
+            f"pane-{index}", f"rx-{index}", start, start + 8e6,
+            ReceiverBindingMode.DEDICATED_PARALLEL))
+            for index, start in enumerate((100e6, 140e6, 200e6), 1)) + (PaneLayoutSlot(4),)
+        layout = compile_pane_layout(slots, groups, {"capture": profile(20e6)})
+        owners = {f"device-{index}": FakeOwner(f"device-{index}") for index in range(1, 4)}
+        leases = ReceiverLeaseManager(max_active_resources=4)
+        session = PaneResourceSession(
+            layout.schedule, groups, owners, leases,
+            source_identity_keys={endpoint.source_id: stable_identity_key(endpoint.source_id)
+                                  for item in groups for endpoint in item.endpoints},
+        )
+
+        class PrecomposedPool(PaneProductGraphPool):
+            def __init__(self, prepared):
+                super().__init__()
+                self._session = prepared
+
+        handle = PaneProductSessionHandle(PrecomposedPool(session), layout, groups, session)
+        self.assertEqual(tuple(item.affected_pane_ids for item in handle.preview()),
+                         (("pane-1",), ("pane-2",), ("pane-3",)))
+        handle.apply()
+        self.select_and_apply()
+        self.page.primary.click()
+        self.wait(lambda: self.live.is_running() and not self.composition.view_model.state.busy)
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            self.composition.install_independent_pane_session(handle)
+        self.page.primary.click()
+        self.wait(lambda: not self.live.is_running() and not self.composition.view_model.state.busy)
+        self.assertEqual(self.events, ["rtbw-start", "rtbw-stop"])
+        self.composition.install_independent_pane_session(handle)
+        pane_ui = self.page.independent_pane_session
+        self.assertIsNotNone(pane_ui)
+        self.assertIs(self.shell._workspace_pages["analyzer"], self.page)
+        self.assertFalse(self.page._pane_host.isVisible())
+        self.assertEqual(pane_ui.board.empty_slots, (4,))
+        self.assertIsNone(pane_ui.board.pane(4))
+        pane_ui.start_all.click()
+        self.wait(lambda: session.active_resource_count == 3)
+        for index, start in enumerate((100e6, 140e6, 200e6), 1):
+            owners[f"device-{index}"].publications.append((
+                f"rx-{index}", frame(f"device-{index}:source", 7, start, start + 8e6)))
+        self.wait(lambda: all(pane_ui.board.pane(index).last_bundle is not None
+                              for index in range(1, 4)))
+        self.assertIsNot(pane_ui.board.pane(1).last_bundle, pane_ui.board.pane(2).last_bundle)
+        screenshot = os.environ.get("SDR_APP07_PRODUCT_SCREENSHOT")
+        if screenshot:
+            self.assertTrue(self.shell.grab().save(screenshot))
+        pane_ui.board.select_slot(3)
+        pane_ui.stop_selected.click()
+        self.wait(lambda: session.active_resource_count == 2)
+        self.assertTrue(owners["device-1"].running and owners["device-2"].running)
+        self.assertFalse(owners["device-3"].running)
+        self.assertEqual(self.events, ["rtbw-start", "rtbw-stop"])
+        self.shell.close()
+        self.assertFalse(self.shell._is_closed)  # No hidden Stop on application close.
+        pane_ui.stop_all.click()
+        self.wait(lambda: session.retained_resource_count == 0)
+        self.shell.close()
+        self.wait(lambda: self.shell._is_closed and handle.shutdown_complete)
+        self.assertEqual(leases.active_resource_count, 0)
+        self.assertEqual(self.events.count("rtbw-start"), 1)
+        self.assertEqual(self.events[-1], "rtbw-stop")
+
 
 if __name__ == "__main__":
     unittest.main()

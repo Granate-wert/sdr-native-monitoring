@@ -6,7 +6,9 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from time import time_ns
 from typing import Protocol
-from weakref import ref
+from weakref import ReferenceType, ref
+
+from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 
 from .shell.close_lifecycle import CloseLifecycle, CloseState
 from .shell.contracts import ClosePort, V2ShellContext
@@ -40,7 +42,7 @@ from .workspaces import (
     tinysa_activation_workspace_definition,
     tinysa_analyzer_workspace_definition,
 )
-from .workspaces.analyzer import analyzer_workspace_definition
+from .workspaces.analyzer import AnalyzerWorkspaceV2, analyzer_workspace_definition
 
 
 class LivePresenterLifecyclePort(LivePresenterPort, Protocol):
@@ -199,6 +201,8 @@ class V2LiveProductComposition:
         else:
             raise ValueError("tinySA V2 requires both deferred activation and analyzer factories")
         self._is_shutdown = False
+        self._pane_handle: PaneProductSessionHandle | None = None
+        self._analyzer_workspace_ref: ReferenceType[AnalyzerWorkspaceV2] | None = None
         self._terminal_presentation_released = False
         self.close_lifecycle = CloseLifecycle(self._prepare_async_shutdown) if async_shutdown else None
         self._presentation_disposed = False
@@ -254,8 +258,15 @@ class V2LiveProductComposition:
                 if owner is None:
                     raise RuntimeError("Analyzer projection owner was released")
                 return owner.create_shared_pane_projector()
+            def remember_analyzer_workspace(widget: AnalyzerWorkspaceV2) -> None:
+                owner = owner_ref()
+                if owner is not None:
+                    owner._analyzer_workspace_ref = ref(widget)
+                    if owner._pane_handle is not None:
+                        widget.install_independent_pane_session(owner._pane_handle)
             workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector,
-                self.calibration_view_model, shared_projector_factory=shared_projector_factory),) + tuple(
+                self.calibration_view_model, shared_projector_factory=shared_projector_factory,
+                on_created=remember_analyzer_workspace),) + tuple(
                 item for item in workspaces if item.workspace_id not in {"home", "live", "sweep"}
             )
         self.context = V2ShellContext(
@@ -355,7 +366,32 @@ class V2LiveProductComposition:
         replay_can_close = self.replay_view_model is None or self.replay_view_model.state.can_close
         tinysa_can_close = self._tinysa is None or self._tinysa.can_close()
         analyzer_can_close = self.analyzer_presenter is None or self.analyzer_presenter.can_close()
-        return live_can_close and sweep_can_close and calibration_can_close and diagnostics_can_close and replay_can_close and tinysa_can_close and analyzer_can_close
+        panes_can_close = self._pane_handle is None or self._pane_handle.can_close()
+        return (live_can_close and sweep_can_close and calibration_can_close
+                and diagnostics_can_close and replay_can_close and tinysa_can_close
+                and analyzer_can_close and panes_can_close)
+
+    def install_independent_pane_session(self, handle: PaneProductSessionHandle) -> None:
+        """Attach an externally previewed/applied plan to this Analyzer tab."""
+        if (not isinstance(handle, PaneProductSessionHandle) or not handle.applied
+                or self._pane_handle is not None or self._is_shutdown or self._presentation_disposed
+                or self.analyzer_view_model is None or not self.can_close()):
+            raise RuntimeError("independent pane product session is unavailable")
+        widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
+        if widget is not None:
+            widget.install_independent_pane_session(handle)
+        self._pane_handle = handle
+
+    def uninstall_independent_pane_session(self) -> None:
+        handle = self._pane_handle
+        if handle is None:
+            return
+        if not handle.shutdown_complete:
+            raise RuntimeError("independent pane owners must close before layout return")
+        widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
+        if widget is not None:
+            widget.uninstall_independent_pane_session()
+        self._pane_handle = None
 
     def memory_snapshot(self, workspace=None):
         """On-demand scalar diagnostic; creates no page and issues no RX call."""
@@ -388,6 +424,9 @@ class V2LiveProductComposition:
         """
         if self._terminal_presentation_released:
             return
+        widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
+        if widget is not None and widget.independent_pane_session is not None:
+            widget.independent_pane_session.release_presentation_after_shutdown()
         for presenter in (self._presenter, self.analyzer_presenter):
             # Only declared hooks; do not invent a port on dynamic mocks/adapters.
             if callable(getattr(type(presenter), "release_presentation_after_shutdown", None)):
@@ -402,6 +441,8 @@ class V2LiveProductComposition:
     def _prepare_async_shutdown(self) -> tuple[tuple[str, Callable[[], None]], ...]:
         """GUI-only phase; no device operations, waits or deferred factories."""
         tasks: list[tuple[str, Callable[[], None]]] = []
+        if self._pane_handle is not None:
+            tasks.append(("independent-pane-resources", self._pane_handle.shutdown_after_stop))
         for name, presenter in (("sweep-reservation", self._sweep_presenter),
                                 ("analyzer", self.analyzer_presenter),
                                 ("live", self._presenter),
@@ -477,6 +518,8 @@ class V2LiveProductComposition:
         # It must cancel/join/release that reservation before Analyzer/Live try
         # to stop the common receiver lifecycle. One failure must never skip a
         # different owner, so all shutdown ports are attempted exactly once.
+        if self._pane_handle is not None:
+            attempt(self._pane_handle.shutdown_after_stop)
         if self._sweep_presenter is not None:
             attempt(self._sweep_presenter.shutdown)
         if self.analyzer_presenter is not None:
