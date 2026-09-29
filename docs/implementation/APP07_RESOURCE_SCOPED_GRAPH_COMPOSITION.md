@@ -315,6 +315,36 @@ This is software-level observability, not a new device command, RF timing
 instrument or proof that the displayed graph has the same age as the most
 recent host-admitted frame. The earlier physical 3+Empty and one-RX/two-
 range runs predate this UI change; the separately frozen EXE above is also
-stale with respect to this change. APP-07 remains partial pending an exact
-new EXE physical/visible check and the remaining topology, performance and
-release gates.
+stale with respect to this change. The next section records the new EXE
+check. APP-07 remains partial pending the remaining topology, performance
+and release gates.
+
+### Exact per-pane-timing EXE and visible 3+Empty follow-up (2026-09-29)
+
+The timing change was committed as product source `5eaafd4` and passed an
+exact clean-HEAD UI V2 gate: 1051 tests, 66 expected skips, zero failures,
+no product imports from outside this checkout. A new, separate official
+CPU/HackRF package from that same source passed 40/40 native CTest and its
+658-file frozen/source/native/shared-runtime checks. The tagged diagnostic
+EXE is at
+`dist/SDRNativeMonitoring-CPU-APP07-TIMING-20260929-5EAAFD4/SDRNativeMonitoring/SDRNativeMonitoring.exe`;
+SHA-256 `0b9f7451c31fd0a677f3cb94dbef7f508a2973f73c1c688d51fcfb94b939695a`.
+It did not replace the approved static/current installation.
+
+Computer Use then repeated local USB Discover and the same in-tab AD936x
+100–108 MHz / 20 MS/s / FFT4096, HackRF 140–148 MHz / 20 MS/s / FFT4096,
+tinySA Ultra 200–210 MHz / 101-point, Empty-fourth-slot Stage, Preview,
+Apply and explicit Start. All three occupied plots and waterfall histories
+updated before Stop; all three new timing rows read a host-accepted data
+age below one second in the sampled Live state. After selecting and
+stopping only tinySA, its row said the retained frame was not new while
+the two SDR rows stayed fresh and the SDR spectra changed. Stop all reached
+three stopped resources without Stop-required error; Close layout and
+normal EXE close completed. The physical same-RX two-range *measured
+revisit* row remains tested in deterministic software only, not in this
+three-independent-resource EXE run.
+
+These are short qualitative Windows observations, not a frame-period,
+paint/DWM FPS, LPS, RF duty/Pd, lossless USB or long-soak result. The small
+observed window still leaves shallow graphs in 2×2; FHD/QHD/DPI and area
+qualification remain open. APP-07 and release remain partial/open.
