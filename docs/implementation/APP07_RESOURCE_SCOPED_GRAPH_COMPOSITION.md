@@ -671,3 +671,54 @@ history on each job epoch, unlike the separately qualified RTBW history
 with absence separators. Extending its same-grid/provenance/gap policy is
 the next bounded APP-07 task; no continuous RF coverage may be fabricated.
 APP-07 and the overall roadmap remain partial/open.
+
+### Qualified scheduled Sweep history (2026-09-30)
+
+Exact product `ca4d0249c9fe360d9b5ededdb4c3d9909882a8f2` repairs the
+historical Sweep-history limitation above. The same independent-pane
+handoff policy now applies to both RTBW and Sweep: an immutable admitted
+pane binding on a multi-job time-sliced resource, newer host activation,
+different known producer epoch, same mode/source/RX/clock/unit/exact grid
+and unchanged instrument display-value context. No DSP/owner/scheduler
+change, synthetic RF continuity or hidden restart is introduced.
+
+The capacity-bounded Sweep ring keys passes by **producer epoch + original
+sequence**. Progressive revisions and Complete/Gap terminal update only
+their own retained row. A confirmed newer epoch inserts one blank Pause
+row, with no pass stamp or acquisition timestamp; its RF duration is
+unknown. Late old-epoch and evicted updates cannot overwrite current data.
+Resize preserves the active segment/cursor. Freeze defers this marker to
+the next admission, Hide still admits bounded rows and Clear remains local.
+Ordinary one-source epoch changes still reset history. Spectrum/statistical
+layers still reset at the measurement epoch; retained Waterfall rows are
+not cross-epoch analytical accumulation. Multi-epoch pass labels include
+`E<epoch>`; RU/EN tooltip explains P/C/G and the unknown-duration separator.
+
+Eight new regression methods cover epoch collisions, partial→terminal,
+wrap/eviction/resize, freeze/hide/clear, compiled two-Sweep board+Empty3/4,
+foreign/unqualified/grid/unit/value-context guards and axis directions/
+locales. Focused61pass; exact tracked-clean fullV2 **1076total/1010pass/
+66skip/0fail340.225s**, no deferred compiled test or outside product import,
+unchanged source/native; four historical NaN warnings remain. Scoped Ruff,
+isolated mypy, compile/diff PASS. Full official CPU/HackRF package pipeline
+passed **40/40 CTest31.53s**, source-snapshot/shared-DLL and658-file frozen
+gates; unchanged native34128b77…/C++, no current/static promotion.
+
+Tagged diagnostic EXE:
+`dist/SDRNativeMonitoring-CPU-APP07-SWEEPHISTORY-20260930-CA4D024-R1/SDRNativeMonitoring/SDRNativeMonitoring.exe`.
+SHA256 `9c3984092a5aa779d527017f173b2e965fdfb7705664b01273b8f27bc9738ed7`.
+Visible Windows Computer Use on that exact EXE staged the same physical
+USB HackRF RX1 into Sweep140–180MHz and300–340MHz, fixed nominal20MS/s,
+FFT4096; two other cells Empty. Stage announced one resource/two time-sliced
+jobs/RF gaps, Apply did not start RX, explicit Start all did. Both live
+Spectrum/Waterfall pairs showed retained prior epochs and separators.
+Pane1 local Freeze left RX/pane2 live; explicit unfreeze resumed its history.
+Explicit Stop all retained both histories/not-new, then normal Close layout/
+EXE exit and post-run658-file verification passed.
+
+This is a bounded **functional** witness, not DWM/FPS/LPS,50ms,lossless
+transport, RF duty/Pd, native leak or sustained release acceptance. Sweep
+history capacity controls still need truthful accessibility names (not
+seconds/rows-per-second), and independent-layout failure/cleanup, fairness,
+sustained timing/density and independent review remain OPEN. APP-07 remains
+PARTIAL; APP-05/06 debts and APP-08…14 are not closed by this packet.
