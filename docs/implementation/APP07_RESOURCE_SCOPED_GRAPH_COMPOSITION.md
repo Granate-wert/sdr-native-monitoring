@@ -1085,3 +1085,22 @@ instead of lowering FFT. This added choice does not expand other pane
 families/modes. Stage/Apply remain separate from explicit Start; locale and
 draft edits never acquire RF. No native DSP/SDK implementation, queue limits,
 Fs, filtering, RTBW width or ownership policy changed in this UI packet.
+
+### Executor-close qualification accounting
+
+The synthetic APP05 executor observer keeps its original never-started count,
+including tasks cancelled by normal product shutdown. It now separately counts
+only cancellation acknowledged by a real concurrent Future; it does not send
+cancellation or retain Future/payload/Qt owner objects. Unexecuted tasks without
+that acknowledgement remain explicitly unaccounted, even if a Future failed
+without entering its wrapped operation.
+
+The close gate requires every accepted task to have finished or been explicitly
+cancelled before execution, with exact attempted/submission-failure/started/
+cancelled accounting, started=finished, unchanged exception accounting, no
+lost timing samples, no remaining workers and zero presentation reservations.
+This corrects the old expectation that ALL admitted tasks must execute even
+during cancel-on-close; it does not relabel cancelled tasks as completed or
+discard their raw count. The original failing1116-test source run remains a
+failed observation, not a performance success. No product lifecycle or native
+DSP is changed; the expired APP05 performance timer is not restarted.

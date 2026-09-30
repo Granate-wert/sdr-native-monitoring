@@ -1,13 +1,14 @@
 """RTBW age observes uploaded/displayed publications, not newer hidden buffers."""
 import importlib.util
 from dataclasses import replace
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event
 from types import SimpleNamespace
 import unittest
 
@@ -138,6 +139,54 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertEqual((truncated["queue_dropped"], truncated["service_dropped"]), (1, 1))
         self.assertIsNone(truncated["queue_ms"])
         self.assertIsNone(truncated["service_ms"])
+
+    def test_executor_queue_probe_accounts_only_acknowledged_future_cancellation(self):
+        probe = OBSERVER.ExecutorQueueResidencyProbe()
+        cancelled = Future()
+        self.assertIs(probe.submit(lambda _operation: cancelled, lambda: None,
+                                  "viewport_required"), cancelled)
+        self.assertTrue(cancelled.cancel())
+        row = probe.report(lambda values: None)["by_kind"]["viewport_required"]
+        self.assertEqual((row["not_started_after_close"], row["cancelled_before_start"],
+                          row["unaccounted_not_started_after_close"]), (1, 1, 0))
+        self.assertEqual((row["started"], row["finished"]), (0, 0))
+        self.assertIsNone(row["queue_ms"])
+
+        for future in (Future(), Future()):
+            probe.submit(lambda _operation: future, lambda: None, "live_preparation")
+        # Even a terminal failed Future is NOT an acknowledgement of a task
+        # having run; unknown/unexecuted tasks must remain unaccounted.
+        future.set_exception(RuntimeError("never entered the operation"))
+        unknown = probe.report(lambda values: None)["by_kind"]["live_preparation"]
+        self.assertEqual((unknown["not_started_after_close"], unknown["cancelled_before_start"],
+                          unknown["unaccounted_not_started_after_close"]), (2, 0, 2))
+
+    def test_executor_queue_probe_real_shutdown_cancels_queued_without_losing_accounting(self):
+        probe = OBSERVER.ExecutorQueueResidencyProbe()
+        entered, release = Event(), Event()
+        pool = ThreadPoolExecutor(max_workers=1)
+
+        def block():
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("test blocker deadline")
+
+        blocker = pool.submit(block)
+        try:
+            self.assertTrue(entered.wait(2))
+            operation_calls = []
+            queued = probe.submit(pool.submit, lambda: operation_calls.append(True), "viewport_density_only")
+            pool.shutdown(wait=False, cancel_futures=True)
+            self.assertTrue(queued.cancelled())
+            self.assertEqual(operation_calls, [])
+            row = probe.report(lambda values: None)["by_kind"]["viewport_density_only"]
+            self.assertEqual((row["attempted"], row["started"], row["finished"],
+                              row["not_started_after_close"], row["cancelled_before_start"],
+                              row["unaccounted_not_started_after_close"]), (1, 0, 0, 1, 1, 0))
+        finally:
+            release.set()
+            blocker.result(timeout=2)
+            pool.shutdown(wait=True)
 
     def test_fixed_qt_target_detects_mid_block_drift_even_after_restore(self):
         target = dict(actual_platform="windows", qt_widget_visible=True,
@@ -707,7 +756,12 @@ class RtbwUploadWitnessTests(unittest.TestCase):
         self.assertGreater(queue["live_preparation"]["finished"], 0)
         self.assertGreater(sum(queue[kind]["finished"] for kind in (
             "viewport_required_with_density", "viewport_required", "viewport_density_only")), 0)
-        self.assertTrue(all(row["not_started_after_close"] == 0 for row in queue.values()))
+        self.assertTrue(all(row["unaccounted_not_started_after_close"] == 0 for row in queue.values()), queue)
+        self.assertTrue(all(row["not_started_after_close"] == row["cancelled_before_start"]
+                            for row in queue.values()), queue)
+        self.assertTrue(all(row["attempted"] == row["submit_failures"] + row["started"]
+                            + row["cancelled_before_start"] for row in queue.values()), queue)
+        self.assertTrue(all(row["started"] == row["finished"] for row in queue.values()), queue)
         self.assertTrue(all(row["queue_dropped"] == row["service_dropped"] == 0
                             for row in queue.values()))
         self.assertTrue(all(row["finished"] == row["raised"] + row["returned_without_exception"]

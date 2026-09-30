@@ -20,6 +20,7 @@ Phase labels describe paint-return context, not the cause of a delayed frame.
 """
 import argparse
 from collections import deque
+from concurrent.futures import Future
 from contextlib import ExitStack
 from dataclasses import asdict, replace
 from functools import wraps
@@ -192,6 +193,7 @@ class ExecutorQueueResidencyProbe:
         self.capacity = capacity
         self._lock = threading.Lock()
         self._rows = {kind: dict(attempted=0, submit_failures=0, started=0, finished=0, raised=0,
+                                cancelled_before_start=0,
                                 queue_ms=BoundedSamples(capacity),
                                 service_ms=BoundedSamples(capacity)) for kind in self.KINDS}
 
@@ -221,18 +223,29 @@ class ExecutorQueueResidencyProbe:
                     row["service_ms"].append((finished - started) * 1000)
 
         try:
-            return submit(observed_operation, *args, **kwargs)
+            future = submit(observed_operation, *args, **kwargs)
         except Exception:
             with self._lock:
                 self._rows[kind]["submit_failures"] += 1
             raise
+
+        if isinstance(future, Future):
+            def observe_terminal(completed):
+                # Capture only the probe/kind, never the operation, payload
+                # or Future. A running concurrent Future cannot be cancelled.
+                if completed.cancelled():
+                    with self._lock:
+                        self._rows[kind]["cancelled_before_start"] += 1
+
+            future.add_done_callback(observe_terminal)
+        return future
 
     def report(self, summarize):
         with self._lock:
             rows = {kind: dict(attempted=row["attempted"],
                                submit_failures=row["submit_failures"],
                                started=row["started"], finished=row["finished"],
-                               raised=row["raised"],
+                               raised=row["raised"], cancelled_before_start=row["cancelled_before_start"],
                                queue=tuple(row["queue_ms"]), service=tuple(row["service_ms"]),
                                queue_dropped=row["queue_ms"].dropped,
                                service_dropped=row["service_ms"].dropped)
@@ -242,6 +255,9 @@ class ExecutorQueueResidencyProbe:
             started=row["started"], finished=row["finished"], raised=row["raised"],
             returned_without_exception=row["finished"] - row["raised"],
             not_started_after_close=max(0, row["attempted"] - row["submit_failures"] - row["started"]),
+            cancelled_before_start=row["cancelled_before_start"],
+            unaccounted_not_started_after_close=max(0, row["attempted"] - row["submit_failures"]
+                                                    - row["started"] - row["cancelled_before_start"]),
             queue_dropped=row["queue_dropped"], service_dropped=row["service_dropped"],
             queue_ms=None if row["queue_dropped"] else summarize(row["queue"]),
             service_ms=None if row["service_dropped"] else summarize(row["service"]))
@@ -252,7 +268,10 @@ class ExecutorQueueResidencyProbe:
                   "live_preparation is separately submitted render preparation, while other includes "
                   "command closures. Finished counts all started task exits, including raised exceptions; "
                   "returned_without_exception does not prove GUI acceptance or non-stale results. "
-                  "Never-started tasks include cancellation before execution. "
+                  "Never-started tasks still include cancellation before execution; only a real "
+                  "concurrent Future cancellation acknowledgement counts as cancelled_before_start. "
+                  "unaccounted_not_started_after_close excludes only those acknowledged cancellations, "
+                  "not unfinished or unknown tasks. No observer-side Future cancellation is sent. "
                   "This observer perturbs timing and is not an uninstrumented speed baseline.")
 
 
