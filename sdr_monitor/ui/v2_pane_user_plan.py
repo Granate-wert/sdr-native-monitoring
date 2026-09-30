@@ -74,7 +74,7 @@ class PaneSlotDraft:
                 or self.start_hz < 100_000 or self.stop_hz <= self.start_hz):
             raise PaneUserPlanError("occupied pane needs a source and an increasing RF range")
         if (self.sample_rate_hz not in {16_000_000.0, 20_000_000.0, 61_440_000.0}
-                or type(self.fft_size) is not int or self.fft_size not in {1024, 4096, 16384}
+                or type(self.fft_size) is not int or self.fft_size not in {1024, 2048, 4096, 16384}
                 or type(self.points) is not int or not 2 <= self.points <= 10001):
             raise PaneUserPlanError("pane sample rate, FFT or trace points are outside the qualified draft choices")
 
@@ -142,6 +142,10 @@ def compile_user_pane_plan(
         source_id = draft.source_id
         choice = selected[source_id]
         assert draft.start_hz is not None and draft.stop_hz is not None
+        if draft.fft_size == 2048 and not (
+                choice.family is DeviceFamily.HACKRF
+                and draft.measurement_mode is CaptureMeasurementMode.SWEEP):
+            raise PaneUserPlanError("2048 is a physical FFT choice for the qualified HackRF Sweep pane")
         center = (draft.start_hz + draft.stop_hz) / 2.0
         if choice.family is DeviceFamily.AD936X:
             if draft.measurement_mode is CaptureMeasurementMode.SWEEP:

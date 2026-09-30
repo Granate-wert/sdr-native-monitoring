@@ -1068,3 +1068,20 @@ profiles, RF middle-drag intent, sustained/50ms/DWM/FHD/QHD/DPI/RF duty/Pd/
 lossless/settling, independent review and release remain OPEN. APP07PARTIAL,
 APP06E CutDC/spur planned/fullAPP00..14ACTIVE; expired APP05 timer not restarted.
 No TX/amp/bias enable, firmware/driver/network/firewall/security/system changes.
+
+### Family-specific pane Sweep preview
+
+The per-pane Stage summary no longer labels HackRF geometry as AD936x or
+uses AD's analysis N/W for its physical transform. It explicitly shows the
+HackRF physical FFT, two disjoint5 MHz windows,20 MHz firmware tuning step,
+subband count, grid spacing (not RBW) and reduced-data budget (not RSS).
+Rounded hardware capture remains a separate PLAN, not readback. AD keeps
+analysis N inside W36 MHz and its separately computed physical FFT.
+
+The HackRF Sweep pane now exposes the backend's existing physical
+F1024/2048/4096 choices. F2048 supports the full1..6000 MHz analysis within
+the same128 MiB reduced-data budget; F4096 refuses that whole-range request
+instead of lowering FFT. This added choice does not expand other pane
+families/modes. Stage/Apply remain separate from explicit Start; locale and
+draft edits never acquire RF. No native DSP/SDK implementation, queue limits,
+Fs, filtering, RTBW width or ownership policy changed in this UI packet.

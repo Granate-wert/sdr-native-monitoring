@@ -265,7 +265,7 @@ class IndependentPaneSetupV2(QWidget):
                 with QSignalBlocker(row.rate):
                     row.rate.setCurrentIndex(index)
         previous_fft = row.fft.currentData()
-        sizes = ((1024, 4096) if family is DeviceFamily.HACKRF
+        sizes = ((1024, 2048, 4096) if family is DeviceFamily.HACKRF
                  and mode is CaptureMeasurementMode.SWEEP else (1024, 4096, 16384))
         if row.fft.count() != len(sizes) or any(row.fft.itemData(i) != value
                                                  for i, value in enumerate(sizes)):
@@ -426,7 +426,7 @@ class IndependentPaneSetupV2(QWidget):
             label = prepared.handle.source_labels.get(source_id, source_id)
             lines.append(text("analyzer.pane.setup.preview_resource", panes=numbers, source=label,
                               mode=mode, jobs=item.capture_job_count) + conflict)
-        for pane_id, geometry in prepared.plan.ad_sweep_geometry + prepared.plan.hackrf_sweep_geometry:
+        for pane_id, geometry in prepared.plan.ad_sweep_geometry:
             lines.append(text("analyzer.pane.setup.preview_ad_sweep",
                               pane=pane_id.rsplit("-", 1)[-1],
                               rate=f"{geometry.sample_rate_hz / 1_000_000:.2f}",
@@ -434,6 +434,17 @@ class IndependentPaneSetupV2(QWidget):
                               bins=geometry.analysis_bins_per_usable_window,
                               fft=geometry.physical_fft_size,
                               step=f"{geometry.segment_stride_hz / 1_000_000:g}",
+                              segments=geometry.segment_count,
+                              spacing=f"{geometry.output_spacing_hz:.2f}",
+                              memory=f"{geometry.reduced.total_bytes / (1024 * 1024):.2f}"))
+        for pane_id, geometry in prepared.plan.hackrf_sweep_geometry:
+            # The spatial 5 MHz subband partition is NOT the firmware's
+            # 20 MHz tuning step. AD's user N/W has no authority here.
+            lines.append(text("analyzer.pane.setup.preview_hackrf_sweep",
+                              pane=pane_id.rsplit("-", 1)[-1],
+                              rate=f"{geometry.sample_rate_hz / 1_000_000:.2f}",
+                              window=f"{geometry.usable_window_hz / 1_000_000:g}",
+                              fft=geometry.physical_fft_size, step=20,
                               segments=geometry.segment_count,
                               spacing=f"{geometry.output_spacing_hz:.2f}",
                               memory=f"{geometry.reduced.total_bytes / (1024 * 1024):.2f}"))

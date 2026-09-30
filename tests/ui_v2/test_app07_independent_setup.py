@@ -105,6 +105,26 @@ class IndependentPaneSetupTests(unittest.TestCase):
             self.assertIn("8192", editor.preview.text())
             self.assertIn("4096", editor.preview.text())
             self.assertIn("36", editor.preview.text())
+            for language, ad_prefix, hf_prefix, crop_text, step_text in (
+                    (UiLocale.EN, "Pane 1, AD936x Sweep plan:", "Pane 2, HackRF Sweep plan:",
+                     "2 disjoint 5 MHz windows", "tuning step 20 MHz"),
+                    (UiLocale.RU, "Окно 1, план сканирования AD936x:",
+                     "Окно 2, план сканирования HackRF:", "2 раздельных окна по 5 МГц",
+                     "шаг настройки 20 МГц")):
+                set_active_locale(language)
+                editor.set_locale()
+                ad_line = next(line for line in editor.preview.text().splitlines()
+                               if line.startswith(ad_prefix))
+                hf_line = next(line for line in editor.preview.text().splitlines()
+                               if line.startswith(hf_prefix))
+                self.assertIn("N 4096", ad_line)
+                self.assertIn("8192", ad_line)
+                self.assertIn("4096", hf_line)
+                self.assertIn(crop_text, hf_line)
+                self.assertIn(step_text, hf_line)
+                self.assertNotIn("AD936x", hf_line)
+                self.assertNotIn("N ", hf_line)
+                self.assertNotIn("W ", hf_line)
             self.assertEqual(ad_fake.events, [])
             self.assertEqual(hf_fake.events, [])
             self.assertEqual(native.engines, [])
@@ -550,7 +570,7 @@ class IndependentPaneSetupTests(unittest.TestCase):
             self.assertFalse(row.rate.isEnabled())
             self.assertEqual(row.rate.currentData(), 20_000_000.0)
             self.assertEqual(tuple(row.fft.itemData(i) for i in range(row.fft.count())),
-                             (1024, 4096))
+                             (1024, 2048, 4096))
             editor.prepare.click()  # 140–148 MHz cannot be a host Sweep.
             self.assertIsNone(editor._future)
             self.assertTrue(editor.error.isVisible())
@@ -558,6 +578,8 @@ class IndependentPaneSetupTests(unittest.TestCase):
             self.assertEqual(fake.events, [])
             row.start.setValue(100.0)
             row.stop.setValue(220.0)
+            row.fft.setCurrentIndex(row.fft.findData(2048))
+            self.assertEqual(editor._read_drafts()[0].fft_size, 2048)
             with patch("sdr_monitor.ui.v2.workspaces.independent_pane_setup.prepare_user_pane_session",
                        side_effect=stage):
                 editor.prepare.click()
@@ -575,6 +597,7 @@ class IndependentPaneSetupTests(unittest.TestCase):
             pane_ui.start_all.click()
             self._wait(lambda: pane_ui.board.pane(1).spectrum_scene.latest_frame is not None)
             self.assertIsNotNone(fake.request)
+            self.assertEqual(fake.request.fft_size, 2048)
             self.assertEqual((fake.request.start_hz, fake.request.stop_hz),
                              (100_000_000, 220_000_000))
             self.assertEqual(handle.queue.pane_ids, ("pane-1",))

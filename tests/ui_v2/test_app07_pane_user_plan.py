@@ -232,6 +232,30 @@ class PaneUserPlanTests(unittest.TestCase):
                          [CaptureMeasurementMode.SWEEP, CaptureMeasurementMode.SWEEP,
                           CaptureMeasurementMode.INSTRUMENT_TRACE])
 
+    def test_hackrf_full_range_physical_fft2048_is_explicit_and_budgeted(self) -> None:
+        plan = self._compile((PaneSlotDraft(1, self.hf_id, 1e6, 6e9, fft_size=2048,
+                              measurement_mode=CaptureMeasurementMode.SWEEP),))
+        profile = plan.layout.schedule.resources[0].jobs[0].profile
+        self.assertIsInstance(profile, HackrfSweepPaneProfile)
+        self.assertEqual(profile.request_template.fft_size, 2048)
+        geometry = plan.hackrf_sweep_geometry[0][1]
+        self.assertEqual(geometry.physical_fft_size, 2048)
+        self.assertEqual(geometry.segment_count, 1200)
+        self.assertEqual(geometry.output_spacing_hz, 20e6 / 2048)
+        self.assertGreater(geometry.reduced.total_bytes, 64 * 1024 * 1024)
+        self.assertLess(geometry.reduced.total_bytes, 128 * 1024 * 1024)
+        self.assertEqual(plan.hackrf_hardware_ranges, (("pane-1", 1_000_000, 6_001_000_000),))
+
+    def test_new_physical_fft_choice_does_not_expand_other_pane_profiles(self) -> None:
+        for source, mode, rate, stop in (
+                (self.ad_id, CaptureMeasurementMode.SWEEP, 61.44e6, 220e6),
+                (self.ad_id, CaptureMeasurementMode.RTBW, 20e6, 108e6),
+                (self.hf_id, CaptureMeasurementMode.RTBW, 20e6, 108e6)):
+            with self.subTest(source=source, mode=mode), self.assertRaisesRegex(
+                    PaneUserPlanError, "qualified HackRF Sweep"):
+                self._compile((PaneSlotDraft(1, source, 100e6, stop, fft_size=2048,
+                            sample_rate_hz=rate, measurement_mode=mode),))
+
     def test_excess_span_and_all_empty_fail_before_device_operation(self) -> None:
         with self.assertRaises(PaneUserPlanError):
             self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 120e6),))

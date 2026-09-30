@@ -200,6 +200,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.preview_ad_sweep": MappingProxyType({
             UiLocale.RU: "Окно {pane}, план сканирования AD936x: Fs {rate} MS/s · W {window} МГц · N {bins} · физическая FFT {fft} · шаг {step} МГц · участков {segments} · сетка {spacing} Гц (не RBW) · спектральные данные ≤ {memory} МиБ (не RSS).",
             UiLocale.EN: "Pane {pane}, AD936x Sweep plan: Fs {rate} MS/s · W {window} MHz · N {bins} · physical FFT {fft} · step {step} MHz · segments {segments} · grid {spacing} Hz (not RBW) · reduced data ≤ {memory} MiB (not RSS)."}),
+        "analyzer.pane.setup.preview_hackrf_sweep": MappingProxyType({
+            UiLocale.RU: "Окно {pane}, план сканирования HackRF: запрос Fs {rate} MS/s · 2 раздельных окна по {window} МГц · физическая FFT {fft} · шаг настройки {step} МГц · поддиапазонов {segments} · сетка {spacing} Гц (не RBW) · спектральные данные ≤ {memory} МиБ (не RSS).",
+            UiLocale.EN: "Pane {pane}, HackRF Sweep plan: requested Fs {rate} MS/s · 2 disjoint {window} MHz windows · physical FFT {fft} · tuning step {step} MHz · subbands {segments} · grid {spacing} Hz (not RBW) · reduced data ≤ {memory} MiB (not RSS)."}),
         "analyzer.pane.setup.preview_scope": MappingProxyType({
             UiLocale.RU: "Это план, не измерение скорости или непрерывности RF. Применить ≠ Старт; для изменения работающей раскладки сначала выполните Стоп.",
             UiLocale.EN: "This is a plan, not measured speed or RF continuity. Apply is not Start; Stop the active layout before editing it."}),
