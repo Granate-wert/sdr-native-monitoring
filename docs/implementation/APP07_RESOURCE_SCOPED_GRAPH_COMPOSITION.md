@@ -1203,7 +1203,43 @@ for each subscriber's Waterfall history. Shared-pair returns keep separate
 bounded histories with a display-only absence separator; a genuine next
 explicit Start still resets history. Epoch/run/source/unit/grid guards remain.
 
-This source contract does not relabel the earlier a4 frozen/Windows/RX proof
-as qualification of the new scheduling controls. New exact full-source,
-frozen Windows, weighted physical/sustained and independent review gates must
-be recorded separately. APP07 remains PARTIAL; the full release remains open.
+Qualification is recorded against exact product
+e97a3b7330f6bcc5e78ad675f385e8b6b2501d48, not the earlier a4 artifact or a later
+documentation commit. Full V2 source:1135total/1069pass/66skip/0fail315.172s,
+exact clean-source/native provenance and no deferred/outside modules. Official
+CPU/HackRF build:40/40CTest42.73s and the complete658-file frozen pipeline.
+Native762fceb6 remains unchanged. The separate diagnostic scheduling EXE has
+disk SHA b05cd0fb and source snapshot63431756; it is NOT current/static promoted.
+The earlier1c7d7b4 RU localization failure and older build remain historical.
+
+A short current-source/common-owner USB witness used distinct AD ranges on
+one RX at61.44MS/s/W36/N1024/F2048, weights1:3 and targets4.08/2.06s, plus
+independent full-range HackRF20MS/s/F2048 and Empty4. Stop-cancel, selected
+shared-resource Stop, explicit next Start and normal shutdown passed. Deliveries
+and last accepted host intervals are not FFT/LPS, RF duty or sustained cadence.
+
+The SAME new frozen Windows EXE separately passed the actual editor's all-pane
+deadline refusal before Apply/RX, explicit admissible Stage/impact preview,
+inert Apply, Start all and three progressive Spectrum/Waterfall pairs. The
+Windows AD profile used N4096/F8192, not the source witness's N1024/F2048.
+Cancelling shared Stop preserved both receivers; confirming it stopped only
+AD's two panes while HackRF continued. Explicit next Start refreshed both AD
+histories/epochs without Discover or a HackRF restart. Final Stop all reported
+zero running/starting/Stop-required resources; Close layout and normal Close
+removed the tested window/process. The post-close658-file verifier passed.
+Five concurrently loaded package-local native/IIO/HackRF/pthread/ONE USB paths
+and current disk hashes matched, not in-memory or exhaustive active ABI proof.
+
+Modeled feasibility is NOT measured feasibility: actual AD host returns included
+about4.20..4.23s against4.08s and2.24..2.26s against2.06s, correctly labeled
+exceeded; shorter second-pane intervals were labeled last-within, not a sustained
+pass. No target-triggered retry, hidden restart or reduced Fs/FFT occurred.
+Computer Use capture/input worked with fresh-observation recovery for transient
+Qt popup errors, without security changes. The1440x912 logical Windows witness
+is not FHD/QHD/DPI/DWM/50ms/RF-duty/Pd/settling/lossless/soak qualification.
+Expanded scheduling plus a long staged preview visibly compressed editor rows
+and clipped preview text: a concrete UI defect, not visual-polish acceptance.
+Bounded readable controls/scrollable preview, SDK cleanup cause, qualified
+tinySA300k/current input, held-middle RF intent, wide RTBW, tuning groups,
+genuine Ethernet, sustained and independent review/release remain open.
+APP07 remains PARTIAL; APP06E is planned and the full release remains active.
