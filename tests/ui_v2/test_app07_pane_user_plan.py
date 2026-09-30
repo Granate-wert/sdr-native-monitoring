@@ -75,6 +75,23 @@ class PaneUserPlanTests(unittest.TestCase):
         self.assertEqual(plan.layout.schedule.resources[0].jobs[0].mode,
                          ReceiverBindingMode.SHARED_CAPTURE)
 
+    def test_high_fs_rf_filter_is_distinct_from_36mhz_usable_capture(self) -> None:
+        plan = self._compile((
+            PaneSlotDraft(1, self.ad_id, 100e6, 116e6, sample_rate_hz=61.44e6),
+            PaneSlotDraft(2, self.ad_id, 120e6, 136e6, sample_rate_hz=61.44e6),
+            PaneSlotDraft(3), PaneSlotDraft(4),
+        ))
+        jobs = plan.layout.schedule.resources[0].jobs
+        self.assertEqual(len(jobs), 1)
+        self.assertIs(jobs[0].mode, ReceiverBindingMode.SHARED_CAPTURE)
+        self.assertEqual(jobs[0].profile.sample_rate_hz, 61.44e6)
+        self.assertEqual(jobs[0].profile.analog_bandwidth_hz, 40e6)
+        self.assertEqual(jobs[0].profile.usable_capture_span_hz, 36e6)
+        self.assertEqual(plan.initial_ad_configurations[0][1].analog_bandwidth_hz, 40e6)
+        self.assertEqual((jobs[0].start_hz, jobs[0].stop_hz), (100e6, 136e6))
+        with self.assertRaisesRegex(PaneUserPlanError, "usable capture span"):
+            self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 137e6, sample_rate_hz=61.44e6),))
+
     def test_same_source_distant_panes_are_one_time_sliced_owner(self) -> None:
         plan = self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 108e6),
                               PaneSlotDraft(2, self.ad_id, 200e6, 208e6)))

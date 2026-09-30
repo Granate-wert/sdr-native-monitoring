@@ -48,7 +48,7 @@ class IndependentPaneFailureTests(unittest.TestCase):
         self.fail("bounded independent-pane failure observation timed out")
 
     @contextmanager
-    def product(self, *, configure_hackrf=None, configure_tinysa=None):
+    def product(self, *, configure_hackrf=None, configure_tinysa=None, ad_rate=20e6):
         native, ad = _ad_graph()
         hf = hackrf_fixture()
         ts = tinysa_fixture()
@@ -70,7 +70,7 @@ class IndependentPaneFailureTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             try:
                 prepared = prepare_user_pane_session((
-                    PaneSlotDraft(1, choices[0].device_id, 100e6, 108e6),
+                    PaneSlotDraft(1, choices[0].device_id, 100e6, 108e6, sample_rate_hz=ad_rate),
                     PaneSlotDraft(2, choices[1].device_id, 140e6, 148e6),
                     PaneSlotDraft(3, choices[2].device_id, 200e6, 210e6, points=3),
                     PaneSlotDraft(4),
@@ -121,13 +121,36 @@ class IndependentPaneFailureTests(unittest.TestCase):
 
     def publish_ad(self, product, sequence):
         snapshot = product.graphs[0].live.current_snapshot()
+        rate = snapshot.applied.applied.sample_rate_hz
         frame = _make_frame(sequence, center_hz=snapshot.applied.applied.center_hz,
-                            sample_rate_hz=20e6, source_id=product.choices[0].device_id,
+                            sample_rate_hz=rate, source_id=product.choices[0].device_id,
                             config_generation=snapshot.active_config_generation)
-        frame.frequencies_hz = frame.center_frequency_hz + (np.arange(4096) - 2048) * (20e6 / 4096)
+        frame.frequencies_hz = frame.center_frequency_hz + (np.arange(4096) - 2048) * (rate / 4096)
         product.native.engines[-1].frames.append(frame)
         self.wait(lambda: product.ui.board.pane(1).spectrum_scene.latest_frame is not None
                   and product.ui.board.pane(1).spectrum_scene.latest_frame.spectrum.sequence == sequence)
+
+    def test_high_fs_ad936x_exact_stage_and_start_with_other_families(self):
+        with self.product(ad_rate=61.44e6) as product:
+            staged = product.graphs[0].live.current_snapshot().applied
+            self.assertEqual(staged.requested.sample_rate_hz, 61.44e6)
+            self.assertEqual(staged.requested.analog_bandwidth_hz, 40e6)
+            self.assertEqual(staged.applied, staged.requested)
+            self.assertEqual(product.native.engines, [])  # Apply is still not Start.
+            profile = product.handle.layout.schedule.resources[0].jobs[0].profile
+            self.assertEqual(profile.usable_capture_span_hz, 36e6)
+            product.ui.start_all.click()
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            self.publish_ad(product, 1)
+            self.publish_ad(product, 2)
+            self.wait(lambda: product.ui.board.pane(2).spectrum_scene.latest_frame is not None
+                      and product.ui.board.pane(3).spectrum_scene.latest_frame is not None)
+            applied = product.graphs[0].live.current_snapshot().applied
+            self.assertEqual(applied.applied.sample_rate_hz, 61.44e6)
+            self.assertEqual(applied.applied.analog_bandwidth_hz, 40e6)
+            self.assertTrue({"center_hz", "sample_rate_hz", "analog_bandwidth_hz", "gain_db"}
+                            <= set(applied.readback_fields))
+            self.assertIsNone(product.ui.board.pane(4))
 
     def test_one_start_failure_does_not_start_again_or_stop_other_families(self):
         with self.product(configure_hackrf=lambda hf: setattr(hf.factory, "fail", True)) as product:

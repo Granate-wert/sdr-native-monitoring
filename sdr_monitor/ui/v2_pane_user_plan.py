@@ -140,8 +140,14 @@ def compile_user_pane_plan(
             if draft.sample_rate_hz not in {20_000_000.0, 61_440_000.0}:
                 raise PaneUserPlanError("AD936x pane supports the listed 20 or 61.44 MS/s profiles")
             usable = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 36_000_000.0
+            # RF filter bandwidth and the edge-trimmed analysis window are
+            # different quantities. The retained Live catalog normalizes a
+            # 36 MHz filter request to 40 MHz; use that qualified preset here
+            # so the exact Stage/Start guards are not bypassed or weakened.
+            # Capabilities and actual RF readback still decide admission.
+            rf_bandwidth = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 40_000_000.0
             profile: PaneProfile = PaneCaptureProfile(
-                draft.sample_rate_hz, usable, "manual", 20.0,
+                draft.sample_rate_hz, rf_bandwidth, "manual", 20.0,
                 draft.fft_size, draft.fft_size // 2, "hann", "sample", None, usable, cost)
         elif choice.family is DeviceFamily.HACKRF:
             if draft.measurement_mode is CaptureMeasurementMode.SWEEP:
