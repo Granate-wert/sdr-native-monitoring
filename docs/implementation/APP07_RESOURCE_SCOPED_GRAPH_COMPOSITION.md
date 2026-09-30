@@ -847,3 +847,57 @@ Post-witness658-file/native-load verification passed unchanged. No DWM/FPS/LPS,
 50-ms, lossless USB, RF duty/Pd, FHD/QHD/DPI, genuine Ethernet, sustained/soak
 or release acceptance is inferred. APP-07 remains PARTIAL; the independent
 review, fairness/shared topology and APP-05/06 debts plus APP-08…14 are OPEN.
+
+### Wider physical profiles and missing interaction/plan cells (2026-09-30)
+
+Additional bounded Windows tests used the SAME product90fa168 diagnostic
+CPU EXE, not a new product build. Standalone AD936x USB RTBW confirmed
+applied61.44-MS/s/56-MHz RF filter and56-MHz viewport with changing Spectrum,
+native persistence and Waterfall for about98s. Host-admitted I/Q remained
+roughly7.1–8.4MS/s, not continuous61.44MS/s. Standalone HackRF requested
+20-MS/s/20-MHz RF filter/FFT4096/hop2048 reproduced no live frame at group1
+for more than a minute; Stop delivered one retained frame. A separately
+explicit Stop/Stage/new Start with group8 produced changing graphs. This
+does not accept group1 freshness, prove its root cause, attest hardware
+Fs/filter readback or preserve every transient. No hidden grouping change.
+
+Standalone tinySA100–300MHz/1001 points produced changing device-dBm traces
+and Waterfall at about0.60s per complete pass. Requested300-kHz RBW could
+NOT be applied/read back because the observed firmware's runtime-settings
+command contract was unqualified. Settings remained preserve-only. Instrument
+identity qualification is not universal shell-settings qualification, and
+a disabled UI default is not an actual RBW readback.
+
+A wider physical mixed2x2 used AD936x RTBW36MHz at61.44MS/s, HackRF
+Sweep320MHz at20MS/s, tinySA Sweep200MHz/1001 points and Empty4. Separate
+Stage/Apply/Start all gave three changing Spectrum/Waterfall pairs; one
+HackRF partial admitted trace was visible before complete range coverage.
+Selected tinySA Stop left both SDR peers changing; Stop all/Close layout/
+normal EXE Close completed. Post-witness658-file package/native verification
+passed unchanged. A stable initial tinySA run does not resolve the previously
+observed error after explicit next Start. No full-range all-Sweep, sustained
+fairness, losslessUSB, RF duty/Pd, DWM/FPS/LPS,50-ms,DPI/soak claim is made.
+
+Current independent-pane admission still limits AD936x to RTBW with36-MHz
+usable span at61.44MS/s, HackRF RTBW to10-MHz usable span, and HackRF pane
+Sweep to whole-MHz20–320-MHz spans in20-MHz steps/FFT<=4096. Thus standalone
+AD56/HackRF20 success cannot be relabelled independent-pane support. Full-range
+Sweep for all three physical sources is NOT admitted and was not performed.
+The next Sweep packet must qualify the existing AD936x Sweep owner in the
+same resource composition and justify wider geometry/memory/deadline budgets,
+not simply remove bounds. tinySA per-pane manual RBW is also still missing.
+
+Real V2-widget offscreen tests with fake owners showed that held-middle drag
+currently pans Spectrum and linked Waterfall viewport only. Receiver center,
+Sweep bounds, producer grid and generation do not change. Desired analysis-
+frequency translation is NOT implemented. Physical Windows held-middle input
+was not verified: the available Computer Use drag API has no mouse-button
+parameter. A future receiver-intent gesture must separate view pan from RF
+control, preserve span, coalesce/clamp requests and reject stale ownership;
+no hidden restart or pixel-by-pixel retune. If restart is required, use the
+separately visible explicit action and gap/epoch contract.
+
+APP-07 remains PARTIAL. These new cells and the HackRF group1/previous tinySA
+next-Start errors remain explicit follow-up work; APP-06E is PLANNED and the
+expired APP-05 timer was not restarted. No product/source/EXE/static promotion,
+TX/amp/bias/firmware/driver/network/firewall/security mutation occurred here.
