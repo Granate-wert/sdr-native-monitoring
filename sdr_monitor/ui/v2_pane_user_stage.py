@@ -11,20 +11,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sdr_monitor.domain.pane_scheduler import PaneRevisitEstimate
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 
 from .v2_pane_graph_pool import PaneProductGraphPool
 from .v2_pane_product_session import PaneProductSessionHandle
-from .v2_pane_user_plan import PaneSlotDraft, PaneUserPlan, compile_user_pane_plan
+from .v2_pane_user_plan import PaneSlotDraft, PaneUserPlan, PaneUserPlanError, compile_user_pane_plan
 
 
 class PaneUserStageError(RuntimeError):
     """Fixed refusal. Retained pool means an explicit cleanup retry is needed."""
 
-    def __init__(self, message: str, pool: PaneProductGraphPool | None = None) -> None:
+    def __init__(self, message: str, pool: PaneProductGraphPool | None = None, *,
+                 revisit_violations: tuple[PaneRevisitEstimate, ...] = ()) -> None:
         super().__init__(message)
         self.pool = pool
+        self.revisit_violations = revisit_violations
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,12 +70,15 @@ def prepare_user_pane_session(
         handle = PaneProductSessionHandle(pool, plan.layout, plan.groups, session,
                                           source_labels={source: choice.label for source, choice in selected.items()})
         return PreparedPaneUserSession(plan, handle, handle.preview())
-    except Exception:
+    except Exception as error:
+        violations = error.revisit_violations if isinstance(error, PaneUserPlanError) else ()
         try:
             pool.close()
         except Exception:
-            raise PaneUserStageError("pane Stage failed and graph cleanup requires an explicit retry", pool) from None
-        raise PaneUserStageError("pane sources or ranges did not confirm on fresh Stage") from None
+            raise PaneUserStageError("pane Stage failed and graph cleanup requires an explicit retry", pool,
+                                     revisit_violations=violations) from None
+        raise PaneUserStageError("pane sources or ranges did not confirm on fresh Stage",
+                                 revisit_violations=violations) from None
 
 
 def apply_user_pane_session(prepared: PreparedPaneUserSession) -> None:

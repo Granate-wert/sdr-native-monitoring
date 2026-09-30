@@ -8,7 +8,7 @@ to one resource; it is never mistaken for a second receiver.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import ceil, isfinite
 from typing import Mapping
 
@@ -23,11 +23,13 @@ from sdr_monitor.domain.live import BackendKind, LiveConfiguration
 from sdr_monitor.domain.pane_scheduler import (
     Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
-    PaneLayoutSlot, PaneProfile, TinySaTracePaneProfile, compile_pane_layout,
+    PaneLayoutSlot, PaneProfile, PaneRevisitEstimate, PaneScheduleDeadlineError,
+    TinySaTracePaneProfile, compile_pane_layout,
 )
 from sdr_monitor.domain.receiver_topology import (
     AcquisitionGroup, ReceiverBindingMode, ReceiverChainSelection,
-    ReceiverEndpoint, SpectrumTraceEndpoint, SweepPaneRequest,
+    PaneSchedulerPolicy, ReceiverEndpoint, SchedulerPolicyKind,
+    SpectrumTraceEndpoint, SweepPaneRequest,
 )
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
 from sdr_monitor.services.native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
@@ -35,6 +37,11 @@ from sdr_monitor.services.native_continuous_sweep_factory import NativeContinuou
 
 class PaneUserPlanError(ValueError):
     """A bounded, user-facing draft cannot be admitted as an exact plan."""
+
+    def __init__(self, message: str, *,
+                 revisit_violations: tuple[PaneRevisitEstimate, ...] = ()) -> None:
+        super().__init__(message)
+        self.revisit_violations = revisit_violations
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +57,21 @@ class PaneSlotDraft:
     points: int = 101
     network_discovery: bool = False
     measurement_mode: CaptureMeasurementMode | None = None
+    priority: int = field(default=1, kw_only=True)
+    maximum_revisit_s: float | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
             raise PaneUserPlanError("pane number must be in [1, 4]")
         if type(self.network_discovery) is not bool:
             raise PaneUserPlanError("pane network discovery intent must be explicit")
+        if type(self.priority) is not int or not 1 <= self.priority <= 100:
+            raise PaneUserPlanError("pane scheduling priority must be an integer in [1, 100]")
+        if self.maximum_revisit_s is not None and (
+                type(self.maximum_revisit_s) not in {int, float}
+                or not 0 < self.maximum_revisit_s <= 3600
+                or not isfinite(self.maximum_revisit_s)):
+            raise PaneUserPlanError("pane maximum revisit must be finite in (0, 3600] seconds")
         if self.measurement_mode is not None:
             try:
                 object.__setattr__(self, "measurement_mode", CaptureMeasurementMode(self.measurement_mode))
@@ -63,7 +79,8 @@ class PaneSlotDraft:
                 raise PaneUserPlanError("pane measurement mode is not supported") from None
         if self.source_id is None:
             if (self.start_hz is not None or self.stop_hz is not None
-                    or self.measurement_mode is not None):
+                    or self.measurement_mode is not None or self.priority != 1
+                    or self.maximum_revisit_s is not None):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
         if (not isinstance(self.source_id, str) or not self.source_id.strip()
@@ -78,6 +95,34 @@ class PaneSlotDraft:
                 or type(self.points) is not int or not 2 <= self.points <= 10001):
             raise PaneUserPlanError("pane sample rate, FFT or trace points are outside the qualified draft choices")
 
+    @property
+    def scheduler_policy(self) -> PaneSchedulerPolicy:
+        """Legacy minimum_revisit_s means a MAXIMUM permitted visit interval."""
+        kind = (SchedulerPolicyKind.MINIMUM_REVISIT if self.maximum_revisit_s is not None
+                else SchedulerPolicyKind.WEIGHTED if self.priority != 1
+                else SchedulerPolicyKind.EQUAL)
+        return PaneSchedulerPolicy(kind, self.priority, self.maximum_revisit_s)
+
+
+@dataclass(frozen=True, slots=True)
+class PaneSchedulingIntent:
+    pane_id: str
+    requested: PaneSchedulerPolicy
+    effective: PaneSchedulerPolicy
+
+
+def _shared_scheduler_policy(entries: list[tuple[PaneSlotDraft, PaneProfile]]) -> PaneSchedulerPolicy:
+    # A common capture has one schedule, not a second RX for a view with a
+    # different priority. Preserve individual requests beside this explicitly
+    # previewed max-weight/strictest-deadline merge; never relax a deadline.
+    weight = max(draft.priority for draft, _profile in entries)
+    deadlines = [draft.maximum_revisit_s for draft, _profile in entries
+                 if draft.maximum_revisit_s is not None]
+    deadline = min(deadlines) if deadlines else None
+    kind = (SchedulerPolicyKind.MINIMUM_REVISIT if deadline is not None
+            else SchedulerPolicyKind.WEIGHTED if weight != 1 else SchedulerPolicyKind.EQUAL)
+    return PaneSchedulerPolicy(kind, weight, deadline)
+
 
 @dataclass(frozen=True, slots=True)
 class PaneUserPlan:
@@ -88,6 +133,7 @@ class PaneUserPlan:
     ad_sweep_geometry: tuple[tuple[str, AnalyzerGeometryPreflight], ...] = ()
     hackrf_sweep_geometry: tuple[tuple[str, AnalyzerGeometryPreflight], ...] = ()
     hackrf_hardware_ranges: tuple[tuple[str, int, int], ...] = ()
+    scheduler_intents: tuple[PaneSchedulingIntent, ...] = ()
 
 
 def compile_user_pane_plan(
@@ -240,6 +286,7 @@ def compile_user_pane_plan(
         by_source[source_id].append((draft, profile))
 
     modes: dict[str, ReceiverBindingMode] = {}
+    shared_policies: dict[str, PaneSchedulerPolicy] = {}
     for source_id, entries in by_source.items():
         if len(entries) == 1:
             mode = ReceiverBindingMode.DEDICATED_PARALLEL
@@ -251,7 +298,10 @@ def compile_user_pane_plan(
                     and envelope <= entries[0][1].usable_capture_span_hz
                     else ReceiverBindingMode.TIME_SLICED)
         modes[source_id] = mode
+        if mode is ReceiverBindingMode.SHARED_CAPTURE:
+            shared_policies[source_id] = _shared_scheduler_policy(entries)
     slots_list: list[PaneLayoutSlot] = []
+    scheduler_intents: list[PaneSchedulingIntent] = []
     for draft in drafts:
         if draft.source_id is None:
             slots_list.append(PaneLayoutSlot(draft.number))
@@ -262,19 +312,28 @@ def compile_user_pane_plan(
                       else draft.start_hz)
         crop_stop = (profile.pane_crop_stop_hz if isinstance(profile, (Ad936xSweepPaneProfile, HackrfSweepPaneProfile))
                      else draft.stop_hz)
+        requested_policy = draft.scheduler_policy
+        effective_policy = shared_policies.get(draft.source_id, requested_policy)
+        scheduler_intents.append(PaneSchedulingIntent(
+            f"pane-{draft.number}", requested_policy, effective_policy))
         slots_list.append(PaneLayoutSlot(draft.number, SweepPaneRequest(
             f"pane-{draft.number}", endpoints[draft.source_id],
             crop_start, crop_stop, profile_id=f"pane-{draft.number}",
-            requested_binding_mode=modes[draft.source_id])))
+            requested_binding_mode=modes[draft.source_id], scheduler_policy=effective_policy)))
     slots = tuple(slots_list)
-    layout = compile_pane_layout(slots, tuple(groups), profiles)
+    try:
+        layout = compile_pane_layout(slots, tuple(groups), profiles)
+    except PaneScheduleDeadlineError as error:
+        raise PaneUserPlanError("pane revisit targets are infeasible in the declared cost model",
+                                revisit_violations=error.violations) from None
     initial_ad: list[tuple[str, LiveConfiguration]] = []
     assert layout.schedule is not None
     for resource_schedule in layout.schedule.resources:
         source_id = source_order[int(resource_schedule.physical_stream_resource_id.rsplit("-", 1)[1]) - 1]
         if selected[source_id].family is not DeviceFamily.AD936X:
             continue
-        job = resource_schedule.jobs[0]
+        first_capture = resource_schedule.slots[0].capture_id
+        job = next(item for item in resource_schedule.jobs if item.capture_id == first_capture)
         profile = job.profile
         if isinstance(profile, Ad936xSweepPaneProfile):
             initial_ad.append((resource_schedule.physical_stream_resource_id, profile.configuration))
@@ -292,7 +351,8 @@ def compile_user_pane_plan(
             persistence_enabled=False, persistence_mode="disabled")))
     return PaneUserPlan(layout, tuple(groups),
                         tuple((resource_for[source], source) for source in source_order),
-                        tuple(initial_ad), tuple(ad_geometry), tuple(hf_geometry), tuple(hf_ranges))
+                        tuple(initial_ad), tuple(ad_geometry), tuple(hf_geometry), tuple(hf_ranges),
+                        tuple(scheduler_intents))
 
 
-__all__ = ["PaneSlotDraft", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]
+__all__ = ["PaneSlotDraft", "PaneSchedulingIntent", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]

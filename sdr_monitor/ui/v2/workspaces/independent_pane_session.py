@@ -58,6 +58,8 @@ class IndependentPaneSessionV2(QWidget):
             for item in schedule.pane_revisits
         }
         self._pane_revisits = {item.pane_id: item for item in schedule.pane_revisits}
+        self._time_sliced_resources = {item.physical_stream_resource_id
+                                       for item in schedule.resources if len(item.jobs) > 1}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -208,6 +210,16 @@ class IndependentPaneSessionV2(QWidget):
             return text("analyzer.independent.timing.under_hundredth")
         return text("analyzer.independent.timing.seconds", value=f"{interval_s:.2f}")
 
+    def _target_text(self, pane_id: str, timing: PaneHostTiming) -> str:
+        target = self._pane_revisits[pane_id].requested_maximum_revisit_s
+        if target is None:
+            return ""
+        observed = timing.last_revisit_s
+        key = ("target_unknown" if observed is None or not isfinite(observed) or observed <= 0
+               else "target_missed" if observed > target else "target_last_within")
+        return " · " + text("analyzer.independent.timing." + key,
+                             target=text("analyzer.independent.timing.seconds", value=f"{target:g}"))
+
     def _timing_text(self, pane_id: str, phase: PanePumpPhase) -> str:
         if phase is not PanePumpPhase.RUNNING:
             key = {
@@ -225,15 +237,17 @@ class IndependentPaneSessionV2(QWidget):
             self._error_key = "analyzer.independent.operation_failed"
         estimate = self._pane_revisits[pane_id]
         age = self._age_text(timing.frame_age_s)
-        if estimate.mode is ReceiverBindingMode.TIME_SLICED:
+        if (estimate.mode is ReceiverBindingMode.TIME_SLICED
+                or estimate.physical_stream_resource_id in self._time_sliced_resources):
             modeled = self._interval_text(estimate.maximum_revisit_s)
+            target = self._target_text(pane_id, timing)
             if age is None:
-                return text("analyzer.independent.timing.sliced_no_frame", modeled=modeled)
+                return text("analyzer.independent.timing.sliced_no_frame", modeled=modeled) + target
             observed = timing.last_revisit_s
             if observed is None or not isfinite(observed) or observed <= 0:
-                return text("analyzer.independent.timing.sliced_first", age=age, modeled=modeled)
+                return text("analyzer.independent.timing.sliced_first", age=age, modeled=modeled) + target
             return text("analyzer.independent.timing.sliced",
-                        age=age, observed=self._interval_text(observed), modeled=modeled)
+                        age=age, observed=self._interval_text(observed), modeled=modeled) + target
         if age is None:
             return text("analyzer.independent.timing.continuous_no_frame")
         return text("analyzer.independent.timing.continuous", age=age)

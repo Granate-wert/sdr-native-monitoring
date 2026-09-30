@@ -587,6 +587,35 @@ class PaneRevisitEstimate:
             _positive_finite(self.requested_maximum_revisit_s, "requested maximum revisit")
 
 
+def _exceeds_revisit_deadline(maximum_s: float, target_s: float) -> bool:
+    # A 400-slot cycle subtracts accumulated float starts. This tolerance is
+    # only arithmetic roundoff (picoseconds / 1e-12 relative), not extra
+    # scheduler wait, RF settling allowance or a relaxed hardware deadline.
+    return maximum_s > target_s and not math.isclose(
+        maximum_s, target_s, rel_tol=1e-12, abs_tol=1e-12)
+
+
+class PaneScheduleDeadlineError(PaneScheduleError):
+    """All missed deadlines in the declared cost model, before RX admission.
+
+    These are finite plan facts, not an SDK error or a claim about measured
+    hardware throughput. Keeping the estimates avoids exposing raw driver
+    exceptions when the product explains a refused user-authored layout.
+    """
+
+    def __init__(self, violations: tuple[PaneRevisitEstimate, ...]) -> None:
+        if (not violations or len(violations) > _MAX_PANES
+                or any(not isinstance(item, PaneRevisitEstimate)
+                       or item.requested_maximum_revisit_s is None
+                       or not _exceeds_revisit_deadline(
+                           item.maximum_revisit_s, item.requested_maximum_revisit_s)
+                       for item in violations)
+                or len({item.pane_id for item in violations}) != len(violations)):
+            raise ValueError("deadline refusal requires bounded missed plan estimates")
+        self.violations = tuple(violations)
+        super().__init__("pane cannot meet its maximum revisit deadline before RX admission")
+
+
 @dataclass(frozen=True, slots=True)
 class ResourcePaneSchedule:
     """All immutable capture jobs for one physical stream resource."""
@@ -951,10 +980,6 @@ def _revisit_estimates(schedule: ResourcePaneSchedule) -> tuple[PaneRevisitEstim
                 if job.scheduler_policy.kind is SchedulerPolicyKind.MINIMUM_REVISIT
                 else None
             )
-            if requested is not None and maximum_revisit_s > requested:
-                raise PaneScheduleError(
-                    f"pane {crop.pane_id} cannot meet its maximum revisit deadline before RX admission"
-                )
             estimates.append(
                 PaneRevisitEstimate(
                     crop.pane_id,
@@ -994,7 +1019,14 @@ def compile_pane_schedule(
         resource_schedule = _schedule_resource(resource_id, jobs, config)
         resources.append(resource_schedule)
         revisits.extend(_revisit_estimates(resource_schedule))
-    return PaneSchedule(tuple(resources), tuple(sorted(revisits, key=lambda item: item.pane_id)))
+    ordered_revisits = tuple(sorted(revisits, key=lambda item: item.pane_id))
+    violations = tuple(item for item in ordered_revisits
+                       if item.requested_maximum_revisit_s is not None
+                       and _exceeds_revisit_deadline(
+                           item.maximum_revisit_s, item.requested_maximum_revisit_s))
+    if violations:
+        raise PaneScheduleDeadlineError(violations)
+    return PaneSchedule(tuple(resources), ordered_revisits)
 
 
 def compile_pane_layout(
@@ -1036,6 +1068,7 @@ __all__ = [
     "PaneRevisitEstimate",
     "PaneSchedule",
     "PaneScheduleError",
+    "PaneScheduleDeadlineError",
     "PaneScheduleSlot",
     "PaneSchedulerConfig",
     "ResourcePaneSchedule",

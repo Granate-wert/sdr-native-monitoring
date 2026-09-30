@@ -1155,3 +1155,51 @@ target revisit, simultaneous tuning groups/RX, genuine Ethernet, wider RTBW,
 qualified tinySA300k/current input, held-middle RF intent, CutDC/spur,
 sustained/independent review and release remain open. APP07 is PARTIAL;
 APP06E is planned and the full APP00..14 objective remains active.
+
+### User scheduling intent on the same V2 resource graph
+
+The Pane sources editor now has a collapsed-by-default Schedule section.
+Each occupied slot can declare a priority weight1..100 and an optional maximum
+revisit target in seconds (0/unset, up to3600s). Empty creates no scheduling
+intent. Controls and their RU/EN accessible names are locked with the staged
+draft; locale/display expansion never applies RF settings or starts RX.
+Numeric fields use the existing range-control theme role in all three themes;
+pane numbers use secondary text and excess height stays below the compact
+editor instead of spreading rows. The source column receives remaining width.
+
+These fields use the existing bounded smooth weighted cycle (at most400slots
+for4panes), the same resource owner/lease/pump and common Spectrum/Waterfall.
+They do not change Fs/FFT/window/detector, add an SDK opener, set UI FPS or
+silently restart healthy peers. A weight affects recurring active time units;
+it is not a guarantee of a proportional FFT/LPS rate or a shorter worst gap.
+Initial AD Apply stages the actual first weighted capture, not jobs[0].
+
+Compatible shared views still have ONE capture even with different user
+preferences. Their effective capture policy is the largest requested weight
+and strictest requested maximum interval. Individual requests and this merge
+are retained separately and shown before Apply; no deadline is relaxed or
+claimed independently achievable for one shared view. Low-level shared job
+contracts continue to require one identical effective policy.
+
+Compilation reports every missed deadline across admitted resources as bounded
+typed plan estimates. Refused Stage creates no pane owners/lease/Apply/RX;
+fresh source metadata selection may have occurred. A failed graph close keeps
+the staged owner for explicit Discard, with the fixed cleanup obligation and
+no raw SDK exception in UI. RU/EN details name the pane, modeled maximum and
+requested target; confirmed Discard clears the cleanup obligation.
+
+Feasibility is ONLY against the existing declared CaptureEpochCost model,
+not transport throughput, full-range acquisition time, RF duty or a hardware
+deadline guarantee. Floating comparison removes only accumulated arithmetic
+roundoff (1e-12 relative/absolute), not scheduler grace time. An exact0.320s
+model boundary remains valid across400slots;0.319s is refused. Actual accepted
+host revisit is separate: unknown before a measured return, last interval
+within target or last interval exceeded target, not a sustained/RF verdict.
+No hidden adaptive Fs/FFT or retry is issued when a target is exceeded.
+Multiple capture jobs remain visibly time-sliced even if each job serves a
+shared pair. Stopped retained frames are not labeled as current measurements.
+
+This source contract does not relabel the earlier a4 frozen/Windows/RX proof
+as qualification of the new scheduling controls. New exact full-source,
+frozen Windows, weighted physical/sustained and independent review gates must
+be recorded separately. APP07 remains PARTIAL; the full release remains open.

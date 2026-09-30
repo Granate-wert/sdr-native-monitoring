@@ -186,6 +186,38 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.discard": MappingProxyType({UiLocale.RU: "Отменить подготовку", UiLocale.EN: "Discard Stage"}),
         "analyzer.pane.setup.preview_intro": MappingProxyType({
             UiLocale.RU: "Влияние раскладки до применения:", UiLocale.EN: "Layout impact before Apply:"}),
+        "analyzer.pane.setup.scheduler": MappingProxyType({UiLocale.RU: "Расписание", UiLocale.EN: "Schedule"}),
+        "analyzer.pane.setup.priority": MappingProxyType({UiLocale.RU: "Вес приоритета", UiLocale.EN: "Priority weight"}),
+        "analyzer.pane.setup.target": MappingProxyType({UiLocale.RU: "Период возврата ≤", UiLocale.EN: "Revisit target ≤"}),
+        "analyzer.pane.setup.priority_name": MappingProxyType({UiLocale.RU: "Вес приоритета окна {pane}", UiLocale.EN: "Pane {pane} priority weight"}),
+        "analyzer.pane.setup.target_name": MappingProxyType({UiLocale.RU: "Максимальный период возврата к окну {pane}", UiLocale.EN: "Pane {pane} maximum revisit target"}),
+        "analyzer.pane.setup.target_unset": MappingProxyType({UiLocale.RU: "Не задан", UiLocale.EN: "Unset"}),
+        "analyzer.pane.setup.target_value": MappingProxyType({UiLocale.RU: "≤ {value} с", UiLocale.EN: "≤ {value} s"}),
+        "analyzer.pane.setup.seconds_suffix": MappingProxyType({UiLocale.RU: " с", UiLocale.EN: " s"}),
+        "analyzer.pane.setup.scheduler_help": MappingProxyType({
+            UiLocale.RU: "Вес 1–100 распределяет активные интервалы между диапазонами одного RX, а не задаёт FPS. Целевой период — максимально допустимый возврат к диапазону; 0 означает «не задан». Общий захват использует максимальный вес и самый строгий период всех его окон: это будет показано до применения. Отказ проверяется по расчётной модели времени (не аппаратной гарантии). Фактический host-revisit зависит от прибора, транспорта и полного прохода; он показан отдельно. Fs, FFT и детектор не меняются автоматически.",
+            UiLocale.EN: "Weight 1–100 allocates active intervals between one RX's ranges, not FPS. The target is the maximum allowed revisit interval; 0 means unset. Shared capture uses the largest weight and strictest target of its panes, shown before Apply. Refusal uses the declared timing model, not a hardware guarantee. Actual host revisit depends on the device, transport and full pass and is shown separately. Fs, FFT and detector are never changed automatically."}),
+        "analyzer.pane.setup.preview_scheduler": MappingProxyType({
+            UiLocale.RU: "Окно {pane}: вес {priority} → захват {effective_priority}; цель {target} → захват {effective_target}; расчётный максимум {modeled} с, посещений за цикл {visits}. Не измерение скорости RF.",
+            UiLocale.EN: "Pane {pane}: weight {priority} → capture {effective_priority}; target {target} → capture {effective_target}; modeled maximum {modeled} s, visits per cycle {visits}. Not measured RF speed."}),
+        "analyzer.pane.setup.deadline_refused": MappingProxyType({
+            UiLocale.RU: "Расписание не подготовлено: расчётная модель превышает заданный период возврата. Увеличьте период или измените веса/диапазоны; Apply и RX не выполнены.",
+            UiLocale.EN: "Schedule not staged: the timing model exceeds a requested revisit target. Increase the target or change weights/ranges; no Apply or RX occurred."}),
+        "analyzer.pane.setup.deadline_detail": MappingProxyType({
+            UiLocale.RU: "Окно {pane}: расчётный максимум {modeled} с > цель {target} с.",
+            UiLocale.EN: "Pane {pane}: modeled maximum {modeled} s > target {target} s."}),
+        "analyzer.pane.setup.deadline_cleanup": MappingProxyType({
+            UiLocale.RU: "Закрытие подготовительного владельца не подтвердилось; выполните явную «Отменить подготовку».",
+            UiLocale.EN: "Staged-owner close did not confirm; use explicit Discard Stage."}),
+        "analyzer.independent.timing.target_unknown": MappingProxyType({
+            UiLocale.RU: "цель ≤{target}, host-интервал ещё не измерен",
+            UiLocale.EN: "target ≤{target}, host interval not measured yet"}),
+        "analyzer.independent.timing.target_missed": MappingProxyType({
+            UiLocale.RU: "последний host-интервал превысил цель ≤{target}",
+            UiLocale.EN: "last host interval exceeded target ≤{target}"}),
+        "analyzer.independent.timing.target_last_within": MappingProxyType({
+            UiLocale.RU: "последний host-интервал в пределах цели ≤{target}; не RF-гарантия",
+            UiLocale.EN: "last host interval within target ≤{target}; not an RF guarantee"}),
         "analyzer.pane.setup.parallel": MappingProxyType({
             UiLocale.RU: "независимый ресурс", UiLocale.EN: "independent resource"}),
         "analyzer.pane.setup.shared": MappingProxyType({

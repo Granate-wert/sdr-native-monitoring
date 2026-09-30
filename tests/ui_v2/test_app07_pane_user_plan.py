@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
+from collections import Counter
+
+from sdr_monitor.domain.receiver_topology import ReceiverBindingMode, SchedulerPolicyKind
 from sdr_monitor.domain.pane_scheduler import Ad936xSweepPaneProfile, CaptureMeasurementMode, HackrfSweepPaneProfile
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.ui.v2_pane_user_plan import (
@@ -99,6 +101,122 @@ class PaneUserPlanTests(unittest.TestCase):
         self.assertEqual(len(plan.layout.schedule.resources[0].jobs), 2)
         self.assertEqual({job.mode for job in plan.layout.schedule.resources[0].jobs},
                          {ReceiverBindingMode.TIME_SLICED})
+
+    def test_priority_uses_existing_weighted_slots_and_stages_actual_first_ad_job(self) -> None:
+        plan = self._compile((
+            PaneSlotDraft(1, self.ad_id, 100e6, 108e6),
+            PaneSlotDraft(2, self.ad_id, 200e6, 208e6, priority=3),
+            PaneSlotDraft(3, self.hf_id, 140e6, 148e6), PaneSlotDraft(4)))
+        ad, hf = plan.layout.schedule.resources
+        counts = Counter(slot.capture_id for slot in ad.slots)
+        by_pane = {job.crops[0].pane_id: job for job in ad.jobs}
+        self.assertEqual(counts[by_pane["pane-1"].capture_id], 1)
+        self.assertEqual(counts[by_pane["pane-2"].capture_id], 3)
+        self.assertEqual(ad.slots[0].capture_id, by_pane["pane-2"].capture_id)
+        self.assertEqual(plan.initial_ad_configurations[0][1].center_hz, 204e6)
+        self.assertEqual(len(hf.jobs), 1)
+        self.assertEqual(len(hf.slots), 1)
+        self.assertEqual(len(plan.groups), 2)
+        self.assertIs(by_pane["pane-2"].scheduler_policy.kind, SchedulerPolicyKind.WEIGHTED)
+
+    def test_shared_capture_merges_strictest_target_and_max_weight_without_second_rx(self) -> None:
+        plan = self._compile((
+            PaneSlotDraft(1, self.ad_id, 100e6, 104e6, maximum_revisit_s=0.09),
+            PaneSlotDraft(2, self.ad_id, 105e6, 108e6, priority=4, maximum_revisit_s=0.08)))
+        resource = plan.layout.schedule.resources[0]
+        self.assertEqual(len(resource.jobs), 1)
+        self.assertEqual(len(plan.groups), 1)
+        job = resource.jobs[0]
+        self.assertIs(job.mode, ReceiverBindingMode.SHARED_CAPTURE)
+        self.assertEqual((job.scheduler_policy.weight, job.scheduler_policy.minimum_revisit_s),
+                         (4, 0.08))
+        self.assertEqual(tuple((item.requested.weight, item.requested.minimum_revisit_s)
+                              for item in plan.scheduler_intents), ((1, 0.09), (4, 0.08)))
+        self.assertTrue(all(item.effective == job.scheduler_policy for item in plan.scheduler_intents))
+        self.assertTrue(all(slot.control_gap_before is None for slot in resource.slots))
+        self.assertIsNone(resource.cycle_transition_gap)
+        self.assertTrue(all(item.visits_per_cycle == 4 for item in plan.layout.schedule.pane_revisits))
+
+    def test_both_native_sweep_families_keep_geometry_while_shared_priority_changes(self) -> None:
+        for source, rate, fft in ((self.ad_id, 61.44e6, 1024), (self.hf_id, 20e6, 2048)):
+            with self.subTest(source=source):
+                plan = self._compile(tuple(PaneSlotDraft(number, source, 100e6, 220e6,
+                    sample_rate_hz=rate, fft_size=fft, measurement_mode=CaptureMeasurementMode.SWEEP,
+                    priority=weight, maximum_revisit_s=1.1)
+                    for number, weight in ((1, 1), (2, 9))))
+                job = plan.layout.schedule.resources[0].jobs[0]
+                self.assertEqual(len(plan.layout.schedule.resources[0].jobs), 1)
+                self.assertEqual(job.scheduler_policy.weight, 9)
+                self.assertEqual(job.profile.sample_rate_hz, rate)
+                self.assertEqual(job.profile.fft_size, 2048)
+                self.assertEqual(tuple(item.requested.weight for item in plan.scheduler_intents), (1, 9))
+                self.assertEqual(len(plan.ad_sweep_geometry) + len(plan.hackrf_sweep_geometry), 2)
+
+    def test_model_deadline_refusal_retains_every_missed_pane_across_resources(self) -> None:
+        with self.assertRaises(PaneUserPlanError) as caught:
+            self._compile((
+                PaneSlotDraft(1, self.ad_id, 100e6, 108e6, maximum_revisit_s=0.01),
+                PaneSlotDraft(2, self.ad_id, 200e6, 208e6, maximum_revisit_s=0.01),
+                PaneSlotDraft(3, self.hf_id, 140e6, 148e6, maximum_revisit_s=0.01),
+                PaneSlotDraft(4)))
+        violations = caught.exception.revisit_violations
+        self.assertEqual(tuple(item.pane_id for item in violations), ("pane-1", "pane-2", "pane-3"))
+        self.assertTrue(all(item.maximum_revisit_s > item.requested_maximum_revisit_s
+                            for item in violations))
+        self.assertEqual(len({item.physical_stream_resource_id for item in violations}), 2)
+
+    def test_feasible_target_does_not_change_fs_fft_unit_or_profile(self) -> None:
+        plain = self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 108e6),
+                               PaneSlotDraft(2, self.ad_id, 200e6, 208e6)))
+        planned = self._compile((
+            PaneSlotDraft(1, self.ad_id, 100e6, 108e6, maximum_revisit_s=0.2),
+            PaneSlotDraft(2, self.ad_id, 200e6, 208e6, maximum_revisit_s=0.2)))
+        self.assertEqual(tuple(job.configuration_key for job in plain.layout.schedule.resources[0].jobs),
+                         tuple(job.configuration_key for job in planned.layout.schedule.resources[0].jobs))
+        self.assertTrue(all(item.requested_maximum_revisit_s == 0.2
+                            for item in planned.layout.schedule.pane_revisits))
+        self.assertEqual(planned.layout.schedule.resources[0].cycle_duration_s,
+                         plain.layout.schedule.resources[0].cycle_duration_s)
+
+    def test_priority_and_target_inputs_are_strict_and_empty_has_no_schedule(self) -> None:
+        for priority in (0, 101, True, 1.0, "2"):
+            with self.subTest(priority=priority), self.assertRaises(PaneUserPlanError):
+                PaneSlotDraft(1, self.ad_id, 100e6, 108e6, priority=priority)
+        for target in (0, -1, True, float("nan"), float("inf"), 3601, 10 ** 1000, "0.2"):
+            with self.subTest(target=target), self.assertRaises(PaneUserPlanError):
+                PaneSlotDraft(1, self.ad_id, 100e6, 108e6, maximum_revisit_s=target)
+        for intent in ({"priority": 2}, {"maximum_revisit_s": 1}):
+            with self.subTest(intent=intent), self.assertRaises(PaneUserPlanError):
+                PaneSlotDraft(1, **intent)
+
+    def test_maximum_user_weights_remain_inside_the_400_slot_budget(self) -> None:
+        plan = self._compile(tuple(PaneSlotDraft(number, self.ad_id,
+            number * 100e6, number * 100e6 + 8e6, priority=100, maximum_revisit_s=3600)
+            for number in range(1, 5)))
+        resource = plan.layout.schedule.resources[0]
+        self.assertEqual(len(resource.slots), 400)
+        self.assertEqual(set(Counter(slot.capture_id for slot in resource.slots).values()), {100})
+        self.assertEqual(len(plan.groups), 1)
+
+    def test_tinysa_schedule_keeps_device_dbm_trace_not_an_fft(self) -> None:
+        plan = self._compile((PaneSlotDraft(1, self.ts_id, 100e6, 300e6,
+            points=1001, priority=7, maximum_revisit_s=9), PaneSlotDraft(2)))
+        job = plan.layout.schedule.resources[0].jobs[0]
+        self.assertEqual((job.profile.unit, job.profile.points), ("dBm", 1001))
+        self.assertIs(job.profile.measurement_mode, CaptureMeasurementMode.INSTRUMENT_TRACE)
+        self.assertEqual(job.scheduler_policy.weight, 7)
+        self.assertEqual(plan.layout.schedule.pane_revisits[0].requested_maximum_revisit_s, 9)
+
+    def test_exact_decimal_model_boundary_does_not_false_refuse_long_weighted_cycle(self) -> None:
+        plan = self._compile(tuple(PaneSlotDraft(number, self.ad_id,
+            number * 100e6, number * 100e6 + 8e6, priority=100, maximum_revisit_s=0.32)
+            for number in range(1, 5)))
+        self.assertTrue(all(abs(item.maximum_revisit_s - 0.32) < 1e-10
+                            for item in plan.layout.schedule.pane_revisits))
+        with self.assertRaises(PaneUserPlanError):
+            self._compile(tuple(PaneSlotDraft(number, self.ad_id,
+                number * 100e6, number * 100e6 + 8e6, priority=100, maximum_revisit_s=0.319)
+                for number in range(1, 5)))
 
     def test_hackrf_host_sweep_and_rtbw_share_one_selected_owner(self) -> None:
         plan = self._compile((

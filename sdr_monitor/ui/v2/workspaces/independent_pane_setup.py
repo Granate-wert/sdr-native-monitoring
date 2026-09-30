@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import DeviceFamily
-from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
+from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneRevisitEstimate
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, PaneUserPlanError
@@ -31,6 +31,7 @@ class _SlotRow:
     def __init__(self, number: int, parent: QWidget) -> None:
         self.number = number
         self.number_label = QLabel(str(number), parent)
+        self.number_label.setProperty("ui2Role", "secondary")
         self.source = QComboBox(parent)
         self.source.setProperty("ui2Role", "utility-select")
         self.source.setMinimumWidth(175)
@@ -40,7 +41,7 @@ class _SlotRow:
             field.setRange(0.1, 10_000.0)
             field.setDecimals(3)
             field.setSingleStep(1.0)
-            field.setProperty("ui2Role", "utility-select")
+            field.setProperty("ui2Role", "range-control")
         self.start.setValue(100.0)
         self.stop.setValue(108.0)
         self.rate = QComboBox(parent)
@@ -53,7 +54,7 @@ class _SlotRow:
         self.points = QSpinBox(parent)
         self.points.setRange(2, 10001)
         self.points.setValue(101)
-        self.points.setProperty("ui2Role", "utility-select")
+        self.points.setProperty("ui2Role", "range-control")
         self.mode = QComboBox(parent)
         self.mode.setProperty("ui2Role", "utility-select")
         self.mode_points = QStackedWidget(parent)
@@ -61,6 +62,17 @@ class _SlotRow:
         self.mode_points.addWidget(self.points)
         self._last_mode: CaptureMeasurementMode | None = None
         self._rtbw_rate: float | None = None
+        self.schedule_number_label = QLabel(str(number), parent)
+        self.schedule_number_label.setProperty("ui2Role", "secondary")
+        self.priority = QSpinBox(parent)
+        self.priority.setRange(1, 100)
+        self.priority.setValue(1)
+        self.priority.setProperty("ui2Role", "range-control")
+        self.maximum_revisit = QDoubleSpinBox(parent)
+        self.maximum_revisit.setRange(0, 3600)
+        self.maximum_revisit.setDecimals(3)
+        self.maximum_revisit.setSingleStep(0.1)
+        self.maximum_revisit.setProperty("ui2Role", "range-control")
 
 
 class IndependentPaneSetupV2(QWidget):
@@ -103,6 +115,7 @@ class IndependentPaneSetupV2(QWidget):
         layout.addWidget(self.description)
         grid = QGridLayout()
         grid.setHorizontalSpacing(6)
+        grid.setColumnStretch(1, 1)
         self.headers = tuple(QLabel(self) for _ in range(7))
         for column, header in enumerate(self.headers):
             header.setProperty("ui2Role", "secondary")
@@ -126,8 +139,32 @@ class IndependentPaneSetupV2(QWidget):
         self.discard = self._button(self._begin_discard)
         for button in (self.prepare, self.apply, self.discard):
             actions.addWidget(button)
+        self.scheduler_toggle = QPushButton(self)
+        self.scheduler_toggle.setProperty("ui2Role", "utility-action")
+        self.scheduler_toggle.setCheckable(True)
+        actions.addWidget(self.scheduler_toggle)
         actions.addStretch(1)
         layout.addLayout(actions)
+        self.scheduler_controls = QWidget(self)
+        schedule_grid = QGridLayout(self.scheduler_controls)
+        schedule_grid.setContentsMargins(0, 0, 0, 0)
+        schedule_grid.setHorizontalSpacing(6)
+        self.scheduler_headers = tuple(QLabel(self.scheduler_controls) for _ in range(3))
+        for column, header in enumerate(self.scheduler_headers):
+            header.setProperty("ui2Role", "secondary")
+            schedule_grid.addWidget(header, 0, column)
+        for row_index, row in enumerate(self._rows, 1):
+            for column, widget in enumerate((row.schedule_number_label, row.priority,
+                                             row.maximum_revisit)):
+                schedule_grid.addWidget(widget, row_index, column)
+        self.scheduler_help = QLabel(self.scheduler_controls)
+        self.scheduler_help.setWordWrap(True)
+        self.scheduler_help.setTextFormat(Qt.TextFormat.PlainText)
+        self.scheduler_help.setProperty("ui2Role", "secondary")
+        schedule_grid.addWidget(self.scheduler_help, 5, 0, 1, 3)
+        self.scheduler_toggle.toggled.connect(self.scheduler_controls.setVisible)
+        self.scheduler_controls.hide()
+        layout.addWidget(self.scheduler_controls)
         self.preview = QLabel(self)
         self.preview.setWordWrap(True)
         self.preview.setTextFormat(Qt.TextFormat.PlainText)
@@ -139,6 +176,12 @@ class IndependentPaneSetupV2(QWidget):
         self.error.setProperty("ui2Tone", "error")
         self.error.hide()
         layout.addWidget(self.error)
+        # Keep editor rows compact at larger heights; do not spread surplus
+        # space through the mode stack or between the scheduling fields.
+        layout.addStretch(1)
+        self._error_key: str | None = None
+        self._revisit_violations: tuple[PaneRevisitEstimate, ...] = ()
+        self._cleanup_required = False
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._poll)
@@ -220,6 +263,8 @@ class IndependentPaneSetupV2(QWidget):
         self._mode_changed(row)
         row.start.setEnabled(family is not None and not self.blocks_single_source)
         row.stop.setEnabled(family is not None and not self.blocks_single_source)
+        row.priority.setEnabled(family is not None and not self.blocks_single_source)
+        row.maximum_revisit.setEnabled(family is not None and not self.blocks_single_source)
         if family is not None and not preserve_range:
             lower, upper = ((200, 210) if family is DeviceFamily.TINYSA else
                             (140, 148) if family is DeviceFamily.HACKRF else (100, 108))
@@ -237,7 +282,8 @@ class IndependentPaneSetupV2(QWidget):
                 row.stop.value() * 1_000_000,
                 sample_rate_hz=row.rate.currentData(), fft_size=row.fft.currentData(),
                 points=row.points.value(), network_discovery=network,
-                measurement_mode=self._selected_mode(row)))
+                measurement_mode=self._selected_mode(row), priority=row.priority.value(),
+                maximum_revisit_s=row.maximum_revisit.value() or None))
         return tuple(drafts)
 
     @staticmethod
@@ -364,8 +410,13 @@ class IndependentPaneSetupV2(QWidget):
                 self.preview.clear()
             elif operation == "apply":
                 self._refresh_preview()
-            self._set_error("analyzer.pane.setup.stage_failed" if operation == "prepare"
-                            else "analyzer.pane.setup.operation_failed")
+            if operation == "prepare" and error.revisit_violations:
+                self._set_error("analyzer.pane.setup.deadline_refused",
+                                revisit_violations=error.revisit_violations,
+                                cleanup_required=error.pool is not None)
+            else:
+                self._set_error("analyzer.pane.setup.stage_failed" if operation == "prepare"
+                                else "analyzer.pane.setup.operation_failed")
         except Exception:
             if operation == "prepare":
                 self.preview.clear()
@@ -392,6 +443,7 @@ class IndependentPaneSetupV2(QWidget):
                 self.preview.clear()
             elif operation == "cleanup":
                 self._retained_pool = None
+                self._set_error(self._error_key, revisit_violations=self._revisit_violations)
             elif operation == "close_layout":
                 try:
                     self._uninstall()
@@ -426,6 +478,22 @@ class IndependentPaneSetupV2(QWidget):
             label = prepared.handle.source_labels.get(source_id, source_id)
             lines.append(text("analyzer.pane.setup.preview_resource", panes=numbers, source=label,
                               mode=mode, jobs=item.capture_job_count) + conflict)
+        intents = {item.pane_id: item for item in prepared.plan.scheduler_intents}
+        for resource in prepared.preview:
+            for estimate in resource.revisit_estimates:
+                intent = intents.get(estimate.pane_id)
+                if intent is None:
+                    continue
+                requested = intent.requested.minimum_revisit_s
+                effective = intent.effective.minimum_revisit_s
+                lines.append(text("analyzer.pane.setup.preview_scheduler",
+                                  pane=estimate.pane_id.rsplit("-", 1)[-1],
+                                  priority=intent.requested.weight,
+                                  effective_priority=intent.effective.weight,
+                                  target=self._preview_target(requested),
+                                  effective_target=self._preview_target(effective),
+                                  modeled=f"{estimate.maximum_revisit_s:.3f}",
+                                  visits=estimate.visits_per_cycle))
         for pane_id, geometry in prepared.plan.ad_sweep_geometry:
             lines.append(text("analyzer.pane.setup.preview_ad_sweep",
                               pane=pane_id.rsplit("-", 1)[-1],
@@ -455,8 +523,31 @@ class IndependentPaneSetupV2(QWidget):
         lines.append(text("analyzer.pane.setup.preview_scope"))
         self.preview.setText("\n".join(lines))
 
-    def _set_error(self, key: str | None) -> None:
-        self.error.setText("" if key is None else text(key))
+    @staticmethod
+    def _preview_target(value: float | None) -> str:
+        return (text("analyzer.pane.setup.target_unset") if value is None else
+                text("analyzer.pane.setup.target_value", value=f"{value:g}"))
+
+    def _set_error(self, key: str | None, *,
+                   revisit_violations: tuple[PaneRevisitEstimate, ...] = (),
+                   cleanup_required: bool = False) -> None:
+        self._error_key = key
+        self._revisit_violations = revisit_violations
+        self._cleanup_required = cleanup_required
+        lines = [] if key is None else [text(key)]
+        for item in revisit_violations:
+            target = item.requested_maximum_revisit_s
+            lines.append(text("analyzer.pane.setup.deadline_detail",
+                              pane=item.pane_id.rsplit("-", 1)[-1],
+                              modeled=f"{item.maximum_revisit_s:.3f}",
+                              target=text("analyzer.pane.setup.target_unset")
+                              if target is None else f"{target:g}"))
+        if cleanup_required:
+            lines.append(text("analyzer.pane.setup.deadline_cleanup"))
+        value = "\n".join(lines)
+        self.error.setText(value)
+        self.error.setAccessibleName(value)
+        self.error.setToolTip(value)
         self.error.setVisible(key is not None)
 
     def _refresh_actions(self) -> None:
@@ -477,10 +568,23 @@ class IndependentPaneSetupV2(QWidget):
         for row in self._rows:
             row.start.setSuffix(text("hackrf.unit.mhz"))
             row.stop.setSuffix(text("hackrf.unit.mhz"))
+            row.priority.setAccessibleName(text("analyzer.pane.setup.priority_name", pane=row.number))
+            row.maximum_revisit.setAccessibleName(text("analyzer.pane.setup.target_name", pane=row.number))
+            row.priority.setToolTip(text("analyzer.pane.setup.scheduler_help"))
+            row.maximum_revisit.setToolTip(text("analyzer.pane.setup.scheduler_help"))
+            row.maximum_revisit.setSuffix(text("analyzer.pane.setup.seconds_suffix"))
+            row.maximum_revisit.setSpecialValueText(text("analyzer.pane.setup.target_unset"))
             if row.source.count():
                 row.source.setItemText(0, text("analyzer.pane.setup.empty"))
         self.description.setText(text("analyzer.pane.setup.description"))
         self.mode_help.setText(text("analyzer.pane.setup.mode_help"))
+        self.scheduler_toggle.setText(text("analyzer.pane.setup.scheduler"))
+        self.scheduler_toggle.setAccessibleName(text("analyzer.pane.setup.scheduler"))
+        self.scheduler_help.setText(text("analyzer.pane.setup.scheduler_help"))
+        for header, key in zip(self.scheduler_headers, (
+                "analyzer.pane.setup.slot", "analyzer.pane.setup.priority",
+                "analyzer.pane.setup.target"), strict=True):
+            header.setText(text(key))
         for header, key in zip(self.headers, (
                 "analyzer.pane.setup.slot", "analyzer.pane.setup.source",
                 "analyzer.pane.setup.start", "analyzer.pane.setup.stop",
@@ -497,6 +601,8 @@ class IndependentPaneSetupV2(QWidget):
         self.update_sources(selection)
         if self._prepared is not None:
             self._refresh_preview()
+        self._set_error(self._error_key, revisit_violations=self._revisit_violations,
+                        cleanup_required=self._cleanup_required)
 
     def release_after_shutdown(self) -> None:
         if self._released:
