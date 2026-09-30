@@ -150,14 +150,17 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Назначьте источник и диапазон каждому окну. Пустое окно не создаёт приёмник. Сначала выполните «Обнаружить USB» или явное «USB + IP» выше. Подготовка проверит источники заново; IP-поиск может быть долгим. Применение не запускает RX.",
             UiLocale.EN: "Assign a source and range to each pane. Empty creates no receiver. First use Discover USB or explicit USB + IP above. Stage rechecks sources; IP discovery may take time. Apply does not start RX."}),
         "analyzer.pane.setup.mode_help": MappingProxyType({
-            UiLocale.RU: "AD936x: RX1 RTBW не шире полезного окна (20 MS/s → 10 МГц; 61,44 MS/s → 36 МГц, RF-фильтр 40 МГц). HackRF: RX1 RTBW либо программное сканирование с диапазоном 20–320 МГц кратно 20 МГц и целыми границами МГц. tinySA: встроенная трасса в dBm. Один RX в нескольких окнах разделяется или чередуется с RF-паузами. Запрос Fs не является считыванием АЦП.",
-            UiLocale.EN: "AD936x: RX1 RTBW within its usable window (20 MS/s → 10 MHz; 61.44 MS/s → 36 MHz, RF filter 40 MHz). HackRF: RX1 RTBW or host Sweep with a whole-MHz, 20–320 MHz span in 20 MHz steps. tinySA: device trace in dBm. One RX in several panes shares or time-slices with RF gaps. Requested Fs is not ADC readback."}),
+            UiLocale.RU: "AD936x: RX1 RTBW (20 MS/s → 10 МГц; 61,44 MS/s → 36 МГц) либо сканирование при Fs 61,44 MS/s с окном 36 МГц, перекрытием 2 МГц и RF-фильтром 40 МГц. При сканировании AD936x выбирается N в окне; физическая FFT показана в плане. Пока действует нативный предел 64 участка и бюджет памяти. HackRF: RTBW либо сканирование 20–320 МГц кратно 20 МГц, целые границы МГц. tinySA: трасса dBm. Один RX разделяется или чередуется с RF-паузами. Запрос Fs не является считыванием АЦП.",
+            UiLocale.EN: "AD936x: RX1 RTBW (20 MS/s → 10 MHz; 61.44 MS/s → 36 MHz) or Sweep at 61.44 MS/s with W=36 MHz, overlap=2 MHz and RF filter=40 MHz. AD936x Sweep selects N inside W; the plan exposes physical FFT. Native 64-segment and memory bounds still apply. HackRF: RTBW or whole-MHz Sweep, 20–320 MHz in 20 MHz steps. tinySA: device dBm trace. One RX shares or time-slices with RF gaps. Requested Fs is not ADC readback."}),
         "analyzer.pane.setup.slot": MappingProxyType({UiLocale.RU: "Окно", UiLocale.EN: "Pane"}),
         "analyzer.pane.setup.source": MappingProxyType({UiLocale.RU: "Источник", UiLocale.EN: "Source"}),
         "analyzer.pane.setup.start": MappingProxyType({UiLocale.RU: "От", UiLocale.EN: "Start"}),
         "analyzer.pane.setup.stop": MappingProxyType({UiLocale.RU: "До", UiLocale.EN: "Stop"}),
         "analyzer.pane.setup.rate": MappingProxyType({UiLocale.RU: "Fs запрос", UiLocale.EN: "Requested Fs"}),
-        "analyzer.pane.setup.fft": MappingProxyType({UiLocale.RU: "FFT", UiLocale.EN: "FFT"}),
+        "analyzer.pane.setup.fft": MappingProxyType({UiLocale.RU: "FFT / N", UiLocale.EN: "FFT / N"}),
+        "analyzer.pane.setup.fft_help": MappingProxyType({
+            UiLocale.RU: "RTBW/HackRF: физическая FFT. Сканирование AD936x: N точек внутри окна 36 МГц; физическая FFT автоматически рассчитывается и явно показана до применения. Шаг сетки не равен RBW.",
+            UiLocale.EN: "RTBW/HackRF: physical FFT. AD936x Sweep: N bins inside W=36 MHz; physical FFT is calculated and explicitly shown before Apply. Grid spacing is not RBW."}),
         "analyzer.pane.setup.points": MappingProxyType({UiLocale.RU: "Точки", UiLocale.EN: "Points"}),
         "analyzer.pane.setup.mode_points": MappingProxyType({UiLocale.RU: "Режим / точки", UiLocale.EN: "Mode / points"}),
         "analyzer.pane.setup.mode_empty": MappingProxyType({UiLocale.RU: "—", UiLocale.EN: "—"}),
@@ -188,6 +191,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.EN: "{source} → panes {panes}: {mode}; capture jobs {jobs}"}),
         "analyzer.pane.setup.recording_conflict": MappingProxyType({
             UiLocale.RU: "конфликт с записью", UiLocale.EN: "recording conflict"}),
+        "analyzer.pane.setup.preview_ad_sweep": MappingProxyType({
+            UiLocale.RU: "Окно {pane}, план сканирования AD936x: Fs {rate} MS/s · W {window} МГц · N {bins} · физическая FFT {fft} · шаг {step} МГц · участков {segments} · сетка {spacing} Гц (не RBW) · спектральные данные ≤ {memory} МиБ (не RSS).",
+            UiLocale.EN: "Pane {pane}, AD936x Sweep plan: Fs {rate} MS/s · W {window} MHz · N {bins} · physical FFT {fft} · step {step} MHz · segments {segments} · grid {spacing} Hz (not RBW) · reduced data ≤ {memory} MiB (not RSS)."}),
         "analyzer.pane.setup.preview_scope": MappingProxyType({
             UiLocale.RU: "Это план, не измерение скорости или непрерывности RF. Применить ≠ Старт; для изменения работающей раскладки сначала выполните Стоп.",
             UiLocale.EN: "This is a plan, not measured speed or RF continuity. Apply is not Start; Stop the active layout before editing it."}),

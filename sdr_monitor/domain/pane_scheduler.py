@@ -16,6 +16,10 @@ import math
 
 from .hackrf_live import HackrfLiveRequest
 from .hackrf_sweep import HackrfSweepRequest
+from .analyzer_sources import AnalyzerSourceChoice
+from .continuous_sweep_request import ContinuousSweepPlanRequest
+from .device_capabilities import DeviceFamily
+from .live import BackendKind, LiveConfiguration
 from .tinysa_analyzer import TinySaSweepRequest
 from .receiver_topology import (
     AcquisitionGroup,
@@ -348,7 +352,79 @@ class HackrfSweepPaneProfile:
                 self.epoch_cost)
 
 
-PaneProfile = (PaneCaptureProfile | HackrfRtbwPaneProfile | HackrfSweepPaneProfile
+@dataclass(frozen=True, slots=True)
+class Ad936xSweepPaneProfile:
+    """Existing continuous-Sweep intent, bound to one selected AD936x source.
+
+    ``configuration`` describes the physical transform; the request describes
+    the usable W/N output grid. Neither is an RF readback or a second native
+    settings model. Geometry/memory admission remains the existing backend's
+    pure preflight. Sweep does not claim a continuous RTBW hop at the pane edge.
+    """
+
+    source: AnalyzerSourceChoice
+    selection_revision: int
+    configuration: LiveConfiguration
+    request_template: ContinuousSweepPlanRequest
+    epoch_cost: CaptureEpochCost
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.source, AnalyzerSourceChoice)
+                or self.source.family is not DeviceFamily.AD936X
+                or type(self.selection_revision) is not int or self.selection_revision < 0
+                or not isinstance(self.configuration, LiveConfiguration)
+                or self.configuration.backend is not BackendKind.CPU
+                or not isinstance(self.request_template, ContinuousSweepPlanRequest)
+                or not isinstance(self.epoch_cost, CaptureEpochCost)):
+            raise PaneScheduleError("AD936x Sweep requires an exact source, CPU profile and typed plan")
+
+    @property
+    def measurement_mode(self) -> CaptureMeasurementMode:
+        return CaptureMeasurementMode.SWEEP
+
+    @property
+    def unit(self) -> str:
+        return "dBFS/bin"
+
+    @property
+    def usable_capture_span_hz(self) -> float:
+        return self.request_template.stop_hz - self.request_template.start_hz
+
+    @property
+    def sample_rate_hz(self) -> float:
+        return self.configuration.sample_rate_hz
+
+    @property
+    def fft_size(self) -> int:
+        return self.configuration.fft_size
+
+    @property
+    def hop_size(self) -> None:
+        return None
+
+    @property
+    def output_spacing_hz(self) -> float:
+        request = self.request_template
+        return (request.usable_window_hz / request.analysis_bins_per_usable_window
+                if request.analysis_bins_per_usable_window else self.sample_rate_hz / self.fft_size)
+
+    @property
+    def pane_crop_start_hz(self) -> float:
+        return self.request_template.start_hz
+
+    @property
+    def pane_crop_stop_hz(self) -> float:
+        # The explicit W/N native grid excludes Stop. Leave one output bin
+        # inside its last center, including non-integral span/spacing ratios.
+        return self.request_template.stop_hz - self.output_spacing_hz
+
+    @property
+    def compatibility_key(self) -> tuple[object, ...]:
+        return ("ad936x-sweep", self.source.device_id, self.selection_revision,
+                self.configuration, replace(self.request_template, epoch=0), self.epoch_cost)
+
+
+PaneProfile = (PaneCaptureProfile | Ad936xSweepPaneProfile | HackrfRtbwPaneProfile | HackrfSweepPaneProfile
                | SpectrumTracePaneProfile | TinySaTracePaneProfile)
 
 
@@ -946,6 +1022,7 @@ __all__ = [
     "CaptureEpochCost",
     "CaptureJob",
     "PaneCaptureProfile",
+    "Ad936xSweepPaneProfile",
     "HackrfRtbwPaneProfile",
     "HackrfSweepPaneProfile",
     "SpectrumTracePaneProfile",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
-from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, HackrfSweepPaneProfile
+from sdr_monitor.domain.pane_scheduler import Ad936xSweepPaneProfile, CaptureMeasurementMode, HackrfSweepPaneProfile
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.ui.v2_pane_user_plan import (
     PaneSlotDraft, PaneUserPlanError, compile_user_pane_plan,
@@ -139,7 +139,7 @@ class PaneUserPlanTests(unittest.TestCase):
                     self._compile((PaneSlotDraft(1, self.hf_id, start, stop,
                          sample_rate_hz=rate, fft_size=fft,
                          measurement_mode=CaptureMeasurementMode.SWEEP),))
-        with self.assertRaisesRegex(PaneUserPlanError, "AD936x wide Sweep"):
+        with self.assertRaisesRegex(PaneUserPlanError, "61.44 MS/s"):
             self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 220e6,
                          measurement_mode=CaptureMeasurementMode.SWEEP),))
         with self.assertRaisesRegex(PaneUserPlanError, "device trace"):
@@ -147,6 +147,70 @@ class PaneUserPlanTests(unittest.TestCase):
                          measurement_mode=CaptureMeasurementMode.SWEEP),))
         with self.assertRaises(PaneUserPlanError):
             PaneSlotDraft(1, measurement_mode=CaptureMeasurementMode.SWEEP)
+
+    def test_ad_sweep_n_is_inside_36mhz_not_the_physical_fft(self) -> None:
+        for n, physical_f in ((1024, 2048), (4096, 8192), (16384, 32768)):
+            with self.subTest(n=n):
+                plan = self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 220e6,
+                    sample_rate_hz=61.44e6, fft_size=n,
+                    measurement_mode=CaptureMeasurementMode.SWEEP),))
+                job = plan.layout.schedule.resources[0].jobs[0]
+                self.assertIsInstance(job.profile, Ad936xSweepPaneProfile)
+                profile = job.profile
+                self.assertIs(profile.source, self.selected[self.ad_id])
+                self.assertEqual(profile.request_template.analysis_bins_per_usable_window, n)
+                self.assertEqual((profile.fft_size, profile.sample_rate_hz), (physical_f, 61.44e6))
+                self.assertIsNone(profile.hop_size)
+                geometry = plan.ad_sweep_geometry[0][1]
+                self.assertEqual((geometry.segment_count, geometry.segment_stride_hz), (4, 34e6))
+                self.assertEqual(geometry.output_spacing_hz, 36e6 / n)
+                self.assertGreaterEqual(geometry.output_spacing_hz, geometry.physical_bin_spacing_hz)
+                self.assertEqual(plan.initial_ad_configurations[0][1], profile.configuration)
+                self.assertLess(job.stop_hz, profile.request_template.stop_hz)
+
+    def test_identical_ad_sweep_shares_but_different_plans_time_slice(self) -> None:
+        for stop, mode, count in ((220e6, ReceiverBindingMode.SHARED_CAPTURE, 1),
+                                  (254e6, ReceiverBindingMode.TIME_SLICED, 2)):
+            with self.subTest(stop=stop):
+                plan = self._compile(tuple(PaneSlotDraft(number, self.ad_id, 100e6, upper,
+                    sample_rate_hz=61.44e6, measurement_mode=CaptureMeasurementMode.SWEEP)
+                    for number, upper in ((1, 220e6), (2, stop))))
+                jobs = plan.layout.schedule.resources[0].jobs
+                self.assertEqual(len(jobs), count)
+                self.assertEqual({job.mode for job in jobs}, {mode})
+                self.assertEqual(len(plan.groups), 1)
+
+    def test_ad_sweep_and_rtbw_remain_explicit_jobs_on_one_rx(self) -> None:
+        plan = self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 108e6),
+            PaneSlotDraft(2, self.ad_id, 100e6, 220e6, sample_rate_hz=61.44e6,
+                          measurement_mode=CaptureMeasurementMode.SWEEP)))
+        jobs = plan.layout.schedule.resources[0].jobs
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual({job.profile.measurement_mode for job in jobs},
+                         {CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP})
+        self.assertEqual({job.mode for job in jobs}, {ReceiverBindingMode.TIME_SLICED})
+
+    def test_ad_sweep_native_64_segment_and_memory_bounds_are_not_bypassed(self) -> None:
+        # The new pane adapter is not full-range native qualification.
+        for start, stop, n in ((70e6, 6e9, 1024), (100e6, 2e9, 16384)):
+            with self.subTest(stop=stop, n=n), self.assertRaisesRegex(PaneUserPlanError, "native geometry"):
+                self._compile((PaneSlotDraft(1, self.ad_id, start, stop,
+                    sample_rate_hz=61.44e6, fft_size=n,
+                    measurement_mode=CaptureMeasurementMode.SWEEP),))
+
+    def test_three_family_sweep_2x2_compiles_without_fabricating_empty_rx(self) -> None:
+        plan = self._compile((
+            PaneSlotDraft(1, self.ad_id, 100e6, 220e6, sample_rate_hz=61.44e6,
+                          measurement_mode=CaptureMeasurementMode.SWEEP),
+            PaneSlotDraft(2, self.hf_id, 100e6, 220e6,
+                          measurement_mode=CaptureMeasurementMode.SWEEP),
+            PaneSlotDraft(3, self.ts_id, 100e6, 300e6, points=1001), PaneSlotDraft(4)))
+        self.assertEqual(plan.layout.empty_slots, (4,))
+        self.assertEqual(len(plan.groups), 3)
+        self.assertEqual([resource.jobs[0].profile.measurement_mode for resource in
+                          plan.layout.schedule.resources],
+                         [CaptureMeasurementMode.SWEEP, CaptureMeasurementMode.SWEEP,
+                          CaptureMeasurementMode.INSTRUMENT_TRACE])
 
     def test_excess_span_and_all_empty_fail_before_device_operation(self) -> None:
         with self.assertRaises(PaneUserPlanError):

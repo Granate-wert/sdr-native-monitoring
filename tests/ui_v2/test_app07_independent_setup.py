@@ -31,6 +31,7 @@ from tests.ui_v2.test_app07_pane_graph_pool import _ad_graph
 from tests.ui_v2.test_app06_hackrf_common_analyzer import graph as hackrf_fixture
 from tests.ui_v2.test_app06_hackrf_sweep_common_analyzer import FakeHackrfSweep
 from tests.ui_v2.test_app06_tinysa_common_analyzer import graph as tinysa_fixture
+from tests.ui_v2.test_app07_ad936x_sweep_pane_owner import ad_sweep_graph
 
 
 class IndependentPaneSetupTests(unittest.TestCase):
@@ -46,6 +47,126 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 return
             sleep(0.01)
         self.fail("pane editor did not reach the expected state")
+
+    def test_three_sweep_2x2_ad_progress_is_visible_before_complete_pass(self) -> None:
+        native, ad_fake, ad = ad_sweep_graph()
+        ad_fake.hold_terminal = True
+        hf_fixture = hackrf_fixture()
+        hf_fake = FakeHackrfSweep()
+        hf = build_v2_analyzer_application_graph(SimpleNamespace(
+            live_sdr=hf_fixture.live, device_catalog=hf_fixture.catalog,
+            analyzer_hackrf=hf_fixture.hackrf, analyzer_hackrf_sweep=hf_fake))
+        ts_fixture = tinysa_fixture()
+        ts = build_v2_analyzer_application_graph(SimpleNamespace(
+            live_sdr=ts_fixture.live, device_catalog=ts_fixture.catalog,
+            analyzer_tinysa=ts_fixture.instrument))
+        graphs = (ad, hf, ts)
+        choices = tuple(next(item for item in graph.live.discover(startup=True)
+                             if item.family is family)
+                        for graph, family in zip(graphs,
+                            (DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.TINYSA), strict=True))
+        pools, installed = [], []
+        editor = IndependentPaneSetupV2(install=installed.append, uninstall=lambda: None)
+        pane_ui = None
+        locale = current_locale()
+
+        def stage(drafts):
+            pool = PaneProductGraphPool(lambda resource: graphs[int(resource.rsplit("-", 1)[-1]) - 1])
+            pools.append(pool)
+            return prepare_user_pane_session(drafts, pool_factory=lambda: pool)
+
+        try:
+            editor.update_sources(AnalyzerSourceSelection(revision=1, choices=choices))
+            editor.show()
+            self.app.processEvents()
+            for row, choice in zip(editor._rows[:3], choices, strict=True):
+                row.source.setCurrentIndex(row.source.findData(choice.device_id))
+                row.start.setValue(100)
+                row.stop.setValue(300 if choice.family is DeviceFamily.TINYSA else 220)
+                if choice.family is DeviceFamily.TINYSA:
+                    row.points.setValue(1001)
+                else:
+                    row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.SWEEP.value))
+            ad_row = editor._rows[0]
+            self.assertTrue(ad_row.mode.isEnabled())
+            self.assertFalse(ad_row.rate.isEnabled())
+            self.assertEqual(ad_row.rate.currentData(), 61_440_000.0)
+            self.assertEqual(tuple(ad_row.fft.itemData(i) for i in range(ad_row.fft.count())),
+                             (1024, 4096, 16384))
+            for language in (UiLocale.EN, UiLocale.RU):
+                set_active_locale(language)
+                editor.set_locale()
+                self.assertIs(editor._selected_mode(ad_row), CaptureMeasurementMode.SWEEP)
+                self.assertEqual(ad_row.rate.currentData(), 61_440_000.0)
+            with patch("sdr_monitor.ui.v2.workspaces.independent_pane_setup.prepare_user_pane_session",
+                       side_effect=stage):
+                editor.prepare.click()
+                self._wait(lambda: editor._prepared is not None)
+            self.assertIn("8192", editor.preview.text())
+            self.assertIn("4096", editor.preview.text())
+            self.assertIn("36", editor.preview.text())
+            self.assertEqual(ad_fake.events, [])
+            self.assertEqual(hf_fake.events, [])
+            self.assertEqual(native.engines, [])
+            self.assertEqual(ts_fixture.serials, [])
+            editor.apply.click()
+            self._wait(lambda: bool(installed))
+            handle = installed[0]
+            self.assertEqual(handle.layout.empty_slots, (4,))
+            self.assertEqual(ad_fake.events, [])
+            pane_ui = IndependentPaneSessionV2(handle)
+            pane_ui.resize(1280, 850)
+            pane_ui.show()
+            self.app.processEvents()
+            pane_ui.start_all.click()
+            self._wait(lambda: all(pane_ui.board.pane(number).spectrum_scene.latest_frame is not None
+                                   for number in (1, 2, 3)))
+            self._wait(lambda: all(pane_ui.board.pane(number).waterfall_pane.history_rows > 0
+                                   for number in (1, 2, 3)))
+            self.assertIsNone(pane_ui.board.pane(4))
+            self.assertIsNotNone(ad_fake.progress)
+            self.assertEqual(len(ad_fake.publications), 1)  # terminal still withheld
+            self.assertIs(ad_fake.publications[0].line, ad_fake.line)
+            self.assertEqual(ad_fake.events.count("start"), 1)
+            self.assertEqual(hf_fake.events.count("start"), 1)
+            ad_fake.hold_terminal = False
+            self._wait(lambda: not ad_fake.publications)
+            pane_ui.board.select_slot(3)
+            pane_ui.stop_selected.click()
+            self._wait(lambda: next(state for state in handle.pump.snapshot()
+                                    if state.physical_stream_resource_id == "pane-resource-3").phase
+                       is PanePumpPhase.STOPPED)
+            self.assertNotIn("stop", ad_fake.events)
+            self.assertNotIn("stop", hf_fake.events)
+            self.assertEqual({state.phase for state in handle.pump.snapshot()
+                              if state.physical_stream_resource_id in {"pane-resource-1", "pane-resource-2"}},
+                             {PanePumpPhase.RUNNING})
+            pane_ui.stop_all.click()
+            self._wait(handle.can_close)
+            self.assertEqual(ad_fake.events.count("stop"), 1)
+            self.assertEqual(hf_fake.events.count("stop"), 1)
+            editor.close_applied_layout(handle)
+            self._wait(lambda: handle.shutdown_complete and editor.can_close)
+        finally:
+            if installed and not installed[0].shutdown_complete:
+                for future in installed[0].pump.stop_all().values():
+                    future.result(timeout=5)
+                installed[0].shutdown_after_stop()
+            elif not installed:
+                for pool in pools:
+                    if pool.staged_resource_ids:
+                        pool.close()
+            if pane_ui is not None and installed and installed[0].shutdown_complete:
+                pane_ui.release_presentation_after_shutdown()
+                pane_ui.close()
+            if editor._prepared is not None:
+                editor.discard.click()
+                self._wait(editor.can_close)
+            editor.release_after_shutdown()
+            editor.close()
+            for graph in graphs:
+                graph.live.shutdown()
+            set_active_locale(locale)
 
     def test_shared_stop_dialog_accepts_equal_yes_value_not_only_same_object(self) -> None:
         parent = QWidget()

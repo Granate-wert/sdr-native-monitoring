@@ -38,7 +38,7 @@ planning boundary; neither document claims product multi-source activation.
 
 ## Supported plan and admission
 
-The adapter currently admits only one explicit AD936x **RX1** endpoint, RTBW,
+The original `Ad936xRtbwPaneOwner` admits only one explicit AD936x **RX1** endpoint, RTBW,
 manual gain, uncalibrated `dBFS/bin`, a known native window/detector name,
 and an overlap within the existing Live limit. Sweep, dual-RX, auto gain,
 absolute-unit correction, HackRF and tinySA plans refuse before lease or
@@ -83,3 +83,58 @@ or a frozen Windows release. Product UI V2 still needs owner factory and
 assignment controls, source-identity-based shared leasing, activation-bound
 delivery, fair rendering and physical/frozen qualification. Do not mark
 APP-07 complete from this backend seam alone.
+
+## Current UI V2 continuous-Sweep pane composition
+
+The V2 product composes `Ad936xPaneOwner` over that same RTBW adapter and the
+same `AnalyzerSweepRouter`. `Ad936xSweepPaneProfile` binds the existing
+`LiveConfiguration` and `ContinuousSweepPlanRequest` to the exact selected
+source object and selection revision. It is not another RF-settings model,
+SDK opener, DSP implementation or renderer. One endpoint remains RX1; this
+does not advertise simultaneous independent RX chains on one AD936x device.
+
+The user can select RTBW or Sweep on the common Analyzer pane. AD936x Sweep
+explicitly fixes requested Fs at 61.44 MS/s, usable W at 36 MHz, overlap at
+2 MHz (34 MHz stride), and requested RF filter at 40 MHz. The FFT/N selector
+means **analysis N inside W** only in AD936x Sweep. The minimum power-of-two
+physical transform F supporting W/N is calculated and shown before Apply:
+N1024/F2048, N4096/F8192, N16384/F32768. Grid spacing W/N is neither RBW nor
+ENBW. The preview includes segment count and the existing conservative
+reduced-data memory estimate, not total RSS or measured RF/transport speed.
+
+The existing pure continuous-Sweep preflight decides segment, grid, physical
+FFT and memory admission before a pane lease or RX. Its current 64-segment
+bound and 64 MiB reduced-data budget are NOT relaxed by the pane adapter.
+Full-device-range Sweep qualification and any native-capacity expansion
+remain separate OPEN work; a bounded 2x2 test is not their substitute.
+
+Stage/Apply do not start RX. Accepted explicit Start stages the exact CPU
+profile, then delegates to the existing continuous-Sweep owner/lease through
+the common application. RTBW/Sweep time-slices first confirm Stop, record
+the planned control boundary and start a new common Analyzer Sweep epoch.
+Sweep's pane admission exposes requested Fs/physical F but no fabricated
+continuous RTBW hop or analog readback receipt. Existing native lease
+capability/identity/readback admission remains authoritative. Identical
+Sweep plans may share one capture; different plans or modes time-slice one
+RX rather than opening another owner. Stop failure retains that same owner
+and claim for explicit cleanup, without retry, reopen or hidden restart.
+
+The native producer's established ID is
+`continuous-sweep:native-sweep:<selected-source-id>`. Only this exact binding
+is normalized to the canonical selected source at the pane boundary, along
+with an optional statistics parent. Epoch, NaN gaps, quality/loss masks,
+acquisition metadata and last-admitted-segment position are not rewritten.
+Progress and terminal publications must match the retained epoch, unit,
+segment partition, output grid and physical transform contract. Foreign
+source/profile/geometry refuses and requires explicit Stop. Bounded
+watermarks deliver new progress before complete-pass coverage while keeping
+terminal events separate; repeated/older progress cannot overwrite its
+terminal. Both use the established V2 spectrum/waterfall preparation path.
+
+Source tests exercise the actual common graphs, user editor and 2x2 pane
+presentation with synthetic reduced AD936x/HackRF frames and fake tinySA
+serial acquisition. AD936x terminal coverage is deliberately withheld until
+its progressive spectrum is visible. This is software evidence, NOT physical
+three-device Sweep, visible Windows/DWM/50 ms/FHD/QHD/DPI, RF duty, lossless
+transport, current tinySA RBW300k, held-middle RF retune, soak or release
+acceptance. APP-07 and the full APP-00..14 objective remain OPEN.

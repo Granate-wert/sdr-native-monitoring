@@ -14,7 +14,7 @@ from functools import partial
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
-from sdr_monitor.services.ad936x_rtbw_pane_owner import Ad936xRtbwPaneOwner
+from sdr_monitor.services.ad936x_pane_owner import Ad936xPaneOwner
 from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
@@ -81,8 +81,8 @@ def compose_v2_pane_resource_session(
         identities[selected.device_id] = selected.binding.identity_key
         families[selected.device_id] = selected.family
         if selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):
-            owner_factories[resource_id] = partial(Ad936xRtbwPaneOwner,
-                graph.live, physical_stream_resource_id=resource_id,
+            owner_factories[resource_id] = partial(Ad936xPaneOwner,
+                graph.live, graph.sweep_router, physical_stream_resource_id=resource_id,
                 source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)
         elif selected.family is DeviceFamily.HACKRF and isinstance(endpoint, ReceiverEndpoint):
             if graph.services.analyzer_hackrf is None:

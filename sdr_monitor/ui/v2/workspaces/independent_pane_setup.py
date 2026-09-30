@@ -205,7 +205,7 @@ class IndependentPaneSetupV2(QWidget):
             if family is DeviceFamily.HACKRF:
                 modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
             elif family is DeviceFamily.AD936X:
-                modes = (CaptureMeasurementMode.RTBW,)
+                modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
             elif family is DeviceFamily.TINYSA:
                 modes = (CaptureMeasurementMode.INSTRUMENT_TRACE,)
             else:
@@ -256,7 +256,8 @@ class IndependentPaneSetupV2(QWidget):
             row._rtbw_rate = row.rate.currentData()
         if mode is CaptureMeasurementMode.SWEEP:
             with QSignalBlocker(row.rate):
-                row.rate.setCurrentIndex(row.rate.findData(20_000_000.0))
+                sweep_rate = 61_440_000.0 if family is DeviceFamily.AD936X else 20_000_000.0
+                row.rate.setCurrentIndex(row.rate.findData(sweep_rate))
         elif (row._last_mode is CaptureMeasurementMode.SWEEP
               and mode is CaptureMeasurementMode.RTBW and row._rtbw_rate is not None):
             index = row.rate.findData(row._rtbw_rate)
@@ -264,7 +265,8 @@ class IndependentPaneSetupV2(QWidget):
                 with QSignalBlocker(row.rate):
                     row.rate.setCurrentIndex(index)
         previous_fft = row.fft.currentData()
-        sizes = (1024, 4096) if mode is CaptureMeasurementMode.SWEEP else (1024, 4096, 16384)
+        sizes = ((1024, 4096) if family is DeviceFamily.HACKRF
+                 and mode is CaptureMeasurementMode.SWEEP else (1024, 4096, 16384))
         if row.fft.count() != len(sizes) or any(row.fft.itemData(i) != value
                                                  for i, value in enumerate(sizes)):
             with QSignalBlocker(row.fft):
@@ -278,7 +280,8 @@ class IndependentPaneSetupV2(QWidget):
                             and mode is not CaptureMeasurementMode.SWEEP and not blocked)
         row.fft.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
         row.points.setEnabled(family is DeviceFamily.TINYSA and not blocked)
-        row.mode.setEnabled(family is DeviceFamily.HACKRF and not blocked)
+        row.mode.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
+        row.fft.setToolTip(text("analyzer.pane.setup.fft_help"))
         row._last_mode = mode
 
     def _begin_prepare(self) -> None:
@@ -423,6 +426,17 @@ class IndependentPaneSetupV2(QWidget):
             label = prepared.handle.source_labels.get(source_id, source_id)
             lines.append(text("analyzer.pane.setup.preview_resource", panes=numbers, source=label,
                               mode=mode, jobs=item.capture_job_count) + conflict)
+        for pane_id, geometry in prepared.plan.ad_sweep_geometry:
+            lines.append(text("analyzer.pane.setup.preview_ad_sweep",
+                              pane=pane_id.rsplit("-", 1)[-1],
+                              rate=f"{geometry.sample_rate_hz / 1_000_000:.2f}",
+                              window=f"{geometry.usable_window_hz / 1_000_000:g}",
+                              bins=geometry.analysis_bins_per_usable_window,
+                              fft=geometry.physical_fft_size,
+                              step=f"{geometry.segment_stride_hz / 1_000_000:g}",
+                              segments=geometry.segment_count,
+                              spacing=f"{geometry.output_spacing_hz:.2f}",
+                              memory=f"{geometry.reduced.total_bytes / (1024 * 1024):.2f}"))
         lines.append(text("analyzer.pane.setup.preview_scope"))
         self.preview.setText("\n".join(lines))
 

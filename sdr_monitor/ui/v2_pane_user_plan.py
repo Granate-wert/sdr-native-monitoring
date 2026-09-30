@@ -9,17 +9,19 @@ to one resource; it is never mistaken for a second receiver.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import ceil, isfinite
 from typing import Mapping
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
+from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
+from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.hackrf_live import HackrfLiveRequest
 from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.identity import SourceId
 from sdr_monitor.domain.live import BackendKind, LiveConfiguration
 from sdr_monitor.domain.pane_scheduler import (
-    CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
+    Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
     PaneLayoutSlot, PaneProfile, TinySaTracePaneProfile, compile_pane_layout,
 )
@@ -28,6 +30,7 @@ from sdr_monitor.domain.receiver_topology import (
     ReceiverEndpoint, SpectrumTraceEndpoint, SweepPaneRequest,
 )
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
+from sdr_monitor.services.native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
 
 
 class PaneUserPlanError(ValueError):
@@ -82,6 +85,7 @@ class PaneUserPlan:
     groups: tuple[AcquisitionGroup, ...]
     resource_sources: tuple[tuple[str, str], ...]
     initial_ad_configurations: tuple[tuple[str, LiveConfiguration], ...]
+    ad_sweep_geometry: tuple[tuple[str, AnalyzerGeometryPreflight], ...] = ()
 
 
 def compile_user_pane_plan(
@@ -91,7 +95,7 @@ def compile_user_pane_plan(
 ) -> PaneUserPlan:
     """Compile explicit source assignments; reject unsupported family modes.
 
-    AD936x panes retain their qualified RX1 RTBW owner. HackRF RX1 can use
+    AD936x RX1 can use RTBW or its existing native continuous Sweep. HackRF RX1 can use
     RTBW or its existing bounded host Sweep owner; tinySA panes are device
     dBm traces. A repeated source shares a capture only if *all* its panes
     have one compatible profile and fit its usable span; otherwise it receives
@@ -126,6 +130,7 @@ def compile_user_pane_plan(
     cost = CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005)
     trace_cost = CaptureEpochCost(0.01, 0.01, 8.0, 0.005, 0.005)
     profiles: dict[str, PaneProfile] = {}
+    ad_geometry: list[tuple[str, AnalyzerGeometryPreflight]] = []
     by_source: dict[str, list[tuple[PaneSlotDraft, PaneProfile]]] = {source: [] for source in source_order}
     for draft in drafts:
         if draft.source_id is None:
@@ -135,20 +140,44 @@ def compile_user_pane_plan(
         assert draft.start_hz is not None and draft.stop_hz is not None
         center = (draft.start_hz + draft.stop_hz) / 2.0
         if choice.family is DeviceFamily.AD936X:
-            if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
-                raise PaneUserPlanError("AD936x wide Sweep is not yet a qualified pane owner")
-            if draft.sample_rate_hz not in {20_000_000.0, 61_440_000.0}:
-                raise PaneUserPlanError("AD936x pane supports the listed 20 or 61.44 MS/s profiles")
-            usable = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 36_000_000.0
-            # RF filter bandwidth and the edge-trimmed analysis window are
-            # different quantities. The retained Live catalog normalizes a
-            # 36 MHz filter request to 40 MHz; use that qualified preset here
-            # so the exact Stage/Start guards are not bypassed or weakened.
-            # Capabilities and actual RF readback still decide admission.
-            rf_bandwidth = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 40_000_000.0
-            profile: PaneProfile = PaneCaptureProfile(
-                draft.sample_rate_hz, rf_bandwidth, "manual", 20.0,
-                draft.fft_size, draft.fft_size // 2, "hann", "sample", None, usable, cost)
+            if draft.measurement_mode is CaptureMeasurementMode.SWEEP:
+                if draft.sample_rate_hz != 61_440_000.0:
+                    raise PaneUserPlanError("AD936x pane Sweep requires its explicit 61.44 MS/s profile")
+                # The displayed selection is analysis N INSIDE W=36 MHz.
+                # Choose and expose the minimum power-of-two physical F whose
+                # Fs/F spacing can support W/N; never reinterpret N as F.
+                minimum_f = ceil(draft.sample_rate_hz * draft.fft_size / 36_000_000.0)
+                physical_f = 1 << (minimum_f - 1).bit_length()
+                configuration = LiveConfiguration(
+                    center_hz=center, sample_rate_hz=draft.sample_rate_hz,
+                    analog_bandwidth_hz=40_000_000.0, gain_db=20.0,
+                    fft_size=physical_f, overlap_ratio=0.5, detector="sample", window="hann",
+                    snapshot_rate_hz=240.0, backend=BackendKind.CPU,
+                    persistence_enabled=False, persistence_mode="disabled")
+                request = ContinuousSweepPlanRequest(
+                    draft.start_hz, draft.stop_hz, usable_window_hz=36_000_000.0,
+                    overlap_hz=2_000_000.0, output_queue_capacity=2,
+                    analysis_bins_per_usable_window=draft.fft_size)
+                try:
+                    geometry = NativeContinuousSweepPlanFactory.preflight_profile(configuration, request)
+                except (TypeError, ValueError, RuntimeError):
+                    raise PaneUserPlanError("AD936x Sweep exceeds native geometry or reduced-data memory bounds") from None
+                profile: PaneProfile = Ad936xSweepPaneProfile(
+                    choice, selection_revisions[source_id], configuration, request,
+                    CaptureEpochCost(0.01, 0.01, 1.0, 0.005, 0.005))
+                ad_geometry.append((f"pane-{draft.number}", geometry))
+            else:
+                if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
+                    raise PaneUserPlanError("AD936x pane mode is not supported")
+                if draft.sample_rate_hz not in {20_000_000.0, 61_440_000.0}:
+                    raise PaneUserPlanError("AD936x pane supports the listed 20 or 61.44 MS/s profiles")
+                usable = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 36_000_000.0
+                # RF filter and edge-trimmed usable analysis span are distinct.
+                # Exact native capabilities and Start readback still decide.
+                rf_bandwidth = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 40_000_000.0
+                profile = PaneCaptureProfile(
+                    draft.sample_rate_hz, rf_bandwidth, "manual", 20.0,
+                    draft.fft_size, draft.fft_size // 2, "hann", "sample", None, usable, cost)
         elif choice.family is DeviceFamily.HACKRF:
             if draft.measurement_mode is CaptureMeasurementMode.SWEEP:
                 if draft.sample_rate_hz != 20_000_000.0:
@@ -219,9 +248,9 @@ def compile_user_pane_plan(
             continue
         assert draft.start_hz is not None and draft.stop_hz is not None
         profile = profiles[f"pane-{draft.number}"]
-        crop_start = (profile.pane_crop_start_hz if isinstance(profile, HackrfSweepPaneProfile)
+        crop_start = (profile.pane_crop_start_hz if isinstance(profile, (Ad936xSweepPaneProfile, HackrfSweepPaneProfile))
                       else draft.start_hz)
-        crop_stop = (profile.pane_crop_stop_hz if isinstance(profile, HackrfSweepPaneProfile)
+        crop_stop = (profile.pane_crop_stop_hz if isinstance(profile, (Ad936xSweepPaneProfile, HackrfSweepPaneProfile))
                      else draft.stop_hz)
         slots_list.append(PaneLayoutSlot(draft.number, SweepPaneRequest(
             f"pane-{draft.number}", endpoints[draft.source_id],
@@ -237,6 +266,9 @@ def compile_user_pane_plan(
             continue
         job = resource_schedule.jobs[0]
         profile = job.profile
+        if isinstance(profile, Ad936xSweepPaneProfile):
+            initial_ad.append((resource_schedule.physical_stream_resource_id, profile.configuration))
+            continue
         assert isinstance(profile, PaneCaptureProfile)
         initial_ad.append((resource_schedule.physical_stream_resource_id, LiveConfiguration(
             center_hz=(job.start_hz + job.stop_hz) / 2.0,
@@ -250,7 +282,7 @@ def compile_user_pane_plan(
             persistence_enabled=False, persistence_mode="disabled")))
     return PaneUserPlan(layout, tuple(groups),
                         tuple((resource_for[source], source) for source in source_order),
-                        tuple(initial_ad))
+                        tuple(initial_ad), tuple(ad_geometry))
 
 
 __all__ = ["PaneSlotDraft", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]
