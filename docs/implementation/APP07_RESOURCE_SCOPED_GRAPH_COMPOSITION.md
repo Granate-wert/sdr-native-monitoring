@@ -1024,3 +1024,47 @@ draft/locale edits do not start RX. Both progressive and terminal publications
 continue through the same owner/common Spectrum/Waterfall path. This extension
 does not implement RF retuning by held-middle drag, wider RTBW pane windows or
 unqualified tinySA RBW commands; those require separate implementation/tests.
+
+### Exact extended-geometry qualification and Windows 2x2 witness
+
+Exact tracked-clean product `a1a8702db7c6befc921073057921b430fc1382ef`
+completed1114 V2 tests:1048pass/66skip/0fail314.644s, compiled deferred[],
+outside-checkout imports[], same source/native and exact provenance. Existing
+NaN warnings remain. Official CPU/HackRF40/40CTest42.54s and the complete
+658-file frozen pipeline passed. New separate diagnostic EXE/native hashes
+are a49a33bb…/762fceb6… with geometry1 and the exact paired source manifest.
+It is NOT promoted to the canonical/static/current installation. Later
+qualification-only commits do not relabel these gates or build bytes.
+
+Physical current-source/common-root OFFSCREEN R1 used AD USB70..6000MHz/
+Fs61.44/W36/N1024/F2048, HackRF USB1..6000MHz/Fs20/F1024, tinySA USB100..300MHz/
+1001points/settingspreserve and Empty4.50.138619s showed progress BEFORE
+complete for both SDR panes and complete events for all three. A first private
+observer missed a brief AD complete event; its FAIL is retained. R1 repaired
+only the observer and explicitly started again after normal shutdown. This
+offscreen witness is not frozen Windows, font/DPI or performance acceptance.
+
+Actual Computer Use on the SAME exact new frozen Windows EXE staged/applied
+these profiles before explicit Start all. Three independent Spectrum/Waterfall
+pairs changed; both SDR panes showed progressive full-range Sweep. Explicit
+selected Stop3 retained both SDR owners running; explicit next Start3, without
+Discover or peer restart, showed fresh tinySA history and all three resources
+running at399.459s after that Start. The prior tinySA fault near57passes did
+not recur at these observations, but its cause remains unknown: bounded
+next-Start success is not long-soak/causal-remediation acceptance.
+
+Stop all returned0running/0starting/0Stop-required/3stopped; Close layout and
+normal window Close removed the test process. Post-close658-file/native
+verification passed unchanged. During Live, process module paths/current disk
+hashes matched package-local native/IIO/HackRF/pthread and ONE libusb. This is
+not in-memory attestation or exhaustive active-ABI/lossless-RF proof. Computer
+Use activation/capture/input worked; transient Qt-popup capture/input failures
+required fresh observation and supported keyboard navigation, not blind retries.
+
+Known preview debt: HackRF geometry is mislabeled as AD936x in the per-pane
+Stage summary. tinySA RBW300k was NOT applied. Shared-resource fairness,
+simultaneous tuning-group/RX and genuine Ethernet cells, wider RTBW pane
+profiles, RF middle-drag intent, sustained/50ms/DWM/FHD/QHD/DPI/RF duty/Pd/
+lossless/settling, independent review and release remain OPEN. APP07PARTIAL,
+APP06E CutDC/spur planned/fullAPP00..14ACTIVE; expired APP05 timer not restarted.
+No TX/amp/bias enable, firmware/driver/network/firewall/security/system changes.
