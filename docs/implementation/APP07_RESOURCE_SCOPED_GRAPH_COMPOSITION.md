@@ -923,7 +923,7 @@ RU/EN first-cause details appear in the affected pane's timing tooltip and
 accessible description, and in a numbered error banner while Stop is required.
 After successful cleanup the cause is retained as previous-run history in the
 tooltip. The compact timing row is unchanged and text/tooltip writes are
-coalesced. Logs emit one first-cause event and changed cleanup events using
+coalesced. Log event details contain one first-cause event and changed cleanup events using
 resource ordinal and finite codes/counts only, not raw resource identity,
 endpoint, vendor text, serial bytes or traceback. Logging failure cannot strand
 the accepted Stop future.
@@ -936,3 +936,30 @@ This packet does not close prior physical tinySA next-Start/group1 errors,
 all-full-range Sweep, receiver-frequency gesture or RBW300-kHz admission.
 APP-07 remains PARTIAL; the APP-05 expired timer and APP-06E planned branch
 are unchanged. No independent agent review has been performed for this packet.
+
+### Exact first-cause source and frozen qualification
+
+Exact tracked-clean product `835edea` completed 1097 V2 tests: 1031 passed,
+66 skipped, zero failures in287.648s; compiled deferred[]/outside-checkout
+product imports[]/source-native unchanged/exact provenance. An earlier full
+run had ONE old APP05 one-second queue-close observation failure during the
+parallel freeze. The isolated test passed; the complete serial retry passed.
+The failed log is retained, causality unproven, assertions NOT weakened and
+the expired APP05 performance timer NOT restarted.
+
+Full official CPU/HackRF StageOnly 40/40CTest31.31s and658-file frozen native/
+inert fake+production V2/libiio0.26/tinySA/shared-DLL gates passed. Initial
+SYSTEM-runtime libusb collision was refused before freeze; R1 explicitly used
+the previous manifest-verified package's common runtime bundle. No system DLL,
+driver or guard was modified. New tagged diagnostic package has EXE SHA
+f74c8b7698e2689c184e2c5fc8f9925704cfee14cbce55e843bd569a7da33160,
+native34128b77…/paired manifest835edea; canonical/static package unpromoted.
+
+Windows Computer Use launched this exact EXE and read the inert V2 surface.
+Capture was black and activation failed; one fresh returned-window recovery
+failed identically. NO Discover/Stage/Apply/Start or RX command was sent. The
+same process remains open for manual window restoration; there was no blind
+input or permission/security action. Physical tinySA Stop→Start and the new
+live first-cause witness are NOT qualified by the software/frozen gates.
+APP07 remains PARTIAL, independent new-packet review pending. All prior
+wideband/Sweep/middle-drag/RBW and group1/physical-nextStart debts remain open.
