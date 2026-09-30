@@ -6,10 +6,11 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
-    QPushButton, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
+    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
@@ -105,9 +106,25 @@ class IndependentPaneSetupV2(QWidget):
         self._choices: tuple[AnalyzerSourceChoice, ...] = ()
         self._selection: AnalyzerSourceSelection | None = None
         self._rows = tuple(_SlotRow(number, self) for number in range(1, 5))
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+        self.setMaximumHeight(480)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        # A staged plan must not squeeze RF fields or the plots to fit its
+        # entire prose. Scroll only this editor; explicit commands stay pinned.
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setObjectName("independentPaneSetupScrollV2")
+        self.scroll_area.setProperty("ui2Role", "panel-scroll")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setMinimumSize(0, 80)
+        self.scroll_contents = QWidget(self.scroll_area)
+        self.scroll_contents.setProperty("ui2Role", "panel-scroll-content")
+        layout = QVBoxLayout(self.scroll_contents)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
+        self._contents_height = 0
         self.description = QLabel(self)
         self.description.setProperty("ui2Role", "secondary")
         self.description.setWordWrap(True)
@@ -143,12 +160,16 @@ class IndependentPaneSetupV2(QWidget):
         self.scheduler_toggle.setProperty("ui2Role", "utility-action")
         self.scheduler_toggle.setCheckable(True)
         actions.addWidget(self.scheduler_toggle)
+        self.details = self._button(self._show_details)
+        actions.addWidget(self.details)
         actions.addStretch(1)
-        layout.addLayout(actions)
+        self._actions_layout = actions
+        root.addLayout(actions)
         self.scheduler_controls = QWidget(self)
         schedule_grid = QGridLayout(self.scheduler_controls)
         schedule_grid.setContentsMargins(0, 0, 0, 0)
         schedule_grid.setHorizontalSpacing(6)
+        schedule_grid.setColumnStretch(3, 1)
         self.scheduler_headers = tuple(QLabel(self.scheduler_controls) for _ in range(3))
         for column, header in enumerate(self.scheduler_headers):
             header.setProperty("ui2Role", "secondary")
@@ -161,8 +182,8 @@ class IndependentPaneSetupV2(QWidget):
         self.scheduler_help.setWordWrap(True)
         self.scheduler_help.setTextFormat(Qt.TextFormat.PlainText)
         self.scheduler_help.setProperty("ui2Role", "secondary")
-        schedule_grid.addWidget(self.scheduler_help, 5, 0, 1, 3)
-        self.scheduler_toggle.toggled.connect(self.scheduler_controls.setVisible)
+        schedule_grid.addWidget(self.scheduler_help, 5, 0, 1, 4)
+        self.scheduler_toggle.toggled.connect(self._show_scheduler)
         self.scheduler_controls.hide()
         layout.addWidget(self.scheduler_controls)
         self.preview = QLabel(self)
@@ -179,6 +200,9 @@ class IndependentPaneSetupV2(QWidget):
         # Keep editor rows compact at larger heights; do not spread surplus
         # space through the mode stack or between the scheduling fields.
         layout.addStretch(1)
+        self.scroll_area.setWidget(self.scroll_contents)
+        root.addWidget(self.scroll_area, 1)
+        self.scroll_area.viewport().installEventFilter(self)
         self._error_key: str | None = None
         self._revisit_violations: tuple[PaneRevisitEstimate, ...] = ()
         self._cleanup_required = False
@@ -195,6 +219,53 @@ class IndependentPaneSetupV2(QWidget):
         button.setProperty("ui2Role", "utility-action")
         button.clicked.connect(callback)
         return button
+
+    def _show_scheduler(self, visible: bool) -> None:
+        self.scheduler_controls.setVisible(visible)
+        self._sync_contents_height()
+
+    def _show_details(self) -> None:
+        target = self.error if not self.error.isHidden() else self.preview
+        self.scroll_area.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.scroll_area.verticalScrollBar().setValue(target.y())
+
+    def _set_preview_text(self, value: str) -> None:
+        self.preview.setText(value)
+        self.preview.setAccessibleName(value)
+        self._sync_contents_height()
+
+    def _sync_contents_height(self) -> None:
+        layout = self.scroll_contents.layout()
+        assert isinstance(layout, QVBoxLayout)
+        layout.invalidate()
+        width = max(self.scroll_area.viewport().width(), layout.totalMinimumSize().width(), 1)
+        height = layout.totalHeightForWidth(width)
+        self._contents_height = max(layout.totalMinimumSize().height(), height)
+        if self.scroll_contents.minimumHeight() != self._contents_height:
+            self.scroll_contents.setMinimumHeight(self._contents_height)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        if not hasattr(self, "_contents_height"):
+            return hint
+        # Prefer showing the compact form in full, but bound long accepted or
+        # refused plans. The parent may give less space; overflow still scrolls.
+        root = self.layout()
+        assert isinstance(root, QVBoxLayout)
+        margins = root.contentsMargins()
+        commands_height = self._actions_layout.sizeHint().height()
+        return QSize(hint.width(), min(480, self._contents_height + commands_height
+                                      + margins.top() + margins.bottom() + root.spacing()))
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._sync_contents_height()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
+            self._sync_contents_height()
+        return super().eventFilter(watched, event)
 
     @property
     def blocks_single_source(self) -> bool:
@@ -386,9 +457,9 @@ class IndependentPaneSetupV2(QWidget):
         self._operation = operation
         self._future = self._executor.submit(task, *args)
         if operation == "prepare":
-            self.preview.setText(text("analyzer.pane.setup.preparing"))
+            self._set_preview_text(text("analyzer.pane.setup.preparing"))
         elif operation == "apply":
-            self.preview.setText(text("analyzer.pane.setup.applying"))
+            self._set_preview_text(text("analyzer.pane.setup.applying"))
         self._timer.start()
         self._refresh_actions()
         self.state_changed.emit()
@@ -407,7 +478,7 @@ class IndependentPaneSetupV2(QWidget):
             if error.pool is not None:
                 self._retained_pool = error.pool
             if operation == "prepare":
-                self.preview.clear()
+                self._set_preview_text("")
             elif operation == "apply":
                 self._refresh_preview()
             if operation == "prepare" and error.revisit_violations:
@@ -419,7 +490,7 @@ class IndependentPaneSetupV2(QWidget):
                                 else "analyzer.pane.setup.operation_failed")
         except Exception:
             if operation == "prepare":
-                self.preview.clear()
+                self._set_preview_text("")
             elif operation == "apply":
                 self._refresh_preview()
             self._set_error("analyzer.pane.setup.operation_failed")
@@ -440,7 +511,7 @@ class IndependentPaneSetupV2(QWidget):
                     self.hide()
             elif operation == "discard":
                 self._prepared = None
-                self.preview.clear()
+                self._set_preview_text("")
             elif operation == "cleanup":
                 self._retained_pool = None
                 self._set_error(self._error_key, revisit_violations=self._revisit_violations)
@@ -451,7 +522,7 @@ class IndependentPaneSetupV2(QWidget):
                     self._set_error("analyzer.pane.setup.operation_failed")
                 else:
                     self._closing_handle = None
-                    self.preview.clear()
+                    self._set_preview_text("")
                     self.hide()
         if operation == "close_layout" and self._closing_handle is not None:
             QMessageBox.warning(self, text("analyzer.pane.setup.close_failed.title"),
@@ -463,7 +534,7 @@ class IndependentPaneSetupV2(QWidget):
     def _refresh_preview(self) -> None:
         prepared = self._prepared
         if prepared is None:
-            self.preview.clear()
+            self._set_preview_text("")
             return
         lines = [text("analyzer.pane.setup.preview_intro")]
         sources = dict(prepared.plan.resource_sources)
@@ -521,7 +592,7 @@ class IndependentPaneSetupV2(QWidget):
                               pane=pane_id.rsplit("-", 1)[-1], start=start // 1_000_000,
                               stop=stop // 1_000_000))
         lines.append(text("analyzer.pane.setup.preview_scope"))
-        self.preview.setText("\n".join(lines))
+        self._set_preview_text("\n".join(lines))
 
     @staticmethod
     def _preview_target(value: float | None) -> str:
@@ -549,6 +620,7 @@ class IndependentPaneSetupV2(QWidget):
         self.error.setAccessibleName(value)
         self.error.setToolTip(value)
         self.error.setVisible(key is not None)
+        self._sync_contents_height()
 
     def _refresh_actions(self) -> None:
         blocked = self._future is not None
@@ -557,12 +629,19 @@ class IndependentPaneSetupV2(QWidget):
                               and not self._prepared.handle.applied
                               and not any(item.recording_conflict for item in self._prepared.preview))
         self.discard.setEnabled(not blocked and (self._prepared is not None or self._retained_pool is not None))
+        self.details.setEnabled(bool(self.preview.text() or self.error.text()))
         for row in self._rows:
             row.source.setEnabled(not self.blocks_single_source)
             self._source_changed(row, preserve_range=True)
 
     def set_theme(self, theme: ThemeId) -> None:
         self.setStyleSheet(stylesheet_for_theme(theme))
+        for row in self._rows:
+            for field in (row.source, row.start, row.stop, row.rate, row.fft,
+                          row.points, row.mode, row.mode_points, row.priority, row.maximum_revisit):
+                field.ensurePolished()
+                field.setMinimumHeight(field.minimumSizeHint().height())
+        self._sync_contents_height()
 
     def set_locale(self) -> None:
         for row in self._rows:
@@ -576,11 +655,22 @@ class IndependentPaneSetupV2(QWidget):
             row.maximum_revisit.setSpecialValueText(text("analyzer.pane.setup.target_unset"))
             if row.source.count():
                 row.source.setItemText(0, text("analyzer.pane.setup.empty"))
+            # A staged draft cannot rebuild source/geometry selectors. Translate
+            # the existing mode items in place, without changing their data or
+            # issuing a source/mode command through currentIndexChanged.
+            with QSignalBlocker(row.mode):
+                for index in range(row.mode.count()):
+                    value = row.mode.itemData(index)
+                    key = ("analyzer.pane.setup.mode_empty" if value is None else
+                           "analyzer.pane.setup.mode_" + CaptureMeasurementMode(value).value)
+                    row.mode.setItemText(index, text(key))
+            row.fft.setToolTip(text("analyzer.pane.setup.fft_help"))
         self.description.setText(text("analyzer.pane.setup.description"))
         self.mode_help.setText(text("analyzer.pane.setup.mode_help"))
         self.scheduler_toggle.setText(text("analyzer.pane.setup.scheduler"))
         self.scheduler_toggle.setAccessibleName(text("analyzer.pane.setup.scheduler"))
         self.scheduler_help.setText(text("analyzer.pane.setup.scheduler_help"))
+        self.scroll_area.setAccessibleName(text("analyzer.pane.setup.open"))
         for header, key in zip(self.scheduler_headers, (
                 "analyzer.pane.setup.slot", "analyzer.pane.setup.priority",
                 "analyzer.pane.setup.target"), strict=True):
@@ -593,7 +683,8 @@ class IndependentPaneSetupV2(QWidget):
             header.setText(text(key))
         for button, key in ((self.prepare, "analyzer.pane.setup.prepare"),
                             (self.apply, "analyzer.pane.setup.apply"),
-                            (self.discard, "analyzer.pane.setup.discard")):
+                            (self.discard, "analyzer.pane.setup.discard"),
+                            (self.details, "analyzer.pane.setup.details")):
             button.setText(text(key))
             button.setAccessibleName(text(key))
         selection = self._selection

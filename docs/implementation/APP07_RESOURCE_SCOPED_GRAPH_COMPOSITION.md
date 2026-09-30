@@ -1243,3 +1243,28 @@ Bounded readable controls/scrollable preview, SDK cleanup cause, qualified
 tinySA300k/current input, held-middle RF intent, wide RTBW, tuning groups,
 genuine Ethernet, sustained and independent review/release remain open.
 APP07 remains PARTIAL; APP06E is planned and the full release remains active.
+
+### Readable staged editor on the same V2 Analyzer
+
+A long accepted impact preview and expanded scheduling section are now in a
+local, bounded editor scroll area instead of shrinking fields to fit above the
+plots. Stage/Apply/Discard/Schedule and Plan/reasons stay pinned outside that
+scroll area. The editor's preferred height is capped at480 logical pixels;
+the parent may give less space while all content remains scrollable. Wrapped
+prose gets its full width-dependent height, and fields keep their actual Qt
+minimum-size hints. This changes neither the graph/DSP nor presentation queues.
+
+Plan/reasons moves focus to the scroll area and exposes the accepted preview
+or refusal reasons. PageDown reaches the last scope/coverage limitation; the
+full plain text is also accessible. Discard clears the accessible preview with
+the visible one, keeps scheduling values and unlocks the draft without RX.
+Scheduling numbers remain compact rather than stretching across equal-width
+columns. A staged locale change translates existing mode items in place under
+signal blocking; it does not rebuild choices, change item data, apply or Start.
+
+Actual-root fake-SDK regression coverage includes the original1440x912 clipped
+control case,60 combinations of5 logical sizes/RU-EN/3themes/expanded-collapsed,
+pinned commands, keyboard-reachable accepted/refused text, preserved staged
+plan and draft focus after Discard. These source/widget tests are NOT a new
+frozen Windows, FHD/QHD/per-monitor-DPI/RF/latency/soak acceptance. Such gates
+must use the new exact build, not relabel the earlier e97 artifact.

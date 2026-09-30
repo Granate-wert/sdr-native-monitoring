@@ -184,6 +184,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Применение настроек и резервирование ресурсов… RX не запускается.",
             UiLocale.EN: "Applying settings and reserving resources… RX is not started."}),
         "analyzer.pane.setup.discard": MappingProxyType({UiLocale.RU: "Отменить подготовку", UiLocale.EN: "Discard Stage"}),
+        "analyzer.pane.setup.details": MappingProxyType({UiLocale.RU: "План / причины", UiLocale.EN: "Plan / reasons"}),
         "analyzer.pane.setup.preview_intro": MappingProxyType({
             UiLocale.RU: "Влияние раскладки до применения:", UiLocale.EN: "Layout impact before Apply:"}),
         "analyzer.pane.setup.scheduler": MappingProxyType({UiLocale.RU: "Расписание", UiLocale.EN: "Schedule"}),
