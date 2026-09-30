@@ -14,7 +14,6 @@ from PySide6.QtCore import QSettings, Signal, Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from sdr_monitor.domain.analyzer import AnalyzerPublicationKind
-from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PreparedPaneDelivery
 
@@ -55,8 +54,10 @@ class IndependentPaneBoardV2(QWidget):
                                 for resource in schedule.resources})
         self._time_sliced_pane_ids = (set() if schedule is None else {
             estimate.pane_id for estimate in schedule.pane_revisits
-            if estimate.mode is ReceiverBindingMode.TIME_SLICED
-            and resource_job_counts[estimate.physical_stream_resource_id] > 1
+            # A job may fan out to shared subscribers while its physical RX
+            # still alternates between multiple jobs. Visit identity follows
+            # the resource schedule, not one subscription's binding mode.
+            if resource_job_counts[estimate.physical_stream_resource_id] > 1
         })
         self._selected_slot = 1
         self._terminal_released = False

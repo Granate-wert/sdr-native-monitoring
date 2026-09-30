@@ -31,6 +31,63 @@ class TimeSlicedWaterfallTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_two_shared_jobs_on_one_rx_keep_both_subscribers_history_on_scheduled_return(self) -> None:
+        groups = (group("one-rx", "rx1"),)
+        slots = tuple(PaneLayoutSlot(number, replace(
+            pane(pane_id, "rx1", start, stop, ReceiverBindingMode.SHARED_CAPTURE),
+            profile_id=profile_id)) for number, pane_id, start, stop, profile_id in (
+                (1, "low-a", 100e6, 104e6, "low"), (2, "low-b", 105e6, 108e6, "low"),
+                (3, "high-a", 200e6, 204e6, "high"), (4, "high-b", 205e6, 208e6, "high")))
+        layout = compile_pane_layout(slots, groups, {
+            "low": iq_profile(20e6), "high": replace(iq_profile(20e6), manual_gain_db=30.0)})
+        assert layout.schedule is not None
+        self.assertEqual(len(layout.schedule.resources), 1)
+        self.assertEqual(len(layout.schedule.resources[0].jobs), 2)
+        self.assertTrue(all(job.mode is ReceiverBindingMode.SHARED_CAPTURE
+                            for job in layout.schedule.resources[0].jobs))
+        preparer = PaneDeliveryPreparer(layout, groups, PresentationAllocationBudget())
+        with TemporaryDirectory() as directory:
+            settings = QSettings(str(Path(directory) / "paired.ini"), QSettings.Format.IniFormat)
+            board = IndependentPaneBoardV2(preparer, settings=settings)
+            try:
+                def offer(pane_id: str, center: float, epoch: int, serial: int, run=0) -> None:
+                    binding = preparer.bindings[pane_id]
+                    bundle = iq_bundle(binding.source_id, center, 20e6, epoch)
+                    bundle = replace(bundle, spectrum=replace(bundle.spectrum,
+                        config_generation=epoch, accumulation_id=f"session-{epoch}"),
+                        session_id=f"session-{epoch}", identity=None)
+                    delivery = PaneDelivery(binding.physical_stream_resource_id, binding.capture_id,
+                        binding.receiver_endpoint_id, serial, binding.crop, bundle, float(serial), run)
+                    self.assertTrue(board.apply_prepared(preparer.prepare(delivery)))
+
+                for pane_id in ("low-a", "low-b"):
+                    offer(pane_id, 104e6, 7, 1)
+                for pane_id in ("high-a", "high-b"):
+                    offer(pane_id, 204e6, 7, 2)
+                self.assertEqual(tuple(board.pane(n).waterfall_pane.history_rows
+                                       for n in range(1, 5)), (1, 1, 1, 1))
+                for pane_id in ("low-a", "low-b"):
+                    offer(pane_id, 104e6, 8, 3)
+                self.assertEqual(tuple(board.pane(n).waterfall_pane.history_rows
+                                       for n in range(1, 5)), (3, 3, 1, 1))
+                for number in (1, 2):
+                    waterfall = board.pane(number).waterfall_pane
+                    self.assertEqual(waterfall.metrics.presentation_gap_rows, 1)
+                    rows = np.concatenate(waterfall._renderer.tiles(), axis=0)
+                    self.assertTrue(np.isnan(rows[1]).all())
+                for number in (3, 4):
+                    self.assertEqual(board.pane(number).waterfall_pane.metrics.presentation_gap_rows, 0)
+                # A true new explicit Start remains a history reset, not a
+                # continuation disguised as another scheduler visit.
+                for pane_id in ("low-a", "low-b"):
+                    offer(pane_id, 104e6, 9, 5, run=1)
+                self.assertEqual(tuple(board.pane(n).waterfall_pane.history_rows
+                                       for n in range(1, 5)), (1, 1, 1, 1))
+            finally:
+                board.release_presentation_after_shutdown()
+                board.close()
+                preparer.clear()
+
     def test_two_disjoint_visits_keep_separate_pane_history_with_gap(self) -> None:
         groups = (group("one-rx", "rx1"),)
         slots = (

@@ -1198,6 +1198,10 @@ within target or last interval exceeded target, not a sustained/RF verdict.
 No hidden adaptive Fs/FFT or retry is issued when a target is exceeded.
 Multiple capture jobs remain visibly time-sliced even if each job serves a
 shared pair. Stopped retained frames are not labeled as current measurements.
+The same multi-job resource criterion identifies qualified scheduled returns
+for each subscriber's Waterfall history. Shared-pair returns keep separate
+bounded histories with a display-only absence separator; a genuine next
+explicit Start still resets history. Epoch/run/source/unit/grid guards remain.
 
 This source contract does not relabel the earlier a4 frozen/Windows/RX proof
 as qualification of the new scheduling controls. New exact full-source,

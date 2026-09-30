@@ -201,7 +201,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Окно {pane}: вес {priority} → захват {effective_priority}; цель {target} → захват {effective_target}; расчётный максимум {modeled} с, посещений за цикл {visits}. Не измерение скорости RF.",
             UiLocale.EN: "Pane {pane}: weight {priority} → capture {effective_priority}; target {target} → capture {effective_target}; modeled maximum {modeled} s, visits per cycle {visits}. Not measured RF speed."}),
         "analyzer.pane.setup.deadline_refused": MappingProxyType({
-            UiLocale.RU: "Расписание не подготовлено: расчётная модель превышает заданный период возврата. Увеличьте период или измените веса/диапазоны; Apply и RX не выполнены.",
+            UiLocale.RU: "Расписание не подготовлено: расчётная модель превышает заданный период возврата. Увеличьте период или измените веса/диапазоны; настройки не применены, приём не запущен.",
             UiLocale.EN: "Schedule not staged: the timing model exceeds a requested revisit target. Increase the target or change weights/ranges; no Apply or RX occurred."}),
         "analyzer.pane.setup.deadline_detail": MappingProxyType({
             UiLocale.RU: "Окно {pane}: расчётный максимум {modeled} с > цель {target} с.",
