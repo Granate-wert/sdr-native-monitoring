@@ -27,9 +27,12 @@ from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpo
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 
 from .receiver_lease_manager import ReceiverLease, ReceiverLeaseManager
+from .pane_resource_diagnostics import (
+    PaneDiagnosticError, PaneFailureReason, PaneFailureStage, pane_failure_from_exception,
+)
 
 
-class PaneResourceError(RuntimeError):
+class PaneResourceError(PaneDiagnosticError):
     """Fixed control-plane refusal; vendor exception text is never published."""
 
 
@@ -442,12 +445,14 @@ class PaneResourceSession:
                     owner.validate_job(job)
                 if self._recording_conflict(_Runtime(runtime.group, runtime.schedule, owner)):
                     raise ValueError("recording conflicts with the explicit new run")
-            except Exception:
-                raise PaneResourceError("fresh receiver adapter did not confirm the existing plan") from None
+            except Exception as error:
+                raise PaneResourceError("fresh receiver adapter did not confirm the existing plan",
+                    failure=pane_failure_from_exception(error, PaneFailureStage.REARM)) from None
             try:
                 lease = self._leases.acquire(runtime.group)
-            except Exception:
-                raise PaneResourceError("physical receiver lease is unavailable for the new run") from None
+            except Exception as error:
+                raise PaneResourceError("physical receiver lease is unavailable for the new run",
+                    failure=pane_failure_from_exception(error, PaneFailureStage.REARM)) from None
             with self._state_lock:
                 runtime.owner = owner
                 runtime.lease = lease
@@ -489,11 +494,16 @@ class PaneResourceSession:
                     runtime.run_serial += 1
                     runtime.stop_required = True  # Reject frames until Start confirms.
                 control_started = self._clock_sample_s()
+                failure_stage = PaneFailureStage.START
                 try:
                     admission = runtime.owner.start_capture(job)
+                    failure_stage = PaneFailureStage.ADMISSION
                     self._validate_admission(runtime, job, admission)
-                except Exception:
-                    raise PaneResourceError("receiver Start did not confirm admission; explicit Stop is required") from None
+                except Exception as error:
+                    raise PaneResourceError("receiver Start did not confirm admission; explicit Stop is required",
+                        failure=pane_failure_from_exception(error, failure_stage,
+                            reason=(PaneFailureReason.INVALID_ADMISSION if failure_stage is PaneFailureStage.ADMISSION
+                                    else PaneFailureReason.OPERATION_FAILED))) from None
                 control_elapsed = self._elapsed_since(control_started)
                 with self._state_lock:
                     activation = PaneActivation(resource_id, job.capture_id, 0, runtime.activation_serial,
@@ -539,18 +549,24 @@ class PaneResourceSession:
                     runtime.stop_required = True  # Close routing before blocking Stop.
                 try:
                     runtime.owner.stop_capture_and_wait()
-                except Exception:
-                    raise PaneResourceError("receiver Stop did not confirm release; no retune was sent") from None
+                except Exception as error:
+                    raise PaneResourceError("receiver Stop did not confirm release; no retune was sent",
+                        failure=pane_failure_from_exception(error, PaneFailureStage.STOP)) from None
                 with self._state_lock:
                     runtime.new_epoch_required = runtime.last_admission_epoch is not None
                     runtime.admission = None
                     runtime.slot_index = next_index
                     runtime.activation_serial += 1
+                failure_stage = PaneFailureStage.START
                 try:
                     admission = runtime.owner.start_capture(next_job)
+                    failure_stage = PaneFailureStage.ADMISSION
                     self._validate_admission(runtime, next_job, admission)
-                except Exception:
-                    raise PaneResourceError("next receiver Start failed; owner retained for explicit Stop") from None
+                except Exception as error:
+                    raise PaneResourceError("next receiver Start failed; owner retained for explicit Stop",
+                        failure=pane_failure_from_exception(error, failure_stage,
+                            reason=(PaneFailureReason.INVALID_ADMISSION if failure_stage is PaneFailureStage.ADMISSION
+                                    else PaneFailureReason.OPERATION_FAILED))) from None
                 control_elapsed = self._elapsed_since(control_started)
                 with self._state_lock:
                     activation = PaneActivation(resource_id, next_id, next_index,
@@ -670,20 +686,26 @@ class PaneResourceSession:
                 activation = runtime.current_activation
                 if not runtime.active or runtime.stop_required or activation is None:
                     return ()
+            failure_stage = PaneFailureStage.OWNER_POLL
             try:
                 publications = runtime.owner.poll_bundles()
+                failure_stage = PaneFailureStage.PUBLICATION_VALIDATION
                 if (not isinstance(publications, tuple) or len(publications) > 64
                         or any(not isinstance(item, tuple) or len(item) != 2
                                or not isinstance(item[0], str)
                                or not isinstance(item[1], AnalyzerFrameBundle)
                                for item in publications)):
                     raise ValueError("malformed bounded pane publication batch")
-            except Exception:
+            except Exception as error:
                 with self._state_lock:
                     runtime.active = False
                     runtime.current_activation = None
                     runtime.stop_required = True
-                raise PaneResourceError("receiver publication failed; explicit Stop is required") from None
+                raise PaneResourceError("receiver publication failed; explicit Stop is required",
+                    failure=pane_failure_from_exception(error, failure_stage,
+                        reason=(PaneFailureReason.INVALID_PUBLICATION
+                                if failure_stage is PaneFailureStage.PUBLICATION_VALIDATION
+                                else PaneFailureReason.OPERATION_FAILED))) from None
             delivered: list[PaneDelivery] = []
             for endpoint_id, bundle in publications:
                 delivered.extend(self.accept_frame(activation, endpoint_id, bundle))
@@ -745,17 +767,23 @@ class PaneResourceSession:
                 if needs_stop:
                     try:
                         runtime.owner.stop_capture_and_wait()
-                    except Exception:
-                        raise PaneResourceError("receiver Stop did not confirm release; owner and lease retained") from None
+                    except Exception as error:
+                        raise PaneResourceError("receiver Stop did not confirm release; owner and lease retained",
+                            failure=pane_failure_from_exception(error, PaneFailureStage.STOP)) from None
                 try:
                     runtime.owner.release_control_claim()
-                except Exception:
+                except Exception as error:
                     with self._state_lock:
                         runtime.stop_required = False  # Hardware Stop succeeded; keep only the claim/lease obligation.
-                    raise PaneResourceError("receiver control claim did not release; owner and lease retained") from None
+                    raise PaneResourceError("receiver control claim did not release; owner and lease retained",
+                        failure=pane_failure_from_exception(error, PaneFailureStage.CONTROL_RELEASE)) from None
                 with self._state_lock:
                     assert runtime.lease is not None
-                    runtime.lease.release()
+                    try:
+                        runtime.lease.release()
+                    except Exception as error:
+                        raise PaneResourceError("receiver lease did not release; explicit Stop is required",
+                            failure=pane_failure_from_exception(error, PaneFailureStage.LEASE_RELEASE)) from None
                     runtime.lease = None
                     runtime.admission = None
                     runtime.stop_required = False
@@ -792,13 +820,14 @@ class PaneResourceSession:
                 yield
         except PaneResourceError:
             raise
-        except Exception:
+        except Exception as error:
             with self._state_lock:
                 if runtime.lease is not None and runtime.slot_index >= 0:
                     runtime.active = False
                     runtime.current_activation = None
                     runtime.stop_required = True
-            raise PaneResourceError("owner control transaction failed; explicit Stop may be required") from None
+            raise PaneResourceError("owner control transaction failed; explicit Stop may be required",
+                failure=pane_failure_from_exception(error, PaneFailureStage.TRANSACTION)) from None
 
     def _clock_sample_s(self) -> float | None:
         try:

@@ -901,3 +901,38 @@ APP-07 remains PARTIAL. These new cells and the HackRF group1/previous tinySA
 next-Start errors remain explicit follow-up work; APP-06E is PLANNED and the
 expired APP-05 timer was not restarted. No product/source/EXE/static promotion,
 TX/amp/bias/firmware/driver/network/firewall/security mutation occurred here.
+
+## First-cause resource diagnostics — 2026-09-30, software packet
+
+The existing owner/session/off-Qt pump now carries one immutable, finite
+first-failure boundary and a separate cleanup failure. Start/admission, owner
+poll, bounded publication validation, preparation, queue, scheduled advance,
+Stop, control claim and lease release are distinct. The already cached tinySA
+acquisition phase/reason reaches the pane instead of being erased by two
+generic exception boundaries. No serial query, parsing of a vendor exception,
+second acquisition model or source restart is added.
+
+The first cause survives failed and successful explicit Stop; a cleanup error
+does not replace it. History clears only on an accepted, separately explicit
+Start of the new run. The same ownership/lease and failed-resource quarantine
+rules remain. Neighbors are not stopped. Unknown exceptions use fixed fallback
+codes: a transport/collector code is an observed boundary, not proof of an
+external USB or firmware cause.
+
+RU/EN first-cause details appear in the affected pane's timing tooltip and
+accessible description, and in a numbered error banner while Stop is required.
+After successful cleanup the cause is retained as previous-run history in the
+tooltip. The compact timing row is unchanged and text/tooltip writes are
+coalesced. Logs emit one first-cause event and changed cleanup events using
+resource ordinal and finite codes/counts only, not raw resource identity,
+endpoint, vendor text, serial bytes or traceback. Logging failure cannot strand
+the accepted Stop future.
+
+21 new tests and 80 combined focused tests passed using fake owners and the
+actual V2 three-family composition. Scoped mypy7/default Ruff/compile/diff
+checks passed. Exact full-source/frozen and physical restart gates are pending
+at this source checkpoint; they must not be inferred from those unit tests.
+This packet does not close prior physical tinySA next-Start/group1 errors,
+all-full-range Sweep, receiver-frequency gesture or RBW300-kHz admission.
+APP-07 remains PARTIAL; the APP-05 expired timer and APP-06E planned branch
+are unchanged. No independent agent review has been performed for this packet.

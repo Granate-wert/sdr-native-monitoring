@@ -29,6 +29,7 @@ from ..design.tokens import tokens_for_theme
 from ..i18n import text
 from .independent_pane_board import IndependentPaneBoardV2
 from .independent_pane_delivery import IndependentPaneDeliveryPort
+from .pane_failure_text import pane_failure_text
 
 
 class IndependentPaneSessionV2(QWidget):
@@ -253,7 +254,8 @@ class IndependentPaneSessionV2(QWidget):
             else:
                 waiting.append(future)
         self._futures = waiting
-        states = {item.physical_stream_resource_id: item.phase for item in self.handle.pump.snapshot()}
+        snapshots = {item.physical_stream_resource_id: item for item in self.handle.pump.snapshot()}
+        states = {resource_id: item.phase for resource_id, item in snapshots.items()}
         selected = self._selected_resource()
         selected_phase = None if selected is None else states[selected[1]]
         startable = self.handle.pump.startable_resource_ids()
@@ -271,12 +273,38 @@ class IndependentPaneSessionV2(QWidget):
         if self.status.text() != summary:
             self.status.setText(summary)
         scope = text("analyzer.independent.timing.scope")
+        failures: list[str] = []
         for slot in self.handle.layout.slots:
             if slot.request is not None:
                 pane_id = slot.request.pane_id
+                state = snapshots[self._pane_resources[pane_id]]
+                explanation = scope
+                if state.first_failure is not None:
+                    first = pane_failure_text(state.first_failure)
+                    key = ("first" if state.phase is PanePumpPhase.STOP_REQUIRED else "previous")
+                    explanation += "\n\n" + text(f"analyzer.independent.failure.{key}", detail=first)
+                    if state.cleanup_failure is not None:
+                        explanation += "\n" + text("analyzer.independent.failure.cleanup",
+                            detail=pane_failure_text(state.cleanup_failure))
+                    explanation += "\n" + text("analyzer.independent.failure.scope")
+                    if state.phase is PanePumpPhase.STOP_REQUIRED:
+                        detail = text("analyzer.independent.failure.pane", number=slot.number, detail=first)
+                        if state.cleanup_failure is not None:
+                            detail += " " + text("analyzer.independent.failure.cleanup",
+                                detail=pane_failure_text(state.cleanup_failure))
+                        failures.append(detail)
                 self.board.set_pane_timing(slot.number,
-                    self._timing_text(pane_id, states[self._pane_resources[pane_id]]), scope)
+                    self._timing_text(pane_id, state.phase), explanation)
         detail = ("" if self._error_key is None else text(self._error_key, pane=self._error_pane or ""))
+        if failures:
+            detail = "\n".join(failures)
+        elif (self._error_key == "analyzer.independent.operation_failed"
+                and not waiting and any(item.first_failure is not None for item in snapshots.values())
+                and all(phase in {PanePumpPhase.RUNNING, PanePumpPhase.STOPPED} for phase in states.values())):
+            # Successful explicit cleanup leaves history in the pane tooltip,
+            # not an active error banner from the already completed failed Future.
+            self._error_key = None
+            detail = ""
         if self.error.text() != detail:
             self.error.setText(detail)
         self.error.setVisible(bool(detail))

@@ -21,6 +21,9 @@ from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
 
 from .pane_resource_session import PaneCaptureAdmission
+from .pane_resource_diagnostics import (
+    PaneDiagnosticError, PaneFailureReason, PaneFailureStage, PaneResourceFailure,
+)
 from .tinysa_common_analyzer import TinySaCommonAnalyzerService
 
 
@@ -145,12 +148,16 @@ class TinySaTracePaneOwner:
     def poll_bundles(self) -> tuple[tuple[str, AnalyzerFrameBundle], ...]:
         snapshot = self._instrument.poll_latest()
         if snapshot.metrics.has_error:
-            raise RuntimeError("tinySA instrument worker failed; explicit Stop required")
+            raise PaneDiagnosticError("tinySA instrument worker failed; explicit Stop required",
+                failure=PaneResourceFailure(PaneFailureStage.OWNER_POLL,
+                    PaneFailureReason.INSTRUMENT_FAILURE, self._instrument.acquisition_failure))
         line = snapshot.line
         if line is None or line is self._last_line:
             return ()
         if not isinstance(line, SweepLineFrame) or line.instrument is None:
-            raise RuntimeError("tinySA pane received a non-instrument publication")
+            raise PaneDiagnosticError("tinySA pane received a non-instrument publication",
+                failure=PaneResourceFailure(PaneFailureStage.PUBLICATION_VALIDATION,
+                                            PaneFailureReason.INVALID_PUBLICATION))
         bundle = bundle_from_sweep(line)
         self._last_line = line
         return ((self._endpoint_id, bundle),)

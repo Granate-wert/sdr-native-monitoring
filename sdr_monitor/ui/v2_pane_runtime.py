@@ -14,10 +14,15 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from enum import StrEnum
 import math
+import logging
 from threading import Condition, Lock, Thread
 from time import monotonic
 
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneLayout, ResourcePaneSchedule
+from sdr_monitor.activity_log import log_event
+from sdr_monitor.services.pane_resource_diagnostics import (
+    PaneDiagnosticError, PaneFailureReason, PaneFailureStage, PaneResourceFailure, pane_failure_from_exception,
+)
 from sdr_monitor.services.pane_resource_session import PaneActivation, PaneResourceSession
 
 from .v2_pane_delivery_queue import PaneFairDeliveryQueue
@@ -41,18 +46,21 @@ class PanePumpResourceState:
     prepared_publications: int = 0
     planned_slot_overrun: bool = False
     error: str | None = None
+    first_failure: PaneResourceFailure | None = None
+    cleanup_failure: PaneResourceFailure | None = None
 
 
 class _ResourceWorker:
     def __init__(self, resource: ResourcePaneSchedule, pane_ids: tuple[str, ...],
                  session: PaneResourceSession, preparer: PaneDeliveryPreparer,
-                 queue: PaneFairDeliveryQueue, poll_interval_s: float) -> None:
+                 queue: PaneFairDeliveryQueue, poll_interval_s: float, resource_number: int = 0) -> None:
         self.resource = resource
         self.pane_ids = pane_ids
         self.session = session
         self.preparer = preparer
         self.queue = queue
         self.poll_interval_s = poll_interval_s
+        self._resource_number = resource_number
         self._condition = Condition()
         self._pending_start: Future[PaneActivation] | None = None
         self._pending_rearm = False
@@ -86,7 +94,8 @@ class _ResourceWorker:
             self._pending_start = future
             # Close-layout/duplicate Start must see an accepted command even
             # before this off-Qt worker dispatches its fresh-lease admission.
-            self._state = replace(self._state, phase=PanePumpPhase.STARTING)
+            self._state = replace(self._state, phase=PanePumpPhase.STARTING,
+                                  error=None, first_failure=None, cleanup_failure=None)
             self._condition.notify()
             return future
 
@@ -107,10 +116,9 @@ class _ResourceWorker:
             unlaunched_future.set_running_or_notify_cancel()
             try:
                 self.session.stop_resource(self.resource.physical_stream_resource_id)
-            except Exception:
-                with self._condition:
-                    self._state = replace(self._state, phase=PanePumpPhase.STOP_REQUIRED,
-                                          error="Receiver lease release failed; explicit Stop required")
+            except Exception as error:
+                self._mark_failed(error, PaneFailureStage.STOP,
+                                  "Receiver lease release failed; explicit Stop required", cleanup=True)
                 unlaunched_future.set_exception(RuntimeError("unlaunched pane receiver did not release"))
             else:
                 with self._condition:
@@ -143,6 +151,33 @@ class _ResourceWorker:
         self._thread.join(timeout_s)
         if self._thread.is_alive():
             raise TimeoutError("pane resource worker has not joined")
+
+    def _mark_failed(self, error: Exception, stage: PaneFailureStage, message: str, *,
+                     cleanup: bool = False) -> None:
+        """Latch one first cause and at most one cleanup cause; never the exception."""
+        failure = pane_failure_from_exception(error, stage)
+        with self._condition:
+            first = self._state.first_failure
+            previous_cleanup = self._state.cleanup_failure
+            cleanup_failure = failure if cleanup and first is not None else previous_cleanup
+            self._state = replace(self._state, phase=PanePumpPhase.STOP_REQUIRED,
+                                  activation=None, planned_slot_overrun=False, error=message,
+                                  first_failure=first or failure, cleanup_failure=cleanup_failure)
+            emitted = self._state.prepared_publications
+        if first is None or cleanup and cleanup_failure != previous_cleanup:
+            instrument = failure.instrument
+            # One event per first/changed cleanup cause, finite codes/numbers only.
+            # An unavailable/broken handler must not strand the Stop future.
+            try:
+                log_event(logging.getLogger("sdr_native_monitoring"), "stream",
+                          "pane_resource_cleanup_failure" if first is not None else "pane_resource_first_failure",
+                          level=logging.ERROR, resource_number=self._resource_number,
+                          stage=failure.stage.value, reason=failure.reason.value,
+                          instrument_phase=None if instrument is None else instrument.phase.value,
+                          instrument_reason=None if instrument is None else instrument.reason.value,
+                          prepared_publications=emitted)
+            except Exception:
+                pass  # State still owns the same immutable cause and receiver.
 
     def _run(self) -> None:
         while True:
@@ -177,6 +212,7 @@ class _ResourceWorker:
                     self._condition.wait()
                     continue
             if command == "start":
+                failure_stage = PaneFailureStage.REARM if rearm else PaneFailureStage.START
                 try:
                     if rearm:
                         self.session.rearm_resource(self.resource.physical_stream_resource_id)
@@ -188,11 +224,10 @@ class _ResourceWorker:
                                 # its new lease without opening RX needlessly.
                                 future_start.set_exception(RuntimeError("pane Start cancelled before RX"))
                                 continue
+                    failure_stage = PaneFailureStage.START
                     activation = self.session.start_resource(self.resource.physical_stream_resource_id)
-                except Exception:
-                    with self._condition:
-                        self._state = replace(self._state, phase=PanePumpPhase.STOP_REQUIRED,
-                                              error="Receiver Start failed; explicit Stop required")
+                except Exception as error:
+                    self._mark_failed(error, failure_stage, "Receiver Start failed; explicit Stop required")
                     future_start.set_exception(RuntimeError("pane receiver Start did not confirm"))
                 else:
                     self._activate(activation)
@@ -200,11 +235,10 @@ class _ResourceWorker:
             elif command == "stop":
                 try:
                     self.session.stop_resource(self.resource.physical_stream_resource_id)
-                except Exception:
+                except Exception as error:
+                    self._mark_failed(error, PaneFailureStage.STOP,
+                                      "Receiver Stop failed; owner retained for explicit retry", cleanup=True)
                     with self._condition:
-                        self._state = replace(self._state, phase=PanePumpPhase.STOP_REQUIRED,
-                                              activation=None, planned_slot_overrun=False,
-                                              error="Receiver Stop failed; owner retained for explicit retry")
                         self._active_stop = None
                     future_stop.set_exception(RuntimeError("pane receiver Stop did not confirm"))
                 else:
@@ -218,11 +252,9 @@ class _ResourceWorker:
             else:
                 try:
                     self._poll_and_advance()
-                except Exception:
-                    with self._condition:
-                        self._state = replace(self._state, phase=PanePumpPhase.STOP_REQUIRED,
-                                              activation=None, planned_slot_overrun=False,
-                                              error="Receiver or pane publication failed; explicit Stop required")
+                except Exception as error:
+                    self._mark_failed(error, PaneFailureStage.OWNER_POLL,
+                                      "Receiver or pane publication failed; explicit Stop required")
 
     def _activate(self, activation: PaneActivation) -> None:
         slot = self.resource.slots[activation.slot_index]
@@ -243,7 +275,17 @@ class _ResourceWorker:
                 self._frame_seen = True
                 if delivery.bundle.terminal_sweep:
                     self._terminal_seen = True
-            self.queue.offer(self.preparer.prepare(delivery))
+            try:
+                prepared = self.preparer.prepare(delivery)
+            except Exception as error:
+                raise PaneDiagnosticError("Pane preparation failed; explicit Stop required",
+                    failure=pane_failure_from_exception(error, PaneFailureStage.PREPARE,
+                                                        reason=PaneFailureReason.INVALID_PUBLICATION)) from None
+            try:
+                self.queue.offer(prepared)
+            except Exception as error:
+                raise PaneDiagnosticError("Pane queue publication failed; explicit Stop required",
+                    failure=pane_failure_from_exception(error, PaneFailureStage.QUEUE)) from None
             prepared_count += 1
         if prepared_count:
             with self._condition:
@@ -263,7 +305,11 @@ class _ResourceWorker:
         with self._condition:
             if self._pending_stop is not None:
                 return  # Explicit Stop outranks a planned retune boundary.
-        self._activate(self.session.advance_resource(resource_id))
+        try:
+            self._activate(self.session.advance_resource(resource_id))
+        except Exception as error:
+            raise PaneDiagnosticError("Planned receiver advance failed; explicit Stop required",
+                failure=pane_failure_from_exception(error, PaneFailureStage.ADVANCE)) from None
 
 
 class PaneResourcePump:
@@ -290,8 +336,8 @@ class PaneResourcePump:
             resource.physical_stream_resource_id: _ResourceWorker(
                 resource, tuple(item.pane_id for item in layout.schedule.pane_revisits
                                 if item.physical_stream_resource_id == resource.physical_stream_resource_id),
-                session, preparer, queue, poll_interval_s)
-            for resource in resources
+                session, preparer, queue, poll_interval_s, resource_number)
+            for resource_number, resource in enumerate(resources, 1)
         }
         self._pane_resources = {
             item.pane_id: item.physical_stream_resource_id

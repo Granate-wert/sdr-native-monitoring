@@ -24,7 +24,7 @@ from ..domain.tinysa_correction import correct_tinysa_values
 from .source_capability_admission import admit_source_request
 from .source_capability_catalog import SourceCapabilityCatalog
 from .tinysa_capability_adapter import TinySaModel
-from .tinysa_owned_acquisition import TinySaOwnedAcquisition
+from .tinysa_owned_acquisition import TinySaAcquisitionFailure, TinySaOwnedAcquisition
 from .tinysa_serial_trace_collector import TinySaScanRawRequest, TinySaTraceCollectionCancelled, TinySaTracePass
 
 
@@ -50,6 +50,7 @@ class TinySaCommonAnalyzerService:
         self._completed = self._gapped = self._sequence = 0
         self._first_completion: float | None = None
         self._snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
+        self._acquisition_failure: TinySaAcquisitionFailure | None = None
 
     @property
     def stop_required(self) -> bool:
@@ -58,6 +59,12 @@ class TinySaCommonAnalyzerService:
     @property
     def instrument_run_identity(self) -> TinySaSweepRunIdentity | None:
         return self._run_identity  # cached; no serial I/O or operation lock
+
+    @property
+    def acquisition_failure(self) -> TinySaAcquisitionFailure | None:
+        """First cached worker cause, retained through Stop until a new run."""
+        with self._lock:
+            return self._acquisition_failure
 
     def start(self, request: TinySaSweepRequest, selection: AnalyzerSourceSelection) -> None:
         if not self._operation.acquire(blocking=False):
@@ -91,6 +98,7 @@ class TinySaCommonAnalyzerService:
             self._first_completion = None
             with self._lock:
                 self._snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
+                self._acquisition_failure = None
             try:
                 self._exclusion.claim_external_analyzer_rx(self)
                 self._claimed = True
@@ -164,6 +172,8 @@ class TinySaCommonAnalyzerService:
             suffix = f" [{failure.phase.value}/{failure.reason.value}]" if failure is not None else ""
             with self._lock:
                 previous = self._snapshot
+                if self._acquisition_failure is None:
+                    self._acquisition_failure = failure
             snapshot = replace(previous, metrics=replace(previous.metrics,
                 has_error=True, acquisition_finished=False,
                 error="tinySA acquisition failed; Stop/release required" + suffix))

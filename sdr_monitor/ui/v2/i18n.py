@@ -278,6 +278,88 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.independent.render_failed": MappingProxyType({
             UiLocale.RU: "Кадр окна {pane} отклонён при отображении. Ресурс сохранён; требуется явный Stop.",
             UiLocale.EN: "Pane {pane} frame failed presentation. Resource retained; explicit Stop required."}),
+        "analyzer.independent.failure.detail": MappingProxyType({
+            UiLocale.RU: "{stage}: {reason} [{codes}]", UiLocale.EN: "{stage}: {reason} [{codes}]"}),
+        "analyzer.independent.failure.first": MappingProxyType({
+            UiLocale.RU: "Первая причина: {detail}", UiLocale.EN: "First cause: {detail}"}),
+        "analyzer.independent.failure.previous": MappingProxyType({
+            UiLocale.RU: "Первая причина предыдущего запуска: {detail}",
+            UiLocale.EN: "Previous run first cause: {detail}"}),
+        "analyzer.independent.failure.cleanup": MappingProxyType({
+            UiLocale.RU: "Ошибка освобождения: {detail}", UiLocale.EN: "Cleanup failure: {detail}"}),
+        "analyzer.independent.failure.pane": MappingProxyType({
+            UiLocale.RU: "Окно {number} · {detail} · требуется явный Stop.",
+            UiLocale.EN: "Pane {number} · {detail} · explicit Stop required."}),
+        "analyzer.independent.failure.instrument": MappingProxyType({
+            UiLocale.RU: "tinySA, {phase} — {reason}", UiLocale.EN: "tinySA, {phase} — {reason}"}),
+        "analyzer.independent.failure.scope": MappingProxyType({
+            UiLocale.RU: "Коды показывают первую замеченную границу сбоя, а не доказанную внешнюю причину. Ошибка освобождения не заменяет её. Сырой текст драйвера, адреса и байты ответа не выводятся. Нет автоматического повтора: сначала явный Stop, затем отдельный Start нового запуска.",
+            UiLocale.EN: "Codes identify the first observed failure boundary, not a proven external cause. Cleanup failure does not replace it. Raw driver text, endpoints and response bytes are not exposed. No automatic retry: explicit Stop first, then separate Start for a new run."}),
+        "analyzer.independent.failure.stage.rearm": MappingProxyType({
+            UiLocale.RU: "Подготовка нового запуска", UiLocale.EN: "New run preparation"}),
+        "analyzer.independent.failure.stage.start": MappingProxyType({
+            UiLocale.RU: "Запуск приёма", UiLocale.EN: "Receiver Start"}),
+        "analyzer.independent.failure.stage.admission": MappingProxyType({
+            UiLocale.RU: "Проверка допуска приёма", UiLocale.EN: "RX admission validation"}),
+        "analyzer.independent.failure.stage.owner_poll": MappingProxyType({
+            UiLocale.RU: "Получение кадра источника", UiLocale.EN: "Source frame poll"}),
+        "analyzer.independent.failure.stage.publication_validation": MappingProxyType({
+            UiLocale.RU: "Проверка публикации", UiLocale.EN: "Publication validation"}),
+        "analyzer.independent.failure.stage.prepare": MappingProxyType({
+            UiLocale.RU: "Подготовка отображения", UiLocale.EN: "Presentation preparation"}),
+        "analyzer.independent.failure.stage.queue": MappingProxyType({
+            UiLocale.RU: "Очередь отображения", UiLocale.EN: "Presentation queue"}),
+        "analyzer.independent.failure.stage.advance": MappingProxyType({
+            UiLocale.RU: "Переключение участка", UiLocale.EN: "Scheduled slot advance"}),
+        "analyzer.independent.failure.stage.stop": MappingProxyType({
+            UiLocale.RU: "Остановка приёма", UiLocale.EN: "Receiver Stop"}),
+        "analyzer.independent.failure.stage.control_release": MappingProxyType({
+            UiLocale.RU: "Освобождение управления", UiLocale.EN: "Control claim release"}),
+        "analyzer.independent.failure.stage.lease_release": MappingProxyType({
+            UiLocale.RU: "Освобождение ресурса", UiLocale.EN: "Receiver lease release"}),
+        "analyzer.independent.failure.stage.transaction": MappingProxyType({
+            UiLocale.RU: "Транзакция источника", UiLocale.EN: "Owner transaction"}),
+        "analyzer.independent.failure.stage.render": MappingProxyType({
+            UiLocale.RU: "Отрисовка окна", UiLocale.EN: "Pane rendering"}),
+        "analyzer.independent.failure.reason.operation_failed": MappingProxyType({
+            UiLocale.RU: "операция не подтверждена", UiLocale.EN: "operation did not confirm"}),
+        "analyzer.independent.failure.reason.invalid_admission": MappingProxyType({
+            UiLocale.RU: "несовместимое подтверждение допуска", UiLocale.EN: "incompatible admission receipt"}),
+        "analyzer.independent.failure.reason.invalid_publication": MappingProxyType({
+            UiLocale.RU: "несовместимый кадр или пакет", UiLocale.EN: "incompatible frame or packet"}),
+        "analyzer.independent.failure.reason.instrument_failure": MappingProxyType({
+            UiLocale.RU: "прибор сообщил ошибку", UiLocale.EN: "instrument acquisition reported a failure"}),
+        "analyzer.independent.failure.instrument_phase.prepared": MappingProxyType({
+            UiLocale.RU: "подготовка", UiLocale.EN: "preparation"}),
+        "analyzer.independent.failure.instrument_phase.open": MappingProxyType({
+            UiLocale.RU: "открытие порта", UiLocale.EN: "port open"}),
+        "analyzer.independent.failure.instrument_phase.version": MappingProxyType({
+            UiLocale.RU: "версия и идентификация", UiLocale.EN: "version and identity"}),
+        "analyzer.independent.failure.instrument_phase.zero": MappingProxyType({
+            UiLocale.RU: "запрос нулевого смещения", UiLocale.EN: "zero-offset query"}),
+        "analyzer.independent.failure.instrument_phase.scan": MappingProxyType({
+            UiLocale.RU: "ответ сканирования", UiLocale.EN: "scan response"}),
+        "analyzer.independent.failure.instrument_phase.settings": MappingProxyType({
+            UiLocale.RU: "применение настроек", UiLocale.EN: "settings application"}),
+        "analyzer.independent.failure.instrument_phase.readback": MappingProxyType({
+            UiLocale.RU: "чтение применённых настроек", UiLocale.EN: "settings readback"}),
+        "analyzer.independent.failure.instrument_phase.close": MappingProxyType({
+            UiLocale.RU: "закрытие порта", UiLocale.EN: "port close"}),
+        "analyzer.independent.failure.instrument_reason.unknown": MappingProxyType({
+            UiLocale.RU: "причина не классифицирована", UiLocale.EN: "unclassified reason"}),
+        "analyzer.independent.failure.instrument_reason.deadline": MappingProxyType({
+            UiLocale.RU: "истёк срок ответа", UiLocale.EN: "response deadline expired"}),
+        "analyzer.independent.failure.instrument_reason.framing": MappingProxyType({
+            UiLocale.RU: "несовместимая структура ответа", UiLocale.EN: "incompatible response framing"}),
+        "analyzer.independent.failure.instrument_reason.bound": MappingProxyType({
+            UiLocale.RU: "превышен допустимый размер", UiLocale.EN: "response size bound exceeded"}),
+        "analyzer.independent.failure.instrument_reason.identity": MappingProxyType({
+            UiLocale.RU: "идентификация не совпала", UiLocale.EN: "identity mismatch"}),
+        "analyzer.independent.failure.instrument_reason.transport": MappingProxyType({
+            UiLocale.RU: "операция транспорта или сборщика не подтверждена",
+            UiLocale.EN: "transport or collector operation did not confirm"}),
+        "analyzer.independent.failure.instrument_reason.close": MappingProxyType({
+            UiLocale.RU: "закрытие не подтверждено", UiLocale.EN: "close did not confirm"}),
         "analyzer.shared_views.scope": MappingProxyType({
             UiLocale.RU: "1–4 вида публикаций одного источника: в RTBW — та же полоса, при сканировании — тот же диапазон. Дополнительные окна не открывают устройство и не добавляют перестроек или независимых RX. Масштаб, маркеры и история независимы.",
             UiLocale.EN: "1–4 views of one source publication: the same RTBW band or the same Sweep span. Extra views do not open a device, add retunes or provide independent RX. Zoom, markers and history are independent."}),
