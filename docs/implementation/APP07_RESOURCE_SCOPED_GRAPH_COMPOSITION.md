@@ -809,3 +809,41 @@ gate, a new frozen EXE and a matched physical Stop→Start witness; the old0df
 EXE above does not contain it. Independent review, sustained/fairness and
 APP-05/06 transport/performance debts and APP-08…14 remain OPEN. APP-07 is
 PARTIAL and the APP-06E Cut DC/spur branch remains separately PLANNED.
+
+### Exact new-run software/frozen and physical result (2026-09-30)
+
+Product90fa168e9df71b998c82886c0c9694dcfbc223b4 completed the qualified
+Qt6.11.1 clean-HEAD gate:1092 total/1026 passed/66 skipped/zero failures,
+321.233s, deferred[]/outside[] and unchanged source/native/exact provenance.
+The first Qt6.11.2 run failed one existing strict raster-runtime guard; it
+was not weakened or counted as passing. Scoped focused/lint/type checks pass;
+historical NaN/runtime/hook debts remain. Full official CPU/HackRF package
+passed40/40CTest31.89s,658-file frozen verification and inert shared-runtime
+gates. Native34128b77… unchanged; separate diagnostic package/source90fa168,
+EXEc131d3e8…, actual freezer6.21.0/Qt6.11.1, no current/static promotion.
+
+Visible Windows Computer Use on THAT new EXE repeated separate Stage/Apply/
+Start all for the same high-Fs three-family2x2/Empty profile above. Initial
+three Spectrum/Waterfall pairs changed. Selected Stop/explicit next Start
+of HackRF Sweep and AD936x RTBW gave new changing histories while their SDR
+peer remained live. AD repeated readback61.44MS/s/RF40MHz/104MHz/gain20/CPU
+without adjustments; no Fs/FFT/hop/detector/native-density change.
+
+tinySA Stop enabled its explicit next Start; it produced new frames/history,
+then entered Resource error/explicit Stop required after~57 new passes.
+Both SDR peers kept changing. Existing aggregate diagnostics did not identify
+whether serial, producer identity or pane publication failed; root cause
+is UNKNOWN. This is **not stable physical tinySA restart acceptance**, and
+must not be attributed to naturally slow instrument sweep without evidence.
+Selected explicit Stop cleared its quarantine; no third Start, reset, hidden
+reopen or automatic recovery was attempted. Bounded fixed/redacted first-cause
+diagnostics followed by a matched next-Start witness are the next open cell.
+
+Five simultaneously loaded package-local native/IIO/HackRF/pthread/one shared
+USB disk hashes matched the release manifest. This is not all-nine active
+ABI/process-memory/global-SDK qualification. Stop all/Close layout/normal EXE
+Close completed with running0/Stop-required0 and no process/window remaining.
+Post-witness658-file/native-load verification passed unchanged. No DWM/FPS/LPS,
+50-ms, lossless USB, RF duty/Pd, FHD/QHD/DPI, genuine Ethernet, sustained/soak
+or release acceptance is inferred. APP-07 remains PARTIAL; the independent
+review, fairness/shared topology and APP-05/06 debts plus APP-08…14 are OPEN.
