@@ -16,7 +16,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings, QTimer
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.device_capabilities import DeviceFamily
@@ -99,6 +99,11 @@ class IndependentPaneFailureTests(unittest.TestCase):
                 if ui is not None:
                     ui.release_presentation_after_shutdown()
                     ui.close()
+                    # Mirror the real composition's terminal QObject retirement;
+                    # close() alone leaves hidden top-level Qt/graphics objects
+                    # until an unrelated later fixture processes their events.
+                    ui.deleteLater()
+                    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
                 for graph in graphs:
                     graph.live.shutdown()
                 self.assertEqual(pool.staged_resource_ids, ())
