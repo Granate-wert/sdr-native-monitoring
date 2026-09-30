@@ -1104,3 +1104,54 @@ during cancel-on-close; it does not relabel cancelled tasks as completed or
 discard their raw count. The original failing1116-test source run remains a
 failed observation, not a performance success. No product lifecycle or native
 DSP is changed; the expired APP05 performance timer is not restarted.
+
+### Exact family-preview and shared/time-sliced RX qualification
+
+Exact product/source `a4dcfdbe25c49f87c64abe7ddbee5203dfaca0b3` passed the
+complete V2 source gate:1118total/1052pass/66skip/0fail323.110s, compiled
+deferred[], outside-checkout imports[], same clean source/native and exact
+provenance. Historical NaN warnings remain. Official CPU/HackRF40/40CTest
+42.43s and complete658-file frozen gates passed. Separate diagnostic EXE
+75acacbd…/native762fceb6…/snapshot98ba2cce… uses the paired a4 manifest,
+schema5/factory2/DSP1/persistence1/Sweep1/geometry1 and Qt6.11.1. It is not
+promoted to canonical/static/current. Later documentation-only revisions do
+not relabel these exact source, build or hardware gates.
+
+Two bounded physical current-source/common-root cells used USB AD936x
+Sweep requested Fs61.44MS/s/W36/N1024/physicalF2048 and independent USB HackRF
+whole-range1..6000MHz/requested Fs20MS/s/physicalF2048, plus Empty4.
+Identical AD100..220MHz panes
+shared one capture with223 matching identities. Disjoint AD100..220 and
+300..420MHz used one RX/two time-sliced jobs, not two owners. Source host
+revisit means were about2.163s against model2.06s; these are not RF periods,
+FFT/LPS rates or sampling-continuity estimates. Explicit selected Stop kept
+HackRF running; explicit accepted next Start gave fresh AD epochs in both
+cells. Normal shutdown/threads[]/outside[]/exact source-native passed.
+The first private shared observer clicked before Start became enabled; its
+FAIL is retained, and the corrected observer was explicitly run after normal
+close. Source time-sliced stderr WRITE/READ -9 after its summary is also
+retained: cause unknown, no zero-error SDK-Close or causal-fix acceptance.
+
+Actual Computer Use on the SAME new frozen Windows EXE exercised both
+layouts through user controls: Stage/impact before Apply, inert Apply,
+explicit Start, three changing Spectrum/Waterfall pairs and SDR progress.
+The shared-Stop dialog named both affected AD panes, defaulted to No,
+cancelled without stopping either resource, then explicitly confirmed Stop
+of AD only. In each layout, a new explicit enabled Start restored fresh AD
+histories/epochs while HackRF stayed live; no Discover or peer restart was
+sent. Time-sliced UI separately showed observed revisit~2.15..2.19s and
+model2.06s. Final Stop-all reached0running/0starting/0Stop-required/2stopped;
+Close layout and normal Close removed the GUI process/window. Post-close
+658-file/native verification passed. Five package-local active native/IIO/
+HackRF/pthread/ONE libusb paths and current disk hashes matched the manifest,
+not in-memory attestation or exhaustive active-ABI/RF/lossless proof.
+
+CU activation/capture/input were available, but a transient owned-modal
+button index was refused; fresh observation and supported Escape/Left/Return
+worked without blind retries or security actions. This1440x912 logical
+witness is not DWM/FHD/QHD/DPI/50ms/RF-duty/Pd/settling/soak qualification.
+tinySA was not opened in these two-resource cells. Scheduler user priority/
+target revisit, simultaneous tuning groups/RX, genuine Ethernet, wider RTBW,
+qualified tinySA300k/current input, held-middle RF intent, CutDC/spur,
+sustained/independent review and release remain open. APP07 is PARTIAL;
+APP06E is planned and the full APP00..14 objective remains active.
