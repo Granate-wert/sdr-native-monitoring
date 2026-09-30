@@ -48,7 +48,7 @@ class TimeSlicedWaterfallTests(unittest.TestCase):
             board = IndependentPaneBoardV2(preparer, settings=settings)
             try:
                 def offer(pane_id: str, center_hz: float, epoch: int, serial: int,
-                          *, generation: int = 5, sequence: int = 1) -> bool:
+                          *, generation: int = 5, sequence: int = 1, run_serial: int = 0) -> bool:
                     binding = preparer.bindings[pane_id]
                     bundle = iq_bundle(binding.source_id, center_hz, 20e6, epoch)
                     frame = replace(bundle.spectrum, config_generation=generation,
@@ -58,6 +58,7 @@ class TimeSlicedWaterfallTests(unittest.TestCase):
                     delivery = PaneDelivery(
                         binding.physical_stream_resource_id, binding.capture_id,
                         binding.receiver_endpoint_id, serial, binding.crop, bundle, float(serial),
+                        run_serial,
                     )
                     return board.apply_prepared(preparer.prepare(delivery))
 
@@ -107,6 +108,14 @@ class TimeSlicedWaterfallTests(unittest.TestCase):
                 self.assertTrue(offer("low", 105e6, 10, 6, generation=8, sequence=2))
                 self.assertEqual(low.waterfall_pane.history_rows, 3)
                 self.assertEqual(low.waterfall_pane.metrics.presentation_gap_rows, 2)
+                # Explicit Stop/next Start is a new run, not another planned
+                # revisit in the old run. Its first FFT cannot inherit history.
+                self.assertTrue(offer("low", 105e6, 11, 7, generation=9, run_serial=1))
+                self.assertEqual((low.waterfall_pane.history_rows, high.waterfall_pane.history_rows), (1, 1))
+                self.assertEqual(low.waterfall_pane.metrics.presentation_gap_rows, 2)
+                self.assertTrue(offer("low", 105e6, 12, 9, generation=10, run_serial=1))
+                self.assertEqual(low.waterfall_pane.history_rows, 3)
+                self.assertEqual(low.waterfall_pane.metrics.presentation_gap_rows, 3)
             finally:
                 board.release_presentation_after_shutdown()
                 board.close()

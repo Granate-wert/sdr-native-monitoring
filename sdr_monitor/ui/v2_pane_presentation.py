@@ -56,6 +56,8 @@ class PreparedPaneDelivery:
     def __post_init__(self) -> None:
         if self.spectrum.view.source_frame is not self.delivery.bundle:
             raise ValueError("pane spectrum preparation belongs to another publication")
+        if type(self.delivery.host_run_serial) is not int or self.delivery.host_run_serial < 0:
+            raise ValueError("pane publication requires an explicit non-negative host run serial")
         binding, delivery = self.binding, self.delivery
         if (delivery.pane_id != binding.pane_id
                 or delivery.physical_stream_resource_id != binding.physical_stream_resource_id
@@ -138,6 +140,20 @@ class PaneDeliveryPreparer:
             layers.clear()
         for grid in self._grids.values():
             grid.clear()
+
+    def clear_resource(self, resource_id: str) -> None:
+        """Reset only the stopped worker's layers before its explicit new run.
+
+        Retained immutable GUI frames are not mutated or called new data.
+        The caller serializes this with preparation on this resource alone.
+        """
+        pane_ids = tuple(pane_id for pane_id, binding in self.bindings.items()
+                         if binding.physical_stream_resource_id == resource_id)
+        if not pane_ids:
+            raise ValueError("unknown pane resource cannot clear peer preparation")
+        for pane_id in pane_ids:
+            self._layers[pane_id].clear()
+            self._grids[pane_id].clear()
 
     def prepare(self, delivery: PaneDelivery) -> PreparedPaneDelivery:
         if not isinstance(delivery, PaneDelivery):

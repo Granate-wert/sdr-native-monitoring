@@ -8,7 +8,8 @@ there is no alternate SDK path or extra serial/IIO/HackRF opener.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from functools import partial
 
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.pane_scheduler import PaneLayout
@@ -63,6 +64,7 @@ def compose_v2_pane_resource_session(
             raise PaneResourceError("parallel panes cannot share one family or recording owner")
 
     owners: dict[str, PaneCaptureOwner] = {}
+    owner_factories: dict[str, Callable[[], PaneCaptureOwner]] = {}
     identities: dict[str, str | None] = {}
     families: dict[str, DeviceFamily] = {}
     for group in groups:
@@ -79,13 +81,13 @@ def compose_v2_pane_resource_session(
         identities[selected.device_id] = selected.binding.identity_key
         families[selected.device_id] = selected.family
         if selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):
-            owners[resource_id] = Ad936xRtbwPaneOwner(
+            owner_factories[resource_id] = partial(Ad936xRtbwPaneOwner,
                 graph.live, physical_stream_resource_id=resource_id,
                 source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)
         elif selected.family is DeviceFamily.HACKRF and isinstance(endpoint, ReceiverEndpoint):
             if graph.services.analyzer_hackrf is None:
                 raise PaneResourceError("selected HackRF graph has no common native RX owner")
-            owners[resource_id] = HackrfPaneOwner(
+            owner_factories[resource_id] = partial(HackrfPaneOwner,
                 graph.live, graph.sweep_router, physical_stream_resource_id=resource_id,
                 sweep_available=getattr(graph.services, "analyzer_hackrf_sweep", None) is not None,
                 source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)
@@ -93,13 +95,15 @@ def compose_v2_pane_resource_session(
             instrument = graph.services.analyzer_tinysa
             if instrument is None:
                 raise PaneResourceError("selected tinySA graph has no common serial owner")
-            owners[resource_id] = TinySaTracePaneOwner(
+            owner_factories[resource_id] = partial(TinySaTracePaneOwner,
                 graph.live, instrument, physical_stream_resource_id=resource_id,
                 source_id=selected.device_id, trace_endpoint_id=endpoint.endpoint_id)
         else:
             raise PaneResourceError("pane endpoint does not match a qualified selected source family")
+        owners[resource_id] = owner_factories[resource_id]()
     return PaneResourceSession(layout.schedule, groups, owners, leases,
-                               source_identity_keys=identities, source_families=families)
+                               source_identity_keys=identities, source_families=families,
+                               owner_factories=owner_factories)
 
 
 __all__ = ["compose_v2_pane_resource_session"]

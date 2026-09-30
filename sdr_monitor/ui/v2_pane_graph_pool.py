@@ -152,6 +152,8 @@ class PaneProductGraphPool:
         """Explicit owner close after every composed resource lease is gone."""
         if self._session is not None and self._session.retained_resource_count:
             raise PaneGraphPoolError("pane receiver Stop must release every resource before graph close")
+        if self._session is not None:
+            self._session.retire_after_stop()
         failures: list[str] = []
         for resource_id, graph in tuple({**self._graphs, **self._cleanup_pending}.items()):
             try:

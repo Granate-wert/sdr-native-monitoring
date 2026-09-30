@@ -126,7 +126,7 @@ class SweepVisitPresentationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def offer(self, pane_id, epoch, serial, *, sequence=1, revision=1,
-              complete=False, gap=False, shift=0., source=None, unit=None):
+              complete=False, gap=False, shift=0., source=None, unit=None, run_serial=0):
         binding = self.preparer.bindings[pane_id]
         frame = terminal(sequence, gap=gap) if complete else progress(sequence, revision)
         offset = (100e6 if pane_id == "high" else 0) + shift
@@ -136,8 +136,23 @@ class SweepVisitPresentationTests(unittest.TestCase):
                         unit=unit or binding.unit, frequencies_hz=frequencies)
         bundle = bundle_from_sweep(frame)
         delivery = PaneDelivery(binding.physical_stream_resource_id, binding.capture_id,
-                                binding.receiver_endpoint_id, serial, binding.crop, bundle, float(serial))
+                                binding.receiver_endpoint_id, serial, binding.crop, bundle, float(serial), run_serial)
         return self.board.apply_prepared(self.preparer.prepare(delivery))
+
+    def test_explicit_new_run_does_not_inherit_scheduled_visit_history(self):
+        self.offer("low", 7, 1, complete=True, run_serial=1)
+        self.offer("high", 7, 2, complete=True, run_serial=1)
+        self.offer("low", 8, 3, complete=True, run_serial=1)
+        low, high = self.board.pane(1).waterfall_pane, self.board.pane(2).waterfall_pane
+        self.assertEqual((low.history_rows, high.history_rows), (3, 1))
+        self.offer("low", 9, 4, complete=True, run_serial=2)
+        self.assertEqual((low.history_rows, high.history_rows), (1, 1))
+        self.assertEqual(low._renderer.sweep_stamps(), (SweepRowStamp(1, 0, SweepRowState.COMPLETE, 9),))
+        self.assertFalse(self.offer("low", 8, 3, complete=True, run_serial=1))
+        # Only subsequent scheduled visits WITHIN the same new explicit run
+        # can keep its history and add a presentation-only absence marker.
+        self.offer("low", 10, 6, complete=True, run_serial=2)
+        self.assertEqual((low.history_rows, high.history_rows), (3, 1))
 
     def test_two_sweep_visits_preserve_rows_without_reusing_sequence_identity(self):
         self.assertTrue(self.offer("low", 7, 1, revision=2))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -176,6 +176,169 @@ class IndependentPaneFailureTests(unittest.TestCase):
             self.publish_ad(product, 2)
             self.assertEqual(self.phases(product), (
                 PanePumpPhase.RUNNING, PanePumpPhase.STOPPED, PanePumpPhase.RUNNING))
+
+    def test_each_family_explicit_next_start_uses_fresh_owner_without_peer_restart_or_discovery(self):
+        with self.product(ad_rate=61.44e6) as product, ExitStack() as spies:
+            for graph in product.graphs:
+                spies.enter_context(patch.object(graph.live, "discover",
+                    side_effect=AssertionError("explicit next Start must not rediscover peers")))
+            create = spies.enter_context(patch.object(product.hf.factory, "create",
+                                                       wraps=product.hf.factory.create))
+            product.ui.start_all.click()
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            self.publish_ad(product, 1)
+            self.wait(lambda: product.ui.board.pane(2).last_bundle is not None
+                      and product.ui.board.pane(3).last_bundle is not None)
+            selections = tuple(graph.live.current_source_selection() for graph in product.graphs)
+            for number in (3, 2, 1):
+                with self.subTest(pane=number):
+                    resource = f"pane-resource-{number}"
+                    runtimes = product.handle.session._runtimes
+                    old_owner = runtimes[resource].owner
+                    old_activation = runtimes[resource].current_activation
+                    peer_activations = {key: runtime.current_activation for key, runtime in runtimes.items()
+                                        if key != resource}
+                    retained = product.ui.board.pane(number).last_bundle
+                    product.ui.board.select_slot(number)
+                    product.ui.stop_selected.click()
+                    self.wait(lambda: self.phases(product)[number - 1] is PanePumpPhase.STOPPED
+                              and product.ui.start_selected.isEnabled())
+                    self.assertIs(product.ui.board.pane(number).last_bundle, retained)
+                    self.assertEqual(product.handle.session.retained_resource_count, 2)
+                    self.assertIsNone(product.graphs[number - 1].live._pane_control_claim)
+                    with self.assertRaisesRegex(RuntimeError, "not-started state"):
+                        product.handle.session.start_resource(resource)  # No implicit re-arm or claim acquisition.
+                    self.assertIsNone(product.graphs[number - 1].live._pane_control_claim)
+                    product.ui.start_selected.click()
+                    self.assertFalse(product.handle.can_close())
+                    self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+                    if number == 1:
+                        self.publish_ad(product, 1)  # Sequence resets: the new run must still display it.
+                    self.wait(lambda: product.ui.board.pane(number).last_bundle is not retained)
+                    self.assertIsNot(runtimes[resource].owner, old_owner)
+                    self.assertGreater(runtimes[resource].current_activation.host_activation_serial,
+                                       old_activation.host_activation_serial)
+                    self.assertEqual(runtimes[resource].run_serial, 2)
+                    for peer, activation in peer_activations.items():
+                        self.assertIs(runtimes[peer].current_activation, activation)
+                    self.assertEqual(tuple(graph.live.current_source_selection() for graph in product.graphs),
+                                     selections)
+                    self.assertEqual(product.handle.session.retained_resource_count, 3)
+            self.assertEqual((len(product.native.engines), len(product.hf.factory.controls),
+                              len(product.ts.serials)), (2, 2, 2))
+            self.assertEqual(create.call_count, 2)
+            self.assertIsNot(create.call_args_list[0].args[0], create.call_args_list[1].args[0])
+            self.assertEqual(product.ts.serials[0].calls.count("close"), 1)
+            self.assertIsNone(product.ui.board.pane(4))
+
+    def test_queued_next_start_stop_cancels_without_new_owner_or_rx(self):
+        with self.product() as product:
+            product.ui.start_all.click()
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            product.ui.board.select_slot(2)
+            product.ui.stop_selected.click()
+            self.wait(lambda: self.phases(product)[1] is PanePumpPhase.STOPPED
+                      and product.ui.start_selected.isEnabled())
+            runtime = product.handle.session._runtimes["pane-resource-2"]
+            owner = runtime.owner
+            worker = product.handle.pump._workers["pane-resource-2"]
+            with worker._condition:
+                starting = product.handle.pump.start_resource("pane-resource-2")
+                self.assertFalse(product.handle.can_close())
+                self.assertFalse(starting.cancel())
+                stopping = product.handle.pump.stop_resource("pane-resource-2")
+            with self.assertRaisesRegex(RuntimeError, "cancelled before RX"):
+                starting.result(timeout=5)
+            stopping.result(timeout=5)
+            self.assertIs(runtime.owner, owner)
+            self.assertEqual(len(product.hf.factory.controls), 1)
+            self.assertEqual(runtime.run_serial, 1)
+            self.assertEqual(product.handle.session.retained_resource_count, 2)
+            self.assertEqual(self.phases(product), (
+                PanePumpPhase.RUNNING, PanePumpPhase.STOPPED, PanePumpPhase.RUNNING))
+
+    def test_new_run_start_failure_keeps_fresh_owner_for_explicit_cleanup_only(self):
+        with self.product() as product:
+            product.ui.start_all.click()
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            product.ui.board.select_slot(2)
+            product.ui.stop_selected.click()
+            self.wait(lambda: self.phases(product)[1] is PanePumpPhase.STOPPED
+                      and product.ui.start_selected.isEnabled())
+            before = product.handle.session._runtimes["pane-resource-2"].owner
+            product.hf.factory.fail = True
+            product.ui.start_selected.click()
+            self.wait(lambda: self.phases(product)[1] is PanePumpPhase.STOP_REQUIRED)
+            runtime = product.handle.session._runtimes["pane-resource-2"]
+            self.assertIsNot(runtime.owner, before)
+            self.assertEqual(product.handle.session.retained_resource_count, 3)
+            self.assertFalse(product.ui.start_selected.isEnabled())
+            self.assertFalse(product.ui.start_all.isEnabled())
+            product.hf.factory.fail = False
+            product.ui.start_selected.click()  # Still disabled: not an implicit retry.
+            self.assertEqual(len(product.hf.factory.controls), 1)
+            product.ui.stop_selected.click()
+            self.wait(lambda: self.phases(product)[1] is PanePumpPhase.STOPPED
+                      and product.ui.start_selected.isEnabled())
+            product.ui.start_selected.click()  # A separately explicit third run admission.
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            self.assertEqual(len(product.hf.factory.controls), 2)
+
+    def test_stop_during_inert_rearm_releases_fresh_lease_before_sdk_start(self):
+        entered, release = Event(), Event()
+        with self.product() as product:
+            product.ui.start_all.click()
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            product.ui.board.select_slot(2)
+            product.ui.stop_selected.click()
+            self.wait(lambda: self.phases(product)[1] is PanePumpPhase.STOPPED
+                      and product.ui.start_selected.isEnabled())
+            session = product.handle.session
+            original = session._owner_factories["pane-resource-2"]
+
+            def slow_inert_factory():
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError("PRIVATE bounded inert adapter construction")
+                return original()
+
+            session._owner_factories["pane-resource-2"] = slow_inert_factory
+            try:
+                starting = product.handle.pump.start_resource("pane-resource-2")
+                self.wait(entered.is_set)
+                stopping = product.handle.pump.stop_resource("pane-resource-2")
+                self.publish_ad(product, 2)
+                self.assertEqual(len(product.hf.factory.controls), 1)
+                release.set()
+                with self.assertRaisesRegex(RuntimeError, "cancelled before RX"):
+                    starting.result(timeout=5)
+                stopping.result(timeout=5)
+                self.assertEqual(session.retained_resource_count, 2)
+                self.assertEqual(session._runtimes["pane-resource-2"].run_serial, 1)
+                self.assertEqual(len(product.hf.factory.controls), 1)
+                self.assertIsNone(product.graphs[1].live._pane_control_claim)
+            finally:
+                release.set()
+
+    def test_stopped_all_can_explicitly_start_again_but_terminal_close_seals_workers(self):
+        with self.product() as product:
+            product.ui.start_all.click()
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            product.ui.stop_all.click()
+            self.wait(lambda: product.handle.can_close() and product.ui.start_all.isEnabled())
+            product.ui.start_all.click()
+            self.assertFalse(product.handle.can_close())
+            self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
+            self.assertEqual((len(product.native.engines), len(product.hf.factory.controls),
+                              len(product.ts.serials)), (2, 2, 2))
+            product.ui.stop_all.click()
+            self.wait(product.handle.can_close)
+            product.handle.shutdown_after_stop()
+            self.assertEqual(product.handle.pump.startable_resource_ids(), ())
+            for resource in ("pane-resource-1", "pane-resource-2", "pane-resource-3"):
+                self.assertFalse(product.handle.session.can_rearm_resource(resource))
+                with self.assertRaisesRegex(RuntimeError, "retiring"):
+                    product.handle.pump.start_resource(resource)
 
     def test_poll_disconnect_failure_quarantines_one_rx_and_keeps_neighbors_live(self):
         with self.product() as product:

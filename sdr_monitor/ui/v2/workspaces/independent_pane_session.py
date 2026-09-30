@@ -147,9 +147,8 @@ class IndependentPaneSessionV2(QWidget):
     def _start_all(self) -> None:
         self._error_key = None
         try:
-            for item in self.handle.pump.snapshot():
-                if item.phase is PanePumpPhase.IDLE:
-                    self._futures.append(self.handle.pump.start_resource(item.physical_stream_resource_id))
+            for resource_id in self.handle.pump.startable_resource_ids():
+                self._futures.append(self.handle.pump.start_resource(resource_id))
         except (RuntimeError, ValueError):
             self._error_key = "analyzer.independent.operation_failed"
         self._refresh()
@@ -257,9 +256,10 @@ class IndependentPaneSessionV2(QWidget):
         states = {item.physical_stream_resource_id: item.phase for item in self.handle.pump.snapshot()}
         selected = self._selected_resource()
         selected_phase = None if selected is None else states[selected[1]]
-        self.start_selected.setEnabled(selected_phase is PanePumpPhase.IDLE)
+        startable = self.handle.pump.startable_resource_ids()
+        self.start_selected.setEnabled(selected is not None and selected[1] in startable)
         self.stop_selected.setEnabled(selected_phase is not None and selected_phase is not PanePumpPhase.STOPPED)
-        self.start_all.setEnabled(any(phase is PanePumpPhase.IDLE for phase in states.values()))
+        self.start_all.setEnabled(bool(startable))
         self.stop_all.setEnabled(any(phase is not PanePumpPhase.STOPPED for phase in states.values()))
         self.close_layout.setEnabled(self._close_layout is not None and self.handle.can_close())
         running = sum(phase is PanePumpPhase.RUNNING for phase in states.values())

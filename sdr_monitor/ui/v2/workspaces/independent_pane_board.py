@@ -48,6 +48,7 @@ class IndependentPaneBoardV2(QWidget):
         self._display_overlays: dict[int, AnalyzerDisplayControls] = {}
         self._range_anchors: dict[int, tuple[object, ...]] = {}
         self._last_order: dict[int, tuple[int, int, int, int, int]] = {}
+        self._last_run_serial: dict[int, int] = {}
         schedule = preparer.layout.schedule
         resource_job_counts = ({} if schedule is None else
                                {resource.physical_stream_resource_id: len(resource.jobs)
@@ -351,10 +352,12 @@ class IndependentPaneBoardV2(QWidget):
         scheduled_visit_boundary = (
             previous is not None and binding.pane_id in self._time_sliced_pane_ids
             and prepared.delivery.host_activation_serial > previous[0]
+            and prepared.delivery.host_run_serial == self._last_run_serial.get(binding.slot_number)
         )
         pane.apply_prepared_pane_delivery(prepared,
                                           scheduled_visit_boundary=scheduled_visit_boundary)
         self._last_order[binding.slot_number] = order
+        self._last_run_serial[binding.slot_number] = prepared.delivery.host_run_serial
         return True
 
     def release_presentation_after_shutdown(self) -> None:
@@ -365,6 +368,7 @@ class IndependentPaneBoardV2(QWidget):
             pane.release_presentation_after_shutdown()
         self._range_anchors.clear()
         self._last_order.clear()
+        self._last_run_serial.clear()
         self._terminal_released = True
 
 

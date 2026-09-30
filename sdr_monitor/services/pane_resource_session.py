@@ -159,6 +159,7 @@ class PaneDelivery:
     crop: PaneCrop
     bundle: AnalyzerFrameBundle
     host_received_monotonic_s: float
+    host_run_serial: int = 0
 
     @property
     def pane_id(self) -> str:
@@ -189,6 +190,7 @@ class _Runtime:
     stop_required: bool = False
     terminal: bool = False
     activation_serial: int = 0
+    run_serial: int = 0
     admission: PaneCaptureAdmission | None = None
     current_activation: PaneActivation | None = None
     last_epoch: int | None = None
@@ -224,6 +226,7 @@ class PaneResourceSession:
         *,
         source_identity_keys: Mapping[str, str | None] | None = None,
         source_families: Mapping[str, DeviceFamily] | None = None,
+        owner_factories: Mapping[str, Callable[[], PaneCaptureOwner]] | None = None,
         now_s: Callable[[], float] = monotonic,
     ) -> None:
         resource_ids = {item.physical_stream_resource_id for item in schedule.resources}
@@ -318,6 +321,10 @@ class PaneResourceSession:
                         or any(sum(other is families[source_id] for other in families.values()) != 1
                                for source_id, key in identities.items() if key is None)):
                     raise PaneResourceError("unidentified parallel receiver needs a unique selected family")
+        factories = dict(owner_factories or {})
+        if not set(factories) <= resource_ids or any(not callable(factory) for factory in factories.values()):
+            raise PaneResourceError("fresh pane owners require exact known resource factories")
+        self._owner_factories = factories
         self._runtimes = runtimes
         self._schedule = schedule
         self._pane_resources = pane_resources
@@ -332,6 +339,7 @@ class PaneResourceSession:
         self._pane_last_visit_received: dict[str, float] = {}
         self._pane_last_revisit_s: dict[str, float] = {}
         self._applied = False
+        self._retired = False
 
     @property
     def active_resource_count(self) -> int:
@@ -371,7 +379,7 @@ class PaneResourceSession:
         """Reserve exact resource keys, without Start, retune or hidden retry."""
         with self._apply_lock:
             with self._state_lock:
-                if self._applied or any(runtime.terminal for runtime in self._runtimes.values()):
+                if self._applied or self._retired or any(runtime.terminal for runtime in self._runtimes.values()):
                     raise PaneResourceError("pane plan has already been applied or terminated")
             preview = self.preview()
             if any(item.recording_conflict for item in preview):
@@ -392,21 +400,93 @@ class PaneResourceSession:
                 self._applied = True
                 return preview
 
+    def can_rearm_resource(self, resource_id: str) -> bool:
+        """Small state-only eligibility query; no owner creation, lease or I/O."""
+        with self._state_lock:
+            runtime = self._required_runtime(resource_id)
+            return bool(self._applied and not self._retired and resource_id in self._owner_factories
+                        and runtime.terminal and runtime.lease is None
+                        and not runtime.active and not runtime.stop_required
+                        and runtime.admission is None and runtime.current_activation is None)
+
+    def rearm_resource(self, resource_id: str) -> None:
+        """Explicit next-run preparation, off Qt, after confirmed full Stop.
+
+        A product factory constructs an inert control adapter over the SAME
+        selected application graph. It must not discover/open an SDK. The
+        family's normal Start still issues its own fresh single-use permit;
+        this resource lease is not that permit. Healthy peer owners, leases
+        and admissions are not replaced or polled here.
+        """
+        runtime = self._required_runtime(resource_id)
+        with runtime.control_lock, self._apply_lock:
+            if not self.can_rearm_resource(resource_id):
+                raise PaneResourceError("receiver has not fully released for an explicit new run")
+            try:
+                owner = self._owner_factories[resource_id]()
+                if (owner is runtime.owner
+                        or any(owner is peer.owner for peer in self._runtimes.values())
+                        or owner.physical_stream_resource_id != resource_id
+                        or any(not callable(getattr(owner, name, None)) for name in (
+                            "validate_endpoint", "validate_job", "release_control_claim", "start_capture",
+                            "stop_capture_and_wait", "poll_bundles", "recording_active",
+                            "recording_conflict", "receiver_identity", "control_transaction"))):
+                    raise ValueError("fresh receiver adapter differs from the admitted resource")
+                for endpoint in runtime.group.endpoints:
+                    owner.validate_endpoint(endpoint)
+                    observed = owner.receiver_identity(endpoint.endpoint_id)
+                    expected = self._expected_receivers[endpoint.endpoint_id]
+                    if type(observed) is not type(expected) or observed != expected:
+                        raise ValueError("fresh receiver adapter changed producer RX identity")
+                for job in runtime.schedule.jobs:
+                    owner.validate_job(job)
+                if self._recording_conflict(_Runtime(runtime.group, runtime.schedule, owner)):
+                    raise ValueError("recording conflicts with the explicit new run")
+            except Exception:
+                raise PaneResourceError("fresh receiver adapter did not confirm the existing plan") from None
+            try:
+                lease = self._leases.acquire(runtime.group)
+            except Exception:
+                raise PaneResourceError("physical receiver lease is unavailable for the new run") from None
+            with self._state_lock:
+                runtime.owner = owner
+                runtime.lease = lease
+                runtime.slot_index = -1
+                runtime.terminal = False
+                runtime.new_epoch_required = runtime.last_admission_epoch is not None
+                for pane_id, pane_resource in self._pane_resources.items():
+                    if pane_resource == resource_id:
+                        self._pane_last_received.pop(pane_id, None)
+                        self._pane_last_visit_activation.pop(pane_id, None)
+                        self._pane_last_visit_received.pop(pane_id, None)
+                        self._pane_last_revisit_s.pop(pane_id, None)
+
+    def retire_after_stop(self) -> None:
+        """Seal new-run factories before terminal application graph close."""
+        with self._apply_lock, self._state_lock:
+            if any(runtime.lease is not None or runtime.active or runtime.stop_required
+                   for runtime in self._runtimes.values()):
+                raise PaneResourceError("receiver Stop must release every resource before retirement")
+            self._retired = True
+            self._owner_factories.clear()
+
     def start_resource(self, resource_id: str) -> PaneActivation:
         """One explicit Start; partial owner failure retains its lease for Stop."""
         runtime = self._required_runtime(resource_id)
         with runtime.control_lock:
+            with self._state_lock:
+                if (not self._applied or runtime.lease is None or runtime.active
+                        or runtime.stop_required or runtime.terminal or runtime.slot_index >= 0):
+                    raise PaneResourceError("receiver is not in the applied, not-started state")
             with self._owner_control_transaction(runtime):
                 if self._recording_conflict(runtime):
                     raise PaneResourceError("recording conflicts with receiver Start")
                 with self._state_lock:
-                    if (not self._applied or runtime.lease is None or runtime.active
-                            or runtime.stop_required or runtime.terminal or runtime.slot_index >= 0):
-                        raise PaneResourceError("receiver is not in the applied, not-started state")
                     runtime.slot_index = 0
                     job = runtime.current_job
                     assert job is not None
                     runtime.activation_serial += 1
+                    runtime.run_serial += 1
                     runtime.stop_required = True  # Reject frames until Start confirms.
                 control_started = self._clock_sample_s()
                 try:
@@ -554,7 +634,7 @@ class PaneResourceSession:
             runtime.last_session_id = identity.session_id
             runtime.new_epoch_required = False
             deliveries = tuple(PaneDelivery(resource_id, capture_id, endpoint_id,
-                                           runtime.activation_serial, crop, bundle, now)
+                                           runtime.activation_serial, crop, bundle, now, runtime.run_serial)
                                for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)
             for delivery in deliveries:
                 pane_id = delivery.pane_id

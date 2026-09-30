@@ -754,3 +754,58 @@ Those cells and independent review stay OPEN; APP-07 remains PARTIAL.
 The additional planned APP-06E filter branch is described in
 [APP06E_SDR_CUT_DC_SPUR_PLAN.md](APP06E_SDR_CUT_DC_SPUR_PLAN.md);
 it introduces no implemented-filter claim in this packet.
+
+### High-Fs three-family witness and explicit stopped-resource next run (2026-09-30)
+
+The exact0df diagnostic EXE was operated through the visible UI V2 assignment
+editor: USB AD936x RTBW100–108MHz/requested61.44MS/s/FFT4096, USB HackRF
+host Sweep140–180MHz/fixed20MS/s/FFT4096, qualified tinySA Ultra device
+Sweep200–210MHz/101points, fourth Empty. Stage/Preview, Apply and Start all
+were separate actions. Apply left RX stopped. All three occupied Spectrum /
+Waterfall pairs then changed over several minutes, with running3 / starting0 /
+Stop-required0 and recent host-data labels. AD applied-readback logging
+confirmed61.44MS/s,40-MHz RF filter,104-MHz center and20-dB gain without
+adjustments; useful pane coverage remains36MHz. Nominal ADC Fs is not the
+host-admitted I/Q transport rate.
+
+Explicit Stop of tinySA alone left both SDR peers changing, running2 /
+stopped1, and labelled the retained instrument frame not new. That EXE
+exposed a genuine lifecycle gap: a stopped resource could not Start again
+without closing/re-staging the whole layout. Stop all, Close layout and
+normal EXE Close completed. Active process inventory during three-source RX
+found package-local native, libiio, HackRF, pthread and one shared libusb;
+their five disk hashes matched the release manifest. This is a bounded
+mixed-mode functional/loaded-path witness, not process-memory attestation,
+all-dependency active ABI, DWM/FPS/LPS,50-ms,lossless USB,RF duty/Pd,DPI or
+release/soak acceptance. Genuine Ethernet remains unqualified.
+
+The current source adds an **explicit next Start** for a cleanly stopped
+resource, over its SAME retained selected V2 graph. An inert family-specific
+factory constructs a new control adapter; endpoint/job/recording/producer-RX
+guards and a new exact resource lease precede the family's usual Start.
+That Start, not the resource lease, obtains its new single-use native/serial
+permit through the existing backend. No Discover, peer graph/owner replacement,
+same-permit retry or automatic restart is introduced. A failed Stop/claim
+release still retains the same owner/lease and prohibits Start. Failed new
+Start retains the new owner for separately explicit Stop/cleanup.
+
+The same bounded per-resource control worker waits without polling after
+Stop; only an explicit Start can re-arm it. Terminal layout shutdown first
+seals all Start commands, joins every control worker and retires the session's
+factories before graph close. A Stop queued before new-run SDK dispatch can
+release its fresh lease without opening RX. An accepted Start is immediately
+visible as Starting, so duplicate Start and terminal Close cannot race the
+fresh-lease admission. Healthy peers keep their existing admissions and jobs.
+
+Host run serials distinguish explicit Stop→Start from scheduled RX visits.
+Late activation/epoch packets still refuse; worker layer caches reset only
+for the re-armed resource. The first new-run frame resets analytical/display
+history instead of inheriting an old run as a scheduled revisit. Subsequent
+qualified visits within that run retain the established bounded gap-marked
+history policy. Retained stopped frames are never labelled fresh.
+
+The new source lifecycle path still needs an exact clean-HEAD full source
+gate, a new frozen EXE and a matched physical Stop→Start witness; the old0df
+EXE above does not contain it. Independent review, sustained/fairness and
+APP-05/06 transport/performance debts and APP-08…14 remain OPEN. APP-07 is
+PARTIAL and the APP-06E Cut DC/spur branch remains separately PLANNED.

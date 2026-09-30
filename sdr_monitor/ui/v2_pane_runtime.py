@@ -14,7 +14,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from enum import StrEnum
 import math
-from threading import Condition, Thread
+from threading import Condition, Lock, Thread
 from time import monotonic
 
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneLayout, ResourcePaneSchedule
@@ -55,6 +55,7 @@ class _ResourceWorker:
         self.poll_interval_s = poll_interval_s
         self._condition = Condition()
         self._pending_start: Future[PaneActivation] | None = None
+        self._pending_rearm = False
         self._pending_stop: Future[None] | None = None
         self._active_stop: Future[None] | None = None
         self._state = PanePumpResourceState(resource.physical_stream_resource_id)
@@ -63,6 +64,7 @@ class _ResourceWorker:
         self._slot_deadline_s: float | None = None
         self._thread = Thread(target=self._run, name=f"pane-rx-{resource.physical_stream_resource_id}")
         self._launched = False
+        self._retiring = False
 
     def launch(self) -> None:
         self._thread.start()
@@ -74,16 +76,27 @@ class _ResourceWorker:
 
     def request_start(self) -> Future[PaneActivation]:
         with self._condition:
-            if (self._state.phase is not PanePumpPhase.IDLE
-                    or self._pending_start is not None or self._pending_stop is not None):
+            if not self.can_start():
                 raise RuntimeError("pane resource is not idle for explicit Start")
             future: Future[PaneActivation] = Future()
             # Futures report completion; cancelling one must never detach an
             # accepted hardware command and strand its resource worker.
             future.set_running_or_notify_cancel()
+            self._pending_rearm = self._state.phase is PanePumpPhase.STOPPED
             self._pending_start = future
+            # Close-layout/duplicate Start must see an accepted command even
+            # before this off-Qt worker dispatches its fresh-lease admission.
+            self._state = replace(self._state, phase=PanePumpPhase.STARTING)
             self._condition.notify()
             return future
+
+    def can_start(self) -> bool:
+        with self._condition:
+            return bool(not self._retiring and self._pending_start is None
+                        and self._pending_stop is None and self._active_stop is None
+                        and (self._state.phase is PanePumpPhase.IDLE
+                             or self._state.phase is PanePumpPhase.STOPPED
+                             and self.session.can_rearm_resource(self.resource.physical_stream_resource_id)))
 
     def request_stop(self) -> Future[None]:
         if not self._launched:
@@ -120,8 +133,11 @@ class _ResourceWorker:
             return future
 
     def join_after_stop(self, timeout_s: float | None) -> None:
-        if self.snapshot().phase is not PanePumpPhase.STOPPED:
-            raise RuntimeError("pane resource has not confirmed explicit Stop")
+        with self._condition:
+            if self._state.phase is not PanePumpPhase.STOPPED:
+                raise RuntimeError("pane resource has not confirmed explicit Stop")
+            self._retiring = True
+            self._condition.notify()
         if not self._launched:
             return
         self._thread.join(timeout_s)
@@ -141,24 +157,37 @@ class _ResourceWorker:
                     if self._pending_start is not None:
                         self._pending_start.set_exception(RuntimeError("pane Start cancelled before RX"))
                         self._pending_start = None
+                        self._pending_rearm = False
                     self._state = replace(self._state, phase=PanePumpPhase.STOPPING)
                 elif self._pending_start is not None:
                     command = "start"
                     future_start = self._pending_start
                     self._pending_start = None
+                    rearm = self._pending_rearm
+                    self._pending_rearm = False
                     self._state = replace(self._state, phase=PanePumpPhase.STARTING)
                 elif self._state.phase is PanePumpPhase.RUNNING:
                     self._condition.wait(self.poll_interval_s)
                     if self._pending_stop is not None:
                         continue
                     command = "poll"
-                elif self._state.phase is PanePumpPhase.STOPPED:
+                elif self._state.phase is PanePumpPhase.STOPPED and self._retiring:
                     return
                 else:
                     self._condition.wait()
                     continue
             if command == "start":
                 try:
+                    if rearm:
+                        self.session.rearm_resource(self.resource.physical_stream_resource_id)
+                        self.preparer.clear_resource(self.resource.physical_stream_resource_id)
+                        with self._condition:
+                            if self._pending_stop is not None:
+                                # Inert new-adapter preparation has not sent
+                                # SDK Start yet. Let the queued Stop release
+                                # its new lease without opening RX needlessly.
+                                future_start.set_exception(RuntimeError("pane Start cancelled before RX"))
+                                continue
                     activation = self.session.start_resource(self.resource.physical_stream_resource_id)
                 except Exception:
                     with self._condition:
@@ -269,6 +298,8 @@ class PaneResourcePump:
             for item in layout.schedule.pane_revisits
         }
         self._started = False
+        self._lifecycle_lock = Lock()
+        self._closing = False
 
     @property
     def activated(self) -> bool:
@@ -307,8 +338,17 @@ class PaneResourcePump:
     def snapshot(self) -> tuple[PanePumpResourceState, ...]:
         return tuple(worker.snapshot() for worker in self._workers.values())
 
+    def startable_resource_ids(self) -> tuple[str, ...]:
+        self._require_started()
+        with self._lifecycle_lock:
+            return (() if self._closing else tuple(
+                resource_id for resource_id, worker in self._workers.items() if worker.can_start()))
+
     def start_resource(self, resource_id: str) -> Future[PaneActivation]:
-        return self._worker(resource_id).request_start()
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("pane resource workers are retiring after terminal Stop")
+            return self._worker(resource_id).request_start()
 
     def stop_resource(self, resource_id: str) -> Future[None]:
         return self._worker(resource_id).request_stop()
@@ -325,6 +365,10 @@ class PaneResourcePump:
 
     def join_after_stop(self, timeout_s: float | None = None) -> None:
         self._require_started()
+        with self._lifecycle_lock:
+            if any(worker.snapshot().phase is not PanePumpPhase.STOPPED for worker in self._workers.values()):
+                raise RuntimeError("pane resource has not confirmed explicit Stop")
+            self._closing = True  # Seal all peers before joining any one control worker.
         for worker in self._workers.values():
             worker.join_after_stop(timeout_s)
 
