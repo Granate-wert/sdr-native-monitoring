@@ -1499,6 +1499,25 @@ Pd, visible frozen UI behavior, harmlessness of all `-9` reports or release
 acceptance. No product acquisition path, default buffer, firmware, driver,
 firewall, native module or release EXE was changed by this diagnostic packet.
 
+### Planned APP-06E: SDR Cut DC and spur filtering (2026-09-30)
+
+The owner added a full implementation branch, not an implemented-filter claim.
+The public specification is
+[APP06E_SDR_CUT_DC_SPUR_PLAN.md](APP06E_SDR_CUT_DC_SPUR_PLAN.md).
+DCSP-01…10 cover native AD936x/HackRF RTBW/Sweep algorithms, capability/policy
+contracts, shared-RX ownership, UI V2 controls, measurement validity,
+recording/Replay provenance, high-Fs qualification and exact frozen review.
+Host filters default OFF. Cosmetic bin masking and tinySA firmware spur removal
+do not satisfy the SDR host-filter requirement. Uncertain candidates are not
+silently removed; affected frequency intervals remain measurement-limited.
+There is no hidden restart or diagnostic retune, silent Fs/FFT/group reduction,
+cross-epoch accumulation or interpolated "measured" coverage.
+
+The native/UI foundation is integrated with APP-06/07; downstream DCSP-07…10
+are accepted in APP-08…14 without a circular prerequisite. The full branch and
+final release cannot be closed from this plan alone. No filter product code,
+SDK/RX action, firmware or system/security setting is changed by this plan.
+
 ### 30-second sequential cross-family control (APP-06D, 2026-09-28)
 
 On tracked-clean source `f73a5e8`, one source-Python Windows diagnostic using

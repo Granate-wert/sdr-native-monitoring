@@ -722,3 +722,35 @@ history capacity controls still need truthful accessibility names (not
 seconds/rows-per-second), and independent-layout failure/cleanup, fairness,
 sustained timing/density and independent review remain OPEN. APP-07 remains
 PARTIAL; APP-05/06 debts and APP-08…14 are not closed by this packet.
+
+### Independent failures, accessibility and high-Fs Stage profile (2026-09-30)
+
+The composed UI V2 graph has regression coverage for independent owner Start/
+poll/Stop failures, cancellation of a consumed tinySA response, accepted Start
+that cannot be cancelled before cleanup, and retained claim/graph release
+failures. Explicit cleanup retry does not silently reopen or restart RX.
+Tests retire the actual Qt presentation fixture through DeferredDelete after
+terminal owner release. Sweep history controls expose capacity in row blocks,
+not RTBW seconds or rows/s; the two new labels are localized in RU/EN.
+
+Product source 0df150cd11bb320c37f93c5e123d80e1927e0089 also separates the
+61.44-MS/s AD936x user-plan RF filter request (40 MHz) from its unchanged
+36-MHz usable analysis window. It does not weaken exact applied/readback Stage
+guards, expand pane coverage, change FFT/hop/detector or implicitly restart.
+The low-rate10-MHz RF/window profile is unchanged. Regression fixtures cover
+high-Fs exact admission, shared36-MHz coverage and over-limit refusal.
+
+Exact tracked-clean0df full UI V2:1086 total/1020 passed/66 skipped/zero
+failures in280.481s, no product import outside the checkout, unchanged source/
+native and exact provenance. Historical NaN warnings remain. The exact0df
+official CPU/HackRF build passed40/40CTest31.20s,658-file frozen verification
+and inert/load-only shared-runtime gates. Native34128b77…/C++ is unchanged;
+the separately tagged diagnostic EXE was not promoted to current/static.
+Earlier Qt-crashed and RU-failed gates are not counted as passes.
+
+This qualifies software contracts, not a healthy simultaneous physical3RX
+matrix on the new EXE, DWM/FPS/LPS,50ms,lossless transport,RF duty/Pd or soak.
+Those cells and independent review stay OPEN; APP-07 remains PARTIAL.
+The additional planned APP-06E filter branch is described in
+[APP06E_SDR_CUT_DC_SPUR_PLAN.md](APP06E_SDR_CUT_DC_SPUR_PLAN.md);
+it introduces no implemented-filter claim in this packet.

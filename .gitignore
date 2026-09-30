@@ -44,6 +44,7 @@ recordings/
 /docs/implementation/*
 # Explicit public source contract; review/evidence remain local-only.
 !/docs/implementation/APP06_CAPABILITY_CATALOG_CONTRACT.md
+!/docs/implementation/APP06E_SDR_CUT_DC_SPUR_PLAN.md
 !/docs/implementation/APP07_AD936X_PANE_OWNER_CONTRACT.md
 !/docs/implementation/APP07_MIXED_SOURCE_TRACE_CONTRACT.md
 !/docs/implementation/APP07_HACKRF_RTBW_PANE_OWNER_CONTRACT.md
