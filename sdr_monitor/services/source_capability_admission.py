@@ -147,7 +147,13 @@ def admit_source_request(
                     or AcquisitionKind.COMPLEX_IQ not in snapshot.acquisition_kinds
                     or not snapshot.tuning_ranges_hz):
                 return SourceRequestAdmission(SourceRequestAdmissionReason.CAPABILITY_UNVERIFIED)
-            if not _contains(snapshot.tuning_ranges_hz, request.start_hz, request.stop_hz):
+            try:
+                request.__post_init__()
+            except (TypeError, ValueError):
+                return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
+            if (not _contains(snapshot.tuning_ranges_hz, request.start_hz, request.stop_hz)
+                    or not _contains(snapshot.tuning_ranges_hz, request.start_hz + 7_500_000,
+                                     request.hardware_stop_hz - 7_500_000)):
                 return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
             return SourceRequestAdmission()
         if not isinstance(request, HackrfLiveRequest):

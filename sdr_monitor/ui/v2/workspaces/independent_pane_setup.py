@@ -302,8 +302,8 @@ class IndependentPaneSetupV2(QWidget):
                 assert draft.start_hz is not None and draft.stop_hz is not None
                 span = draft.stop_hz - draft.start_hz
                 if (draft.start_hz % 1_000_000 or draft.stop_hz % 1_000_000
-                        or span < 20_000_000 or span > 320_000_000
-                        or span % 20_000_000 or draft.fft_size not in (1024, 2048, 4096)):
+                        or span < 20_000_000 or draft.start_hz < 1_000_000
+                        or draft.stop_hz > 6_000_000_000 or draft.fft_size not in (1024, 2048, 4096)):
                     self._set_error("hackrf.sweep.invalid")
                     return
         if not any(item.source_id is not None for item in drafts):
@@ -426,7 +426,7 @@ class IndependentPaneSetupV2(QWidget):
             label = prepared.handle.source_labels.get(source_id, source_id)
             lines.append(text("analyzer.pane.setup.preview_resource", panes=numbers, source=label,
                               mode=mode, jobs=item.capture_job_count) + conflict)
-        for pane_id, geometry in prepared.plan.ad_sweep_geometry:
+        for pane_id, geometry in prepared.plan.ad_sweep_geometry + prepared.plan.hackrf_sweep_geometry:
             lines.append(text("analyzer.pane.setup.preview_ad_sweep",
                               pane=pane_id.rsplit("-", 1)[-1],
                               rate=f"{geometry.sample_rate_hz / 1_000_000:.2f}",
@@ -437,6 +437,10 @@ class IndependentPaneSetupV2(QWidget):
                               segments=geometry.segment_count,
                               spacing=f"{geometry.output_spacing_hz:.2f}",
                               memory=f"{geometry.reduced.total_bytes / (1024 * 1024):.2f}"))
+        for pane_id, start, stop in prepared.plan.hackrf_hardware_ranges:
+            lines.append(text("analyzer.pane.setup.preview_hackrf_capture",
+                              pane=pane_id.rsplit("-", 1)[-1], start=start // 1_000_000,
+                              stop=stop // 1_000_000))
         lines.append(text("analyzer.pane.setup.preview_scope"))
         self.preview.setText("\n".join(lines))
 

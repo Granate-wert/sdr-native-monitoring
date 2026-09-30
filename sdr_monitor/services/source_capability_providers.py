@@ -213,6 +213,8 @@ def _qualified_hackrf_sdk_directory(native: object) -> Path | None:
         hackrf_dsp_profile_contract_version(native, manifest)
         hackrf_persistence_contract_version(native, manifest)
         hackrf_sweep_contract_version(native, manifest)
+        from .sweep_geometry_contract import sweep_geometry_contract
+        sweep_geometry_contract(native, manifest)
         if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
             return None
         for name, expected in hashes.items():

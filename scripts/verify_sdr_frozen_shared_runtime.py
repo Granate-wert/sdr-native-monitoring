@@ -85,6 +85,19 @@ def verify_frozen_shared_runtime(package_dir: Path, manifest_path: Path, version
             or verdict.get("hackrf_persistence_contract_version") != persistence_version):
         raise ValueError("frozen optional persistence contract differs from its native manifest")
     sweep_bridge = native_manifest.get("hackrf_sweep_bridge_contract_version")
+    geometry = native_manifest.get("sweep_geometry_contract_version")
+    capacity = native_manifest.get("sweep_max_segments")
+    budget = native_manifest.get("sweep_max_reduced_bytes")
+    if (geometry is not None or capacity is not None or budget is not None) and (
+            type(geometry) is not int or geometry != 1 or type(capacity) is not int or capacity != 2048
+            or type(budget) is not int or budget != 134217728
+            or type(verdict.get("sweep_geometry_contract_version")) is not int
+            or verdict.get("sweep_geometry_contract_version") != geometry
+            or type(verdict.get("sweep_max_segments")) is not int
+            or verdict.get("sweep_max_segments") != capacity
+            or type(verdict.get("sweep_max_reduced_bytes")) is not int
+            or verdict.get("sweep_max_reduced_bytes") != budget):
+        raise ValueError("Frozen Sweep geometry differs from its paired native manifest")
     sweep_factory = native_manifest.get("hackrf_sweep_factory_contract_version")
     if ((sweep_bridge is not None or sweep_factory is not None)
             and (type(sweep_bridge) is not int or sweep_bridge != 1

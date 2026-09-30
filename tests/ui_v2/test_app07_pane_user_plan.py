@@ -131,7 +131,7 @@ class PaneUserPlanTests(unittest.TestCase):
 
     def test_unsupported_sweep_geometry_and_family_refuse_before_rx(self) -> None:
         for start, stop, fft, rate in ((100e6, 108e6, 4096, 20e6),
-                                        (100e6, 225e6, 4096, 20e6),
+                                        (100e6, 225.5e6, 4096, 20e6),
                                         (100e6, 220e6, 16384, 20e6),
                                         (100e6, 220e6, 4096, 16e6)):
             with self.subTest(start=start, stop=stop, fft=fft, rate=rate):
@@ -190,12 +190,32 @@ class PaneUserPlanTests(unittest.TestCase):
                          {CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP})
         self.assertEqual({job.mode for job in jobs}, {ReceiverBindingMode.TIME_SLICED})
 
-    def test_ad_sweep_native_64_segment_and_memory_bounds_are_not_bypassed(self) -> None:
-        # The new pane adapter is not full-range native qualification.
-        for start, stop, n in ((70e6, 6e9, 1024), (100e6, 2e9, 16384)):
+    def test_ad_sweep_segment_and_memory_bounds_are_not_bypassed(self) -> None:
+        for start, stop, n in ((70e6, 100e9, 1024), (100e6, 2e9, 16384)):
             with self.subTest(stop=stop, n=n), self.assertRaisesRegex(PaneUserPlanError, "native geometry"):
                 self._compile((PaneSlotDraft(1, self.ad_id, start, stop,
                     sample_rate_hz=61.44e6, fft_size=n,
+                    measurement_mode=CaptureMeasurementMode.SWEEP),))
+
+    def test_full_sdr_ranges_three_sweep_panes_keep_exact_geometry_and_memory(self) -> None:
+        plan = self._compile((
+            PaneSlotDraft(1, self.ad_id, 70e6, 6e9, sample_rate_hz=61.44e6, fft_size=1024,
+                          measurement_mode=CaptureMeasurementMode.SWEEP),
+            PaneSlotDraft(2, self.hf_id, 1e6, 6e9, fft_size=1024,
+                          measurement_mode=CaptureMeasurementMode.SWEEP),
+            PaneSlotDraft(3, self.ts_id, 100e6, 300e6, points=1001), PaneSlotDraft(4)))
+        self.assertEqual(len(plan.layout.schedule.resources), 3)
+        ad = plan.ad_sweep_geometry[0][1]
+        hf = plan.hackrf_sweep_geometry[0][1]
+        self.assertEqual((ad.segment_count, ad.physical_fft_size), (175, 2048))
+        self.assertEqual((hf.segment_count, hf.physical_fft_size), (1200, 1024))
+        self.assertEqual(plan.hackrf_hardware_ranges, (("pane-2", 1_000_000, 6_001_000_000),))
+        self.assertLess(ad.reduced.total_bytes, 64 * 1024 * 1024)
+        self.assertLess(hf.reduced.total_bytes, 64 * 1024 * 1024)
+        for source, rate in ((self.ad_id, 61.44e6), (self.hf_id, 20e6)):
+            with self.subTest(source=source), self.assertRaises(PaneUserPlanError):
+                self._compile((PaneSlotDraft(1, source, 70e6 if source == self.ad_id else 1e6,
+                    6e9, sample_rate_hz=rate, fft_size=16384 if source == self.ad_id else 4096,
                     measurement_mode=CaptureMeasurementMode.SWEEP),))
 
     def test_three_family_sweep_2x2_compiles_without_fabricating_empty_rx(self) -> None:

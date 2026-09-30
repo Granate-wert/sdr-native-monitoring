@@ -1,8 +1,11 @@
 """Immutable HackRF bounded-Sweep intent; no receiver or hardware ownership."""
 
 from dataclasses import dataclass
+from math import ceil
 
 from .analyzer_sources import AnalyzerSourceChoice
+from .analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
+from .live import DEFAULT_LIVE_RESOURCE_BUDGET
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,8 +31,12 @@ class HackrfSweepRequest:
                 or self.start_hz % 1_000_000 or self.stop_hz % 1_000_000):
             raise ValueError("HackRF Sweep frequencies must be whole MHz")
         span = self.stop_hz - self.start_hz
-        if not 20_000_000 <= span <= 320_000_000 or span % 20_000_000:
-            raise ValueError("HackRF Sweep span must be 20..320 MHz in 20 MHz steps")
+        if not 20_000_000 <= span or self.stop_hz > 6_000_000_000:
+            raise ValueError("HackRF Sweep requires a >=20 MHz span within 1..6000 MHz")
+        if self.start_hz < 1_000_000:
+            raise ValueError("HackRF Sweep requires frequencies within 1..6000 MHz")
+        if self.hardware_stop_hz - 7_500_000 > 6_000_000_000:
+            raise ValueError("HackRF rounded capture would tune outside its qualified RF envelope")
         if type(self.fft_size) is not int or self.fft_size not in (1024, 2048, 4096):
             raise ValueError("HackRF Sweep FFT size must be 1024, 2048 or 4096")
         if type(self.lna_gain) is not int or not 0 <= self.lna_gain <= 40 or self.lna_gain % 8:
@@ -38,6 +45,33 @@ class HackrfSweepRequest:
             raise ValueError("HackRF VGA gain must be 0..62 dB in 2 dB steps")
         if type(self.preview_rate_hz) is not int or not 1 <= self.preview_rate_hz <= 100:
             raise ValueError("HackRF preview rate must be in 1..100 Hz")
+        if self.geometry.reduced.total_bytes > DEFAULT_LIVE_RESOURCE_BUDGET.max_spectrum_backlog_bytes:
+            raise ValueError("HackRF Sweep reduced spectrum backlog exceeds memory budget")
+
+    @property
+    def hardware_stop_hz(self) -> int:
+        # Match official host whole tuning-step planning; analysis stop stays
+        # EXACT. Padding is shown in UI preview, never relabelled as coverage.
+        span = self.stop_hz - self.start_hz
+        return self.start_hz + ((span + 19_999_999) // 20_000_000) * 20_000_000
+
+    @property
+    def requires_extended_geometry(self) -> bool:
+        return (self.stop_hz - self.start_hz > 320_000_000
+                or self.hardware_stop_hz != self.stop_hz)
+
+    @property
+    def geometry(self) -> AnalyzerGeometryPreflight:
+        spacing = 20_000_000.0 / self.fft_size
+        segments = ceil((self.stop_hz - self.start_hz) / 5_000_000)
+        bins = ceil((self.stop_hz - self.start_hz) / spacing - 1.0 - 1e-12)
+        reduced = estimate_analyzer_reduced(
+            "sweep", bins, 5, physical_fft_size=self.fft_size, segment_count=segments)
+        return AnalyzerGeometryPreflight(
+            "sweep", 20_000_000.0, self.fft_size, spacing, segments, 5_000_000.0,
+            reduced, usable_window_hz=5_000_000.0,
+            analysis_bins_per_usable_window=self.fft_size // 4,
+            physical_bin_spacing_hz=spacing)
 
 
 __all__ = ["HackrfSweepRequest"]

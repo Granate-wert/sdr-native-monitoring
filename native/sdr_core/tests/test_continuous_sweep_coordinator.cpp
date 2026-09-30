@@ -288,10 +288,54 @@ void statistics_pipeline_test(bool single_window) {
     }
 }
 
+void extended_geometry_test() {
+    auto plan = coordinator_config();
+    plan.display_start_hz = 70'000'000.0;
+    plan.display_stop_hz = 6'000'000'000.0;
+    plan.usable_window_hz = 36'000'000.0;
+    plan.analysis_bins_per_usable_window = 1024U;
+    plan.output_queue_capacity = 2U;
+    plan.segments.clear();
+    for (std::uint32_t index = 0; index < 175U; ++index) {
+        const auto start = plan.display_start_hz + index * 34'000'000.0;
+        const auto stop = std::min(plan.display_stop_hz, start + plan.usable_window_hz);
+        auto fixed = fixed_config((start + stop) / 2.0);
+        fixed.device.sample_rate_hz = 61'440'000.0;
+        fixed.device.analog_bandwidth_hz = 40'000'000.0;
+        fixed.dsp.fft_size = 2048U;
+        fixed.dsp.hop_size = 1024U;
+        plan.segments.push_back({std::move(fixed), start, stop});
+    }
+    sdr_pluto::validate(plan);  // Pure metadata admission; no IIO/RX object.
+    if (plan.segments.back().usable_stop_hz != plan.display_stop_hz ||
+        plan.segments.back().usable_stop_hz - plan.segments.back().usable_start_hz != 14'000'000.0) {
+        throw std::runtime_error("full AD936x range lost its exact partial final window");
+    }
+    auto excessive = plan;
+    excessive.analysis_bins_per_usable_window = 8192U;
+    for (auto& segment : excessive.segments) {
+        segment.fixed_band.device.buffer_samples = 262144U;
+        segment.fixed_band.dsp.fft_size = 16384U;
+        segment.fixed_band.dsp.hop_size = 8192U;
+    }
+    bool refused = false;
+    try { sdr_pluto::validate(excessive); }
+    catch (const sdr_core::ConfigurationError& error) {
+        refused = std::string(error.what()).find("128 MiB") != std::string::npos;
+    }
+    if (!refused) throw std::runtime_error("full AD936x Sweep exceeded the reduced-data memory bound");
+    plan.segments.resize(sdr_core::sweep_max_segments + 1U, plan.segments.front());
+    refused = false;
+    try { sdr_pluto::validate(plan); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    if (!refused) throw std::runtime_error("AD936x Sweep exceeded its 2048-segment bound");
+}
+
 }  // namespace
 
 int main() {
     try {
+        extended_geometry_test();
         cancellation_phase_matrix();
         // Drain a continuously replenished output with default, explicit-small
         // and oversized requests. Each vector stays within the configured

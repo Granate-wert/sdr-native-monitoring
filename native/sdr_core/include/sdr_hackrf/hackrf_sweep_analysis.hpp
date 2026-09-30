@@ -22,6 +22,9 @@ struct HackrfSweepAnalysisConfig {
     sdr_core::WindowType window{sdr_core::WindowType::Hann};
     sdr_core::DetectorType detector{sdr_core::DetectorType::Sample};
     sdr_core::SpectrumUnit unit{sdr_core::SpectrumUnit::DbfsBin};
+    // Optional exact analysis end inside a whole-step firmware capture plan.
+    // Zero retains the original aligned-range contract.
+    double analysis_stop_hz{};
 };
 
 struct HackrfSweepAnalysisMetrics {

@@ -20,7 +20,7 @@ constexpr std::uint32_t pinned_offset_hz = 7'500'000U;
 constexpr std::uint32_t pinned_step_hz = 20'000'000U;
 constexpr std::uint32_t maximum_fft = 4096U;
 constexpr std::size_t complex_samples_per_block = hackrf_sweep_ci8_bytes / 2U;
-constexpr std::size_t maximum_analysis_blocks = 32U;
+constexpr std::size_t maximum_analysis_blocks = sdr_core::sweep_max_segments / 2U;
 
 void validate_config(const HackrfSweepAnalysisConfig& config) {
     sdr_core::validate(config.source);
@@ -74,10 +74,7 @@ sdr_core::SweepLineDefinition make_definition(
 ) {
     const auto expected = gate.expected_blocks();
     if (expected.empty() || expected.size() > maximum_analysis_blocks) {
-        // The canonical line assembler currently bounds a line to 64
-        // segments. Wider scans need a genuinely bounded tiling policy;
-        // silently dropping header blocks would fabricate full coverage.
-        throw sdr_core::ConfigurationError("HackRF Sweep analysis span exceeds 64 segments");
+        throw sdr_core::ConfigurationError("HackRF Sweep analysis span exceeds 2048 segments");
     }
     const auto range = config.acquisition.sequence.ranges.front();
     const auto bin_hz = static_cast<double>(pinned_sample_rate_hz) /
@@ -88,7 +85,15 @@ sdr_core::SweepLineDefinition make_definition(
     // The official host excludes the first crop bin. The declaration begins
     // at the first retained FFT bin rather than claiming the requested start.
     definition.start_frequency_hz = static_cast<double>(range.start_mhz) * one_mhz + bin_hz;
-    definition.stop_frequency_hz = static_cast<double>(range.stop_mhz) * one_mhz;
+    const auto hardware_stop_hz = static_cast<double>(range.stop_mhz) * one_mhz;
+    const auto requested_stop_hz = config.analysis_stop_hz == 0.0
+        ? hardware_stop_hz : config.analysis_stop_hz;
+    if (!std::isfinite(requested_stop_hz) || requested_stop_hz > hardware_stop_hz ||
+        requested_stop_hz <= definition.start_frequency_hz ||
+        hardware_stop_hz - requested_stop_hz >= pinned_step_hz) {
+        throw sdr_core::ConfigurationError("HackRF exact analysis end differs from its whole-step capture plan");
+    }
+    definition.stop_frequency_hz = requested_stop_hz;
     definition.target_spacing_hz = bin_hz;
     // One firmware FFT yields two distinct 5 MHz subbands. Do not present
     // their union as a contiguous 10 or 20 MHz analysis window.
@@ -98,25 +103,31 @@ sdr_core::SweepLineDefinition make_definition(
     definition.physical_fft_size = config.fft_size;
     definition.unit = config.unit;
     definition.max_inflight_lines = 1U;
-    definition.segments.resize(expected.size() * 2U);
+    definition.segments.reserve(expected.size() * 2U);
     for (std::size_t index = 0U; index < expected.size(); ++index) {
         const double base_hz = static_cast<double>(expected[index].reported_tuned_frequency_hz);
         const auto low = segment_index(index, false);
         const auto high = segment_index(index, true);
-        definition.segments[low] = {
-            low,
-            config.acquisition.config_generation,
-            base_hz + bin_hz,
-            base_hz + 5'000'000.0,
-        };
-        definition.segments[high] = {
-            high,
-            config.acquisition.config_generation,
-            base_hz + 10'000'000.0 + bin_hz,
-            base_hz + 15'000'000.0,
-        };
+        for (const auto upper : {false, true}) {
+            const auto start = base_hz + (upper ? 10'000'000.0 : 0.0) + bin_hz;
+            const auto stop = std::min(requested_stop_hz, base_hz + (upper ? 15'000'000.0 : 5'000'000.0));
+            if (start < stop) {
+                definition.segments.push_back({upper ? high : low,
+                    config.acquisition.config_generation, start, stop});
+            }
+        }
     }
+    std::sort(definition.segments.begin(), definition.segments.end(), [](const auto& a, const auto& b) {
+        return a.segment_index < b.segment_index;
+    });
     sdr_core::validate(definition);
+    const auto bins = static_cast<std::uint64_t>(std::ceil(
+        (definition.stop_frequency_hz - definition.start_frequency_hz) / bin_hz - 1e-12));
+    const auto reduced_bytes = bins * 128U +
+        definition.segments.size() * static_cast<std::uint64_t>(config.fft_size) * 16U + config.fft_size * 8U;
+    if (reduced_bytes > sdr_core::sweep_max_reduced_bytes) {
+        throw sdr_core::ConfigurationError("HackRF Sweep reduced spectrum backlog exceeds 128 MiB");
+    }
     return definition;
 }
 
@@ -272,14 +283,15 @@ std::vector<sdr_core::SweepLineFrame> HackrfSweepAnalysis::admit(
     auto frame = impl_->spectrum_for(block);
     const auto low = segment_index(block.plan_index, false);
     const auto high = segment_index(block.plan_index, true);
-    append(emitted, impl_->assembler.admit(
-        block.scan_epoch, block.host_timestamp_ns,
-        {low, frame}
-    ));
-    append(emitted, impl_->assembler.admit(
-        block.scan_epoch, block.host_timestamp_ns,
-        {high, std::move(frame)}
-    ));
+    for (const auto index : {low, high}) {
+        const auto& segments = impl_->line_definition.segments;
+        const auto found = std::lower_bound(segments.begin(), segments.end(), index,
+            [](const auto& segment, const auto id) { return segment.segment_index < id; });
+        if (found != segments.end() && found->segment_index == index) {
+            append(emitted, impl_->assembler.admit(
+                block.scan_epoch, block.host_timestamp_ns, {index, frame}));
+        }
+    }
     ++impl_->accepted_blocks;
     impl_->next_plan_index = block.plan_index + 1U;
     return emitted;

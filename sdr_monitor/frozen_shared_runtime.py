@@ -157,6 +157,8 @@ def packaged_shared_runtime_verdict(native: object) -> dict[str, object]:
     dsp_version = hackrf_dsp_profile_contract_version(native, manifest)
     persistence_version = hackrf_persistence_contract_version(native, manifest)
     sweep_version = hackrf_sweep_contract_version(native, manifest)
+    from .services.sweep_geometry_contract import sweep_geometry_contract
+    geometry_version = sweep_geometry_contract(native, manifest)
     hashes = manifest.get("hackrf_runtime_sha256")
     if not isinstance(hashes, dict) or set(hashes) != set(HACKRF_COMPONENTS):
         raise RuntimeError("official SDK runtime manifest is incomplete")
@@ -192,6 +194,9 @@ def packaged_shared_runtime_verdict(native: object) -> dict[str, object]:
         "hackrf_persistence_contract_version": persistence_version,
         "hackrf_sweep_bridge_contract_version": sweep_version,
         "hackrf_sweep_factory_contract_version": sweep_version,
+        "sweep_geometry_contract_version": geometry_version,
+        "sweep_max_segments": getattr(native, "SWEEP_MAX_SEGMENTS", None),
+        "sweep_max_reduced_bytes": getattr(native, "SWEEP_MAX_REDUCED_BYTES", None),
         "cuda_compiled": False,
         "libiio_available": True,
         "metadata_hold_released": True,

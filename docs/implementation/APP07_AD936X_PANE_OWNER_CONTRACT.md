@@ -103,10 +103,24 @@ ENBW. The preview includes segment count and the existing conservative
 reduced-data memory estimate, not total RSS or measured RF/transport speed.
 
 The existing pure continuous-Sweep preflight decides segment, grid, physical
-FFT and memory admission before a pane lease or RX. Its current 64-segment
-bound and 64 MiB reduced-data budget are NOT relaxed by the pane adapter.
-Full-device-range Sweep qualification and any native-capacity expansion
-remain separate OPEN work; a bounded 2x2 test is not their substitute.
+FFT and memory admission before a pane lease or RX. The optional common
+geometry contract version1 admits up to2048 segments, subject to the existing
+2-million-output-bin bound and128 MiB reduced-data budget. This is not an RSS
+or whole-process allocation guarantee. Earlier prose saying64 MiB was wrong:
+the established backend spectrum budget was already128 MiB; the separately
+bounded visual queue is not that backend budget.
+
+Extended plans (>64 segments) require the ALREADY loaded native artifact's
+own sibling manifest, matching geometry version/capacity/budget and artifact
+SHA. Old artifacts retain their bounded compatibility; they refuse extended
+plans before a pane lease or receiver Start. There is no alternate loader,
+fallback, hidden FFT reduction or retry. Full-device-range physical/frozen
+qualification remains separate work; a bounded2x2 test is not its substitute.
+
+For70..6000 MHz, W36/overlap2 produces175 segments. N1024/F2048 and
+N4096/F8192 fit the reduced-data budget; N8192/F16384 exceeds that budget,
+and N16384/F32768 also exceeds the output-grid bound. These are pure planning
+results, not measured RF settling, transport speed or sweep duration.
 
 Stage/Apply do not start RX. Accepted explicit Start stages the exact CPU
 profile, then delegates to the existing continuous-Sweep owner/lease through

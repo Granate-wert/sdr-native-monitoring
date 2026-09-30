@@ -75,8 +75,8 @@ class SegmentProjectionTests(unittest.TestCase):
         with patch("numpy.array_equal", side_effect=AssertionError("bin comparison")), \
              patch("numpy.isfinite", side_effect=AssertionError("bin reduction")):
             self.assertEqual(len(inspect_sweep(source).segments), 4)
-        oversized = replace(source.progress, pending_segment_indices=tuple(range(1, 65)))
-        with self.assertRaisesRegex(ValueError, "64-segment"):
+        oversized = replace(source.progress, pending_segment_indices=tuple(range(1, 2050)))
+        with self.assertRaisesRegex(ValueError, "2048-segment"):
             inspect_sweep(ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics(), oversized))
 
 

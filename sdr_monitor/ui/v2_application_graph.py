@@ -8,6 +8,7 @@ resources would retain the old single-source exclusion and is not supported.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from sdr_monitor.application.analyzer_rtbw_router import AnalyzerRtbwRouter
@@ -60,7 +61,10 @@ def build_v2_analyzer_application_graph(services: Any) -> V2AnalyzerApplicationG
                                                  start_live=router.start if router else start_live)
     live = LiveSessionApplicationService(
         services.live_sdr,
-        sweep_preflight=NativeContinuousSweepPlanFactory.preflight_profile,
+        sweep_preflight=(partial(NativeContinuousSweepPlanFactory.preflight_native_profile,
+                                 services.live_sdr._native)
+                         if isinstance(services.live_sdr, NativeLiveSessionService)
+                         else NativeContinuousSweepPlanFactory.preflight_profile),
         analyzer=analyzer,
         catalog_close=catalog.close if isinstance(catalog, SourceCapabilityCatalog) else None,
         sources=sources,

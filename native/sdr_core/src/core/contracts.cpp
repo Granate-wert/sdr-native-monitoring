@@ -543,8 +543,8 @@ void validate(const SweepLineDefinition& value) {
     if (value.analysis_bins_per_usable_window > 262'144U) {
         invalid("sweep-line analysis bins per usable window exceeds its bound");
     }
-    if (value.segments.empty() || value.segments.size() > 64U) {
-        invalid("sweep-line segment count must be in [1, 64]");
+    if (value.segments.empty() || value.segments.size() > sweep_max_segments) {
+        invalid("sweep-line segment count must be in [1, 2048]");
     }
     std::uint32_t previous_index{};
     for (std::size_t index = 0U; index < value.segments.size(); ++index) {

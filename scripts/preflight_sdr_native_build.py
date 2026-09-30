@@ -235,6 +235,17 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
 
 def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> None:
     """Runtime presence, not a device probe or physical support assertion."""
+    missing = object()
+    geometry = (getattr(module, "SWEEP_GEOMETRY_CONTRACT_VERSION", missing),
+                getattr(module, "SWEEP_MAX_SEGMENTS", missing),
+                getattr(module, "SWEEP_MAX_REDUCED_BYTES", missing),
+                manifest.get("sweep_geometry_contract_version", missing),
+                manifest.get("sweep_max_segments", missing),
+                manifest.get("sweep_max_reduced_bytes", missing))
+    if not all(value is missing for value in geometry) and (
+            any(type(value) is not int for value in geometry)
+            or geometry != (1, 2048, 134217728, 1, 2048, 134217728)):
+        raise ContractSurfaceError("Sweep geometry contract does not match its native manifest")
     if callable(getattr(module, "create_hackrf_runtime_dsp_control", None)) != bool(manifest.get("hackrf_official_compiled")):
         raise ContractSurfaceError("native HackRF factory does not match its staging manifest")
     if manifest.get("hackrf_official_compiled"):

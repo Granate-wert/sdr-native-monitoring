@@ -117,4 +117,4 @@ class AnalyzerResourceTests(unittest.TestCase):
             with self.subTest(mode=mode, bins=bins), self.assertRaises(ValueError):
                 estimate_analyzer_reduced(mode, bins, retained)
         with self.assertRaises(ValueError):
-            estimate_analyzer_reduced("sweep", 1024, 4, physical_fft_size=4096, segment_count=65)
+            estimate_analyzer_reduced("sweep", 1024, 4, physical_fft_size=4096, segment_count=2049)

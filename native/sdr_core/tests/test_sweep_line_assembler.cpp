@@ -97,6 +97,18 @@ namespace {
 int main() {
     try {
         app04_geometry_test::run();
+        {
+            auto bounded = definition();
+            bounded.stop_frequency_hz = 100.0 + sdr_core::sweep_max_segments;
+            bounded.segments.clear();
+            for (std::uint32_t index = 0; index < sdr_core::sweep_max_segments; ++index) {
+                bounded.segments.push_back({index, 1U, 100.0 + index, 101.0 + index});
+            }
+            sdr_core::validate(bounded);
+            bounded.stop_frequency_hz += 1.0;
+            bounded.segments.push_back({2048U, 1U, 2148.0, 2149.0});
+            if (!rejects([&] { sdr_core::validate(bounded); })) return 80;
+        }
         // A true zero-power bin is -infinity dB, not a missing sample.
         // Preserve it through aligned bins, interpolation and overlap power
         // averaging; +infinity is unavailable and NaN is rejected at admission.

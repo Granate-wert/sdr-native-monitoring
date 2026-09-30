@@ -23,6 +23,9 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(_sdr_native, module) {
     module.doc() = "Portable SDR native-core contracts module";
+    module.attr("SWEEP_GEOMETRY_CONTRACT_VERSION") = 1;
+    module.attr("SWEEP_MAX_SEGMENTS") = sdr_core::sweep_max_segments;
+    module.attr("SWEEP_MAX_REDUCED_BYTES") = sdr_core::sweep_max_reduced_bytes;
 
     const auto native_error = py::register_exception<sdr_core::SdrNativeError>(module, "SdrNativeError");
     py::register_exception<sdr_core::ConfigurationError>(module, "ConfigurationError", native_error.ptr());

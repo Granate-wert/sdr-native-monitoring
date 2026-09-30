@@ -20,6 +20,8 @@ from .native_continuous_sweep import (
 )
 from .native_sweep import NativeSweepLease
 from .ad936x_identity_admission import create_identity_bound_owner
+from ..domain.sweep_capacity import LEGACY_SWEEP_MAX_SEGMENTS, SWEEP_MAX_SEGMENTS
+from .sweep_geometry_contract import require_extended_sweep_geometry
 
 
 class NativeContinuousSweepPlanFactory:
@@ -53,7 +55,17 @@ class NativeContinuousSweepPlanFactory:
         self._lease.assert_active()
         if self._lease.validate_continuous_request is not None:
             self._lease.validate_continuous_request(request)
-        return self.preflight_profile(self._lease.source.live_configuration, request)
+        return self.preflight_native_profile(
+            self._lease.native_module, self._lease.source.live_configuration, request)
+
+    @staticmethod
+    def preflight_native_profile(
+        native: object, live: LiveConfiguration, request: ContinuousSweepPlanRequest,
+    ) -> AnalyzerGeometryPreflight:
+        geometry = NativeContinuousSweepPlanFactory.preflight_profile(live, request)
+        if geometry.segment_count > LEGACY_SWEEP_MAX_SEGMENTS:
+            require_extended_sweep_geometry(native)
+        return geometry
 
     @staticmethod
     def preflight_profile(
@@ -118,8 +130,8 @@ class NativeContinuousSweepPlanFactory:
         stride = request.usable_window_hz - request.overlap_hz
         span = request.stop_hz - request.start_hz
         count = max(1, math.ceil(max(0.0, span - request.usable_window_hz) / stride) + 1)
-        if count > 64:
-            raise ValueError("continuous sweep plan exceeds native 64-segment bound")
+        if count > SWEEP_MAX_SEGMENTS:
+            raise ValueError("continuous sweep plan exceeds native 2048-segment bound")
         spacing = (request.usable_window_hz / request.analysis_bins_per_usable_window
                    if request.analysis_bins_per_usable_window else sample_rate / fft_size)
         physical_spacing = sample_rate / fft_size

@@ -5,6 +5,7 @@ from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
+from sdr_monitor.domain.sweep_capacity import SWEEP_MAX_SEGMENTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +57,8 @@ def inspect_sweep(snapshot: ContinuousSweepDisplaySnapshot | None) -> SweepInspe
                        if index not in absent}
     indices = sorted(set(generations) | absent)
     # Matches application preflight. Refuse, never silently truncate evidence.
-    if len(indices) > 64:
-        raise ValueError("Sweep inspection exceeds the 64-segment application limit")
+    if len(indices) > SWEEP_MAX_SEGMENTS:
+        raise ValueError("Sweep inspection exceeds the 2048-segment application limit")
     records = {record.segment_index: record for record in frame.segment_acquisition or ()}
     previous = snapshot.line if snapshot.line is not None and snapshot.line.sequence < frame.sequence else None
     previous_generations = ({index: generation for index, generation in previous.segment_config_generations

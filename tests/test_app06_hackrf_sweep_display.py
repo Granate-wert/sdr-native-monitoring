@@ -1,6 +1,7 @@
 """Pure lifecycle tests for the optional native HackRF Sweep display owner."""
 
 import unittest
+from copy import copy
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -164,8 +165,12 @@ class HackrfSweepDisplayTests(unittest.TestCase):
                       SourceRequestAdmissionReason.MODE_RUNTIME_UNAVAILABLE)
         self.assertTrue(admit_source_request(inventory, request.source.device_id, "sweep", request,
                                              hackrf_sweep_runtime_available=True).accepted)
-        self.assertIs(admit_source_request(inventory, request.source.device_id, "sweep",
-                       replace(request, start_hz=6_000_000_000, stop_hz=6_020_000_000),
+        # A foreign caller can forge a frozen payload; capability admission
+        # must still reject it even though normal construction now refuses.
+        forged = copy(request)
+        object.__setattr__(forged, "start_hz", 6_000_000_000)
+        object.__setattr__(forged, "stop_hz", 6_020_000_000)
+        self.assertIs(admit_source_request(inventory, request.source.device_id, "sweep", forged,
                        hackrf_sweep_runtime_available=True).reason,
                       SourceRequestAdmissionReason.REQUEST_RANGE)
 

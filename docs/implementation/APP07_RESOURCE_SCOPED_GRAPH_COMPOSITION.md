@@ -969,8 +969,10 @@ wideband/Sweep/middle-drag/RBW and group1/physical-nextStart debts remain open.
 Exact product `febd3f7` adds the selected RX1 continuous-Sweep pane adapter over
 the SAME existing application/router/native lease and common V2 preparation.
 See APP07_AD936X_PANE_OWNER_CONTRACT.md for W/N versus physical F, exact
-source/epoch/grid/quality guards and explicit control boundaries. Native64
-segments/64MiB remain bounded; full-range qualification is OPEN.
+source/epoch/grid/quality guards and explicit control boundaries. That earlier
+packet retained the64-segment native cap; its64 MiB budget prose was incorrect,
+as the backend's established reduced-data budget was128 MiB. Full-range
+qualification was OPEN at that checkpoint.
 
 16new/103focused source tests passed; exact clean1113 V2 tests1047pass/66skip/
 0fail313.277s, deferred[]/outside[]/source-native unchanged. Full officialCPU
@@ -989,3 +991,36 @@ and progressive missing coverage, remain present. tinySA300k RBW was NOT
 applied. All full-range Sweep, actual middle-button RF retune, wider RTBW
 pane profiles, matched visible new-EXE cells and independent review remain
 OPEN. APP07PARTIAL/APP06Eplanned/fullAPP00..14ACTIVE; APP05 timer not restarted.
+
+### Extended full-range Sweep geometry contract
+
+Common optional geometry version1 is strictly paired across native module,
+sibling manifest, source admission, preview and frozen diagnostics: up to2048
+segments,128 MiB reduced-data budget and the unchanged2-million-bin limit.
+Old64-segment AD and aligned<=320 MHz HackRF modules remain usable only for
+their existing compatible plans. Extended/nonaligned requests refuse before
+receiver ownership/SDK Start; no fallback DLL, implicit FFT reduction or retry.
+Native AD/HackRF budget validation precedes receive allocation or SDK open.
+This does not claim bounded total RSS or release/performance acceptance.
+
+HackRF keeps requested Fs20 MS/s, filter15 MHz,20 MHz tuning step, interleaved
+firmware headers and two separated5 MHz crops per FFT. Whole-MHz analysis
+endpoints within1..6000 MHz require span>=20 MHz. The planned hardware stop
+is rounded UP to a whole tuning step, following the official host policy;
+the exact analysis stop is preserved and padding is never displayed as measured
+coverage. Planned first/last LO centers must fit the observed RF envelope.
+Excluded crop-edge bins stay missing; no interpolation fills them.
+
+Full1..6000 MHz analyzes1200 subbands with a1..6001 MHz hardware plan and a
+last planned LO center of5993.5 MHz. Explicit F1024/F2048 fit the backend
+budget; F4096 does not and refuses before SDK. No user FFT is silently changed.
+Partial final5 MHz crops are clipped exactly; wholly out-of-analysis crops
+are discarded without a fabricated segment. Padding headers still participate
+in the same firmware sequence gate, not a second acquisition algorithm.
+
+UI V2's standalone settings and per-pane preview show rounded capture as a
+PLAN, distinct from requested analysis and from hardware readback. Stage and
+draft/locale edits do not start RX. Both progressive and terminal publications
+continue through the same owner/common Spectrum/Waterfall path. This extension
+does not implement RF retuning by held-middle drag, wider RTBW pane windows or
+unqualified tinySA RBW commands; those require separate implementation/tests.

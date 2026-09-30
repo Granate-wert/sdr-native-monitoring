@@ -244,8 +244,8 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
          value.line_snapshot_rate_hz < 1.0 || value.line_snapshot_rate_hz > 2'000.0)) {
         invalid("continuous sweep coordinator line snapshot rate must be zero or in [1, 2000] Hz");
     }
-    if (value.segments.empty() || value.segments.size() > 64U) {
-        invalid("continuous sweep coordinator segment count must be in [1, 64]");
+    if (value.segments.empty() || value.segments.size() > sdr_core::sweep_max_segments) {
+        invalid("continuous sweep coordinator segment count must be in [1, 2048]");
     }
     const auto& first = value.segments.front().fixed_band;
     validate(first);
@@ -285,7 +285,16 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
         previous_stop < value.display_stop_hz) {
         invalid("continuous sweep segments do not cover the display span");
     }
-    static_cast<void>(planned_definition(value));
+    const auto definition = planned_definition(value);
+    sdr_core::validate(definition);
+    const auto ratio = (value.display_stop_hz - value.display_start_hz) / definition.target_spacing_hz;
+    const auto bins = static_cast<std::uint64_t>(value.analysis_bins_per_usable_window
+        ? std::ceil(ratio - 1e-12) : std::floor(ratio) + 1.0);
+    const auto reduced_bytes = bins * (20U * (value.output_queue_capacity + 3U) + 28U) +
+        value.segments.size() * static_cast<std::uint64_t>(first.dsp.fft_size) * 16U + first.dsp.fft_size * 8U;
+    if (reduced_bytes > sdr_core::sweep_max_reduced_bytes) {
+        invalid("continuous sweep reduced spectrum backlog exceeds 128 MiB");
+    }
     if (value.statistics && (!std::isfinite(value.statistics_snapshot_rate_hz) ||
         value.statistics_snapshot_rate_hz < 1.0 || value.statistics_snapshot_rate_hz > 60.0)) {
         invalid("Sweep statistics snapshot rate must be in [1, 60] Hz");

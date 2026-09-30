@@ -70,6 +70,11 @@ class HackrfSweepConfigurationBar(QWidget):
         self.scope.setProperty("ui2Role", "secondary")
         self.scope.setWordWrap(True)
         layout.addWidget(self.scope)
+        self.plan_detail = QLabel(self)
+        self.plan_detail.setProperty("ui2Role", "secondary")
+        self.plan_detail.setWordWrap(True)
+        layout.addWidget(self.plan_detail)
+        self.draft_changed.connect(self._refresh_plan_detail)
         self.set_locale()
         self.hide()
 
@@ -82,12 +87,23 @@ class HackrfSweepConfigurationBar(QWidget):
                 label.buddy().setAccessibleName(text(key))
         self.scope.setText(text("hackrf.sweep.scope"))
         self.scope.setToolTip(text("hackrf.sweep.scope"))
+        self._refresh_plan_detail()
 
     def apply_view_state(self, state: AnalyzerViewState) -> None:
         available = state.mode is AnalyzerMode.SWEEP and state.hackrf_sweep_controls_available
         self.setVisible(available)
         for field in self._fields:
             field.setEnabled(available and not state.controls_locked)
+        self._refresh_plan_detail()
+
+    def _refresh_plan_detail(self) -> None:
+        try:
+            request = self.request()
+        except (TypeError, ValueError):
+            self.plan_detail.setText(text("hackrf.sweep.invalid"))
+            return
+        self.plan_detail.setText(text("hackrf.sweep.capture_plan",
+            start=request.start_hz // 1_000_000, stop=request.hardware_stop_hz // 1_000_000))
 
     def request(self) -> HackrfSweepRequest:
         state = self._model.state

@@ -217,7 +217,7 @@ void test_incomplete_finish_and_fail_closed_admission() {
         case 2U: invalid.acquisition.baseband_filter_hz = 20'000'000U; break;
         case 3U: invalid.unit = sdr_core::SpectrumUnit::Dbm; break;
         case 4U: invalid.source.backend_id = "native.libhackrf.rx.v1"; break;
-        case 5U: invalid.acquisition.sequence.ranges = {{2400U, 2740U}}; break;
+        case 5U: invalid.acquisition.sequence.ranges = {{2000U, 6000U}}; break;
         case 6U: invalid.fft_size = 512U; break;
         default: break;
         }
@@ -244,6 +244,43 @@ void test_incomplete_finish_and_fail_closed_admission() {
     }
 }
 
+void test_extended_full_range_and_partial_final_crop() {
+    for (const auto stop_mhz : {122U, 6000U}) {
+        auto value = config();
+        const auto start_mhz = stop_mhz == 6000U ? 1U : 100U;
+        const auto steps = (stop_mhz - start_mhz + 19U) / 20U;
+        value.acquisition.sequence.ranges = {{static_cast<std::uint16_t>(start_mhz),
+            static_cast<std::uint16_t>(start_mhz + steps * 20U)}};
+        value.analysis_stop_hz = static_cast<double>(stop_mhz) * 1'000'000.0;
+        value.fft_size = 1024U;
+        sdr_hackrf::HackrfSweepAnalysis analysis(value);
+        const auto& definition = analysis.definition();
+        expect(definition.stop_frequency_hz == value.analysis_stop_hz &&
+               definition.segments.back().usable_stop_hz == value.analysis_stop_hz,
+               "hardware padding leaked into declared analysis range");
+        std::vector<sdr_core::SweepLineFrame> lines;
+        for (std::uint32_t index = 0; index < steps * 2U; ++index) {
+            auto input = block(index, 1U, 1U);
+            input.reported_tuned_frequency_hz = static_cast<std::uint64_t>(start_mhz) * 1'000'000U +
+                static_cast<std::uint64_t>(index / 2U) * 20'000'000U + (index % 2U) * 5'000'000U;
+            auto emitted = analysis.admit(input);
+            lines.insert(lines.end(), emitted.begin(), emitted.end());
+            if (index == 0U) {
+                expect(analysis.preview().has_value(), "full-range progress waited for a terminal line");
+            }
+        }
+        expect(lines.size() == 1U && lines[0].missing_segment_indices.empty() &&
+               lines[0].frequencies_hz->back() < value.analysis_stop_hz &&
+               lines[0].last_admitted_segment->usable_stop_hz == value.analysis_stop_hz,
+               "exact full/partial native Sweep did not complete coherently");
+        if (stop_mhz == 6000U) {
+            expect(definition.segments.size() == 1200U &&
+                   lines[0].last_admitted_segment->segment_index == 1199U,
+                   "full 1..6000 MHz analysis was silently truncated");
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -251,6 +288,7 @@ int main() {
         test_two_disjoint_subbands_and_progressive_line();
         test_gap_flush_and_next_scan_without_stale_repair();
         test_incomplete_finish_and_fail_closed_admission();
+        test_extended_full_range_and_partial_final_crop();
         std::cout << "HackRF Sweep native FFT/line analysis OK\n";
         return 0;
     } catch (const std::exception& error) {

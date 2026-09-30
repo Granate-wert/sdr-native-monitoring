@@ -28,6 +28,7 @@ from .native_continuous_sweep import _to_domain_line, _to_domain_progress
 from .readonly_observation_owner import RetainedReadOnlyObserver
 from .source_capability_admission import admit_source_request
 from .source_capability_providers import _qualified_hackrf_sdk_directory
+from .sweep_geometry_contract import require_extended_sweep_geometry
 
 
 class HackrfSweepDisplayService:
@@ -68,6 +69,10 @@ class HackrfSweepDisplayService:
                     or selection.revision != request.selection_revision
                     or request.source.family is not DeviceFamily.HACKRF):
                 raise LiveAdmissionRejected("HackRF Sweep source selection is stale or unavailable")
+            try:
+                request.__post_init__()  # also refuse forged frozen foreign payloads before SDK/claim
+            except (TypeError, ValueError):
+                raise LiveAdmissionRejected("HackRF Sweep geometry is not admitted") from None
             choice = request.source
             binding = choice.binding
             inventory = self._catalog.snapshot()
@@ -85,6 +90,11 @@ class HackrfSweepDisplayService:
                 raise LiveAdmissionRejected("HackRF optional Sweep contract changed") from None
             if contract != 1:
                 raise LiveAdmissionRejected("HackRF optional Sweep contract is unavailable")
+            if request.requires_extended_geometry:
+                try:
+                    require_extended_sweep_geometry(self._native)
+                except ValueError:
+                    raise LiveAdmissionRejected("HackRF extended Sweep geometry is unavailable") from None
             admitted = admit_source_request(inventory, choice.device_id, "sweep", request,
                                             hackrf_sweep_runtime_available=True)
             if not admitted.accepted:

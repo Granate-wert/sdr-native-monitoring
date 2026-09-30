@@ -186,8 +186,8 @@ class SweepPreviewTests(unittest.TestCase):
         # Actual application reuses the same bounded scalar factory, no I/O.
         config = self.page.drawer.preview_configuration()
         request = self.page._sweep_request()
-        with self.assertRaisesRegex(ValueError, "64-segment"):
-            self.harness.presenter.preview_sweep(config, replace(request, stop_hz=6000e6))
+        with self.assertRaisesRegex(ValueError, "2048-segment"):
+            self.harness.presenter.preview_sweep(config, replace(request, stop_hz=100_000e6))
         self.assertEqual(self.harness.events, [])
 
     def test_details_keyboard_and_geometry_without_rf_commands(self):

@@ -169,7 +169,18 @@ void bind_hackrf_sweep(py::module_& module) {
             // before the official port is initialized or opens any device.
             sdr_hackrf::HackrfSweepRuntimeAnalysisConfig config;
             auto& analysis = config.analysis;
-            analysis.acquisition.sequence.ranges = {{range_start_mhz, range_stop_mhz}};
+            if (range_start_mhz < 1U || range_stop_mhz > 6000U ||
+                range_stop_mhz <= range_start_mhz ||
+                range_stop_mhz - range_start_mhz < 20U) {
+                throw ConfigurationError("HackRF Sweep analysis range must fit 1..6000 MHz with >=20 MHz span");
+            }
+            const auto steps = (range_stop_mhz - range_start_mhz + 19U) / 20U;
+            const auto hardware_stop_mhz = static_cast<std::uint16_t>(range_start_mhz + steps * 20U);
+            if (static_cast<double>(hardware_stop_mhz) * 1'000'000.0 - 7'500'000.0 > 6'000'000'000.0) {
+                throw ConfigurationError("HackRF rounded capture would tune outside the qualified RF envelope");
+            }
+            analysis.acquisition.sequence.ranges = {{range_start_mhz, hardware_stop_mhz}};
+            analysis.analysis_stop_hz = static_cast<double>(range_stop_mhz) * 1'000'000.0;
             analysis.acquisition.sequence.step_width_hz = 20'000'000U;
             analysis.acquisition.sequence.offset_hz = 7'500'000U;
             analysis.acquisition.sequence.style = sdr_hackrf::HackrfSweepStyle::Interleaved;

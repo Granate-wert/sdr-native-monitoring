@@ -68,6 +68,34 @@ class SharedRuntimeDiagnosticTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.object(runtime, "hold_package_libiio_metadata", return_value=nullcontext()))
 
+    def test_extended_geometry_is_paired_before_libiio_metadata_or_sdk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module, _, manifest = package_fixture(Path(tmp))
+            native = native_fixture(module)
+            native.SWEEP_GEOMETRY_CONTRACT_VERSION = 1
+            native.SWEEP_MAX_SEGMENTS = 2048
+            native.SWEEP_MAX_REDUCED_BYTES = 134217728
+            extended = {**manifest, "sweep_geometry_contract_version": 1,
+                        "sweep_max_segments": 2048, "sweep_max_reduced_bytes": 134217728}
+            path = module.parent / "native_build_manifest.json"
+            with patch.object(sys, "frozen", True, create=True):
+                for updates in ({"sweep_max_segments": 64}, {"sweep_geometry_contract_version": True},
+                                {"sweep_max_reduced_bytes": 67108864}):
+                    path.write_text(json.dumps({**extended, **updates}), encoding="utf-8")
+                    with self.subTest(updates=updates), self.assertRaises(ValueError):
+                        runtime.packaged_shared_runtime_verdict(native)
+                native.pluto_runtime_info.assert_not_called()
+                path.write_text(json.dumps(extended), encoding="utf-8")
+                paths = tuple(module.parent / n for n in runtime.SHARED_COMPONENTS)
+                with patch.object(runtime, "windows_loaded_module_paths", return_value=paths):
+                    verdict = runtime.packaged_shared_runtime_verdict(native)
+                self.assertEqual(verdict["sweep_geometry_contract_version"], 1)
+                self.assertEqual(verdict["sweep_max_segments"], 2048)
+                self.assertEqual(verdict["sweep_max_reduced_bytes"], 134217728)
+            native.create_hackrf_runtime_dsp_control.assert_not_called()
+            native.scan_pluto_contexts.assert_not_called()
+            native.hackrf_init.assert_not_called()
+
     def test_exact_manifest_sdk_and_all_loaded_modules_without_hardware_entrypoints(self):
         with tempfile.TemporaryDirectory() as tmp:
             module, _, _ = package_fixture(Path(tmp))

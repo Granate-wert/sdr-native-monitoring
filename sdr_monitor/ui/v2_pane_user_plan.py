@@ -86,6 +86,8 @@ class PaneUserPlan:
     resource_sources: tuple[tuple[str, str], ...]
     initial_ad_configurations: tuple[tuple[str, LiveConfiguration], ...]
     ad_sweep_geometry: tuple[tuple[str, AnalyzerGeometryPreflight], ...] = ()
+    hackrf_sweep_geometry: tuple[tuple[str, AnalyzerGeometryPreflight], ...] = ()
+    hackrf_hardware_ranges: tuple[tuple[str, int, int], ...] = ()
 
 
 def compile_user_pane_plan(
@@ -131,6 +133,8 @@ def compile_user_pane_plan(
     trace_cost = CaptureEpochCost(0.01, 0.01, 8.0, 0.005, 0.005)
     profiles: dict[str, PaneProfile] = {}
     ad_geometry: list[tuple[str, AnalyzerGeometryPreflight]] = []
+    hf_geometry: list[tuple[str, AnalyzerGeometryPreflight]] = []
+    hf_ranges: list[tuple[str, int, int]] = []
     by_source: dict[str, list[tuple[PaneSlotDraft, PaneProfile]]] = {source: [] for source in source_order}
     for draft in drafts:
         if draft.source_id is None:
@@ -188,11 +192,13 @@ def compile_user_pane_plan(
                         int(draft.start_hz), int(draft.stop_hz), draft.fft_size,
                         16, 20, 50)
                 except (TypeError, ValueError):
-                    raise PaneUserPlanError("HackRF Sweep requires whole MHz, a 20..320 MHz span and FFT <=4096") from None
+                    raise PaneUserPlanError("HackRF Sweep requires whole MHz, admitted FFT and reduced-data memory budget") from None
                 if sweep_request.start_hz != draft.start_hz or sweep_request.stop_hz != draft.stop_hz:
                     raise PaneUserPlanError("HackRF Sweep endpoints must be exact whole MHz")
                 sweep_cost = CaptureEpochCost(0.01, 0.01, 1.0, 0.005, 0.005)
                 profile = HackrfSweepPaneProfile(sweep_request, sweep_cost)
+                hf_geometry.append((f"pane-{draft.number}", sweep_request.geometry))
+                hf_ranges.append((f"pane-{draft.number}", sweep_request.start_hz, sweep_request.hardware_stop_hz))
             else:
                 if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
                     raise PaneUserPlanError("HackRF pane mode is not supported")
@@ -282,7 +288,7 @@ def compile_user_pane_plan(
             persistence_enabled=False, persistence_mode="disabled")))
     return PaneUserPlan(layout, tuple(groups),
                         tuple((resource_for[source], source) for source in source_order),
-                        tuple(initial_ad), tuple(ad_geometry))
+                        tuple(initial_ad), tuple(ad_geometry), tuple(hf_geometry), tuple(hf_ranges))
 
 
 __all__ = ["PaneSlotDraft", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]

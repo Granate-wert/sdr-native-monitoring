@@ -1,6 +1,7 @@
 """Shared reduced-data accounting; excludes acquisition and DSP engine memory."""
 from dataclasses import dataclass
 import math
+from .sweep_capacity import SWEEP_MAX_SEGMENTS
 
 
 def _finite_positive(value: object, name: str, *, allow_zero: bool = False) -> None:
@@ -76,7 +77,7 @@ class AnalyzerGeometryPreflight:
         _finite_positive(self.sample_rate_hz, "sample rate")
         _bounded_int(self.physical_fft_size, "physical FFT size", minimum=2, maximum=262_144)
         _finite_positive(self.output_spacing_hz, "output spacing")
-        _bounded_int(self.segment_count, "segment count", minimum=1, maximum=64)
+        _bounded_int(self.segment_count, "segment count", minimum=1, maximum=SWEEP_MAX_SEGMENTS)
         _finite_positive(self.segment_stride_hz, "segment stride", allow_zero=True)
         _finite_positive(self.usable_window_hz, "usable window", allow_zero=True)
         if self.mode == "sweep" and (self.segment_stride_hz == 0.0 or self.usable_window_hz == 0.0):
@@ -118,7 +119,7 @@ def estimate_analyzer_reduced(
         # Preserve the established Live axis/value + per-frame margin.
         return AnalyzerReducedEstimate(mode, output_bins, output_bins * 16 * retained_outputs, 0, 0)
     if (type(physical_fft_size) is not int or not 2 <= physical_fft_size <= 262144
-            or type(segment_count) is not int or not 1 <= segment_count <= 64):
+            or type(segment_count) is not int or not 1 <= segment_count <= SWEEP_MAX_SEGMENTS):
         raise ValueError("invalid sweep retained-segment geometry")
     # Output: f64 axis + f32 values + u32 quality + i32 segment index.
     # Assembly: f64 power + u32 coverage/quality + i32 source + shared f64 axis.

@@ -247,6 +247,9 @@ $manifest = [ordered]@{
     native_version = "0.6.0"
     source_commit = $sourceCommit
     artifact_sha256 = $artifactSha256
+    sweep_geometry_contract_version = 1
+    sweep_max_segments = 2048
+    sweep_max_reduced_bytes = 134217728
 }
 if ($hackrfRequested) {
     $manifest['profiling_enabled'] = [bool]$Profile

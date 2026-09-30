@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -10,6 +11,11 @@
 #include <vector>
 
 namespace sdr_core {
+
+// Optional geometry protocol1: common AD936x/HackRF line capacity. Queue,
+// target-bin and reduced-data budgets are separate and are NOT widened.
+inline constexpr std::size_t sweep_max_segments = 2048U;
+inline constexpr std::uint64_t sweep_max_reduced_bytes = 128U * 1024U * 1024U;
 
 inline constexpr std::string_view contract_schema_name = "sdr-native-contracts";
 // Version 2: P04 adds EngineState, OverflowPolicy and EventSeverity wire enums.
