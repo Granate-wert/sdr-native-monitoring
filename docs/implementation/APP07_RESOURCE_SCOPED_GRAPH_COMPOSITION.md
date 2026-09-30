@@ -963,3 +963,29 @@ input or permission/security action. Physical tinySA Stop→Start and the new
 live first-cause witness are NOT qualified by the software/frozen gates.
 APP07 remains PARTIAL, independent new-packet review pending. All prior
 wideband/Sweep/middle-drag/RBW and group1/physical-nextStart debts remain open.
+
+### Current AD936x continuous-Sweep pane packet
+
+Exact product `febd3f7` adds the selected RX1 continuous-Sweep pane adapter over
+the SAME existing application/router/native lease and common V2 preparation.
+See APP07_AD936X_PANE_OWNER_CONTRACT.md for W/N versus physical F, exact
+source/epoch/grid/quality guards and explicit control boundaries. Native64
+segments/64MiB remain bounded; full-range qualification is OPEN.
+
+16new/103focused source tests passed; exact clean1113 V2 tests1047pass/66skip/
+0fail313.277s, deferred[]/outside[]/source-native unchanged. Full officialCPU
+40/40CTest43.20s and658-file frozen pipeline passed. New diagnostic EXE is
+not promoted to the approved static/current installation; C++/native hash
+unchanged. Existing NaN warning debt is not declared resolved.
+
+Short current-source physical RX observation with the new package native
+used three product owners and actual OFFSCREEN V2 panes concurrently: ADUSB
+Sweep100..220MHz/Fs61.44/W36/N4096/F8192, HFUSB Sweep100..220/Fs20/F4096,
+tinySA100..300/1001point, Empty4. Progressive/terminal graph delivery and
+selected Stop3 retaining both SDR peers, then normal Stopall/close passed.
+This is NOT frozen visible Windows/50ms/DWM/FHD/QHD/DPI/RFduty/Pd/USB-lossless/
+RF-settled/soak acceptance. Native quality flags, including HackRF settling
+and progressive missing coverage, remain present. tinySA300k RBW was NOT
+applied. All full-range Sweep, actual middle-button RF retune, wider RTBW
+pane profiles, matched visible new-EXE cells and independent review remain
+OPEN. APP07PARTIAL/APP06Eplanned/fullAPP00..14ACTIVE; APP05 timer not restarted.
