@@ -2424,7 +2424,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Глубина истории водопада в секундах", UiLocale.EN: "Waterfall history depth in seconds"}
         ),
         "waterfall.history.blocks.name": MappingProxyType(
-            {UiLocale.RU: "Ёмкость истории Sweep-водопада в блоках строк, не в секундах",
+            {UiLocale.RU: "Ёмкость истории водопада обзора в блоках строк, не в секундах",
              UiLocale.EN: "Sweep waterfall history capacity in row blocks, not seconds"}
         ),
         "waterfall.history.prefix": MappingProxyType(
@@ -2464,7 +2464,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Строк в секунду водопада", UiLocale.EN: "Waterfall rows per second"}
         ),
         "waterfall.rows_per_block.name": MappingProxyType(
-            {UiLocale.RU: "Строк в блоке истории Sweep-водопада, не скорость сканирования",
+            {UiLocale.RU: "Строк в блоке истории водопада обзора, не скорость сканирования",
              UiLocale.EN: "Rows per Sweep waterfall history block, not scan rate"}
         ),
         "waterfall.status.cleared": MappingProxyType(
