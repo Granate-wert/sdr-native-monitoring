@@ -1860,3 +1860,65 @@ four-view Qt receipt-before-Start chain. Candidate expanded regression:
 216 passed, no failures/errors/skips. This candidate result is NOT exact-source,
 matching frozen Windows, new physical RF, sustained or release acceptance;
 those are recorded separately after qualification. APP07 remains PARTIAL.
+
+### Default RF qualification — exact product 75543d7, 2026-10-01
+
+The corrected product `75543d7a83443ce9fb07a4f96ad26850e00daafc` passed the
+full clean-HEAD UI V2 source gate: 1253 total / 1187 passed / 66 skipped /
+zero failures or errors in 419.399s. Source/native provenance was exact,
+compiled deferred and outside-product import lists empty, and the native
+input unchanged. Four historical NaN validation warnings remain. The first
+8f full run failed the existing strict Russian prose guard; only catalog
+wording was corrected, not its assertions, identity or admission contracts.
+
+The matching, separately tagged diagnostic CPU/HackRF package passed the
+official full pipeline without skip-gates: 40/40 CTest in 32.15s, all 658
+manifest-covered frozen payload files, shared runtime and source snapshot
+verification. The snapshot contains 530 inputs. It uses Qt6.11.1 and the
+unchanged native schema5/factory2/DSP1/persistence1/Sweep1/geometry1 contracts,
+maximum2048 segments and128MiB reduced-data budget. It is NOT promoted to
+canonical/static/current release. Later documentation commits do not relabel
+these exact product source/build/hardware results.
+
+Five bounded real-device tests of the SAME source and matching packaged
+native module passed on the ordinary Analyzer's four same-source views:
+AD9364 USB RTBW at61.44MS/s/RF56MHz/F4096 and Sweep at61.44MS/s/W36MHz/N4096/
+F8192; HackRF USB RTBW at20MS/s/RF20MHz/F4096 and Sweep at20MS/s/F2048; tinySA
+USB Sweep at100–300MHz/1001points/LOW/targetRBW300kHz. Each exercised actual
+Qt middle events, default Cancel, approved numeric+5MHz, all four GUI history
+receipts before new Start, a second stopped Apply-only shift, separate Start,
+real epoch/operation transitions and normal Stop/shutdown. These OFFSCREEN
+source tests are not frozen Windows input, RF accuracy or sustained tests.
+The tinySA target is not a newly serialized numeric actual RBW readback;
+HackRF setter acknowledgements are not unavailable Fs/filter getter proof.
+Initial private-observer stale source-reference/diagnostic-attribute failures
+before RX remain recorded; only the observer was corrected, no product guard
+was relaxed and no implicit retry was added.
+
+The SAME new frozen Windows EXE was then operated on the default AD USB path
+with four views. Explicit RTBW Start showed SDK61.44MS/s/RF56MHz/F4096; default
+Cancel preserved2400MHz/epoch3, approved RF+5 produced2405MHz/epoch5, stopped
+Apply prepared2410MHz and cleared all four histories without RX, and separate
+Start produced epoch7. Sweep on the SAME Analyzer tab progressively displayed
+partial coverage before a complete100–1000MHz pass; approved RF+5 changed it
+to105–1005MHz/fresh epoch1 with four fresh histories. Stop during a partial
+pass retained cancellation/gapped status instead of reporting Complete.
+Normal Close removed the tested process/window, followed by repeated full
+package/native/source verification. No firewall/network/firmware changes.
+
+Computer Use capture/activation and observed numeric controls were usable;
+one stale cached-index error and helper/caption observations remain recorded.
+This is not a permanent helper repair or actual Windows held-middle proof.
+1440×912 logical captures are not FHD/QHD/DPI, DWM50ms, lossless, RF duty/Pd,
+RF accuracy or soak acceptance. Five selected package-local loaded-module
+paths/current disk hashes are not in-memory/exhaustive ABI attestation.
+
+APP07 remains PARTIAL/full APP00–14 ACTIVE. The bounded default path unit is
+qualified, not the complete APP07 release. Next: matching new-package shared/
+time-sliced RF controls with independent peers, genuine Windows held-middle,
+bounded historical tinySA identity/readback first-cause diagnosis, tuning
+groups/supported dual-RX/genuine Ethernet, sustained/layout/accessibility,
+independent review and release. Short tinySA success does not fix the previous
+late identity mismatch or readback-deadline failure. APP06E remains planned;
+the expired APP05 timer is not restarted. Private reports/runners/raw captures
+and device identities are not part of the public publication whitelist.
