@@ -253,7 +253,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "RBW после прохода {value} кГц",
             UiLocale.EN: "post-pass RBW {value} kHz"}),
         "analyzer.pane.setup.preview_tinysa_scope": MappingProxyType({
-            UiLocale.RU: "Целевой RBW не является фактическим: обратное чтение будет после прохода. Вход/LNA/точность/подавление помех/число измерений не имеют readback; ACK команды — не RF-доказательство. Точки tinySA не являются FFT. Настройки не сохраняются в прошивку и не восстанавливаются автоматически после Stop.",
+            UiLocale.RU: "Целевой RBW не является фактическим: обратное чтение будет после прохода. Вход/LNA/точность/подавление помех/число измерений не имеют обратного чтения; ACK команды — не RF-доказательство. Точки tinySA не являются FFT. Настройки не сохраняются в прошивку и не восстанавливаются автоматически после «Стоп».",
             UiLocale.EN: "Target RBW is not actual RBW: readback follows the pass. Input/LNA/accuracy/spur/repeat have no readback; command ACK is not RF proof. tinySA points are not FFTs. Settings are not saved to firmware or automatically restored after Stop."}),
         "analyzer.pane.setup.invalid": MappingProxyType({
             UiLocale.RU: "Проверьте источник, диапазон и параметры окна; раскладка не подготовлена.",

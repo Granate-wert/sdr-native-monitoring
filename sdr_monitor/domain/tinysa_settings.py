@@ -11,11 +11,19 @@ TINYSA_FIRMWARE_SOURCE_COMMIT = "26fc821ad3432f929630718cd290314dbc711f48"
 MAX_TINYSA_SETTINGS_COMMANDS = 7
 TINYSA_RUNTIME_CONTROL_CONTRACT = "tinysa-shell-26fc821-v1"
 _REVISION_SUFFIX = re.compile(r"(?:^|[-_\s])g?26fc821(?:ad3432f929630718cd290314dbc711f48)?$", re.ASCII)
+# cmd_version/main.c at the SAME admitted source commit emits this second
+# line for TINYSA4. The product version probe joins lines with " | ". Keep
+# all original text in firmware identity; only contract recognition splits it.
+_ULTRA_HW_LINE = re.compile(
+    r"HW Version:(?:V0\.4\.5\.1(?:\.1)?|V0\.4\.6|V0\.5\.4|Unknown)(?: max2871)?\Z", re.ASCII)
 
 
 def tinysa_control_contract(firmware_version: str) -> str | None:
     """Map an observed version suffix to a SOURCE contract, not firmware attestation."""
-    return TINYSA_RUNTIME_CONTROL_CONTRACT if _REVISION_SUFFIX.search(firmware_version) else None
+    version, separator, hardware = firmware_version.partition(" | ")
+    if separator and (not version.startswith("tinySA4") or not _ULTRA_HW_LINE.fullmatch(hardware)):
+        return None
+    return TINYSA_RUNTIME_CONTROL_CONTRACT if _REVISION_SUFFIX.search(version) else None
 
 
 class TinySaInputMode(StrEnum):

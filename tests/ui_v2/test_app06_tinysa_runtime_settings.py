@@ -29,6 +29,7 @@ from sdr_monitor.domain.tinysa_settings import (
 from sdr_monitor.services import tinysa_sweep_settings_controller as legacy
 from sdr_monitor.services.tinysa_capability_adapter import TinySaModel, TinySaReadOnlyProbe
 from sdr_monitor.services.tinysa_owned_acquisition import TinySaAcquisitionPhase
+from sdr_monitor.services.tinysa_serial_version_probe import _parse_version
 from sdr_monitor.services.tinysa_serial_trace_collector import (
     TinySaScanRawRequest,
     TinySaTraceCollectionCancelled,
@@ -46,9 +47,9 @@ from tests.ui_v2 import test_app06_tinysa_common_analyzer as common
 VERSION = "tinySA4_v1.4-179-g26fc821"
 
 
-def settings_graph(model=TinySaModel.ULTRA):
+def settings_graph(model=TinySaModel.ULTRA, *, version_text=None):
     g = common.graph()
-    version = VERSION if model is TinySaModel.ULTRA else "tinySA_v1.4-179-g26fc821"
+    version = version_text or (VERSION if model is TinySaModel.ULTRA else "tinySA_v1.4-179-g26fc821")
     class Probe:
         def __init__(self, endpoint):
             self.endpoint = endpoint
@@ -63,7 +64,7 @@ def settings_graph(model=TinySaModel.ULTRA):
         factory = owner._factory
         def serial_factory(route):
             serial = factory(route)
-            serial.version = (version + "\r\nch> ").encode("ascii")
+            serial.version = (version.replace(" | ", "\r\n") + "\r\nch> ").encode("ascii")
             write = serial.write
             def settings_write(command):
                 count = write(command)
@@ -128,6 +129,48 @@ class TinySaRuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(g.serials, [])
         with self.assertRaises(ValueError):
             replace(snapshot, runtime_control_contract=None)
+
+    def test_source_evidenced_ultra_hw_metadata_does_not_hide_known_revision(self):
+        for hardware in ("V0.4.5.1", "V0.4.5.1.1", "V0.4.6", "V0.5.4", "Unknown"):
+            for suffix in ("", " max2871"):
+                with self.subTest(hardware=hardware, suffix=suffix):
+                    value = VERSION + " | HW Version:" + hardware + suffix
+                    self.assertEqual(tinysa_control_contract(value), TINYSA_RUNTIME_CONTROL_CONTRACT)
+        for value in (
+            VERSION + " | other", VERSION + " | HW Version:V9.9.9", VERSION + " | HW Version:V0.5.4 extra",
+            VERSION + " | HW Version:V0.5.4 max9999", VERSION + " | HW Version:V0.5.4 | other",
+            "tinySA_v1.4-g26fc821 | HW Version:V0.5.4", "tinySA4-g9999999 | HW Version:V0.5.4",
+            "tinySA4-g26fc821-dirty | HW Version:V0.5.4"):
+            with self.subTest(value=value):
+                self.assertIsNone(tinysa_control_contract(value))
+
+    def test_observed_multiline_version_preserves_full_identity_through_same_owner_settings(self):
+        normalized = "tinySA4_v1.4-200-g26fc821 | HW Version:V0.5.4 max2871"
+        parsed = _parse_version(b"version\r\ntinySA4_v1.4-200-g26fc821\r\nHW Version:V0.5.4 max2871\r\nch> ")
+        self.assertEqual(parsed.normalized_version, normalized)
+        g = settings_graph(version_text=normalized)
+        self.addCleanup(g.application.shutdown)
+        source = g.application.discover()[0]
+        g.application.select_device(source.device_id)
+        selected = g.sources.current()
+        self.assertEqual(selected.selected.binding.snapshot.runtime_control_contract, TINYSA_RUNTIME_CONTROL_CONTRACT)
+        # Contract recognition must not erase the hardware line from identity.
+        self.assertNotEqual(parsed.firmware_fingerprint, _parse_version(
+            b"tinySA4_v1.4-200-g26fc821\r\nch> ").firmware_fingerprint)
+        request = TinySaSweepRequest(selected.selected, selected.revision, 100_000_000, 300_000_000, 1001,
+            settings=TinySaSweepSettingsPlan(rbw_mode=TinySaRbwMode.MANUAL, rbw_hz=300_000),
+            input_mode=TinySaInputMode.LOW, readback_settings=True)
+        g.application.start_sweep(request)
+        self.wait(lambda: g.instrument.poll_latest().metrics.acquisition_finished)
+        line = g.instrument.poll_latest().line
+        self.assertIsNotNone(line)
+        self.assertEqual(line.instrument.firmware_fingerprint, selected.selected.binding.calibration_identity.firmware_fingerprint)
+        self.assertEqual(line.instrument.settings.plan.rbw_hz, 300_000)
+        self.assertEqual(line.instrument.settings.actual_rbw_hz, 30_000)
+        self.assertEqual(len(g.serials), 1)
+        self.assertIn(b"rbw 300\r", writes(g.serials[0]))
+        g.application.stop()
+        self.assertFalse(g.serials[0].is_open)
 
     def test_model_input_settings_matrix_refuses_before_serial(self):
         cases = (

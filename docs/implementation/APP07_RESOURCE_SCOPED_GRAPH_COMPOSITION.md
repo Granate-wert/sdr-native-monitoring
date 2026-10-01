@@ -1333,3 +1333,14 @@ through Discard; labels are translated in place without I/O. The maximum
 are unchanged. Fake-serial/source tests do not qualify physical 300 kHz RBW,
 RF input, Windows/DPI or sustained multi-source operation; exact current
 build/device evidence remains a separate gate. APP07 is still PARTIAL.
+
+The actual version-only observation found the admitted revision followed by
+the Ultra hardware line. Contract recognition now accepts only the exact
+second-line forms emitted by `cmd_version`/`get_hw_version_text` in the SAME
+[firmware source commit](https://github.com/erikkaashoek/tinySA/blob/26fc821ad3432f929630718cd290314dbc711f48/main.c#L2207-L2242).
+It does not admit arbitrary trailers, another/dirty revision or unknown
+commands. The full normalized response, including HW text, remains in the
+firmware identity and same-owner version comparison; no parser/fingerprint
+normalization or binary-firmware-attestation claim is introduced. An initial
+exact915ba19 full gate's one RU-prose failure is retained, not relabeled PASS;
+the untranslated readback/Stop words were corrected, not the catalog guard.
