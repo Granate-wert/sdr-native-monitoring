@@ -1551,3 +1551,20 @@ qualification, genuine Ethernet/tuning groups, sustained/review/release.
 APP07 remains PARTIAL; APP06E and later APP08–14 gates remain open. No native
 DSP, SDK, Fs/group, transport, queue-capacity or resource-budget expansion is
 introduced, and the expired APP05 timer is not restarted.
+
+#### Exact source qualification of the RF replacement foundation
+
+Exact product fcad48cb1ac6cb38b7899e6a0cd07c85caba6172 passed the clean
+full V2 source gate:1176 total,1110 passed/66 skipped/zero failures in411.659s,
+no deferred compiled tests or outside product imports, unchanged source and
+native762fceb6. Four historical NaN warnings remain. The separate exact-HEAD
+focused set passed120 tests in7.931s, including14 new service-core methods
+outside full-V2 discovery. There are30 new methods overall:14 service,7 pure
+plan and9 concrete product tests. Scoped lint/type/compile checks passed.
+
+These are source/common-graph tests with fake SDKs plus the existing packaged
+native, not a new frozen Python/Windows gesture, physical RF change, native
+build/CTest, DWM/50ms or sustained/release acceptance. The old ff5a5be package
+and its physical/Windows gates are not relabelled as fcad48c. A later
+public-documentation-only commit likewise does not change fcad48c's tested
+product identity. The UI gesture and full-feature gates above remain open.
