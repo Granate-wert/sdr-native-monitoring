@@ -1922,3 +1922,71 @@ independent review and release. Short tinySA success does not fix the previous
 late identity mismatch or readback-deadline failure. APP06E remains planned;
 the expired APP05 timer is not restarted. Private reports/runners/raw captures
 and device identities are not part of the public publication whitelist.
+
+### Independent SDR Sweep RF controls — exact product 059b34e, 2026-10-02
+
+The preceding frozen product exposed a real UI defect: independent SDR Sweep
+panes published progressively but could not enable RF shift. The board anchor
+incorrectly required a single configuration generation. SDR Sweep explicitly
+has per-segment generations and no global producer generation. Only for an
+installed SWEEP binding, the existing exact binding and actual producer epoch
+now permit the RF anchor when global config_generation is None. No zero/clock
+is invented; per-segment provenance remains unchanged. Missing mandatory
+RTBW/instrument generation still refuses the anchor. Native/DSP/SDK/Fs/FFT/
+queue/budget/quality/time contracts are unchanged.
+
+Nine new real-Qt/common-owner methods with AD936x/HackRF fake-SDK matrices
+cover progress and terminal anchors, actual held-middle events on Spectrum
+and Waterfall, stale-epoch refusal, default Cancel, shared-resource impact,
+all affected GUI history receipts before Start, stopped Apply-only arming,
+and strict RTBW/instrument negatives. Shared approval shifts only the selected
+pane: equal requests can become two time-sliced capture jobs on ONE RX. Both
+affected histories reset, while an independent fake peer retains its owner,
+activation/binding and history. That peer test is not physical peer proof.
+
+Exact clean product `059b34e89c917f7f1cc31266e0fc2c2827f5ed4b` passed focused78
+tests and full serial UI V2 source gate1262total/1196passed/66skipped/zero
+failures-errors in482.703s. Before/after tracked source and native were exact,
+compiled-deferred/outside-import lists empty. Four historical NaN warnings
+remain. The matching separately tagged diagnostic CPU/HackRF build passed the
+official full no-skip pipeline:40/40CTest34.23s, all658 manifest-covered frozen
+files, source530-input snapshot and native/shared-runtime verification.
+Qt6.11.1/schema5/factory2/DSP1/persistence1/Sweep1/geometry1/2048segments/128MiB
+remain unchanged. No canonical/static/current release promotion occurred.
+Later documentation commits never relabel exact059 source/build/hardware.
+
+The SAME new frozen Windows EXE then exercised real HackRF USB Sweep20MS/s/
+FFT2048 in two shared100–220MHz panes and two Empty panes. Apply stayed inert,
+explicit Start produced two changing Spectrum/Waterfall pairs with RF enabled.
+The+5MHz preview showed all affected panes and default Enter Cancel was inert.
+Explicit Stop/Apply/Start shifted only pane1 to105–225MHz; pane2 stayed100–220,
+both histories were fresh and the one RX time-sliced both requests. Observed
+revisit2.11–2.12s exceeded model2.06s and was not hidden. After ordinary Stop,
+a second+5MHz Apply-only changed pane1 to110–230, cleared BOTH affected
+histories and did not start RX. Separate Start resumed progressive pairs.
+Final Stop/CloseLayout/normalClose removed the process/window; repeated full
+658-file/native-loader/source-snapshot verification passed.
+
+This Windows RF witness has NO independent physical peer and no exact numeric
+GUI epoch/gap readback, true Windows held-middle, DWM50ms, FHD/QHD/DPI, RF duty/
+Pd/accuracy, lossless or soak acceptance. Actual Qt middle tests are distinct
+from Windows hardware input. Helper popup/index errors and accessibility lag
+remain recorded; fresh observation recovery did not change security/system.
+HackRF setter acknowledgements are not nonexistent Fs/filter getters.
+
+A separate mixed physical source+matching-native attempt did NOT qualify:
+initial/R1 private Empty-observer errors and R2 initial-start timeout are
+retained, all with normal Stop/shutdown. A first-failure event occurred, but
+the affected resource and finite cause were not captured: cause UNKNOWN, not
+a proven tinySA or SDK-cleanup diagnosis. No RF action or mixed R3 retry was
+performed. The future private observer now records cached first cause before
+cleanup and stops waiting on stop_required; compile-only, no new physical
+PASS. Earlier real shared/time-sliced HackRF plus independent tinySA on the
+preceding product remains a distinct functional witness, not new059 RF proof.
+
+APP07 remains PARTIAL. Next: bounded pre-cleanup mixed first cause, matching
+physical independent-peer RF, strict independent AD admission, supported
+tuning groups/dual RX/genuine Ethernet, historical SDK-cleanup cause, actual
+Windows input when supported, sustained/layout/accessibility, independent
+review and release. APP06E Cut DC/spur remains planned; expired APP05 timer
+is not restarted. Private captures/runners/reports are excluded from publish.
