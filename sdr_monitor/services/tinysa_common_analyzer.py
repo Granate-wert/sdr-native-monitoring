@@ -66,25 +66,35 @@ class TinySaCommonAnalyzerService:
         with self._lock:
             return self._acquisition_failure
 
+    def preflight(self, request: TinySaSweepRequest, selection: AnalyzerSourceSelection) -> TinySaScanRawRequest:
+        """Pure current catalog/settings/correction admission, no serial work."""
+        if (not isinstance(request, TinySaSweepRequest) or selection.release_pending
+                or selection.selected is not request.source or selection.revision != request.selection_revision):
+            raise LiveAdmissionRejected("Instrument selection changed; rebuild the request")
+        request.__post_init__()
+        inventory = self._catalog.snapshot()
+        source = request.source
+        if (inventory.binding_for_source(source.device_id) is not source.binding
+                or inventory.runtime_for_adapter(source.binding.adapter_id) is not source.runtime):
+            raise LiveAdmissionRejected("Instrument catalog changed; select again")
+        assert source.binding.snapshot is not None and source.runtime is not None
+        scan = TinySaScanRawRequest(TinySaModel(source.binding.snapshot.model_id or ""), request.start_hz,
+                                   request.stop_hz, request.points, request.timeout_s)
+        admitted = admit_source_request(inventory, source.device_id, "sweep", scan)
+        if not admitted.accepted:
+            raise LiveAdmissionRejected("Instrument request is not admitted")
+        return scan
+
     def start(self, request: TinySaSweepRequest, selection: AnalyzerSourceSelection) -> None:
         if not self._operation.acquire(blocking=False):
             raise LiveAdmissionRejected("Instrument control operation is pending")
         try:
             if self.stop_required:
                 raise LiveAdmissionRejected("Release the previous instrument pass before Start")
-            if (not isinstance(request, TinySaSweepRequest) or selection.release_pending
-                    or selection.selected is not request.source or selection.revision != request.selection_revision):
-                raise LiveAdmissionRejected("Instrument selection changed; rebuild the request")
-            inventory = self._catalog.snapshot()
+            scan = self.preflight(request, selection)
             source = request.source
-            if (inventory.binding_for_source(source.device_id) is not source.binding
-                    or inventory.runtime_for_adapter(source.binding.adapter_id) is not source.runtime):
-                raise LiveAdmissionRejected("Instrument catalog changed; select again")
             assert source.binding.snapshot is not None and source.runtime is not None
-            scan = TinySaScanRawRequest(TinySaModel(source.binding.snapshot.model_id or ""), request.start_hz,
-                                       request.stop_hz, request.points, request.timeout_s)
-            admitted = admit_source_request(inventory, source.device_id, "sweep", scan)
-            if not admitted.accepted or self._generation >= (1 << 64) - 1:
+            if self._generation >= (1 << 64) - 1:
                 raise LiveAdmissionRejected("Instrument request is not admitted")
             # Inert preparation is retained BEFORE graph acquisition. A later
             # claim/start failure therefore requires Stop, not admission reset.

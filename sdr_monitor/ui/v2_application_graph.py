@@ -69,6 +69,7 @@ def build_v2_analyzer_application_graph(services: Any) -> V2AnalyzerApplicationG
         catalog_close=catalog.close if isinstance(catalog, SourceCapabilityCatalog) else None,
         sources=sources,
         rtbw=router,
+        family_sweep_preflight=sweep_router.preflight_family,
     )
     return V2AnalyzerApplicationGraph(services, live, analyzer, sweep_router, sources,
                                       catalog if isinstance(catalog, SourceCapabilityCatalog) else None)

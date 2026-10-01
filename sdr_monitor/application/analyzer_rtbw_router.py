@@ -6,7 +6,7 @@ from typing import Protocol, cast
 
 from ..domain.analyzer_sources import AnalyzerSourceSelection
 from ..domain.device_capabilities import DeviceFamily
-from ..domain.hackrf_live import HackrfConfigurationPatch
+from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
 from ..domain.live import LiveAdmissionRejected, LiveSnapshot
 from .analyzer_sources import AnalyzerSourceSelectionApplicationService
 
@@ -27,6 +27,7 @@ class HackrfRtbwPort(Protocol):
     def current_snapshot(self) -> LiveSnapshot: ...
     def is_running(self) -> bool: ...
     def poll_frames(self) -> list[LiveSnapshot]: ...
+    def preflight(self, request: HackrfLiveRequest) -> None: ...
 
 
 class AnalyzerRtbwRouter:
@@ -59,6 +60,11 @@ class AnalyzerRtbwRouter:
         if not self.hackrf_selected or self._hackrf is None:
             raise LiveAdmissionRejected("HackRF RTBW runtime is not composed for this source")
         return self._hackrf.stage(patch)
+
+    def preflight_hackrf(self, request: HackrfLiveRequest) -> None:
+        if not self.hackrf_selected or self._hackrf is None:
+            raise LiveAdmissionRejected("HackRF RTBW runtime is not composed for this source")
+        self._hackrf.preflight(request)
 
     def current_snapshot(self) -> LiveSnapshot:
         port = self._dispatched or self._selected_port()

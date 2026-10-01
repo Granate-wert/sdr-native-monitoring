@@ -20,7 +20,11 @@ from .analyzer_session import (
 )
 from .analyzer_sources import AnalyzerSourceSelectionApplicationService
 from .analyzer_rtbw_router import AnalyzerRtbwRouter
-from ..domain.hackrf_live import HackrfConfigurationPatch
+from .analyzer_rf_change import (
+    AnalyzerRfChangeRejected, AnalyzerRfContext, AnalyzerRfShiftProposal,
+    compile_analyzer_rf_shift, source_inventory,
+)
+from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
 from ..domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 
 from ..domain import DeviceDescriptor, LiveConfiguration, LiveSnapshot, ConfigurationGeneration, FrameSequence
@@ -32,6 +36,8 @@ from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.analyzer import AnalyzerFrameBundle, bundle_from_live
 from ..domain.recording import RecordingState
 from ..domain.tinysa_analyzer import TinySaSweepRequest
+from ..domain.device_capabilities import DeviceFamily
+from ..services.source_capability_admission import admit_source_request
 
 
 _Args = ParamSpec("_Args")
@@ -101,13 +107,15 @@ class LiveSessionApplicationService:
     ] | None = None, analyzer: AnalyzerSessionApplicationService | None = None,
                  catalog_close: Callable[[], None] | None = None,
                  sources: AnalyzerSourceSelectionApplicationService | None = None,
-                 rtbw: AnalyzerRtbwRouter | None = None) -> None:
+                 rtbw: AnalyzerRtbwRouter | None = None,
+                 family_sweep_preflight: Callable[[TinySaSweepRequest | HackrfSweepRequest], None] | None = None) -> None:
         self._port = port
         self._sweep_preflight = sweep_preflight
         self._analyzer = analyzer
         self._catalog_close = catalog_close
         self._sources = sources
         self._rtbw = rtbw
+        self._family_sweep_preflight = family_sweep_preflight
         self._empty_source_snapshot: tuple[AnalyzerSourceSelection, LiveSnapshot] | None = None
         self._control_error: tuple[str, LiveErrorKind | None] | None = None
         self._pane_application_lock = RLock()
@@ -150,6 +158,103 @@ class LiveSessionApplicationService:
     def current_source_selection(self) -> AnalyzerSourceSelection | None:
         """Immutable low-rate control metadata; no SDK/catalog rebuild."""
         return self._sources.current() if self._sources is not None else None
+
+    @_pane_exclusive_command
+    def capture_rf_context(self) -> AnalyzerRfContext:
+        """Cached full-profile identity for the default Analyzer, no SDK/IQ.
+
+        The presenter must call this in its existing worker lane. A tentative
+        editor request is not a successfully dispatched Sweep profile.
+        """
+        selection, state = self.current_source_selection(), self.analyzer_state
+        if (selection is None or selection.selected is None or selection.release_pending
+                or selection.refusal is not None or state is None or self._analyzer is None
+                or self._analyzer.control_busy):
+            raise AnalyzerRfChangeRejected("RF change requires an available shared source/operation")
+        source = selection.selected
+        if state.mode is AnalyzerMode.SWEEP:
+            request = self._analyzer.accepted_sweep_request
+            if request is None:
+                raise AnalyzerRfChangeRejected("RF change requires the actually accepted Sweep request")
+            if isinstance(request, ContinuousSweepPlanRequest):
+                snapshot = self._port.latest_snapshot()
+                if (snapshot.applied is None or snapshot.device is None
+                        or snapshot.device.device_id != source.device_id or snapshot.error is not None):
+                    raise AnalyzerRfChangeRejected("RF change requires the same applied AD Sweep profile")
+                return AnalyzerRfContext(source, selection.revision, state, request,
+                    applied_live=snapshot.applied.applied, session_id=snapshot.session_id,
+                    configuration_generation=int(snapshot.generation), acquisition_epoch=state.sweep_epoch)
+            return AnalyzerRfContext(source, selection.revision, state, request, acquisition_epoch=state.sweep_epoch)
+        snapshot = self.current_snapshot()
+        if snapshot.error is not None:
+            raise AnalyzerRfChangeRejected("RF change cannot reuse a failed receiver profile")
+        if source.family is DeviceFamily.AD936X:
+            if (snapshot.applied is None or snapshot.device is None
+                    or snapshot.device.device_id != source.device_id):
+                raise AnalyzerRfChangeRejected("RF change requires the same applied AD RTBW profile")
+            profile: LiveConfiguration | HackrfLiveRequest = snapshot.applied.applied
+        elif source.family is DeviceFamily.HACKRF:
+            if (snapshot.hackrf_request is None or snapshot.source_choice is not source
+                    or snapshot.selection_revision != selection.revision):
+                raise AnalyzerRfChangeRejected("RF change requires the same full HackRF RTBW profile")
+            profile = snapshot.hackrf_request
+        else:
+            raise AnalyzerRfChangeRejected("The selected instrument has no RTBW RF profile")
+        return AnalyzerRfContext(source, selection.revision, state, profile,
+            session_id=snapshot.session_id, configuration_generation=int(snapshot.generation),
+            acquisition_epoch=snapshot.acquisition_epoch, receiver_id=snapshot.receiver_id,
+            clock_domain=snapshot.clock_domain, unit=snapshot.unit)
+
+    def _preflight_rf_proposal(self, proposal: AnalyzerRfShiftProposal) -> None:
+        if not isinstance(proposal, AnalyzerRfShiftProposal):
+            raise AnalyzerRfChangeRejected("RF control requires a typed full-profile proposal")
+        proposal.__post_init__()
+        request, context = proposal.request, proposal.expected
+        if isinstance(request, (LiveConfiguration, ContinuousSweepPlanRequest)):
+            admitted = admit_source_request(source_inventory(context), context.source.device_id,
+                context.state.mode.value, request, applied_live=context.applied_live)
+            if not admitted.accepted:
+                raise AnalyzerRfChangeRejected("RF range/profile is not admitted by the selected capability")
+            if isinstance(request, LiveConfiguration):
+                self.preflight_configuration(request)
+            else:
+                assert context.applied_live is not None
+                self.preflight_sweep(context.applied_live, request)
+        elif isinstance(request, HackrfLiveRequest):
+            if self._rtbw is None:
+                raise AnalyzerRfChangeRejected("Shared HackRF RTBW admission is not composed")
+            self._rtbw.preflight_hackrf(request)
+        elif self._family_sweep_preflight is not None:
+            self._family_sweep_preflight(request)
+        else:
+            raise AnalyzerRfChangeRejected("Shared family Sweep admission is not composed")
+
+    @_pane_exclusive_command
+    def preview_rf_shift(self, shift_hz: float) -> AnalyzerRfShiftProposal:
+        """Inert full-profile preview with the existing native/family preflight."""
+        proposal = compile_analyzer_rf_shift(self.capture_rf_context(), shift_hz)
+        self._preflight_rf_proposal(proposal)
+        return proposal
+
+    @contextmanager
+    def rf_change_transaction(self, proposal: AnalyzerRfShiftProposal, *, stopped: bool = False) -> Iterator[None]:
+        """Revalidate before a caller's control effect under SAME RX/IQ owner.
+
+        This scope performs no Stop, Apply or Start itself. Sweep callers MUST
+        still use the owned Sweep facade/terminal publication, not generic Stop
+        followed by a new SDK owner. Unknown/active recording refuses RF control;
+        ordinary Stop remains independent and available for cleanup.
+        """
+        if type(stopped) is not bool or not isinstance(proposal, AnalyzerRfShiftProposal):
+            raise AnalyzerRfChangeRejected("RF control requires an explicit typed proposal/phase")
+        with self.pane_control_transaction():
+            current = self.capture_rf_context()
+            if not proposal.expected.matches(current, stopped=stopped):
+                raise AnalyzerRfChangeRejected("RF source, operation or full profile changed")
+            self._preflight_rf_proposal(proposal)
+            if self.pane_recording_conflict():
+                raise AnalyzerRfChangeRejected("RF change conflicts with the native recording owner")
+            yield
 
     @contextmanager
     def pane_control_transaction(self, claim: object | None = None) -> Iterator[None]:

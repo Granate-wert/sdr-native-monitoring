@@ -19,12 +19,14 @@ class NativeSweepPort(Protocol):
 
 
 class InstrumentSweepPort(Protocol):
+    def preflight(self, request: TinySaSweepRequest, selection: AnalyzerSourceSelection) -> object: ...
     def start(self, request: TinySaSweepRequest, selection: AnalyzerSourceSelection) -> None: ...
     def stop(self) -> None: ...
     def poll_latest(self) -> ContinuousSweepDisplaySnapshot: ...
 
 
 class HackrfSweepPort(Protocol):
+    def preflight(self, request: HackrfSweepRequest, selection: AnalyzerSourceSelection) -> None: ...
     def start(self, request: HackrfSweepRequest, selection: AnalyzerSourceSelection) -> None: ...
     def stop(self) -> None: ...
     def poll_latest(self) -> ContinuousSweepDisplaySnapshot: ...
@@ -41,6 +43,18 @@ class AnalyzerSweepRouter:
     def instrument_run_identity(self) -> TinySaSweepRunIdentity | None:
         value = getattr(self._dispatched or self._terminal, "instrument_run_identity", None)
         return value if isinstance(value, TinySaSweepRunIdentity) else None
+
+    def preflight_family(self, request: TinySaSweepRequest | HackrfSweepRequest) -> None:
+        """Inert admission through the same composed owner, even during RX."""
+        if self._sources is None:
+            raise LiveAdmissionRejected("Shared source admission is not composed")
+        selection = self._sources.current()
+        if isinstance(request, TinySaSweepRequest) and self._instrument is not None:
+            self._instrument.preflight(request, selection)
+        elif isinstance(request, HackrfSweepRequest) and self._hackrf is not None:
+            self._hackrf.preflight(request, selection)
+        else:
+            raise LiveAdmissionRejected("Shared family Sweep admission is not composed")
 
     def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> None:
         port: NativeSweepPort | InstrumentSweepPort | HackrfSweepPort

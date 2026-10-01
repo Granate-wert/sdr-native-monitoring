@@ -130,6 +130,18 @@ class HackrfAnalyzerService:
         if not result.accepted:
             raise LiveAdmissionRejected(f"HackRF request refused: {result.reason.value if result.reason else 'unknown'}")
 
+    def preflight(self, request: HackrfLiveRequest) -> None:
+        """Same retained capability/native gates, with no SDK, stage or claim.
+
+        A running RF preview is allowed. Lifecycle/generation/identity checks
+        still run at the existing Stage and Start boundaries after explicit Stop.
+        """
+        if not isinstance(request, HackrfLiveRequest):
+            raise LiveAdmissionRejected("HackRF requires its complete RTBW profile")
+        request.__post_init__()
+        with self._lock:
+            self._admit(request)
+
     def stage(self, patch: HackrfConfigurationPatch) -> LiveSnapshot:
         if not isinstance(patch, HackrfConfigurationPatch):
             raise TypeError("HackRF settings require an immutable patch")

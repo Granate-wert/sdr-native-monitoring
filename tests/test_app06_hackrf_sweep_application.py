@@ -144,13 +144,23 @@ class HackrfSweepApplicationTests(unittest.TestCase):
 
     def test_domain_bounds_are_strict_without_claiming_tuning_range_support(self) -> None:
         for kwargs in ({"fft_size": 512}, {"lna_gain": 9}, {"vga_gain": 63},
-                       {"preview_rate_hz": 101}, {"stop_hz": 121_000_000}):
+                       {"preview_rate_hz": 101}, {"stop_hz": 120_000_001}):
             values = dict(source=self.source, selection_revision=7, start_hz=100_000_000,
                           stop_hz=120_000_000, fft_size=2048, lna_gain=16,
                           vga_gain=20, preview_rate_hz=10)
             values.update(kwargs)
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 HackrfSweepRequest(**values)
+
+    def test_whole_mhz_analysis_stop_retains_explicit_extended_capture_padding(self) -> None:
+        # APP-07 extended geometry permits non-20-MHz analysis spans. It does
+        # not turn capture padding into measured analysis coverage or grant
+        # legacy modules permission to execute the plan.
+        supplied = HackrfSweepRequest(self.source, 7, 100_000_000, 121_000_000,
+                                       2048, 16, 20, 10)
+        self.assertEqual(supplied.stop_hz, 121_000_000)
+        self.assertEqual(supplied.hardware_stop_hz, 140_000_000)
+        self.assertTrue(supplied.requires_extended_geometry)
 
 
 if __name__ == "__main__":

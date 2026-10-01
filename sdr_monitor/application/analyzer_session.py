@@ -75,6 +75,7 @@ class AnalyzerSessionApplicationService:
         self._idle_control_active = False
         self._next_operation_id = 0
         self._last_sweep_epoch = -1
+        self._accepted_sweep: tuple[int, ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest] | None = None
 
     @contextmanager
     def bounded_sweep_operation(self) -> Iterator[None]:
@@ -129,6 +130,22 @@ class AnalyzerSessionApplicationService:
     def stop_required(self) -> bool:
         with self._lock:
             return self._start_dispatched
+
+    @property
+    def accepted_sweep_request(self) -> ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest | None:
+        """Exact successfully dispatched request, including the assigned epoch.
+
+        Retained through Stop for a full-profile RF proposal. A failed or later
+        operation, RTBW, or the bounded Sweep tool cannot borrow this request.
+        No publication, port query or SDK operation is performed here.
+        """
+        with self._lock:
+            accepted = self._accepted_sweep
+            if (accepted is None or self._state.mode is not AnalyzerMode.SWEEP
+                    or accepted[0] != self._state.operation_id
+                    or self._state.sweep_epoch != accepted[1].epoch):
+                return None
+            return accepted[1]
 
     def select_mode(self, mode: AnalyzerMode) -> AnalyzerSessionState:
         mode = AnalyzerMode(mode)
@@ -187,6 +204,8 @@ class AnalyzerSessionApplicationService:
             raise
         with self._lock:
             self._state = replace(self._state, phase=AnalyzerPhase.RUNNING)
+            if request is not None:
+                self._accepted_sweep = self._state.operation_id, request
             return self._state
 
     def stop(self) -> AnalyzerSessionState:

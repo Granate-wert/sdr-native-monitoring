@@ -58,47 +58,59 @@ class HackrfSweepDisplayService:
                 raise RuntimeError("Stop HackRF Sweep before changing source")
             self._selection = selection
 
+    def preflight(self, request: HackrfSweepRequest, selection: AnalyzerSourceSelection) -> None:
+        """Reuse Start's pure retained-fact gates without disturbing a live owner.
+
+        No identity enumeration, RF setter, native control creation, claim or
+        epoch assignment. Lifecycle and SDK identity admission remain in Start.
+        """
+        with self._lock:
+            self._preflight(request, selection)
+
+    def _preflight(self, request: HackrfSweepRequest, selection: AnalyzerSourceSelection) -> None:
+        if (not isinstance(request, HackrfSweepRequest)
+                or selection.release_pending or selection.selected is not request.source
+                or selection.revision != request.selection_revision
+                or request.source.family is not DeviceFamily.HACKRF):
+            raise LiveAdmissionRejected("HackRF Sweep source selection is stale or unavailable")
+        try:
+            request.__post_init__()
+        except (TypeError, ValueError):
+            raise LiveAdmissionRejected("HackRF Sweep geometry is not admitted") from None
+        choice = request.source
+        binding = choice.binding
+        inventory = self._catalog.snapshot()
+        runtime = inventory.runtime_for_adapter(binding.adapter_id)
+        if (binding.snapshot is None or binding.calibration_identity is None
+                or inventory.binding_for_source(choice.device_id) is not binding
+                or runtime is not choice.runtime or runtime is None
+                or runtime.availability.value != "available"
+                or runtime.adapter_id != HACKRF_LIBHACKRF_ADAPTER_ID
+                or binding.adapter_id != HACKRF_LIBHACKRF_ADAPTER_ID):
+            raise LiveAdmissionRejected("HackRF Sweep catalog binding is not current")
+        try:
+            contract = hackrf_sweep_contract_version(self._native, self._manifest)
+        except ValueError:
+            raise LiveAdmissionRejected("HackRF optional Sweep contract changed") from None
+        if contract != 1:
+            raise LiveAdmissionRejected("HackRF optional Sweep contract is unavailable")
+        if request.requires_extended_geometry:
+            try:
+                require_extended_sweep_geometry(self._native)
+            except ValueError:
+                raise LiveAdmissionRejected("HackRF extended Sweep geometry is unavailable") from None
+        admitted = admit_source_request(inventory, choice.device_id, "sweep", request,
+                                        hackrf_sweep_runtime_available=True)
+        if not admitted.accepted:
+            raise LiveAdmissionRejected("HackRF Sweep request is not admitted")
+
     def start(self, request: HackrfSweepRequest, selection: AnalyzerSourceSelection) -> None:
         with self._lock:
             if self._closed or self._claimed or self._stop_required:
                 raise RuntimeError("HackRF Sweep requires an open, idle owner")
-            # Bind and validate all retained facts before identity enumeration or
-            # analyzer-RX claim.  Object identity prevents stale catalog copies.
-            if (not isinstance(request, HackrfSweepRequest)
-                    or selection.release_pending or selection.selected is not request.source
-                    or selection.revision != request.selection_revision
-                    or request.source.family is not DeviceFamily.HACKRF):
-                raise LiveAdmissionRejected("HackRF Sweep source selection is stale or unavailable")
-            try:
-                request.__post_init__()  # also refuse forged frozen foreign payloads before SDK/claim
-            except (TypeError, ValueError):
-                raise LiveAdmissionRejected("HackRF Sweep geometry is not admitted") from None
-            choice = request.source
-            binding = choice.binding
-            inventory = self._catalog.snapshot()
-            runtime = inventory.runtime_for_adapter(binding.adapter_id)
-            if (binding.snapshot is None or binding.calibration_identity is None
-                    or inventory.binding_for_source(choice.device_id) is not binding
-                    or runtime is not choice.runtime or runtime is None
-                    or runtime.availability.value != "available"
-                    or runtime.adapter_id != HACKRF_LIBHACKRF_ADAPTER_ID
-                    or binding.adapter_id != HACKRF_LIBHACKRF_ADAPTER_ID):
-                raise LiveAdmissionRejected("HackRF Sweep catalog binding is not current")
-            try:
-                contract = hackrf_sweep_contract_version(self._native, self._manifest)
-            except ValueError:
-                raise LiveAdmissionRejected("HackRF optional Sweep contract changed") from None
-            if contract != 1:
-                raise LiveAdmissionRejected("HackRF optional Sweep contract is unavailable")
-            if request.requires_extended_geometry:
-                try:
-                    require_extended_sweep_geometry(self._native)
-                except ValueError:
-                    raise LiveAdmissionRejected("HackRF extended Sweep geometry is unavailable") from None
-            admitted = admit_source_request(inventory, choice.device_id, "sweep", request,
-                                            hackrf_sweep_runtime_available=True)
-            if not admitted.accepted:
-                raise LiveAdmissionRejected("HackRF Sweep request is not admitted")
+            self._preflight(request, selection)
+            binding = request.source.binding
+            assert binding.calibration_identity is not None  # Established by the same pure preflight.
             # Capture the immutable current selection only after all retained
             # catalog and request checks have succeeded.
             self._selection = selection

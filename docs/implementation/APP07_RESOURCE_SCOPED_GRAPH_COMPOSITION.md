@@ -1700,3 +1700,52 @@ groups/genuine Ethernet, sustained/performance/UX/review/release. No source
 profile, native DSP, Fs/FFT/group, SDK or queue/memory budget was reduced to
 make the tests pass. APP07 remains PARTIAL; the full APP00–14 goal remains
 active, APP06E planned and the expired APP05 timer was not restarted.
+
+
+### Default Analyzer full-profile RF admission foundation — 2026-10-01
+
+The default one-source Analyzer now has an application-level immutable RF
+context and inert proposal/compiler, using the same shared lifecycle and
+receiver/recorder exclusion. This is groundwork for the remaining presenter/UI
+control chain, NOT a newly usable default middle-drag feature or APP07 closure.
+
+All five existing typed strategies retain their complete original profile:
+AD936x RTBW changes only center; HackRF RTBW changes only center and preserves
+gain stages, FFT/hop/group, queues, persistence and generation; AD Sweep retains
+both the full applied Live profile and the actually accepted Sweep request;
+HackRF Sweep and tinySA retain their full family request and exact selected
+source reference while changing only start/stop. The controller retains the
+successful Sweep request with its actual assigned epoch/operation, through
+Stop; a failed or newer operation, RTBW or bounded tool cannot borrow it.
+
+Requested/effective half-away rounding is explicit: whole MHz for HackRF Sweep,
+integer Hz otherwise. There is no edge clamp, Fs/FFT reduction or allocated
+epoch/generation in the compiler. tinySA input/settings and additional
+correction applicability are revalidated, not silently extrapolated.
+
+The existing application graph composes inert family preflight from the same
+HackRF/tinySA owners. Start reuses its existing gates; SDK identity probing,
+claim, factory, lease and actual lifecycle remain at the original boundaries.
+AD capability/resource and paired-native extended geometry admission occur
+before Stop. Missing contracts, stale exact source/revision/operation/profile,
+active/unknown recording and a pane-owned capture claim refuse the RF scope.
+Ordinary Stop remains available for recording cleanup. Fresh frame sequences
+are not part of the control anchor. The guard performs no implicit Stop,
+Apply or Start; Sweep consumers must preserve the existing owned facade and
+single terminal-publication obligation. No new executor or native DSP change.
+
+Candidate software checks covered full non-frequency field preservation,
+forged/stale contexts, native geometry/memory refusal, recording exclusion,
+actual shared graph preflight and owned Sweep terminal order with fake SDK/
+serial only. An outdated service test that rejected a whole-MHz padded stop
+was corrected to test fractional-MHz refusal plus explicit analysis/capture
+padding; the domain/native contracts were not relaxed. Exact-source/full and
+matched frozen/physical qualifications are distinct evidence, not implied by
+these focused tests or by the old9425 diagnostic EXE.
+
+Still OPEN: default presenter-worker commands, Qt terminal/receipt ordering,
+all one-source view history reset before authorized Start, bounded RU/EN
+impact preview and numeric/middle input, Stop/close cancelling queued restart,
+then exact new-package Windows and physical qualification. The independent
+resource RF route remains separate; do not reconstruct a default full profile
+from its simpler pane draft. APP07 remains PARTIAL/full APP00–14 ACTIVE.

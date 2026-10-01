@@ -41,6 +41,54 @@ class Sweep:
 
 
 class AnalyzerSessionTests(unittest.TestCase):
+    def test_successful_sweep_retains_exact_assigned_request_through_stop(self):
+        from unittest.mock import Mock
+        sweep = Mock()
+        owner = AnalyzerSessionApplicationService(Live([]), sweep)
+        owner.select_mode(AnalyzerMode.SWEEP)
+        supplied = ContinuousSweepPlanRequest(100e6, 220e6, epoch=17,
+            output_queue_capacity=8, line_snapshot_rate_hz=75,
+            segment_frame_timeout_ms=1200, acquisition_buffer_samples=32768)
+        state = owner.start(supplied)
+        accepted = owner.accepted_sweep_request
+        self.assertIs(accepted, sweep.start.call_args.args[0])
+        self.assertEqual(accepted.epoch, state.sweep_epoch)
+        self.assertEqual(accepted, supplied)
+        owner.stop()
+        self.assertIs(owner.accepted_sweep_request, accepted)
+        owner.start(supplied)
+        self.assertEqual(owner.accepted_sweep_request.epoch, 18)
+        self.assertIsNot(owner.accepted_sweep_request, accepted)
+        owner.stop()
+
+    def test_failed_new_sweep_cannot_borrow_previous_accepted_request(self):
+        from unittest.mock import Mock
+        sweep = Mock()
+        owner = AnalyzerSessionApplicationService(Live([]), sweep)
+        owner.select_mode(AnalyzerMode.SWEEP)
+        supplied = ContinuousSweepPlanRequest(100e6, 220e6)
+        owner.start(supplied)
+        owner.stop()
+        sweep.start.side_effect = RuntimeError("partial effect")
+        with self.assertRaises(RuntimeError):
+            owner.start(supplied)
+        self.assertIsNone(owner.accepted_sweep_request)
+        owner.stop()
+
+    def test_rtbw_and_bounded_tool_cannot_reuse_accepted_sweep_request(self):
+        owner = AnalyzerSessionApplicationService(Live([]), Sweep([]))
+        owner.select_mode(AnalyzerMode.SWEEP)
+        owner.start(ContinuousSweepPlanRequest(100e6, 220e6))
+        owner.stop()
+        owner.select_mode(AnalyzerMode.RTBW)
+        self.assertIsNone(owner.accepted_sweep_request)
+        owner.start()
+        owner.stop()
+        with owner.bounded_sweep_operation():
+            self.assertIsNone(owner.accepted_sweep_request)
+        owner.select_mode(AnalyzerMode.SWEEP)
+        self.assertIsNone(owner.accepted_sweep_request)
+
     def test_bounded_sweep_tool_blocks_both_strategies_until_scope_exits(self):
         events = []
         owner = AnalyzerSessionApplicationService(Live(events), Sweep(events))
