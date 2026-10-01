@@ -1389,3 +1389,91 @@ Remaining wide RTBW/RF-middle-pan, genuine Ethernet, SDK-cleanup-cause,
 layout/visual polish, sustained/review/release work stays open. APP07 PARTIAL;
 APP06E CutDC/spur remains planned. This later documentation tail does not
 relabel product42377c4's gates as the documentation commit's own identity.
+
+
+### Explicit wide RTBW bands and matched Windows qualification, 2026-10-01
+
+Independent panes have an explicit typed RTBW band policy. The existing
+edge-trimmed default remains unchanged; Full receive is opt-in and follows
+Stop → Stage / impact preview → Apply → explicit Start, never hidden restart.
+The optional bounded editor section preserves intent across locale/Discard
+and RTBW→Sweep→RTBW, while disabled Empty/tinySA/Sweep controls cannot submit
+a wide-RTBW draft. Accepted Stage locks the choice with other RF fields.
+
+| Requested SDR rate | Default filter / analysis span | Full receive filter / allowed span |
+| --- | --- | --- |
+| AD936x 20 MS/s | 10 / 10 MHz | 20 / 20 MHz |
+| AD936x 61.44 MS/s | 40 / 36 MHz | 56 / 56 MHz |
+| HackRF 16 MS/s | 14 / 10 MHz | 14 / 14 MHz |
+| HackRF 20 MS/s | 15 / 10 MHz | 20 / 20 MHz |
+
+Numeric Fs/filter/span/crop/physical-FFT/hop values and evidence limitations
+are previewed BEFORE Apply. Full receive means requested acquisition/filter
+coverage, not a calibrated flat or alias-free RF passband, ADC-rate readback,
+continuous reception or lossless transport. Fresh capability admission and
+AD936x Start readback still apply; HackRF filter setters are ACK-only.
+Sweep geometry stays unchanged: AD936x Fs61.44/W36/overlap2/RF40 with the
+established analysis-N/physical-F mapping, and existing HackRF host Sweep.
+Same-compatible full-band crops can share one owner if their envelope fits;
+wide and trimmed profiles with different effective settings time-slice on
+that SAME RX rather than silently merging filters or opening another handle.
+
+The complete immutable RTBW FFT grid is already validated against center,
+Fs and physical F. Its O(1) coverage property is half-open
+`[first bin center, first bin center + Fs)`; the positive boundary is not a
+new measured bin. For even F, the final bin center is Fs/F below positive
+Nyquist. Resource routing and presentation use the SAME validated bounds.
+This admits an exact full-Fs crop, not truncated/shifted/forged grids or an
+extra sample. Exact source/session/generation/epoch/Fs/F/hop/unit and memory
+guards remain; Sweep/tinySA coverage, native flags, NaN gaps and loss counters
+are not rewritten. Native DSP/FFT/group/queue/SDK/lease algorithms are unchanged.
+
+Exact product ff5a5be received 103 focused passes and a clean serial full V2
+gate after freeze:1160 tests,1094 passed/66 skipped/zero failures, no deferred
+compiled tests or outside product modules, unchanged exact source/native.
+Four historical NaN warnings remain. The complete official CPU/HackRF build
+passed40/40 CTest and all658-file frozen gates. Its separate tagged diagnostic
+was not promoted to canonical/static/current; native code/hash is unchanged.
+
+Matched common SOURCE V2 plus its packaged native ran AD USB RTBW100–156MHz/
+Fs61.44/filter-span56MHz and HackRF USB RTBW140–160MHz/Fs20/filter-span20MHz,
+both F4096/hop2048 (HFgroup1), tinySA100–300MHz/1001/target300kHz/explicitLOW,
+plus Empty4. AD Start read back61.44MS/s/56MHz and retained2Hz LO quantization.
+The HF full-Fs positive boundary was admitted without an extra FFT bin;
+HF filter ACK is not hardware/RF readback. TinySA queried actual300000Hz,
+screen0.125s and host acquisition about0.93s; screen time is not scanraw and
+LOW ACK is not RF-input proof. Selected tinySA/HF Stop and explicit next
+Start changed only that resource's epoch/history; peers continued. Normal
+Stop/shutdown completed in an approximately48-second bounded functional run.
+Source OFFSCREEN images are not Windows font/DPI acceptance.
+
+The SAME exact new frozen Windows EXE separately passed Computer Use
+inventory/activation/nonblack capture/indexed mouse/keyboard controls. Stage
+showed the same full-band numeric plan and freshly admitted tinySA settings;
+Apply was inert. Maximized1440×912 logical produced actual2×2, then explicit
+Start all showed three changing Spectrum/Waterfall pairs and queried300kHz.
+Selected tinySA and HF Stop→explicit next Start each preserved running peers
+and produced fresh selected histories without Discover or peer restart.
+Windows histories do not expose numeric epoch IDs; source epoch/readback
+evidence is not relabeled a frozen GUI hardware getter observation.
+Stop all reached zero running/starting/Stop-required, Close layout returned
+to an inert Analyzer, and normal Close removed the tested process/window.
+Post-close complete658-file/native metadata verification passed unchanged.
+
+Five selected live module paths and associated disk hashes were package-local
+and matched the release manifest, with ONE libusb; this is not in-memory or
+exhaustive active ABI attestation. Transient Qt-popup capture failures, lagging
+accessibility focus/enable metadata and a static navigation accessible name
+were retained; fresh observations recovered control without security changes.
+Computer Use currently works, not a claim of permanent plugin repair/full AT.
+HF Time unknown and tinySA Passes remain honest, not fabricated RF time.
+
+This packet is bounded functional qualification, NOT DWM FPS/50ms, FHD/QHD/
+per-monitor DPI, RF flatness/settling/duty/Pd, lossless reception, uninterrupted
+30-minute/2-hour soak or release acceptance. Held-middle RF-intent (not just
+viewport movement), tuning groups, genuine Ethernet, SDK-cleanup-cause,
+sustained/performance/layout polish, independent review and release remain
+OPEN; APP07 PARTIAL and APP06E CutDC/spur planned. The expired APP05 timer was
+not restarted. No TX/amp/bias enable, firmware, driver, network, firewall,
+security or system changes. A later public-documentation commit does not
+relabel exact ff5a5be source/build/device gates as its own product identity.
