@@ -1627,3 +1627,11 @@ genuine Ethernet/tuning groups, sustained/performance/review/release remain
 open. Qt offscreen input/fake SDK is NOT a Windows middle-drag, physical RF,
 DWM/50ms/FHD/QHD/DPI or lossless-stream acceptance. No native/DSP/Fs/FFT/group,
 SDK or queue/memory-budget expansion; expired APP05 timer not restarted.
+
+The FIRST exact f73ade7 full V2 gate completed1195 tests in421.668s with
+66 skips and3 Russian-catalog subtest failures: untranslated `Apply` in the
+new approval/armed explanations. Exact clean-source/native provenance was
+true, deferred compiled/outside-import lists empty. This is retained as a
+FAILED gate, not release acceptance. The RU text was subsequently corrected
+without changing the translation guard; the corrected source requires its
+own exact-HEAD full gate and package identity.
