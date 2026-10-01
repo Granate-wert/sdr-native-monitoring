@@ -58,6 +58,13 @@ class PaneProductSessionHandle:
         self.pump = PaneResourcePump(session, layout, self.preparer, self.queue)
         self._applied = False
         self._shutdown = False
+        self._rf_presentation_pending = False
+
+    def set_rf_presentation_pending(self, pending: bool) -> None:
+        """Qt preview/receipt gate only; it neither claims nor controls hardware."""
+        if type(pending) is not bool or self._shutdown:
+            raise RuntimeError("RF presentation gate requires an active product handle")
+        self._rf_presentation_pending = pending
 
     @property
     def applied(self) -> bool:
@@ -80,7 +87,8 @@ class PaneProductSessionHandle:
         return preview
 
     def can_close(self) -> bool:
-        if self.session.retained_resource_count or self.pump.control_pending():
+        if (self._rf_presentation_pending or self.session.retained_resource_count
+                or self.pump.control_pending()):
             return False
         return not self.pump.activated or all(
             item.phase is PanePumpPhase.STOPPED for item in self.pump.snapshot())

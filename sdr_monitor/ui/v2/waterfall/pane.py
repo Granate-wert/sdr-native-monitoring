@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
+from ..components.rf_pan_view_box import RfPanViewBox
 from ..i18n import UiLocale, enum_text, text
 from ..spectrum.axis import FrequencyAxis
 from ..spectrum.plot_terminal import retire_plot_item_after_shutdown
@@ -148,7 +149,7 @@ class WaterfallPane(QWidget):
         return self._plot_item
 
     @property
-    def view_box(self) -> pg.ViewBox:
+    def view_box(self) -> RfPanViewBox:
         return self._view_box
 
     @property
@@ -578,13 +579,13 @@ class WaterfallPane(QWidget):
         self._frequency_axis = FrequencyAxis(orientation="bottom", locale=self._locale)
         self._frequency_axis.setStyle(showValues=False)
         self._plot_item = self._graphics.addPlot(
-            axisItems={"left": self._time_axis, "bottom": self._frequency_axis}
+            viewBox=RfPanViewBox(), axisItems={"left": self._time_axis, "bottom": self._frequency_axis}
         )
         self._plot_item.setMenuEnabled(False)
         self._plot_item.hideButtons()
         self._plot_item.setLabel("left", text("waterfall.axis.time"))
         self._plot_item.setLabel("bottom", text("waterfall.axis.frequency"))
-        self._view_box = self._plot_item.getViewBox()
+        self._view_box = cast(RfPanViewBox, self._plot_item.getViewBox())
         self._view_box.setMouseEnabled(x=True, y=False)
         self._view_box.invertY(True)
         self._image_items: list[pg.ImageItem] = []

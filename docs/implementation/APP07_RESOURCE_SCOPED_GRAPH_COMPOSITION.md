@@ -1568,3 +1568,62 @@ build/CTest, DWM/50ms or sustained/release acceptance. The old ff5a5be package
 and its physical/Windows gates are not relabelled as fcad48c. A later
 public-documentation-only commit likewise does not change fcad48c's tested
 product identity. The UI gesture and full-feature gates above remain open.
+
+### Common held-middle RF gesture and independent-layout UI
+
+The UI V2 Spectrum and Waterfall now use the same RF-intent ViewBox. A
+middle-button hold snapshots a cached scalar measurement/control anchor and
+the original frequency-per-pixel scale. Only release after at least three
+pixels proposes one offset: grabbing right requests lower RF frequencies.
+There are no per-pixel RF setters or viewport-only middle-pan fallback.
+Escape, a linked frequency zoom, unavailable control or a changed source/RX/
+session/epoch/config/unit cancel the held gesture. Ordinary frame sequence,
+progress revision and array allocation are deliberately not anchor fields.
+Left/right/wheel presentation behavior retains the common plot path.
+
+The independently assigned 1–4-pane layout connects that proposal to the
+existing resource worker, not an extra acquisition/DSP/SDK path. An accessible
+numeric RF Shift command is an alternative entry into the SAME preview.
+The scrollable, bounded RU/EN dialog shows requested/effective quantum,
+every affected shared/time-sliced pane, old/new ranges, original/merged
+weights and modeled/target revisits. Cancel is the default; Escape and
+Cancel leave RF and the accepted plan unchanged. No command is inferred
+from merely opening the dialog or pressing Enter on its default button.
+
+For a running target the explicitly labelled approval authorizes
+Stop -> Apply -> Start of that RX only. The same native control transaction
+rechecks source/run/recording before Stop. After the stopped host Apply
+receipt, Qt installs target captions, revisit/binding maps and clears only
+target histories BEFORE submitting the approved fresh Start. A stopped
+target only arms the new plan, requiring a separate subsequent Start.
+Independent RX owners, epochs and bindings are not restarted/reset.
+The pending UI dialog/receipt also prevents terminal layout close; Start
+controls cannot bypass the receipt even when the backend Future is done.
+
+An ordinary target Stop/Stop All cancels the remaining chain, never detaches
+an already accepted Future, and never retries or restarts after error. If a
+cancelled Apply has already committed, its terminal receipt still updates
+the GUI before exposing manual Start. An incoherent GUI receipt bars the
+target's Start until Stop/layout close. Only known old target bindings are
+dropped as stale; arbitrary foreign pane deliveries still refuse. The
+timing tooltip keeps host RF-plan-change boundary/control elapsed separate
+from the latest producer-frame epoch, RF duty, Pd and sample-loss evidence.
+
+Candidate source checks:19 new methods (7 real Qt viewport middle-event
+checks and12 concrete graph/owner/pump/dialog checks);62 focused tests PASS
+in31.473s, scoped lint/type checks PASS. Initial pixel-scale test sampled
+before initial axis/layout timers settled; two later checks found an input
+availability race in the test and a hard-coded MHz suffix in product UI.
+The fixture now waits for the actual enabled button/layout; the suffix uses
+the catalog. Assertions, recording/identity/capability/deadline guards were
+not weakened. A later exact-HEAD gate is a separate qualification.
+
+This completes neither APP07 nor the full RF-shift feature. The DEFAULT
+single-source Analyzer presenter path is not yet connected: its complete
+AD/HackRF applied profile and typed Sweep request must be preserved, not
+reconstructed from the simpler pane draft. Matched new frozen Windows/RX
+qualification, actual Windows held-middle input, single-source integration,
+genuine Ethernet/tuning groups, sustained/performance/review/release remain
+open. Qt offscreen input/fake SDK is NOT a Windows middle-drag, physical RF,
+DWM/50ms/FHD/QHD/DPI or lossless-stream acceptance. No native/DSP/Fs/FFT/group,
+SDK or queue/memory-budget expansion; expired APP05 timer not restarted.

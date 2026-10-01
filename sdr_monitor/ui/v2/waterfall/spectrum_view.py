@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, QTimer, Qt
+from collections.abc import Callable
+
+from PySide6.QtCore import QSettings, QTimer, Qt, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ..components import V2Splitter
@@ -17,6 +19,8 @@ _SETTINGS_DEBOUNCE_MS = 250
 
 class SpectrumWaterfallView(QWidget):
     """Own the UI-only splitter; neither child gains a service or receiver owner."""
+
+    rf_shift_requested = Signal(float, object)
 
     def __init__(
         self,
@@ -57,6 +61,11 @@ class SpectrumWaterfallView(QWidget):
     @property
     def splitter(self) -> V2Splitter:
         return self._splitter
+
+    def set_rf_shift_provider(self, provider: Callable[[], object | None] | None) -> None:
+        """Both plots use the same cached control anchor, not an SDR reference."""
+        self._spectrum.view_box.set_rf_shift_provider(provider)
+        self._waterfall.view_box.set_rf_shift_provider(provider)
 
     def set_theme(self, theme: ThemeId) -> None:
         self._theme = theme
@@ -139,6 +148,8 @@ class SpectrumWaterfallView(QWidget):
         self._splitter.setStretchFactor(1, 2)
         self._splitter.splitterMoved.connect(lambda _position, _index: self._schedule_splitter_write())
         self._waterfall.link_frequency_view_box(self._spectrum.view_box)
+        self._spectrum.view_box.rf_shift_requested.connect(self.rf_shift_requested)
+        self._waterfall.view_box.rf_shift_requested.connect(self.rf_shift_requested)
         self._spectrum.measurement_available_changed.connect(
             self._waterfall.set_linked_frequency_available
         )

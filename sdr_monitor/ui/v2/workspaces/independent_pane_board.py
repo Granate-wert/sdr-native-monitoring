@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushBut
 
 from sdr_monitor.domain.analyzer import AnalyzerPublicationKind
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
-from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PreparedPaneDelivery
+from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PanePresentationBinding, PreparedPaneDelivery
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import current_locale, text
@@ -28,6 +28,7 @@ class IndependentPaneBoardV2(QWidget):
     """Route only exact resource-scoped deliveries to distinct graph pairs."""
 
     selected_slot_changed = Signal(int)
+    rf_shift_requested = Signal(int, float, object)
 
     def __init__(self, preparer: PaneDeliveryPreparer, *,
                  projector_factory: Callable[[], SpectrumProjector] | None = None,
@@ -38,9 +39,13 @@ class IndependentPaneBoardV2(QWidget):
             raise TypeError("independent pane board requires a qualified presentation plan")
         super().__init__(parent)
         self._preparer = preparer
+        self._installed_bindings = dict(preparer.bindings)
+        self._retired_bindings: dict[str, PanePresentationBinding] = {}
+        self._rf_control_available: Callable[[int], bool] | None = None
         self._source_labels = {} if source_labels is None else dict(source_labels)
         self._panes: dict[int, AnalyzerPaneViewV2] = {}
         self._headers: dict[int, QPushButton] = {}
+        self._captions: dict[int, QLabel] = {}
         self._empty_slots: dict[int, QLabel] = {}
         self._timing_labels: dict[int, QLabel] = {}
         self._display_buttons: dict[int, QPushButton] = {}
@@ -109,6 +114,7 @@ class IndependentPaneBoardV2(QWidget):
                 caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
                 caption.setText(self._binding_label(binding, self._source_labels.get(binding.source_id)))
                 caption.setToolTip(self._binding_label(binding))
+                self._captions[slot.number] = caption
                 header.addWidget(caption, 1)
                 cell_layout.addLayout(header)
                 projector = None if projector_factory is None else projector_factory()
@@ -123,6 +129,9 @@ class IndependentPaneBoardV2(QWidget):
                     parent=cell)
                 pane.set_compact_grid_geometry(compact)
                 pane.set_selected(slot.number == self._selected_slot)
+                pane.set_rf_shift_provider(self._rf_provider_for(slot.number))
+                pane.rf_shift_requested.connect(
+                    lambda delta, anchor, number=slot.number: self._request_rf_shift(number, delta, anchor))
                 overlay = AnalyzerDisplayControls(
                     pane.spectrum_scene.take_display_controls(),
                     pane.waterfall_pane.take_display_controls(), self)
@@ -274,6 +283,80 @@ class IndependentPaneBoardV2(QWidget):
                 f"{binding.crop.start_hz / 1e6:g}–{binding.crop.stop_hz / 1e6:g} MHz · "
                 f"{binding.mode.value.upper()} · {binding.unit}")
 
+    def set_rf_control_available(self, provider: Callable[[int], bool] | None) -> None:
+        """An inert eligibility callback; the board never holds an SDR service."""
+        self._rf_control_available = provider
+
+    def rf_anchor(self, number: int) -> tuple[object, ...] | None:
+        pane = self._panes.get(number)
+        binding = next((item for item in self._installed_bindings.values()
+                        if item.slot_number == number), None)
+        identity = None if pane is None else pane._last_identity
+        if (self._terminal_released or binding is None or identity is None
+                or identity.source_id is None or identity.acquisition_epoch is None
+                or identity.config_generation is None or identity.unit is None):
+            return None
+        # Grid allocation, sequence and progressive revision may change every
+        # frame. They must not cancel a valid held gesture in the same epoch.
+        return (id(binding), binding.mode, identity.source_id, identity.receiver_id,
+                identity.session_id, identity.acquisition_epoch,
+                identity.config_generation, identity.clock_domain, identity.unit)
+
+    def _gesture_anchor(self, number: int) -> tuple[object, ...] | None:
+        if self._rf_control_available is None or not self._rf_control_available(number):
+            return None
+        return self.rf_anchor(number)
+
+    def _rf_provider_for(self, number: int) -> Callable[[], object | None]:
+        def provider() -> object | None:
+            return self._gesture_anchor(number)
+        return provider
+
+    def _request_rf_shift(self, number: int, delta: float, anchor: object) -> None:
+        if anchor != self._gesture_anchor(number):
+            return
+        self.select_slot(number)
+        self.rf_shift_requested.emit(number, delta, anchor)
+
+    def refresh_resource_plan(self, resource_id: str) -> None:
+        """Qt receipt before next Start; target captions/history only, peers intact."""
+        if self._terminal_released:
+            raise RuntimeError("terminal pane board cannot install a new RF plan")
+        bindings = self._preparer.bindings
+        if (bindings.keys() != self._installed_bindings.keys()
+                or any(bindings[key] is not binding for key, binding in self._installed_bindings.items()
+                       if binding.physical_stream_resource_id != resource_id)):
+            raise ValueError("RF presentation receipt changed an independent peer")
+        for key, binding in bindings.items():
+            if binding.physical_stream_resource_id != resource_id:
+                continue
+            previous = self._installed_bindings[key]
+            if (previous.slot_number, previous.source_id, previous.receiver_endpoint_id) != (
+                    binding.slot_number, binding.source_id, binding.receiver_endpoint_id):
+                raise ValueError("RF presentation receipt changed pane identity")
+        for binding in bindings.values():
+            if binding.physical_stream_resource_id != resource_id:
+                continue
+            number = binding.slot_number
+            self._retired_bindings[binding.pane_id] = self._installed_bindings[binding.pane_id]
+            self._installed_bindings[binding.pane_id] = binding
+            caption = self._captions[number]
+            caption.setText(self._binding_label(binding, self._source_labels.get(binding.source_id)))
+            caption.setToolTip(self._binding_label(binding))
+            self._display_overlays[number].hide()
+            self._range_anchors.pop(number, None)
+            self._last_order.pop(number, None)
+            self._last_run_serial.pop(number, None)
+            self._panes[number].clear_shared_view()
+            for view in (self._panes[number].spectrum_scene.view_box,
+                         self._panes[number].waterfall_pane.view_box):
+                view.cancel_rf_drag()
+        schedule = self._preparer.layout.schedule
+        assert schedule is not None
+        sliced = {item.physical_stream_resource_id for item in schedule.resources if len(item.jobs) > 1}
+        self._time_sliced_pane_ids = {
+            item.pane_id for item in schedule.pane_revisits if item.physical_stream_resource_id in sliced}
+
     @property
     def empty_slots(self) -> tuple[int, ...]:
         return tuple(self._empty_slots)
@@ -336,8 +419,17 @@ class IndependentPaneBoardV2(QWidget):
         if not isinstance(prepared, PreparedPaneDelivery):
             raise TypeError("independent pane board accepts only worker-prepared deliveries")
         binding = self._preparer.bindings.get(prepared.binding.pane_id)
-        if binding is None or prepared.binding != binding:
+        if binding is None:
             raise ValueError("prepared delivery belongs to another pane layout")
+        if prepared.binding != binding:
+            # A Qt delivery already dequeued before a stopped RF commit may
+            # still carry the old binding. Never relabel it as the new plan.
+            if prepared.binding in (self._installed_bindings.get(binding.pane_id),
+                                     self._retired_bindings.get(binding.pane_id)):
+                return False
+            raise ValueError("prepared delivery belongs to another pane layout")
+        if binding != self._installed_bindings.get(binding.pane_id):
+            return False  # GUI receipt has not installed this plan yet.
         pane = self._panes[binding.slot_number]
         frame = prepared.bundle.spectrum
         epoch = prepared.bundle.acquisition_epoch

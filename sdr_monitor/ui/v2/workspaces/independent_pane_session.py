@@ -15,15 +15,17 @@ from typing import Any
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
+    QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
+from sdr_monitor.domain.pane_scheduler import PaneControlGapReason
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
-from sdr_monitor.services.pane_resource_session import PaneHostTiming
+from sdr_monitor.services.pane_resource_session import PaneActivation, PaneHostTiming
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
+from sdr_monitor.ui.v2_pane_rf_plan import PaneRfChangePreview
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..design.tokens import tokens_for_theme
@@ -32,6 +34,7 @@ from ..state.analyzer_readouts import tinysa_settings_readout
 from .independent_pane_board import IndependentPaneBoardV2
 from .independent_pane_delivery import IndependentPaneDeliveryPort
 from .pane_failure_text import pane_failure_text
+from .rf_shift_dialog import RfImpactDialog, RfShiftEntryDialog, pane_rf_preview_text
 
 
 class IndependentPaneSessionV2(QWidget):
@@ -53,6 +56,13 @@ class IndependentPaneSessionV2(QWidget):
         self._error_key: str | None = None
         self._error_pane: str | None = None
         self._terminal_released = False
+        self._rf_phase: str | None = None
+        self._rf_future: Future[Any] | None = None
+        self._rf_preview: PaneRfChangePreview | None = None
+        self._rf_dialog: QDialog | None = None
+        self._rf_cancelled = False
+        self._rf_fault_resource: str | None = None
+        self._rf_boundaries: dict[str, PaneActivation] = {}
         schedule = handle.layout.schedule
         assert schedule is not None  # The applied product handle requires a nonempty plan.
         self._pane_resources = {
@@ -74,6 +84,9 @@ class IndependentPaneSessionV2(QWidget):
         self.title.setMinimumWidth(0)
         self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         title_row.addWidget(self.title, 1)
+        self.rf_shift = self._button(self._enter_rf_shift)
+        self.rf_shift.setObjectName("independentRfShiftV2")
+        title_row.addWidget(self.rf_shift)
         self.close_layout = self._button(self._request_close_layout)
         self.close_layout.setVisible(close_layout is not None)
         title_row.addWidget(self.close_layout)
@@ -102,6 +115,8 @@ class IndependentPaneSessionV2(QWidget):
             handle.preparer, source_labels=handle.source_labels, parent=self.board_scroll)
         self.board_scroll.setWidget(self.board)
         self.board.selected_slot_changed.connect(self._refresh)
+        self.board.set_rf_control_available(self._rf_eligible)
+        self.board.rf_shift_requested.connect(self._request_rf_shift)
         layout.addWidget(self.board_scroll, 1)
         self.status = QLabel(self)
         self.status.setProperty("ui2Role", "secondary")
@@ -140,7 +155,8 @@ class IndependentPaneSessionV2(QWidget):
 
     def _start_selected(self) -> None:
         selected = self._selected_resource()
-        if selected is None:
+        if (selected is None or self._rf_phase is not None
+                or selected[1] == self._rf_fault_resource):
             return
         self._error_key = None
         try:
@@ -150,9 +166,13 @@ class IndependentPaneSessionV2(QWidget):
         self._refresh()
 
     def _start_all(self) -> None:
+        if self._rf_phase is not None:
+            return
         self._error_key = None
         try:
             for resource_id in self.handle.pump.startable_resource_ids():
+                if resource_id == self._rf_fault_resource:
+                    continue
                 self._futures.append(self.handle.pump.start_resource(resource_id))
         except (RuntimeError, ValueError):
             self._error_key = "analyzer.independent.operation_failed"
@@ -166,6 +186,11 @@ class IndependentPaneSessionV2(QWidget):
             impact = self.handle.session.stop_impact(selected[0])
             if len(impact) > 1 and not self._confirm_shared_stop(impact):
                 return
+            preview = self._rf_preview
+            # Stop on an independent peer does not cancel this target's
+            # approved RF change. Stop of the target outranks the chain.
+            if preview is None or preview.proposal.physical_stream_resource_id == selected[1]:
+                self._cancel_rf_change()
             _, future = self.handle.pump.stop_selected(selected[0], acknowledge_shared=True)
             self._futures.append(future)
         except (RuntimeError, ValueError):
@@ -173,11 +198,164 @@ class IndependentPaneSessionV2(QWidget):
         self._refresh()
 
     def _stop_all(self) -> None:
+        self._cancel_rf_change()
         try:
             self._futures.extend(self.handle.pump.stop_all().values())
         except (RuntimeError, ValueError):
             self._error_key = "analyzer.independent.operation_failed"
         self._refresh()
+
+    def _rf_eligible(self, number: int) -> bool:
+        if (type(number) is not int or not 1 <= number <= len(self.handle.layout.slots)
+                or self._terminal_released or self._rf_phase is not None or self.handle.rf_context is None
+                or self.handle.pump.control_pending() or any(not future.done() for future in self._futures)):
+            return False
+        slot = self.handle.layout.slots[number - 1]
+        if slot.request is None:
+            return False
+        resource_id = self._pane_resources[slot.request.pane_id]
+        state = next(item for item in self.handle.pump.snapshot()
+                     if item.physical_stream_resource_id == resource_id)
+        return (resource_id != self._rf_fault_resource
+                and state.phase in {PanePumpPhase.RUNNING, PanePumpPhase.STOPPED}
+                and self.board.rf_anchor(number) is not None)
+
+    def _enter_rf_shift(self) -> None:
+        number = self.board.selected_slot
+        if not self._rf_eligible(number):
+            return
+        anchor = self.board.rf_anchor(number)
+        dialog = RfShiftEntryDialog(self)
+        self._rf_dialog = dialog
+        self._rf_phase = "entry"
+        self.handle.set_rf_presentation_pending(True)
+
+        def finished(result: int) -> None:
+            if self._rf_dialog is not dialog:
+                return
+            delta = dialog.offset.value() * 1e6
+            self._finish_rf_change()
+            if result == QDialog.DialogCode.Accepted:
+                self._request_rf_shift(number, delta, anchor)
+            self._refresh()
+
+        dialog.finished.connect(finished)
+        dialog.open()
+        self._refresh()
+
+    def _request_rf_shift(self, number: int, delta: float, anchor: object) -> None:
+        if (not self._rf_eligible(number) or anchor != self.board.rf_anchor(number)
+                or not isfinite(delta) or delta == 0):
+            return
+        self._error_key = None
+        self._rf_cancelled = False
+        self._rf_phase = "preview"
+        self.handle.set_rf_presentation_pending(True)
+        try:
+            self._rf_future = self.handle.preview_rf_shift(number, delta)
+        except (RuntimeError, ValueError):
+            self._error_key = "analyzer.rf.refused"
+            self._finish_rf_change()
+        self._refresh()
+
+    def _show_rf_preview(self, preview: PaneRfChangePreview) -> None:
+        self._rf_preview = preview
+        self._rf_phase = "confirm"
+        dialog = RfImpactDialog(pane_rf_preview_text(preview),
+                                restart_required=preview.resource.restart_required, parent=self)
+        self._rf_dialog = dialog
+
+        def finished(result: int) -> None:
+            if self._rf_dialog is not dialog:
+                return
+            self._rf_dialog = None
+            dialog.deleteLater()
+            if result != QDialog.DialogCode.Accepted:
+                self._finish_rf_change()
+            else:
+                try:
+                    self._rf_phase = "stop"
+                    self._rf_future = self.handle.stop_for_rf_shift(preview)
+                except (RuntimeError, ValueError):
+                    self._error_key = "analyzer.rf.refused"
+                    self._finish_rf_change()
+            self._refresh()
+
+        dialog.finished.connect(finished)
+        dialog.open()
+
+    def _finish_rf_change(self) -> None:
+        dialog = self._rf_dialog
+        self._rf_dialog = None
+        if dialog is not None:
+            dialog.reject()
+            dialog.deleteLater()
+        self._rf_phase = None
+        self._rf_future = None
+        self._rf_preview = None
+        self._rf_cancelled = False
+        self.handle.set_rf_presentation_pending(False)
+
+    def _cancel_rf_change(self) -> None:
+        if self._rf_phase is None:
+            return
+        self._rf_cancelled = True
+        dialog = self._rf_dialog
+        self._rf_dialog = None
+        if dialog is not None:
+            dialog.reject()
+            dialog.deleteLater()
+        if self._rf_future is None:
+            self._finish_rf_change()
+        # A running Future is not detached or cancelled. Observe its terminal
+        # receipt; if Apply committed, update GUI metadata but NEVER Start.
+
+    def _install_rf_receipt(self, resource_id: str) -> None:
+        try:
+            self.board.refresh_resource_plan(resource_id)
+        except Exception:
+            self._rf_fault_resource = resource_id
+            self._error_key = "analyzer.rf.receipt_failed"
+            raise RuntimeError("RF GUI receipt failed; Stop and layout close required") from None
+        schedule = self.handle.layout.schedule
+        assert schedule is not None
+        self._pane_resources = {item.pane_id: item.physical_stream_resource_id
+                                for item in schedule.pane_revisits}
+        self._pane_revisits = {item.pane_id: item for item in schedule.pane_revisits}
+        self._time_sliced_resources = {item.physical_stream_resource_id
+                                       for item in schedule.resources if len(item.jobs) > 1}
+
+    def _advance_rf_change(self) -> None:
+        future = self._rf_future
+        if future is None or not future.done():
+            return
+        phase = self._rf_phase
+        self._rf_future = None
+        try:
+            result = future.result()  # Done only: no blocking Qt/SDK operation.
+            preview = self._rf_preview
+            if phase == "apply":
+                assert preview is not None
+                self._install_rf_receipt(preview.proposal.physical_stream_resource_id)
+            if self._rf_cancelled:
+                self._finish_rf_change()
+            elif phase == "preview":
+                if not isinstance(result, PaneRfChangePreview):
+                    raise RuntimeError("RF worker returned an invalid preview")
+                self._show_rf_preview(result)
+            elif phase == "stop":
+                assert preview is not None
+                self._rf_phase = "apply"
+                self._rf_future = self.handle.apply_rf_shift(preview)
+            elif phase == "apply" and preview is not None and preview.resource.restart_required:
+                self._rf_phase = "start"
+                self._rf_future = self.handle.pump.start_resource(preview.proposal.physical_stream_resource_id)
+            else:
+                self._finish_rf_change()
+        except Exception:
+            if not self._rf_cancelled and self._rf_fault_resource is None:
+                self._error_key = "analyzer.rf.refused"
+            self._finish_rf_change()
 
     def _request_close_layout(self) -> None:
         if self._close_layout is not None and self.handle.can_close():
@@ -257,6 +435,7 @@ class IndependentPaneSessionV2(QWidget):
     def _refresh(self, _selected_slot: int | None = None) -> None:
         if self._terminal_released:
             return
+        self._advance_rf_change()
         for control, key in ((self.start_selected, "analyzer.independent.start_slot"),
                              (self.stop_selected, "analyzer.independent.stop_slot")):
             label = text(key, number=self.board.selected_slot)
@@ -274,18 +453,22 @@ class IndependentPaneSessionV2(QWidget):
         states = {resource_id: item.phase for resource_id, item in snapshots.items()}
         selected = self._selected_resource()
         selected_phase = None if selected is None else states[selected[1]]
-        startable = self.handle.pump.startable_resource_ids()
+        startable = (() if self._rf_phase is not None else tuple(
+            item for item in self.handle.pump.startable_resource_ids() if item != self._rf_fault_resource))
         self.start_selected.setEnabled(selected is not None and selected[1] in startable)
         self.stop_selected.setEnabled(selected_phase is not None and selected_phase is not PanePumpPhase.STOPPED)
         self.start_all.setEnabled(bool(startable))
         self.stop_all.setEnabled(any(phase is not PanePumpPhase.STOPPED for phase in states.values()))
         self.close_layout.setEnabled(self._close_layout is not None and self.handle.can_close())
+        self.rf_shift.setEnabled(self._rf_eligible(self.board.selected_slot))
         running = sum(phase is PanePumpPhase.RUNNING for phase in states.values())
         starting = sum(phase in {PanePumpPhase.STARTING, PanePumpPhase.STOPPING} for phase in states.values())
         failed = sum(phase is PanePumpPhase.STOP_REQUIRED for phase in states.values())
         stopped = sum(phase is PanePumpPhase.STOPPED for phase in states.values())
         summary = text("analyzer.independent.summary", running=running, starting=starting,
                        failed=failed, stopped=stopped)
+        if self._rf_phase is not None:
+            summary += " · " + text("analyzer.rf.phase." + self._rf_phase)
         if self.status.text() != summary:
             self.status.setText(summary)
         scope = text("analyzer.independent.timing.scope")
@@ -313,6 +496,16 @@ class IndependentPaneSessionV2(QWidget):
                 pane = self.board.pane(slot.number)
                 bundle = None if pane is None else pane.last_bundle
                 frame = None if bundle is None else bundle.spectrum
+                activation = state.activation
+                if (activation is not None and activation.planned_control_gap is not None
+                        and activation.planned_control_gap.reason is PaneControlGapReason.PROFILE_OR_RF_PLAN_CHANGE):
+                    self._rf_boundaries[state.physical_stream_resource_id] = activation
+                boundary = self._rf_boundaries.get(state.physical_stream_resource_id)
+                if boundary is not None:
+                    elapsed = boundary.host_control_elapsed_s
+                    explanation += "\n\n" + text("analyzer.rf.boundary", serial=boundary.host_activation_serial,
+                        elapsed="—" if elapsed is None else f"{elapsed:.3f}",
+                        epoch="—" if bundle is None or bundle.acquisition_epoch is None else bundle.acquisition_epoch)
                 if isinstance(frame, SweepLineFrame) and frame.instrument is not None:
                     observation = frame.instrument.settings
                     actual_rbw = None if observation is None else observation.actual_rbw_hz
@@ -354,6 +547,7 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: {col
             (self.stop_selected, "analyzer.independent.stop_selected"),
             (self.stop_all, "analyzer.independent.stop_all"),
             (self.close_layout, "analyzer.pane.setup.close_layout"),
+            (self.rf_shift, "analyzer.rf.shift"),
         ):
             control.setText(text(key))
             control.setAccessibleName(text(key))
