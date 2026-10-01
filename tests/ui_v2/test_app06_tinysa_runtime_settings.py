@@ -28,7 +28,7 @@ from sdr_monitor.domain.tinysa_settings import (
 )
 from sdr_monitor.services import tinysa_sweep_settings_controller as legacy
 from sdr_monitor.services.tinysa_capability_adapter import TinySaModel, TinySaReadOnlyProbe
-from sdr_monitor.services.tinysa_owned_acquisition import TinySaAcquisitionPhase
+from sdr_monitor.services.tinysa_owned_acquisition import TinySaAcquisitionPhase, _settings_scalar
 from sdr_monitor.services.tinysa_serial_version_probe import _parse_version
 from sdr_monitor.services.tinysa_serial_trace_collector import (
     TinySaScanRawRequest,
@@ -47,7 +47,7 @@ from tests.ui_v2 import test_app06_tinysa_common_analyzer as common
 VERSION = "tinySA4_v1.4-179-g26fc821"
 
 
-def settings_graph(model=TinySaModel.ULTRA, *, version_text=None):
+def settings_graph(model=TinySaModel.ULTRA, *, version_text=None, readback_payloads=None):
     g = common.graph()
     version = version_text or (VERSION if model is TinySaModel.ULTRA else "tinySA_v1.4-179-g26fc821")
     class Probe:
@@ -74,6 +74,8 @@ def settings_graph(model=TinySaModel.ULTRA, *, version_text=None):
                     b"attenuate ?\r": b"attenuate ?\r\nusage: attenuate 0..31|auto\r\n12.00\r\nch> ",
                     b"sweeptime ?\r": b"sweeptime ?\r\nusage: sweeptime 0.003..60\r\n0.123s\r\nch> ",
                 }
+                if readback_payloads is not None:
+                    responses.update(readback_payloads)
                 serial.response = responses.get(command, serial.response)
                 return count
             serial.write = settings_write
@@ -115,6 +117,70 @@ class TinySaRuntimeSettingsTests(unittest.TestCase):
         self.assertIs(legacy.TinySaSweepSettingsPlan, TinySaSweepSettingsPlan)
         self.assertIs(legacy.TinySaSwitchPolicy, TinySaSwitchPolicy)
         self.assertIs(legacy.TinySaSettingsUnsupported, TinySaSettingsUnsupported)
+
+    def test_pinned_si_scalar_representations_are_base_units_not_targets(self):
+        for value, unit, expected in (("300kHz", "Hz", 300_000), ("10.5kHz", "Hz", 10_500),
+                ("200Hz", "Hz", 200), ("2MHz", "Hz", 2_000_000),
+                ("123ms", "s", .123), ("0.123s", "s", .123),
+                ("3ms", "s", .003), ("12.00", "", 12), ("500m", "", .5)):
+            with self.subTest(value=value, unit=unit):
+                self.assertAlmostEqual(_settings_scalar(value, unit), expected)
+
+    def test_si_scalar_refuses_wrong_units_unknown_prefixes_and_arbitrary_text(self):
+        for value, unit in (("300KHz", "Hz"), ("300kHz extra", "Hz"), ("300k", "Hz"),
+                ("0.3GHz", "Hz"), ("0.3mHz", "Hz"), ("3us", "s"), ("3kHz", "s"),
+                ("1.2e5Hz", "Hz"), ("NaNHz", "Hz"), ("-1Hz", "Hz"), ("+1Hz", "Hz"),
+                ("12dB", ""), ("12k", ""), ("auto", "Hz"), ("12", "dB")):
+            with self.subTest(value=value, unit=unit), self.assertRaises(TinySaTraceCollectionError) as caught:
+                _settings_scalar(value, unit)
+            self.assertEqual(caught.exception.reason, TinySaTraceFailureReason.FRAMING)
+
+    def test_actual_owner_hardware_version_and_si_queries_keep_exact_intent(self):
+        payloads = {b"rbw ?\r": b"rbw ?\r\nusage: rbw 0.2..850|auto\r\n300kHz\r\nch> ",
+            b"attenuate ?\r": b"attenuate ?\r\nusage: attenuate 0..31|auto\r\n12\r\nch> ",
+            b"sweeptime ?\r": b"sweeptime ?\r\nusage: sweeptime 0.003..60\r\n123ms\r\nch> "}
+        g = settings_graph(version_text="tinySA4_v1.4-200-g26fc821 | HW Version:V0.5.4 max2871",
+                           readback_payloads=payloads)
+        self.addCleanup(g.application.shutdown)
+        g.application.select_device(g.application.discover()[0].device_id)
+        selection = g.sources.current()
+        request = TinySaSweepRequest(selection.selected, selection.revision,
+            100_000_000, 300_000_000, 1001,
+            settings=TinySaSweepSettingsPlan(rbw_mode=TinySaRbwMode.MANUAL, rbw_hz=300_000),
+            input_mode=TinySaInputMode.LOW, readback_settings=True)
+        g.application.start_sweep(request)
+        self.wait(lambda: g.instrument.poll_latest().line is not None or g.instrument.poll_latest().metrics.has_error)
+        state = g.instrument.poll_latest()
+        self.assertFalse(state.metrics.has_error)
+        observation = state.line.instrument.settings
+        self.assertEqual(observation.plan, request.settings)
+        self.assertEqual(observation.acknowledged_commands, ("mode low input", "rbw 300"))
+        self.assertEqual(observation.actual_rbw_hz, 300_000)
+        self.assertEqual(observation.actual_attenuation_db, 12)
+        self.assertAlmostEqual(observation.screen_sweep_time_s, .123)
+        for command in (b"rbw ?\r", b"attenuate ?\r", b"sweeptime ?\r"):
+            self.assertEqual(writes(g.serials[0]).count(command), 1)
+        self.assertEqual(len(g.serials), 1)
+        self.assertFalse(g.catalog.cleanup_pending)
+
+    def test_si_readback_checks_scaled_bounds_before_any_publication(self):
+        for command, unit, value in ((b"rbw ?\r", "Hz", "3MHz"),
+                (b"attenuate ?\r", "", "41"), (b"sweeptime ?\r", "s", "121000ms")):
+            with self.subTest(command=command):
+                g = settings_graph(readback_payloads={command: command + b"\n" + value.encode("ascii") + b"\r\nch> "})
+                try:
+                    g.application.select_device(g.application.discover()[0].device_id)
+                    selection = g.sources.current()
+                    request = TinySaSweepRequest(selection.selected, selection.revision,
+                        100_000_000, 300_000_000, 1001, readback_settings=True)
+                    g.application.start_sweep(request)
+                    self.wait(lambda: g.instrument.poll_latest().metrics.has_error)
+                    self.assertIsNone(g.instrument.poll_latest().line)
+                    self.assertEqual(g.instrument.acquisition_failure.phase, TinySaAcquisitionPhase.READBACK)
+                    self.assertEqual(g.instrument.acquisition_failure.reason, TinySaTraceFailureReason.BOUND)
+                    self.assertEqual(len(g.serials), 1)
+                finally:
+                    g.application.shutdown()
 
     def test_revision_contract_is_suffix_only_and_evidenced_on_existing_snapshot(self):
         for version in (VERSION, "tinySA v1.4 g26fc821", "tinySA4 " + "26fc821ad3432f929630718cd290314dbc711f48"):

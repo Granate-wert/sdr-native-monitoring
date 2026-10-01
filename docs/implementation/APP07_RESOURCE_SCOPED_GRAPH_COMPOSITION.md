@@ -1344,3 +1344,16 @@ firmware identity and same-owner version comparison; no parser/fingerprint
 normalization or binary-firmware-attestation claim is introduced. An initial
 exact915ba19 full gate's one RU-prose failure is retained, not relabeled PASS;
 the untranslated readback/Stop words were corrected, not the catalog guard.
+
+The first current-device settings attempt reached post-pass readback but
+refused `300kHz`: the old reader accepted only an unprefixed numeric `Hz`
+value. A separate passive parser observation, without extra commands or
+response substitution, isolated that format. The pinned
+[sa_cmd.c query definitions](https://github.com/erikkaashoek/tinySA/blob/26fc821ad3432f929630718cd290314dbc711f48/sa_cmd.c#L354-L394)
+and [chprintf.c SI formatter](https://github.com/erikkaashoek/tinySA/blob/26fc821ad3432f929630718cd290314dbc711f48/chprintf.c#L195-L227)
+use `%F`, not a plain float. Readback now converts only the field's admitted
+SI scales into base Hz/seconds/dB before the SAME finite observation bounds.
+Unknown units/prefixes, arbitrary text, duplicate lines, missing prompts,
+deadline failures and out-of-bound scaled values still refuse publication.
+This parsing fix does not replace requested RBW with a target-derived actual
+value or imply settings/RF/Windows qualification from fake-serial tests.

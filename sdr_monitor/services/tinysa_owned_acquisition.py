@@ -410,10 +410,10 @@ class TinySaOwnedAcquisition:
                 lines = _settings_payload(response, command)
                 if lines and lines[0] in {usage, "usage: " + usage}:
                     lines = lines[1:]
-                if len(lines) != 1 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?" + re.escape(unit), lines[0]):
+                if len(lines) != 1:
                     raise TinySaTraceCollectionError("tinySA settings readback framing is invalid",
                         reason=TinySaTraceFailureReason.FRAMING)
-                actual[field] = float(lines[0][:-len(unit)] if unit else lines[0])
+                actual[field] = _settings_scalar(lines[0], unit)
                 self._cancelled()
         try:
             observation = TinySaSettingsObservation(self._settings_plan, self._input_mode,
@@ -537,6 +537,25 @@ class TinySaOwnedAcquisition:
             self._port = None
         self._ready = False
         self._closed = True
+
+
+def _settings_scalar(line: str, unit: str) -> float:
+    """Decode the pinned firmware's %F SI formatting into BASE units.
+
+    sa_cmd.c uses %.1FHz / %5.3Fs / %4.2F and chprintf.c::ftoaS adds
+    prefixes. Only representations within these fields' physical scales are
+    admitted; TinySaSettingsObservation still checks the finite BASE bounds.
+    No exponent, arbitrary unit/prefix, sign or text is interpreted as a value.
+    """
+    prefixes = {"Hz": r"[kM]?", "s": "m?", "": "m?"}
+    pattern = prefixes.get(unit)
+    match = None if pattern is None else re.fullmatch(
+        r"([0-9]+(?:\.[0-9]+)?)(" + pattern + ")" + re.escape(unit), line)
+    if match is None:
+        raise TinySaTraceCollectionError("tinySA settings readback framing is invalid",
+            reason=TinySaTraceFailureReason.FRAMING)
+    multiplier = {"": 1.0, "m": 0.001, "k": 1_000.0, "M": 1_000_000.0}[match[2]]
+    return float(match[1]) * multiplier
 
 
 def _settings_payload(response: bytes, command: bytes) -> list[str]:
