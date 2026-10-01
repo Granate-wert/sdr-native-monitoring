@@ -1297,3 +1297,39 @@ window sizes1154x760/1282x751 are not FHD/QHD/per-monitor-DPI qualification.
 The short-height footer and remaining SDK cleanup/RF/device/sustained/review/
 release work stay open; APP07 remains PARTIAL. This later documentation tail
 does not relabel the exact8378 source/build/witness as its own commit identity.
+
+### Per-pane tinySA settings intent, 2026-10-01
+
+Each tinySA pane now has its own immutable settings/input/readback and optional
+external-correction intent. The independent editor reuses the single-source
+tinySA drawer and existing profile-store presenter; a selector exposes one
+pane's drawer at a time inside the bounded editor. It does not discover/open
+serial, select the base Analyzer source or apply a setting on Qt. Changing a
+pane source resets that pane's intent; another pane's draft is not changed.
+
+A still-unobserved USB candidate may express requested settings with an
+explicit unverified warning. This is NOT command admission or an identified
+model: explicit Stage freshly observes the source and the SAME typed
+TinySaSweepRequest applies the existing firmware/model/input/range checks.
+Observed unsupported firmware remains preserve-only. A refused Stage performs
+no measurement/settings commands or RX. Accepted Stage locks the drawer,
+shows the verified contract and previews requested commands/input/readback/
+correction. Apply still reserves the existing owner; only explicit Start
+executes the request on its same serial handle. No flash save, automatic
+restore, hidden retry, new firmware command or receiver factory is introduced.
+
+The profile compatibility key already includes the complete settings intent:
+different RBW/input/correction on one physical tinySA creates time-sliced
+jobs, not a silent shared-settings merge or second independent port owner.
+Changed UI settings/correction force available post-pass queries, matching
+the single-source UI. The pane shows actual queried RBW separately from the
+target; its tooltip/accessibility retains the existing full readout and scope.
+ACK is not input/LNA/accuracy/spur/repeat readback, and screen-sweep time is
+not scanraw duration. Slow instrument acquisition is not an SDR FFT defect.
+
+Staged locale changes retain the exact source-selection key and settings
+through Discard; labels are translated in place without I/O. The maximum
+10,001-point policy, device-reported dBm and optional separate correction layer
+are unchanged. Fake-serial/source tests do not qualify physical 300 kHz RBW,
+RF input, Windows/DPI or sustained multi-source operation; exact current
+build/device evidence remains a separate gate. APP07 is still PARTIAL.

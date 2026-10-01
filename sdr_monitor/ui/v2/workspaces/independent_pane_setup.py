@@ -14,11 +14,12 @@ from PySide6.QtWidgets import (
 )
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
-from sdr_monitor.domain.device_capabilities import DeviceFamily
-from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneRevisitEstimate
+from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
+from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneRevisitEstimate, TinySaTracePaneProfile
+from sdr_monitor.domain.tinysa_settings import TinySaInputMode
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
-from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, PaneUserPlanError
+from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, TinySaPaneIntent
 from sdr_monitor.ui.v2_pane_user_stage import (
     PaneUserStageError, PreparedPaneUserSession, apply_user_pane_session,
     discard_user_pane_session, prepare_user_pane_session,
@@ -26,6 +27,8 @@ from sdr_monitor.ui.v2_pane_user_stage import (
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import text
+from ..view_models.calibration_view_model import CalibrationProfileViewModel
+from .analyzer_tinysa_settings import TinySaSettingsDrawer
 
 
 class _SlotRow:
@@ -74,6 +77,7 @@ class _SlotRow:
         self.maximum_revisit.setDecimals(3)
         self.maximum_revisit.setSingleStep(0.1)
         self.maximum_revisit.setProperty("ui2Role", "range-control")
+        self.tinysa_settings = TinySaSettingsDrawer(parent)
 
 
 class IndependentPaneSetupV2(QWidget):
@@ -89,6 +93,7 @@ class IndependentPaneSetupV2(QWidget):
     def __init__(self, *, install: Callable[[PaneProductSessionHandle], None],
                  uninstall: Callable[[], None],
                  can_prepare: Callable[[], bool] = lambda: True,
+                 calibration_profiles: CalibrationProfileViewModel | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("independentPaneSetupV2")
@@ -150,6 +155,34 @@ class IndependentPaneSetupV2(QWidget):
         self.mode_help.setProperty("ui2Role", "secondary")
         self.mode_help.setWordWrap(True)
         layout.addWidget(self.mode_help)
+        # One reused settings drawer per pane, one visible at a time. This
+        # never opens serial or mutates the base Analyzer's source selection.
+        self.tinysa_controls = QWidget(self)
+        tiny_controls = QHBoxLayout(self.tinysa_controls)
+        tiny_controls.setContentsMargins(0, 0, 0, 0)
+        self.tinysa_toggle = QPushButton(self.tinysa_controls)
+        self.tinysa_toggle.setProperty("ui2Role", "utility-action")
+        self.tinysa_toggle.setCheckable(True)
+        self.tinysa_pane = QComboBox(self.tinysa_controls)
+        self.tinysa_pane.setProperty("ui2Role", "utility-select")
+        tiny_controls.addWidget(self.tinysa_toggle)
+        tiny_controls.addWidget(self.tinysa_pane)
+        tiny_controls.addStretch(1)
+        layout.addWidget(self.tinysa_controls)
+        self.tinysa_stack = QStackedWidget(self)
+        self.tinysa_stack.setMinimumHeight(300)
+        self.tinysa_stack.setMaximumHeight(380)
+        for row in self._rows:
+            drawer = row.tinysa_settings
+            drawer.bind_profiles(calibration_profiles)
+            self.tinysa_stack.addWidget(drawer)
+            drawer.close_requested.connect(lambda: self.tinysa_toggle.setChecked(False))
+            drawer.draft_changed.connect(lambda target=row: self._refresh_tinysa_row(target))
+        self.tinysa_toggle.toggled.connect(self._show_tinysa_settings)
+        self.tinysa_pane.currentIndexChanged.connect(self._select_tinysa_pane)
+        self.tinysa_stack.hide()
+        self.tinysa_controls.hide()
+        layout.addWidget(self.tinysa_stack)
         actions = QHBoxLayout()
         self.prepare = self._button(self._begin_prepare)
         self.apply = self._button(self._begin_apply)
@@ -223,6 +256,50 @@ class IndependentPaneSetupV2(QWidget):
     def _show_scheduler(self, visible: bool) -> None:
         self.scheduler_controls.setVisible(visible)
         self._sync_contents_height()
+
+    def _show_tinysa_settings(self, visible: bool) -> None:
+        self.tinysa_stack.setVisible(visible and self.tinysa_pane.count() > 0)
+        self._sync_contents_height()
+
+    def _select_tinysa_pane(self, _index: int = -1) -> None:
+        number = self.tinysa_pane.currentData()
+        if number is not None:
+            drawer = self._rows[number - 1].tinysa_settings
+            self.tinysa_stack.setCurrentWidget(drawer)
+            drawer.show()
+        self._show_tinysa_settings(self.tinysa_toggle.isChecked())
+
+    def _refresh_tinysa_row(self, row: _SlotRow) -> None:
+        choice = next((item for item in self._choices
+                       if item.device_id == row.source.currentData()), None)
+        if self._prepared is not None:
+            schedule = self._prepared.plan.layout.schedule
+            assert schedule is not None
+            choice = next((job.profile.request_template.source
+                           for resource in schedule.resources for job in resource.jobs
+                           if isinstance(job.profile, TinySaTracePaneProfile)
+                           and any(crop.pane_id == f"pane-{row.number}" for crop in job.crops)), choice)
+        available = bool(choice is not None and choice.family is DeviceFamily.TINYSA
+                         and choice.runtime is not None
+                         and choice.runtime.availability is AdapterRuntimeAvailability.AVAILABLE
+                         and self._selection is not None and not self._selection.release_pending)
+        row.tinysa_settings.apply_source_state(
+            choice, revision=None if self._selection is None else self._selection.revision,
+            available=available, controls_locked=self.blocks_single_source,
+            allow_unobserved_draft=True)
+
+    def _refresh_tinysa_selector(self) -> None:
+        previous = self.tinysa_pane.currentData()
+        numbers = [row.number for row in self._rows
+                   if any(choice.device_id == row.source.currentData()
+                          and choice.family is DeviceFamily.TINYSA for choice in self._choices)]
+        with QSignalBlocker(self.tinysa_pane):
+            self.tinysa_pane.clear()
+            for number in numbers:
+                self.tinysa_pane.addItem(text("analyzer.pane.setup.tinysa_pane", pane=number), number)
+            self.tinysa_pane.setCurrentIndex(max(0, self.tinysa_pane.findData(previous)))
+        self.tinysa_controls.setVisible(bool(numbers))
+        self._select_tinysa_pane()
 
     def _show_details(self) -> None:
         target = self.error if not self.error.isHidden() else self.preview
@@ -341,6 +418,8 @@ class IndependentPaneSetupV2(QWidget):
                             (140, 148) if family is DeviceFamily.HACKRF else (100, 108))
             row.start.setValue(lower)
             row.stop.setValue(upper)
+        self._refresh_tinysa_row(row)
+        self._refresh_tinysa_selector()
 
     def _read_drafts(self) -> tuple[PaneSlotDraft, ...]:
         drafts = []
@@ -348,13 +427,22 @@ class IndependentPaneSetupV2(QWidget):
             source_id = row.source.currentData()
             choice = next((item for item in self._choices if item.device_id == source_id), None)
             network = (choice is not None and choice.transport_label.casefold() in {"ip", "ethernet"})
+            tiny = None
+            if choice is not None and choice.family is DeviceFamily.TINYSA:
+                drawer = row.tinysa_settings
+                correction = drawer.correction_profile()
+                tiny = TinySaPaneIntent(
+                    settings=drawer.plan(), input_mode=TinySaInputMode(drawer.input.currentData()),
+                    readback=drawer.readback.isChecked(), external_correction=correction,
+                    frontend_chain=drawer.frontend_chain.text().strip() or "unknown",
+                    allow_correction_extrapolation=correction is not None and drawer.extrapolate.isChecked())
             drafts.append(PaneSlotDraft(row.number) if source_id is None else PaneSlotDraft(
                 row.number, source_id, row.start.value() * 1_000_000,
                 row.stop.value() * 1_000_000,
                 sample_rate_hz=row.rate.currentData(), fft_size=row.fft.currentData(),
                 points=row.points.value(), network_discovery=network,
                 measurement_mode=self._selected_mode(row), priority=row.priority.value(),
-                maximum_revisit_s=row.maximum_revisit.value() or None))
+                maximum_revisit_s=row.maximum_revisit.value() or None, tinysa=tiny))
         return tuple(drafts)
 
     @staticmethod
@@ -409,7 +497,7 @@ class IndependentPaneSetupV2(QWidget):
             return
         try:
             drafts = self._read_drafts()
-        except PaneUserPlanError:
+        except (ValueError, TypeError):
             self._set_error("analyzer.pane.setup.invalid")
             return
         for draft in drafts:
@@ -591,6 +679,26 @@ class IndependentPaneSetupV2(QWidget):
             lines.append(text("analyzer.pane.setup.preview_hackrf_capture",
                               pane=pane_id.rsplit("-", 1)[-1], start=start // 1_000_000,
                               stop=stop // 1_000_000))
+        schedule = prepared.plan.layout.schedule
+        assert schedule is not None
+        tiny_requests = {crop.pane_id: job.profile.request_template
+                         for resource in schedule.resources for job in resource.jobs
+                         if isinstance(job.profile, TinySaTracePaneProfile) for crop in job.crops}
+        for pane_id, request in sorted(tiny_requests.items()):
+            commands = (() if request.input_mode is TinySaInputMode.PRESERVE else
+                        (f"mode {request.input_mode.value} input",)) + request.settings.commands
+            lines.append(text("analyzer.pane.setup.preview_tinysa", pane=pane_id.rsplit("-", 1)[-1],
+                              start=f"{request.start_hz / 1e6:g}", stop=f"{request.stop_hz / 1e6:g}",
+                              points=request.points,
+                              input=text("tinysa.settings." + request.input_mode.value),
+                              commands=" · ".join(commands) or text("tinysa.settings.preserve"),
+                              readback=text("tinysa.settings.on" if request.readback_settings else
+                                            "tinysa.settings.off"),
+                              correction=text("tinysa.correction.none") if request.external_correction is None else
+                              text("tinysa.correction.item", name=request.external_correction.profile_id,
+                                   version=request.external_correction.profile_version,
+                                   digest=request.external_correction.fingerprint[:8])))
+            lines.append(text("analyzer.pane.setup.preview_tinysa_scope"))
         lines.append(text("analyzer.pane.setup.preview_scope"))
         self._set_preview_text("\n".join(lines))
 
@@ -669,6 +777,13 @@ class IndependentPaneSetupV2(QWidget):
         self.mode_help.setText(text("analyzer.pane.setup.mode_help"))
         self.scheduler_toggle.setText(text("analyzer.pane.setup.scheduler"))
         self.scheduler_toggle.setAccessibleName(text("analyzer.pane.setup.scheduler"))
+        self.tinysa_toggle.setText(text("analyzer.pane.setup.tinysa_settings"))
+        self.tinysa_toggle.setAccessibleName(text("analyzer.pane.setup.tinysa_settings"))
+        self.tinysa_pane.setAccessibleName(text("analyzer.pane.setup.tinysa_settings"))
+        for row in self._rows:
+            row.tinysa_settings.set_locale()
+            self._refresh_tinysa_row(row)
+        self._refresh_tinysa_selector()
         self.scheduler_help.setText(text("analyzer.pane.setup.scheduler_help"))
         self.scroll_area.setAccessibleName(text("analyzer.pane.setup.open"))
         for header, key in zip(self.scheduler_headers, (
@@ -687,9 +802,9 @@ class IndependentPaneSetupV2(QWidget):
                             (self.details, "analyzer.pane.setup.details")):
             button.setText(text(key))
             button.setAccessibleName(text(key))
-        selection = self._selection
-        self._selection = None  # Rebuild the visible Empty label in the new locale.
-        self.update_sources(selection)
+        # Empty/mode/drawer labels were translated in place above. Retain the
+        # exact selection while staged; a locale change cannot invalidate the
+        # tinySA draft's source key or reset it when Discard unlocks controls.
         if self._prepared is not None:
             self._refresh_preview()
         self._set_error(self._error_key, revisit_violations=self._revisit_violations,
@@ -702,6 +817,8 @@ class IndependentPaneSetupV2(QWidget):
             raise RuntimeError("pane editor retains a control operation or un-applied resource")
         self._timer.stop()
         self._executor.shutdown(wait=False, cancel_futures=False)
+        for row in self._rows:
+            row.tinysa_settings.release_profiles()
         self._released = True
 
 

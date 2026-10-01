@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from sdr_monitor.domain.calibration import CalibrationProfile
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
+from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.tinysa_settings import (
     TINYSA_RUNTIME_CONTROL_CONTRACT,
     TinySaAttenuationMode,
@@ -46,7 +48,7 @@ class TinySaSettingsDrawer(QFrame):
         self.setObjectName("v2-tinysa-settings-drawer")
         self.setProperty("ui2Role", "card")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._revision: int | None = None
+        self._source_key: tuple[str, int | None] | None = None
         self._profiles_model: CalibrationProfileViewModel | None = None
         self._unsubscribe_profiles: Callable[[], None] | None = None
         self._profiles_locked = False
@@ -186,8 +188,9 @@ class TinySaSettingsDrawer(QFrame):
         for label, key in self._labels:
             label.setText(text(key))
         for combo, keys in self._options:
-            for index, key in enumerate(keys):
-                combo.setItemText(index, text(key))
+            with QSignalBlocker(combo):
+                for index, key in enumerate(keys):
+                    combo.setItemText(index, text(key))
         for field, key in self._field_labels:
             field.setAccessibleName(text(key))
         self.rbw.setSuffix(text("tinysa.settings.unit.khz"))
@@ -268,10 +271,23 @@ class TinySaSettingsDrawer(QFrame):
     def apply_view_state(self, state: AnalyzerViewState) -> None:
         selection = state.source_selection
         source = selection.selected if selection is not None else None
+        self.apply_source_state(source, revision=None if selection is None else selection.revision,
+                                available=state.tinysa_controls_available,
+                                controls_locked=state.controls_locked)
+
+    def apply_source_state(self, source: AnalyzerSourceChoice | None, *,
+                           revision: int | None, available: bool, controls_locked: bool,
+                           allow_unobserved_draft: bool = False) -> None:
+        """Reuse the draft for an independent pane, without selecting/opening it.
+
+        Pane candidates can express intent before their explicit fresh Stage;
+        this does NOT admit a command. Observed unknown firmware stays locked.
+        Single-source callers retain their original observed-only policy.
+        """
         snapshot = source.binding.snapshot if source is not None else None
-        revision = selection.revision if state.tinysa_controls_available and selection is not None else None
-        if revision != self._revision:
-            self._revision = revision
+        source_key = (source.device_id, revision) if available and source is not None else None
+        if source_key != self._source_key:
+            self._source_key = source_key
             for control, _keys in self._options:
                 with QSignalBlocker(control):
                     control.setCurrentIndex(0)
@@ -293,10 +309,13 @@ class TinySaSettingsDrawer(QFrame):
             with QSignalBlocker(self.extrapolate):
                 self.extrapolate.setChecked(False)
         known = snapshot is not None and snapshot.runtime_control_contract == TINYSA_RUNTIME_CONTROL_CONTRACT
-        self.contract.setText(text("tinysa.settings.known" if known else "tinysa.settings.unknown"))
-        enabled = known and state.tinysa_controls_available and not state.controls_locked
+        unobserved = (allow_unobserved_draft and source is not None
+                      and source.family is DeviceFamily.TINYSA and snapshot is None)
+        self.contract.setText(text("tinysa.settings.unobserved_draft" if unobserved else
+                                   "tinysa.settings.known" if known else "tinysa.settings.unknown"))
+        enabled = (known or unobserved) and available and not controls_locked
         was_locked = self._profiles_locked
-        self._profiles_locked = state.controls_locked
+        self._profiles_locked = controls_locked
         if was_locked and not self._profiles_locked and self._pending_profiles is not None:
             self._on_profiles(self._pending_profiles)
         ultra = snapshot is not None and snapshot.model_id == "tinysa_ultra"
@@ -313,11 +332,11 @@ class TinySaSettingsDrawer(QFrame):
         self.correction.setEnabled(enabled and self._profiles_model is not None)
         self.frontend_chain.setEnabled(enabled and self.correction_profile() is not None)
         self.extrapolate.setEnabled(enabled and self.correction_profile() is not None)
-        self.refresh_profiles.setEnabled(state.tinysa_controls_available and not state.controls_locked
+        self.refresh_profiles.setEnabled(available and not controls_locked
             and self._profiles_model is not None and not self._profiles_model.state.busy)
         self.lna.setToolTip(text("tinysa.settings.lna.help"))
         self.attenuation_mode.setToolTip(text("tinysa.settings.atten.help"))
-        if not state.tinysa_controls_available:
+        if not available:
             self.hide()
 
     def plan(self) -> TinySaSweepSettingsPlan:

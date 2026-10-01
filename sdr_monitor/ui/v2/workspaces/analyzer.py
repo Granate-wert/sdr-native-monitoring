@@ -71,6 +71,7 @@ class AnalyzerWorkspaceV2(QWidget):
         super().__init__(parent)
         self.model = model
         self._shared_projector_factory = shared_projector_factory
+        self._calibration_profiles = calibration_profiles
         self._terminal_released = False
         self._independent_session: IndependentPaneSessionV2 | None = None
         self._independent_setup: IndependentPaneSetupV2 | None = None
@@ -239,6 +240,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._commands.insertWidget(self._commands.indexOf(self.settings), button)
         setup = IndependentPaneSetupV2(
             install=install, uninstall=uninstall,
+            calibration_profiles=self._calibration_profiles,
             can_prepare=lambda: (not self._terminal_released and not self.model.state.controls_locked
                                  and self._independent_session is None),
             parent=self)

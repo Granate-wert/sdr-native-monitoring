@@ -37,6 +37,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "tinysa.settings.title": MappingProxyType({UiLocale.RU: "Настройки tinySA · черновик", UiLocale.EN: "tinySA settings · draft"}),
         "tinysa.settings.input": MappingProxyType({UiLocale.RU: "Вход прибора", UiLocale.EN: "Instrument input"}),
         "tinysa.settings.preserve": MappingProxyType({UiLocale.RU: "Не менять", UiLocale.EN: "Preserve"}),
+        "tinysa.settings.unobserved_draft": MappingProxyType({
+            UiLocale.RU: "Версия прибора ещё не прочитана. Это только запрос настроек: «Подготовить» заново проверит модель и прошивку и может отказать. Команды измерения отправляются только после явного «Старт».",
+            UiLocale.EN: "Device version has not been read. These are requested settings only: Stage will freshly check model/firmware and may refuse them. Measurement commands are sent only after explicit Start."}),
         "tinysa.settings.low": MappingProxyType({UiLocale.RU: "LOW-вход", UiLocale.EN: "LOW input"}),
         "tinysa.settings.high": MappingProxyType({UiLocale.RU: "HIGH-вход · только Basic", UiLocale.EN: "HIGH input · Basic only"}),
         "tinysa.settings.accuracy": MappingProxyType({UiLocale.RU: "Точность прохода", UiLocale.EN: "Sweep accuracy"}),
@@ -239,6 +242,19 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.preview_scope": MappingProxyType({
             UiLocale.RU: "Это план, не измерение скорости или непрерывности RF. Применить ≠ Старт; для изменения работающей раскладки сначала выполните Стоп.",
             UiLocale.EN: "This is a plan, not measured speed or RF continuity. Apply is not Start; Stop the active layout before editing it."}),
+        "analyzer.pane.setup.tinysa_settings": MappingProxyType({
+            UiLocale.RU: "Настройки tinySA", UiLocale.EN: "tinySA settings"}),
+        "analyzer.pane.setup.tinysa_pane": MappingProxyType({
+            UiLocale.RU: "Окно {pane}", UiLocale.EN: "Pane {pane}"}),
+        "analyzer.pane.setup.preview_tinysa": MappingProxyType({
+            UiLocale.RU: "Окно {pane}, tinySA: {start}…{stop} МГц · {points} точек · приборные dBm; запрос входа: {input}; команды при Старт: {commands}; чтение после прохода: {readback}; запрос коррекции: {correction}.",
+            UiLocale.EN: "Pane {pane}, tinySA: {start}…{stop} MHz · {points} points · device dBm; requested input: {input}; commands at Start: {commands}; post-pass readback: {readback}; requested correction: {correction}."}),
+        "analyzer.independent.tinysa.rbw_actual": MappingProxyType({
+            UiLocale.RU: "RBW после прохода {value} кГц",
+            UiLocale.EN: "post-pass RBW {value} kHz"}),
+        "analyzer.pane.setup.preview_tinysa_scope": MappingProxyType({
+            UiLocale.RU: "Целевой RBW не является фактическим: обратное чтение будет после прохода. Вход/LNA/точность/подавление помех/число измерений не имеют readback; ACK команды — не RF-доказательство. Точки tinySA не являются FFT. Настройки не сохраняются в прошивку и не восстанавливаются автоматически после Stop.",
+            UiLocale.EN: "Target RBW is not actual RBW: readback follows the pass. Input/LNA/accuracy/spur/repeat have no readback; command ACK is not RF proof. tinySA points are not FFTs. Settings are not saved to firmware or automatically restored after Stop."}),
         "analyzer.pane.setup.invalid": MappingProxyType({
             UiLocale.RU: "Проверьте источник, диапазон и параметры окна; раскладка не подготовлена.",
             UiLocale.EN: "Check each pane's source, range and parameters; no layout was staged."}),

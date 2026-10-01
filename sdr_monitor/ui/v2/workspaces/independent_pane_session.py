@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
+from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.services.pane_resource_session import PaneHostTiming
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
@@ -27,6 +28,7 @@ from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
 from ..design import ThemeId, stylesheet_for_theme
 from ..design.tokens import tokens_for_theme
 from ..i18n import text
+from ..state.analyzer_readouts import tinysa_settings_readout
 from .independent_pane_board import IndependentPaneBoardV2
 from .independent_pane_delivery import IndependentPaneDeliveryPort
 from .pane_failure_text import pane_failure_text
@@ -307,8 +309,18 @@ class IndependentPaneSessionV2(QWidget):
                             detail += " " + text("analyzer.independent.failure.cleanup",
                                 detail=pane_failure_text(state.cleanup_failure))
                         failures.append(detail)
-                self.board.set_pane_timing(slot.number,
-                    self._timing_text(pane_id, state.phase), explanation)
+                summary_text = self._timing_text(pane_id, state.phase)
+                pane = self.board.pane(slot.number)
+                bundle = None if pane is None else pane.last_bundle
+                frame = None if bundle is None else bundle.spectrum
+                if isinstance(frame, SweepLineFrame) and frame.instrument is not None:
+                    observation = frame.instrument.settings
+                    actual_rbw = None if observation is None else observation.actual_rbw_hz
+                    summary_text += " · " + text("analyzer.independent.tinysa.rbw_actual",
+                        value="—" if actual_rbw is None else f"{actual_rbw / 1000:g}")
+                    explanation += "\n\n" + tinysa_settings_readout(frame)
+                    explanation += "\n" + text("analyzer.pane.setup.preview_tinysa_scope")
+                self.board.set_pane_timing(slot.number, summary_text, explanation)
         detail = ("" if self._error_key is None else text(self._error_key, pane=self._error_pane or ""))
         if failures:
             detail = "\n".join(failures)

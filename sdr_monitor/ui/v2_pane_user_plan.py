@@ -14,6 +14,7 @@ from typing import Mapping
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
 from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
+from sdr_monitor.domain.calibration import CalibrationProfile
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.hackrf_live import HackrfLiveRequest
@@ -32,6 +33,7 @@ from sdr_monitor.domain.receiver_topology import (
     SpectrumTraceEndpoint, SweepPaneRequest,
 )
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
+from sdr_monitor.domain.tinysa_settings import TinySaInputMode, TinySaSweepSettingsPlan
 from sdr_monitor.services.native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
 
 
@@ -42,6 +44,39 @@ class PaneUserPlanError(ValueError):
                  revisit_violations: tuple[PaneRevisitEstimate, ...] = ()) -> None:
         super().__init__(message)
         self.revisit_violations = revisit_violations
+
+
+@dataclass(frozen=True, slots=True)
+class TinySaPaneIntent:
+    """Immutable UI intent, validated against the FRESH source during Stage.
+
+    This is not an observed firmware/input state. The same TinySaSweepRequest
+    and serial owner perform model/contract admission and post-pass readback.
+    """
+
+    settings: TinySaSweepSettingsPlan = field(default_factory=TinySaSweepSettingsPlan)
+    input_mode: TinySaInputMode = TinySaInputMode.PRESERVE
+    readback: bool = False
+    external_correction: CalibrationProfile | None = None
+    frontend_chain: str = "unknown"
+    allow_correction_extrapolation: bool = False
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.settings, TinySaSweepSettingsPlan)
+                or not isinstance(self.input_mode, TinySaInputMode)
+                or type(self.readback) is not bool
+                or type(self.allow_correction_extrapolation) is not bool
+                or self.external_correction is not None
+                and not isinstance(self.external_correction, CalibrationProfile)):
+            raise PaneUserPlanError("tinySA pane settings require typed immutable intent")
+
+    @property
+    def readback_settings(self) -> bool:
+        # Match the single-source UI: changed settings/correction always query
+        # actual values, even if the preserve-only checkbox is not selected.
+        return bool(self.readback or self.settings.commands
+                    or self.input_mode is not TinySaInputMode.PRESERVE
+                    or self.external_correction is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,12 +94,15 @@ class PaneSlotDraft:
     measurement_mode: CaptureMeasurementMode | None = None
     priority: int = field(default=1, kw_only=True)
     maximum_revisit_s: float | None = field(default=None, kw_only=True)
+    tinysa: TinySaPaneIntent | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
             raise PaneUserPlanError("pane number must be in [1, 4]")
         if type(self.network_discovery) is not bool:
             raise PaneUserPlanError("pane network discovery intent must be explicit")
+        if self.tinysa is not None and not isinstance(self.tinysa, TinySaPaneIntent):
+            raise PaneUserPlanError("pane tinySA settings require typed intent")
         if type(self.priority) is not int or not 1 <= self.priority <= 100:
             raise PaneUserPlanError("pane scheduling priority must be an integer in [1, 100]")
         if self.maximum_revisit_s is not None and (
@@ -80,7 +118,7 @@ class PaneSlotDraft:
         if self.source_id is None:
             if (self.start_hz is not None or self.stop_hz is not None
                     or self.measurement_mode is not None or self.priority != 1
-                    or self.maximum_revisit_s is not None):
+                    or self.maximum_revisit_s is not None or self.tinysa is not None):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
         if (not isinstance(self.source_id, str) or not self.source_id.strip()
@@ -187,6 +225,8 @@ def compile_user_pane_plan(
             continue
         source_id = draft.source_id
         choice = selected[source_id]
+        if draft.tinysa is not None and choice.family is not DeviceFamily.TINYSA:
+            raise PaneUserPlanError("tinySA settings cannot be attached to an SDR pane")
         assert draft.start_hz is not None and draft.stop_hz is not None
         if draft.fft_size == 2048 and not (
                 choice.family is DeviceFamily.HACKRF
@@ -268,12 +308,18 @@ def compile_user_pane_plan(
             if not float(draft.start_hz).is_integer() or not float(draft.stop_hz).is_integer():
                 raise PaneUserPlanError("tinySA endpoints must be exact whole hertz")
             revision = selection_revisions[source_id]
+            intent = draft.tinysa or TinySaPaneIntent()
             tiny_request = TinySaSweepRequest(
                 choice, revision, int(draft.start_hz), int(draft.stop_hz),
-                draft.points, timeout_s=60.0, repeat_until_stop=True)
+                draft.points, timeout_s=60.0, repeat_until_stop=True,
+                settings=intent.settings, input_mode=intent.input_mode,
+                readback_settings=intent.readback_settings,
+                external_correction=intent.external_correction,
+                frontend_chain=intent.frontend_chain,
+                allow_correction_extrapolation=intent.allow_correction_extrapolation)
             profile = TinySaTracePaneProfile(
                 draft.points, draft.stop_hz - draft.start_hz,
-                "instrument-default", trace_cost, request_template=tiny_request)
+                "tinysa-request-v1", trace_cost, request_template=tiny_request)
         if draft.stop_hz - draft.start_hz > profile.usable_capture_span_hz:
             raise PaneUserPlanError("pane range exceeds the source's current usable capture span")
         snapshot = choice.binding.snapshot
@@ -355,4 +401,4 @@ def compile_user_pane_plan(
                         tuple(scheduler_intents))
 
 
-__all__ = ["PaneSlotDraft", "PaneSchedulingIntent", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]
+__all__ = ["TinySaPaneIntent", "PaneSlotDraft", "PaneSchedulingIntent", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]
