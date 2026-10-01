@@ -36,7 +36,7 @@ from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.analyzer import AnalyzerFrameBundle, bundle_from_live
 from ..domain.recording import RecordingState
 from ..domain.tinysa_analyzer import TinySaSweepRequest
-from ..domain.device_capabilities import DeviceFamily
+from ..domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
 from ..services.source_capability_admission import admit_source_request
 
 
@@ -187,7 +187,8 @@ class LiveSessionApplicationService:
                     raise AnalyzerRfChangeRejected("RF change requires the same applied AD Sweep profile")
                 return AnalyzerRfContext(source, selection.revision, state, request,
                     applied_live=snapshot.applied.applied, session_id=snapshot.session_id,
-                    configuration_generation=int(snapshot.generation), acquisition_epoch=state.sweep_epoch)
+                    configuration_generation=int(snapshot.generation), acquisition_epoch=state.sweep_epoch,
+                    route_rf_capabilities=snapshot.device.route_rf_capabilities)
             return AnalyzerRfContext(source, selection.revision, state, request, acquisition_epoch=state.sweep_epoch)
         snapshot = self.current_snapshot()
         if snapshot.error is not None:
@@ -207,7 +208,9 @@ class LiveSessionApplicationService:
         return AnalyzerRfContext(source, selection.revision, state, profile,
             session_id=snapshot.session_id, configuration_generation=int(snapshot.generation),
             acquisition_epoch=snapshot.acquisition_epoch, receiver_id=snapshot.receiver_id,
-            clock_domain=snapshot.clock_domain, unit=snapshot.unit)
+            clock_domain=snapshot.clock_domain, unit=snapshot.unit,
+            route_rf_capabilities=(snapshot.device.route_rf_capabilities
+                                   if source.family is DeviceFamily.AD936X and snapshot.device is not None else None))
 
     def _preflight_rf_proposal(self, proposal: AnalyzerRfShiftProposal) -> None:
         if not isinstance(proposal, AnalyzerRfShiftProposal):
@@ -215,10 +218,19 @@ class LiveSessionApplicationService:
         proposal.__post_init__()
         request, context = proposal.request, proposal.expected
         if isinstance(request, (LiveConfiguration, ContinuousSweepPlanRequest)):
-            admitted = admit_source_request(source_inventory(context), context.source.device_id,
-                context.state.mode.value, request, applied_live=context.applied_live)
-            if not admitted.accepted:
-                raise AnalyzerRfChangeRejected("RF range/profile is not admitted by the selected capability")
+            if context.route_rf_capabilities is not None:
+                runtime = context.source.runtime
+                gate = getattr(self._port, "preflight_rf_route", None)
+                if (runtime is None or runtime.family is not DeviceFamily.AD936X
+                        or runtime.adapter_id != context.source.binding.adapter_id
+                        or runtime.availability is not AdapterRuntimeAvailability.AVAILABLE or not callable(gate)):
+                    raise AnalyzerRfChangeRejected("RF route runtime admission is unavailable")
+                gate(context.source.device_id, context.route_rf_capabilities, request, applied_live=context.applied_live)
+            else:
+                admitted = admit_source_request(source_inventory(context), context.source.device_id,
+                    context.state.mode.value, request, applied_live=context.applied_live)
+                if not admitted.accepted:
+                    raise AnalyzerRfChangeRejected("RF range/profile is not admitted by the selected capability")
             if isinstance(request, LiveConfiguration):
                 self.preflight_configuration(request)
             else:

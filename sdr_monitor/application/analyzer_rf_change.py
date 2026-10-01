@@ -17,6 +17,7 @@ from ..domain.device_capabilities import DeviceCapabilityInventory, DeviceFamily
 from ..domain.hackrf_live import HackrfLiveRequest
 from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.live import LiveConfiguration, LiveSnapshot
+from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 from ..domain.tinysa_analyzer import TinySaSweepRequest
 
 
@@ -47,6 +48,9 @@ class AnalyzerRfContext:
     receiver_id: str | None = None
     clock_domain: str | None = None
     unit: str | None = None
+    # Exact selected descriptor reference ONLY for empty-serial AD routes.
+    # Never enters source_inventory, stable identity or calibration admission.
+    route_rf_capabilities: Ad936xRouteCapabilities | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.source, AnalyzerSourceChoice)
@@ -58,6 +62,12 @@ class AnalyzerRfContext:
                 or self.state.error is not None):
             raise AnalyzerRfChangeRejected("RF context requires a stable selected Analyzer operation")
         request, family, mode = self.request, self.source.family, self.state.mode
+        route = self.route_rf_capabilities
+        if route is not None:
+            if (family is not DeviceFamily.AD936X or not isinstance(route, Ad936xRouteCapabilities)
+                    or self.source.binding.snapshot is not None or self.source.binding.calibration_identity is not None):
+                raise AnalyzerRfChangeRejected("RF route facts cannot replace a canonical identity")
+            route.__post_init__()
         expected = {(DeviceFamily.AD936X, AnalyzerMode.RTBW): LiveConfiguration,
                     (DeviceFamily.AD936X, AnalyzerMode.SWEEP): ContinuousSweepPlanRequest,
                     (DeviceFamily.HACKRF, AnalyzerMode.RTBW): HackrfLiveRequest,
@@ -96,6 +106,7 @@ class AnalyzerRfContext:
         if (current.source is not self.source or current.selection_revision != self.selection_revision
                 or current.state != replace(self.state, phase=required_phase)
                 or current.request != self.request or current.applied_live != self.applied_live
+                or current.route_rf_capabilities is not self.route_rf_capabilities
                 or current.configuration_generation != self.configuration_generation
                 or current.session_id != self.session_id):
             return False
@@ -193,6 +204,7 @@ requesting Start. A failed or superseded receipt cannot restart a receiver.
         expected, armed = self.proposal.expected, self.armed_context
         if (armed.state.phase is not AnalyzerPhase.IDLE
                 or armed.source is not expected.source or armed.selection_revision != expected.selection_revision
+                or armed.route_rf_capabilities is not expected.route_rf_capabilities
                 or armed.state != replace(expected.state, phase=AnalyzerPhase.IDLE)
                 or self.snapshot.error is not None or self.snapshot.stop_required):
             raise AnalyzerRfChangeRejected("RF Apply receipt is not the confirmed stopped operation")

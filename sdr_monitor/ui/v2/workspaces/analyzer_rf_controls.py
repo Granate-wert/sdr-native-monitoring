@@ -55,6 +55,8 @@ def default_rf_preview_text(proposal: AnalyzerRfShiftProposal, numbers: tuple[in
              text("analyzer.rf.impact", panes=", ".join(str(number) for number in numbers)),
              text("analyzer.rf.restart" if proposal.expected.state.phase is AnalyzerPhase.RUNNING
                   else "analyzer.rf.armed")]
+    if proposal.expected.route_rf_capabilities is not None:
+        lines.extend(("", text("analyzer.rf.route_scope")))
     for number in numbers:
         lines.append(text("analyzer.rf.pane_range", number=number,
                           old_start=f"{old_start / 1e6:.6f}", old_stop=f"{old_stop / 1e6:.6f}",

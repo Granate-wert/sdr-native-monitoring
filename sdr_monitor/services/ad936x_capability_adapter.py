@@ -20,6 +20,7 @@ from ..domain.device_capabilities import (
     stable_identity_key,
 )
 from .ad936x_identity_admission import normalized_pluto_serial
+from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 from .pluto_readonly_observation import PlutoReadOnlyObservation, PlutoReadOnlyObserver
 
 
@@ -74,6 +75,37 @@ class Ad936xLibiioCapabilityAdapter:
         try:
             observation = self._observer.observe(route)
             return self.map_observation(observation, route)
+        except Exception:
+            raise Ad936xCapabilityObservationError(_GENERIC_FAILURE) from None
+
+    @staticmethod
+    def map_route_observation(observation: PlutoReadOnlyObservation, route: str) -> Ad936xRouteCapabilities:
+        """Copy same-owner bounds ONLY for a genuinely empty observed serial.
+
+        Never relax canonical mapping, invent a serial, infer bounds or admit
+        an old/incoherent runtime. Invalid/nonempty identity is not absence.
+        The observer already required successful disconnect before return.
+        """
+        try:
+            _transport_for_route(route)
+            if not observation.coherent_context:
+                raise ValueError("route observation is not coherent")
+            probe, capabilities = observation.probe, observation.capabilities
+            serial = getattr(probe, "serial", None)
+            if (not isinstance(serial, str) or serial.strip()
+                    or getattr(capabilities, "serial", None) != serial
+                    or getattr(probe, "uri", None) != route):
+                raise ValueError("route observation requires explicit empty same-owner serial")
+            if _required_bool(getattr(capabilities, "supports_continuous_iq", None), "raw IQ") is not True:
+                raise ValueError("route has no observed continuous IQ")
+            firmware = _required_native_text(getattr(probe, "firmware", None), "firmware")
+            if getattr(capabilities, "firmware", None) != getattr(probe, "firmware", None):
+                raise ValueError("route firmware facts disagree")
+            return Ad936xRouteCapabilities(route, firmware,
+                (_native_range(getattr(capabilities, "tuning_range_hz", None), "Hz"),),
+                _native_ranges(getattr(capabilities, "sample_rate_ranges_hz", None), "Hz"),
+                _native_ranges(getattr(capabilities, "analog_bandwidth_ranges_hz", None), "Hz"),
+                (_native_range(getattr(capabilities, "gain_range_db", None), "dB"),))
         except Exception:
             raise Ad936xCapabilityObservationError(_GENERIC_FAILURE) from None
 

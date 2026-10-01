@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, cast
 from ..domain.live import LiveAdmissionRejected
+from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 
 from ..activity_log import log_event
 from ..libiio_runtime import configure_frozen_libiio_runtime
@@ -66,7 +67,9 @@ from ..domain.device_capabilities import (
     DeviceCapabilityInventory, DeviceFamily, build_device_capability_inventory,
 )
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
-from .source_capability_admission import admit_source_request, live_configuration_numbers_valid
+from .source_capability_admission import (
+    admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
+)
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 
 # P07 defaults mirrored from the legacy adapter contract.
@@ -448,6 +451,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     capabilities=fresh.capabilities,
                     capability_snapshot=fresh.capability_snapshot,
                     calibration_identity=fresh.calibration_identity,
+                    route_rf_capabilities=fresh.route_rf_capabilities,
                     serial=fresh.serial,
                     identity_key=fresh.identity_key,
                 )
@@ -564,6 +568,34 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 raise LiveAdmissionRejected(reason)
             return self._start_unlocked()
 
+    def preflight_rf_route(
+        self, source_id: str, facts: Ad936xRouteCapabilities,
+        request: LiveConfiguration | ContinuousSweepPlanRequest,
+        *, applied_live: LiveConfiguration | None = None,
+    ) -> None:
+        """No-I/O bounds of SAME selected empty-serial owner/route, not Start.
+
+        Called again under the receiver/recording transaction before effects.
+        Reference identity prevents copying old facts after a new selection.
+        Stable identity and calibration admission remain unchanged and strict.
+        """
+        with self._recording_transaction_lock:
+            device = self._snapshot.device
+            runtime = _ad936x_runtime_snapshot(self._native)
+            if (device is None or device.device_id != source_id
+                    or not isinstance(facts, Ad936xRouteCapabilities)
+                    or device.route_rf_capabilities is not facts
+                    or device.uri != facts.uri or self._native_uri != facts.uri
+                    or device.capability_snapshot is not None or device.calibration_identity is not None
+                    or (device.serial is not None and device.serial.strip())
+                    or runtime.availability is not AdapterRuntimeAvailability.AVAILABLE
+                    or self._observation_owner.cleanup_pending or self._stream_release_failed
+                    or self._external_analyzer_owner is not None):
+                raise LiveAdmissionRejected("RF route observation/owner/runtime is missing or stale")
+            admitted = admit_ad936x_route_request(facts, request, applied_live=applied_live)
+            if not admitted.accepted:
+                raise LiveAdmissionRejected(f"RF route bounds refused: {admitted.reason}")
+
     def _start_capability_refusal(self, snapshot: LiveSnapshot | None = None) -> str | None:
         """Low-rate pure gate before factory access; route compatibility stays explicit."""
         snapshot = self._snapshot if snapshot is None else snapshot
@@ -573,6 +605,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         if not live_configuration_numbers_valid(configuration):
             return "Live configuration numbers are invalid"
         device = snapshot.device
+        if device is not None and device.route_rf_capabilities is not None:
+            try:
+                self.preflight_rf_route(device.device_id, device.route_rf_capabilities, configuration)
+            except LiveAdmissionRejected as error:
+                return str(error)
+            return None
         if device is None or device.capability_snapshot is None:
             return None  # No canonical claim for explicit unverified routes.
         admitted = admit_source_request(self.capability_inventory(), device.device_id, "rtbw", configuration)
@@ -1922,6 +1960,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         topology = _domain_receiver_topology(observation.topology, probe, identity_key)
         capability_snapshot = None
         calibration_identity = None
+        route_rf_capabilities = None
         try:
             mapped = Ad936xLibiioCapabilityAdapter.map_observation(observation, uri)
             capability_snapshot = mapped.snapshot
@@ -1930,6 +1969,11 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             # No stable serial/coherent facts: preserve the operational route,
             # not invented stable evidence, inferred RX count or calibration.
             pass
+        if capability_snapshot is None:
+            try:
+                route_rf_capabilities = Ad936xLibiioCapabilityAdapter.map_route_observation(observation, uri)
+            except Ad936xCapabilityObservationError:
+                pass  # No empty-serial/coherent/bounded facts; no RF route admission.
         description_text = (description or "").strip()
         model_prefix = model.split("(", 1)[0].strip().casefold()
         label = model if not description_text or model_prefix in description_text.casefold() else f"{model} — {description_text}"
@@ -1943,6 +1987,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             identity_key=identity_key,
             capability_snapshot=capability_snapshot,
             calibration_identity=calibration_identity,
+            route_rf_capabilities=route_rf_capabilities,
         )
 
     def _fail(

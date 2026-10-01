@@ -29,6 +29,7 @@ from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .presentation_omission import PresentationOmission
 from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilitySnapshot
+from .ad936x_route_capabilities import Ad936xRouteCapabilities
 from .analyzer_sources import AnalyzerSourceChoice
 
 if TYPE_CHECKING:
@@ -307,8 +308,18 @@ class DeviceDescriptor:
     # The SAME owned observation supplies this canonical firmware/device join.
     # It is not an absolute-unit calibration or a rewrite of operational IDs.
     calibration_identity: DeviceCalibrationIdentity | None = None
+    # Coherent read-only bounds of this exact EMPTY-serial route. These are
+    # deliberately excluded from stable capability/calibration catalogs.
+    route_rf_capabilities: Ad936xRouteCapabilities | None = None
 
     def __post_init__(self) -> None:
+        route = self.route_rf_capabilities
+        if route is not None:
+            if (not isinstance(route, Ad936xRouteCapabilities) or route.uri != self.uri
+                    or self.capability_snapshot is not None or self.calibration_identity is not None
+                    or (self.serial is not None and self.serial.strip())):
+                raise ValueError("route RF bounds cannot claim a stable serial or calibration identity")
+            route.__post_init__()
         identity = self.calibration_identity
         if identity is None:
             return  # Legacy/fake/unverified descriptors have no canonical join.

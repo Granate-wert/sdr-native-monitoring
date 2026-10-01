@@ -21,6 +21,7 @@ from ..domain.device_capabilities import (
     DeviceFamily,
 )
 from ..domain.live import LiveConfiguration
+from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 from ..domain.hackrf_sweep import HackrfSweepRequest
 from .ad936x_capability_adapter import AD936X_LIBIIO_ADAPTER_ID
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID
@@ -71,7 +72,7 @@ def _contains(ranges: tuple[CapabilityRange, ...], minimum: float, maximum: floa
     return any(item.minimum <= minimum <= maximum <= item.maximum for item in ranges)
 
 
-def _ad936x_live_reason(snapshot: DeviceCapabilitySnapshot, request: LiveConfiguration) -> SourceRequestAdmissionReason | None:
+def _ad936x_live_reason(snapshot: DeviceCapabilitySnapshot | Ad936xRouteCapabilities, request: LiveConfiguration) -> SourceRequestAdmissionReason | None:
     if not live_configuration_numbers_valid(request):
         return SourceRequestAdmissionReason.REQUEST_RANGE
     facts: tuple[tuple[tuple[CapabilityRange, ...], float], ...] = ((snapshot.tuning_ranges_hz, request.center_hz),
@@ -85,6 +86,39 @@ def _ad936x_live_reason(snapshot: DeviceCapabilitySnapshot, request: LiveConfigu
         if not _contains(ranges, value, value):
             return SourceRequestAdmissionReason.REQUEST_RANGE
     return None
+
+
+def admit_ad936x_route_request(
+    facts: Ad936xRouteCapabilities, request: LiveConfiguration | ContinuousSweepPlanRequest,
+    *, applied_live: LiveConfiguration | None = None,
+) -> SourceRequestAdmission:
+    """Pure bounds only; caller MUST bind exact selected descriptor/runtime.
+
+    This does not admit a stable identity, catalog join, calibration or Start.
+    All RF and non-frequency fields still pass the existing native preflight.
+    """
+    if not isinstance(facts, Ad936xRouteCapabilities):
+        return SourceRequestAdmission(SourceRequestAdmissionReason.CAPABILITY_UNVERIFIED)
+    try:
+        facts.__post_init__()
+        request.__post_init__()
+    except (TypeError, ValueError, AttributeError):
+        return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
+    if isinstance(request, LiveConfiguration):
+        return SourceRequestAdmission(_ad936x_live_reason(facts, request))
+    if not isinstance(request, ContinuousSweepPlanRequest):
+        return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_TYPE)
+    if not isinstance(applied_live, LiveConfiguration):
+        return SourceRequestAdmission(SourceRequestAdmissionReason.CONFIGURATION_REQUIRED)
+    reason = _ad936x_live_reason(facts, applied_live)
+    if reason is not None:
+        return SourceRequestAdmission(reason)
+    bandwidth = applied_live.analog_bandwidth_hz
+    window = min(applied_live.sample_rate_hz, bandwidth) if bandwidth is not None else applied_live.sample_rate_hz
+    if (not _contains(facts.tuning_ranges_hz, request.start_hz, request.stop_hz)
+            or request.usable_window_hz > window):
+        return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
+    return SourceRequestAdmission()
 
 
 def admit_source_request(
@@ -195,5 +229,6 @@ __all__ = [
     "SourceRequestAdmission",
     "SourceRequestAdmissionReason",
     "admit_source_request",
+    "admit_ad936x_route_request",
     "live_configuration_numbers_valid",
 ]

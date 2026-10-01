@@ -1824,3 +1824,39 @@ of this default path, shared/time-sliced RF cases, genuine held-middle input,
 bounded tinySA first-cause diagnosis, tuning groups/genuine Ethernet, sustained
 performance/layout/UX and independent review/release. APP06E remains planned;
 the expired APP05 timer is not restarted and full APP00–14 scope is unchanged.
+
+### Empty-serial AD936x route RF admission — 2026-10-01
+
+A physical default-Analyzer qualification found that the connected AD9364
+reports empty serials in BOTH IIO `hw_serial` and USB `usb,serial`. Its SAME
+read-only owner reports coherent tuning/Fs/filter/gain bounds and the loaded
+runtime protocols. Working I/Q does not establish stable physical identity;
+canonical capability/calibration mapping correctly continues to refuse this
+device. No firmware, network, driver or security setting is changed.
+
+Default RF control can now use an exact descriptor-owned, immutable set of
+route-scoped bounds when, and only when, that coherent observation reported a
+genuinely empty serial. Missing/malformed/nonempty identity, old protocols,
+unknown firmware, unavailable/invalid ranges and pending release cannot acquire
+this path. The facts are NEVER published as a stable capability snapshot,
+calibration identity or USB/IP alias. Independent catalog-based admission is
+not relaxed. The RU/EN RF preview explicitly warns that the physical identity
+and calibration join are unverified and same-route device replacement without
+a serial may be indistinguishable.
+
+Preview performs no probe or RX mutation. Every effecting boundary checks the
+SAME current source/selection, exact facts object, selected URI, owner/runtime,
+full typed request and receiver/recording transaction; equal copied facts or
+facts from a later selection do not authorize an older proposal. Tuning/Fs/
+filter/gain/Sweep-window limits are readbacks, not model assumptions. The usual
+native geometry/budget, all-view GUI receipt, explicit Stop/Apply/Start and
+ordinary Stop/close semantics remain intact. New Start remains the existing
+owner's configure/readback operation, not an identity proof or a hidden retry.
+
+Fifteen new tests cover mapping refusal vs route evidence, strict negative
+admission, no alias/calibration claims, stale/copy/runtime/recording races,
+full-profile RTBW and Sweep bounds, stopped arming, both locales and the actual
+four-view Qt receipt-before-Start chain. Candidate expanded regression:
+216 passed, no failures/errors/skips. This candidate result is NOT exact-source,
+matching frozen Windows, new physical RF, sustained or release acceptance;
+those are recorded separately after qualification. APP07 remains PARTIAL.
