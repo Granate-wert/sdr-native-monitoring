@@ -1357,3 +1357,35 @@ Unknown units/prefixes, arbitrary text, duplicate lines, missing prompts,
 deadline failures and out-of-bound scaled values still refuse publication.
 This parsing fix does not replace requested RBW with a target-derived actual
 value or imply settings/RF/Windows qualification from fake-serial tests.
+
+#### Exact tinySA-settings qualification, 2026-10-01
+
+Exact product42377c4 received a clean serial full V2 gate after its full build
+and physical shutdown:1154 tests,1088 passed/66 skipped/zero failures, no
+deferred compiled tests or outside product modules, unchanged exact source
+and native artifact. The complete official CPU/HackRF pipeline passed40/40
+CTest and all658-file frozen package gates. The new tagged diagnostic package
+was not promoted to canonical/static/current. Earlier915 RU-prose and636
+readback-format failures remain historical evidence, not retroactive passes.
+
+The SAME common source V2 graph/pool/owners/native and Spectrum/Waterfall ran
+USB AD936x70–6000 MHz Sweep/Fs61.44/N1024/F2048/W36/overlap2, independent USB
+HackRF1–6000 MHz Sweep/Fs20/F2048, tinySA100–300 MHz/1001 points/target300kHz/
+explicit LOW, plus Empty4. Actual post-pass tinySA RBW was300000Hz; attenuation
+was0dB, screen-sweep time0.125s and host acquisition about0.93s. Device screen
+time is not scanraw duration and LOW command ACK is not RF-input readback.
+Selected tinySA Stop preserved both SDR deliveries/epochs; explicit next
+Start reset only tinySA to a fresh epoch/history. All resources stopped and
+the graph shut down normally in this approximately65-second functional run.
+
+This is source-OFFSCREEN plus the exact packaged native artifact, NOT a new
+frozen Windows visual/input/RX, DWM/FPS, RF duty/Pd, lossless or sustained
+acceptance. Live source-process libiio came from the installed SDK with the
+same disk hash as the bundle; it was not all-package-local/in-memory/exhaustive
+ABI proof. The separate636 Windows Computer Use diagnostic read the tree but
+captured black pixels and failed one fresh activation recovery; no RX input
+was sent. Its inert window was left for manual restoration, not killed.
+Remaining wide RTBW/RF-middle-pan, genuine Ethernet, SDK-cleanup-cause,
+layout/visual polish, sustained/review/release work stays open. APP07 PARTIAL;
+APP06E CutDC/spur remains planned. This later documentation tail does not
+relabel product42377c4's gates as the documentation commit's own identity.
