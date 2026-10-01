@@ -1760,3 +1760,67 @@ native input was unchanged packaged9425/native762fceb6; this is NOT a newly
 built3a frozen GUI, new CTest/RX/Windows performance gate or default UI feature
 acceptance. The25 new methods include21 V2,3 controller and1 padding check.
 A later public-doc-only commit must not relabel these3a source gates.
+
+### Default Analyzer RF control chain — 2026-10-01, source implementation
+
+The ordinary **UI V2 Analyzer** now connects full-profile RF shifts to its
+existing Live and continuous-Sweep presenters. It does not convert a complete
+default profile into an independent `PaneSlotDraft`, create a receiver/executor,
+or send settings from a GUI callback. The five typed family/mode strategies
+retain their admitted Fs, RF filter, FFT/hop/detector groups, gains, persistence,
+queues, Sweep geometry and instrument settings. RTBW and Sweep use the same
+Spectrum/Waterfall gesture and numeric RF-offset command on the Analyzer tab.
+
+Middle-button release produces one inert proposal, using the original pixel
+scale and scalar source/selection/mode/RX/session/epoch/config/clock/unit anchor.
+New sequences do not cancel a valid held gesture; a different measurement
+identity does. Numeric entry reaches the same serial-worker preflight. The
+scrollable RU/EN impact preview includes all affected one-source views and the
+unchanged scalar acquisition/settings profile. Cancel is the default action.
+While running, an explicit approval authorizes **Stop → Apply → GUI receipt →
+Start**; while stopped, Apply only arms that exact full request for the next
+explicit Start. Disarm uses ordinary explicit Stop; it does not silently restore
+older settings. There is no hidden restart, discovery, retry, edge clamp or
+Fs/FFT reduction.
+
+The established Sweep owner delivers its terminal packet on Qt before Apply.
+After Apply, frequency controls, model caches and **all 1–4 one-source histories**,
+including parked views, acknowledge the new binding before any Start command.
+Retired RTBW spectrum, density and waterfall layers cannot return on a Busy or
+locale notification. Missing/failed/superseded receipts block every Start until
+explicit Stop. Next Start uses the current application receipt once, with fresh
+native acquisition epoch allocation at the existing owner. Source/profile and
+active/unknown recording checks remain inside the SAME receiver/recorder
+transaction at each control boundary.
+
+User Stop cancels queued continuations, including Apply/ACK/Start, and waits
+asynchronously for the existing lanes to acknowledge cleanup. Explicit close
+intent cancels a pending RF chain even when active RX still bars window close;
+read-only `can_close` does not perform Stop. Ordinary active acquisition still
+requires the user's explicit Stop. Executor submission and snapshot-preparation
+failures finish their RF phase rather than stranding the GUI. Actual operation/
+epoch transitions and host control elapsed time are labeled
+`PROFILE_OR_RF_PLAN_CHANGE`; they are not ADC loss, RF duty or detection probability.
+
+For a running tinySA, frequency-only preflight can use only the SAME healthy,
+claimed acquisition's admitted immutable source facts and unchanged full request.
+It rejects changed non-frequency settings/epoch, cancelled/failed/unclaimed
+owners and stale selection. New Start still requires released/current catalog
+admission and the existing identity/settings checks. This avoids trying to probe
+an already owned serial port; it does **not** fix or ignore the separate historical
+tinySA version/identity/readback-deadline failures.
+
+Source tests use the actual V2 shell, widgets, serial presenters and shared
+application owners with fake physical SDK/serial boundaries. They exercise both
+canvases' actual Qt middle events, default Cancel, five strategies, all-view
+receipt ordering, stopped arming, full-profile preservation, recording races,
+Stop/close cancellation and failure cleanup. Focused and exact-source results
+are recorded separately below when available. No new frozen EXE, Windows held-
+middle, physical RX, DWM/FHD/QHD/DPI, sustained performance or release acceptance
+is implied by these source tests or the unchanged old9425 native module.
+
+APP07 remains PARTIAL. Next: matching new-package Windows/physical qualification
+of this default path, shared/time-sliced RF cases, genuine held-middle input,
+bounded tinySA first-cause diagnosis, tuning groups/genuine Ethernet, sustained
+performance/layout/UX and independent review/release. APP06E remains planned;
+the expired APP05 timer is not restarted and full APP00–14 scope is unchanged.

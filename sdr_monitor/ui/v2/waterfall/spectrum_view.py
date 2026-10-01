@@ -67,6 +67,11 @@ class SpectrumWaterfallView(QWidget):
         self._spectrum.view_box.set_rf_shift_provider(provider)
         self._waterfall.view_box.set_rf_shift_provider(provider)
 
+    def cancel_rf_drag(self) -> None:
+        """Cancel both held gestures without changing RF or the viewport."""
+        self._spectrum.view_box.cancel_rf_drag()
+        self._waterfall.view_box.cancel_rf_drag()
+
     def set_theme(self, theme: ThemeId) -> None:
         self._theme = theme
         self.setStyleSheet(stylesheet_for_theme(theme))

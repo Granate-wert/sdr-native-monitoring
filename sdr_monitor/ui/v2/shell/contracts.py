@@ -63,12 +63,15 @@ class ClosePort:
     shutdown: Callable[[], None]
     request_shutdown: Callable[[], CloseState] | None = None
     poll_shutdown: Callable[[], CloseState] | None = None
+    cancel_pending_control: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("close port name must not be blank")
         if not callable(self.can_close) or not callable(self.shutdown):
             raise TypeError("close port callbacks must be callable")
+        if self.cancel_pending_control is not None and not callable(self.cancel_pending_control):
+            raise TypeError("close intent cancellation must be callable")
         if (self.request_shutdown is None) != (self.poll_shutdown is None):
             raise ValueError("async close requires both request and poll callbacks")
         if self.request_shutdown is not None and (

@@ -16,7 +16,7 @@ from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ..domain.device_capabilities import DeviceCapabilityInventory, DeviceFamily
 from ..domain.hackrf_live import HackrfLiveRequest
 from ..domain.hackrf_sweep import HackrfSweepRequest
-from ..domain.live import LiveConfiguration
+from ..domain.live import LiveConfiguration, LiveSnapshot
 from ..domain.tinysa_analyzer import TinySaSweepRequest
 
 
@@ -25,6 +25,10 @@ AnalyzerRfRequest = LiveConfiguration | HackrfLiveRequest | ContinuousSweepPlanR
 
 class AnalyzerRfChangeRejected(ValueError):
     """Missing/stale RF intent or inadmissible range; no implicit fallback."""
+
+
+class AnalyzerRfStopRejected(AnalyzerRfChangeRejected):
+    """Admission failed BEFORE Stop; acquisition has not been dispatched here."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,5 +169,45 @@ def compile_analyzer_rf_shift(context: AnalyzerRfContext, shift_hz: float) -> An
     return AnalyzerRfShiftProposal(context, request, float(shift_hz), effective, quantum)
 
 
-__all__ = ["AnalyzerRfContext", "AnalyzerRfRequest", "AnalyzerRfChangeRejected",
-           "AnalyzerRfShiftProposal", "compile_analyzer_rf_shift"]
+@dataclass(frozen=True, slots=True)
+class AnalyzerRfApplyReceipt:
+    """Exact stopped profile, NOT a measured frame or a reusable Start permit.
+
+The application also requires this exact returned object's identity. Sweep
+keeps its complete proposed host intent here until the existing facade assigns
+a fresh actual epoch. The UI must acknowledge all fanout history changes before
+requesting Start. A failed or superseded receipt cannot restart a receiver.
+"""
+
+    proposal: AnalyzerRfShiftProposal
+    armed_context: AnalyzerRfContext
+    snapshot: LiveSnapshot
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.proposal, AnalyzerRfShiftProposal)
+                or not isinstance(self.armed_context, AnalyzerRfContext)
+                or not isinstance(self.snapshot, LiveSnapshot)):
+            raise AnalyzerRfChangeRejected("RF Apply requires a typed stopped receipt")
+        self.proposal.__post_init__()
+        self.armed_context.__post_init__()
+        expected, armed = self.proposal.expected, self.armed_context
+        if (armed.state.phase is not AnalyzerPhase.IDLE
+                or armed.source is not expected.source or armed.selection_revision != expected.selection_revision
+                or armed.state != replace(expected.state, phase=AnalyzerPhase.IDLE)
+                or self.snapshot.error is not None or self.snapshot.stop_required):
+            raise AnalyzerRfChangeRejected("RF Apply receipt is not the confirmed stopped operation")
+        if armed.state.mode is AnalyzerMode.SWEEP:
+            # The last dispatched Sweep remains historical until NEXT Start.
+            if armed.request != expected.request or armed.applied_live != expected.applied_live:
+                raise AnalyzerRfChangeRejected("RF Sweep Apply must preserve its exact retained profile")
+        else:
+            request = self.proposal.request
+            if isinstance(request, HackrfLiveRequest):
+                request = replace(request, configuration_generation=armed.request.configuration_generation
+                                  if isinstance(armed.request, HackrfLiveRequest) else 0)
+            if armed.request != request:
+                raise AnalyzerRfChangeRejected("RF Apply changed fields outside the admitted full profile")
+
+
+__all__ = ["AnalyzerRfContext", "AnalyzerRfRequest", "AnalyzerRfChangeRejected", "AnalyzerRfStopRejected",
+           "AnalyzerRfShiftProposal", "AnalyzerRfApplyReceipt", "compile_analyzer_rf_shift"]

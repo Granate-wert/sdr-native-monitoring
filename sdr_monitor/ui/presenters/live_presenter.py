@@ -16,6 +16,8 @@ from ...domain.analyzer_sources import AnalyzerSourceSelection
 from ...domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ...domain.hackrf_live import HackrfConfigurationPatch
 from ...domain.live_configuration_patch import LiveConfigurationPatch
+from ...application.analyzer_rf_change import AnalyzerRfApplyReceipt, AnalyzerRfShiftProposal
+from ..v2.state.analyzer_rf_control import RfControlCompletion
 from ..display_scheduler import DisplayScheduler, DisplaySchedulerMetrics
 
 
@@ -41,6 +43,13 @@ class _PreparedDelivery:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _RfDelivery:
+    completion: RfControlCompletion
+    snapshot: LiveSnapshot | None = None
+    prepared: _PreparedDelivery | None = None
+
+
 class LivePresenter(QObject):
     """Moves all potentially blocking service methods off the Qt GUI thread."""
 
@@ -53,6 +62,7 @@ class LivePresenter(QObject):
     analyzer_ready = Signal(object)
     prepared_snapshot_ready = Signal(object)
     preparation_active_changed = Signal(bool)
+    rf_command_ready = Signal(object)
     _prepared_control_ready = Signal(object)
     _prepared_render_done = Signal(object)
     _prepared_command_done = Signal(object)
@@ -210,6 +220,71 @@ class LivePresenter(QObject):
     def stop(self) -> None:
         self._submit(self._use_cases.stop, self._emit_snapshot)
 
+    @property
+    def rf_controls_available(self) -> bool:
+        """No SDK inspection; only this composed use-case surface is checked."""
+        return all(callable(getattr(self._use_cases, name, None)) for name in (
+            "preview_rf_shift", "stop_rf_rtbw", "apply_rf_shift", "acknowledge_rf_apply",
+            "start_rf_rtbw", "capture_rf_context"))
+
+    def preview_rf_shift(self, offset_hz: float, token: object, *, cancelled: Callable[[], bool]) -> None:
+        self._rf_command(token, "preview", "preview_rf_shift", offset_hz, cancelled=cancelled)
+
+    def stop_rf_rtbw(self, proposal: AnalyzerRfShiftProposal, token: object, *, cancelled: Callable[[], bool]) -> None:
+        self._rf_command(token, "stop", "stop_rf_rtbw", proposal, cancelled=cancelled, pass_cancel=True)
+
+    def apply_rf_shift(self, proposal: AnalyzerRfShiftProposal, token: object, *, cancelled: Callable[[], bool]) -> None:
+        self._rf_command(token, "apply", "apply_rf_shift", proposal, cancelled=cancelled, pass_cancel=True)
+
+    def acknowledge_rf_apply(self, receipt: AnalyzerRfApplyReceipt, token: object, *, cancelled: Callable[[], bool]) -> None:
+        self._rf_command(token, "ack", "acknowledge_rf_apply", receipt, cancelled=cancelled)
+
+    def start_rf_rtbw(self, receipt: AnalyzerRfApplyReceipt, token: object, *, cancelled: Callable[[], bool]) -> None:
+        self._rf_command(token, "start", "start_rf_rtbw", receipt, cancelled=cancelled, pass_cancel=True)
+
+    def observe_rf_context(self, token: object, *, cancelled: Callable[[], bool]) -> None:
+        self._rf_command(token, "observe", "capture_rf_context", cancelled=cancelled)
+
+    def stop_rf_cleanup(self, token: object) -> None:
+        self._rf_command(token, "cleanup", "stop", cancelled=lambda: False)
+
+    def _rf_command(self, token: object, phase: str, name: str, *arguments: object,
+                    cancelled: Callable[[], bool], pass_cancel: bool = False) -> None:
+        """SAME serial control lane, with an always-queued Qt acknowledgement.
+
+The unprepared compatibility path must not call a widget/coordinator from a
+Future callback. There is no new executor or unbounded display-task loophole.
+"""
+        if self._closed or self._closing or not self.rf_controls_available:
+            raise RuntimeError("Shared RF control is unavailable or closing")
+
+        def run() -> _RfDelivery:
+            try:
+                if cancelled():
+                    raise RuntimeError("RF command was cancelled")
+                operation = getattr(self._use_cases, name)
+                value = operation(*arguments, cancelled=cancelled) if pass_cancel else operation(*arguments)
+                if phase == "cleanup" and isinstance(value, LiveSnapshot) and (value.error is not None or value.stop_required):
+                    return _RfDelivery(RfControlCompletion(token, phase, error=value.error or "RF cleanup was not confirmed"), value)
+                snapshot = value.snapshot if isinstance(value, AnalyzerRfApplyReceipt) else value if isinstance(value, LiveSnapshot) else None
+                return _RfDelivery(RfControlCompletion(token, phase, value), snapshot)
+            except Exception as error:
+                return _RfDelivery(RfControlCompletion(token, phase, error=str(error)))
+
+        self._submit(run, self._deliver_rf_command, force_gui=True)
+
+    def _deliver_rf_command(self, delivery: _RfDelivery) -> None:
+        completion = delivery.completion
+        if delivery.prepared is not None:
+            if delivery.prepared.error is not None:
+                completion = replace(completion, error="RF snapshot preparation failed")
+            else:
+                self._deliver_prepared(delivery.prepared)
+        elif delivery.snapshot is not None and completion.error is None:
+            self.snapshot_changed.emit(delivery.snapshot)
+            self._emit_analyzer(delivery.snapshot)
+        self.rf_command_ready.emit(completion)
+
     def offer_snapshot_for_render(self, snapshot: LiveSnapshot) -> None:
         """Coalesce producer-rate publications into a bounded configured-FPS stream."""
         snapshot = self._admit_snapshot(snapshot)
@@ -340,10 +415,10 @@ class LivePresenter(QObject):
         if callable(clear):
             clear()
 
-    def _submit(self, operation: Callable[[], Any], on_success: Callable[[Any], None]) -> None:
+    def _submit(self, operation: Callable[[], Any], on_success: Callable[[Any], None], *, force_gui: bool = False) -> None:
         if self._closed or self._closing:
             return
-        if self.prepares_snapshots:
+        if self.prepares_snapshots or force_gui:
             # Invalidate at command acceptance, not only after a slow Stop/Apply
             # finishes. At most the one already-running preparation precedes it.
             with self._publication_lock:
@@ -359,10 +434,23 @@ class LivePresenter(QObject):
             # is acknowledged on GUI (Future callbacks may run inline).
             def run():
                 value = operation()
+                if isinstance(value, _RfDelivery) and self.prepares_snapshots and value.snapshot is not None:
+                    try:
+                        return replace(value, prepared=self._prepare(value.snapshot, revision, render=False))
+                    except Exception:
+                        # Admission/preparation can fail before its own error
+                        # packet exists. The RF token still MUST finish on Qt.
+                        return _RfDelivery(replace(value.completion, value=None,
+                            error="RF snapshot preparation failed"))
                 return (self._prepare(value, revision, render=False)
                         if on_success == self._emit_snapshot else value)
 
-            future = self._executor.submit(run)
+            try:
+                future = self._executor.submit(run)
+            except Exception:
+                self._pending_commands -= 1
+                self.busy_changed.emit(self._pending_commands > 0)
+                raise
             future.add_done_callback(lambda result: self._prepared_command_done.emit(
                 (result, on_success, revision)))
             return
@@ -501,12 +589,21 @@ class LivePresenter(QObject):
                 acknowledged_revision = self._control_revision
             if not current:
                 self._preparation_stale += 1
+                if on_success == self._deliver_rf_command:
+                    value = future.result()
+                    if isinstance(value, _RfDelivery):
+                        # Supersession invalidates the publication, not the
+                        # requirement to finish this RF command's GUI phase.
+                        self.rf_command_ready.emit(replace(value.completion, value=None,
+                            error="RF command acknowledgement was superseded"))
                 return
             self._emit_source_selection()
             value = future.result()  # completion notification, never a GUI wait
             if isinstance(value, _PreparedDelivery):
                 self._deliver_prepared(replace(value, revision=acknowledged_revision))
             else:
+                if isinstance(value, _RfDelivery) and value.prepared is not None:
+                    value = replace(value, prepared=replace(value.prepared, revision=acknowledged_revision))
                 on_success(value)
         except Exception as error:
             self.task_failed.emit(str(error))

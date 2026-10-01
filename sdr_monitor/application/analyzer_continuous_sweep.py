@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import threading
 from typing import Protocol
+from collections.abc import Callable
 
 from .analyzer_session import AnalyzerMode, AnalyzerPhase, AnalyzerSessionState
+from .analyzer_rf_change import AnalyzerRfApplyReceipt, AnalyzerRfShiftProposal, AnalyzerRfStopRejected
 from ..domain.live import LiveSnapshot
 from ..domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
@@ -124,6 +126,39 @@ class AnalyzerContinuousSweepApplicationService:
     def stop(self) -> None:
         with self._operation_lock:
             self._stop_owned_attempt()
+
+    def stop_rf(self, proposal: AnalyzerRfShiftProposal, *, cancelled: Callable[[], bool]) -> None:
+        """Admission BEFORE Stop, preserving this facade's final-poll obligation."""
+        with self._operation_lock:
+            transaction = getattr(self._application, "rf_change_transaction", None)
+            if not callable(transaction):
+                raise AnalyzerRfStopRejected("Shared RF admission is not composed")
+            # Only an exception before _stop_owned_attempt has this no-effect
+            # meaning. Actual Stop/SDK/terminal failures retain their obligation.
+            dispatched = False
+            try:
+                with transaction(proposal):
+                    if (proposal.expected.state.mode is not AnalyzerMode.SWEEP or not self._owns_sweep_attempt
+                            or self._attempt_id != proposal.expected.state.operation_id or cancelled()):
+                        raise AnalyzerRfStopRejected("RF Sweep Stop was cancelled or superseded")
+                    dispatched = True
+                    self._stop_owned_attempt()
+            except Exception as error:
+                if not dispatched:
+                    raise AnalyzerRfStopRejected("RF Sweep Stop admission refused before dispatch") from error
+                raise
+
+    def start_rf(self, receipt: AnalyzerRfApplyReceipt, *, cancelled: Callable[[], bool]) -> None:
+        """Full preserved host intent, one new controller epoch, same owner."""
+        with self._operation_lock:
+            if self._closed or self._owns_sweep_attempt or self._terminal_poll_pending:
+                raise RuntimeError("RF Sweep Start requires acknowledged terminal Stop")
+            transaction = getattr(self._application, "rf_start_transaction", None)
+            request = receipt.proposal.request
+            if not callable(transaction) or not isinstance(request, (ContinuousSweepPlanRequest, TinySaSweepRequest, HackrfSweepRequest)):
+                raise RuntimeError("RF Sweep Start requires the same full-profile application")
+            with transaction(receipt, cancelled=cancelled):
+                self.start(request)
 
     def close(self) -> None:
         with self._operation_lock:

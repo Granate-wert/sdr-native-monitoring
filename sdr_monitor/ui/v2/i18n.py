@@ -24,6 +24,9 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
         "analyzer.rf.shift": MappingProxyType({UiLocale.RU: "Сдвиг RF", UiLocale.EN: "RF shift"}),
+        "analyzer.rf.disarm": MappingProxyType({UiLocale.RU: "Снять RF-подготовку", UiLocale.EN: "Disarm RF plan"}),
+        "analyzer.rf.disarm_help": MappingProxyType({UiLocale.RU: "Явный «Стоп»: снять подготовку нового запуска без запуска RX. Применённые настройки не откатываются автоматически.", UiLocale.EN: "Explicit Stop: disarm the next Start without starting RX. Applied settings are not automatically rolled back."}),
+        "analyzer.rf.default_boundary": MappingProxyType({UiLocale.RU: "Граница PROFILE_OR_RF_PLAN_CHANGE: операция {old_operation} → {operation}; эпоха {old_epoch} → {epoch}; время команды на хосте {elapsed} с. Это не измерение RF duty, длительности пропуска радиоданных или потерь АЦП.", UiLocale.EN: "PROFILE_OR_RF_PLAN_CHANGE boundary: operation {old_operation} → {operation}; epoch {old_epoch} → {epoch}; host command time {elapsed} s. This does not measure RF duty, the radio-data gap duration or ADC loss."}),
         "analyzer.rf.unit.mhz": MappingProxyType({UiLocale.RU: " МГц", UiLocale.EN: " MHz"}),
         "analyzer.rf.phase.entry": MappingProxyType({UiLocale.RU: "RF: ввод сдвига", UiLocale.EN: "RF: entering shift"}),
         "analyzer.rf.phase.preview": MappingProxyType({UiLocale.RU: "RF: проверка плана", UiLocale.EN: "RF: validating plan"}),

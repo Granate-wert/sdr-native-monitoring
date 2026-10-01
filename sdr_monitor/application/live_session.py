@@ -21,7 +21,7 @@ from .analyzer_session import (
 from .analyzer_sources import AnalyzerSourceSelectionApplicationService
 from .analyzer_rtbw_router import AnalyzerRtbwRouter
 from .analyzer_rf_change import (
-    AnalyzerRfChangeRejected, AnalyzerRfContext, AnalyzerRfShiftProposal,
+    AnalyzerRfApplyReceipt, AnalyzerRfChangeRejected, AnalyzerRfContext, AnalyzerRfShiftProposal,
     compile_analyzer_rf_shift, source_inventory,
 )
 from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
@@ -121,6 +121,9 @@ class LiveSessionApplicationService:
         self._pane_application_lock = RLock()
         self._pane_control_thread = local()
         self._pane_control_claim: object | None = None
+        self._rf_receipt: AnalyzerRfApplyReceipt | None = None
+        self._rf_receipt_acknowledged = False
+        self._rf_receipt_failed = False
 
     @property
     def analyzer_state(self) -> AnalyzerSessionState | None:
@@ -139,7 +142,8 @@ class LiveSessionApplicationService:
     def _lifecycle_snapshot(self, snapshot: LiveSnapshot) -> LiveSnapshot:
         if self._analyzer is None:
             return snapshot
-        required = self._analyzer.stop_required or bool(self._sources and self._sources.current().release_pending)
+        required = (self._analyzer.stop_required or self._rf_receipt_failed
+                    or bool(self._sources and self._sources.current().release_pending))
         if self._analyzer.state.phase is AnalyzerPhase.ERROR and self._control_error is not None:
             message, kind = self._control_error
             snapshot = replace(snapshot, state=LiveSessionState.ERROR, error=message, error_kind=kind)
@@ -255,6 +259,93 @@ class LiveSessionApplicationService:
             if self.pane_recording_conflict():
                 raise AnalyzerRfChangeRejected("RF change conflicts with the native recording owner")
             yield
+
+    def stop_rf_rtbw(self, proposal: AnalyzerRfShiftProposal, *, cancelled: Callable[[], bool]) -> LiveSnapshot:
+        """Same guarded owner Stop; Sweep MUST use its terminal-owning facade."""
+        with self.rf_change_transaction(proposal):
+            if proposal.expected.state.mode is not AnalyzerMode.RTBW or cancelled():
+                raise AnalyzerRfChangeRejected("RF Stop was cancelled or belongs to Sweep")
+            snapshot = self.stop()
+            if snapshot.error is not None or snapshot.stop_required or self.analyzer_state is None or (
+                    self.analyzer_state.phase is not AnalyzerPhase.IDLE):
+                raise RuntimeError(snapshot.error or "RF Stop was not confirmed")
+            return snapshot
+
+    def apply_rf_shift(self, proposal: AnalyzerRfShiftProposal, *, cancelled: Callable[[], bool]) -> AnalyzerRfApplyReceipt:
+        """Stopped frequency-only Stage; host-only Sweep intent, NEVER Start.
+
+Failure or missing GUI acknowledgement bars ANY Start until explicit Stop.
+The exact full HackRF request is staged through its existing optimistic patch;
+AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
+"""
+        with self.rf_change_transaction(proposal, stopped=True):
+            if cancelled():
+                raise AnalyzerRfChangeRejected("RF Apply was cancelled")
+            self._rf_receipt = None
+            self._rf_receipt_acknowledged = False
+            self._rf_receipt_failed = True
+            request = proposal.request
+            if isinstance(request, LiveConfiguration):
+                snapshot = self.apply_configuration(request)
+            elif isinstance(request, HackrfLiveRequest):
+                generation = proposal.expected.configuration_generation
+                if generation is None:
+                    raise AnalyzerRfChangeRejected("RF Apply requires the observed HackRF generation")
+                snapshot = self.stage_hackrf_configuration(HackrfConfigurationPatch(
+                    request, proposal.expected.selection_revision, generation))
+            else:
+                snapshot = self.current_snapshot()
+            # The pending failure latch is application admission, not an SDK
+            # snapshot/quality mutation. Do not interpret it as failed Stop.
+            snapshot = replace(snapshot, stop_required=self._analyzer.stop_required if self._analyzer else True)
+            receipt = AnalyzerRfApplyReceipt(proposal, self.capture_rf_context(), snapshot)
+            self._rf_receipt = receipt
+            return receipt
+
+    @_pane_exclusive_command
+    def acknowledge_rf_apply(self, receipt: AnalyzerRfApplyReceipt) -> None:
+        """Called on the control worker AFTER Qt delivered every view receipt."""
+        if (receipt is not self._rf_receipt or not isinstance(receipt, AnalyzerRfApplyReceipt)
+                or not receipt.armed_context.matches(self.capture_rf_context())):
+            raise AnalyzerRfChangeRejected("RF UI receipt is missing or has been superseded")
+        receipt.__post_init__()
+        self._rf_receipt_acknowledged = True
+        self._rf_receipt_failed = False
+
+    @contextmanager
+    def rf_start_transaction(self, receipt: AnalyzerRfApplyReceipt, *, cancelled: Callable[[], bool]) -> Iterator[None]:
+        """One-use actual Start admission; no stale/cancelled/recording restart."""
+        with self.pane_control_transaction():
+            if (not isinstance(receipt, AnalyzerRfApplyReceipt) or receipt is not self._rf_receipt
+                    or not self._rf_receipt_acknowledged or self._rf_receipt_failed
+                    or not receipt.armed_context.matches(self.capture_rf_context())):
+                raise AnalyzerRfChangeRejected("RF Start requires the current acknowledged stopped receipt")
+            receipt.__post_init__()
+            self._preflight_rf_proposal(receipt.proposal)
+            if self.pane_recording_conflict() or cancelled():
+                raise AnalyzerRfChangeRejected("RF Start was cancelled or conflicts with recording")
+            # Consume BEFORE dispatch, including a rejected/partially owned
+            # Start. There is no product retry of a failed permit/SDK call.
+            self._rf_receipt = None
+            self._rf_receipt_acknowledged = False
+            try:
+                yield
+                state = self.analyzer_state
+                if state is None or state.phase is not AnalyzerPhase.RUNNING:
+                    raise AnalyzerRfChangeRejected("RF Start did not confirm RUNNING")
+            except Exception:
+                self._rf_receipt_failed = True
+                raise
+
+    def start_rf_rtbw(self, receipt: AnalyzerRfApplyReceipt, *, cancelled: Callable[[], bool]) -> LiveSnapshot:
+        if receipt.proposal.expected.state.mode is not AnalyzerMode.RTBW:
+            raise AnalyzerRfChangeRejected("Sweep RF Start requires its existing facade")
+        with self.rf_start_transaction(receipt, cancelled=cancelled):
+            return self.start()
+
+    def _rf_start_admission(self) -> None:
+        if self._rf_receipt is not None or self._rf_receipt_failed:
+            raise AnalyzerRfChangeRejected("A pending or failed RF receipt bars Start; acknowledge it or explicitly Stop")
 
     @contextmanager
     def pane_control_transaction(self, claim: object | None = None) -> Iterator[None]:
@@ -430,6 +521,7 @@ class LiveSessionApplicationService:
 
     @_pane_exclusive_command
     def start(self) -> LiveSnapshot:
+        self._rf_start_admission()
         if self._rtbw is None or not self._rtbw.hackrf_selected:
             self._require_native_family()
         if self._analyzer is not None:
@@ -452,6 +544,7 @@ class LiveSessionApplicationService:
 
     @_pane_exclusive_command
     def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> AnalyzerSessionState:
+        self._rf_start_admission()
         if self._analyzer is None:
             raise RuntimeError("Shared analyzer is unavailable in this composition")
         self._configuration_admission(idle_only=True)
@@ -477,13 +570,30 @@ class LiveSessionApplicationService:
     @_pane_exclusive_command
     def stop(self) -> LiveSnapshot:
         if self._analyzer is not None:
+            before = self._analyzer.state
             try:
                 self._analyzer.stop()
             except Exception as error:
                 return self._failed_lifecycle_snapshot(error)
             if self._sources is not None:
                 self._sources.release_pending()
-            return self.current_snapshot()
+            # An unsuccessful idle RF Stage may have returned an SDK error
+            # without a dispatched Analyzer attempt. Explicit Stop still owns
+            # cleanup of THIS selected RTBW port, never a foreign pane resource.
+            state = self._analyzer.state
+            if self._rf_receipt_failed and before.phase is AnalyzerPhase.IDLE and state.phase is AnalyzerPhase.IDLE:
+                selection = self.current_source_selection()
+                if selection is not None and selection.selected is not None and selection.selected.family in (
+                        DeviceFamily.AD936X, DeviceFamily.HACKRF):
+                    cleaned = self._rtbw.stop() if self._rtbw is not None else self._port.stop()
+                    if cleaned.error is not None or cleaned.stop_required:
+                        return self._lifecycle_snapshot(cleaned)
+            snapshot = self.current_snapshot()
+            if snapshot.error is None and state.phase is AnalyzerPhase.IDLE:
+                self._rf_receipt = None
+                self._rf_receipt_acknowledged = self._rf_receipt_failed = False
+                snapshot = self._lifecycle_snapshot(snapshot)
+            return snapshot
         return self._port.stop()
 
     def poll_published_snapshots(self) -> list[LiveSnapshot]:

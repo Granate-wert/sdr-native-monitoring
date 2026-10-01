@@ -53,7 +53,7 @@ class AnalyzerFrequencyBar(QWidget):
     def _frequency(self, value: float) -> QDoubleSpinBox:
         field = QDoubleSpinBox(self)
         field.setProperty("ui2Role", "range-control")
-        field.setDecimals(3)
+        field.setDecimals(6)
         field.setRange(0.001, 100_000.0)
         field.setMaximumWidth(116)
         field.setValue(value)

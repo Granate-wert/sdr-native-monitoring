@@ -105,6 +105,11 @@ class LiveViewModel:
     def source_selection(self) -> AnalyzerSourceSelection | None:
         return self._source_selection
 
+    @property
+    def rf_presentation_port(self) -> object | None:
+        """Optional typed RF commands of the SAME presenter, not a service port."""
+        return self._presenter if getattr(self._presenter, "rf_controls_available", False) is True else None
+
     def subscribe(self, listener: Callable[[LiveViewState], None]) -> Callable[[], None]:
         """Subscribe to immutable presentation updates and receive current state."""
 

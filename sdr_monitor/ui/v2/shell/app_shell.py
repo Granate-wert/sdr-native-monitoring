@@ -284,6 +284,12 @@ class AppShellV2(QMainWindow):
         if self._is_closed:
             event.accept()
             return
+        if not self._close_started:
+            # Explicit Close must invalidate queued control continuations even
+            # when active RX still bars shutdown. A can_close query stays inert.
+            for port in self._context.close_ports:
+                if port.cancel_pending_control is not None:
+                    port.cancel_pending_control()
         if not self._close_started and any(not port.can_close() for port in self._context.close_ports):
             self._status_bar.show()
             self._status_message.set_value(text("shell.close_requires_stop"))

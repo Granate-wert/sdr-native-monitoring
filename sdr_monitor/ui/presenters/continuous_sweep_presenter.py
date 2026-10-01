@@ -25,6 +25,8 @@ from ..performance import BoundedRenderMetrics, RenderPerformanceSnapshot
 from ...domain.analyzer import AnalyzerFrameBundle
 from ...domain.tinysa_analyzer import TinySaSweepRunIdentity
 from ...domain.hackrf_sweep import HackrfSweepRequest
+from ...application.analyzer_rf_change import AnalyzerRfApplyReceipt, AnalyzerRfShiftProposal, AnalyzerRfStopRejected
+from ..v2.state.analyzer_rf_control import RfControlCompletion
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,7 @@ class ContinuousSweepPresenter(QObject):
     stopping_changed = Signal(bool)
     poll_preparation_active_changed = Signal(bool)
     preview_preparation_cancelled = Signal(object)
+    rf_command_ready = Signal(object)
     _start_completed = Signal(object)
     _stop_completed = Signal(object)
     _poll_completed = Signal(object)
@@ -92,6 +95,9 @@ class ContinuousSweepPresenter(QObject):
         self._projection_poll_pending = False
         self._stop_failed = False
         self._instrument_run_identity: TinySaSweepRunIdentity | None = None
+        self._rf_start_token: object | None = None
+        self._rf_stop_token: object | None = None
+        self._rf_stop_phase = "stop"
         self._start_completed.connect(self._finish_start, Qt.ConnectionType.QueuedConnection)
         self._stop_completed.connect(self._finish_stop, Qt.ConnectionType.QueuedConnection)
         self._poll_completed.connect(self._finish_poll, Qt.ConnectionType.QueuedConnection)
@@ -127,10 +133,23 @@ class ContinuousSweepPresenter(QObject):
                 and getattr(self._service, "stop_required", False) is not True)
 
     def start(self, native_config: Any) -> None:
+        self._start(native_config, lambda: self._service.start(native_config))
+
+    @property
+    def rf_controls_available(self) -> bool:
+        return callable(getattr(self._service, "stop_rf", None)) and callable(getattr(self._service, "start_rf", None))
+
+    def start_rf(self, receipt: AnalyzerRfApplyReceipt, token: object, *, cancelled: Callable[[], bool]) -> None:
+        operation = getattr(self._service, "start_rf", None)
+        if not callable(operation) or not self._start(receipt.proposal.request,
+                lambda: operation(receipt, cancelled=cancelled), token=token):
+            raise RuntimeError("RF Sweep Start is not admitted by the existing presenter")
+
+    def _start(self, native_config: Any, operation: Callable[[], None], *, token: object | None = None) -> bool:
         if self._closed or self._closing:
             raise RuntimeError("continuous Sweep presenter is closing")
         if self._timer.isActive() or self.is_starting or self.is_stopping or self._poll_future is not None:
-            return
+            return False
         if self._stop_failed:
             raise RuntimeError("previous continuous Sweep cleanup is unresolved; retry Stop")
         self._stop_requested.clear()
@@ -140,16 +159,19 @@ class ContinuousSweepPresenter(QObject):
         self._timer.setInterval(max(1, round(1000.0 / native_config.preview_rate_hz))
                                 if isinstance(native_config, HackrfSweepRequest)
                                 else self._default_poll_interval_ms)
-        future = self._stop_executor.submit(self._service.start, native_config)
+        future = self._stop_executor.submit(operation)
+        self._rf_start_token = token
         self._start_future = future
         self.starting_changed.emit(True)
         future.add_done_callback(self._start_completed.emit)
+        return True
 
     @Slot(object)
     def _finish_start(self, future: Future[None]) -> None:
         if future is not self._start_future:
             return
         error: Exception | None = None
+        rf_token, self._rf_start_token = self._rf_start_token, None
         try:
             future.result()
         except Exception as caught:
@@ -164,6 +186,8 @@ class ContinuousSweepPresenter(QObject):
             self.running_changed.emit(True)
             self._start_future = None
             self.starting_changed.emit(False)
+            if rf_token is not None:
+                self.rf_command_ready.emit(RfControlCompletion(rf_token, "start"))
             return
         if error is not None:
             self.task_failed.emit(str(error))
@@ -176,21 +200,38 @@ class ContinuousSweepPresenter(QObject):
             # owned failed admission never exposes an actionable idle gap.
             self.stop()
         self.starting_changed.emit(False)
+        if rf_token is not None:
+            self.rf_command_ready.emit(RfControlCompletion(rf_token, "start", error=str(error or "RF Start closed")))
 
     def stop(self) -> None:
         """Request stop without blocking Qt; Start stays barred until completion."""
+        self._request_stop(self._service.stop)
+
+    def stop_rf(self, proposal: AnalyzerRfShiftProposal, token: object, *, cancelled: Callable[[], bool]) -> None:
+        operation = getattr(self._service, "stop_rf", None)
+        if not callable(operation) or not self._request_stop(lambda: operation(proposal, cancelled=cancelled), token=token):
+            raise RuntimeError("RF Sweep Stop is not admitted by the existing presenter")
+
+    def stop_rf_cleanup(self, token: object) -> None:
+        if not self._request_stop(self._service.stop, token=token, phase="cleanup"):
+            raise RuntimeError("RF Sweep cleanup is pending or not admitted")
+
+    def _request_stop(self, operation: Callable[[], None], *, token: object | None = None, phase: str = "stop") -> bool:
         if self._closed or self._closing or self.is_starting:
-            return
+            return False
         if (not self._timer.isActive() and not self._stop_failed
                 and getattr(self._service, "stop_required", False) is not True) or self._stop_future is not None:
-            return
+            return False
         self._timer.stop()
         self._projection_poll_pending = False
-        future = self._stop_executor.submit(self._stop_and_snapshot)
+        future = self._stop_executor.submit(self._stop_and_snapshot, operation)
         self._stop_requested.set()  # Failed submission must not cancel an otherwise valid preview.
         self._stop_future = future
+        self._rf_stop_token = token
+        self._rf_stop_phase = phase
         self.stopping_changed.emit(True)
         future.add_done_callback(self._stop_completed.emit)
+        return True
 
     def set_projection_in_flight(self, active: bool) -> None:
         """V2 GUI acknowledgement releases at most one cadence-admitted poll.
@@ -236,8 +277,8 @@ class ContinuousSweepPresenter(QObject):
             bundle = getattr(prepared, "analyzer_bundle", bundle)
         return _PreparedPublication(snapshot, bundle, prepared)
 
-    def _stop_and_snapshot(self) -> ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview:
-        self._service.stop()
+    def _stop_and_snapshot(self, operation: Callable[[], None] | None = None) -> ContinuousSweepDisplaySnapshot | _PreparedPublication | _CancelledPreview:
+        (self._service.stop if operation is None else operation)()
         return self._poll_and_prepare(final=True)
 
     @Slot(object)
@@ -249,16 +290,29 @@ class ContinuousSweepPresenter(QObject):
         # snapshot. Qt callback arrival order must not reverse these packets.
         if self._poll_future is not None:
             self._finish_poll(self._poll_future)
+        rf_token, self._rf_stop_token = self._rf_stop_token, None
+        rf_phase = self._rf_stop_phase
+        failure: str | None = None
+        admission_refused = False
         try:
             self._emit_snapshot(future.result())
         except Exception as error:
-            self._stop_failed = True
+            failure = str(error)
+            admission_refused = rf_token is not None and isinstance(error, AnalyzerRfStopRejected)
+            self._stop_failed = not admission_refused
             self.task_failed.emit(str(error))
         else:
             self._stop_failed = False
-        self.running_changed.emit(False)
+        if admission_refused and not self._closed and not self._closing:
+            # This is ONLY resuming presentation polling of the SAME running
+            # acquisition. Admission refused BEFORE SDK Stop; no RX restart.
+            self._stop_requested.clear()
+            self._timer.start()
+        self.running_changed.emit(admission_refused)
         self._stop_future = None
         self.stopping_changed.emit(False)
+        if rf_token is not None:
+            self.rf_command_ready.emit(RfControlCompletion(rf_token, rf_phase, error=failure))
 
     def record_completed_render(self, duration_ms: float, *, now_s: float | None = None) -> None:
         """Called only after a widget has actually rendered a supplied line."""

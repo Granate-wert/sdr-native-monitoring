@@ -282,6 +282,7 @@ class V2LiveProductComposition:
                     shutdown=self.shutdown,
                     request_shutdown=self.request_shutdown if async_shutdown else None,
                     poll_shutdown=self.poll_shutdown if async_shutdown else None,
+                    cancel_pending_control=self.cancel_pending_rf_control,
                 ),
             ),
             automatic_discovery_enabled=False,
@@ -369,12 +370,14 @@ class V2LiveProductComposition:
         replay_can_close = self.replay_view_model is None or self.replay_view_model.state.can_close
         tinysa_can_close = self._tinysa is None or self._tinysa.can_close()
         analyzer_can_close = self.analyzer_presenter is None or self.analyzer_presenter.can_close()
+        rf = None if self.analyzer_view_model is None else self.analyzer_view_model.rf_controller
+        rf_can_close = rf is None or not (rf.pending or rf.fault)
         panes_can_close = self._pane_handle is None or self._pane_handle.can_close()
         widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
         pane_setup_can_close = widget is None or widget.independent_setup_can_close
         return (live_can_close and sweep_can_close and calibration_can_close
                 and diagnostics_can_close and replay_can_close and tinysa_can_close
-                and analyzer_can_close and panes_can_close and pane_setup_can_close)
+                and analyzer_can_close and rf_can_close and panes_can_close and pane_setup_can_close)
 
     def install_independent_pane_session(self, handle: PaneProductSessionHandle) -> None:
         """Attach an externally previewed/applied plan to this Analyzer tab."""
@@ -405,6 +408,7 @@ class V2LiveProductComposition:
 
     def request_shutdown(self) -> CloseState:
         assert self.close_lifecycle is not None
+        self.cancel_pending_rf_control()
         if self.close_lifecycle.state.phase == "idle" and not self.can_close():
             return CloseState("failed", "Stop must acknowledge before application close")
         state = self.close_lifecycle.request()
@@ -412,6 +416,16 @@ class V2LiveProductComposition:
             self._release_terminal_presentation()
             self._is_shutdown = True
         return state
+
+    def cancel_pending_rf_control(self) -> None:
+        """Explicit close intent only; no side effects from readiness checks."""
+        rf = None if self.analyzer_view_model is None else self.analyzer_view_model.rf_controller
+        if rf is not None and rf.pending:
+            if rf.phase in {"entry", "preview", "confirm"}:
+                rf.cancel()
+            else:
+                # Stop acknowledges on the ordinary lanes; never wait here.
+                rf.request_user_stop()
 
     def poll_shutdown(self) -> CloseState:
         assert self.close_lifecycle is not None

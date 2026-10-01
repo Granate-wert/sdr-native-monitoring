@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol
 
@@ -15,10 +15,12 @@ from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, D
 from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
 from sdr_monitor.domain.tinysa_correction import tinysa_correction_signature
+from sdr_monitor.application.analyzer_rf_change import AnalyzerRfApplyReceipt
 
 from ..state.live_view_state import LiveAction, LiveViewState
 from ..state.prepared_sweep import PreparedSweepSnapshot
 from .live_view_model import LiveViewModel, _SignalPort
+from .analyzer_rf_controller import AnalyzerRfController
 
 
 class AnalyzerMode(StrEnum):
@@ -54,6 +56,9 @@ class AnalyzerViewState:
     source_selection: AnalyzerSourceSelection | None = None
     hackrf_sweep_composed: bool = False
     hackrf_sweep_request: HackrfSweepRequest | None = None
+    rf_control_pending: bool = False
+    rf_armed: bool = False
+    rf_fault: bool = False
 
     @property
     def ad936x_controls_available(self) -> bool:
@@ -90,7 +95,7 @@ class AnalyzerViewState:
     @property
     def controls_locked(self) -> bool:
         return (self.live.busy or self.starting or self.stopping or self.running
-                or self.stop_required or self.configuration_pending)
+                or self.stop_required or self.configuration_pending or self.rf_control_pending or self.rf_armed or self.rf_fault)
 
 
 class AnalyzerViewModel:
@@ -118,6 +123,9 @@ class AnalyzerViewModel:
         self._publishing = False
         self._publication_pending = False
         self._disposed = False
+        self.rf_controller: AnalyzerRfController | None = None
+        self._rf_live_history_barred = False
+        self._rf_retired_live_epoch: int | None = None
         self._live_identity: tuple[object, ...] | None = None
         self._mode_source_choice: object | None = None
         self._mode_source_revision: int | None = None
@@ -136,24 +144,38 @@ class AnalyzerViewModel:
         for signal, callback in self._connections:
             signal.connect(callback)
         self._unsubscribe_live = live.subscribe(self._on_live)
+        rf_live = getattr(live, "rf_presentation_port", None)
+        if rf_live is not None and getattr(sweep, "rf_controls_available", False) is True:
+            self.rf_controller = AnalyzerRfController(self, rf_live, sweep)
 
     @property
     def state(self) -> AnalyzerViewState:
         live = self.live.state
+        if self._rf_live_history_barred:
+            # Keep the immutable lifecycle/readback snapshot, not its retired
+            # measurement layers. Busy/locale notifications cannot reinsert an
+            # old Waterfall row between all-view receipt and the next Start.
+            live = replace(live, analyzer_bundle=None, spectrum=None, has_spectrum=False,
+                           persistence_frame=None, waterfall_line=None, prepared_spectrum=None,
+                           frozen_last_frame=False)
         selection = getattr(self.live, "source_selection", None)
         rtbw_running = live.primary_action is LiveAction.STOP
         return AnalyzerViewState(
             self._mode, live, self._bundle, self._starting, self._stopping,
             self._running or rtbw_running,
             (not self._sweep.can_close() and not (self._running or self._starting or self._stopping))
-            or bool(selection and selection.release_pending),
-            self._error or live.error_label,
+            or bool(selection and selection.release_pending)
+            or bool(self.rf_controller is not None and self.rf_controller.fault),
+            (self.rf_controller.error if self.rf_controller is not None else None) or self._error or live.error_label,
             self._configuration_pending,
             self._sweep_snapshot,
             self._prepared_sweep,
             selection,
             self._hackrf_sweep_composed,
             self._hackrf_sweep_request if self._mode is AnalyzerMode.SWEEP else None,
+            self.rf_controller.pending if self.rf_controller is not None else False,
+            self.rf_controller.armed if self.rf_controller is not None else False,
+            self.rf_controller.fault if self.rf_controller is not None else False,
         )
 
     def subscribe(self, callback: Callable[[AnalyzerViewState], None]) -> Callable[[], None]:
@@ -189,6 +211,8 @@ class AnalyzerViewModel:
         return True
 
     def start(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest | None = None) -> bool:
+        if not self._disposed and self.rf_controller is not None and self.rf_controller.armed:
+            return self.rf_controller.start_armed()
         state = self.state
         instrument = state.tinysa_controls_available and self._mode is AnalyzerMode.SWEEP
         hackrf_sweep = state.hackrf_sweep_controls_available and self._mode is AnalyzerMode.SWEEP
@@ -232,6 +256,9 @@ class AnalyzerViewModel:
         return True
 
     def stop(self) -> bool:
+        if not self._disposed and self.rf_controller is not None and (
+                self.rf_controller.pending or self.rf_controller.armed or self.rf_controller.fault):
+            return self.rf_controller.request_user_stop()
         state = self.state
         if self._disposed or state.starting or state.stopping or state.live.busy:
             return False
@@ -283,10 +310,35 @@ class AnalyzerViewModel:
         if self._disposed:
             return
         self._disposed = True
+        if self.rf_controller is not None:
+            self.rf_controller.dispose()
         self._unsubscribe_live()
         for signal, callback in self._connections:
             signal.disconnect(callback)
         self._listeners.clear()
+
+    def notify_rf_control(self) -> None:
+        """Bounded scalar GUI state only; the controller never reads an SDK."""
+        self._publish()
+
+    def accept_rf_views(self, receipt: AnalyzerRfApplyReceipt) -> None:
+        """Clear the default one-source state before EVERY pane acknowledges."""
+        if self.rf_controller is None or self._disposed:
+            raise RuntimeError("RF presentation has been retired")
+        self._bundle = self._sweep_snapshot = self._prepared_sweep = None
+        if receipt.proposal.expected.state.mode.value == "rtbw":
+            self._rf_live_history_barred = True
+            self._rf_retired_live_epoch = receipt.proposal.expected.acquisition_epoch
+        request = receipt.proposal.request
+        self._instrument_request = request if isinstance(request, TinySaSweepRequest) else None
+        self._instrument_epoch = self._instrument_sequence = None
+        self._hackrf_sweep_request = request if isinstance(request, HackrfSweepRequest) else None
+        self._publish()
+
+    def prepare_rf_start(self, receipt: AnalyzerRfApplyReceipt) -> None:
+        # Family guards consume the preserved full request, not a UI rebuilt
+        # subset. Actual epoch remains assigned by the existing application.
+        self.accept_rf_views(receipt)
 
     def release_presentation_after_shutdown(self) -> None:
         """No notification/repaint: the composition's terminal close owns this."""
@@ -304,6 +356,7 @@ class AnalyzerViewModel:
         selected = selection.selected if selection is not None else None
         revision = selection.revision if selection is not None else None
         if selected is not self._mode_source_choice or revision != self._mode_source_revision:
+            self._rf_live_history_barred = False
             self._mode_source_choice, self._mode_source_revision = selected, revision
             if selected is not None and selected.family is DeviceFamily.TINYSA:
                 self._mode = AnalyzerMode.SWEEP  # Local supported-mode intent, no retune.
@@ -318,7 +371,12 @@ class AnalyzerViewModel:
             self._prepared_sweep = None
         self._live_identity = identity
         if self._mode is AnalyzerMode.RTBW and (self.state.ad936x_controls_available or self.state.hackrf_controls_available):
-            self._bundle = state.analyzer_bundle
+            bundle = state.analyzer_bundle
+            if self._rf_live_history_barred and bundle is not None and bundle.identity is not None:
+                epoch = bundle.identity.acquisition_epoch
+                if epoch is not None and epoch != self._rf_retired_live_epoch:
+                    self._rf_live_history_barred = False
+            self._bundle = None if self._rf_live_history_barred else bundle
         self._publish()
 
     def _on_sweep_snapshot(self, value: object) -> None:

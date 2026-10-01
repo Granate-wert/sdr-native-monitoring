@@ -48,6 +48,7 @@ from .analyzer_hackrf_configuration import HackrfConfigurationBar
 from .analyzer_hackrf_sweep import HackrfSweepConfigurationBar
 from .analyzer_inspector import AnalyzerInspector
 from .analyzer_pane import AnalyzerPaneViewV2
+from .analyzer_rf_controls import AnalyzerRfControls
 from .analyzer_status_label import AnalyzerPeriodsLabel, AnalyzerStatusLabel
 from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_tinysa_configuration import TinySaConfigurationBar
@@ -187,6 +188,7 @@ class AnalyzerWorkspaceV2(QWidget):
         )
         self.visualization.set_selected(True)
         self._panes = [self.visualization]
+        self._shared_view_count = 1
         self._pane_grid.addWidget(self.visualization, 0, 0, 1, 2)
         self.frequency_bar.viewport_span_requested.connect(self._change_viewport_span)
         self.visualization.spectrum_scene.view_box.sigXRangeChanged.connect(self._viewport_changed)
@@ -211,6 +213,9 @@ class AnalyzerWorkspaceV2(QWidget):
         self.periods.setProperty("ui2Role", "secondary")
         layout.addWidget(self.periods)
         self.drawer.close_requested.connect(self._hide_settings)
+        self._rf_controls = AnalyzerRfControls(self)
+        self._rf_controls.install(self.visualization)
+        self.rf_shift = self._rf_controls.button
         self.drawer.draft_changed.connect(lambda: self._render(model.state))
         self.drawer.hide()
         for child in (self.tinysa_bar.settings_drawer, *self.tinysa_bar.settings_drawer.findChildren(QWidget),
@@ -280,7 +285,8 @@ class AnalyzerWorkspaceV2(QWidget):
         if (self._terminal_released or self._independent_session is not None
                 or not isinstance(handle, PaneProductSessionHandle)
                 or not handle.applied or state.running or state.stop_required
-                or state.starting or state.stopping or state.live.busy):
+                or state.starting or state.stopping or state.live.busy
+                or state.rf_control_pending or state.rf_armed or state.rf_fault):
             raise RuntimeError("independent panes require an idle Analyzer and applied plan")
         widget = IndependentPaneSessionV2(
             handle, close_layout=(None if self._independent_setup is None
@@ -301,6 +307,7 @@ class AnalyzerWorkspaceV2(QWidget):
             self.frequency_bar, self.hackrf_bar, self.hackrf_sweep_bar,
             self.tinysa_bar, self.source_summary, self.applied, self.sweep_preview,
             self.error, self._pane_host, self.status, self.periods,
+            self.rf_shift, self._rf_controls.disarm,
         )
         for control in self._single_source_controls:
             control.hide()
@@ -345,6 +352,11 @@ class AnalyzerWorkspaceV2(QWidget):
         factory = self._shared_projector_factory
         if self._terminal_released or type(count) is not int or not 1 <= count <= 4:
             return
+        state = self.model.state
+        if state.rf_control_pending or state.rf_armed or state.rf_fault:
+            with QSignalBlocker(self.shared_views):
+                self.shared_views.setCurrentIndex(self.shared_views.findData(self._shared_view_count))
+            return
         if count > 1 and factory is None:
             return
         while len(self._panes) < count:
@@ -375,6 +387,8 @@ class AnalyzerWorkspaceV2(QWidget):
                 child.installEventFilter(self)
             self._display_overlays.append(overlay)
             self._panes.append(pane)
+            self._rf_controls.install(pane)
+        self._shared_view_count = count
         selected = min(self.selected_view.currentData(), count)
         with QSignalBlocker(self.selected_view):
             self.selected_view.clear()
@@ -522,6 +536,7 @@ class AnalyzerWorkspaceV2(QWidget):
 
     def set_locale(self) -> None:
         """Translate controls in place; preserve canvas, source and local range."""
+        self._rf_controls.set_locale()
         self._last_source_selection = None  # Reformat this scalar readout in the new locale.
         self.setAccessibleName(text("analyzer.title"))
         self.source.setAccessibleName(text("live.device_selector.name"))
@@ -594,6 +609,12 @@ class AnalyzerWorkspaceV2(QWidget):
         self.drawer.set_theme(theme)
 
     def closeEvent(self, event) -> None:
+        self._rf_controls.cancel()
+        state = self.model.state
+        if state.rf_control_pending or state.rf_fault:
+            self.model.stop()
+            event.ignore()
+            return
         if not self.independent_setup_can_close:
             event.ignore()
             return
@@ -605,7 +626,13 @@ class AnalyzerWorkspaceV2(QWidget):
         self._unsubscribe_devices()
         self.drawer.dispose()
         self.tinysa_bar.settings_drawer.release_profiles()
+        self._rf_controls.dispose()
         super().closeEvent(event)
+
+    def hideEvent(self, event) -> None:
+        if hasattr(self, "_rf_controls"):
+            self._rf_controls.cancel()
+        super().hideEvent(event)
 
     def release_presentation_after_shutdown(self) -> None:
         """Explicit parent-shell terminal hook; never used for Stop/hide."""
@@ -617,6 +644,7 @@ class AnalyzerWorkspaceV2(QWidget):
             self._independent_setup.release_after_shutdown()
         self._unsubscribe()
         self._unsubscribe_devices()
+        self._rf_controls.dispose()
         self.sweep_preview.cancel()
         self.drawer.dispose()
         self.tinysa_bar.settings_drawer.release_profiles()
@@ -745,7 +773,11 @@ class AnalyzerWorkspaceV2(QWidget):
         if self._independent_setup is not None and self._independent_setup.blocks_single_source:
             return
         state = self.model.state
-        if state.running or state.stop_required:
+        if state.rf_control_pending or state.rf_fault:
+            self.model.stop()
+        elif state.rf_armed:
+            self.model.start()  # Exact full receipt, never reconstruct a UI subset.
+        elif state.running or state.stop_required:
             self.model.stop()
         elif state.tinysa_controls_available:
             try:
@@ -811,7 +843,7 @@ class AnalyzerWorkspaceV2(QWidget):
                 or any(overlay.isVisible() for overlay in self._display_overlays)
                 or self.tinysa_bar.settings_drawer.isVisible()):
             return
-        if (state.running or state.stop_required
+        if (state.running or state.stop_required or state.rf_control_pending or state.rf_armed
                 or state.tinysa_controls_available and self.tinysa_bar.valid
                 or state.hackrf_sweep_controls_available and state.mode is AnalyzerMode.SWEEP
                    and self.hackrf_sweep_bar.valid
@@ -836,6 +868,10 @@ class AnalyzerWorkspaceV2(QWidget):
         enabled = (not (state.configuration_pending or state.starting or state.stopping or state.live.busy)
                    and not (self._independent_setup is not None and self._independent_setup.blocks_single_source)
                    and (state.running or state.stop_required or (ready and not invalid_sweep)))
+        if state.rf_control_pending or state.rf_fault:
+            enabled = True  # Explicit Stop/cancel outranks queued RF work.
+        elif state.rf_armed:
+            enabled = not state.live.busy
         self.primary.setEnabled(enabled)
         hint = (self.tinysa_bar.validation_message if state.tinysa_controls_available and not ready else
                 text("hackrf.sweep.invalid") if state.hackrf_sweep_controls_available
@@ -876,6 +912,9 @@ class AnalyzerWorkspaceV2(QWidget):
                              and self._independent_setup.blocks_single_source)
         for control in (self.source, self.discover, self.discover_network, self.mode):
             control.setEnabled(not state.controls_locked and not pane_stage_blocks)
+        rf_locked = state.rf_control_pending or state.rf_armed or state.rf_fault
+        self.shared_views.setEnabled(self._shared_projector_factory is not None and not rf_locked)
+        self.selected_view.setEnabled(not rf_locked)
         if self._independent_setup_button is not None:
             self._independent_setup_button.setEnabled(not state.controls_locked or pane_stage_blocks)
         self.frequency_bar.apply_view_state(state, has_frame=state.bundle is not None)
@@ -886,7 +925,9 @@ class AnalyzerWorkspaceV2(QWidget):
         for control in (self.frequency_bar, self.hackrf_bar, self.hackrf_sweep_bar,
                         self.tinysa_bar, self.settings, self.drawer):
             control.setEnabled(not pane_stage_blocks)
-        key = ("analyzer.applying" if state.configuration_pending
+        key = ("analyzer.stop" if state.rf_control_pending or state.rf_fault
+               else "analyzer.start" if state.rf_armed
+               else "analyzer.applying" if state.configuration_pending
                else "analyzer.starting" if state.starting else "analyzer.stopping" if state.stopping
                else "analyzer.stop" if state.running or state.stop_required
                else "analyzer.start")
@@ -948,6 +989,7 @@ class AnalyzerWorkspaceV2(QWidget):
             if overlay.isVisible() and self._range_anchors.get(overlay) != self._view_range_identity(self._selected_pane()):
                 overlay.set_range_error("analyzer.view_range.stale")
         self._selected_frame_applied(self.selected_view.currentData())
+        self._rf_controls.refresh()
         scene = self.visualization.spectrum_scene
         if self._status_cadence.admit(state, monotonic()):
             _set_text_if_changed(self.periods, analyzer_periods(state, scene.paint_cadence.period_ms()))

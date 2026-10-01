@@ -17,6 +17,7 @@ import numpy as np
 
 from ..domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from ..domain.analyzer_sources import AnalyzerSourceSelection
+from ..domain.device_capabilities import DeviceCapabilityInventory
 from ..domain.live import LiveAdmissionRejected
 from ..domain.sweep_lines import SweepLineFrame, SweepLineGapReason, SweepLineState, SweepQualitySchema
 from ..domain.tinysa_analyzer import TinySaSweepProvenance, TinySaSweepRequest, TinySaSweepRunIdentity
@@ -72,8 +73,28 @@ class TinySaCommonAnalyzerService:
                 or selection.selected is not request.source or selection.revision != request.selection_revision):
             raise LiveAdmissionRejected("Instrument selection changed; rebuild the request")
         request.__post_init__()
-        inventory = self._catalog.snapshot()
         source = request.source
+        if self.stop_required:
+            # A healthy SAME acquisition necessarily keeps the provider busy.
+            # Admit ONLY its frequency-only preview from its accepted facts;
+            # this is not a catalog refresh, serial probe or new Start permit.
+            if not self._operation.acquire(blocking=False):
+                raise LiveAdmissionRejected("Instrument control operation is pending")
+            try:
+                owner, run = self._owner, self._run_identity
+                if (owner is None or run is None or not self._claimed or self._thread is None
+                        or self._thread.ident is None or owner.cancellation_requested
+                        or owner.failure is not None or self.poll_latest().metrics.has_error
+                        or request.source is not run.request.source
+                        or replace(request, start_hz=run.request.start_hz, stop_hz=run.request.stop_hz) != run.request
+                        or source.binding.snapshot is None or source.runtime is None):
+                    raise LiveAdmissionRejected("RF preview requires the same healthy instrument acquisition")
+                inventory = DeviceCapabilityInventory((source.binding.snapshot,),
+                    bindings=(source.binding,), runtimes=(source.runtime,))
+            finally:
+                self._operation.release()
+        else:
+            inventory = self._catalog.snapshot()  # New Start still requires released/current catalog.
         if (inventory.binding_for_source(source.device_id) is not source.binding
                 or inventory.runtime_for_adapter(source.binding.adapter_id) is not source.runtime):
             raise LiveAdmissionRejected("Instrument catalog changed; select again")
