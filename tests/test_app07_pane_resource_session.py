@@ -43,8 +43,8 @@ def frame(source_id: str, epoch: int, start_hz: float, stop_hz: float):
 
 def live_frame(source_id: str, session_id: str, epoch: int, *,
                generation: int = 5, fft_size: int = 4096, hop_size: int = 2048,
-               center_hz: float = 104e6, receiver_id: str | None = None):
-    sample_rate_hz = 61_440_000.0
+               center_hz: float = 104e6, receiver_id: str | None = None,
+               sample_rate_hz: float = 61_440_000.0):
     grid = center_hz + (np.arange(fft_size) - fft_size // 2) * (sample_rate_hz / fft_size)
     spectrum = LiveSpectrumFrame(
         sequence=1, timestamp_ns=1, center_frequency_hz=center_hz,

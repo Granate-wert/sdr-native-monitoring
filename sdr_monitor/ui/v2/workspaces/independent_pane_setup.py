@@ -15,11 +15,14 @@ from PySide6.QtWidgets import (
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
-from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneRevisitEstimate, TinySaTracePaneProfile
+from sdr_monitor.domain.pane_scheduler import (
+    CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile,
+    PaneRevisitEstimate, TinySaTracePaneProfile,
+)
 from sdr_monitor.domain.tinysa_settings import TinySaInputMode
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
-from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, TinySaPaneIntent
+from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, RtbwBandPolicy, TinySaPaneIntent
 from sdr_monitor.ui.v2_pane_user_stage import (
     PaneUserStageError, PreparedPaneUserSession, apply_user_pane_session,
     discard_user_pane_session, prepare_user_pane_session,
@@ -66,6 +69,12 @@ class _SlotRow:
         self.mode_points.addWidget(self.points)
         self._last_mode: CaptureMeasurementMode | None = None
         self._rtbw_rate: float | None = None
+        self.band_number_label = QLabel(str(number), parent)
+        self.band_number_label.setProperty("ui2Role", "secondary")
+        self.band = QComboBox(parent)
+        self.band.setProperty("ui2Role", "utility-select")
+        for policy in RtbwBandPolicy:
+            self.band.addItem(policy.value, policy)
         self.schedule_number_label = QLabel(str(number), parent)
         self.schedule_number_label.setProperty("ui2Role", "secondary")
         self.priority = QSpinBox(parent)
@@ -193,11 +202,35 @@ class IndependentPaneSetupV2(QWidget):
         self.scheduler_toggle.setProperty("ui2Role", "utility-action")
         self.scheduler_toggle.setCheckable(True)
         actions.addWidget(self.scheduler_toggle)
+        self.band_toggle = QPushButton(self)
+        self.band_toggle.setProperty("ui2Role", "utility-action")
+        self.band_toggle.setCheckable(True)
+        actions.addWidget(self.band_toggle)
         self.details = self._button(self._show_details)
         actions.addWidget(self.details)
         actions.addStretch(1)
         self._actions_layout = actions
         root.addLayout(actions)
+        self.band_controls = QWidget(self)
+        band_grid = QGridLayout(self.band_controls)
+        band_grid.setContentsMargins(0, 0, 0, 0)
+        band_grid.setHorizontalSpacing(6)
+        band_grid.setColumnStretch(2, 1)
+        self.band_headers = tuple(QLabel(self.band_controls) for _ in range(2))
+        for column, header in enumerate(self.band_headers):
+            header.setProperty("ui2Role", "secondary")
+            band_grid.addWidget(header, 0, column)
+        for row_index, row in enumerate(self._rows, 1):
+            band_grid.addWidget(row.band_number_label, row_index, 0)
+            band_grid.addWidget(row.band, row_index, 1)
+        self.band_help = QLabel(self.band_controls)
+        self.band_help.setWordWrap(True)
+        self.band_help.setTextFormat(Qt.TextFormat.PlainText)
+        self.band_help.setProperty("ui2Role", "secondary")
+        band_grid.addWidget(self.band_help, 5, 0, 1, 3)
+        self.band_toggle.toggled.connect(self._show_band)
+        self.band_controls.hide()
+        layout.addWidget(self.band_controls)
         self.scheduler_controls = QWidget(self)
         schedule_grid = QGridLayout(self.scheduler_controls)
         schedule_grid.setContentsMargins(0, 0, 0, 0)
@@ -255,6 +288,10 @@ class IndependentPaneSetupV2(QWidget):
 
     def _show_scheduler(self, visible: bool) -> None:
         self.scheduler_controls.setVisible(visible)
+        self._sync_contents_height()
+
+    def _show_band(self, visible: bool) -> None:
+        self.band_controls.setVisible(visible)
         self._sync_contents_height()
 
     def _show_tinysa_settings(self, visible: bool) -> None:
@@ -442,7 +479,10 @@ class IndependentPaneSetupV2(QWidget):
                 sample_rate_hz=row.rate.currentData(), fft_size=row.fft.currentData(),
                 points=row.points.value(), network_discovery=network,
                 measurement_mode=self._selected_mode(row), priority=row.priority.value(),
-                maximum_revisit_s=row.maximum_revisit.value() or None, tinysa=tiny))
+                maximum_revisit_s=row.maximum_revisit.value() or None, tinysa=tiny,
+                rtbw_band=(RtbwBandPolicy(row.band.currentData())
+                           if self._selected_mode(row) is CaptureMeasurementMode.RTBW
+                           else RtbwBandPolicy.EDGE_TRIMMED)))
         return tuple(drafts)
 
     @staticmethod
@@ -486,6 +526,8 @@ class IndependentPaneSetupV2(QWidget):
         row.fft.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
         row.points.setEnabled(family is DeviceFamily.TINYSA and not blocked)
         row.mode.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
+        row.band.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
+                            and mode is CaptureMeasurementMode.RTBW and not blocked)
         row.fft.setToolTip(text("analyzer.pane.setup.fft_help"))
         row._last_mode = mode
 
@@ -681,6 +723,26 @@ class IndependentPaneSetupV2(QWidget):
                               stop=stop // 1_000_000))
         schedule = prepared.plan.layout.schedule
         assert schedule is not None
+        for resource_schedule in schedule.resources:
+            for job in resource_schedule.jobs:
+                profile = job.profile
+                if (not isinstance(profile, (PaneCaptureProfile, HackrfRtbwPaneProfile))
+                        or profile.measurement_mode is not CaptureMeasurementMode.RTBW):
+                    continue
+                bandwidth = (profile.request_template.baseband_filter_hz
+                             if isinstance(profile, HackrfRtbwPaneProfile)
+                             else profile.analog_bandwidth_hz)
+                for crop in job.crops:
+                    lines.append(text("analyzer.pane.setup.preview_rtbw_band",
+                                      pane=crop.pane_id.rsplit("-", 1)[-1],
+                                      rate=f"{profile.sample_rate_hz / 1e6:g}",
+                                      filter=f"{bandwidth / 1e6:g}",
+                                      usable=f"{profile.usable_capture_span_hz / 1e6:g}",
+                                      start=f"{crop.start_hz / 1e6:g}", stop=f"{crop.stop_hz / 1e6:g}",
+                                      fft=profile.fft_size, hop=profile.hop_size))
+        if any(job.profile.measurement_mode is CaptureMeasurementMode.RTBW
+               for resource in schedule.resources for job in resource.jobs):
+            lines.append(text("analyzer.pane.setup.rtbw_band_scope"))
         tiny_requests = {crop.pane_id: job.profile.request_template
                          for resource in schedule.resources for job in resource.jobs
                          if isinstance(job.profile, TinySaTracePaneProfile) for crop in job.crops}
@@ -746,7 +808,8 @@ class IndependentPaneSetupV2(QWidget):
         self.setStyleSheet(stylesheet_for_theme(theme))
         for row in self._rows:
             for field in (row.source, row.start, row.stop, row.rate, row.fft,
-                          row.points, row.mode, row.mode_points, row.priority, row.maximum_revisit):
+                          row.points, row.mode, row.mode_points, row.priority, row.maximum_revisit,
+                          row.band):
                 field.ensurePolished()
                 field.setMinimumHeight(field.minimumSizeHint().height())
         self._sync_contents_height()
@@ -761,6 +824,12 @@ class IndependentPaneSetupV2(QWidget):
             row.maximum_revisit.setToolTip(text("analyzer.pane.setup.scheduler_help"))
             row.maximum_revisit.setSuffix(text("analyzer.pane.setup.seconds_suffix"))
             row.maximum_revisit.setSpecialValueText(text("analyzer.pane.setup.target_unset"))
+            row.band.setAccessibleName(text("analyzer.pane.setup.rtbw_band_name", pane=row.number))
+            row.band.setToolTip(text("analyzer.pane.setup.rtbw_band_help"))
+            with QSignalBlocker(row.band):
+                for index in range(row.band.count()):
+                    policy = RtbwBandPolicy(row.band.itemData(index))
+                    row.band.setItemText(index, text("analyzer.pane.setup.rtbw_band_" + policy.value))
             if row.source.count():
                 row.source.setItemText(0, text("analyzer.pane.setup.empty"))
             # A staged draft cannot rebuild source/geometry selectors. Translate
@@ -777,6 +846,12 @@ class IndependentPaneSetupV2(QWidget):
         self.mode_help.setText(text("analyzer.pane.setup.mode_help"))
         self.scheduler_toggle.setText(text("analyzer.pane.setup.scheduler"))
         self.scheduler_toggle.setAccessibleName(text("analyzer.pane.setup.scheduler"))
+        self.band_toggle.setText(text("analyzer.pane.setup.rtbw_band"))
+        self.band_toggle.setAccessibleName(text("analyzer.pane.setup.rtbw_band"))
+        self.band_help.setText(text("analyzer.pane.setup.rtbw_band_help"))
+        for header, key in zip(self.band_headers, (
+                "analyzer.pane.setup.slot", "analyzer.pane.setup.rtbw_band"), strict=True):
+            header.setText(text(key))
         self.tinysa_toggle.setText(text("analyzer.pane.setup.tinysa_settings"))
         self.tinysa_toggle.setAccessibleName(text("analyzer.pane.setup.tinysa_settings"))
         self.tinysa_pane.setAccessibleName(text("analyzer.pane.setup.tinysa_settings"))

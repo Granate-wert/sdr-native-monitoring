@@ -21,8 +21,10 @@ from sdr_monitor.services.pane_resource_session import PaneHostTiming
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase, PanePumpResourceState
-from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft
-from sdr_monitor.ui.v2_pane_user_stage import apply_user_pane_session, prepare_user_pane_session
+from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, RtbwBandPolicy
+from sdr_monitor.ui.v2_pane_user_stage import (
+    apply_user_pane_session, discard_user_pane_session, prepare_user_pane_session,
+)
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale
 from sdr_monitor.ui.v2.workspaces.independent_pane_session import IndependentPaneSessionV2
 from sdr_monitor.ui.v2.workspaces.independent_pane_setup import IndependentPaneSetupV2
@@ -47,6 +49,95 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 return
             sleep(0.01)
         self.fail("pane editor did not reach the expected state")
+
+    def test_explicit_wide_band_stage_preview_lock_locale_discard_and_mode_restore(self) -> None:
+        native, ad = _ad_graph(serial="")
+        hf_fixture = hackrf_fixture()
+        hf = build_v2_analyzer_application_graph(SimpleNamespace(
+            live_sdr=hf_fixture.live, device_catalog=hf_fixture.catalog,
+            analyzer_hackrf=hf_fixture.hackrf))
+        graphs = (ad, hf)
+        choices = tuple(next(item for item in graph.live.discover(startup=True)
+                             if item.family is family)
+                        for graph, family in zip(graphs,
+                            (DeviceFamily.AD936X, DeviceFamily.HACKRF), strict=True))
+        pools, installed = [], []
+        editor = IndependentPaneSetupV2(install=installed.append, uninstall=lambda: None)
+        locale = current_locale()
+
+        def stage(drafts):
+            pool = PaneProductGraphPool(lambda resource: graphs[int(resource.rsplit("-", 1)[-1]) - 1])
+            pools.append(pool)
+            return prepare_user_pane_session(drafts, pool_factory=lambda: pool)
+
+        try:
+            editor.resize(1100, 480)
+            editor.update_sources(AnalyzerSourceSelection(revision=1, choices=choices))
+            editor.show()
+            self.app.processEvents()
+            editor.band_toggle.click()
+            for row, choice, rate, start, stop in zip(editor._rows[:2], choices,
+                    (61.44e6, 20e6), (100, 140), (156, 160), strict=True):
+                row.source.setCurrentIndex(row.source.findData(choice.device_id))
+                row.rate.setCurrentIndex(row.rate.findData(rate))
+                row.start.setValue(start)
+                row.stop.setValue(stop)
+                self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.EDGE_TRIMMED)
+                row.band.setCurrentIndex(row.band.findData(RtbwBandPolicy.FULL_RECEIVE.value))
+                self.assertTrue(row.band.isEnabled())
+                row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.SWEEP.value))
+                self.assertFalse(row.band.isEnabled())
+                self.assertIs(editor._read_drafts()[row.number - 1].rtbw_band,
+                              RtbwBandPolicy.EDGE_TRIMMED)
+                row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.RTBW.value))
+                self.assertIs(editor._read_drafts()[row.number - 1].rtbw_band,
+                              RtbwBandPolicy.FULL_RECEIVE)
+            self.assertTrue(all(not row.band.isEnabled() for row in editor._rows[2:]))
+            draft = editor._read_drafts()
+            with patch("sdr_monitor.ui.v2.workspaces.independent_pane_setup.prepare_user_pane_session",
+                       side_effect=stage):
+                editor.prepare.click()
+                self._wait(lambda: editor._prepared is not None or editor._error_key is not None)
+            self.assertIsNotNone(editor._prepared, editor.error.text())
+            staged = editor._prepared
+            for language, prefix, filter_text, scope in (
+                    (UiLocale.EN, "Pane 1, RTBW plan:", "RF filter 56 MHz", "half-open"),
+                    (UiLocale.RU, "Окно 1, план RTBW:", "RF-фильтр 56 МГц", "полуоткрытую")):
+                set_active_locale(language)
+                editor.set_locale()
+                self.app.processEvents()
+                self.assertIs(editor._prepared, staged)
+                self.assertEqual(editor._read_drafts(), draft)
+                self.assertTrue(all(not row.band.isEnabled() for row in editor._rows))
+                line = next(line for line in editor.preview.text().splitlines() if line.startswith(prefix))
+                self.assertIn(filter_text, line)
+                self.assertIn("61.44", line)
+                self.assertIn("4096", line)
+                self.assertIn(scope, editor.preview.text())
+                self.assertEqual(editor.preview.accessibleName(), editor.preview.text())
+                self.assertTrue(editor.apply.isEnabled())
+                self.assertGreaterEqual(editor._rows[0].band.height(),
+                                        editor._rows[0].band.minimumSizeHint().height())
+            self.assertEqual(native.engines, [])
+            self.assertEqual(hf_fixture.factory.controls, [])
+            self.assertFalse(installed)
+            editor.discard.click()
+            self._wait(lambda: editor.can_close)
+            self.assertEqual(editor._read_drafts(), draft)
+            self.assertTrue(editor._rows[0].band.isEnabled())
+        finally:
+            self._wait(lambda: editor._future is None)
+            if editor._prepared is not None:
+                discard_user_pane_session(editor._prepared)
+                editor._prepared = None
+            set_active_locale(locale)
+            editor.release_after_shutdown()
+            editor.close()
+            for pool in pools:
+                if pool.staged_resource_ids:
+                    pool.close()
+            for graph in graphs:
+                graph.live.shutdown()
 
     def test_three_sweep_2x2_ad_progress_is_visible_before_complete_pass(self) -> None:
         native, ad_fake, ad = ad_sweep_graph()

@@ -183,6 +183,11 @@ class PaneDeliveryPreparer:
             raise ValueError("instrument trace span differs from the selected capture")
         lower = float(trace.start_hz) if trace is not None else float(grid[0])
         upper = float(trace.stop_hz) if trace is not None else float(grid[-1])
+        if binding.measurement_mode is CaptureMeasurementMode.RTBW:
+            bounds = bundle.rtbw_frequency_bounds_hz
+            if bounds is None:
+                raise ValueError("RTBW pane requires its validated FFT coverage")
+            lower, upper = bounds
         if (binding.crop.start_hz < lower or binding.crop.stop_hz > upper):
             raise ValueError(f"pane crop for {binding.pane_id} is outside the delivered physical frequency grid")
         if not self.allocation_budget.admit_sources(bundle):

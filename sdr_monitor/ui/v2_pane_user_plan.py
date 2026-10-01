@@ -9,6 +9,7 @@ to one resource; it is never mistaken for a second receiver.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from math import ceil, isfinite
 from typing import Mapping
 
@@ -44,6 +45,13 @@ class PaneUserPlanError(ValueError):
                  revisit_violations: tuple[PaneRevisitEstimate, ...] = ()) -> None:
         super().__init__(message)
         self.revisit_violations = revisit_violations
+
+
+class RtbwBandPolicy(str, Enum):
+    """Explicit receive/filter intent, not a calibrated passband claim."""
+
+    EDGE_TRIMMED = "edge_trimmed"
+    FULL_RECEIVE = "full_receive"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +103,7 @@ class PaneSlotDraft:
     priority: int = field(default=1, kw_only=True)
     maximum_revisit_s: float | None = field(default=None, kw_only=True)
     tinysa: TinySaPaneIntent | None = field(default=None, kw_only=True)
+    rtbw_band: RtbwBandPolicy = field(default=RtbwBandPolicy.EDGE_TRIMMED, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
@@ -103,6 +112,8 @@ class PaneSlotDraft:
             raise PaneUserPlanError("pane network discovery intent must be explicit")
         if self.tinysa is not None and not isinstance(self.tinysa, TinySaPaneIntent):
             raise PaneUserPlanError("pane tinySA settings require typed intent")
+        if not isinstance(self.rtbw_band, RtbwBandPolicy):
+            raise PaneUserPlanError("RTBW receive band requires typed explicit intent")
         if type(self.priority) is not int or not 1 <= self.priority <= 100:
             raise PaneUserPlanError("pane scheduling priority must be an integer in [1, 100]")
         if self.maximum_revisit_s is not None and (
@@ -118,7 +129,8 @@ class PaneSlotDraft:
         if self.source_id is None:
             if (self.start_hz is not None or self.stop_hz is not None
                     or self.measurement_mode is not None or self.priority != 1
-                    or self.maximum_revisit_s is not None or self.tinysa is not None):
+                    or self.maximum_revisit_s is not None or self.tinysa is not None
+                    or self.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
         if (not isinstance(self.source_id, str) or not self.source_id.strip()
@@ -227,6 +239,10 @@ def compile_user_pane_plan(
         choice = selected[source_id]
         if draft.tinysa is not None and choice.family is not DeviceFamily.TINYSA:
             raise PaneUserPlanError("tinySA settings cannot be attached to an SDR pane")
+        if draft.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED and (
+                choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
+                or draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW)):
+            raise PaneUserPlanError("wide receive band is only an explicit SDR RTBW intent")
         assert draft.start_hz is not None and draft.stop_hz is not None
         if draft.fft_size == 2048 and not (
                 choice.family is DeviceFamily.HACKRF
@@ -269,6 +285,9 @@ def compile_user_pane_plan(
                 # RF filter and edge-trimmed usable analysis span are distinct.
                 # Exact native capabilities and Start readback still decide.
                 rf_bandwidth = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 40_000_000.0
+                if draft.rtbw_band is RtbwBandPolicy.FULL_RECEIVE:
+                    rf_bandwidth = min(draft.sample_rate_hz, 56_000_000.0)
+                    usable = rf_bandwidth
                 profile = PaneCaptureProfile(
                     draft.sample_rate_hz, rf_bandwidth, "manual", 20.0,
                     draft.fft_size, draft.fft_size // 2, "hann", "sample", None, usable, cost)
@@ -294,12 +313,17 @@ def compile_user_pane_plan(
                     raise PaneUserPlanError("HackRF pane mode is not supported")
                 if draft.sample_rate_hz not in {16_000_000.0, 20_000_000.0}:
                     raise PaneUserPlanError("HackRF pane supports the listed 16 or 20 MS/s profiles")
+                filter_hz = 14_000_000 if draft.sample_rate_hz == 16_000_000.0 else 15_000_000
+                usable = 10_000_000.0
+                if draft.rtbw_band is RtbwBandPolicy.FULL_RECEIVE:
+                    filter_hz = 14_000_000 if draft.sample_rate_hz == 16_000_000.0 else 20_000_000
+                    usable = float(filter_hz)
                 hackrf_request = HackrfLiveRequest(
                     center, draft.sample_rate_hz,
-                    14_000_000 if draft.sample_rate_hz == 16_000_000.0 else 15_000_000,
+                    filter_hz,
                     16, 20, fft_size=draft.fft_size, hop_size=draft.fft_size // 2,
                     detector="peak", source_id=SourceId(source_id))
-                profile = HackrfRtbwPaneProfile(hackrf_request, 10_000_000.0, cost)
+                profile = HackrfRtbwPaneProfile(hackrf_request, usable, cost)
         else:
             if draft.measurement_mode not in (None, CaptureMeasurementMode.INSTRUMENT_TRACE):
                 raise PaneUserPlanError("tinySA pane is a device trace, not an SDR receiver")
@@ -401,4 +425,4 @@ def compile_user_pane_plan(
                         tuple(scheduler_intents))
 
 
-__all__ = ["TinySaPaneIntent", "PaneSlotDraft", "PaneSchedulingIntent", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]
+__all__ = ["RtbwBandPolicy", "TinySaPaneIntent", "PaneSlotDraft", "PaneSchedulingIntent", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]

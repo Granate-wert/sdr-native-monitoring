@@ -147,6 +147,22 @@ class AnalyzerFrameBundle:
             raise TypeError("unsupported analyzer publication")
 
     @property
+    def rtbw_frequency_bounds_hz(self) -> tuple[float, float] | None:
+        """Validated FFT coverage [first center, exclusive next-bin edge).
+
+        The full, immutable FFT grid is checked against center/Fs/F in
+        __post_init__. Its last bin CENTER is not the positive Nyquist edge.
+        This O(1) metadata bound does not invent another measured sample,
+        extrapolate a partial grid, or extend Sweep/instrument coverage.
+        """
+        if self.rtbw is None:
+            return None
+        metadata = self.rtbw
+        lower = (metadata.center_frequency_hz - metadata.fft_size // 2
+                 * (metadata.sample_rate_hz / metadata.fft_size))
+        return lower, lower + metadata.sample_rate_hz
+
+    @property
     def mode(self) -> str:
         return "rtbw" if isinstance(self.spectrum, LiveSpectrumFrame) else "sweep"
 

@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
+
+import numpy as np
 
 from collections import Counter
 
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode, SchedulerPolicyKind
 from sdr_monitor.domain.pane_scheduler import Ad936xSweepPaneProfile, CaptureMeasurementMode, HackrfSweepPaneProfile
-from sdr_monitor.domain.device_capabilities import DeviceFamily
+from sdr_monitor.domain.device_capabilities import DeviceFamily, stable_identity_key
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.services.pane_resource_session import PaneResourceSession
+from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
+from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer
+from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2_pane_user_plan import (
-    PaneSlotDraft, PaneUserPlanError, compile_user_pane_plan,
+    PaneSlotDraft, PaneUserPlanError, RtbwBandPolicy, compile_user_pane_plan,
 )
 
 from tests.ui_v2.test_app07_pane_graph_pool import _ad_graph
@@ -18,6 +26,7 @@ from tests.ui_v2.test_app06_hackrf_common_analyzer import graph as hackrf_fixtur
 from tests.ui_v2.test_app06_tinysa_common_analyzer import graph as tinysa_fixture
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from types import SimpleNamespace
+from tests.test_app07_pane_resource_session import FakeOwner, live_frame, readonly
 
 
 class PaneUserPlanTests(unittest.TestCase):
@@ -76,6 +85,120 @@ class PaneUserPlanTests(unittest.TestCase):
         self.assertEqual(len(plan.layout.schedule.resources[0].jobs), 1)
         self.assertEqual(plan.layout.schedule.resources[0].jobs[0].mode,
                          ReceiverBindingMode.SHARED_CAPTURE)
+
+    def test_explicit_wide_rtbw_56_and_20_mhz_keep_exact_native_intent(self) -> None:
+        plan = self._compile((
+            PaneSlotDraft(1, self.ad_id, 100e6, 156e6, sample_rate_hz=61.44e6,
+                          rtbw_band=RtbwBandPolicy.FULL_RECEIVE),
+            PaneSlotDraft(2, self.hf_id, 140e6, 160e6, rtbw_band=RtbwBandPolicy.FULL_RECEIVE),
+            PaneSlotDraft(3, self.ts_id, 100e6, 300e6, points=1001), PaneSlotDraft(4)))
+        ad, hf, tiny = (resource.jobs[0].profile for resource in plan.layout.schedule.resources)
+        self.assertEqual((ad.sample_rate_hz, ad.analog_bandwidth_hz, ad.usable_capture_span_hz),
+                         (61.44e6, 56e6, 56e6))
+        self.assertEqual((hf.sample_rate_hz, hf.request_template.baseband_filter_hz,
+                          hf.usable_capture_span_hz), (20e6, 20_000_000, 20e6))
+        self.assertEqual((ad.fft_size, hf.fft_size, ad.hop_size, hf.hop_size),
+                         (4096, 4096, 2048, 2048))
+        self.assertEqual(hf.request_template.averaging_frames, 1)
+        self.assertFalse(hf.request_template.rf_amplifier_enabled)
+        self.assertFalse(hf.request_template.bias_tee_enabled)
+        self.assertEqual(plan.initial_ad_configurations[0][1].analog_bandwidth_hz, 56e6)
+        self.assertEqual((tiny.points, tiny.unit, plan.layout.empty_slots), (1001, "dBm", (4,)))
+        for source, rate, span in ((self.ad_id, 61.44e6, 56e6), (self.hf_id, 20e6, 20e6)):
+            for stop in (100e6 + span, 100e6 + span + 1):
+                with self.subTest(source=source, stop=stop), self.assertRaises(PaneUserPlanError):
+                    self._compile((PaneSlotDraft(1, source, 100e6, stop, sample_rate_hz=rate,
+                        **({} if stop == 100e6 + span else {"rtbw_band": RtbwBandPolicy.FULL_RECEIVE})),))
+
+    def test_lower_rate_wide_profiles_never_exceed_fs_or_discrete_filter(self) -> None:
+        for source, rate, span in ((self.ad_id, 20e6, 20e6), (self.hf_id, 16e6, 14e6)):
+            with self.subTest(source=source):
+                plan = self._compile((PaneSlotDraft(1, source, 100e6, 100e6 + span,
+                    sample_rate_hz=rate, rtbw_band=RtbwBandPolicy.FULL_RECEIVE),))
+                profile = plan.layout.schedule.resources[0].jobs[0].profile
+                self.assertEqual(profile.usable_capture_span_hz, span)
+                self.assertLessEqual(profile.usable_capture_span_hz, rate)
+                with self.assertRaises(PaneUserPlanError):
+                    self._compile((PaneSlotDraft(1, source, 100e6, 100e6 + span + 1,
+                        sample_rate_hz=rate, rtbw_band=RtbwBandPolicy.FULL_RECEIVE),))
+
+    def test_wide_and_trimmed_same_rx_are_not_silently_merged(self) -> None:
+        plan = self._compile((
+            PaneSlotDraft(1, self.ad_id, 100e6, 108e6, sample_rate_hz=61.44e6),
+            PaneSlotDraft(2, self.ad_id, 100e6, 108e6, sample_rate_hz=61.44e6,
+                          rtbw_band=RtbwBandPolicy.FULL_RECEIVE)))
+        resource = plan.layout.schedule.resources[0]
+        self.assertEqual(len(plan.groups), 1)
+        self.assertEqual(len(resource.jobs), 2)
+        self.assertTrue(all(job.mode is ReceiverBindingMode.TIME_SLICED for job in resource.jobs))
+        self.assertEqual({job.profile.analog_bandwidth_hz for job in resource.jobs}, {40e6, 56e6})
+        shared = self._compile(tuple(PaneSlotDraft(number, self.hf_id, start, stop,
+            rtbw_band=RtbwBandPolicy.FULL_RECEIVE)
+            for number, start, stop in ((1, 140e6, 148e6), (2, 150e6, 160e6))))
+        self.assertEqual(len(shared.layout.schedule.resources[0].jobs), 1)
+        self.assertIs(shared.layout.schedule.resources[0].jobs[0].mode, ReceiverBindingMode.SHARED_CAPTURE)
+
+    def test_wide_policy_is_typed_rtbw_only_and_empty_does_not_retain_it(self) -> None:
+        for invalid in (True, 1, "full_receive", None):
+            with self.subTest(invalid=invalid), self.assertRaises(PaneUserPlanError):
+                PaneSlotDraft(1, self.ad_id, 100e6, 108e6, rtbw_band=invalid)
+        with self.assertRaises(PaneUserPlanError):
+            PaneSlotDraft(1, rtbw_band=RtbwBandPolicy.FULL_RECEIVE)
+        for source, rate, mode in ((self.ad_id, 61.44e6, CaptureMeasurementMode.SWEEP),
+                                   (self.hf_id, 20e6, CaptureMeasurementMode.SWEEP),
+                                   (self.ts_id, 20e6, CaptureMeasurementMode.INSTRUMENT_TRACE)):
+            with self.subTest(source=source), self.assertRaisesRegex(PaneUserPlanError, "only.*RTBW"):
+                self._compile((PaneSlotDraft(1, source, 100e6, 220e6,
+                    sample_rate_hz=rate, measurement_mode=mode,
+                    rtbw_band=RtbwBandPolicy.FULL_RECEIVE),))
+
+    def test_full_hackrf_fft_right_edge_routes_and_prepares_without_extra_bin(self) -> None:
+        plan = self._compile((PaneSlotDraft(1, self.hf_id, 140e6, 160e6,
+                                          rtbw_band=RtbwBandPolicy.FULL_RECEIVE),))
+        resource = plan.layout.schedule.resources[0].physical_stream_resource_id
+        endpoint = plan.groups[0].endpoints[0].endpoint_id
+        owner = FakeOwner(resource)
+        owner.admission_source_id = self.hf_id
+        owner.admission_mode = "rtbw"
+        owner.admission_generation = 5
+        session = PaneResourceSession(plan.layout.schedule, plan.groups, {resource: owner},
+            ReceiverLeaseManager(max_active_resources=4),
+            source_identity_keys={self.hf_id: stable_identity_key(self.hf_id)})
+        preparer = PaneDeliveryPreparer(plan.layout, plan.groups, PresentationAllocationBudget())
+        session.apply()
+        activation = session.start_resource(resource)
+        try:
+            valid = live_frame(self.hf_id, "fake-live-session", 7,
+                               center_hz=150e6, sample_rate_hz=20e6)
+            valid = replace(valid, spectrum=replace(valid.spectrum, native_quality_flags=0x2001))
+            self.assertLess(valid.frequencies_hz[-1], 160e6)
+            self.assertEqual(valid.rtbw_frequency_bounds_hz, (140e6, 160e6))
+            deliveries = session.accept_frame(activation, endpoint, valid)
+            self.assertEqual(len(deliveries), 1)
+            prepared = preparer.prepare(deliveries[0])
+            self.assertIs(prepared.bundle, valid)
+            self.assertIs(prepared.spectrum.view.source_frame, valid)
+            self.assertEqual(prepared.bundle.frequencies_hz.size, 4096)
+            self.assertEqual(prepared.bundle.spectrum.native_quality_flags, 0x2001)
+            self.assertFalse(prepared.bundle.frequencies_hz.flags.writeable)
+            self.assertIsNotNone(prepared.waterfall)
+            for invalid in (live_frame(self.hf_id, "fake-live-session", 7,
+                            center_hz=150e6 - 1, sample_rate_hz=20e6),
+                            live_frame(self.hf_id, "other-session", 7,
+                            center_hz=150e6, sample_rate_hz=20e6)):
+                self.assertEqual(session.accept_frame(activation, endpoint, invalid), ())
+                if invalid.session_id == valid.session_id:
+                    with self.assertRaisesRegex(ValueError, "outside"):
+                        preparer.prepare(replace(deliveries[0], bundle=invalid))
+            for grid in (valid.frequencies_hz[:-1], valid.frequencies_hz + 1000):
+                forged = replace(valid.spectrum, frequencies_hz=readonly(grid, np.float64),
+                                 values=readonly(valid.spectrum.values[:len(grid)], np.float32))
+                with self.assertRaisesRegex(ValueError, "grid"):
+                    AnalyzerFrameBundle(forged, valid.session_id, valid.receiver_id,
+                                        valid.acquisition_epoch, valid.rtbw)
+        finally:
+            self.assertEqual(session.stop_all(), ())
+            preparer.clear()
 
     def test_high_fs_rf_filter_is_distinct_from_36mhz_usable_capture(self) -> None:
         plan = self._compile((
