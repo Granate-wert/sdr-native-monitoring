@@ -14,6 +14,7 @@ from PySide6.QtCore import QSettings, Signal, Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from sdr_monitor.domain.analyzer import AnalyzerPublicationKind
+from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PanePresentationBinding, PreparedPaneDelivery
 
@@ -294,8 +295,14 @@ class IndependentPaneBoardV2(QWidget):
         identity = None if pane is None else pane._last_identity
         if (self._terminal_released or binding is None or identity is None
                 or identity.source_id is None or identity.acquisition_epoch is None
-                or identity.config_generation is None or identity.unit is None):
+                or identity.unit is None
+                or identity.config_generation is None
+                and binding.measurement_mode is not CaptureMeasurementMode.SWEEP):
             return None
+        # SDR Sweep has per-segment generations, not one configuration
+        # generation. Its exact installed binding and producer epoch anchor
+        # the RF intent; absent metadata remains None, never an invented zero.
+        # RTBW and instrument traces keep their existing generation guard.
         # Grid allocation, sequence and progressive revision may change every
         # frame. They must not cancel a valid held gesture in the same epoch.
         return (id(binding), binding.mode, identity.source_id, identity.receiver_id,
