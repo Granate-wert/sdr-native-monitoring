@@ -1635,3 +1635,68 @@ true, deferred compiled/outside-import lists empty. This is retained as a
 FAILED gate, not release acceptance. The RU text was subsequently corrected
 without changing the translation guard; the corrected source requires its
 own exact-HEAD full gate and package identity.
+
+#### Corrected exact source, package and physical RF qualification
+
+Corrected product9425d52d0f3d88fdfed5e47c5bb8da26e273593d passed the clean
+full V2 source gate:1195total/1129passed/66skipped/zero failures418.661s,
+exact clean-source/native provenance, no deferred compiled tests or outside
+product imports. The earlier f73ade7 three-RU-failure gate remains FAILED;
+neither its result nor the four historical NaN warnings were erased.
+
+The official CPU/HackRF build of that SAME9425 product passed40/40CTest in
+44.06s and the complete658-file frozen/load-only/shared-runtime gates.
+Native762fceb6 was unchanged. This is a separate diagnostic package, not a
+canonical/static/current-release promotion. Post-Windows-close full658-file
+and frozen native verification passed; the source snapshot was unchanged.
+A later public-documentation-only commit does not relabel these9425 gates.
+
+A new short physical source+packaged-native Qt test used AD936xUSB61.44MS/s,
+RF/analysis56MHz, FFT4096/hop2048, independent HackRFUSB20MS/s/20MHz with
+the same FFT/hop/group1, and tinySAUSB100–300MHz/1001/LOW/queried300kHz RBW.
+Real Qt middle-press/move/release proposed one+4.477135MHz shift; no RF
+proposal occurred before release. Cancel retained the old plan/epoch.
+Explicit approval moved only AD100–156 to104.477135–160.477135MHz, changed
+its epoch4→6 and activation1→2, and recorded PROFILE_OR_RF_PLAN_CHANGE with
+0.2638941s host Stop/wait/Start elapsed. The AD readback retained61.44MS/s,
+56MHz and a3Hz center-rounding difference. Independent peer epochs remained
+unchanged; HackRF delivered newer frames. This6.501357s observation is NOT
+a Windows middle-held gesture, RF accuracy, continuous USB, duty/Pd or soak.
+The initial private-runner unsupported-discovery-argument failure occurred
+before RX and is retained; only that runner was corrected for the explicit R1.
+
+The SAME new frozen Windows EXE exercised the accessible numeric entry
+on three actual RX/trace sources plus Empty4. A+5MHz preview listed only the
+AD target and preserved Fs/RF56/FFT/hop/gain. Enter on default Cancel retained
+100–156MHz and all three running resources. A new, explicitly approved
+Stop→Apply→Start changed AD to105–161MHz and visibly reset ONLY its waterfall
+history. HackRF140–160MHz and tinySA100–300MHz plots continued without a
+visible peer reset. Numeric epoch/gap was proven in the separate source
+observation above, NOT independently read through the Windows timing tooltip.
+
+Before the final Stop, the longer Windows observation exposed a tinySA
+first-cause failure: version/identity mismatch at owner-poll/instrument
+verification. It was visible as Stop-required while independent SDRs remained
+running. No automatic retry/new Start or identity-guard weakening followed.
+One explicit Stop all reached0running/0starting/0Stop-required/3stopped;
+Close layout and normal window Close removed the test process/window.
+This is a bounded RF-control functional witness with a retained tinySA
+stability failure, NOT successful sustained cross-family/release acceptance.
+The reason for unequal fresh/expected identity remains OPEN; the older
+SDK READ/WRITE-9 cleanup cause is a different, still-open investigation.
+
+Five selected active native/IIO/HackRF/pthread/ONEUSB module paths and their
+on-disk hashes matched the SAME package manifest. This is not process-memory
+or exhaustive active ABI attestation. Current Computer Use capture, activation,
+keyboard and coordinate/indexed clicks worked; modal accessibility sometimes
+returned null, and a prior indexed modal value-set failed. Fresh screenshot/
+keyboard observations recovered control, without security/settings changes
+or a permanent-helper-repair claim.1440×912logical is not FHD/QHD/DPI proof.
+
+Still required: DEFAULT single Analyzer exact-profile/presenter RF integration,
+shared/time-sliced new-package RF control qualification, genuine Windows
+held-middle input, bounded tinySA identity-mismatch cause capture, tuning
+groups/genuine Ethernet, sustained/performance/UX/review/release. No source
+profile, native DSP, Fs/FFT/group, SDK or queue/memory budget was reduced to
+make the tests pass. APP07 remains PARTIAL; the full APP00–14 goal remains
+active, APP06E planned and the expired APP05 timer was not restarted.
