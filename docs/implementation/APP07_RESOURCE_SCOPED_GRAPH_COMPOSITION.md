@@ -1749,3 +1749,14 @@ impact preview and numeric/middle input, Stop/close cancelling queued restart,
 then exact new-package Windows and physical qualification. The independent
 resource RF route remains separate; do not reconstruct a default full profile
 from its simpler pane draft. APP07 remains PARTIAL/full APP00–14 ACTIVE.
+
+
+Exact product source3a38031257559cc817c1365be7585622782695a1 subsequently
+passed117 focused tests in4.757s and the full clean-HEAD V2 source gate:
+1216total/1150passed/66skipped/zero failures421.612s. Exact source/native
+provenance was true; compiled deferred and outside-product import lists were
+empty. The four historical NaN validation warnings remain. The main-process
+native input was unchanged packaged9425/native762fceb6; this is NOT a newly
+built3a frozen GUI, new CTest/RX/Windows performance gate or default UI feature
+acceptance. The25 new methods include21 V2,3 controller and1 padding check.
+A later public-doc-only commit must not relabel these3a source gates.
