@@ -1477,3 +1477,77 @@ OPEN; APP07 PARTIAL and APP06E CutDC/spur planned. The expired APP05 timer was
 not restarted. No TX/amp/bias enable, firmware, driver, network, firewall,
 security or system changes. A later public-documentation commit does not
 relabel exact ff5a5be source/build/device gates as its own product identity.
+
+### Resource-scoped RF range replacement foundation, 2026-10-01
+
+This is a backend/control foundation for a real RF shift, NOT the completed
+held-middle-button UI gesture. Existing viewport movement is not receiver
+tuning. No new UI control invokes these commands in this packet; a later
+UI packet must show an impact preview and preserve explicit operator consent.
+
+The staged product handle retains immutable copies of the original pane
+drafts and exact selected source/revision facts. A shift changes only one
+draft's start/stop and preserves its span, family, mode, Fs/filter/FFT/hop/group,
+receive-band policy, tinySA points/settings/input/correction, and every pane's
+original priority and maximum-revisit request. Other drafts are retained,
+not reconstructed from a merged capture's effective scheduler policy. The
+SAME all-pane compiler rechecks capabilities, geometry/budgets and all
+deadlines before any Stop. Out-of-range or infeasible proposals refuse; there
+is no edge clamp, FFT reduction, source replacement or extra SDK opener.
+
+Requested and effective shifts are distinct. Qualified HackRF host Sweep
+ranges use an explicit 1 MHz request quantum; other admitted pane requests
+use whole-Hz shifts, rounded nearest with ties away from zero. A sub-quantum
+zero shift refuses. This request quantum is not hardware LO/readback accuracy
+or a promise that the device applies a whole-Hz center exactly.
+
+| Operation | Allowed effect | Explicitly excluded |
+| --- | --- | --- |
+| Preview | Compile and validate the same resource's proposed plan off Qt | SDK acquisition/configuration, lease creation, Stop or Start |
+| Approved RF Stop | Recheck exact source/run/plan and recording state, then stop/release that resource | Stopping a newer run or an independent peer |
+| Apply after confirmed Stop | Replace target host routing and worker-owned presentation bindings/caches | RF setters, owner creation or receiver Start |
+| Explicit next Start | Fresh adapter/lease/permit on the same selected graph; normal family admission | Discover, peer restart, stale-frame/epoch relabel |
+
+The impact includes ALL panes sharing or time-slicing the affected physical
+RX, even those whose requested ranges stay unchanged. A preview cannot omit
+an affected pane. A shared capture can become time-sliced (or vice versa), so
+the future UI must display the original/effective priorities and new planned
+revisits for all affected panes before approval. Independent resources retain
+their exact owner, admission, presentation binding and cache objects.
+
+Preview identity is anchored to the exact schedule object and explicit-run
+serial. Normal advances within that accepted time-sliced run do not stale it;
+a new Start or accepted plan change does. Recording/source guards are checked
+again before approved RF Stop and before Apply. The RF Stop check and actual
+Stop share the same owner's native control transaction, closing the recorder
+attach race. Ordinary selected/emergency Stop remains available during
+recording; a recorder conflict cannot obstruct that cleanup action.
+
+The bounded existing resource worker holds at most one pending RF-plan
+command. Accepted Futures cannot detach commands via cancellation. Explicit
+Stop outranks a queued plan command; Start and terminal Close cannot bypass
+pending control. A partial host/presentation commit blocks further Start until
+explicit Stop and terminal layout close; there is no hidden repair/retry.
+Stopped handoff-cleanup failures complete their Future, retain a visible
+cleanup obligation and keep the worker available for an explicit Stop retry,
+rather than killing it with an unresolved completion.
+
+The next admission has a fresh epoch and a PROFILE_OR_RF_PLAN_CHANGE control
+gap from the actual last capture at Stop, not the preview-time timeslice.
+Multiple Apply actions while stopped preserve that last real admission.
+Planned gap and observed host control elapsed are separate: the latter starts
+when routing closes for Stop and includes Stop, operator wait and next Start.
+Unknown/invalid clocks remain unknown. Neither value proves RF duty, missing
+ADC samples, pulse-detection probability or a continuous I/Q stream. Native
+quality flags, gaps, time scope, units and loss counters remain unchanged.
+
+Source tests use the real common resource session, graph pool, adapters,
+pump and preparer with fake SDKs. They are not a physical RF shift, current
+frozen Windows gesture or performance acceptance. Still required: one common
+Spectrum/Waterfall held-middle gesture, bounded/default-Cancel impact UI,
+single- and multi-pane integration, target caption/history refresh before
+Start, shared/time-sliced behavior, matched actual high-Fs hardware/new-EXE
+qualification, genuine Ethernet/tuning groups, sustained/review/release.
+APP07 remains PARTIAL; APP06E and later APP08–14 gates remain open. No native
+DSP, SDK, Fs/group, transport, queue-capacity or resource-budget expansion is
+introduced, and the expired APP05 timer is not restarted.

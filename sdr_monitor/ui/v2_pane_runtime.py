@@ -17,6 +17,7 @@ import math
 import logging
 from threading import Condition, Lock, Thread
 from time import monotonic
+from typing import Any, Callable
 
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneLayout, ResourcePaneSchedule
 from sdr_monitor.activity_log import log_event
@@ -27,6 +28,8 @@ from sdr_monitor.services.pane_resource_session import PaneActivation, PaneResou
 
 from .v2_pane_delivery_queue import PaneFairDeliveryQueue
 from .v2_pane_presentation import PaneDeliveryPreparer
+from .v2_pane_rf_plan import PaneRfChangePreview, PaneRfShiftProposal
+from .v2_pane_user_plan import PaneUserPlanError
 
 
 class PanePumpPhase(StrEnum):
@@ -66,6 +69,9 @@ class _ResourceWorker:
         self._pending_rearm = False
         self._pending_stop: Future[None] | None = None
         self._active_stop: Future[None] | None = None
+        self._pending_plan: tuple[Callable[[], Any], Future[Any]] | None = None
+        self._active_plan = False
+        self._plan_consistency_fault = False
         self._state = PanePumpResourceState(resource.physical_stream_resource_id)
         self._frame_seen = False
         self._terminal_seen = False
@@ -103,9 +109,92 @@ class _ResourceWorker:
         with self._condition:
             return bool(not self._retiring and self._pending_start is None
                         and self._pending_stop is None and self._active_stop is None
+                        and self._pending_plan is None and not self._active_plan and not self._plan_consistency_fault
                         and (self._state.phase is PanePumpPhase.IDLE
                              or self._state.phase is PanePumpPhase.STOPPED
                              and self.session.can_rearm_resource(self.resource.physical_stream_resource_id)))
+
+    def control_pending(self) -> bool:
+        with self._condition:
+            return self._pending_plan is not None or self._active_plan
+
+    def _request_plan(self, operation: Callable[[], Any], *, require_stopped: bool = False) -> Future[Any]:
+        with self._condition:
+            if (self._retiring or self.control_pending() or self._plan_consistency_fault
+                    or self._pending_start is not None or self._pending_stop is not None or self._active_stop is not None
+                    or self._state.phase not in {PanePumpPhase.IDLE, PanePumpPhase.RUNNING, PanePumpPhase.STOPPED}
+                    or require_stopped and self._state.phase is not PanePumpPhase.STOPPED):
+                raise RuntimeError("pane RF command is unavailable; confirmed Stop is required for Apply")
+            future: Future[Any] = Future()
+            future.set_running_or_notify_cancel()
+            self._pending_plan = operation, future
+            self._condition.notify()
+            return future
+
+    def request_rf_preview(self, build: Callable[[], PaneRfShiftProposal]) -> Future[PaneRfChangePreview]:
+        def preview() -> PaneRfChangePreview:
+            proposal = build()  # Original-intent compile is off Qt on this SAME serial worker.
+            if (not isinstance(proposal, PaneRfShiftProposal)
+                    or proposal.physical_stream_resource_id != self.resource.physical_stream_resource_id
+                    or proposal.expected_context.plan.layout.schedule is not self.session.schedule):
+                raise PaneUserPlanError("RF proposal no longer belongs to this exact plan")
+            schedule = proposal.proposed_context.plan.layout.schedule
+            assert schedule is not None
+            return PaneRfChangePreview(proposal, self.session.preview_resource_plan(
+                self.resource.physical_stream_resource_id, schedule))
+        return self._request_plan(preview)
+
+    def request_rf_apply(self, preview: PaneRfChangePreview, commit: Callable[[], None],
+                         validate: Callable[[], None]) -> Future[None]:
+        def apply() -> None:
+            validate()
+            plan = preview.proposal.proposed_context.plan
+            resource_id = self.resource.physical_stream_resource_id
+            bindings = self.preparer.preview_resource_layout(plan.layout, plan.groups, resource_id)
+            self.session.replace_stopped_resource_plan(preview.resource)
+            try:
+                for pane_id in self.pane_ids:
+                    self.queue.clear(pane_id)
+                self.preparer.commit_resource_layout(plan.layout, bindings, resource_id)
+                assert plan.layout.schedule is not None
+                self.resource = next(item for item in plan.layout.schedule.resources
+                                     if item.physical_stream_resource_id == resource_id)
+                commit()  # Host metadata only, never a QWidget or hardware operation.
+            except Exception as error:
+                # A partial routing commit may not expose Start. Explicit Stop
+                # and terminal Close remain possible; no hidden repair/retry.
+                self._plan_consistency_fault = True
+                self._mark_failed(error, PaneFailureStage.PREPARE,
+                                  "RF routing commit failed; explicit Stop and layout close required")
+                raise RuntimeError("pane RF routing did not commit") from None
+        return self._request_plan(apply, require_stopped=True)
+
+    def request_rf_stop(self, preview: PaneRfChangePreview, validate: Callable[[], None]) -> Future[None]:
+        def stop() -> None:
+            validate()
+            try:
+                self.session.stop_for_resource_plan(preview.resource)
+                self._clear_stopped_queue()
+            except Exception as error:
+                # Pure validation refusals retain the healthy run. Actual
+                # Stop/release failures have already closed routing and must
+                # keep the normal explicit cleanup obligation visible.
+                failure = pane_failure_from_exception(error, PaneFailureStage.STOP)
+                if getattr(error, "failure", None) is not None:
+                    self._mark_failed(error, failure.stage, "RF Stop failed; explicit Stop required", cleanup=True)
+                raise
+            with self._condition:
+                self._state = replace(self._state, phase=PanePumpPhase.STOPPED,
+                                      activation=None, planned_slot_overrun=False, error=None)
+        return self._request_plan(stop)
+
+    def _clear_stopped_queue(self) -> None:
+        try:
+            for pane_id in self.pane_ids:
+                self.queue.clear(pane_id)
+        except Exception as error:
+            raise PaneDiagnosticError("Stopped pane handoff did not clear; explicit Stop required",
+                failure=pane_failure_from_exception(error, PaneFailureStage.QUEUE)) from None
 
     def request_stop(self) -> Future[None]:
         if not self._launched:
@@ -126,7 +215,7 @@ class _ResourceWorker:
                 unlaunched_future.set_result(None)
             return unlaunched_future
         with self._condition:
-            if self._state.phase is PanePumpPhase.STOPPED:
+            if self._state.phase is PanePumpPhase.STOPPED and not self.control_pending():
                 done: Future[None] = Future()
                 done.set_result(None)
                 return done
@@ -142,7 +231,7 @@ class _ResourceWorker:
 
     def join_after_stop(self, timeout_s: float | None) -> None:
         with self._condition:
-            if self._state.phase is not PanePumpPhase.STOPPED:
+            if self._state.phase is not PanePumpPhase.STOPPED or self.control_pending():
                 raise RuntimeError("pane resource has not confirmed explicit Stop")
             self._retiring = True
             self._condition.notify()
@@ -193,6 +282,9 @@ class _ResourceWorker:
                         self._pending_start.set_exception(RuntimeError("pane Start cancelled before RX"))
                         self._pending_start = None
                         self._pending_rearm = False
+                    if self._pending_plan is not None:
+                        self._pending_plan[1].set_exception(RuntimeError("pane RF command cancelled by explicit Stop"))
+                        self._pending_plan = None
                     self._state = replace(self._state, phase=PanePumpPhase.STOPPING)
                 elif self._pending_start is not None:
                     command = "start"
@@ -201,9 +293,14 @@ class _ResourceWorker:
                     rearm = self._pending_rearm
                     self._pending_rearm = False
                     self._state = replace(self._state, phase=PanePumpPhase.STARTING)
+                elif self._pending_plan is not None:
+                    command = "plan"
+                    operation, future_plan = self._pending_plan
+                    self._pending_plan = None
+                    self._active_plan = True
                 elif self._state.phase is PanePumpPhase.RUNNING:
                     self._condition.wait(self.poll_interval_s)
-                    if self._pending_stop is not None:
+                    if self._pending_stop is not None or self._pending_plan is not None:
                         continue
                     command = "poll"
                 elif self._state.phase is PanePumpPhase.STOPPED and self._retiring:
@@ -211,7 +308,19 @@ class _ResourceWorker:
                 else:
                     self._condition.wait()
                     continue
-            if command == "start":
+            if command == "plan":
+                try:
+                    result = operation()
+                except Exception as error:
+                    with self._condition:
+                        self._active_plan = False
+                    future_plan.set_exception(error if isinstance(error, (PaneUserPlanError, PaneDiagnosticError))
+                                              else RuntimeError("pane RF plan command was refused"))
+                else:
+                    with self._condition:
+                        self._active_plan = False
+                    future_plan.set_result(result)
+            elif command == "start":
                 failure_stage = PaneFailureStage.REARM if rearm else PaneFailureStage.START
                 try:
                     if rearm:
@@ -235,6 +344,7 @@ class _ResourceWorker:
             elif command == "stop":
                 try:
                     self.session.stop_resource(self.resource.physical_stream_resource_id)
+                    self._clear_stopped_queue()
                 except Exception as error:
                     self._mark_failed(error, PaneFailureStage.STOP,
                                       "Receiver Stop failed; owner retained for explicit retry", cleanup=True)
@@ -242,8 +352,6 @@ class _ResourceWorker:
                         self._active_stop = None
                     future_stop.set_exception(RuntimeError("pane receiver Stop did not confirm"))
                 else:
-                    for pane_id in self.pane_ids:
-                        self.queue.clear(pane_id)
                     with self._condition:
                         self._state = replace(self._state, phase=PanePumpPhase.STOPPED,
                                               activation=None, planned_slot_overrun=False, error=None)
@@ -303,7 +411,7 @@ class _ResourceWorker:
                     self._state = replace(self._state, planned_slot_overrun=True)
             return
         with self._condition:
-            if self._pending_stop is not None:
+            if self._pending_stop is not None or self._pending_plan is not None:
                 return  # Explicit Stop outranks a planned retune boundary.
         try:
             self._activate(self.session.advance_resource(resource_id))
@@ -384,6 +492,34 @@ class PaneResourcePump:
     def snapshot(self) -> tuple[PanePumpResourceState, ...]:
         return tuple(worker.snapshot() for worker in self._workers.values())
 
+    def control_pending(self) -> bool:
+        return any(worker.control_pending() for worker in self._workers.values())
+
+    def preview_rf_shift(self, resource_id: str,
+                         build: Callable[[], PaneRfShiftProposal]) -> Future[PaneRfChangePreview]:
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("pane workers are retiring")
+            return self._worker(resource_id).request_rf_preview(build)
+
+    def apply_rf_shift(self, preview: PaneRfChangePreview, commit: Callable[[], None],
+                       validate: Callable[[], None]) -> Future[None]:
+        if not isinstance(preview, PaneRfChangePreview):
+            raise ValueError("pane RF Apply needs its exact impact preview")
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("pane workers are retiring")
+            return self._worker(preview.proposal.physical_stream_resource_id).request_rf_apply(preview, commit, validate)
+
+    def stop_for_rf_shift(self, preview: PaneRfChangePreview,
+                          validate: Callable[[], None]) -> Future[None]:
+        if not isinstance(preview, PaneRfChangePreview):
+            raise ValueError("pane RF Stop needs its exact impact preview")
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("pane workers are retiring")
+            return self._worker(preview.proposal.physical_stream_resource_id).request_rf_stop(preview, validate)
+
     def startable_resource_ids(self) -> tuple[str, ...]:
         self._require_started()
         with self._lifecycle_lock:
@@ -412,7 +548,8 @@ class PaneResourcePump:
     def join_after_stop(self, timeout_s: float | None = None) -> None:
         self._require_started()
         with self._lifecycle_lock:
-            if any(worker.snapshot().phase is not PanePumpPhase.STOPPED for worker in self._workers.values()):
+            if any(worker.snapshot().phase is not PanePumpPhase.STOPPED or worker.control_pending()
+                   for worker in self._workers.values()):
                 raise RuntimeError("pane resource has not confirmed explicit Stop")
             self._closing = True  # Seal all peers before joining any one control worker.
         for worker in self._workers.values():

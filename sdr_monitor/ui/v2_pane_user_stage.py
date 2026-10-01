@@ -17,6 +17,7 @@ from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 
 from .v2_pane_graph_pool import PaneProductGraphPool
 from .v2_pane_product_session import PaneProductSessionHandle
+from .v2_pane_rf_plan import PaneRfPlanContext
 from .v2_pane_user_plan import PaneSlotDraft, PaneUserPlan, PaneUserPlanError, compile_user_pane_plan
 
 
@@ -68,7 +69,9 @@ def prepare_user_pane_session(
         if session is None:
             raise PaneUserStageError("an occupied pane layout has no resource session")
         handle = PaneProductSessionHandle(pool, plan.layout, plan.groups, session,
-                                          source_labels={source: choice.label for source, choice in selected.items()})
+                                          source_labels={source: choice.label for source, choice in selected.items()},
+                                          rf_context=PaneRfPlanContext(plan, drafts, tuple(
+                                              (source, selected[source], revisions[source]) for source in source_order)))
         return PreparedPaneUserSession(plan, handle, handle.preview())
     except Exception as error:
         violations = error.revisit_violations if isinstance(error, PaneUserPlanError) else ()

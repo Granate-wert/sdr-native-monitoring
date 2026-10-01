@@ -9,9 +9,9 @@ that its owner applies a CaptureJob and reports the resulting native identity.
 from __future__ import annotations
 
 from _thread import LockType
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
-from math import isfinite
+from math import isclose, isfinite
 from threading import Lock, RLock
 from time import monotonic
 from typing import Callable, ContextManager, Iterator, Mapping, Protocol
@@ -20,7 +20,7 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.pane_scheduler import (
-    CaptureJob, CaptureMeasurementMode, PaneControlGap, PaneCrop, PaneRevisitEstimate, PaneSchedule,
+    CaptureJob, CaptureMeasurementMode, PaneControlGap, PaneControlGapReason, PaneCrop, PaneRevisitEstimate, PaneSchedule,
     ResourcePaneSchedule, SpectrumTracePaneProfile,
 )
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
@@ -182,6 +182,42 @@ class PaneHostTiming:
     last_revisit_s: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class PaneResourcePlanPreview:
+    """An inert range-change proposal anchored to one exact plan and run.
+
+    All panes on this RX are affected, including unchanged shared/time-sliced
+    neighbors. Applying requires a separately confirmed full Stop. A preview
+    is not a capability receipt, hardware configuration or Start permission.
+    """
+
+    physical_stream_resource_id: str
+    expected_schedule: PaneSchedule
+    proposed_schedule: PaneSchedule
+    expected_run_serial: int
+    affected_pane_ids: tuple[str, ...]
+    restart_required: bool
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.expected_schedule, PaneSchedule)
+                or not isinstance(self.proposed_schedule, PaneSchedule)
+                or not isinstance(self.physical_stream_resource_id, str)
+                or type(self.expected_run_serial) is not int or self.expected_run_serial < 0
+                or type(self.restart_required) is not bool):
+            raise PaneResourceError("RF preview requires exact typed schedules and run state")
+        resource = next((item for item in self.expected_schedule.resources
+                         if item.physical_stream_resource_id == self.physical_stream_resource_id), None)
+        try:
+            affected = tuple(self.affected_pane_ids)
+        except TypeError:
+            raise PaneResourceError("RF preview requires the complete affected pane set") from None
+        expected = (() if resource is None else
+                    tuple(sorted({crop.pane_id for job in resource.jobs for crop in job.crops})))
+        if not expected or affected != expected:
+            raise PaneResourceError("RF preview requires the complete affected pane set")
+        object.__setattr__(self, "affected_pane_ids", affected)
+
+
 @dataclass(slots=True)
 class _Runtime:
     group: AcquisitionGroup
@@ -202,6 +238,9 @@ class _Runtime:
     last_admission_session_id: str | None = None
     new_epoch_required: bool = False
     rejected_publications: int = 0
+    last_stop_started_s: float | None = None
+    pending_control_gap: PaneControlGap | None = None
+    pending_control_started_s: float | None = None
     control_lock: LockType = field(default_factory=Lock, repr=False)
 
     @property
@@ -412,6 +451,118 @@ class PaneResourceSession:
                         and not runtime.active and not runtime.stop_required
                         and runtime.admission is None and runtime.current_activation is None)
 
+    def _validate_resource_plan(self, runtime: _Runtime, proposed: PaneSchedule) -> ResourcePaneSchedule:
+        """No new resource, endpoint, pane route or peer plan can be smuggled in."""
+        if not isinstance(proposed, PaneSchedule):
+            raise PaneResourceError("receiver range change requires a compiled pane schedule")
+        current = {item.physical_stream_resource_id: item for item in self._schedule.resources}
+        incoming = {item.physical_stream_resource_id: item for item in proposed.resources}
+        resource_id = runtime.group.physical_stream_resource_id
+        if (incoming.keys() != current.keys() or incoming[resource_id] == runtime.schedule
+                or any(incoming[key] != value for key, value in current.items() if key != resource_id)):
+            raise PaneResourceError("receiver range change must affect exactly one existing resource")
+        before = {crop.pane_id: (crop.receiver_endpoint_id, job.profile.measurement_mode, job.profile.unit)
+                  for job in runtime.schedule.jobs for crop in job.crops}
+        following = incoming[resource_id]
+        after = {crop.pane_id: (crop.receiver_endpoint_id, job.profile.measurement_mode, job.profile.unit)
+                 for job in following.jobs for crop in job.crops}
+        expected_revisits = {item.pane_id: item for item in self._schedule.pane_revisits}
+        new_revisits = {item.pane_id: item for item in proposed.pane_revisits}
+        if (before != after or expected_revisits.keys() != new_revisits.keys()
+                or any(new_revisits[key] != value for key, value in expected_revisits.items() if key not in before)
+                or any(item.physical_stream_resource_id != resource_id
+                       for key, item in new_revisits.items() if key in before)
+                or any(item.requested_maximum_revisit_s is not None
+                       and item.maximum_revisit_s > item.requested_maximum_revisit_s
+                       and not isclose(item.maximum_revisit_s, item.requested_maximum_revisit_s,
+                                       rel_tol=1e-12, abs_tol=1e-12) for item in proposed.pane_revisits)):
+            raise PaneResourceError("receiver range change alters pane routes, modes, units or revisit admission")
+        endpoints = {endpoint.endpoint_id for endpoint in runtime.group.endpoints}
+        if any(not set(job.receiver_endpoint_ids) <= endpoints for job in following.jobs):
+            raise PaneResourceError("receiver range change has a foreign RX endpoint")
+        try:
+            for job in following.jobs:
+                runtime.owner.validate_job(job)
+            if self._recording_conflict(runtime) or self._recording_conflict(
+                    _Runtime(runtime.group, following, runtime.owner)):
+                raise PaneResourceError("recording conflicts with receiver range change")
+        except PaneResourceError:
+            raise
+        except Exception:
+            raise PaneResourceError("receiver refuses the proposed range plan") from None
+        return following
+
+    def preview_resource_plan(self, resource_id: str, proposed: PaneSchedule) -> PaneResourcePlanPreview:
+        """Off-Qt, serialized inert preflight; never Stop/apply/Start an owner."""
+        runtime = self._required_runtime(resource_id)
+        with runtime.control_lock:
+            with self._state_lock:
+                if not self._applied or self._retired or runtime.stop_required:
+                    raise PaneResourceError("receiver is unavailable for range preview")
+            # A stopped adapter has released its application claim. Preview
+            # must not reclaim it and strand the normal fresh-adapter Start.
+            with self._owner_control_transaction(runtime) if runtime.lease is not None else nullcontext():
+                self._validate_resource_plan(runtime, proposed)
+                with self._state_lock:
+                    return PaneResourcePlanPreview(resource_id, self._schedule, proposed,
+                        runtime.run_serial, self.stop_impact(next(
+                            crop.pane_id for job in runtime.schedule.jobs for crop in job.crops)), runtime.active)
+
+    def replace_stopped_resource_plan(self, preview: PaneResourcePlanPreview) -> None:
+        """Apply host routing ONLY after full release; next Start stays explicit.
+
+        The same graph/factory/lease manager remains authoritative. Timeslice
+        advances do not stale a preview, but a new run or any accepted plan
+        does. The actual last capture, not a preview-time slot, defines the gap.
+        """
+        if not isinstance(preview, PaneResourcePlanPreview):
+            raise PaneResourceError("receiver range Apply needs its exact preview")
+        runtime = self._required_runtime(preview.physical_stream_resource_id)
+        with runtime.control_lock, self._apply_lock:
+            with self._state_lock:
+                if (self._schedule is not preview.expected_schedule
+                        or runtime.run_serial != preview.expected_run_serial
+                        or not self.can_rearm_resource(preview.physical_stream_resource_id)):
+                    raise PaneResourceError("range preview is stale or receiver Stop has not fully released")
+            # Pure host commit after full release. The next explicit Start
+            # rechecks recording under the fresh owner's native transaction.
+            following = self._validate_resource_plan(runtime, preview.proposed_schedule)
+            previous = runtime.current_job
+            first = next(job for job in following.jobs if job.capture_id == following.slots[0].capture_id)
+            previous_capture = (previous.capture_id if previous is not None else
+                                runtime.pending_control_gap.previous_capture_id if runtime.pending_control_gap is not None
+                                else None)
+            gap = (None if previous_capture is None or runtime.last_admission_epoch is None else PaneControlGap(
+                preview.physical_stream_resource_id, previous_capture, first.capture_id,
+                PaneControlGapReason.PROFILE_OR_RF_PLAN_CHANGE, first.profile.epoch_cost.control_gap_s))
+            with self._state_lock:
+                runtime.schedule = following
+                runtime.slot_index = -1
+                runtime.pending_control_gap = gap
+                runtime.pending_control_started_s = runtime.last_stop_started_s if gap is not None else None
+                self._schedule = preview.proposed_schedule
+
+    def stop_for_resource_plan(self, preview: PaneResourcePlanPreview) -> None:
+        """Explicit approved RF Stop, with stale/recording refusal BEFORE Stop.
+
+        This is NOT the ordinary emergency/selected Stop: recording does not
+        block those. Approval cannot stop a newer run or race recorder attach
+        between the check and Stop under this owner's native transaction.
+        """
+        if not isinstance(preview, PaneResourcePlanPreview):
+            raise PaneResourceError("RF Stop requires an exact approved impact preview")
+        runtime = self._required_runtime(preview.physical_stream_resource_id)
+        with runtime.control_lock:
+            with self._state_lock:
+                if (self._schedule is not preview.expected_schedule
+                        or runtime.run_serial != preview.expected_run_serial
+                        or not self._applied or self._retired or runtime.stop_required):
+                    raise PaneResourceError("RF preview is stale; no receiver Stop was sent")
+            with self._owner_control_transaction(runtime) if runtime.lease is not None else nullcontext():
+                self._validate_resource_plan(runtime, preview.proposed_schedule)
+                if runtime.lease is not None:
+                    self._stop_runtime_locked(runtime)
+
     def rearm_resource(self, resource_id: str) -> None:
         """Explicit next-run preparation, off Qt, after confirmed full Stop.
 
@@ -504,10 +655,13 @@ class PaneResourceSession:
                         failure=pane_failure_from_exception(error, failure_stage,
                             reason=(PaneFailureReason.INVALID_ADMISSION if failure_stage is PaneFailureStage.ADMISSION
                                     else PaneFailureReason.OPERATION_FAILED))) from None
-                control_elapsed = self._elapsed_since(control_started)
+                control_elapsed = self._elapsed_since(
+                    runtime.pending_control_started_s if runtime.pending_control_gap is not None else control_started)
                 with self._state_lock:
                     activation = PaneActivation(resource_id, job.capture_id, 0, runtime.activation_serial,
-                                                runtime.schedule.initial_control_gap, control_elapsed)
+                                                runtime.pending_control_gap or runtime.schedule.initial_control_gap, control_elapsed)
+                    runtime.pending_control_gap = None
+                    runtime.pending_control_started_s = None
                     runtime.admission = admission
                     runtime.last_admission_epoch = admission.acquisition_epoch
                     runtime.last_admission_session_id = admission.session_id
@@ -764,35 +918,41 @@ class PaneResourceSession:
                 if runtime.lease is None:
                     return
             with self._owner_control_transaction(runtime):
-                with self._state_lock:
-                    needs_stop = runtime.active or runtime.stop_required
-                    runtime.active = False  # No late frame may reach a pane during join.
-                    runtime.current_activation = None
-                    runtime.stop_required = needs_stop
-                if needs_stop:
-                    try:
-                        runtime.owner.stop_capture_and_wait()
-                    except Exception as error:
-                        raise PaneResourceError("receiver Stop did not confirm release; owner and lease retained",
-                            failure=pane_failure_from_exception(error, PaneFailureStage.STOP)) from None
-                try:
-                    runtime.owner.release_control_claim()
-                except Exception as error:
-                    with self._state_lock:
-                        runtime.stop_required = False  # Hardware Stop succeeded; keep only the claim/lease obligation.
-                    raise PaneResourceError("receiver control claim did not release; owner and lease retained",
-                        failure=pane_failure_from_exception(error, PaneFailureStage.CONTROL_RELEASE)) from None
-                with self._state_lock:
-                    assert runtime.lease is not None
-                    try:
-                        runtime.lease.release()
-                    except Exception as error:
-                        raise PaneResourceError("receiver lease did not release; explicit Stop is required",
-                            failure=pane_failure_from_exception(error, PaneFailureStage.LEASE_RELEASE)) from None
-                    runtime.lease = None
-                    runtime.admission = None
-                    runtime.stop_required = False
-                    runtime.terminal = True
+                self._stop_runtime_locked(runtime)
+
+    def _stop_runtime_locked(self, runtime: _Runtime) -> None:
+        """Caller holds resource control AND the application's native transaction."""
+        with self._state_lock:
+            needs_stop = runtime.active or runtime.stop_required
+            if runtime.active:
+                runtime.last_stop_started_s = self._clock_sample_s()
+            runtime.active = False  # No late frame may reach a pane during join.
+            runtime.current_activation = None
+            runtime.stop_required = needs_stop
+        if needs_stop:
+            try:
+                runtime.owner.stop_capture_and_wait()
+            except Exception as error:
+                raise PaneResourceError("receiver Stop did not confirm release; owner and lease retained",
+                    failure=pane_failure_from_exception(error, PaneFailureStage.STOP)) from None
+        try:
+            runtime.owner.release_control_claim()
+        except Exception as error:
+            with self._state_lock:
+                runtime.stop_required = False  # Hardware Stop succeeded; keep only the claim/lease obligation.
+            raise PaneResourceError("receiver control claim did not release; owner and lease retained",
+                failure=pane_failure_from_exception(error, PaneFailureStage.CONTROL_RELEASE)) from None
+        with self._state_lock:
+            assert runtime.lease is not None
+            try:
+                runtime.lease.release()
+            except Exception as error:
+                raise PaneResourceError("receiver lease did not release; explicit Stop is required",
+                    failure=pane_failure_from_exception(error, PaneFailureStage.LEASE_RELEASE)) from None
+            runtime.lease = None
+            runtime.admission = None
+            runtime.stop_required = False
+            runtime.terminal = True
 
     def stop_all(self) -> tuple[str, ...]:
         """Try every resource once; failed owners remain retained, not retried."""
@@ -876,5 +1036,5 @@ class PaneResourceSession:
 
 __all__ = [
     "PaneActivation", "PaneCaptureAdmission", "PaneCaptureOwner", "PaneDelivery", "PaneResourceError",
-    "PaneHostTiming", "PaneResourcePreview", "PaneResourceSession",
+    "PaneHostTiming", "PaneResourcePreview", "PaneResourcePlanPreview", "PaneResourceSession",
 ]

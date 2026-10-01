@@ -86,6 +86,16 @@ class PaneDeliveryPreparer:
                  allocation_budget: PresentationAllocationBudget) -> None:
         if not isinstance(layout, PaneLayout) or not isinstance(allocation_budget, PresentationAllocationBudget):
             raise TypeError("pane presentation needs a compiled layout and shared allocation budget")
+        bindings = self._bindings_for_layout(layout, groups)
+        self.layout = layout
+        self.bindings = bindings
+        self.allocation_budget = allocation_budget
+        self._grids = {pane_id: MeasurementGridCache(allocation_budget) for pane_id in bindings}
+        self._layers = {pane_id: AnalyzerLayerCache(allocation_budget, grid_cache=self._grids[pane_id])
+                        for pane_id in bindings}
+
+    @staticmethod
+    def _bindings_for_layout(layout: PaneLayout, groups: tuple[AcquisitionGroup, ...]) -> dict[str, PanePresentationBinding]:
         expected_resources = (set() if layout.schedule is None else
                               {item.physical_stream_resource_id for item in layout.schedule.resources})
         if (len({group.physical_stream_resource_id for group in groups}) != len(groups)
@@ -127,12 +137,35 @@ class PaneDeliveryPreparer:
                 job.profile.measurement_mode, job.profile.unit)
         if set(bindings) != set(jobs):
             raise ValueError("pane presentation has unmatched occupied slots")
-        self.layout = layout
+        return bindings
+
+    def preview_resource_layout(self, layout: PaneLayout, groups: tuple[AcquisitionGroup, ...],
+                                resource_id: str) -> dict[str, PanePresentationBinding]:
+        """Validate the next routing without allocating layers or changing peers."""
+        proposed = self._bindings_for_layout(layout, groups)
+        if (proposed.keys() != self.bindings.keys()
+                or any(proposed[key] != binding for key, binding in self.bindings.items()
+                       if binding.physical_stream_resource_id != resource_id)
+                or any(proposed[key].physical_stream_resource_id != binding.physical_stream_resource_id
+                       or proposed[key].slot_number != binding.slot_number
+                       or proposed[key].receiver_endpoint_id != binding.receiver_endpoint_id
+                       or proposed[key].source_id != binding.source_id
+                       for key, binding in self.bindings.items())):
+            raise ValueError("RF change cannot replace pane identities or peer presentation")
+        # Preserve exact peer binding objects, not just their equal values.
+        return {key: proposed[key] if binding.physical_stream_resource_id == resource_id else binding
+                for key, binding in self.bindings.items()}
+
+    def commit_resource_layout(self, layout: PaneLayout, bindings: dict[str, PanePresentationBinding],
+                               resource_id: str) -> None:
+        """Only the stopped target worker commits its prevalidated routing.
+
+        No GUI frame is relabelled or mutated. The GUI refreshes captions from
+        this receipt BEFORE exposing the explicit next Start.
+        """
+        self.clear_resource(resource_id)
         self.bindings = bindings
-        self.allocation_budget = allocation_budget
-        self._grids = {pane_id: MeasurementGridCache(allocation_budget) for pane_id in bindings}
-        self._layers = {pane_id: AnalyzerLayerCache(allocation_budget, grid_cache=self._grids[pane_id])
-                        for pane_id in bindings}
+        self.layout = layout
 
     def clear(self) -> None:
         """Release worker-owned comparison/layer roots after its worker joins."""
