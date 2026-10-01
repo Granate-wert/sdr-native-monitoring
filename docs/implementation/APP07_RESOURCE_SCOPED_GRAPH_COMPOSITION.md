@@ -1268,3 +1268,32 @@ pinned commands, keyboard-reachable accepted/refused text, preserved staged
 plan and draft focus after Discard. These source/widget tests are NOT a new
 frozen Windows, FHD/QHD/per-monitor-DPI/RF/latency/soak acceptance. Such gates
 must use the new exact build, not relabel the earlier e97 artifact.
+
+#### Exact readable-editor qualification, 2026-10-01
+
+The exact product8378c46 received a clean serial full V2 gate:1139 tests,
+1073 passed/66 skipped/zero failures, no deferred compiled tests or outside
+product modules. Its complete official CPU/HackRF pipeline passed40/40 CTest
+and all658-file frozen package gates; the native artifact remained unchanged.
+The separate tagged diagnostic package was not promoted to static/current.
+
+Computer Use on that SAME new Windows EXE staged two AD936x USB Sweep ranges
+100–220/300–420 MHz with N4096/F8192, weights1:3 and targets4.08/2.06s, plus
+independent HackRF1–6000 MHz/F2048 and Empty4. Pinned commands stayed reachable;
+Plan/reasons and PageDown exposed the last preview scope line. Changing the
+staged locale translated the three mode items and preview while retaining
+sources, ranges, FFT and scheduling values. Discard cleared both visible and
+accessible preview, unlocked the preserved draft, and visible Tab focus moved
+from priority to target. Apply/Start were NOT invoked: this is a bounded editor
+witness, not a new RX/FFT-rate/RF/latency/soak acceptance. Normal Close removed
+the tested window/process and the post-close658-file/native verifier passed.
+
+Transient Qt-popup capture/input errors and one observer stale-index error
+after locale rebuild were retained; fresh observations, keyboard selection
+and main-window screenshot clicks recovered without security changes. Helper
+focus metadata was sometimes stale despite correct visible caret, so full AT
+focus compliance or permanent plugin repair is not claimed. Reported logical
+window sizes1154x760/1282x751 are not FHD/QHD/per-monitor-DPI qualification.
+The short-height footer and remaining SDK cleanup/RF/device/sustained/review/
+release work stay open; APP07 remains PARTIAL. This later documentation tail
+does not relabel the exact8378 source/build/witness as its own commit identity.
