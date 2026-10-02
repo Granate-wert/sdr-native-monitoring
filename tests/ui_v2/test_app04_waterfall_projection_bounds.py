@@ -17,7 +17,10 @@ class WaterfallProjectionBoundsTests(unittest.TestCase):
                 frequencies = 100e6 + np.arange(count, dtype=np.float64) * 125.
                 bucket = ((2 * np.arange(count, dtype=np.int64) + 1) * 2048) // (2 * count)
                 splits = np.flatnonzero(np.diff(bucket)) + 1
-                expected = np.array([np.max(group) if np.all(np.isfinite(group)) else np.nan
+                # Native -inf dB is measured zero power, not unavailable data.
+                # Only NaN/+inf invalidate a cell; keep the independent scalar
+                # centre assignment and maximum rather than copying reduceat.
+                expected = np.array([np.max(group) if not np.any(np.isnan(group) | np.isposinf(group)) else np.nan
                                      for group in np.split(values, splits)], dtype=np.float32)
                 original = values.copy()
                 actual, edges = layers._waterfall_projection(frequencies, values)
