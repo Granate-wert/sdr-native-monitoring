@@ -2866,3 +2866,60 @@ whole-backend independent approval. Paired Sweep/group recording and physical
 four-source Pluto1/HackRF2/tinySA3/RTL4 lower-right acceptance remain OPEN.
 APP07 PARTIAL/APP06E planned/full APP00–14 goal ACTIVE/APP05 timer not restarted.
 Main user changes and old UI are preserved; only this public contract mirrored.
+
+## 2026-10-03: RTL WinUSB owned-handle guard (runtime da3df7b, partial)
+
+Runtime `da3df7bdb1036d5d20783f57a123076f6e1dc5ec` corrects the RTL port's
+post-open identity validation. On Windows, the SDK index-descriptor helper
+attempted a second USB open while the primary WinUSB interface was occupied,
+causing selected-device open to fail before acquisition. Both selected-session
+and exact-serial routes now compare before-open descriptors with descriptors
+read from the SAME owned handle. Count, identity-change, descriptor-read-error,
+tuner/mode and cleanup refusal guards remain intact; no serial-only fallback.
+
+A mock denied the second index open and reproduced the original failure:
+44/45 native tests passed, one official-port test terminated with an exception.
+The correction passed 45/45 native tests and 27 matching packaged RTL
+binding/pure/product/UI tests (1.396 s). The full tagged build
+`APP07-RTLWINUSB-20261003-DA3DF7B` passed its native/frozen/shared-runtime/
+source/offscreen checks. ONE serial after-freeze V2 gate passed 1296 total /
+1230 passed / 66 skipped / no failures or errors (493.337 s), exact provenance,
+tracked-clean before/after, unchanged native and no outside-checkout modules.
+Four historical NaN warnings remain. Post-gate base 658-file and 551-source
+snapshot checks passed. This gate is source V2 with packaged native, not GUI RX.
+
+The human explicitly authorized RTL driver and library installation, overriding
+the earlier no-driver-mutation restriction ONLY for RTL setup. The selected RTL
+interface now uses WinUSB with Windows status OK/problem code 0. Other device
+drivers, firmware/EEPROM, TX/bias, firewall/security and system PATH were not
+changed. Official RTL-SDR Blog V1.4.0 x64 is provisioned locally with hash
+admission, not committed or included in the pristine base package. Its
+redistribution/linking review remains OPEN.
+
+A separate LOCAL diagnostic package preserves the pristine base and records
+its additional runtime in a separate provision record and regenerated exact
+662-file manifest. Matching native plus the real SDK passed bounded physical
+100 MHz / 2.4 MS/s / FFT4096 RX: 286 delivered snapshots, 3519 computed FFT,
+zero host-input drops/worker failures, quality flag 8209 and 2371 presentation
+supersessions retained. Stop joined reader/DSP and closed successfully.
+The real application RTL service separately passed inert Stage, explicit Start,
+95 distinct snapshots with actual center/Fs and numerical provenance, then
+Stop/release with no first fault or quarantine. SDK initial direct-sampling/PLL
+messages remain recorded; these are not claims of clean RF, lossless transport,
+display FPS/LPS, sustained reception, GUI interaction or four-source acceptance.
+
+EXE SHA256 `c6c18d51508f27359ac23e5f7629c0e98f06d9b3865f0bf01c41c276cfd9517d`;
+native SHA256 `5fa47cd1685db15fbfd40c9b03fe531e2775c2a9c871a9d1637bb790109e78e8`.
+The LOCAL add-on does not relabel the pristine base qualification or older
+candidate physical proof. Neither package is current/static/canonical/promoted.
+RTL still supports the bounded RTBW profiles, CPU/Hann/half-hop and automatic
+gain; RTL Sweep, bias control, raw-IQ recording and absolute-power calibration
+are not enabled by driver setup. DSP/Fs/FFT/cadence/queue/budget/quality/time
+contracts and the disabled paired AD selector are unchanged.
+
+NEXT remains dedicated UI-only paired selection/impact implementation and review,
+paired Sweep/group recording, and physical four-source 2x2 with Pluto1, HackRF2,
+tinySA3 and RTL4 lower-right. No new subagents/models were used for RTL setup or
+this native fix; earlier gpt-6-sol/high UI review is separate, not whole-backend
+approval. APP07 PARTIAL/APP06E planned/full APP00–14 goal ACTIVE; APP05 timer
+not restarted. All bounded RX sessions stopped; no installer/test EXE left open.
