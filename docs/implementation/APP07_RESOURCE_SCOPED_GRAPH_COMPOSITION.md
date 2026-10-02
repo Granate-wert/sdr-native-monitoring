@@ -2541,3 +2541,57 @@ RTBW only, explicit unsupported-Sweep refusal and uncalibrated dBFS/bin.
 Runtime absence, identity/capability limits and SDK redistribution/linking review
 must be visible, not silently bypassed or claimed qualified. Implementation and
 four-source hardware acceptance remain OPEN. APP-07 remains PARTIAL.
+
+## 2026-10-02: RTL RTBW foundation qualification (not hardware support)
+
+Exact runtime `e80c6351e1c07d0c05eb1c1bd4599e9d3a039f7d` adds a distinct
+RTL-SDR family, immutable RTBW intent and pure pane profile/compiler branch.
+Initial requested profiles are 2.048/2.4 MS/s, FFT1024/2048/4096, half-FFT hop,
+CPU Hann sample/peak and uncalibrated dBFS/bin. These are bounded application
+choices, not observed tuner maxima, sustained sample rates or calibrated dBm.
+RTL Sweep refuses; the conservative digital crop is not an analog passband.
+
+The native standalone target owns an injected SDK-port abstraction, one RX
+thread, bounded preallocated CU8 slots, in-place CI8 conversion, shared CPU DSP
+and bounded reduced publication. Analytical FFT capacity is separate from the
+small latest-wins presentation queue. Host input loss, unknown malformed-pair
+cardinality and presentation supersession are distinct, not USB/RF loss metrics.
+Exact rate/center readback precedes RX; auto-gain setter acknowledgment does not
+establish actual tuner gain. A failed cancellation/join or ambiguous close
+retains the owner and bars subsequent RTL Starts; no unsafe detach/reclose.
+Synchronous vendor-call duration is not qualified by the mock join deadline.
+
+UI V2 requires coherent protocol/complex-IQ capability facts and an exact
+source+revision owner predicate. The predicate defaults false and remains
+unwired. Runtime absence, stale selection and predicate failure cannot Stage
+or Apply. AD Full Receive to RTL resets only the new row draft to Edge Trimmed,
+without modifying a running owner or peer drafts. No actual RTL catalog entry,
+Python native binding, official vendor port or application RTL owner is enabled.
+The official SDK build option remains OFF (ON explicitly refuses); no SDK or
+driver is bundled/installed. Generic-serial session admission remains OPEN.
+
+New no-I/O mock compiler coverage proves distinct Pluto/HackRF/tinySA/RTL
+resources, no Empty slot and RTL only in pane4. UI mocks likewise use row4.
+This is NOT a four-device acquisition or visible-GUI proof. Pane4 is the future
+APP-07 hardware-test assignment, not a global product restriction on RTL layout.
+Historical three+Empty4 tests/witnesses remain unchanged and separately scoped.
+
+Root combined52tests/123subtests passed14.40s; a new local-name mypy collision
+was corrected without behavior changes, scoped5files passed and repeat34tests
+passed1.13s. Matching full diagnostic build
+`APP07-RTLBASE-20261002-E80C635` passed44/44CTest54.59s (assertion-active RTL
+target2.84s), all658 frozen files/541 source inputs/shared9DLL/ONEUSB/default
+fake+native offscreen/IIO/tinySA checks. Serial AFTER-freeze full V2 gate passed
+1271total/1205PASS/66skip/0fail-error518.231s, exact/clean before-after, no outside
+product imports or deferred compiled tests. Post-gate658/source541 verification
+passed. EXE320319e6/nativea8e87d41/sourceCONTENT006adf54/snapshotFILE42fd0d26
+belong to exacte80 runtime, never a later documentation commit. The existing
+native Python artifact is unchanged; the new RTL target is not exposed there.
+
+This diagnostic is NOT canonical/current/static/promoted. Physical RTL RX,
+four-source live/Sweep, visible GUI/DPI/DWM, throughput/duty/lossless/soak and
+SDK release qualification remain OPEN. Windows bulk interfaces have Problem28;
+no driver/network/firewall/security/bias/firmware mutation or physical RX here.
+Two delegated agents used gpt-6-sol/high: RTL integration and UI V2 design/code;
+root owns integration review/build/provenance. Whole release review remains OPEN.
+APP-07 PARTIAL, APP-06E planned, full APP-00–APP-14 goal ACTIVE.
