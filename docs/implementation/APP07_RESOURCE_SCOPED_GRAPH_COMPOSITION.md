@@ -2340,3 +2340,22 @@ a dedicated UI-only agent; root retains native/backend/RX/build/provenance.
 Its read-only review identified typed endpoint, common-tuning Stage preview/
 refusal, group-impact copy, scoped metrics and Replay channel provenance as
 future integration requirements. No new selector/physical dual proof claimed.
+
+#### Exact paired-burst prerequisite qualification, 85187f4
+
+Product `85187f49b3e20a4085632faae41b8b19d28ce45d`: candidate42/42CTest49.82s;
+matching official full42/42CTest45.49s/all658 frozen files/source533/native/
+shared9DLL/ONEUSB/default offscreen/IIO/tinySA pipeline passed. Diagnostic
+`APP07-PAIRBURST-20261002-85187F4` is NOT canonical/static/current/promoted.
+EXEb874d6b0/native9f9d315d/source-content7134a8c5/snapshot-fileba3094d0 belong
+to85187f4, not later documentation revisions. Qt6.11.1/schema5/factory2/
+DSP1/persistence1/Sweep1/geometry1/2048segments128MiB limits unchanged.
+
+Serial AFTER-freeze exact source UI V2 gate1265total/1199PASS/66skip/no
+fail-error477.036s; clean before/after/exact provenance true/deferred[]/
+outside[]. Four historical NaN warnings retained. Explicit matching-packaged
+native/mock binding3PASS1.248s separately (new paired budget plus prior selected
+engine/gain). Ruff1/mypy1/compile1/diff passed; post-gate all658/native/source
+verifiers passed. No test EXE remained. No physical RX retry/dual RF/paired
+application owner/GUI-input-DPI-DWM/performance/lossless/soak acceptance;
+historical SDK-9 cause remains UNKNOWN. Whole independent release review OPEN.
