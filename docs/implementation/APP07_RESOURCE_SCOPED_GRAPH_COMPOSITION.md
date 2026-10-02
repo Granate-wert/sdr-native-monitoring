@@ -2487,3 +2487,54 @@ recording owner adapter and both producer deliveries, paired retuning Sweep;
 then dedicated UI-agent development/design review and matched EXE witness.
 Root-owned backend increment used NO new subagents/UI edits. Whole independent
 release review, physical Ethernet/sustained/AT-DPI and SDK-9 cause remain OPEN.
+
+## 2026-10-02: paired application Live foundation (partial)
+
+Exact runtime `43c64f53f106b1d68bec547e436c8b715d32dacd` integrates typed
+paired RTBW staging/publication/metrics into the SAME Native Live and application
+owner. Stage is inert, Start explicit, both native producers retain distinct
+source/receiver identities, and common stream counters are counted once.
+Legacy single-frame/configuration/Sweep/recording paths refuse a staged pair
+before their mutation; this is not yet paired recording or paired pane admission.
+Both actual gain readbacks and common RF/epoch coherence are required before
+Start; v1 has a common gain policy, not independently observed per-chain controls.
+Group discontinuity clears both bounded caches. Stop uses the same native
+cancel/join/close lifecycle; unconfirmed release bars another acquisition.
+
+Corrected candidate60 focused tests passed7.698s. Matching diagnostic build
+`APP07-PAIRLIVE-20261002-43C64F5` passed43/43CTest46.68s,658 frozen files and
+537 source inputs; matching packaged native/mock9 tests passed6.609s BEFORE
+the full source gate. Serial exact full V2 R1 passed1265total/1199PASS/66skip/
+0fail-error524.497s, clean before/after and unchanged native, no outside product
+imports/deferred tests. Post-gate frozen658/source537 verification passed.
+Earlier3c build/source gate errors remain separate; the first43 gate was
+interrupted without final JSON and had two subprocess-probe errors, cause
+UNKNOWN. Those two probes passed separately; R1 success is not a causal fix.
+
+EXE838becda/nativea8e87d41/sourceCONTENT6efcf4bd/snapshotFILE95c2a320 belong
+to exact43 runtime, not documentation commits or prior Unicode witnesses.
+The diagnostic build is NOT canonical/current/static/promoted. No physical
+RX/dual-RF, visible GUI, DPI/DWM/speed/lossless/duty/soak acceptance this increment.
+The actual pane compiler/owner remains RX1-only and pair selector disabled.
+Typed per-endpoint graph IDs, common owner adapter/both deliveries, recording
+group transactions and paired retuning Sweep remain OPEN before UI enablement.
+
+## RTL-SDR extension and future APP-07 four-source layout (planned)
+
+The user added RTL-SDR and explicitly delegated RTL integration to a backend
+subagent, with the root orchestrating and a separate UI V2 design agent. Future
+four-source tests assign pane1 Pluto, pane2 HackRF, pane3 tinySA, pane4 RTL-SDR.
+Historical three-source+Empty4 witnesses remain unchanged. Empty behavior still
+has separate coverage. Each pane must retain a distinct actual owner/binding;
+RTL is not a clone, HackRF alias or another receiver of the same stream.
+
+The attached RTL USB composite is present, but both bulk interfaces currently
+have Windows ProblemCode28 and no driver/service. Physical RTL RX is not
+available; no driver/system/security/bias-tee mutation is authorized here.
+The antenna input marking25–1700MHz is a user declaration, not an observed
+tuner limit. The generic serial00000001 does not establish stable identity.
+Initial integration targets optional native RTL acquisition/shared CPU-DSP and
+RTBW only, explicit unsupported-Sweep refusal and uncalibrated dBFS/bin.
+Runtime absence, identity/capability limits and SDK redistribution/linking review
+must be visible, not silently bypassed or claimed qualified. Implementation and
+four-source hardware acceptance remain OPEN. APP-07 remains PARTIAL.
