@@ -2249,3 +2249,47 @@ The product compiler/group adapter and UI selector remain RX1-only. Required
 paired acquisition/publication, combined budgets, group-wide control/recording
 receipts, actual endpoint admission and only then capability-backed RX choice
 remain OPEN. This prerequisite does not complete APP07 or narrow APP00–14.
+
+#### Exact selected-engine prerequisite qualification, 3075bcd
+
+Exact product `3075bcda15662af07a911183fe64d8e510d84d26` passed the serial
+AFTER-freeze UI V2 source gate with its matching packaged native: 1265 total,
+1199 passed, 66 skipped, no failures/errors, 480.173s; tracked clean before/
+after, exact provenance true, deferred/outside modules empty. Four historical
+NaN warnings remain. Two explicit packaged-native/mock binding tests passed
+(0.892s) separately; candidate native full42/42 passed49.14s, matching official
+pipeline full42/42 passed45.20s. All658 frozen files/source533/native and
+package-local shared9DLL/ONEUSB/default offscreen/IIO/tinySA checks passed.
+Qt6.11.1/schema5/factory2/DSP1/persistence1/Sweep1/geometry1 and existing
+2048segments/128MiB limits remain. Linux compilation was not performed.
+
+The new diagnostic package `APP07-RXENGINE-20261002-3075BCD` is not promoted
+to canonical/static/current. EXE hash9553a0b3/nativeb69ec506/source-content
+ccee8665/snapshot-file6b39c65e belong to3075, not later documentation commits.
+The package uses previously hash-admitted runtime DLL inputs, not an old
+native module; no SDK/driver/network/firewall/system changes were made.
+
+One bounded physical RX1/common-engine regression on the available USB AD
+route functionally passed with the same packaged native (1.6586524s total
+host elapsed including setup/cleanup): actual Fs61.44MS/s/filter56MHz/
+center2450MHz/gain20dB/RX1/epoch1; one admitted block produced127 analytical
+FFT frames, zero native FFT-drop counter and two reduced publications carrying
+source/epoch/Fs/quality8193. These are counts, not measured FFT/s or LPS, and
+the elapsed script duration is not a scan-period measurement. The observed
+digital scan pair was RX1 only; this is not physical RX2/dual-RF qualification.
+Stop/disconnect reported streamingfalse/connectedfalse; fresh test-EXE count0,
+post-test all658/native/source verifier passed. Five selected package-local
+active DLL paths/current diskhashes are not in-memory/exhaustive ABI evidence.
+
+The process also emitted SDK diagnostics `ERROR: READ LINE: -9` and
+`ERROR: READ INTEGER: -9`. Their exact operation/phase/cause is UNKNOWN;
+no repeat physical run, error-free/soak or SDK-cleanup-fix claim is made.
+Keep them open for bounded first-cause capture before cleanup. No continuous
+61.44MS/s USB, RF-path/phase/calibration, real GUI/input/DPI/DWM/50ms/duty/Pd/
+lossless/sustained acceptance follows from this short prerequisite.
+
+The dedicated UI design/review agent separately specified future producer
+FFT/s, completed Sweep LPS, one-stream throughput, pane delivery and actual
+paint/DWM metrics. Shared panes must not double acquisition counts; absent
+or stale metrics/legacy channel metadata are not zero or implicit RX1. This
+is a design note, not implemented multi-RX UI or independent release review.
