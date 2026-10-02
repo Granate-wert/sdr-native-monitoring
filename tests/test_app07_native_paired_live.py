@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +83,20 @@ def run_case(path: str, case: str) -> None:
             return
         assert device.serial == "MOCK" and device.capability_snapshot is not None
         if case == "guards":
+            rx = native.PlutoReceiverSelection
+            manual = native.GainMode.MANUAL
+            def readback(gains):
+                return SimpleNamespace(receiver_selection=rx.BOTH, receiver_gains=gains,
+                    gain_mode=manual, config_generation=1, center_frequency_hz=profile.center_hz,
+                    sample_rate_hz=profile.sample_rate_hz, analog_bandwidth_hz=profile.analog_bandwidth_hz,
+                    manual_gain_db=43.)
+            first = SimpleNamespace(receiver=rx.RX1, gain_mode=manual, manual_gain_db=43.)
+            second = SimpleNamespace(receiver=rx.RX2, gain_mode=manual, manual_gain_db=43.)
+            service._validate_paired_applied(readback([first, second]))
+            for gains in ([], [first], [second, first], [first, first],
+                          [first, SimpleNamespace(receiver=rx.RX2, gain_mode=manual, manual_gain_db=42.)],
+                          [first, SimpleNamespace(receiver=rx.RX2, gain_mode=manual, manual_gain_db=float("nan"))]):
+                refuses(lambda: service._validate_paired_applied(readback(gains)))
             for stale in (replace(request, device_id="other"), replace(request, session_id="old"),
                           replace(request, configuration=replace(profile, gain_db=40.))):
                 refuses(lambda: app.stage_paired_rtbw(stale))

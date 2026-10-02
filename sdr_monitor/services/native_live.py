@@ -756,9 +756,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                         )
                     else:
                         candidate_applied = candidate.configure_paired(self._paired_native_config(paired_request, route))
-                        if (candidate_applied.receiver_selection != self._native.PlutoReceiverSelection.BOTH
-                                or len(candidate_applied.receiver_gains) != 2):
-                            raise ValueError("native paired configuration did not admit both actual chains")
+                        self._validate_paired_applied(candidate_applied)
                     candidate.start()
                     if paired_request is not None:
                         candidate_metrics = candidate.paired_metrics().primary
@@ -1090,6 +1088,30 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         ]
         # Aggregate admission includes BOTH DSP/persistence allocations, no I/O.
         return self._native.PairedFixedBandConfig(*configurations, _SPECTRUM_QUEUE_CAPACITY)
+
+    def _validate_paired_applied(self, value: Any) -> None:
+        """Common-profile v1 refuses unrepresented per-chain readback differences.
+
+        Native per-chain gains are mandatory, never replaced with requested
+        values or the primary scalar. Independent per-chain gain UI is OPEN.
+        Called after configure but BEFORE Start/buffer/stream side effects.
+        """
+        rx = self._native.PlutoReceiverSelection
+        if (value.receiver_selection != rx.BOTH or len(value.receiver_gains) != 2
+                or tuple(gain.receiver for gain in value.receiver_gains) != (rx.RX1, rx.RX2)
+                or value.gain_mode != self._native.GainMode.MANUAL
+                or type(value.config_generation) is not int or value.config_generation < 0):
+            raise ValueError("paired configuration lacks mandatory actual chain/gain/generation readback")
+        for number in (value.center_frequency_hz, value.sample_rate_hz, value.analog_bandwidth_hz):
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or number <= 0:
+                raise ValueError("paired configuration lacks finite positive common RF readback")
+        if isinstance(value.manual_gain_db, bool) or not isinstance(value.manual_gain_db, (int, float)):
+            raise ValueError("paired configuration lacks a numerical actual gain readback")
+        for gain in value.receiver_gains:
+            if (gain.gain_mode != value.gain_mode or isinstance(gain.manual_gain_db, bool)
+                    or not isinstance(gain.manual_gain_db, (int, float))
+                    or not math.isfinite(gain.manual_gain_db) or gain.manual_gain_db != value.manual_gain_db):
+                raise ValueError("common paired profile cannot represent different actual per-chain gain readbacks")
 
     def stage_paired_rtbw(self, request: PairedLiveRequest) -> LiveSnapshot:
         with self._recording_transaction_lock, self._lock:
