@@ -57,6 +57,8 @@ from ..domain import (
     as_timestamp_ns,
 )
 from .live_session import InMemoryLiveSessionService
+from ..domain.paired_live import PairedLiveRequest, PairedLivePublication, PairedLivePerformance
+from .native_paired_live import pair_performance, pair_publication
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .ad936x_capability_adapter import (
     AD936X_LIBIIO_ADAPTER_ID, Ad936xCapabilityObservationError, Ad936xLibiioCapabilityAdapter,
@@ -208,6 +210,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._native_uri: str | None = None
         self._engine: Any | None = None
         self._poller: threading.Thread | None = None
+        self._paired_request: PairedLiveRequest | None = None
+        self._paired_publication: PairedLivePublication | None = None
+        self._paired_performance: PairedLivePerformance | None = None
+        self._paired_densities: tuple[LivePersistenceFrame | None, LivePersistenceFrame | None] = (None, None)
+        self._paired_synchronization_epoch: int | None = None
+        self._paired_density_sequence_floor: int | None = None
         self._stream_release_failed = False
         # One composed Analyzer may own a non-IIO receiver. This is a logical
         # exclusion token, not a process-global SDK arbiter or a device handle.
@@ -507,6 +515,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         # Low-rate transaction only; reject BEFORE staging/logging a mutation.
         with self._recording_transaction_lock:
             self._require_no_external_analyzer_owner()
+            self._require_single_receiver_control()
             return self._apply_configuration_unlocked(requested)
 
     def _apply_configuration_unlocked(self, requested: LiveConfiguration) -> LiveSnapshot:
@@ -687,6 +696,15 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 return self._fail(reason, kind=LiveErrorKind.CONFIGURATION_REJECTED)
             routes = _start_routes(device, self._native_uri)
             recording_request = self._native_recording_armed
+            paired_request = self._paired_request
+            if paired_request is not None:
+                try:
+                    paired_request.validate_snapshot(prepared)
+                    if recording_request is not None or self._native_recording_active is not None:
+                        raise ValueError("paired recording requires its own explicit group lifecycle")
+                    self._paired_native_config(paired_request, self._native_uri)
+                except Exception as error:
+                    return self._fail(str(error), kind=LiveErrorKind.CONFIGURATION_REJECTED)
             log_event(
                 _LOGGER,
                 "stream",
@@ -720,26 +738,35 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                         self._native, "PlutoFixedBandEngine", route, self._timeout_ms,
                         expected_serial=normalized_pluto_serial(device.serial) if device else None,
                     )
-                    candidate_applied = candidate.configure(
-                        _native_fixed_band_config(
-                            self._native,
-                            requested,
-                            route,
-                            source_id=(device.device_id if device is not None else "native-live"),
-                            recording_options=(
-                                recording_request.options if recording_request is not None else None
-                            ),
-                            device_buffer_samples=self._device_buffer_samples,
-                            allow_nonstandard_evidence_buffer_geometry=(
-                                self._allow_nonstandard_evidence_buffer_geometry
-                            ),
+                    if paired_request is None:
+                        candidate_applied = candidate.configure(
+                            _native_fixed_band_config(
+                                self._native,
+                                requested,
+                                route,
+                                source_id=(device.device_id if device is not None else "native-live"),
+                                recording_options=(
+                                    recording_request.options if recording_request is not None else None
+                                ),
+                                device_buffer_samples=self._device_buffer_samples,
+                                allow_nonstandard_evidence_buffer_geometry=(
+                                    self._allow_nonstandard_evidence_buffer_geometry
+                                ),
+                            )
                         )
-                    )
+                    else:
+                        candidate_applied = candidate.configure_paired(self._paired_native_config(paired_request, route))
+                        if (candidate_applied.receiver_selection != self._native.PlutoReceiverSelection.BOTH
+                                or len(candidate_applied.receiver_gains) != 2):
+                            raise ValueError("native paired configuration did not admit both actual chains")
                     candidate.start()
-                    try:
-                        candidate_metrics = candidate.metrics()
-                    except Exception:
-                        candidate_metrics = candidate_applied
+                    if paired_request is not None:
+                        candidate_metrics = candidate.paired_metrics().primary
+                    else:
+                        try:
+                            candidate_metrics = candidate.metrics()
+                        except Exception:
+                            candidate_metrics = candidate_applied
                 except Exception as error:
                     if candidate is not None:
                         try:
@@ -889,6 +916,14 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     if type(getattr(applied, "config_generation", None)) is int else None
                 ),
             )
+            self._paired_publication = None
+            self._paired_performance = None
+            self._paired_densities = (None, None)
+            self._paired_synchronization_epoch = None
+            self._paired_density_sequence_floor = None
+            if paired_request is not None:
+                # An explicit next Start uses actual numerical readback.
+                self._paired_request = replace(paired_request, configuration=final_applied.applied)
             self._stop_event.clear()
             self._poller = threading.Thread(
                 target=self._poll_loop,
@@ -1005,6 +1040,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 # Capture the finalized writer before disconnect. If any stage
                 # fails, retain both owners; an explicit Stop can retry safely.
                 self._capture_native_recording_completion(engine)
+                if self._paired_request is not None:
+                    try:
+                        self._paired_performance = pair_performance(engine.paired_metrics(), self._paired_request)
+                    except Exception as error:
+                        self._paired_performance = None
+                        log_event(_LOGGER, "performance", "paired_terminal_metrics_read_failed",
+                                  level=logging.WARNING, error=str(error))
                 engine.disconnect()
             self._observation_owner.close()
         except Exception:
@@ -1017,15 +1059,85 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if self._engine is engine:
                 self._engine = None
             self._stream_release_failed = False
+            self._paired_publication = None
+            self._paired_densities = (None, None)
+            self._paired_synchronization_epoch = None
+            self._paired_density_sequence_floor = None
 
     def poll_frames(self) -> list[LiveSnapshot]:
         with self._lock:
+            if self._paired_request is not None:
+                raise RuntimeError("paired RX requires the explicit paired publication port")
             return [self._snapshot] if self._snapshot.state is _running_state() else []
 
     def poll_live_metrics(self, timeout_s: float) -> LiveSnapshot:
         del timeout_s
         with self._lock:
             return self._snapshot
+
+    def _require_single_receiver_control(self) -> None:
+        if self._paired_request is not None:
+            raise RuntimeError("clear the stopped paired RTBW plan before a single-receiver operation")
+
+    def _paired_native_config(self, request: PairedLiveRequest, uri: str) -> Any:
+        rx = self._native.PlutoReceiverSelection
+        configurations = [
+            _native_fixed_band_config(self._native, request.configuration, uri,
+                source_id=source, receiver_selection=selection,
+                device_buffer_samples=self._device_buffer_samples,
+                allow_nonstandard_evidence_buffer_geometry=self._allow_nonstandard_evidence_buffer_geometry)
+            for source, selection in ((request.primary_source_id, rx.RX1), (request.secondary_source_id, rx.RX2))
+        ]
+        # Aggregate admission includes BOTH DSP/persistence allocations, no I/O.
+        return self._native.PairedFixedBandConfig(*configurations, _SPECTRUM_QUEUE_CAPACITY)
+
+    def stage_paired_rtbw(self, request: PairedLiveRequest) -> LiveSnapshot:
+        with self._recording_transaction_lock, self._lock:
+            self._require_no_external_analyzer_owner()
+            self._require_route_selection_idle()
+            if self._snapshot.state is _error_state() or self._sweep_lease_active:
+                raise RuntimeError("explicit Stop is required before staging paired RTBW")
+            if self._native_recording_armed is not None or self._native_recording_active is not None:
+                raise RuntimeError("stop/unarm single-receiver recording before paired RTBW")
+            if not isinstance(request, PairedLiveRequest):
+                raise TypeError("paired RTBW requires a typed request")
+            request.validate_snapshot(self._snapshot)
+            if self._native_uri is None:
+                raise RuntimeError("paired RTBW requires the exact selected route")
+            self._paired_native_config(request, self._native_uri)
+            self._paired_request = request
+            self._paired_publication = None
+            self._paired_performance = None
+            self._paired_densities = (None, None)
+            self._paired_synchronization_epoch = None
+            self._paired_density_sequence_floor = None
+            return self._snapshot
+
+    def clear_paired_rtbw(self) -> LiveSnapshot:
+        with self._recording_transaction_lock, self._lock:
+            self._require_no_external_analyzer_owner()
+            self._require_route_selection_idle()
+            if self._snapshot.state is _error_state():
+                raise RuntimeError("explicit Stop is required before clearing paired RTBW")
+            self._paired_request = None
+            self._paired_publication = None
+            self._paired_performance = None
+            self._paired_densities = (None, None)
+            self._paired_synchronization_epoch = None
+            self._paired_density_sequence_floor = None
+            return self._snapshot
+
+    def poll_paired_frames(self) -> tuple[PairedLivePublication, ...]:
+        with self._lock:
+            if self._paired_request is None:
+                raise RuntimeError("paired RTBW is not staged")
+            if self._snapshot.state is not _running_state() or self._paired_publication is None:
+                return ()
+            return (self._paired_publication,)
+
+    def paired_performance(self) -> PairedLivePerformance | None:
+        with self._lock:
+            return self._paired_performance
 
     def latest_snapshot(self) -> LiveSnapshot:
         with self._lock:
@@ -1050,6 +1162,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
         with self._recording_transaction_lock:
             with self._sweep_lease_lock:
+                self._require_single_receiver_control()
                 if self._sweep_lease_active:
                     raise RuntimeError("native sweep already owns the selected device")
                 with self._lock:
@@ -1125,6 +1238,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
         with self._recording_transaction_lock:
             self._require_no_external_analyzer_owner()
+            self._require_single_receiver_control()
             if self._native_recording_active is not None:
                 raise RuntimeError("native recording is already active")
             self._native_recording_epoch += 1
@@ -1158,6 +1272,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
         with self._recording_transaction_lock:
             self._require_no_external_analyzer_owner()
+            self._require_single_receiver_control()
             if self._native_recording_active is not None:
                 raise RuntimeError("native recording is already active")
             was_running = self.is_running()
@@ -1418,6 +1533,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         engine = self._engine
         if engine is None:
             return
+        if self._paired_request is not None:
+            self._poll_paired_loop(engine, self._paired_request)
+            return
         last_frame_at = time.monotonic()
         while not self._stop_event.is_set():
             try:
@@ -1470,6 +1588,96 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if now - self._last_metrics_sample_s >= _METRICS_SAMPLE_INTERVAL_S:
                 self._sample_performance(engine, now)
             self._stop_event.wait(_POLL_INTERVAL_S)
+
+    def _poll_paired_loop(self, engine: Any, request: PairedLiveRequest) -> None:
+        """Same poller/Stop token, bounded native pairs, never raw I/Q or two openers."""
+        if engine is None:
+            raise ValueError("paired poller requires its actual engine")
+        last_frame_at = time.monotonic()
+        while not self._stop_event.is_set():
+            try:
+                drained = engine.drain_latest_paired_spectrum_frame()
+                value, coalesced = drained.frame, drained.coalesced_frames
+                if type(coalesced) is not int or coalesced < 0 or (value is None and coalesced):
+                    raise ValueError("invalid native paired coalescing receipt")
+                if value is not None:
+                    with self._lock:
+                        if engine is not self._engine or self._stop_event.is_set():
+                            return
+                        if self._paired_synchronization_epoch != value.synchronization_epoch:
+                            self._paired_densities = (None, None)
+                            self._paired_synchronization_epoch = value.synchronization_epoch
+                            # An old density can still be in the bounded native
+                            # queue. Never attach it across an observed group gap.
+                            self._paired_density_sequence_floor = int(value.primary.frame_sequence)
+                        context = self._snapshot
+                    densities = list(self._paired_densities)
+                    for index, selection in enumerate((self._native.PlutoReceiverSelection.RX1,
+                                                       self._native.PlutoReceiverSelection.RX2)):
+                        values = cast(Any, engine).poll_receiver_persistence_snapshots(selection, 2)
+                        if values:
+                            density = self._convert_persistence(values[-1], context)
+                            expected_source = (request.primary_source_id, request.secondary_source_id)[index]
+                            if (not density.producer_identity_available or density.source_id != expected_source
+                                    or density.config_generation != context.active_config_generation):
+                                raise ValueError("paired density has a foreign producer/generation")
+                            floor = self._paired_density_sequence_floor
+                            if floor is not None and int(density.source_frame_sequence) >= floor:
+                                densities[index] = density
+                    density_pair = (densities[0], densities[1])
+                    publication = pair_publication(value, context, request, self._convert_spectrum,
+                                                   density_pair, self._paired_quality)
+                    with self._lock:
+                        if engine is not self._engine or self._stop_event.is_set():
+                            return
+                        spectrum = publication.primary.spectrum
+                        if spectrum is None:
+                            raise ValueError("paired publication requires its actual spectrum")
+                        sequence = int(spectrum.sequence)
+                        if sequence <= self._last_native_frame_sequence:
+                            raise ValueError("paired native sequence did not progress")
+                        self._last_native_frame_sequence = sequence
+                        self._paired_densities = density_pair
+                        self._paired_publication = publication
+                        self._sequence += 1
+                        # Control state is NOT an RX1 alias and has no Spectrum.
+                        self._snapshot = replace(self._snapshot, sequence=as_frame_sequence(self._sequence))
+                    self._record_bridge_batch(coalesced + 1, True)
+                    last_frame_at = time.monotonic()
+                elif time.monotonic() - last_frame_at > _STALL_TIMEOUT_S:
+                    raise RuntimeError("paired Pluto RX stream stalled (no frames)")
+                now = time.monotonic()
+                if now - self._last_native_event_sample_s >= _NATIVE_EVENT_SAMPLE_INTERVAL_S:
+                    self._drain_native_events(engine, now)
+                if now - self._last_metrics_sample_s >= _METRICS_SAMPLE_INTERVAL_S:
+                    metrics = engine.paired_metrics()
+                    if metrics.primary.has_error or metrics.secondary.has_error:
+                        raise RuntimeError("paired Pluto RX engine entered error state")
+                    performance = pair_performance(metrics, request)
+                    with self._lock:
+                        if engine is not self._engine or self._stop_event.is_set():
+                            return
+                        self._paired_performance = performance
+                    self._last_metrics_sample_s = now
+            except Exception as error:
+                if not self._stop_event.is_set():
+                    self._publish_error(f"Pluto paired RX polling/conversion failed: {error}")
+                return
+            self._stop_event.wait(_POLL_INTERVAL_S)
+
+    @staticmethod
+    def _paired_quality(spectrum: LiveSpectrumFrame, context: LiveQuality) -> LiveQuality:
+        provenance = spectrum.numerical_provenance
+        if provenance is None:
+            raise ValueError("paired publication requires numerical provenance")
+        return replace(context,
+            calibration=_frame_calibration_quality(provenance.calibration_status),
+            backend=BackendKind.CPU if spectrum.backend_fallback else context.backend,
+            fallback_reason=(context.fallback_reason or "backend fallback") if spectrum.backend_fallback
+                            else context.fallback_reason,
+            backend_discontinuity=spectrum.backend_discontinuity,
+            dropped_blocks=spectrum.dropped_iq_blocks_before,
+            loss_reasons=spectrum.loss_reasons)
 
     def _drain_native_events(self, engine: Any, now_s: float) -> None:
         """Mirror bounded native diagnostics into the structured activity log."""
@@ -1722,6 +1930,77 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if published:
                 self._bridge_frames_published += 1
 
+    def _convert_spectrum(self, frame: Any, publication_context: LiveSnapshot,
+                          source_id: str | None = None, *, receiver_id: str | None = None) -> LiveSpectrumFrame:
+        fallback_source = source_id or publication_context.device.device_id if publication_context.device is not None else "native-live"
+        source_id, generation, timestamp_quality, loss_reasons = _native_frame_metadata(
+            self._native, frame, fallback_source
+        )
+        backend_fallback = _native_quality_mask(self._native, frame, "BACKEND_FALLBACK")
+        backend_discontinuity = _native_quality_mask(
+            self._native, frame, "BACKEND_DISCONTINUITY"
+        )
+        provenance = native_spectrum_provenance(frame)
+        unit = _native_spectrum_unit(frame.unit)
+        validate_absolute_unit(unit, provenance)
+        return LiveSpectrumFrame(
+            sequence=as_frame_sequence(frame.frame_sequence),
+            timestamp_ns=as_timestamp_ns(frame.timestamp_ns),
+            center_frequency_hz=float(frame.center_frequency_hz),
+            sample_rate_hz=float(frame.sample_rate_hz),
+            fft_size=int(frame.fft_size),
+            hop_size=int(frame.hop_size),
+            frequencies_hz=frame.frequencies_hz,
+            values=frame.values,
+            unit=unit,
+            dropped_samples_before=int(frame.dropped_samples_before),
+            dropped_iq_blocks_before=int(frame.dropped_iq_blocks_before),
+            dropped_fft_frames_before=int(frame.dropped_fft_frames_before),
+            source_id=source_id,
+            config_generation=generation,
+            timestamp_quality=timestamp_quality,
+            loss_reasons=loss_reasons,
+            backend_fallback=backend_fallback,
+            backend_discontinuity=backend_discontinuity,
+            native_quality_flags=(int(frame.quality_flags)
+                                  if getattr(frame, "quality_flags", None) is not None else None),
+            acquisition_epoch=publication_context.acquisition_epoch,
+            clock_domain=publication_context.clock_domain,
+            numerical_provenance=provenance,
+            receiver_id=receiver_id,
+        )
+
+    def _convert_persistence(self, value: Any, publication_context: LiveSnapshot) -> LivePersistenceFrame:
+        source = getattr(value, "source_id", None)
+        native_generation = getattr(value, "config_generation", None)
+        native_unit = getattr(value, "unit", None)
+        identity_available = source is not None and native_generation is not None
+        source_id = as_source_id(source if source is not None else "unknown")
+        generation = as_configuration_generation(native_generation if native_generation is not None else 0)
+        timestamp_quality = TimestampQuality.UNKNOWN
+        return LivePersistenceFrame(
+            update_sequence=as_frame_sequence(value.update_sequence),
+            timestamp_ns=as_timestamp_ns(value.timestamp_ns),
+            source_frame_sequence=as_frame_sequence(value.source_frame_sequence),
+            power_min_db=float(value.power_min_db),
+            power_max_db=float(value.power_max_db),
+            power_bins=int(value.power_bins),
+            frequency_bins=int(value.frequency_bins),
+            processed_frames=int(value.processed_frames),
+            exponential_decay=bool(value.exponential_decay),
+            frequencies_hz=value.frequencies_hz,
+            density=value.density,
+            probability_scale=float(getattr(value, "probability_scale", 1.0)),
+            count_scale=float(getattr(value, "count_scale", 1.0)),
+            unit=(_native_spectrum_unit(native_unit) if native_unit is not None else None),
+            producer_identity_available=identity_available,
+            source_id=source_id,
+            config_generation=generation,
+            timestamp_quality=timestamp_quality,
+            acquisition_epoch=publication_context.acquisition_epoch,
+            clock_domain=publication_context.clock_domain,
+        )
+
     def _publish_frame(self, frame: Any, *, expected_engine: Any = None) -> bool:
         with self._lock:
             if expected_engine is not None and (expected_engine is not self._engine or self._stop_event.is_set()):
@@ -1732,42 +2011,11 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 return False
             self._last_native_frame_sequence = native_sequence
         try:
-            fallback_source = self._snapshot.device.device_id if self._snapshot.device is not None else "native-live"
-            source_id, generation, timestamp_quality, loss_reasons = _native_frame_metadata(
-                self._native, frame, fallback_source
-            )
-            backend_fallback = _native_quality_mask(self._native, frame, "BACKEND_FALLBACK")
-            backend_discontinuity = _native_quality_mask(
-                self._native, frame, "BACKEND_DISCONTINUITY"
-            )
-            provenance = native_spectrum_provenance(frame)
-            unit = _native_spectrum_unit(frame.unit)
-            validate_absolute_unit(unit, provenance)
-            spectrum = LiveSpectrumFrame(
-                sequence=as_frame_sequence(frame.frame_sequence),
-                timestamp_ns=as_timestamp_ns(frame.timestamp_ns),
-                center_frequency_hz=float(frame.center_frequency_hz),
-                sample_rate_hz=float(frame.sample_rate_hz),
-                fft_size=int(frame.fft_size),
-                hop_size=int(frame.hop_size),
-                frequencies_hz=frame.frequencies_hz,
-                values=frame.values,
-                unit=unit,
-                dropped_samples_before=int(frame.dropped_samples_before),
-                dropped_iq_blocks_before=int(frame.dropped_iq_blocks_before),
-                dropped_fft_frames_before=int(frame.dropped_fft_frames_before),
-                source_id=source_id,
-                config_generation=generation,
-                timestamp_quality=timestamp_quality,
-                loss_reasons=loss_reasons,
-                backend_fallback=backend_fallback,
-                backend_discontinuity=backend_discontinuity,
-                native_quality_flags=(int(frame.quality_flags)
-                                      if getattr(frame, "quality_flags", None) is not None else None),
-                acquisition_epoch=publication_context.acquisition_epoch,
-                clock_domain=publication_context.clock_domain,
-                numerical_provenance=provenance,
-            )
+            spectrum = self._convert_spectrum(frame, publication_context)
+            provenance = spectrum.numerical_provenance
+            backend_fallback = spectrum.backend_fallback
+            backend_discontinuity = spectrum.backend_discontinuity
+            loss_reasons = spectrum.loss_reasons
         except Exception as error:
             self._publish_error(f"Pluto RX frame conversion failed: {error}")
             return False
@@ -1800,7 +2048,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 device=self._snapshot.device,
                 applied=self._snapshot.applied,
                 quality=LiveQuality(
-                    calibration=_frame_calibration_quality(provenance.calibration_status),
+                    calibration=_frame_calibration_quality(provenance.calibration_status if provenance is not None else None),
                     backend=backend,
                     fallback_reason=fallback_reason,
                     backend_discontinuity=backend_discontinuity,
@@ -1825,35 +2073,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 return
             publication_context = self._snapshot
         try:
-            source = getattr(value, "source_id", None)
-            native_generation = getattr(value, "config_generation", None)
-            native_unit = getattr(value, "unit", None)
-            identity_available = source is not None and native_generation is not None
-            source_id = as_source_id(source if source is not None else "unknown")
-            generation = as_configuration_generation(native_generation if native_generation is not None else 0)
-            timestamp_quality = TimestampQuality.UNKNOWN
-            persistence = LivePersistenceFrame(
-                update_sequence=as_frame_sequence(value.update_sequence),
-                timestamp_ns=as_timestamp_ns(value.timestamp_ns),
-                source_frame_sequence=as_frame_sequence(value.source_frame_sequence),
-                power_min_db=float(value.power_min_db),
-                power_max_db=float(value.power_max_db),
-                power_bins=int(value.power_bins),
-                frequency_bins=int(value.frequency_bins),
-                processed_frames=int(value.processed_frames),
-                exponential_decay=bool(value.exponential_decay),
-                frequencies_hz=value.frequencies_hz,
-                density=value.density,
-                probability_scale=float(getattr(value, "probability_scale", 1.0)),
-                count_scale=float(getattr(value, "count_scale", 1.0)),
-                unit=(_native_spectrum_unit(native_unit) if native_unit is not None else None),
-                producer_identity_available=identity_available,
-                source_id=source_id,
-                config_generation=generation,
-                timestamp_quality=timestamp_quality,
-                acquisition_epoch=publication_context.acquisition_epoch,
-                clock_domain=publication_context.clock_domain,
-            )
+            persistence = self._convert_persistence(value, publication_context)
         except Exception as error:
             self._publish_error(f"Pluto persistence conversion failed: {error}")
             return
@@ -2012,6 +2232,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
     def _clear_selected_route(self) -> None:
         self._observation_owner.close()
         self._native_uri = None
+        self._paired_request = None
+        self._paired_publication = None
+        self._paired_performance = None
+        self._paired_densities = (None, None)
+        self._paired_synchronization_epoch = None
+        self._paired_density_sequence_floor = None
 
 
 def _shutdown_engine_instance(engine: Any) -> None:
@@ -2044,6 +2270,7 @@ def _native_fixed_band_config(
     *,
     recording_options: RecordingOptions | None = None,
     source_id: str = "live",
+    receiver_selection: Any = None,
     discard_blocks_after_start: int | None = None,
     device_buffer_samples: int = _DEFAULT_DEVICE_BUFFER_SAMPLES,
     snapshot_rate_hz: float | None = None,
@@ -2128,8 +2355,9 @@ def _native_fixed_band_config(
         False,
         persistence,
     )
+    receiver_arguments = {} if receiver_selection is None else {"receiver_selection": receiver_selection}
     if recording_options is None:
-        return native_module.FixedBandConfig(*fixed_arguments)
+        return native_module.FixedBandConfig(*fixed_arguments, **receiver_arguments)
     recording_config = native_module.RecordingConfig(
         True,
         recording_options.output_path,
@@ -2140,7 +2368,7 @@ def _native_fixed_band_config(
         False,
         _SCHEMA_VERSION,
     )
-    return native_module.FixedBandConfig(*fixed_arguments, recording_config)
+    return native_module.FixedBandConfig(*fixed_arguments, recording_config, **receiver_arguments)
 
 
 def build_native_fixed_band_config(

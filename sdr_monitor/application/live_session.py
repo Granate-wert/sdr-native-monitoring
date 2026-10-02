@@ -7,7 +7,7 @@ while presenters depend on the use-case interface rather than service modules.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import wraps
 from threading import RLock, local
 from typing import Concatenate, Iterator, ParamSpec, Protocol, TypeVar
@@ -25,6 +25,7 @@ from .analyzer_rf_change import (
     compile_analyzer_rf_shift, source_inventory,
 )
 from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
+from ..domain.paired_live import PairedLiveRequest, PairedLivePublication, PairedLivePerformance
 from ..domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 
 from ..domain import DeviceDescriptor, LiveConfiguration, LiveSnapshot, ConfigurationGeneration, FrameSequence
@@ -545,6 +546,51 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
                 return self._failed_lifecycle_snapshot(error)
             return self.current_snapshot()
         return self._port.start()
+
+    @_pane_exclusive_command
+    def stage_paired_rtbw(self, request: PairedLiveRequest) -> LiveSnapshot:
+        """Arm the SAME selected Live owner; explicit Start remains separate.
+
+        This internal typed boundary does not enable the UI/pane selector.
+        A pair cannot be consumed through the single-producer Analyzer port.
+        """
+        self._configuration_admission(idle_only=True)
+        self._require_native_family()
+        stage = getattr(self._port, "stage_paired_rtbw", None)
+        if not callable(stage):
+            raise RuntimeError("paired RTBW is unavailable in this composition")
+        reservation = self._analyzer.idle_control_operation() if self._analyzer is not None else nullcontext()
+        with reservation:
+            request.validate_snapshot(self._port.latest_snapshot())
+            return self._lifecycle_snapshot(stage(request))
+
+    @_pane_exclusive_command
+    def clear_paired_rtbw(self) -> LiveSnapshot:
+        self._configuration_admission(idle_only=True)
+        self._require_native_family()
+        clear = getattr(self._port, "clear_paired_rtbw", None)
+        if not callable(clear):
+            raise RuntimeError("paired RTBW is unavailable in this composition")
+        reservation = self._analyzer.idle_control_operation() if self._analyzer is not None else nullcontext()
+        with reservation:
+            return self._lifecycle_snapshot(clear())
+
+    def poll_paired_publications(self) -> tuple[PairedLivePublication, ...]:
+        self._require_native_family()
+        state = self.analyzer_state
+        if state is not None and (state.mode is not AnalyzerMode.RTBW or state.phase is not AnalyzerPhase.RUNNING):
+            return ()
+        poll = getattr(self._port, "poll_paired_frames", None)
+        if not callable(poll):
+            raise RuntimeError("paired RTBW is unavailable in this composition")
+        return poll()
+
+    def paired_performance(self) -> PairedLivePerformance | None:
+        self._require_native_family()
+        getter = getattr(self._port, "paired_performance", None)
+        if not callable(getter):
+            raise RuntimeError("paired RTBW is unavailable in this composition")
+        return getter()
 
     @_pane_exclusive_command
     def stage_hackrf_configuration(self, patch: HackrfConfigurationPatch) -> LiveSnapshot:

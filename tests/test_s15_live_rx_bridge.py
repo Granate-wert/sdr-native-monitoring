@@ -342,7 +342,9 @@ class NativeLiveRxBridgeTests(unittest.TestCase):
             spectrum = snapshot.spectrum
             self.assertIsNotNone(spectrum)
             self.assertEqual(spectrum.sequence, 7)
-            self.assertEqual(spectrum.unit, "DBFS_BIN")
+            # The domain carries the declared canonical unit, not a pybind
+            # enum token. Baseline conversion already emits dBFS/bin.
+            self.assertEqual(spectrum.unit, "dBFS/bin")
             self.assertEqual(spectrum.values.dtype, np.float32)
             self.assertFalse(spectrum.values.flags.writeable)
             self.assertEqual(spectrum.frequencies_hz.dtype, np.float64)
