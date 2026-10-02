@@ -2821,3 +2821,49 @@ APP05 expired timer not restarted. Physical dual-RF/four-source, genuine Etherne
 SDK first-cause, Windows/AT/DPI/DWM, throughput/duty/lossless/sustained/soak and
 whole independent release review remain OPEN. UI V2 only; old UI, user changes,
 current/static EXE and system/firewall/driver/firmware/security are untouched.
+
+
+## 2026-10-03: paired user Stage/Apply/Start (runtime 050914e, partial)
+
+Runtime `050914e8369414a62cce74419b1df656f52b3947` adds typed RX1/RX2
+user-plan intent and fresh selected topology/session/identity receipts. Only
+compatible common AD936x RTBW pairs compile: one graph/resource/group/capture
+job and one native owner/context/buffer. Stage is selection-only; Apply checks
+all paired receipts before configuration or leases; Start retains actual applied
+configuration/readback guards. Lone RX2, paired Sweep, incompatible common
+profiles/window, stale selection and missing stable identity explicitly refuse.
+Per-pane crops and scheduling requests remain distinct; no implicit fallback.
+
+A compiled MOCK regression reproduced old-plan rearm adopting a replacement
+same-device session. Composition now captures the original Stage source-choice
+object/revision/snapshot; the owner checks it before RF mutation on every Start.
+RF preview remains inert; explicit Stop/Apply stays stopped until separate Start.
+Both reduced producers then carry fresh native epochs through the same graph.
+
+Qualification: candidate 90 tests passed (25.999 s); matching full tagged build
+`APP07-PAIRSTAGE-20261003-050914E` passed 45/45 native CTest (53.83 s),
+658 frozen files/551-source snapshot/shared runtimes/one-libusb/default offscreen/
+IIO/tinySA checks. Matching packaged MOCK Stage/owner tests passed 14/14
+(15.091 s). ONE serial after-freeze exact V2 gate passed 1296 total / 1230 passed /
+66 skipped / no failures or errors (519.533 s); tracked-clean before/after,
+exact provenance, unchanged native, no deferred/outside-checkout modules.
+Four historical NaN warnings retained. Post-gate source/package checks passed.
+This is source V2 with packaged native, not physical dual-RF or visible paired GUI.
+Scoped Ruff/compile/diff and mypy seven changed files passed; broad mypy retains
+nine errors in two unchanged imported files, not a whole-project mypy pass.
+
+EXE SHA256 `af3b0059ed7442edb6989e57fff522db9c243e8f1c167e203623804abc9b7213`.
+Diagnostic only, not current/static/canonical/promoted. Later documentation
+commits never relabel this runtime build. Native DSP/Fs/FFT/cadence/queue/budget/
+quality/time/recording policies unchanged. No physical RX in this increment.
+
+Pair selector remains DISABLED. NEXT dedicated UI-only implementation/review:
+typed pane-to-RX/common tuning preview, both affected histories, Start selected/
+all group confirmation before enqueue (default Cancel), common RF-shift impact
+and fixed localized refusal reasons. UI read-only integration review used reused
+gpt-6-sol/high; root owns backend/integration/tests/build/provenance/Git. Not
+whole-backend independent approval. Paired Sweep/group recording and physical
+four-source Pluto1/HackRF2/tinySA3/RTL4 lower-right acceptance remain OPEN.
+APP07 PARTIAL/APP06E planned/full APP00–14 goal ACTIVE/APP05 timer not restarted.
+Main user changes and old UI are preserved; only this public contract mirrored.
+
