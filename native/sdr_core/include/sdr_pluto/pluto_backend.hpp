@@ -104,6 +104,15 @@ struct SampleLayout {
     sdr_core::SampleFormat output_format{sdr_core::SampleFormat::ComplexInt12InInt16Le};
 };
 
+// Actual per-chain gain readback, not a claim about an RF connector.
+// Common LO/Fs/filter remain on AppliedConfig. Legacy scalar gain fields
+// refer to the first selected chain (RX2 for an RX2-only request).
+struct ReceiverGainReadback {
+    ReceiverSelection receiver{ReceiverSelection::Rx1};
+    sdr_core::GainMode gain_mode{sdr_core::GainMode::Manual};
+    double manual_gain_db{};
+};
+
 struct AppliedConfig {
     sdr_core::DeviceConfig requested;
     double center_frequency_hz{};
@@ -113,6 +122,8 @@ struct AppliedConfig {
     double manual_gain_db{};
     std::uint64_t config_generation{};
     SampleLayout sample_layout;
+    ReceiverSelection receiver_selection{ReceiverSelection::Rx1};
+    std::vector<ReceiverGainReadback> receiver_gains;
 };
 
 struct StreamMetrics {

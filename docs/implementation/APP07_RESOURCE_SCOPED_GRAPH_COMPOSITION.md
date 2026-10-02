@@ -2127,3 +2127,41 @@ release review remain open. Dedicated UI agent handles design/development/
 review; parent handles backend/RX/integration/provenance. Full APP00–14 goal
 remains ACTIVE, APP06E Cut DC/spur planned, APP05 expired timer not restarted.
 Private identities/screenshots/runners/reports stay outside public whitelist.
+
+## 2026-10-02: multi-RX prerequisite — actual selected PHY gain control
+
+Native device configuration previously selected RX2 digital samples but still
+wrote/read gain on PHY voltage0 (RX1). Windows and Linux implementations now
+resolve optional **PHY** voltage1 exactly, separately from the stream's RX1-Q
+voltage1. Missing, output, aliased, wrong-ID or incomplete gain controls refuse
+RX2/BOTH before interrupting an existing compatible RX1 stream or writing RF.
+Retained common LO/Fs/filter and selected gain state are read before Stop.
+Successful RX2 writes/reads only its selected gain control; BOTH applies the
+single requested gain policy to both selected chains. Distinct simultaneous
+gain intents are NOT yet implemented. Common LO/Fs/filter remain one device
+transaction, not independently tuned RX channels.
+
+AppliedConfig adds readonly Python `receiver_selection` and `receiver_gains`
+with per-chain actual mode/gain. Legacy scalar gain describes the first selected
+chain (RX2 for RX2-only), and the integer pool-size configure overload remains
+unchanged. Failed configuration restores/verifies all selected modes and prior
+manual gains plus common controls; unverifiable rollback invalidates admission
+and bars Start until a successful explicit reconfiguration. AGC instantaneous
+gain is readback, not a guarantee it remains fixed or can be restored as manual.
+No hidden restart or digital-to-RF independence inference is introduced.
+
+Candidate Windows CPU+official-HackRF native build and full CTest 41/41 passed
+(33.07s), including new deterministic per-chain isolation/readback/rollback,
+mode-ACK mismatch, failed-rollback Start refusal, and missing/aliased PHY
+refusal without stopping RX1. Explicit freshly staged Python binding test
+1/1 passed (0.153s); Ruff/compile/diff checks passed. These are mock/source
+prerequisite results, NOT physical dual-RF qualification or completed product
+RX2 ownership. Old b257 EXE/native/Windows results stay tied to b257; its frozen
+native is not this changed native. Current-source exact gates and a matching
+new frozen package must be recorded separately.
+
+APP07 remains PARTIAL: one-buffer paired acquisition/DSP publication through
+the product owner, explicit endpoint/group compiler/composition, combined
+resource budgets, group-wide recording/control/receipt transactions and only
+then capability-backed UI RX choice are still required. A dedicated UI agent
+prepared a future view/layout/refusal plan, not an enabled RX2 selector.

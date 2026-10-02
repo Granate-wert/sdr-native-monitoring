@@ -412,15 +412,33 @@ public:
         std::scoped_lock lock(mutex_);
         require_connected_locked();
         validate_selection_locked(selection);
+        // Digital scan pairs alone do not establish an RX2 PHY control path.
+        // Refuse before stopping a compatible stream or mutating common RF.
+        if (selection != ReceiverSelection::Rx1 && phy_rx2_ == nullptr) {
+            throw sdr_core::ConfigurationError("selected RX2 has no exact PHY voltage1 gain control");
+        }
         // A rejected RX2/BOTH request is a capability mismatch, not a reason
         // to interrupt an already-running compatible RX1 stream.
-        stop_stream_locked();
         const auto old_rate = read_ll(*api_, phy_rx_, "sampling_frequency");
         const auto old_bandwidth = read_ll(*api_, phy_rx_, "rf_bandwidth");
         const auto old_frequency = read_ll(*api_, lo_, "frequency");
-        const auto old_mode = read_text_required(*api_, phy_rx_, "gain_control_mode");
-        const auto old_mode_value = mode_from_text(old_mode);
-        const auto old_gain = read_double(*api_, phy_rx_, "hardwaregain");
+        struct PreviousGain {
+            iio_channel* channel;
+            ReceiverSelection receiver;
+            std::string mode;
+            sdr_core::GainMode mode_value;
+            double gain;
+        };
+        std::vector<PreviousGain> previous_gains;
+        const auto retain_gain = [&](iio_channel* channel, const ReceiverSelection receiver) {
+            auto mode = read_text_required(*api_, channel, "gain_control_mode");
+            const auto mode_value = mode_from_text(mode);
+            const auto gain = read_double(*api_, channel, "hardwaregain");
+            previous_gains.push_back({channel, receiver, std::move(mode), mode_value, gain});
+        };
+        if (selection != ReceiverSelection::Rx2) retain_gain(phy_rx_, ReceiverSelection::Rx1);
+        if (selection != ReceiverSelection::Rx1) retain_gain(phy_rx2_, ReceiverSelection::Rx2);
+        stop_stream_locked();
         try {
             const auto target_rate = static_cast<long long>(std::llround(config.sample_rate_hz));
             const auto target_bandwidth = static_cast<long long>(std::llround(config.analog_bandwidth_hz));
@@ -428,17 +446,29 @@ public:
                 *api_, phy_rx_, old_rate, old_bandwidth, target_rate, target_bandwidth
             );
             write_ll(*api_, lo_, "frequency", static_cast<long long>(std::llround(config.center_frequency_hz)));
-            write_text(*api_, phy_rx_, "gain_control_mode", mode_wire(config.gain_mode));
-            if (config.gain_mode == sdr_core::GainMode::Manual) write_double(*api_, phy_rx_, "hardwaregain", config.manual_gain_db);
+            std::vector<ReceiverGainReadback> gains;
+            for (const auto& previous : previous_gains) {
+                write_text(*api_, previous.channel, "gain_control_mode", mode_wire(config.gain_mode));
+                if (config.gain_mode == sdr_core::GainMode::Manual) {
+                    write_double(*api_, previous.channel, "hardwaregain", config.manual_gain_db);
+                }
+                const auto mode = mode_from_text(read_text_required(*api_, previous.channel, "gain_control_mode"));
+                if (mode != config.gain_mode) {
+                    throw sdr_core::ConfigurationError("selected receiver gain mode readback differs from requested mode");
+                }
+                gains.push_back({previous.receiver, mode, read_double(*api_, previous.channel, "hardwaregain")});
+            }
             AppliedConfig candidate{
                 .requested = config,
                 .center_frequency_hz = static_cast<double>(read_ll(*api_, lo_, "frequency")),
                 .sample_rate_hz = static_cast<double>(read_ll(*api_, phy_rx_, "sampling_frequency")),
                 .analog_bandwidth_hz = static_cast<double>(read_ll(*api_, phy_rx_, "rf_bandwidth")),
-                .gain_mode = mode_from_text(read_text_required(*api_, phy_rx_, "gain_control_mode")),
-                .manual_gain_db = read_double(*api_, phy_rx_, "hardwaregain"),
+                .gain_mode = gains.front().gain_mode,
+                .manual_gain_db = gains.front().manual_gain_db,
                 .config_generation = generation_ + 1U,
                 .sample_layout = sample_layout_locked(selection),
+                .receiver_selection = selection,
+                .receiver_gains = std::move(gains),
             };
             if (candidate.gain_mode != config.gain_mode) throw sdr_core::ConfigurationError("gain mode readback differs from requested mode");
             auto candidate_pool = std::make_unique<sdr_core::BufferPool>(
@@ -470,17 +500,21 @@ public:
                 );
             });
             rollback([&] { write_ll(*api_, lo_, "frequency", old_frequency); });
-            rollback([&] { write_text(*api_, phy_rx_, "gain_control_mode", old_mode); });
-            if (old_mode_value == sdr_core::GainMode::Manual) {
-                rollback([&] { write_double(*api_, phy_rx_, "hardwaregain", old_gain); });
+            for (const auto& previous : previous_gains) {
+                rollback([&] { write_text(*api_, previous.channel, "gain_control_mode", previous.mode); });
+                if (previous.mode_value == sdr_core::GainMode::Manual) {
+                    rollback([&] { write_double(*api_, previous.channel, "hardwaregain", previous.gain); });
+                }
             }
             rollback([&] {
                 rollback_ok = rollback_ok && read_ll(*api_, phy_rx_, "sampling_frequency") == old_rate;
                 rollback_ok = rollback_ok && read_ll(*api_, phy_rx_, "rf_bandwidth") == old_bandwidth;
                 rollback_ok = rollback_ok && read_ll(*api_, lo_, "frequency") == old_frequency;
-                rollback_ok = rollback_ok && mode_from_text(read_text_required(*api_, phy_rx_, "gain_control_mode")) == old_mode_value;
-                if (old_mode_value == sdr_core::GainMode::Manual) {
-                    rollback_ok = rollback_ok && std::abs(read_double(*api_, phy_rx_, "hardwaregain") - old_gain) < 1.0e-9;
+                for (const auto& previous : previous_gains) {
+                    rollback_ok = rollback_ok && mode_from_text(read_text_required(*api_, previous.channel, "gain_control_mode")) == previous.mode_value;
+                    if (previous.mode_value == sdr_core::GainMode::Manual) {
+                        rollback_ok = rollback_ok && std::abs(read_double(*api_, previous.channel, "hardwaregain") - previous.gain) < 1.0e-9;
+                    }
                 }
             });
             if (!rollback_ok) {
@@ -787,6 +821,7 @@ public:
         connected_.store(false, std::memory_order_release);
         phy_ = nullptr;
         phy_rx_ = nullptr;
+        phy_rx2_ = nullptr;
         lo_ = nullptr;
         rx_stream_ = nullptr;
         rx_i_ = nullptr;
@@ -811,6 +846,16 @@ private:
         rx_stream_ = find_rx_stream_device(*api_, context_);
         if (phy_ == nullptr || rx_stream_ == nullptr) throw std::runtime_error("Pluto AD936x PHY/RX devices not found");
         phy_rx_ = find_channel(*api_, phy_, {"voltage0"}, false, {"voltage", "rx"}, "sampling_frequency");
+        // Never substitute voltage0 or the stream's voltage1 (RX1 Q) for
+        // the optional second PHY receiver control channel.
+        phy_rx2_ = api_->find_channel(phy_, "voltage1", false);
+        if (phy_rx2_ != nullptr &&
+            (phy_rx2_ == phy_rx_ || api_->channel_output(phy_rx2_) ||
+             safe(api_->channel_id(phy_rx2_)) != "voltage1" ||
+             api_->find_attr(phy_rx2_, "gain_control_mode") == nullptr ||
+             api_->find_attr(phy_rx2_, "hardwaregain") == nullptr)) {
+            phy_rx2_ = nullptr;
+        }
         lo_ = find_channel(*api_, phy_, {"altvoltage0", "RX_LO"}, true, {"altvoltage", "rx_lo"}, "frequency");
         rx_i_ = find_channel(*api_, rx_stream_, {"voltage0"}, false, {"voltage0", " i"});
         rx_q_ = find_channel(*api_, rx_stream_, {"voltage1"}, false, {"voltage1", " q"});
@@ -915,6 +960,7 @@ private:
     iio_context* context_{};
     iio_device* phy_{};
     iio_channel* phy_rx_{};
+    iio_channel* phy_rx2_{};
     iio_channel* lo_{};
     iio_device* rx_stream_{};
     iio_channel* rx_i_{};

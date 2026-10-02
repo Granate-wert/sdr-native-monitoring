@@ -41,6 +41,8 @@ iio_device phy{0};
 iio_device dds{1};
 iio_device rx{2};
 iio_channel phy_rx{0, false, false};
+// RX2 PHY controls are distinct from voltage1 in the digital I/Q device.
+iio_channel phy_rx2{9, false, false};
 iio_channel lo{1, true, false};
 iio_channel rx_i{2, false, false};
 iio_channel rx_q{3, false, false};
@@ -55,6 +57,8 @@ long long sample_rate = 3'000'000LL;
 long long bandwidth = 1'500'000LL;
 double gain = 20.0;
 std::string gain_mode = "manual";
+double gain2 = 31.0;
+std::string gain_mode2 = "manual";
 std::atomic<bool> cancel_in_progress{};
 std::atomic<bool> cancel_release{true};
 std::atomic<bool> destroyed_during_cancel{};
@@ -82,6 +86,11 @@ bool extended_ad9363_profile() {
     return std::getenv("SDR_MOCK_LIBIIO_AD9363_EXTENDED") != nullptr;
 }
 
+bool has_rx2_phy() {
+    return std::getenv("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL") != nullptr &&
+        std::getenv("SDR_MOCK_LIBIIO_NO_RX2_PHY") == nullptr;
+}
+
 void delay_from_env(const char* name) {
     if (const char* raw = std::getenv(name); raw != nullptr) {
         const int milliseconds = std::max(0, std::atoi(raw));
@@ -97,10 +106,13 @@ const char* channel_id(const iio_channel* channel) {
     case 3: return "voltage1";
     case 5: return "voltage2";
     case 6: return "voltage3";
+    case 9: return "voltage1";
     default: return "voltage0";
     }
 }
 bool has_attr(const iio_channel* channel, const char* attr) {
+    if (channel == &phy_rx2) return std::strcmp(attr, "hardwaregain") == 0 ||
+        std::strcmp(attr, "gain_control_mode") == 0;
     if (channel == &phy_rx) return std::strcmp(attr, "sampling_frequency") == 0 || std::strcmp(attr, "sampling_frequency_available") == 0 ||
         std::strcmp(attr, "rf_bandwidth") == 0 || std::strcmp(attr, "rf_bandwidth_available") == 0 ||
         std::strcmp(attr, "hardwaregain") == 0 || std::strcmp(attr, "hardwaregain_available") == 0 ||
@@ -112,9 +124,9 @@ std::string value_text(const iio_channel* channel, const char* attr) {
     if (std::strcmp(attr, "sampling_frequency_available") == 0) return "[2083333 1 61440000]";
     if (std::strcmp(attr, "rf_bandwidth") == 0) return std::to_string(bandwidth);
     if (std::strcmp(attr, "rf_bandwidth_available") == 0) return "[200000 1 56000000]";
-    if (std::strcmp(attr, "hardwaregain") == 0) return std::to_string(gain);
+    if (std::strcmp(attr, "hardwaregain") == 0) return std::to_string(channel == &phy_rx2 ? gain2 : gain);
     if (std::strcmp(attr, "hardwaregain_available") == 0) return "[-3 1 71]";
-    if (std::strcmp(attr, "gain_control_mode") == 0) return gain_mode;
+    if (std::strcmp(attr, "gain_control_mode") == 0) return channel == &phy_rx2 ? gain_mode2 : gain_mode;
     if (std::strcmp(attr, "gain_control_mode_available") == 0) return "manual slow_attack fast_attack hybrid";
     if (channel == &lo && std::strcmp(attr, "frequency") == 0) return std::to_string(frequency);
     if (channel == &lo && std::strcmp(attr, "frequency_available") == 0) return "[70000000 1 6000000000]";
@@ -142,6 +154,8 @@ __declspec(dllexport) int mock_iio_live_contexts() { return live_contexts.load()
 __declspec(dllexport) int mock_iio_created_contexts() { return created_contexts.load(); }
 __declspec(dllexport) int mock_iio_destroyed_contexts() { return destroyed_contexts.load(); }
 __declspec(dllexport) int mock_iio_rf_mutation_calls() { return rf_mutation_calls.load(); }
+__declspec(dllexport) double mock_iio_gain(int receiver) { return receiver == 2 ? gain2 : gain; }
+__declspec(dllexport) const char* mock_iio_gain_mode(int receiver) { return receiver == 2 ? gain_mode2.c_str() : gain_mode.c_str(); }
 __declspec(dllexport) iio_scan_context* iio_create_scan_context(const char*, unsigned int) { return new iio_scan_context; }
 __declspec(dllexport) void iio_scan_context_destroy(iio_scan_context* value) { delete value; }
 __declspec(dllexport) std::ptrdiff_t iio_scan_context_get_info_list(iio_scan_context*, iio_context_info*** output) {
@@ -232,7 +246,7 @@ __declspec(dllexport) const char* iio_device_get_name(const iio_device* value) {
     return value == &phy ? "ad9361-phy" : "cf-ad9361-lpc";
 }
 __declspec(dllexport) unsigned int iio_device_get_channels_count(const iio_device* value) {
-    if (value == &phy) return std::getenv("SDR_MOCK_LIBIIO_EXACT_WRONG") != nullptr ? 3U : 2U;
+    if (value == &phy) return std::getenv("SDR_MOCK_LIBIIO_EXACT_WRONG") != nullptr ? 3U : (has_rx2_phy() ? 3U : 2U);
     if (value == &dds) return 2U;
     return std::getenv("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL") != nullptr ? 4U : 2U;
 }
@@ -241,7 +255,11 @@ __declspec(dllexport) iio_channel* iio_device_get_channel(const iio_device* valu
         if (index == 0U) return &wrong_phy_rx;
         return index == 1U ? &phy_rx : &lo;
     }
-    if (value == &phy) return index == 0U ? &phy_rx : &lo;
+    if (value == &phy) {
+        if (index == 0U) return &phy_rx;
+        if (has_rx2_phy()) return index == 1U ? &phy_rx2 : &lo;
+        return &lo;
+    }
     if (value == &dds) return index == 0U ? &dds_i : &dds_q;
     if (index == 0U) return &rx_i;
     if (index == 1U) return &rx_q;
@@ -250,6 +268,10 @@ __declspec(dllexport) iio_channel* iio_device_get_channel(const iio_device* valu
 }
 __declspec(dllexport) iio_channel* iio_device_find_channel(const iio_device* value, const char* name, bool output) {
     if (value == &phy && !output && std::strcmp(name, "voltage0") == 0) return std::getenv("SDR_MOCK_LIBIIO_EXACT_WRONG") != nullptr ? &wrong_phy_rx : &phy_rx;
+    if (value == &phy && !output && std::strcmp(name, "voltage1") == 0 && has_rx2_phy()) {
+        if (std::getenv("SDR_MOCK_LIBIIO_RX2_PHY_ALIAS") != nullptr) return &phy_rx;
+        return &phy_rx2;
+    }
     if (value == &phy && output && (std::strcmp(name, "altvoltage0") == 0 || std::strcmp(name, "RX_LO") == 0)) return &lo;
     if (value == &rx && !output && std::strcmp(name, "voltage0") == 0) return &rx_i;
     if (value == &rx && !output && std::strcmp(name, "voltage1") == 0) return &rx_q;
@@ -268,9 +290,11 @@ __declspec(dllexport) std::ptrdiff_t iio_channel_attr_read(const iio_channel* ch
 }
 __declspec(dllexport) std::ptrdiff_t iio_channel_attr_write(const iio_channel* channel, const char* attr, const char* value) {
     ++rf_mutation_calls;
-    if (channel != &phy_rx || std::strcmp(attr, "gain_control_mode") != 0) return -EINVAL;
+    if ((channel != &phy_rx && channel != &phy_rx2) || std::strcmp(attr, "gain_control_mode") != 0) return -EINVAL;
     const std::string next(value); if (next != "manual" && next != "slow_attack" && next != "fast_attack" && next != "hybrid") return -EINVAL;
-    if (std::getenv("SDR_MOCK_LIBIIO_GAIN_MODE_MISMATCH") == nullptr) gain_mode = next;
+    if (channel == &phy_rx2) {
+        if (std::getenv("SDR_MOCK_LIBIIO_RX2_MODE_MISMATCH") == nullptr) gain_mode2 = next;
+    } else if (std::getenv("SDR_MOCK_LIBIIO_GAIN_MODE_MISMATCH") == nullptr) gain_mode = next;
     return static_cast<std::ptrdiff_t>(next.size());
 }
 __declspec(dllexport) int iio_channel_attr_read_longlong(const iio_channel* channel, const char* attr, long long* value) {
@@ -306,11 +330,18 @@ __declspec(dllexport) int iio_channel_attr_write_longlong(const iio_channel* cha
     return -EINVAL;
 }
 __declspec(dllexport) int iio_channel_attr_read_double(const iio_channel* channel, const char* attr, double* value) {
-    if (channel != &phy_rx || std::strcmp(attr, "hardwaregain") != 0) return -EINVAL; *value = gain; return 0;
+    if ((channel != &phy_rx && channel != &phy_rx2) || std::strcmp(attr, "hardwaregain") != 0) return -EINVAL;
+    *value = channel == &phy_rx2 ? gain2 : gain; return 0;
 }
 __declspec(dllexport) int iio_channel_attr_write_double(const iio_channel* channel, const char* attr, double value) {
     ++rf_mutation_calls;
-    if (channel != &phy_rx || std::strcmp(attr, "hardwaregain") != 0 || value < -3.0 || value > 71.0) return -EINVAL; gain = value; return 0;
+    if ((channel != &phy_rx && channel != &phy_rx2) || std::strcmp(attr, "hardwaregain") != 0 || value < -3.0 || value > 71.0) return -EINVAL;
+    if (channel == &phy_rx2) {
+        const auto fail_at = std::getenv("SDR_MOCK_LIBIIO_RX2_GAIN_FAIL_AT");
+        if (fail_at && value == std::strtod(fail_at, nullptr)) return -EIO;
+        gain2 = value;
+    } else gain = value;
+    return 0;
 }
 __declspec(dllexport) void iio_channel_enable(iio_channel* value) { ++rf_mutation_calls; value->enabled = true; }
 __declspec(dllexport) void iio_channel_disable(iio_channel* value) { value->enabled = false; }

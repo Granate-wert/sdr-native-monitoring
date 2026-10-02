@@ -317,6 +317,11 @@ void bind_pluto(py::module_& module) {
         .def_readonly("stride_bytes", &sdr_pluto::SampleLayout::stride_bytes)
         .def_readonly("output_format", &sdr_pluto::SampleLayout::output_format);
 
+    py::class_<sdr_pluto::ReceiverGainReadback>(module, "PlutoReceiverGainReadback")
+        .def_readonly("receiver", &sdr_pluto::ReceiverGainReadback::receiver)
+        .def_readonly("gain_mode", &sdr_pluto::ReceiverGainReadback::gain_mode)
+        .def_readonly("manual_gain_db", &sdr_pluto::ReceiverGainReadback::manual_gain_db);
+
     py::class_<sdr_pluto::AppliedConfig>(module, "PlutoAppliedConfig")
         .def_readonly("requested", &sdr_pluto::AppliedConfig::requested)
         .def_readonly("center_frequency_hz", &sdr_pluto::AppliedConfig::center_frequency_hz)
@@ -325,7 +330,9 @@ void bind_pluto(py::module_& module) {
         .def_readonly("gain_mode", &sdr_pluto::AppliedConfig::gain_mode)
         .def_readonly("manual_gain_db", &sdr_pluto::AppliedConfig::manual_gain_db)
         .def_readonly("config_generation", &sdr_pluto::AppliedConfig::config_generation)
-        .def_readonly("sample_layout", &sdr_pluto::AppliedConfig::sample_layout);
+        .def_readonly("sample_layout", &sdr_pluto::AppliedConfig::sample_layout)
+        .def_readonly("receiver_selection", &sdr_pluto::AppliedConfig::receiver_selection)
+        .def_readonly("receiver_gains", &sdr_pluto::AppliedConfig::receiver_gains);
 
     py::class_<sdr_pluto::StreamMetrics>(module, "PlutoStreamMetrics")
         .def_readonly("blocks_received", &sdr_pluto::StreamMetrics::blocks_received)

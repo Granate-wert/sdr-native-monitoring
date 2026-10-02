@@ -650,6 +650,15 @@ if(SDR_CORE_BUILD_TESTS)
             TIMEOUT 120
             ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>"
         )
+        add_executable(sdr_core_pluto_receiver_gain_test tests/test_pluto_receiver_gain.cpp)
+        target_link_libraries(sdr_core_pluto_receiver_gain_test PRIVATE sdr_pluto sdr_core::sdr_core)
+        sdr_core_apply_platform_defaults(sdr_core_pluto_receiver_gain_test)
+        add_dependencies(sdr_core_pluto_receiver_gain_test sdr_core_mock_libiio)
+        add_test(NAME sdr_core.pluto_receiver_gain COMMAND sdr_core_pluto_receiver_gain_test)
+        set_tests_properties(sdr_core.pluto_receiver_gain PROPERTIES
+            TIMEOUT 30
+            ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>"
+        )
         # Explicit microbenchmark only: it measures the native mock-libIIO
         # refill/unpack/pool path and never opens a physical receiver. It is
         # deliberately not a CTest or a release artifact.
