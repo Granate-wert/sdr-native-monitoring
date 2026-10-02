@@ -1990,3 +1990,70 @@ tuning groups/dual RX/genuine Ethernet, historical SDK-cleanup cause, actual
 Windows input when supported, sustained/layout/accessibility, independent
 review and release. APP06E Cut DC/spur remains planned; expired APP05 timer
 is not restarted. Private captures/runners/reports are excluded from publish.
+
+### Stopped-frame presentation and mixed RF qualification — 2026-10-02
+
+A dedicated UI V2 design/review agent now handles interface design changes;
+the parent retains backend, physical RX, integration and qualification duties.
+No simultaneous product writes are permitted during exact tests/builds.
+Design review does not constitute whole-backend independent release approval.
+
+A new bounded source Qt + matching native check on exact product059, with only
+its verified public-doc tail094, exercised two shared HackRF USB Sweep20MS/s/
+FFT2048 panes100–220MHz, independent tinySA100–300MHz/1001 points/LOW/target
+RBW300kHz, and Empty4. The initial-start diagnostic passed; the preceding
+timeout did not reproduce and its affected resource/cause remains UNKNOWN.
+A separate RF check used actual Qt middle-button events: default Cancel was
+inert, explicit approval shifted only pane1 by10MHz, preserved pane2's range,
+and converted shared capture into time-sliced jobs on ONE HackRF RX. Both
+affected histories were empty before Start. The independent tinySA retained
+epoch1/activation1 and published a genuinely newer frame after the RF change.
+The recorded0.2591743s control interval is host elapsed time, not ADC RF gap,
+duty, detection probability or lossless proof. Both runs stopped and shut down
+normally with no residual Python threads. This is source059 qualification,
+not a frozen Windows independent-peer witness or a timeout causal fix.
+
+Exact product `f060651a1cb4f78eaa117c7c68c8445e9ab5c852` corrects one proven
+UI wording defect: an IDLE/STOPPED independent pane with no presented frame
+now says “RX stopped · no frame” (localized EN/RU). Ordinary Stop with a
+retained frame keeps the existing retained-frame label. It reads only the
+currently presented immutable bundle; capture/pump/owners/epochs/gaps,
+STARTING/STOPPING/STOP_REQUIRED/RUNNING and native/DSP/SDK/Fs/FFT/budgets are
+unchanged. One new actual-Qt method covers inert Apply before first Start;
+existing tests additionally cover both locales and automatic cleared-history
+receipt before separate Start. Expanded focused74 tests passed. Full exact
+serial UI V2 gate1263total/1197passed/66skipped/zero failures-errors654.824s
+passed with clean before/after source, unchanged native762, no deferred compiled
+tests or outside product imports. Four historical NaN warnings remain.
+Two scoped mypy Optional-QDialog diagnostics reproduce identically in the
+immutable preceding HEAD; they remain baseline diagnostics, not mypy PASS.
+
+The matching full no-skip diagnostic CPU/HackRF build passed40/40CTest,
+all658 frozen files, source530 snapshot, native and shared-runtime checks.
+Qt6.11.1/schema5/factory2/DSP1/persistence1/Sweep1/geometry1 and the2048segment/
+128MiB budget remain unchanged. The separate tagged package was not promoted
+to canonical/static/current release. Its source/build stay exactf060651;
+later documentation commits must not relabel them.
+
+The SAME new frozen Windows EXE then checked real HackRF RTBW20MS/s/FFT4096
+140–148MHz in one pane plus three Empty panes. Apply remained inert with the
+new no-frame label. Explicit Start produced changing Spectrum/Waterfall;
+ordinary Stop retained both plots and the retained-frame label. Stopped
+numeric+5MHz RF Apply-only changed the range to145–153MHz, cleared both plots,
+showed the no-frame label and left RX stopped. Separate Start produced fresh
+plots. Final Stop/CloseLayout/normalClose removed the process/window; full
+postclose658-file/native/source-snapshot verification passed. The design agent
+reviewed the original sequence without finding a new correctness defect.
+Accessibility text still lagged some transition screenshots; this is not full
+AT coherence, temporal jitter, DPI, DWM50ms, RF accuracy, sustained/soak, numeric
+GUI epoch/gap, genuine Windows held-middle, or new frozen Sweep/peer acceptance.
+
+APP07 remains PARTIAL. Next UI design package: a localized, readable RF impact
+summary distinguishing the target range, all history-reset panes and one-RX
+shared/time-sliced topology while retaining exact profiles/default Cancel/
+explicit approval and Apply≠Start. Strict independent AD admission, supported
+tuning groups/dual RX/genuine Ethernet, historical first-cause diagnostics,
+sustained/layout/accessibility and complete independent release review remain
+open. APP06E Cut DC/spur remains planned; the expired APP05 timer is not reset.
+Private device identities, raw screenshots, runners and reports are not
+included in the public publication whitelist.
