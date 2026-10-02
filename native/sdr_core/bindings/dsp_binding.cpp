@@ -4,6 +4,7 @@
 #include "sdr_core/errors.hpp"
 #include "sdr_core/events.hpp"
 #include "sdr_core/recording_reprocess.hpp"
+#include "sdr_core/recording_path.hpp"
 
 #include <complex>
 #include <cstddef>
@@ -175,8 +176,8 @@ void bind_dsp(py::module_& module) {
                  const std::uint32_t max_samples_per_push
              ) {
             return std::make_shared<NativeIqRecordingReprocessor>(
-                std::filesystem::path(input_uri),
-                std::filesystem::path(output_uri),
+                recording_path_from_utf8(input_uri),
+                recording_path_from_utf8(output_uri),
                 dsp,
                 selection,
                 max_samples_per_push

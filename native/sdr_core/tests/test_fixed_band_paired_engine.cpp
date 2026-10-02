@@ -4,6 +4,7 @@
 #include "sdr_core/errors.hpp"
 #include "sdr_core/recording_reprocess.hpp"
 #include "sdr_core/recording_writer.hpp"
+#include "sdr_core/recording_path.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -227,6 +228,40 @@ void test_pair_guards_before_rf(Hooks& hooks) {
         engine.state() == sdr_core::EngineState::Created, "host preflight must precede RF mutation");
     engine.disconnect();
 }
+std::string utf8_path(const std::filesystem::path& path) {
+    const auto value = path.u8string();
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+void test_pair_unicode_alias_before_rf(Hooks& hooks) {
+    CaptureDirectory capture;
+    auto p = paired_config();
+    // Explicit code points keep the test independent of source/CRT code pages.
+    const auto upper = capture.root / L"\u0417\u0410\u041f\u0418\u0421\u042c_\u00c4";
+    const auto lower = capture.root / L"\u0437\u0430\u043f\u0438\u0441\u044c_\u00e4";
+    p.primary.recording = {.enabled = true, .output_uri = utf8_path(upper),
+        .record_iq = true, .stop_on_overflow = false};
+    p.secondary.recording = p.primary.recording;
+    p.secondary.recording.output_uri = utf8_path(lower) + ".sigmf-meta.part";
+    require(sdr_core::native_recording_base_path(p.primary.recording.output_uri) == upper,
+        "writer path must preserve UTF-8 Unicode filename");
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto writes = hooks.mutations();
+    refused([&] { static_cast<void>(engine.configure_paired(p)); },
+        "Windows ordinal Unicode case alias must refuse");
+    p.secondary.recording.output_uri = utf8_path(lower) + ".part.part";
+    refused([&] { static_cast<void>(engine.configure_paired(p)); },
+        "Unicode bare repeated partial suffix alias must refuse");
+    p.secondary.recording.output_uri = utf8_path(lower) + std::string(1, '\0') + "hidden";
+    refused([&] { static_cast<void>(engine.configure_paired(p)); },
+        "embedded NUL recording path must refuse before RF");
+    p.secondary.recording.output_uri = utf8_path(capture.root) + "/bad_\xc3\x28";
+    refused([&] { static_cast<void>(engine.configure_paired(p)); },
+        "malformed UTF-8 recording path must refuse before RF");
+    require(hooks.mutations() == writes && hooks.buffers() == 0 &&
+        engine.state() == sdr_core::EngineState::Created &&
+        std::filesystem::is_empty(capture.root), "Unicode alias preflight before RF or files");
+    engine.disconnect();
+}
 void test_pair_lines_and_metric_polling() {
     auto p = paired_config();
     p.primary.continuous_sweep_line = sdr_pluto::ContinuousSweepLineConfig{
@@ -264,12 +299,17 @@ void test_pair_lines_and_metric_polling() {
     }
     engine.disconnect();
 }
-void test_pair_durable_recordings() {
+void test_pair_durable_recordings(bool unicode = false) {
     CaptureDirectory capture;
     auto p = paired_config();
+    const auto capture_path = [&](const auto* channel) {
+        return unicode ? capture.root / L"\u0414\u0430\u043d\u043d\u044b\u0435_\u00c4" /
+            (channel == &p.primary ? L"\u041f\u0440\u0438\u0451\u043c_RX1" : L"\u041f\u0440\u0438\u0451\u043c_RX2")
+            : capture.root / channel->device.source_id;
+    };
     for (auto* channel : {&p.primary, &p.secondary}) {
         channel->recording = {.enabled = true,
-            .output_uri = (capture.root / channel->device.source_id).string(),
+            .output_uri = utf8_path(capture_path(channel)),
             .record_iq = true, .record_spectrum = true, .chunk_samples = 4096,
             .queue_capacity = 32, .stop_on_overflow = false};
     }
@@ -288,7 +328,7 @@ void test_pair_durable_recordings() {
         !m.primary.spectrum_writer_failed && !m.secondary.spectrum_writer_failed,
         "both channel writers normal-finalize after DSP join");
     for (const auto* channel : {&p.primary, &p.secondary}) {
-        const auto base = capture.root / channel->device.source_id;
+        const auto base = capture_path(channel);
         const auto info = sdr_core::inspect_final_native_recording(base);
         require(info.iq_manifest_final && info.spectrum_manifest_final &&
             info.spectrum_frame_count > 0, "both independent native artifacts finalized");
@@ -298,6 +338,25 @@ void test_pair_durable_recordings() {
             frame.source.metadata_json.at("receiver_selection") ==
                 (channel == &p.primary ? "\"RX1\"" : "\"RX2\"") &&
             frame.config_generation == applied.config_generation, "replay per-chain provenance");
+        if (unicode) {
+            const auto output = base.parent_path() /
+                (channel == &p.primary ? L"\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430_RX1" : L"\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430_RX2");
+            sdr_core::DspBackendSelectionOptions selection;
+            selection.preference = sdr_core::ComputeBackendKind::Cpu;
+            selection.allow_runtime_fallback = false;
+            sdr_core::NativeIqRecordingReprocessor reprocessor(base, output, channel->dsp, selection);
+            std::uint32_t turns = 0;
+            while (!reprocessor.process(1)) require(++turns < 256, "bounded Unicode reprocess");
+            require(reprocessor.progress().state == sdr_core::NativeIqReprocessState::Completed &&
+                reprocessor.progress().output_uri == utf8_path(output), "Unicode reprocess output path");
+            sdr_core::NativeSpectrumRecordingReader reprocessed(output);
+            require(reprocessed.frame_count() > 0 &&
+                reprocessed.read_frame(0).source.source_id == channel->device.source_id,
+                "Unicode reprocess preserves channel provenance");
+            const auto manifest = sdr_core::recording_path_with_suffix(base, ".sdr-spectrum.meta");
+            require(read_text(manifest).find(utf8_path(base.filename())) != std::string::npos,
+                "manifest artifact names are UTF-8");
+        }
     }
     engine.disconnect();
 }
@@ -362,15 +421,17 @@ int main() {
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "1");
         test_pair_consumers_and_same_owner_restart(hooks);
         test_pair_guards_before_rf(hooks);
+        test_pair_unicode_alias_before_rf(hooks);
         test_pair_lines_and_metric_polling();
         test_pair_durable_recordings();
+        test_pair_durable_recordings(true);
         test_pair_cancel_refill(hooks);
         std::cout << "shared queue gap/flush case\n";
         test_pair_shared_queue_gap_and_terminal_flush();
         test_pair_absent_rx2(hooks);
         require(hooks.contexts() == 0 && hooks.buffers() == 0, "paired ownership leaks");
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "");
-        std::cout << "paired same-owner data plane 7 cases PASS (mock ONLY)\n";
+        std::cout << "paired same-owner data plane 9 cases PASS (mock ONLY)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

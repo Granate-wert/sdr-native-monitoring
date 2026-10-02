@@ -1,4 +1,5 @@
 #include "sdr_core/recording_reprocess.hpp"
+#include "sdr_core/recording_path.hpp"
 
 #include "sdr_core/errors.hpp"
 #include "sdr_core/receiver_provenance.hpp"
@@ -21,7 +22,7 @@ namespace {
 constexpr std::uint64_t max_reprocess_block_bytes = 64U * 1024U * 1024U;
 
 [[nodiscard]] std::filesystem::path normalized_base_path(const std::filesystem::path& output_uri) {
-    const auto value = output_uri.string();
+    const auto value = recording_path_utf8(output_uri);
     static constexpr std::string_view suffixes[] = {
         ".sigmf-meta", ".sigmf-index.jsonl", ".sigmf-gaps.jsonl",
         ".sdr-spectrum.meta", ".sdr-spectrum.bin", ".sdr-spectrum-index.jsonl",
@@ -29,7 +30,7 @@ constexpr std::uint64_t max_reprocess_block_bytes = 64U * 1024U * 1024U;
     for (const auto suffix : suffixes) {
         if (value.size() >= suffix.size() &&
             value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0) {
-            return std::filesystem::path(value.substr(0U, value.size() - suffix.size()));
+            return recording_path_from_utf8(value.substr(0U, value.size() - suffix.size()));
         }
     }
     return output_uri;
@@ -148,9 +149,9 @@ template <typename Integer>
     const std::uint64_t segment
 ) {
     std::ostringstream name;
-    name << base.string() << '.' << std::setw(6) << std::setfill('0') << segment
+    name << '.' << std::setw(6) << std::setfill('0') << segment
          << ".sigmf-data";
-    return name.str();
+    return recording_path_with_suffix(base, name.str());
 }
 
 [[nodiscard]] SourceDescriptor source_from_manifest(const std::filesystem::path& manifest_path) {
@@ -233,8 +234,8 @@ NativeIqRecordingReprocessor::NativeIqRecordingReprocessor(
     if (!admission.iq_manifest_final) {
         throw ConfigurationError("native I/Q reprocess accepts only a completed I/Q manifest");
     }
-    source_ = source_from_manifest(input_base_path_.string() + ".sigmf-meta");
-    index_.open(input_base_path_.string() + ".sigmf-index.jsonl", std::ios::binary);
+    source_ = source_from_manifest(recording_path_with_suffix(input_base_path_, ".sigmf-meta"));
+    index_.open(recording_path_with_suffix(input_base_path_, ".sigmf-index.jsonl"), std::ios::binary);
     if (!index_) {
         throw std::runtime_error("cannot open final native I/Q index");
     }
@@ -261,7 +262,7 @@ NativeIqRecordingReprocessor::NativeIqRecordingReprocessor(
 
     RecordingConfig recording;
     recording.enabled = true;
-    recording.output_uri = output_base_path_.string();
+    recording.output_uri = recording_path_utf8(output_base_path_);
     recording.record_spectrum = true;
     recording.chunk_samples = 1'048'576U;
     recording.queue_capacity = 1U;
@@ -272,7 +273,7 @@ NativeIqRecordingReprocessor::NativeIqRecordingReprocessor(
 
     progress_.backend_requested = selection_.preference;
     progress_.backend_active = backend_->metrics().active_backend;
-    progress_.output_uri = output_base_path_.string();
+    progress_.output_uri = recording_path_utf8(output_base_path_);
 }
 
 NativeIqRecordingReprocessor::~NativeIqRecordingReprocessor() noexcept {

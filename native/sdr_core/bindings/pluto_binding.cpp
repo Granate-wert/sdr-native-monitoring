@@ -1,6 +1,7 @@
 #include "pluto_binding.hpp"
 
 #include "sdr_core/recording_writer.hpp"
+#include "sdr_core/recording_path.hpp"
 #include "sdr_core/dual_rx_dsp.hpp"
 #include "sdr_core/sweep_statistics.hpp"
 #include "sdr_pluto/continuous_sweep_coordinator.hpp"
@@ -192,7 +193,7 @@ void bind_pluto(py::module_& module) {
     module.def(
         "scan_native_recording_prefix",
         [](const std::string& output_uri) {
-            return sdr_core::scan_native_recording_prefix(std::filesystem::path(output_uri));
+            return sdr_core::scan_native_recording_prefix(sdr_core::recording_path_from_utf8(output_uri));
         },
         py::arg("output_uri")
     );
@@ -248,7 +249,7 @@ void bind_pluto(py::module_& module) {
     )
         .def(py::init([](const std::string& output_uri) {
             return std::make_shared<sdr_core::NativeSpectrumRecordingReader>(
-                std::filesystem::path(output_uri)
+                sdr_core::recording_path_from_utf8(output_uri)
             );
         }), py::arg("output_uri"))
         .def_property_readonly("info", [](const sdr_core::NativeSpectrumRecordingReader& value) {
@@ -269,7 +270,7 @@ void bind_pluto(py::module_& module) {
     module.def(
         "inspect_final_native_recording",
         [](const std::string& output_uri) {
-            return sdr_core::inspect_final_native_recording(std::filesystem::path(output_uri));
+            return sdr_core::inspect_final_native_recording(sdr_core::recording_path_from_utf8(output_uri));
         },
         py::arg("output_uri")
     );

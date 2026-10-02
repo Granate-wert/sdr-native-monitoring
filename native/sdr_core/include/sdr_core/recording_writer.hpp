@@ -15,7 +15,7 @@
 namespace sdr_core {
 
 // The exact writer artifact stem, shared with native multi-channel admission.
-// This only normalizes a path; it does not create or open a recording.
+// output_uri is UTF-8. This only normalizes a path; it does not create or open a recording.
 [[nodiscard]] std::filesystem::path native_recording_base_path(
     const std::string& output_uri);
 

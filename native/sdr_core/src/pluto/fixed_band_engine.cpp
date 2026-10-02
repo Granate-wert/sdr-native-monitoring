@@ -9,16 +9,26 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <exception>
 #include <filesystem>
-#include <cwctype>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace sdr_pluto {
 
@@ -456,10 +466,17 @@ void validate(const PairedFixedBandConfig& value) {
         left = std::filesystem::weakly_canonical(std::filesystem::absolute(left));
         right = std::filesystem::weakly_canonical(std::filesystem::absolute(right));
 #if defined(_WIN32)
-        auto l = left.native(), r = right.native();
-        std::transform(l.begin(), l.end(), l.begin(), ::towlower);
-        std::transform(r.begin(), r.end(), r.begin(), ::towlower);
-        if (l == r) invalid("paired recordings require distinct canonical base paths");
+        const auto& l = left.native();
+        const auto& r = right.native();
+        if (l.size() > INT_MAX || r.size() > INT_MAX) {
+            invalid("paired recording path exceeds Windows comparison range");
+        }
+        // Windows ordinal casing is independent of the process CRT locale.
+        // Conservative case-insensitive refusal also protects case-sensitive folders.
+        const auto comparison = CompareStringOrdinal(l.data(), static_cast<int>(l.size()),
+            r.data(), static_cast<int>(r.size()), TRUE);
+        if (comparison == 0) invalid("paired recording path comparison failed");
+        if (comparison == CSTR_EQUAL) invalid("paired recordings require distinct canonical base paths");
 #else
         if (left == right) invalid("paired recordings require distinct canonical base paths");
 #endif

@@ -1,4 +1,5 @@
 #include "sdr_core/recording_writer.hpp"
+#include "sdr_core/recording_path.hpp"
 
 #include "sdr_core/errors.hpp"
 #include "sdr_core/receiver_provenance.hpp"
@@ -97,7 +98,7 @@ void rename_no_replace(
     std::filesystem::rename(source, destination, error);
     if (error) {
         throw std::runtime_error(
-            "failed to finalize recording artifact " + destination.string() +
+            "failed to finalize recording artifact " + recording_path_utf8(destination) +
             ": " + error.message()
         );
     }
@@ -106,7 +107,7 @@ void rename_no_replace(
 [[nodiscard]] std::filesystem::path normalized_base_path(
     std::filesystem::path path
 ) {
-    auto name = path.filename().string();
+    auto name = recording_path_utf8(path.filename());
     constexpr std::string_view partial_suffix = ".part";
     while (name.size() >= partial_suffix.size() &&
            name.compare(
@@ -124,10 +125,10 @@ void rename_no_replace(
         if (name.size() >= suffix.size() &&
             name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
             return path.parent_path() /
-                   name.substr(0U, name.size() - suffix.size());
+                   recording_path_from_utf8(name.substr(0U, name.size() - suffix.size()));
         }
     }
-    return path;
+    return path.parent_path() / recording_path_from_utf8(name);
 }
 
 constexpr std::array<char, 8U> spectrum_magic{{'S', 'D', 'R', 'S', 'P', 'C', '0', '1'}};
@@ -345,7 +346,7 @@ struct NewlineScan {
 }  // namespace
 
 std::filesystem::path native_recording_base_path(const std::string& output_uri) {
-    return normalized_base_path(output_uri);
+    return normalized_base_path(recording_path_from_utf8(output_uri));
 }
 
 SegmentedIqRecordingWriter::SegmentedIqRecordingWriter(
@@ -353,10 +354,10 @@ SegmentedIqRecordingWriter::SegmentedIqRecordingWriter(
     SourceDescriptor source
 ) : config_(std::move(config)),
     source_(std::move(source)),
-    base_path_(normalized_base_path(config_.output_uri)),
-    manifest_path_(base_path_.string() + ".sigmf-meta"),
-    index_path_(base_path_.string() + ".sigmf-index.jsonl"),
-    gaps_path_(base_path_.string() + ".sigmf-gaps.jsonl") {
+    base_path_(native_recording_base_path(config_.output_uri)),
+    manifest_path_(recording_path_with_suffix(base_path_, ".sigmf-meta")),
+    index_path_(recording_path_with_suffix(base_path_, ".sigmf-index.jsonl")),
+    gaps_path_(recording_path_with_suffix(base_path_, ".sigmf-gaps.jsonl")) {
     validate(config_);
     validate(source_);
     static_cast<void>(receiver_selection_json_suffix(source_));
@@ -397,9 +398,9 @@ void SegmentedIqRecordingWriter::start() {
         std::filesystem::exists(gaps_part)) {
         throw ConfigurationError("native recording target already exists");
     }
-    const auto prefix = base_path_.filename().string() + ".";
+    const auto prefix = recording_path_utf8(base_path_.filename()) + ".";
     for (const auto& entry : std::filesystem::directory_iterator(base_path_.parent_path())) {
-        const auto name = entry.path().filename().string();
+        const auto name = recording_path_utf8(entry.path().filename());
         if (name.starts_with(prefix) && name.find(".sigmf-data") != std::string::npos) {
             throw ConfigurationError("native recording target has existing data segment");
         }
@@ -602,15 +603,15 @@ std::filesystem::path SegmentedIqRecordingWriter::data_path(
     const std::uint64_t segment
 ) const {
     std::ostringstream name;
-    name << base_path_.string() << '.' << std::setw(6) << std::setfill('0')
+    name << '.' << std::setw(6) << std::setfill('0')
          << segment << ".sigmf-data";
-    return name.str();
+    return recording_path_with_suffix(base_path_, name.str());
 }
 
 std::filesystem::path SegmentedIqRecordingWriter::part_path(
     const std::filesystem::path& path
 ) const {
-    return path.string() + ".part";
+    return recording_path_with_suffix(path, ".part");
 }
 
 void SegmentedIqRecordingWriter::open_segment(const IqBlock& first_block) {
@@ -624,7 +625,7 @@ void SegmentedIqRecordingWriter::open_segment(const IqBlock& first_block) {
     write_index_line(
         "{\"type\":\"segment_start\",\"segment\":" +
         std::to_string(current_segment_) + ",\"file\":" +
-        quote_json(data_path(current_segment_).filename().string()) +
+        quote_json(recording_path_utf8(data_path(current_segment_).filename())) +
         ",\"first_sample_index\":" + std::to_string(first_block.first_sample_index) +
         ",\"timestamp_ns\":" + std::to_string(first_block.timestamp_ns) + "}"
     );
@@ -674,7 +675,7 @@ void SegmentedIqRecordingWriter::write_manifest(
     const std::string_view abort_reason
 ) {
     const auto part = part_path(manifest_path_);
-    const auto temporary = part.string() + ".tmp";
+    const auto temporary = recording_path_with_suffix(part, ".tmp");
     std::ofstream manifest(temporary, std::ios::binary | std::ios::out | std::ios::trunc);
     if (!manifest) {
         throw std::runtime_error("cannot write native recording manifest");
@@ -696,8 +697,8 @@ void SegmentedIqRecordingWriter::write_manifest(
              << quote_json(source_.uri) << ",\"backend_id\":"
              << quote_json(source_.backend_id) << ",\"schema_version\":"
              << source_.schema_version << receiver_selection_json_suffix(source_) << "},\"index_file\":"
-             << quote_json(index_path_.filename().string()) << ",\"gaps_file\":"
-             << quote_json(gaps_path_.filename().string()) << ",\"segment_count\":"
+             << quote_json(recording_path_utf8(index_path_.filename())) << ",\"gaps_file\":"
+             << quote_json(recording_path_utf8(gaps_path_.filename())) << ",\"segment_count\":"
              << metrics_.segments << ",\"chunk_samples\":" << config_.chunk_samples
              << ",\"written_blocks\":" << metrics_.written_blocks
              << ",\"written_samples\":" << metrics_.written_samples
@@ -741,10 +742,10 @@ SpectrumFrameRecordingWriter::SpectrumFrameRecordingWriter(
     SourceDescriptor source
 ) : config_(std::move(config)),
     source_(std::move(source)),
-    base_path_(normalized_base_path(config_.output_uri)),
-    manifest_path_(base_path_.string() + ".sdr-spectrum.meta"),
-    data_path_(base_path_.string() + ".sdr-spectrum.bin"),
-    index_path_(base_path_.string() + ".sdr-spectrum-index.jsonl") {
+    base_path_(native_recording_base_path(config_.output_uri)),
+    manifest_path_(recording_path_with_suffix(base_path_, ".sdr-spectrum.meta")),
+    data_path_(recording_path_with_suffix(base_path_, ".sdr-spectrum.bin")),
+    index_path_(recording_path_with_suffix(base_path_, ".sdr-spectrum-index.jsonl")) {
     validate(config_);
     validate(source_);
     static_cast<void>(receiver_selection_json_suffix(source_));
@@ -967,7 +968,7 @@ std::filesystem::path SpectrumFrameRecordingWriter::manifest_path() const {
 std::filesystem::path SpectrumFrameRecordingWriter::part_path(
     const std::filesystem::path& path
 ) const {
-    return path.string() + ".part";
+    return recording_path_with_suffix(path, ".part");
 }
 
 void SpectrumFrameRecordingWriter::write_manifest(
@@ -975,7 +976,7 @@ void SpectrumFrameRecordingWriter::write_manifest(
     const std::string_view abort_reason
 ) {
     const auto part = part_path(manifest_path_);
-    const auto temporary = part.string() + ".tmp";
+    const auto temporary = recording_path_with_suffix(part, ".tmp");
     std::ofstream manifest(temporary, std::ios::binary | std::ios::out | std::ios::trunc);
     if (!manifest) {
         throw std::runtime_error("cannot write native spectrum recording manifest");
@@ -991,8 +992,8 @@ void SpectrumFrameRecordingWriter::write_manifest(
              << quote_json(source_.uri) << ",\"backend_id\":"
              << quote_json(source_.backend_id) << ",\"schema_version\":"
              << source_.schema_version << receiver_selection_json_suffix(source_) << "},\"spectrum_file\":"
-             << quote_json(data_path_.filename().string()) << ",\"index_file\":"
-             << quote_json(index_path_.filename().string()) << ",\"written_frames\":"
+             << quote_json(recording_path_utf8(data_path_.filename())) << ",\"index_file\":"
+             << quote_json(recording_path_utf8(index_path_.filename())) << ",\"written_frames\":"
              << metrics_.written_frames << ",\"written_bytes\":"
              << metrics_.written_bytes << ",\"recorder_queue_dropped_frames\":"
              << metrics_.recorder_queue_dropped_frames << "}}\n";
@@ -1030,20 +1031,20 @@ NativeRecordingRecoveryScan scan_native_recording_prefix(
 ) {
     NativeRecordingRecoveryScan result;
     const auto base = normalized_base_path(output_uri);
-    const auto iq_manifest = std::filesystem::path(base.string() + ".sigmf-meta");
+    const auto iq_manifest = recording_path_with_suffix(base, ".sigmf-meta");
     const auto spectrum_manifest =
-        std::filesystem::path(base.string() + ".sdr-spectrum.meta");
-    const auto iq_index = std::filesystem::path(base.string() + ".sigmf-index.jsonl");
-    const auto iq_gaps = std::filesystem::path(base.string() + ".sigmf-gaps.jsonl");
-    const auto spectrum_data = std::filesystem::path(base.string() + ".sdr-spectrum.bin");
+        recording_path_with_suffix(base, ".sdr-spectrum.meta");
+    const auto iq_index = recording_path_with_suffix(base, ".sigmf-index.jsonl");
+    const auto iq_gaps = recording_path_with_suffix(base, ".sigmf-gaps.jsonl");
+    const auto spectrum_data = recording_path_with_suffix(base, ".sdr-spectrum.bin");
     result.iq_manifest_final = std::filesystem::exists(iq_manifest);
-    result.iq_manifest_partial = std::filesystem::exists(iq_manifest.string() + ".part");
+    result.iq_manifest_partial = std::filesystem::exists(recording_path_with_suffix(iq_manifest, ".part"));
     result.spectrum_manifest_final = std::filesystem::exists(spectrum_manifest);
     result.spectrum_manifest_partial =
-        std::filesystem::exists(spectrum_manifest.string() + ".part");
+        std::filesystem::exists(recording_path_with_suffix(spectrum_manifest, ".part"));
 
     const auto select_artifact = [](const std::filesystem::path& final_path) {
-        const auto partial = std::filesystem::path(final_path.string() + ".part");
+        const auto partial = recording_path_with_suffix(final_path, ".part");
         return std::filesystem::exists(partial) ? partial : final_path;
     };
     const auto index_scan = scan_newline_records(select_artifact(iq_index));
@@ -1057,12 +1058,12 @@ NativeRecordingRecoveryScan scan_native_recording_prefix(
 
     const auto parent = base.parent_path().empty() ? std::filesystem::path(".")
                                                     : base.parent_path();
-    const auto prefix = base.filename().string() + ".";
+    const auto prefix = recording_path_utf8(base.filename()) + ".";
     std::error_code directory_error;
     for (std::filesystem::directory_iterator iterator(parent, directory_error), end;
          !directory_error && iterator != end;
          iterator.increment(directory_error)) {
-        const auto name = iterator->path().filename().string();
+        const auto name = recording_path_utf8(iterator->path().filename());
         if (!name.starts_with(prefix) ||
             (!has_suffix(name, ".sigmf-data") &&
              !has_suffix(name, ".sigmf-data.part"))) {
@@ -1119,21 +1120,21 @@ NativeRecordingOpenInfo inspect_final_native_recording(
 ) {
     const auto base = normalized_base_path(output_uri);
     NativeRecordingOpenInfo result;
-    const auto iq_manifest = std::filesystem::path(base.string() + ".sigmf-meta");
-    const auto spectrum_manifest = std::filesystem::path(base.string() + ".sdr-spectrum.meta");
+    const auto iq_manifest = recording_path_with_suffix(base, ".sigmf-meta");
+    const auto spectrum_manifest = recording_path_with_suffix(base, ".sdr-spectrum.meta");
     result.iq_manifest_final = completed_manifest(iq_manifest, "native_iq_segmented");
     result.spectrum_manifest_final =
         completed_manifest(spectrum_manifest, "native_spectrum_frames");
     if (result.iq_manifest_final) {
         result.iq_gap_records = scan_newline_records(
-            std::filesystem::path(base.string() + ".sigmf-gaps.jsonl")
+            recording_path_with_suffix(base, ".sigmf-gaps.jsonl")
         ).complete_records;
     }
     if (result.spectrum_manifest_final) {
         result.spectrum_frame_count = scan_native_recording_prefix(base).spectrum_complete_records;
     }
 
-    const auto lifecycle_path = std::filesystem::path(base.string() + ".sdr-lifecycle.jsonl");
+    const auto lifecycle_path = recording_path_with_suffix(base, ".sdr-lifecycle.jsonl");
     if (!std::filesystem::exists(lifecycle_path)) {
         return result;
     }
@@ -1166,8 +1167,8 @@ NativeRecordingOpenInfo inspect_final_native_recording(
 NativeSpectrumRecordingReader::NativeSpectrumRecordingReader(
     const std::filesystem::path& output_uri
 ) : base_path_(normalized_base_path(output_uri)),
-    data_path_(base_path_.string() + ".sdr-spectrum.bin"),
-    index_path_(base_path_.string() + ".sdr-spectrum-index.jsonl"),
+    data_path_(recording_path_with_suffix(base_path_, ".sdr-spectrum.bin")),
+    index_path_(recording_path_with_suffix(base_path_, ".sdr-spectrum-index.jsonl")),
     info_(inspect_final_native_recording(base_path_)) {
     if (!info_.spectrum_manifest_final) {
         throw ConfigurationError(

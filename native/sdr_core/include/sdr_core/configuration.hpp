@@ -63,7 +63,7 @@ struct SweepConfig {
 
 struct RecordingConfig {
     bool enabled{};
-    std::string output_uri;
+    std::string output_uri; // UTF-8 filesystem path, also at the Python boundary.
     bool record_iq{};
     bool record_spectrum{};
     std::uint32_t chunk_samples{1048576U};
