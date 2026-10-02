@@ -2595,3 +2595,72 @@ no driver/network/firewall/security/bias/firmware mutation or physical RX here.
 Two delegated agents used gpt-6-sol/high: RTL integration and UI V2 design/code;
 root owns integration review/build/provenance. Whole release review remains OPEN.
 APP-07 PARTIAL, APP-06E planned, full APP-00–APP-14 goal ACTIVE.
+
+## 2026-10-02: optional RTL RTBW vertical slice, runtime69f9a64 (PARTIAL acceptance)
+
+Runtime `69f9a64f5e717a11938517216c67f2230cb6a145` adds the Windows
+optional unbundled RTL ABI port, compiled coarse control/reduced Spectrum
+binding, generic-serial SESSION route, actual common Live/pane owner and UI V2
+Stage/readback integration. Default SDK flag remains OFF; explicit ON uses
+separate CPU Release staging and a new tagged full package. No current/static
+replacement, driver/system change, vendor DLL or external manifest bundling.
+
+Future four-device APP-07 tests MUST use Pluto pane1/top-left, HackRF
+pane2/top-right, tinySA pane3/bottom-left, RTL pane4/bottom-right. This is a
+test assignment, not a product placement restriction. Missing actual RTL keeps
+acceptance OPEN; Empty/mock/duplicate cannot substitute. Old three+Empty4
+witnesses retain their original scope.
+
+The runtime requires explicit absolute UTF-8 external DLL/dependency paths,
+hash/import-closure admission and fresh exact-one descriptor/tuner/normal-mode
+observation. Compiled availability alone never grants Stage/Start. Generic
+serial00000001 is not stable calibration identity; matching replacement may
+be indistinguishable. Antenna25–1700MHz marking is not observed tuner RF range.
+Actual center/Fs readback precedes native RX. CPU Hann sample/peak profiles
+2.048/2.4MS/s and FFT1024/2048/4096, half-hop, uncalibrated dBFS/bin are bounded
+request choices, not measured throughput, analog passband or device maxima.
+
+CU8 acquisition, conversion, FFT and bounded analytical queues remain native.
+Only coarse control and reduced frames cross Python. RTL frame publication
+requires exact producer/source/generation/current epoch-clock, center/Fs/FFT/
+hop, numerical profile and 1D exactlyFFT-bin arrays. Malformed data refuses
+before Live publication and requires explicit Stop. Value/optional SpectrumFrame
+ownership replaces the failed shared-holder bridge without changing common
+pybind ownership. Host loss, DSP loss and render supersession stay distinct.
+Rates require an observed interval; hardware loss/RF duty/Pd remain unknown.
+
+UI Stage is a no-I/O exact cached candidate check, including when default Pluto
+is selected. Stage/Apply does not secretly Start. Pane actual Fs/center comes
+only from an accepted current RUNNING activation; stopped/retained is unknown.
+RTL Sweep, recording and analytical density/persistence are not implemented.
+Ambiguous native cleanup pins the owner/module and bars unsafe reopening.
+
+Focused qualification:45/45 native CTest51.16s, RTL31 methods4.629s, earlier134
+combined methods9.818s, Ruff29/scopedmypy8/stageddiffPASS. Matching packaged mock
+C-ABI bridge ALSO drives actual provider/service Stage/Start/spectrum/Stop:
+1/1PASS0.360s. Four actual app graphs with fake controls prove RTLpane4 delivery,
+failure/Stop isolation and independent peers; not actual four-device RF.
+
+Full diagnostic `APP07-RTLBRIDGE-20261002-69F9A64`:45/45CTest50.75s,
+all658frozen files/source550/shared9DLL/ONEUSB/defaultoffscreen/IIO/tinySA PASS.
+EXE5d3a520b/native8e081bfb/sourceCONTENT114c1d3d/snapshotFILEb41ba30d belong to
+runtime69f9a64, NEVER a later documentation commit. No vendor/mock RTL DLL or
+external manifest is in the package. Post-gate source/658native verification PASS.
+
+The ONE serial AFTER-freeze full V2 gate is NOT PASS:1279total/1212PASS/66skip/
+1FAIL499.371s, exact/clean before-after, deferred[]/outside[]. Existing APP05
+partial-Stop observer failed: source pass5 was open at GUI intent but completed
+before coordinator Stop, so genuine terminal gap6 differed from requested5.
+Benchmark/test files are unchanged from the foundation; causality to this
+increment is UNKNOWN. One bounded identical standalone diagnostic PASS is NOT
+a fix or a replacement for the failed full gate. No repeated full-suite retry,
+guard weakening or APP05 expired-timer restart; observer qualification remainsOPEN.
+
+This is a development increment/diagnostic package, NOT canonical/current/static/
+promoted or whole-release acceptance. Actual RTL bulk interfaces still Windows
+Problem28/no service/INF; actual external SDK absent. Four-device GUI, RTL RF,
+shared RTL+HackRF libusb compatibility, DPI/DWM/LPS/throughput/lossless/duty/soak,
+SDK linking/redistribution and whole independent release review remainOPEN.
+Two dedicated subagents used gpt-6-sol/high: RTL integration and UI V2 design/
+code/read-only review. Root retains integration/tests/RX/build/provenance/Git.
+APP07PARTIAL/APP06Eplanned/fullAPP00–14 goalACTIVE.
