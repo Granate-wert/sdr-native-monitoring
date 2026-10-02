@@ -148,6 +148,18 @@ class LivePresenter(QObject):
             return
         self._emit_snapshot(self._use_cases.current_snapshot())
 
+    def rtl_candidate_stage_available(self, source_id: str, selection_revision: int) -> bool:
+        """Read-only cached-candidate check, never a selected-graph Start permit."""
+        if self._closed or self._closing:
+            return False
+        operation = getattr(self._use_cases, "rtl_candidate_stage_available", None)
+        if not callable(operation):
+            return False
+        try:
+            return operation(source_id, selection_revision) is True
+        except Exception:
+            return False
+
     def apply_configuration(self, configuration: LiveConfiguration | LiveConfigurationPatch) -> None:
         self._submit(lambda: self._use_cases.apply_configuration(configuration), self._emit_snapshot)
 

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -14,6 +15,16 @@ namespace sdr_rtlsdr {
 // Vendor API callback data are interleaved *unsigned* 8-bit I/Q. The native
 // owner converts them to signed CI8 in its bounded slot pool before CPU DSP.
 using RtlBytesCallback = void (*)(std::span<const std::uint8_t>, void*) noexcept;
+
+// One currently enumerated USB session, never a stable device or calibration
+// identity. Same-string compatible replacement cannot be distinguished.
+struct RtlSessionRoute {
+    std::string manufacturer;
+    std::string product;
+    std::string serial;
+    std::uint32_t tuner_type{};
+    std::uint64_t selection_revision{};
+};
 
 struct RtlProfile {
     std::uint32_t center_hz{};
@@ -27,10 +38,18 @@ struct RtlProfile {
     std::uint64_t configuration_generation{1U};
     std::string source_id{"native.rtl_sdr.live"};
     std::string expected_unique_serial;
+    std::optional<RtlSessionRoute> session_route;
+    bool official_unbundled_runtime{};  // set by the native official factory only
     sdr_core::DetectorType detector{sdr_core::DetectorType::Sample};
 };
 
 void validate_rtl_profile(const RtlProfile& profile);
+// Used only when an external SDK close/open transition leaves handle
+// ownership ambiguous. It bars every subsequent RTL Start in this process.
+void quarantine_rtl_process() noexcept;
+[[nodiscard]] bool rtl_process_quarantined() noexcept;
+[[nodiscard]] bool try_acquire_rtl_process_lease() noexcept;
+void release_rtl_process_lease() noexcept;
 
 // One injected, family-specific SDK owner. The official implementation is
 // optional and deliberately unbundled; ordinary builds only compile mocks.
@@ -38,12 +57,14 @@ class RtlRuntimePort {
 public:
     virtual ~RtlRuntimePort() = default;
     virtual int open_exact_unique_serial(const std::string& expected) noexcept = 0;
+    virtual int open_selected_session_route(const RtlSessionRoute& expected) noexcept = 0;
     virtual int set_sample_rate(std::uint32_t value) noexcept = 0;
     virtual std::uint32_t get_sample_rate() noexcept = 0;
     virtual int set_center_frequency(std::uint32_t value) noexcept = 0;
     virtual std::uint32_t get_center_frequency() noexcept = 0;
     virtual int set_automatic_tuner_gain() noexcept = 0;
     virtual int reset_buffer() noexcept = 0;
+    virtual int verify_normal_tuner_mode() noexcept = 0;
     // Blocks on the caller's native RX thread until cancellation or failure.
     virtual int read_async(RtlBytesCallback callback, void* context,
                            std::uint32_t buffer_bytes) noexcept = 0;
@@ -74,7 +95,9 @@ struct RtlMetrics {
 };
 
 struct RtlLatestFrame {
-    std::shared_ptr<const sdr_core::SpectrumFrame> frame;
+    // The common Python SpectrumFrame binding uses value ownership, as do
+    // Pluto/HackRF latest-frame drains. Do not hand it a const shared_ptr.
+    std::optional<sdr_core::SpectrumFrame> frame;
     std::uint32_t coalesced_frames{};
 };
 
@@ -90,6 +113,13 @@ struct RtlStopResult {
     [[nodiscard]] bool complete() const noexcept {
         return reader_joined && dsp_joined && close_called && close_status == 0;
     }
+};
+
+struct RtlAcquisitionReadback {
+    std::uint64_t session_epoch{};
+    std::uint32_t actual_sample_rate_hz{};
+    std::uint32_t actual_center_hz{};
+    bool tuner_gain_readback_known{};  // no gain-mode getter is asserted
 };
 
 // One RX thread and one CPU-DSP worker. The C ABI callback never calls Python,
@@ -109,6 +139,7 @@ public:
     [[nodiscard]] RtlStopResult stop(std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool cleanup_required() const noexcept;
+    [[nodiscard]] RtlAcquisitionReadback readback() const noexcept;
 
 private:
     struct Impl;

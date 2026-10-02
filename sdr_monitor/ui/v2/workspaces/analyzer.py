@@ -237,6 +237,7 @@ class AnalyzerWorkspaceV2(QWidget):
     def enable_independent_pane_setup(
         self, *, install: Callable[[PaneProductSessionHandle], None],
         uninstall: Callable[[], None],
+        rtl_candidate_stage_available: Callable[[str, int], bool] = lambda _source, _revision: False,
     ) -> None:
         """Install the user editor on this existing Analyzer, without RX I/O."""
         if self._terminal_released or self._independent_setup is not None:
@@ -245,6 +246,7 @@ class AnalyzerWorkspaceV2(QWidget):
         self._commands.insertWidget(self._commands.indexOf(self.settings), button)
         setup = IndependentPaneSetupV2(
             install=install, uninstall=uninstall,
+            rtl_candidate_stage_available=rtl_candidate_stage_available,
             calibration_profiles=self._calibration_profiles,
             can_prepare=lambda: (not self._terminal_released and not self.model.state.controls_locked
                                  and self._independent_session is None),

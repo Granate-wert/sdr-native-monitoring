@@ -67,7 +67,10 @@ class AnalyzerSourceSelectionApplicationService:
             else:
                 transport = "UNVERIFIED"
             family_label = {DeviceFamily.AD936X: "AD936x SDR", DeviceFamily.HACKRF: "HackRF One",
-                            DeviceFamily.TINYSA: "tinySA candidate"}.get(binding.family, "SDR/instrument candidate")
+                            DeviceFamily.TINYSA: "tinySA candidate",
+                            DeviceFamily.RTL_SDR: "RTL-SDR USB session"}.get(binding.family, "SDR/instrument candidate")
+            if binding.family is DeviceFamily.RTL_SDR:
+                transport = "USB SESSION" if binding.rtl_session_route is not None else "USB UNVERIFIED"
             if binding.snapshot is not None:
                 family_label = binding.snapshot.label
             # Fixed model/transport + opaque suffix: no USB serial, COM, URI.

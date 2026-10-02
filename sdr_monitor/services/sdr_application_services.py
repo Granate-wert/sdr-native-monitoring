@@ -21,6 +21,7 @@ from .replay_session import ReplayService
 from .diagnostics_session import DiagnosticsService
 from .source_capability_catalog import SourceCapabilityCatalog
 from .hackrf_analyzer import HackrfAnalyzerService
+from .rtl_analyzer import RtlAnalyzerService
 from .hackrf_sweep_display import HackrfSweepDisplayService
 from .tinysa_common_analyzer import TinySaCommonAnalyzerService
 
@@ -218,6 +219,7 @@ class SdrApplicationServices:
     # Shared retained catalog for V2 source routing. None in inert/test graphs.
     device_catalog: SourceCapabilityCatalog | None = None
     analyzer_hackrf: HackrfAnalyzerService | None = None
+    analyzer_rtl: RtlAnalyzerService | None = None
     analyzer_hackrf_sweep: HackrfSweepDisplayService | None = None
     analyzer_tinysa: TinySaCommonAnalyzerService | None = None
 
@@ -245,10 +247,12 @@ def build_default_sdr_services() -> SdrApplicationServices:
     from .hackrf_analyzer import build_hackrf_analyzer_service
     from .hackrf_sweep_display import build_hackrf_sweep_display_service
     hackrf = build_hackrf_analyzer_service(live, catalog) if catalog is not None else None
+    rtl = (RtlAnalyzerService(live._native, live, catalog.snapshot, catalog.rtl_provision_for)
+           if catalog is not None and isinstance(live, NativeLiveSessionService) else None)
     hackrf_sweep = build_hackrf_sweep_display_service(live, catalog) if catalog is not None else None
     tinysa = TinySaCommonAnalyzerService(catalog, live) if catalog is not None and isinstance(live, NativeLiveSessionService) else None
     return SdrApplicationServices(live_sdr=live, sweep=sweep, recording=recording, device_catalog=catalog,
-                                  analyzer_hackrf=hackrf, analyzer_hackrf_sweep=hackrf_sweep,
+                                  analyzer_hackrf=hackrf, analyzer_rtl=rtl, analyzer_hackrf_sweep=hackrf_sweep,
                                   analyzer_tinysa=tinysa)
 
 

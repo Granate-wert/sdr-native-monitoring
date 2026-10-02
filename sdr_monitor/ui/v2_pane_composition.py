@@ -16,6 +16,7 @@ from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
 from sdr_monitor.services.ad936x_pane_owner import Ad936xPaneOwner
 from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
+from sdr_monitor.services.rtl_rtbw_pane_owner import RtlRtbwPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.services.tinysa_trace_pane_owner import TinySaTracePaneOwner
@@ -57,7 +58,7 @@ def compose_v2_pane_resource_session(
         values = tuple(owner_attribute(graph) for graph in graph_values)
         if any(value is None for value in values) or len({id(value) for value in values}) != len(values):
             raise PaneResourceError("parallel panes cannot share one application or catalog owner")
-    for name in ("analyzer_hackrf", "analyzer_hackrf_sweep", "analyzer_tinysa", "recording"):
+    for name in ("analyzer_hackrf", "analyzer_rtl", "analyzer_hackrf_sweep", "analyzer_tinysa", "recording"):
         owners_for_family = tuple(value for graph in graph_values
                                   if (value := getattr(graph.services, name, None)) is not None)
         if len({id(value) for value in owners_for_family}) != len(owners_for_family):
@@ -90,6 +91,12 @@ def compose_v2_pane_resource_session(
             owner_factories[resource_id] = partial(HackrfPaneOwner,
                 graph.live, graph.sweep_router, physical_stream_resource_id=resource_id,
                 sweep_available=getattr(graph.services, "analyzer_hackrf_sweep", None) is not None,
+                source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)
+        elif selected.family is DeviceFamily.RTL_SDR and isinstance(endpoint, ReceiverEndpoint):
+            if (graph.services.analyzer_rtl is None or selected.binding.rtl_session_route is None):
+                raise PaneResourceError("selected RTL graph has no same-session native RTBW owner")
+            owner_factories[resource_id] = partial(RtlRtbwPaneOwner,
+                graph.live, physical_stream_resource_id=resource_id,
                 source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)
         elif selected.family is DeviceFamily.TINYSA and isinstance(endpoint, SpectrumTraceEndpoint):
             instrument = graph.services.analyzer_tinysa

@@ -15,6 +15,7 @@
         "SDR_CORE_ENABLE_PLUTO": "OFF",
         "SDR_CORE_ENABLE_CUDA": "OFF",
         "SDR_CORE_ENABLE_HACKRF_OFFICIAL": "OFF",
+        "SDR_CORE_ENABLE_RTLSDR_OFFICIAL": "OFF",
         "SDR_CORE_ENABLE_SIMD": "ON",
         "SDR_CORE_ENABLE_SANITIZERS": "OFF",
         "SDR_CORE_ENABLE_PROFILING": "OFF"
@@ -51,6 +52,26 @@
         "SDR_CORE_HACKRF_INCLUDE_DIR": "$env{SDR_HACKRF_INCLUDE_DIR}",
         "SDR_CORE_HACKRF_LIBRARY": "$env{SDR_HACKRF_LIBRARY}",
         "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/windows-msvc-cpu-hackrf/python"
+      }
+    },
+    {
+      "name": "windows-msvc-cpu-rtl",
+      "displayName": "Windows MSVC CPU + Pluto + external RTL bridge staging",
+      "inherits": "windows-msvc-cpu",
+      "binaryDir": "${sourceDir}/out/build/rtl",
+      "cacheVariables": {
+        "SDR_CORE_ENABLE_RTLSDR_OFFICIAL": "ON",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/rtl/python"
+      }
+    },
+    {
+      "name": "windows-msvc-cpu-hackrf-rtl",
+      "displayName": "Windows MSVC CPU + Pluto + HackRF + external RTL bridge staging",
+      "inherits": "windows-msvc-cpu-hackrf",
+      "binaryDir": "${sourceDir}/out/build/rtl-hf",
+      "cacheVariables": {
+        "SDR_CORE_ENABLE_RTLSDR_OFFICIAL": "ON",
+        "SDR_CORE_PYTHON_OUTPUT_DIR": "${sourceDir}/out/build/rtl-hf/python"
       }
     },
     {
@@ -174,6 +195,14 @@
   ],
   "buildPresets": [
     {
+      "name": "windows-msvc-cpu-rtl-release",
+      "configurePreset": "windows-msvc-cpu-rtl"
+    },
+    {
+      "name": "windows-msvc-cpu-hackrf-rtl-release",
+      "configurePreset": "windows-msvc-cpu-hackrf-rtl"
+    },
+    {
       "name": "windows-msvc-cpu-hackrf-profile-release",
       "configurePreset": "windows-msvc-cpu-hackrf-profile"
     },
@@ -219,6 +248,16 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "windows-msvc-cpu-rtl",
+      "configurePreset": "windows-msvc-cpu-rtl",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-msvc-cpu-hackrf-rtl",
+      "configurePreset": "windows-msvc-cpu-hackrf-rtl",
+      "output": { "outputOnFailure": true }
+    },
     {
       "name": "windows-msvc-cpu-hackrf-profile",
       "configurePreset": "windows-msvc-cpu-hackrf-profile",

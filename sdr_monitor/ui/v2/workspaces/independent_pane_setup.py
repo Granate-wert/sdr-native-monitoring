@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
-from sdr_monitor.domain.device_capabilities import AcquisitionKind, AdapterRuntimeAvailability, DeviceFamily
+from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
 from sdr_monitor.domain.pane_scheduler import (
     CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile, RtlRtbwPaneProfile,
     PaneRevisitEstimate, TinySaTracePaneProfile,
@@ -103,7 +103,7 @@ class IndependentPaneSetupV2(QWidget):
     def __init__(self, *, install: Callable[[PaneProductSessionHandle], None],
                  uninstall: Callable[[], None],
                  can_prepare: Callable[[], bool] = lambda: True,
-                 rtl_controls_available: Callable[[str, int], bool] = lambda _source_id, _revision: False,
+                 rtl_candidate_stage_available: Callable[[str, int], bool] = lambda _source_id, _revision: False,
                  calibration_profiles: CalibrationProfileViewModel | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,7 +111,7 @@ class IndependentPaneSetupV2(QWidget):
         self.setProperty("ui2Root", True)
         self._install = install
         self._uninstall = uninstall
-        self._rtl_controls_available = rtl_controls_available
+        self._rtl_candidate_stage_available = rtl_candidate_stage_available
         self._can_prepare = can_prepare
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-pane-control")
         self._future: Future[Any] | None = None
@@ -396,23 +396,36 @@ class IndependentPaneSetupV2(QWidget):
     def _rtl_unavailable_key(self, choice: AnalyzerSourceChoice) -> str | None:
         if choice.family is not DeviceFamily.RTL_SDR:
             return None
-        if self._selection is None or self._selection.release_pending:
+        if (self._selection is None or self._selection.release_pending
+                or self._selection.refusal is not None
+                or choice not in self._selection.choices):
             return "analyzer.pane.setup.rtl_selection_unavailable"
         if choice.runtime is None or choice.runtime.availability is not AdapterRuntimeAvailability.AVAILABLE:
             return "analyzer.pane.setup.rtl_runtime_unavailable"
-        snapshot = choice.binding.snapshot
-        if (snapshot is None or choice.binding.identity_key is None
-                or snapshot.runtime_control_contract != "rtl.librtlsdr.rx.v1"
-                or AcquisitionKind.COMPLEX_IQ not in snapshot.acquisition_kinds
-                or not snapshot.tuning_ranges_hz or not snapshot.sample_rate_ranges_hz):
+        # RTL's generic-serial route is session scoped. A canonical snapshot
+        # or calibration key would be a false stable-identity claim here.
+        if (choice.binding.adapter_id != "rtl.librtlsdr.rx.v1"
+                or choice.binding.snapshot is not None
+                or choice.binding.calibration_identity is not None):
             return "analyzer.pane.setup.rtl_capability_unverified"
         try:
-            ready = self._rtl_controls_available(choice.device_id, self._selection.revision)
+            ready = self._rtl_candidate_stage_available(choice.device_id, self._selection.revision)
         except Exception:
             ready = False
         if ready is not True:
             return "analyzer.pane.setup.rtl_owner_unavailable"
         return None
+
+    @staticmethod
+    def _rtl_assurance_key(choice: AnalyzerSourceChoice) -> str:
+        return ("analyzer.pane.setup.rtl_session_scope"
+                if choice.binding.rtl_session_route is not None else
+                "analyzer.pane.setup.rtl_inventory_only")
+
+    def _rtl_choice_tip(self, choice: AnalyzerSourceChoice, reason: str | None) -> str:
+        if reason is not None:
+            return text(reason)
+        return text(self._rtl_assurance_key(choice)) if choice.family is DeviceFamily.RTL_SDR else choice.device_id
 
     def _source_user_changed(self, row: _SlotRow) -> None:
         self._source_changed(row)
@@ -441,7 +454,7 @@ class IndependentPaneSetupV2(QWidget):
                              text("analyzer.pane.setup.rtl_unavailable_choice", source=choice.label))
                     row.source.addItem(label, choice.device_id)
                     index = row.source.count() - 1
-                    row.source.setItemData(index, choice.device_id if reason is None else text(reason),
+                    row.source.setItemData(index, self._rtl_choice_tip(choice, reason),
                                            Qt.ItemDataRole.ToolTipRole)
                     model = row.source.model()
                     if reason is not None and isinstance(model, QStandardItemModel):
@@ -466,8 +479,10 @@ class IndependentPaneSetupV2(QWidget):
             if edge_index >= 0 and row.band.currentIndex() != edge_index:
                 with QSignalBlocker(row.band):
                     row.band.setCurrentIndex(edge_index)
-        row.source.setToolTip("" if reason is None else text(reason))
-        row.source.setAccessibleDescription("" if reason is None else text(reason))
+        tip = (self._rtl_choice_tip(choice, reason)
+               if choice is not None and choice.family is DeviceFamily.RTL_SDR else "")
+        row.source.setToolTip(tip)
+        row.source.setAccessibleDescription(tip)
         previous_rate = row.rate.currentData()
         with QSignalBlocker(row.rate):
             row.rate.clear()
@@ -837,6 +852,10 @@ class IndependentPaneSetupV2(QWidget):
             lines.append(text("analyzer.pane.setup.rtbw_band_scope"))
         if any(isinstance(job.profile, RtlRtbwPaneProfile)
                for resource in schedule.resources for job in resource.jobs):
+            context = getattr(prepared.handle, "rf_context", None)
+            for _source_id, choice, _revision in getattr(context, "selections", ()):
+                if choice.family is DeviceFamily.RTL_SDR:
+                    lines.append(text(self._rtl_assurance_key(choice)))
             lines.append(text("analyzer.pane.setup.rtl_rtbw_scope"))
         tiny_requests = {crop.pane_id: job.profile.request_template
                          for resource in schedule.resources for job in resource.jobs
@@ -943,13 +962,15 @@ class IndependentPaneSetupV2(QWidget):
                 row.source.setItemText(index, choice.label if reason is None else
                                        text("analyzer.pane.setup.rtl_unavailable_choice",
                                             source=choice.label))
-                row.source.setItemData(index, choice.device_id if reason is None else text(reason),
+                row.source.setItemData(index, self._rtl_choice_tip(choice, reason),
                                        Qt.ItemDataRole.ToolTipRole)
             choice = next((item for item in self._choices
                            if item.device_id == row.source.currentData()), None)
             reason = None if choice is None else self._rtl_unavailable_key(choice)
-            row.source.setToolTip("" if reason is None else text(reason))
-            row.source.setAccessibleDescription("" if reason is None else text(reason))
+            tip = (self._rtl_choice_tip(choice, reason)
+                   if choice is not None and choice.family is DeviceFamily.RTL_SDR else "")
+            row.source.setToolTip(tip)
+            row.source.setAccessibleDescription(tip)
             # A staged draft cannot rebuild source/geometry selectors. Translate
             # the existing mode items in place, without changing their data or
             # issuing a source/mode command through currentIndexChanged.

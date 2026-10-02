@@ -25,6 +25,7 @@ from .analyzer_rf_change import (
     compile_analyzer_rf_shift, source_inventory,
 )
 from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
+from ..domain.rtl_live import RtlConfigurationPatch
 from ..domain.paired_live import PairedLiveRequest, PairedLivePublication, PairedLivePerformance
 from ..domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 
@@ -163,6 +164,16 @@ class LiveSessionApplicationService:
     def current_source_selection(self) -> AnalyzerSourceSelection | None:
         """Immutable low-rate control metadata; no SDK/catalog rebuild."""
         return self._sources.current() if self._sources is not None else None
+
+    def rtl_controls_available(self, source_id: str, selection_revision: int) -> bool:
+        """No-I/O exact graph/selection readiness, never hardware or Start proof."""
+        return bool(self._rtbw is not None
+                    and self._rtbw.rtl_controls_available(source_id, selection_revision))
+
+    def rtl_candidate_stage_available(self, source_id: str, selection_revision: int) -> bool:
+        """No-I/O cached candidate for independent pane Stage, never Start."""
+        return bool(self._rtbw is not None
+                    and self._rtbw.rtl_candidate_stage_available(source_id, selection_revision))
 
     @_pane_exclusive_command
     def capture_rf_context(self) -> AnalyzerRfContext:
@@ -449,7 +460,7 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
         return self._port.select_manual_uri(uri)
 
     def current_snapshot(self) -> LiveSnapshot:
-        if self._rtbw is not None and self._rtbw.hackrf_selected:
+        if self._rtbw is not None and (self._rtbw.hackrf_selected or self._rtbw.rtl_selected):
             return self._lifecycle_snapshot(self._rtbw.current_snapshot())
         selection = self.current_source_selection()
         if selection is not None and not selection.ad936x_controls_available:
@@ -535,7 +546,7 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
     @_pane_exclusive_command
     def start(self) -> LiveSnapshot:
         self._rf_start_admission()
-        if self._rtbw is None or not self._rtbw.hackrf_selected:
+        if self._rtbw is None or not (self._rtbw.hackrf_selected or self._rtbw.rtl_selected):
             self._require_native_family()
         if self._analyzer is not None:
             self._analyzer.select_mode(AnalyzerMode.RTBW)
@@ -601,6 +612,14 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             return self._lifecycle_snapshot(self._rtbw.stage_hackrf(patch))
 
     @_pane_exclusive_command
+    def stage_rtl_configuration(self, patch: RtlConfigurationPatch) -> LiveSnapshot:
+        self._configuration_admission(idle_only=True)
+        if self._rtbw is None or self._analyzer is None:
+            raise RuntimeError("Common RTL RTBW is unavailable")
+        with self._analyzer.idle_control_operation():
+            return self._lifecycle_snapshot(self._rtbw.stage_rtl(patch))
+
+    @_pane_exclusive_command
     def start_sweep(self, request: ContinuousSweepPlanRequest | TinySaSweepRequest | HackrfSweepRequest) -> AnalyzerSessionState:
         self._rf_start_admission()
         if self._analyzer is None:
@@ -642,7 +661,7 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             if self._rf_receipt_failed and before.phase is AnalyzerPhase.IDLE and state.phase is AnalyzerPhase.IDLE:
                 selection = self.current_source_selection()
                 if selection is not None and selection.selected is not None and selection.selected.family in (
-                        DeviceFamily.AD936X, DeviceFamily.HACKRF):
+                        DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.RTL_SDR):
                     cleaned = self._rtbw.stop() if self._rtbw is not None else self._port.stop()
                     if cleaned.error is not None or cleaned.stop_required:
                         return self._lifecycle_snapshot(cleaned)

@@ -22,6 +22,7 @@ constexpr std::uint32_t input_samples = input_bytes / 2U;
 constexpr auto component_budget = 64U * 1024U * 1024U;
 std::atomic<bool> process_rtl_quarantined{};
 std::atomic<bool> process_rtl_owner_active{};
+std::atomic<std::uint64_t> next_session_epoch{1U};
 
 [[nodiscard]] bool serial_is_unique_claim(const std::string& value) {
     if (value.size() < 4U || value.size() > 64U || value == "00000001") {
@@ -32,12 +33,40 @@ std::atomic<bool> process_rtl_owner_active{};
     });
 }
 
+[[nodiscard]] bool valid_route_string(const std::string& value) {
+    return !value.empty() && value.size() < 256U && value.find('\0') == std::string::npos;
+}
+
 [[nodiscard]] std::int64_t steady_now_ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 }  // namespace
+
+void quarantine_rtl_process() noexcept {
+    process_rtl_quarantined.store(true, std::memory_order_release);
+}
+
+bool rtl_process_quarantined() noexcept {
+    return process_rtl_quarantined.load(std::memory_order_acquire);
+}
+
+bool try_acquire_rtl_process_lease() noexcept {
+    if (process_rtl_quarantined.load(std::memory_order_acquire)) return false;
+    bool available = false;
+    if (!process_rtl_owner_active.compare_exchange_strong(
+            available, true, std::memory_order_acq_rel, std::memory_order_acquire)) return false;
+    if (process_rtl_quarantined.load(std::memory_order_acquire)) {
+        process_rtl_owner_active.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+void release_rtl_process_lease() noexcept {
+    process_rtl_owner_active.store(false, std::memory_order_release);
+}
 
 void validate_rtl_profile(const RtlProfile& profile) {
     if (profile.center_hz == 0U ||
@@ -53,9 +82,18 @@ void validate_rtl_profile(const RtlProfile& profile) {
         profile.source_id.empty() || profile.source_id.size() > 128U ||
         profile.source_id.find_first_of("\\/") != std::string::npos ||
         profile.source_id.find("usb:") != std::string::npos ||
-        profile.source_id.find("ip:") != std::string::npos ||
-        !serial_is_unique_claim(profile.expected_unique_serial)) {
+        profile.source_id.find("ip:") != std::string::npos) {
         throw sdr_core::ConfigurationError("RTL RX profile is outside its typed bounds or unique-serial policy");
+    }
+    if (profile.session_route.has_value()) {
+        const auto& route = *profile.session_route;
+        if (!profile.expected_unique_serial.empty() || !valid_route_string(route.manufacturer) ||
+            !valid_route_string(route.product) || !valid_route_string(route.serial) ||
+            route.tuner_type == 0U || route.tuner_type > 6U || route.selection_revision == 0U) {
+            throw sdr_core::ConfigurationError("RTL session route must be exact, selected and uncalibrated");
+        }
+    } else if (!serial_is_unique_claim(profile.expected_unique_serial)) {
+        throw sdr_core::ConfigurationError("RTL RX requires a unique serial or an explicit session route");
     }
     const auto minimum_outputs = (input_samples + profile.hop_size - 1U) / profile.hop_size + 2U;
     if (profile.dsp_output_capacity < minimum_outputs || profile.dsp_output_capacity > 256U) {
@@ -96,7 +134,8 @@ struct RtlRuntimeSession::Impl final {
         options.source.source_type = sdr_core::SourceType::LiveIq;
         options.source.source_id = profile.source_id;
         options.source.display_name = "RTL-SDR Live";
-        options.source.backend_id = "native.rtlsdr.injected.cpu.v1";
+        options.source.backend_id = profile.official_unbundled_runtime
+            ? "native.librtlsdr.unbundled.cpu.v1" : "native.rtlsdr.injected.cpu.v1";
         dsp = sdr_core::make_cpu_dsp_backend(std::move(options));
         sdr_core::DspConfig config;
         config.fft_size = profile.fft_size;
@@ -112,7 +151,7 @@ struct RtlRuntimeSession::Impl final {
 
     ~Impl() {
         if (owns_process_lease) {
-            process_rtl_owner_active.store(false, std::memory_order_release);
+            release_rtl_process_lease();
         }
     }
 
@@ -145,7 +184,7 @@ struct RtlRuntimeSession::Impl final {
     std::uint64_t known_missing_samples{};
     mutable std::mutex dsp_mutex;
     mutable std::mutex presentation_mutex;
-    std::deque<std::shared_ptr<const sdr_core::SpectrumFrame>> presentation;
+    std::deque<sdr_core::SpectrumFrame> presentation;
     std::uint64_t presentation_superseded{};
     std::thread reader;
     std::thread processor;
@@ -160,6 +199,9 @@ struct RtlRuntimeSession::Impl final {
     bool device_open{};
     bool close_ambiguous{};
     bool owns_process_lease{};
+    std::atomic<bool> cleanup_pending{};
+    std::atomic<bool> reader_started{};
+    RtlAcquisitionReadback readback{};
     RtlStopResult stop_result{};
     Impl* quarantine_next{};
 
@@ -302,7 +344,7 @@ struct RtlRuntimeSession::Impl final {
                         presentation.pop_front();
                         ++presentation_superseded;
                     }
-                    presentation.push_back(std::make_shared<sdr_core::SpectrumFrame>(std::move(frame)));
+                    presentation.push_back(std::move(frame));
                 }
             }
         } catch (...) {
@@ -366,32 +408,37 @@ std::unique_ptr<RtlRuntimeSession> RtlRuntimeSession::start(
     auto impl = std::make_unique<Impl>(std::move(runtime), std::move(profile));
     auto session = std::unique_ptr<RtlRuntimeSession>(new RtlRuntimeSession(std::move(impl)));
     auto& state = *session->impl_;
-    bool available = false;
-    if (!process_rtl_owner_active.compare_exchange_strong(
-            available, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    if (!try_acquire_rtl_process_lease()) {
         throw sdr_core::DeviceError("another RTL receiver owner is active");
     }
     state.owns_process_lease = true;
     if (process_rtl_quarantined.load(std::memory_order_acquire)) {
         throw sdr_core::DeviceError("RTL receiver is quarantined after incomplete cleanup");
     }
-    if (state.runtime->open_exact_unique_serial(state.profile.expected_unique_serial) != 0) {
-        throw sdr_core::DeviceError("RTL exact-device open failed");
+    const auto open_status = state.profile.session_route.has_value() ?
+        state.runtime->open_selected_session_route(*state.profile.session_route) :
+        state.runtime->open_exact_unique_serial(state.profile.expected_unique_serial);
+    if (open_status != 0) {
+        throw sdr_core::DeviceError("RTL exact-device open failed; native status=" +
+                                    std::to_string(open_status));
     }
     state.device_open = true;
-    const auto configured =
-        state.runtime->set_automatic_tuner_gain() == 0 &&
-        state.runtime->set_sample_rate(state.profile.sample_rate_hz) == 0 &&
-        state.runtime->get_sample_rate() == state.profile.sample_rate_hz &&
-        state.runtime->set_center_frequency(state.profile.center_hz) == 0 &&
-        state.runtime->get_center_frequency() == state.profile.center_hz &&
-        state.runtime->reset_buffer() == 0;
-    if (!configured) {
+    state.cleanup_pending.store(true, std::memory_order_release);
+    auto configuration_status = state.runtime->set_automatic_tuner_gain();
+    if (configuration_status == 0) configuration_status = state.runtime->set_sample_rate(state.profile.sample_rate_hz);
+    if (configuration_status == 0 && state.runtime->get_sample_rate() != state.profile.sample_rate_hz) configuration_status = -101;
+    if (configuration_status == 0) configuration_status = state.runtime->set_center_frequency(state.profile.center_hz);
+    if (configuration_status == 0 && state.runtime->get_center_frequency() != state.profile.center_hz) configuration_status = -102;
+    if (configuration_status == 0) configuration_status = state.runtime->reset_buffer();
+    if (configuration_status == 0) configuration_status = state.runtime->verify_normal_tuner_mode();
+    if (configuration_status != 0) {
         state.stop_result.close_called = true;
         state.stop_result.close_status = state.runtime->close();
         if (state.stop_result.close_status == 0) {
             state.device_open = false;
-            throw sdr_core::DeviceError("RTL configuration/readback failed before RX");
+            state.cleanup_pending.store(false, std::memory_order_release);
+            throw sdr_core::DeviceError("RTL configuration/readback failed before RX; native status=" +
+                                        std::to_string(configuration_status));
         }
         // Close failed with unknown ownership semantics. Retain the faulted
         // owner for diagnosis; a second close or fresh Start is forbidden.
@@ -399,8 +446,13 @@ std::unique_ptr<RtlRuntimeSession> RtlRuntimeSession::start(
         state.close_ambiguous = true;
         process_rtl_quarantined.store(true, std::memory_order_release);
         throw sdr_core::DeviceError(
-            "RTL configuration/readback failed before RX; close failed and owner is quarantined");
+            "RTL configuration/readback failed before RX; native status=" +
+            std::to_string(configuration_status) + "; close status=" +
+            std::to_string(state.stop_result.close_status) + "; owner quarantined");
     }
+    state.readback = RtlAcquisitionReadback{
+        next_session_epoch.fetch_add(1U, std::memory_order_acq_rel),
+        state.profile.sample_rate_hz, state.profile.center_hz, false};
     state.processor = std::thread([&state] { state.process(); });
     state.reader = std::thread([&state] {
         const auto status = state.runtime->read_async(&Impl::callback, &state, input_bytes);
@@ -418,6 +470,7 @@ std::unique_ptr<RtlRuntimeSession> RtlRuntimeSession::start(
         }
         state.reader_cv.notify_all();
     });
+    state.reader_started.store(true, std::memory_order_release);
     return session;
 }
 
@@ -524,6 +577,7 @@ RtlStopResult RtlRuntimeSession::stop(const std::chrono::milliseconds timeout) n
             return state.stop_result;
         }
         state.device_open = false;
+        state.cleanup_pending.store(false, std::memory_order_release);
     }
     if (!state.device_open) {
         state.stop_result.close_called = true;
@@ -531,19 +585,23 @@ RtlStopResult RtlRuntimeSession::stop(const std::chrono::milliseconds timeout) n
     }
     if (state.stop_result.complete() && state.owns_process_lease) {
         state.owns_process_lease = false;
-        process_rtl_owner_active.store(false, std::memory_order_release);
+        release_rtl_process_lease();
     }
     return state.stop_result;
 }
 
 bool RtlRuntimeSession::running() const noexcept {
-    if (!impl_->reader.joinable()) return false;
+    if (!impl_->reader_started.load(std::memory_order_acquire)) return false;
     std::lock_guard lock(impl_->lifecycle_mutex);
     return !impl_->reader_done && !impl_->admission_closed.load(std::memory_order_acquire);
 }
 
 bool RtlRuntimeSession::cleanup_required() const noexcept {
-    return impl_->device_open || impl_->reader.joinable() || impl_->processor.joinable();
+    return impl_->cleanup_pending.load(std::memory_order_acquire);
+}
+
+RtlAcquisitionReadback RtlRuntimeSession::readback() const noexcept {
+    return impl_->readback;
 }
 
 }  // namespace sdr_rtlsdr

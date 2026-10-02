@@ -201,6 +201,16 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
         raise ContractSurfaceError("manifest artifact_sha256 is missing or invalid")
     if _file_sha256(module_path) != expected_hash:
         raise ContractSurfaceError("staged native module does not match manifest artifact_sha256")
+    if "rtl_official_compiled" in manifest:
+        compiled = manifest["rtl_official_compiled"]
+        if type(compiled) is not bool:
+            raise ContractSurfaceError("RTL compiled manifest flag must be a boolean")
+        if compiled:
+            version = manifest.get("rtl_control_contract_version")
+            if type(version) is not int or version != 1:
+                raise ContractSurfaceError("RTL staging requires control contract version1")
+        elif "rtl_control_contract_version" in manifest:
+            raise ContractSurfaceError("RTL disabled staging must not declare a control contract")
     if "hackrf_official_compiled" in manifest:
         if manifest["hackrf_official_compiled"] is not True:
             raise ContractSurfaceError("explicit HackRF staging manifest must declare compiled=true")
@@ -281,6 +291,38 @@ def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> N
             raise ContractSurfaceError("HackRF optional Sweep bridge/factory contract does not match its native manifest")
 
 
+def validate_rtl_factory(module: object, manifest: Mapping[str, object]) -> None:
+    """Validate the compiled bridge without loading its external SDK or probing USB.
+
+    Older OFF artifacts without either metadata item remain valid. A new bridge
+    must explicitly match the hash-bound staging manifest. Device availability
+    and external runtime identity are separately admitted by the provider.
+    """
+    missing = object()
+    compiled = getattr(module, "RTLSDR_OFFICIAL_COMPILED", missing)
+    declared = manifest.get("rtl_official_compiled", missing)
+    if compiled is missing and declared is missing:
+        enabled = False
+    elif type(compiled) is not bool or type(declared) is not bool or compiled != declared:
+        raise ContractSurfaceError("native RTL compiled flag does not match its staging manifest")
+    else:
+        enabled = compiled
+    methods = ("RtlExternalFile", "RtlExternalRuntime", "RtlSessionRoute",
+               "rtl_enumerate_candidates", "rtl_observe_single_candidate",
+               "create_rtl_runtime_control", "rtl_process_is_quarantined")
+    observed_version = getattr(module, "RTLSDR_RX_CONTROL_CONTRACT_VERSION", missing)
+    declared_version = manifest.get("rtl_control_contract_version", missing)
+    if enabled:
+        if (type(observed_version) is not int or observed_version != 1
+                or type(declared_version) is not int or declared_version != observed_version):
+            raise ContractSurfaceError("native RTL control contract does not match its staging manifest")
+        if not all(callable(getattr(module, name, None)) for name in methods):
+            raise ContractSurfaceError("native RTL control surface is incomplete")
+    elif (observed_version is not missing or declared_version is not missing
+          or any(hasattr(module, name) for name in methods)):
+        raise ContractSurfaceError("native RTL control surface is present in disabled staging")
+
+
 def validate_active_artifact(
     module_path: Path,
     manifest: Mapping[str, object],
@@ -332,6 +374,7 @@ def main() -> int:
         validate_manifest(module_path, manifest, args.expect_cuda)
         module = _load_native_module(module_path)
         validate_hackrf_factory(module, manifest)
+        validate_rtl_factory(module, manifest)
         info = dict(module.build_info())
         if bool(info.get("cuda_compiled")) != args.expect_cuda:
             raise ContractSurfaceError("build_info cuda_compiled does not match manifest")

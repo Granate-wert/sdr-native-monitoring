@@ -19,12 +19,16 @@ from PySide6.QtWidgets import (
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
-from sdr_monitor.domain.pane_scheduler import PaneControlGapReason
+from sdr_monitor.domain.pane_scheduler import PaneControlGapReason, RtlRtbwPaneProfile
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.services.pane_resource_session import PaneActivation, PaneHostTiming
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
+from sdr_monitor.ui.v2_pane_runtime import PanePumpResourceState
+from sdr_monitor.ui.v2_pane_presentation import PanePresentationBinding
 from sdr_monitor.ui.v2_pane_rf_plan import PaneRfChangePreview
 
 from ..design import ThemeId, stylesheet_for_theme
@@ -70,6 +74,10 @@ class IndependentPaneSessionV2(QWidget):
             for item in schedule.pane_revisits
         }
         self._pane_revisits = {item.pane_id: item for item in schedule.pane_revisits}
+        self._rtl_pane_ids = {
+            crop.pane_id for resource in schedule.resources for job in resource.jobs
+            if isinstance(job.profile, RtlRtbwPaneProfile) for crop in job.crops
+        }
         self._time_sliced_resources = {item.physical_stream_resource_id
                                        for item in schedule.resources if len(item.jobs) > 1}
         layout = QVBoxLayout(self)
@@ -433,6 +441,39 @@ class IndependentPaneSessionV2(QWidget):
             return text("analyzer.independent.timing.continuous_no_frame")
         return text("analyzer.independent.timing.continuous", age=age)
 
+    @staticmethod
+    def _rtl_actual_readout(
+        bundle: AnalyzerFrameBundle | None, state: PanePumpResourceState,
+        binding: PanePresentationBinding, accepted_serial: int | None,
+    ) -> str:
+        """Only a GUI-accepted frame from this live activation carries actuals."""
+        frame = None if bundle is None else bundle.spectrum
+        activation = state.activation
+        identity = None if bundle is None else bundle.identity
+        if (state.phase is not PanePumpPhase.RUNNING or activation is None
+                or accepted_serial != activation.host_activation_serial
+                or activation.physical_stream_resource_id != binding.physical_stream_resource_id
+                or activation.capture_id != binding.capture_id
+                or not isinstance(frame, LiveSpectrumFrame) or bundle is None
+                or bundle.rtbw is None or identity is None
+                or not bundle.session_id or identity.session_id != bundle.session_id
+                or type(bundle.acquisition_epoch) is not int
+                or bundle.acquisition_epoch != frame.acquisition_epoch
+                or identity.acquisition_epoch != frame.acquisition_epoch
+                or identity.source_id != binding.source_id
+                or frame.source_id != binding.source_id
+                or identity.unit != "dBFS/bin" or frame.unit != binding.unit
+                or identity.config_generation != frame.config_generation
+                or bundle.rtbw.center_frequency_hz != frame.center_frequency_hz
+                or bundle.rtbw.sample_rate_hz != frame.sample_rate_hz):
+            key = ("analyzer.independent.rtl_retained_unknown" if bundle is not None
+                   and state.phase is PanePumpPhase.STOPPED else
+                   "analyzer.independent.rtl_actual_unknown")
+            return text(key)
+        return text("analyzer.independent.rtl_actual",
+                    center=f"{frame.center_frequency_hz / 1e6:g}",
+                    rate=f"{frame.sample_rate_hz / 1e6:g}")
+
     def _refresh(self, _selected_slot: int | None = None) -> None:
         if self._terminal_released:
             return
@@ -498,6 +539,18 @@ class IndependentPaneSessionV2(QWidget):
                 frame = None if bundle is None else bundle.spectrum
                 summary_text = self._timing_text(pane_id, state.phase,
                                                  has_retained_frame=frame is not None)
+                if pane_id in self._rtl_pane_ids:
+                    binding = self.handle.preparer.bindings[pane_id]
+                    actual = self._rtl_actual_readout(
+                        bundle, state, binding, self.board.accepted_activation_serial(slot.number))
+                    summary_text += " · " + actual
+                    explanation += "\n\n" + actual + "\n" + text("analyzer.independent.rtl_scope")
+                    context = self.handle.rf_context
+                    if context is not None:
+                        choice = next((choice for source, choice, _revision in context.selections
+                                       if source == binding.source_id), None)
+                        if choice is not None and choice.binding.rtl_session_route is not None:
+                            explanation += "\n" + text("analyzer.pane.setup.rtl_session_scope")
                 activation = state.activation
                 if (activation is not None and activation.planned_control_gap is not None
                         and activation.planned_control_gap.reason is PaneControlGapReason.PROFILE_OR_RF_PLAN_CHANGE):

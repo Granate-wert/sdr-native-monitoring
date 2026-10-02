@@ -28,12 +28,13 @@ from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .presentation_omission import PresentationOmission
-from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilitySnapshot
+from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilitySnapshot, DeviceFamily
 from .ad936x_route_capabilities import Ad936xRouteCapabilities
 from .analyzer_sources import AnalyzerSourceChoice
 
 if TYPE_CHECKING:
     from .hackrf_live import HackrfLiveRequest
+    from .rtl_live import RtlLiveRequest
 
 
 class DeviceTransport(StrEnum):
@@ -659,6 +660,7 @@ class LiveSnapshot:
     source_choice: AnalyzerSourceChoice | None = None
     selection_revision: int | None = None
     hackrf_request: HackrfLiveRequest | None = None
+    rtl_request: RtlLiveRequest | None = None
     # Loaded native optional protocol observation, not a hardware capability.
     hackrf_detector_groups_available: bool = False
     hackrf_persistence_available: bool = False
@@ -673,19 +675,38 @@ class LiveSnapshot:
                 raise TypeError("family publication needs an existing source choice")
             if type(self.selection_revision) is not int or not 0 <= self.selection_revision < 1 << 64:
                 raise ValueError("family publication needs an explicit selection revision")
-        elif self.selection_revision is not None or self.hackrf_request is not None:
+        elif self.selection_revision is not None or self.hackrf_request is not None or self.rtl_request is not None:
             raise ValueError("family publication cannot omit its source choice")
+        if self.rtl_request is not None:
+            from .rtl_live import RtlLiveRequest
+            rtl_request = self.rtl_request
+            if (not isinstance(rtl_request, RtlLiveRequest) or self.source_choice is None
+                    or self.source_choice.family is not DeviceFamily.RTL_SDR
+                    or rtl_request.source_id != self.source_choice.device_id
+                    or self.device is not None or self.applied is not None or self.persistence is not None
+                    or self.hackrf_request is not None or self.generation != rtl_request.configuration_generation):
+                raise ValueError("RTL publication cannot use a foreign/Pluto profile or density")
+            if self.spectrum is not None:
+                frame = self.spectrum
+                if (frame.source_id != rtl_request.source_id or self.active_source_id != rtl_request.source_id
+                        or frame.config_generation != rtl_request.configuration_generation
+                        or frame.center_frequency_hz != rtl_request.center_frequency_hz
+                        or frame.sample_rate_hz != rtl_request.sample_rate_hz
+                        or frame.fft_size != rtl_request.fft_size or frame.hop_size != rtl_request.hop_size
+                        or frame.unit != "dBFS/bin" or self.unit != frame.unit
+                        or frame.acquisition_epoch != self.acquisition_epoch or self.acquisition_epoch is None
+                        or frame.clock_domain != "host_steady_ns" or self.clock_domain != frame.clock_domain):
+                    raise ValueError("RTL frame provenance/readback differs from the selected profile")
+        elif self.source_choice is not None and self.source_choice.family is DeviceFamily.RTL_SDR and self.spectrum is not None:
+            raise ValueError("Unstaged RTL source cannot publish a measurement")
         if self.hackrf_detector_groups_available or self.hackrf_persistence_available:
-            from .device_capabilities import DeviceFamily
             if self.source_choice is None or self.source_choice.family is not DeviceFamily.HACKRF:
                 raise ValueError("HackRF detector-group runtime observation needs its source choice")
         if self.source_choice is not None:
-            from .device_capabilities import DeviceFamily
             if (self.source_choice.family is DeviceFamily.HACKRF and self.hackrf_request is None
                     and (self.device is not None or self.applied is not None or self.spectrum is not None or self.persistence is not None)):
                 raise ValueError("Unstaged HackRF source cannot carry native measurements/configuration")
         if self.hackrf_request is not None:
-            from .device_capabilities import DeviceFamily
             from .hackrf_live import HackrfLiveRequest
             if (not isinstance(self.hackrf_request, HackrfLiveRequest)
                     or self.source_choice is None

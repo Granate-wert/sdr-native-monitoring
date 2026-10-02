@@ -11,6 +11,7 @@ from sdr_monitor.domain.device_capabilities import (
     CapabilityEvidence, CapabilityEvidenceOrigin, CapabilityField, CapabilityRange,
     CapabilityTransport, DeviceCalibrationIdentity,
     DeviceCapabilityBinding, DeviceCapabilitySnapshot, DeviceFamily,
+    RtlSessionRouteAssurance, build_device_capability_inventory,
     stable_identity_key,
 )
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, RtlRtbwPaneProfile
@@ -51,6 +52,35 @@ def _choice(*, canonical: bool, available: bool = True) -> AnalyzerSourceChoice:
 
 
 class RtlPureContractTests(unittest.TestCase):
+    def test_selected_generic_serial_is_session_only_not_calibration(self) -> None:
+        from sdr_monitor.services.rtl_capability_provider import RTL_ADAPTER_ID
+        from sdr_monitor.services.source_capability_admission import admit_source_request
+
+        route = RtlSessionRouteAssurance("Generic", "RTL tuner", "00000001", 5, 7,
+                                        True, "a" * 64)
+        binding = DeviceCapabilityBinding("rtl-sdr-session", DeviceFamily.RTL_SDR,
+                                          RTL_ADAPTER_ID, rtl_session_route=route)
+        self.assertIsNone(binding.identity_key)
+        self.assertIsNone(binding.calibration_identity)
+        self.assertIsNone(binding.snapshot)
+        runtime = AdapterRuntimeSnapshot(RTL_ADAPTER_ID, DeviceFamily.RTL_SDR,
+            AdapterRuntimeAvailability.AVAILABLE, "mock-unbundled-runtime")
+        inventory = build_device_capability_inventory((), bindings=(binding,), runtimes=(runtime,))
+        request = RtlLiveRequest(150_000_000, 2_400_000, source_id="rtl-sdr-session")
+        self.assertTrue(admit_source_request(inventory, binding.source_id, "rtbw", request).accepted)
+        self.assertFalse(admit_source_request(inventory, binding.source_id, "sweep", request).accepted)
+        unknown = replace(binding, rtl_session_route=None)
+        self.assertFalse(admit_source_request(build_device_capability_inventory((), bindings=(unknown,),
+            runtimes=(runtime,)), unknown.source_id, "rtbw", request).accepted)
+        selected = AnalyzerSourceChoice(binding, runtime, "RTL selected USB session", "USB SESSION")
+        draft = PaneSlotDraft(1, binding.source_id, 149_500_000, 150_500_000,
+                              sample_rate_hz=2_400_000, fft_size=4096)
+        plan = compile_user_pane_plan((draft,), {binding.source_id: selected},
+                                      {binding.source_id: 4})
+        assert plan.layout.schedule is not None
+        self.assertIsInstance(plan.layout.schedule.resources[0].jobs[0].profile,
+                              RtlRtbwPaneProfile)
+
     def test_four_distinct_mock_families_put_rtl_only_in_pane_four(self) -> None:
         # Reuse the existing no-hardware AD/HackRF/tinySA graph fixtures;
         # this proves a compiler layout, not four working receiver owners.
@@ -115,10 +145,10 @@ class RtlPureContractTests(unittest.TestCase):
                          (150_000_000, 2_400_000, "dBFS/bin"))
         self.assertEqual(profile.usable_capture_span_hz, 1_200_000)
         unknown = _choice(canonical=False)
-        with self.assertRaisesRegex(PaneUserPlanError, "tuner-specific capability"):
+        with self.assertRaisesRegex(PaneUserPlanError, "selected session or tuner capability"):
             compile_user_pane_plan((draft,), {unknown.device_id: unknown}, {unknown.device_id: 3})
         unavailable = _choice(canonical=True, available=False)
-        with self.assertRaisesRegex(PaneUserPlanError, "tuner-specific capability"):
+        with self.assertRaisesRegex(PaneUserPlanError, "selected session or tuner capability"):
             compile_user_pane_plan((draft,), {unavailable.device_id: unavailable},
                                    {unavailable.device_id: 3})
         assert choice.binding.snapshot is not None
@@ -128,7 +158,7 @@ class RtlPureContractTests(unittest.TestCase):
             changed = replace(choice, binding=replace(choice.binding, snapshot=changed_snapshot))
             with self.subTest(contract=changed_snapshot.runtime_control_contract,
                               kind=changed_snapshot.acquisition_kinds), self.assertRaisesRegex(
-                                  PaneUserPlanError, "tuner-specific capability"):
+                                  PaneUserPlanError, "selected session or tuner capability"):
                 compile_user_pane_plan((draft,), {changed.device_id: changed},
                                        {changed.device_id: 3})
 

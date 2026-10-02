@@ -53,7 +53,8 @@ def build_v2_analyzer_application_graph(services: Any) -> V2AnalyzerApplicationG
         catalog, services.live_sdr, control_transaction=lambda: analyzer.idle_control_operation())
         if isinstance(catalog, SourceCapabilityCatalog)
         and isinstance(services.live_sdr, NativeLiveSessionService) else None)
-    router = (AnalyzerRtbwRouter(services.live_sdr, sources, getattr(services, "analyzer_hackrf", None))
+    router = (AnalyzerRtbwRouter(services.live_sdr, sources, getattr(services, "analyzer_hackrf", None),
+                                 getattr(services, "analyzer_rtl", None))
               if sources is not None else None)
     sweep_router = AnalyzerSweepRouter(display, sources, getattr(services, "analyzer_tinysa", None),
                                        getattr(services, "analyzer_hackrf_sweep", None))

@@ -9,6 +9,8 @@ param(
     [switch]$StageOnly,
     # Diagnostic stage timing stays outside the active/frozen product module.
     [switch]$Profile,
+    # Compile the optional external-RTL ABI bridge; never load or bundle its SDK.
+    [switch]$EnableRtlOfficial,
     # Explicit opt-in SDK; canonical activation remains disabled.
     [string]$HackrfIncludeDirectory = "",
     [string]$HackrfLibrary = ""
@@ -17,6 +19,10 @@ param(
 $ErrorActionPreference = "Stop"
 if ($StageOnly -and $Clean) { throw "StageOnly cannot be combined with Clean (which removes active artifacts)" }
 $hackrfRequested = [bool]($HackrfIncludeDirectory -or $HackrfLibrary)
+if ($EnableRtlOfficial -and (-not $StageOnly -or $Lane -ne "CPU" -or
+        $Configuration -ne "Release" -or $Profile)) {
+    throw "External RTL bridge requires StageOnly CPU Release without profiling; canonical activation remains disabled"
+}
 if ($Profile -and (-not $StageOnly -or -not $hackrfRequested -or $Lane -ne "CPU" -or
         $Configuration -ne "Release")) {
     throw "Official HackRF profiling requires StageOnly CPU Release with explicit SDK paths"
@@ -168,6 +174,14 @@ $env:SDR_PYBIND11_CMAKE_DIR = [System.IO.Path]::GetFullPath($pybindCmakeDir)
 if ($hackrfRequested) {
     $env:SDR_HACKRF_INCLUDE_DIR = $HackrfIncludeDirectory
     $env:SDR_HACKRF_LIBRARY = $HackrfLibrary
+}
+if ($EnableRtlOfficial) {
+    $configurePreset = if ($hackrfRequested) { "windows-msvc-cpu-hackrf-rtl" } else { "windows-msvc-cpu-rtl" }
+    $buildPreset = "$configurePreset-release"
+    $testPreset = $configurePreset
+    $rtlBuildSubdir = if ($hackrfRequested) { "rtl-hf" } else { "rtl" }
+    $artifactDir = Join-Path $sourceDir "out\build\$rtlBuildSubdir\python"
+} elseif ($hackrfRequested) {
     $configurePreset = if ($Profile) { "windows-msvc-cpu-hackrf-profile" } else { "windows-msvc-cpu-hackrf" }
     $buildPreset = if ($Profile) { "windows-msvc-cpu-hackrf-profile-release" } else { "windows-msvc-cpu-hackrf-release" }
     $testPreset = $configurePreset
@@ -198,8 +212,12 @@ if ($hackrfRequested) {
 
 Push-Location $sourceDir
 try {
-    Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset, "-DSDR_CORE_PYTHON_OUTPUT_DIR=$artifactDir", "-DSDR_MSVC_SHOWINCLUDES_PREFIX=$dependencyPrefix")
-    $nativeBuildDir = if ($Profile) {
+    # Always reset the option, including OFF runs against a reused cache.
+    $rtlOfficialOption = if ($EnableRtlOfficial) { "ON" } else { "OFF" }
+    Invoke-Checked -FilePath $cmake -Arguments @("--preset", $configurePreset, "-DSDR_CORE_PYTHON_OUTPUT_DIR=$artifactDir", "-DSDR_MSVC_SHOWINCLUDES_PREFIX=$dependencyPrefix", "-DSDR_CORE_ENABLE_RTLSDR_OFFICIAL=$rtlOfficialOption")
+    $nativeBuildDir = if ($EnableRtlOfficial) {
+        Join-Path $sourceDir "out/build/$rtlBuildSubdir"
+    } elseif ($Profile) {
         Join-Path $sourceDir 'out/build/hackrf-profile'
     } else {
         Join-Path $sourceDir "out/build/$configurePreset"
@@ -247,10 +265,12 @@ $manifest = [ordered]@{
     native_version = "0.6.0"
     source_commit = $sourceCommit
     artifact_sha256 = $artifactSha256
+    rtl_official_compiled = [bool]$EnableRtlOfficial
     sweep_geometry_contract_version = 1
     sweep_max_segments = 2048
     sweep_max_reduced_bytes = 134217728
 }
+if ($EnableRtlOfficial) { $manifest['rtl_control_contract_version'] = 1 }
 if ($hackrfRequested) {
     $manifest['profiling_enabled'] = [bool]$Profile
     $runtimeHashes = [ordered]@{}

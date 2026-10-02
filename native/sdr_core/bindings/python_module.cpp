@@ -8,6 +8,9 @@
 #include "pluto_binding.hpp"
 #endif
 #include "synthetic_binding.hpp"
+#if defined(SDR_CORE_RTLSDR_OFFICIAL_COMPILED)
+#include "rtl_binding.hpp"
+#endif
 
 #include "sdr_core/api.hpp"
 #include "sdr_core/errors.hpp"
@@ -26,6 +29,11 @@ PYBIND11_MODULE(_sdr_native, module) {
     module.attr("SWEEP_GEOMETRY_CONTRACT_VERSION") = 1;
     module.attr("SWEEP_MAX_SEGMENTS") = sdr_core::sweep_max_segments;
     module.attr("SWEEP_MAX_REDUCED_BYTES") = sdr_core::sweep_max_reduced_bytes;
+#if defined(SDR_CORE_RTLSDR_OFFICIAL_COMPILED)
+    module.attr("RTLSDR_OFFICIAL_COMPILED") = true;
+#else
+    module.attr("RTLSDR_OFFICIAL_COMPILED") = false;
+#endif
 
     const auto native_error = py::register_exception<sdr_core::SdrNativeError>(module, "SdrNativeError");
     py::register_exception<sdr_core::ConfigurationError>(module, "ConfigurationError", native_error.ptr());
@@ -45,6 +53,9 @@ PYBIND11_MODULE(_sdr_native, module) {
     sdr_core::python::bind_lifecycle(module);
     sdr_core::python::bind_dsp(module);
     sdr_core::python::bind_hackrf(module);
+#if defined(SDR_CORE_RTLSDR_OFFICIAL_COMPILED)
+    sdr_core::python::bind_rtl(module);
+#endif
 #if defined(SDR_CORE_HACKRF_OFFICIAL_COMPILED)
     sdr_core::python::bind_hackrf_factory(module);
 #endif

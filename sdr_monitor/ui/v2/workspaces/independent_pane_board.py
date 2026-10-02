@@ -375,6 +375,11 @@ class IndependentPaneBoardV2(QWidget):
     def pane(self, slot_number: int) -> AnalyzerPaneViewV2 | None:
         return self._panes.get(slot_number)
 
+    def accepted_activation_serial(self, slot_number: int) -> int | None:
+        """The last GUI-accepted delivery, not a receiver Start receipt."""
+        order = self._last_order.get(slot_number)
+        return None if order is None else order[0]
+
     def set_pane_timing(self, slot_number: int, summary: str, explanation: str) -> None:
         """Show a compact, truthful host-timing row for one occupied pane."""
         if self._terminal_released or slot_number not in self._timing_labels:

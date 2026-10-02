@@ -44,6 +44,12 @@ public:
         observed_->opens.fetch_add(1);
         return expected == "RTL-UNIQUE-42" && fault_ != Fault::Open ? 0 : -7;
     }
+    int open_selected_session_route(const sdr_rtlsdr::RtlSessionRoute& expected) noexcept override {
+        observed_->opens.fetch_add(1);
+        return expected.manufacturer == "Mock" && expected.product == "RTL tuner" &&
+            expected.serial == "00000001" && expected.tuner_type == 5U &&
+            expected.selection_revision == 3U && fault_ != Fault::Open ? 0 : -7;
+    }
     int set_sample_rate(const std::uint32_t value) noexcept override {
         rate_ = value;
         return 0;
@@ -59,6 +65,7 @@ public:
     std::uint32_t get_center_frequency() noexcept override { return center_; }
     int set_automatic_tuner_gain() noexcept override { return 0; }
     int reset_buffer() noexcept override { return 0; }
+    int verify_normal_tuner_mode() noexcept override { return 0; }
 
     int read_async(const sdr_rtlsdr::RtlBytesCallback callback, void* context,
                    const std::uint32_t buffer_bytes) noexcept override {
@@ -133,6 +140,15 @@ void check_inert_validation() {
     } catch (const sdr_core::ConfigurationError&) {}
     request = profile();
     request.sample_rate_hz = 3'200'000U;  // no above-2.4M loss claim.
+    try {
+        sdr_rtlsdr::validate_rtl_profile(request);
+        assert(false);
+    } catch (const sdr_core::ConfigurationError&) {}
+    request = profile();
+    request.expected_unique_serial.clear();
+    request.session_route = sdr_rtlsdr::RtlSessionRoute{"Mock", "RTL tuner", "00000001", 5U, 3U};
+    sdr_rtlsdr::validate_rtl_profile(request);
+    request.session_route->tuner_type = 0U;
     try {
         sdr_rtlsdr::validate_rtl_profile(request);
         assert(false);
@@ -225,6 +241,44 @@ void check_reader_error_first_cause() {
     assert(observed->closes.load() == 1);
 }
 
+void check_concurrent_observers_during_stop() {
+    auto observed = std::make_shared<Observed>();
+    auto session = sdr_rtlsdr::RtlRuntimeSession::start(
+        std::make_unique<MockRtlPort>(observed), profile());
+    const auto readback = session->readback();
+    assert(readback.session_epoch > 0U);
+    assert(readback.actual_sample_rate_hz == 2'400'000U);
+    assert(readback.actual_center_hz == 100'000'000U);
+    assert(!readback.tuner_gain_readback_known);
+    std::atomic<bool> observe{true};
+    std::thread watcher([&] {
+        while (observe.load(std::memory_order_acquire)) {
+            static_cast<void>(session->running());
+            static_cast<void>(session->cleanup_required());
+            static_cast<void>(session->metrics());
+            std::this_thread::yield();
+        }
+    });
+    const auto stopped = session->stop(2000ms);
+    observe.store(false, std::memory_order_release);
+    watcher.join();
+    assert(stopped.complete());
+    assert(!session->running());
+    assert(!session->cleanup_required());
+}
+
+void check_selected_session_route() {
+    auto observed = std::make_shared<Observed>();
+    auto request = profile();
+    request.expected_unique_serial.clear();
+    request.session_route = sdr_rtlsdr::RtlSessionRoute{"Mock", "RTL tuner", "00000001", 5U, 3U};
+    auto session = sdr_rtlsdr::RtlRuntimeSession::start(
+        std::make_unique<MockRtlPort>(observed), request);
+    assert(session->readback().session_epoch > 0U);
+    assert(session->stop(2000ms).complete());
+    assert(observed->opens.load() == 1);
+}
+
 void check_stopped_object_does_not_hold_or_erase_new_lease() {
     auto first_observed = std::make_shared<Observed>();
     auto first = sdr_rtlsdr::RtlRuntimeSession::start(
@@ -279,7 +333,9 @@ void check_setup_close_fault_child() {
     } catch (const sdr_core::DeviceError& error) {
         const std::string cause = error.what();
         assert(cause.find("configuration/readback failed before RX") != std::string::npos);
-        assert(cause.find("close failed") != std::string::npos);
+        assert(cause.find("native status=-101") != std::string::npos);
+        assert(cause.find("close status=-1") != std::string::npos);
+        assert(cause.find("owner quarantined") != std::string::npos);
     }
     assert(observed->reads.load() == 0);
     assert(observed->closes.load() == 1);  // destructor never retries ambiguous close
@@ -332,6 +388,8 @@ int main(int argc, char** argv) {
     check_callback_dsp_and_stop(false, false, true);  // shorter even callback then full buffer
     check_callback_dsp_and_stop(true, false);  // immediate Stop before read enters
     check_reader_error_first_cause();
+    check_concurrent_observers_during_stop();
+    check_selected_session_route();
     check_stopped_object_does_not_hold_or_erase_new_lease();
     const std::string command = std::string("\"") + argv[0] + "\" --close-fault";
     assert(std::system(command.c_str()) == 0);

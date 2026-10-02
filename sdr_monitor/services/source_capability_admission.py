@@ -27,6 +27,7 @@ from .ad936x_capability_adapter import AD936X_LIBIIO_ADAPTER_ID
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID
 from .hackrf_live_admission import HackrfLiveAdmissionReason, HackrfLiveRequest, admit_hackrf_live
 from .tinysa_capability_adapter import TINYSA_READ_ONLY_ADAPTER_ID
+from .rtl_capability_provider import RTL_ADAPTER_ID
 
 
 class SourceRequestAdmissionReason(StrEnum):
@@ -140,6 +141,30 @@ def admit_source_request(
         return SourceRequestAdmission(SourceRequestAdmissionReason.SOURCE_NOT_FOUND)
     if not isinstance(mode, str) or mode not in {"rtbw", "sweep"}:
         return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_MODE)
+    if binding.family is DeviceFamily.RTL_SDR and binding.adapter_id == RTL_ADAPTER_ID:
+        if mode != "rtbw":
+            return SourceRequestAdmission(SourceRequestAdmissionReason.DEVICE_MODE_UNSUPPORTED)
+        from ..domain.rtl_live import RtlLiveRequest
+        if not isinstance(request, RtlLiveRequest):
+            return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_TYPE)
+        if request.source_id != binding.source_id:
+            return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_SOURCE)
+        route = binding.rtl_session_route
+        if route is None or route.normal_tuner_path is not True:
+            return SourceRequestAdmission(SourceRequestAdmissionReason.IDENTITY_UNVERIFIED)
+        runtime = inventory.runtime_for_adapter(binding.adapter_id)
+        if runtime is None or runtime.availability is AdapterRuntimeAvailability.UNKNOWN:
+            return SourceRequestAdmission(SourceRequestAdmissionReason.RUNTIME_NOT_OBSERVED)
+        if runtime.availability is not AdapterRuntimeAvailability.AVAILABLE:
+            return SourceRequestAdmission(SourceRequestAdmissionReason.RUNTIME_UNAVAILABLE)
+        try:
+            request.__post_init__()
+        except (TypeError, ValueError):
+            return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
+        # No stable serial/calibration or tuner-specific RF range is inferred.
+        # The native owner must recheck one current route, tuner mode and the
+        # exact center/Fs setters' readbacks before admitting any IQ callback.
+        return SourceRequestAdmission()
     snapshot = binding.snapshot
     identity = binding.calibration_identity
     if snapshot is None or identity is None:

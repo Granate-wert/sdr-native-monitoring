@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -360,6 +361,37 @@ class DeviceCalibrationIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class RtlSessionRouteAssurance:
+    """One selected enumeration, not stable identity or calibration.
+
+    A same-strings compatible replacement can be indistinguishable. A fresh
+    Discover/Select invalidates this observation; native Start rechecks it.
+    """
+
+    manufacturer: str
+    product: str
+    serial: str
+    tuner_type: int
+    observation_revision: int
+    normal_tuner_path: bool
+    runtime_set_sha256: str
+
+    def __post_init__(self) -> None:
+        for name in ("manufacturer", "product", "serial"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value or len(value) >= 256 or "\x00" in value:
+                raise ValueError(f"RTL session {name} is invalid")
+        if type(self.tuner_type) is not int or not 1 <= self.tuner_type <= 6:
+            raise ValueError("RTL tuner type is not observed")
+        if type(self.observation_revision) is not int or not 1 <= self.observation_revision < (1 << 63):
+            raise ValueError("RTL selected observation revision is invalid")
+        if self.normal_tuner_path is not True:
+            raise ValueError("RTL direct/offset sampling path is not qualified")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.runtime_set_sha256):
+            raise ValueError("RTL selected route needs the exact provisioned runtime digest")
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceCapabilityBinding:
     """Explicit operational→canonical join referencing existing immutable facts.
 
@@ -372,6 +404,7 @@ class DeviceCapabilityBinding:
     adapter_id: str
     snapshot: DeviceCapabilitySnapshot | None = None
     calibration_identity: DeviceCalibrationIdentity | None = None
+    rtl_session_route: RtlSessionRouteAssurance | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_id", _catalog_source_id(self.source_id))
@@ -379,6 +412,11 @@ class DeviceCapabilityBinding:
         object.__setattr__(self, "adapter_id", _opaque_identifier(self.adapter_id, "adapter_id"))
         if (self.snapshot is None) != (self.calibration_identity is None):
             raise ValueError("canonical binding requires both capability and calibration identity")
+        if self.rtl_session_route is not None:
+            if (self.family is not DeviceFamily.RTL_SDR or self.snapshot is not None
+                    or self.calibration_identity is not None
+                    or not isinstance(self.rtl_session_route, RtlSessionRouteAssurance)):
+                raise ValueError("RTL session assurance must not claim canonical/calibration identity")
         if self.snapshot is None:
             return
         if not isinstance(self.snapshot, DeviceCapabilitySnapshot):
@@ -500,6 +538,7 @@ __all__ = [
     "DeviceCapabilityInventory",
     "DeviceCapabilitySnapshot",
     "DeviceFamily",
+    "RtlSessionRouteAssurance",
     "build_device_capability_inventory",
     "merge_device_capability_inventories",
     "stable_identity_key",

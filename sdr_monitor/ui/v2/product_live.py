@@ -49,6 +49,7 @@ class LivePresenterLifecyclePort(LivePresenterPort, Protocol):
     """The existing public presenter plus its explicit application shutdown hook."""
 
     def shutdown(self) -> None: ...
+    def rtl_candidate_stage_available(self, source_id: str, selection_revision: int) -> bool: ...
 
 
 class SweepPresenterLifecyclePort(SweepPresenterPort, Protocol):
@@ -264,7 +265,10 @@ class V2LiveProductComposition:
                     owner._analyzer_workspace_ref = ref(widget)
                     widget.enable_independent_pane_setup(
                         install=owner.install_independent_pane_session,
-                        uninstall=owner.uninstall_independent_pane_session)
+                        uninstall=owner.uninstall_independent_pane_session,
+                        rtl_candidate_stage_available=getattr(
+                            owner._presenter, "rtl_candidate_stage_available",
+                            lambda _source, _revision: False))
                     if owner._pane_handle is not None:
                         widget.install_independent_pane_session(owner._pane_handle)
             workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector,

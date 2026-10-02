@@ -5,6 +5,7 @@ param(
     [switch]$SkipNative,
     [switch]$SkipFreeze,
     [switch]$SkipTests,
+    [switch]$EnableRtlOfficial,
     # Explicit opt-in package. The canonical CPU module is never activated.
     [string]$HackrfIncludeDirectory = "",
     [string]$HackrfLibrary = ""
@@ -12,6 +13,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $hackrfRequested = [bool]($HackrfIncludeDirectory -or $HackrfLibrary)
+if ($EnableRtlOfficial -and ($Lane -ne 'CPU' -or -not $OutputTag -or $SkipNative -or $SkipFreeze -or $SkipTests)) {
+    throw 'External RTL bridge package requires a tagged full CPU pipeline (no skip modes); no vendor RTL SDK is bundled'
+}
 if ($hackrfRequested) {
     if ($Lane -ne 'CPU' -or -not $OutputTag -or $SkipNative -or $SkipFreeze -or $SkipTests) {
         throw 'Official HackRF package requires a tagged full CPU pipeline (no skip modes)'
@@ -32,7 +36,7 @@ if (-not $SkipFreeze) {
 
 $releaseRoot = Join-Path $repoRoot ("dist\SDRNativeMonitoring-" + $Lane)
 if ($OutputTag) { $releaseRoot = "$releaseRoot-$OutputTag" }
-if ($hackrfRequested -and (Test-Path -LiteralPath $releaseRoot)) { throw 'Official HackRF output must be a new tagged directory; existing packages are preserved' }
+if (($hackrfRequested -or $EnableRtlOfficial) -and (Test-Path -LiteralPath $releaseRoot)) { throw 'Optional SDK output must be a new tagged directory; existing packages are preserved' }
 $packageDir = Join-Path $releaseRoot "SDRNativeMonitoring"
 $buildRoot = Join-Path $repoRoot ("build\sdr-release-" + $Lane)
 if ($OutputTag) { $buildRoot = "$buildRoot-$OutputTag" }
@@ -50,7 +54,9 @@ if ($bindSource) {
 
 if (-not $SkipNative) {
     if ($hackrfRequested) {
-        & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane CPU -PythonExecutable $python -StageOnly -HackrfIncludeDirectory $HackrfIncludeDirectory -HackrfLibrary $HackrfLibrary
+        & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane CPU -PythonExecutable $python -StageOnly -HackrfIncludeDirectory $HackrfIncludeDirectory -HackrfLibrary $HackrfLibrary -EnableRtlOfficial:$EnableRtlOfficial
+    } elseif ($EnableRtlOfficial) {
+        & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane CPU -PythonExecutable $python -StageOnly -EnableRtlOfficial
     } else {
         & (Join-Path $repoRoot "build_native_sdr.ps1") -Configuration Release -Lane $Lane -PythonExecutable $python -SkipTests:$SkipTests
     }
@@ -60,7 +66,10 @@ if ($bindSource) {
     & $python $snapshotTool --root $repoRoot --verify $sourceSnapshotPath
     if ($LASTEXITCODE -ne 0) { throw "source changed during native build" }
 }
-$freezeNativeDirectory = if ($hackrfRequested) { Join-Path $repoRoot 'native\sdr_core\out\build\windows-msvc-cpu-hackrf\python' } else { Join-Path $repoRoot 'sdr_monitor' }
+$freezeNativeDirectory = if ($EnableRtlOfficial) {
+    $rtlBuildSubdir = if ($hackrfRequested) { 'rtl-hf' } else { 'rtl' }
+    Join-Path $repoRoot "native\sdr_core\out\build\$rtlBuildSubdir\python"
+} elseif ($hackrfRequested) { Join-Path $repoRoot 'native\sdr_core\out\build\windows-msvc-cpu-hackrf\python' } else { Join-Path $repoRoot 'sdr_monitor' }
 $freezeNativeManifestPath = Join-Path $freezeNativeDirectory 'native_build_manifest.json'
 $nativeModules = @(Get-ChildItem -LiteralPath $freezeNativeDirectory -Filter "_sdr_native*.pyd" -File)
 if ($nativeModules.Count -ne 1) { throw "Expected one ABI-specific _sdr_native extension before freeze, found $($nativeModules.Count)" }
@@ -98,7 +107,8 @@ if (-not $SkipFreeze) {
         if ($hackrfRequested) {
             & $python (Join-Path $repoRoot 'scripts\freeze_sdr_official.py') --repo-root $repoRoot --native-directory $freezeNativeDirectory --libiio-directory $libiioRuntimeDir --release-root $releaseRoot --build-root $buildRoot
         } else {
-            & $python -m PyInstaller --noconfirm --clean --onedir --hide-console hide-early --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main --add-binary ("$($nativeModules[0].FullName);sdr_monitor") @libiioPyInstallerArgs (Join-Path $repoRoot "main_sdr.py")
+            $rtlManifestArgs = if ($EnableRtlOfficial) { @('--add-data', "$freezeNativeManifestPath;sdr_monitor") } else { @() }
+            & $python -m PyInstaller --noconfirm --clean --onedir --hide-console hide-early --name SDRNativeMonitoring --distpath $releaseRoot --workpath $buildRoot --specpath $buildRoot --exclude-module esw_dfl --exclude-module olefile --exclude-module _sgram_native --hidden-import sdr_monitor.main --add-binary ("$($nativeModules[0].FullName);sdr_monitor") @rtlManifestArgs @libiioPyInstallerArgs (Join-Path $repoRoot "main_sdr.py")
         }
     } finally {
         $env:PATH = $freezeOriginalPath

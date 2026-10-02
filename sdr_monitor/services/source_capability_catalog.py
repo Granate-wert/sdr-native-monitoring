@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from .tinysa_owned_acquisition import TinySaOwnedAcquisition
+    from .rtl_capability_provider import RtlRuntimeProvision
 
 from ..domain.device_capabilities import (
     AdapterRuntimeSnapshot,
@@ -196,7 +197,9 @@ class SourceCapabilityCatalog:
         """
         from .source_capability_providers import TinySaCapabilityProvider
 
-        with self._operation(), self._control_transaction():
+        # Pure retained-reference lookup. Stage already holds the Analyzer's
+        # idle transaction; re-entering it here would spuriously refuse.
+        with self._operation():
             self._require_released()
             if (not isinstance(binding, DeviceCapabilityBinding)
                     or binding.family is not DeviceFamily.TINYSA
@@ -210,6 +213,27 @@ class SourceCapabilityCatalog:
             try:
                 return provider.prepare_acquisition(binding.source_id, binding)
             except Exception:  # noqa: BLE001 - no routes, serial/vendor failures or substitution.
+                raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_FAILED) from None
+
+    def rtl_provision_for(self, binding: DeviceCapabilityBinding,
+                          runtime: AdapterRuntimeSnapshot) -> RtlRuntimeProvision:
+        """No-I/O exact retained RTL selection lookup; not a Start permit."""
+        from .rtl_capability_provider import RtlCapabilityProvider
+
+        with self._operation(), self._control_transaction():
+            self._require_released()
+            if (not isinstance(binding, DeviceCapabilityBinding)
+                    or binding.family is not DeviceFamily.RTL_SDR
+                    or self._inventory.binding_for_source(binding.source_id) is not binding
+                    or self._inventory.runtime_for_adapter(binding.adapter_id) is not runtime):
+                raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_CONTRACT)
+            provider = next((value for value in self._providers
+                             if value.adapter_id == binding.adapter_id), None)
+            if not isinstance(provider, RtlCapabilityProvider):
+                raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_CONTRACT)
+            try:
+                return provider.provision_for(binding)
+            except Exception:
                 raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_FAILED) from None
 
     def close(self) -> None:

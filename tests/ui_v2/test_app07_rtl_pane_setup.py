@@ -15,10 +15,8 @@ from PySide6.QtWidgets import QApplication, QComboBox
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import (
-    AcquisitionKind, AdapterRuntimeAvailability, AdapterRuntimeSnapshot, CapabilityEvidence,
-    CapabilityEvidenceOrigin, CapabilityField, CapabilityRange, CapabilityTransport,
-    DeviceCalibrationIdentity, DeviceCapabilityBinding, DeviceCapabilitySnapshot, DeviceFamily,
-    stable_identity_key,
+    AdapterRuntimeAvailability, AdapterRuntimeSnapshot, DeviceCapabilityBinding,
+    DeviceFamily, RtlSessionRouteAssurance,
 )
 from sdr_monitor.domain.pane_scheduler import CaptureEpochCost, CaptureMeasurementMode, RtlRtbwPaneProfile
 from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ, RtlLiveRequest
@@ -28,31 +26,12 @@ from sdr_monitor.ui.v2_pane_user_stage import PreparedPaneUserSession
 from sdr_monitor.ui.v2_pane_user_plan import RtbwBandPolicy
 
 
-def _choice(*, runtime: AdapterRuntimeAvailability, canonical: bool,
-            protocol: str = "rtl.librtlsdr.rx.v1", complex_iq: bool = True) -> AnalyzerSourceChoice:
+def _choice(*, runtime: AdapterRuntimeAvailability, selected_route: bool = False) -> AnalyzerSourceChoice:
     family = DeviceFamily.RTL_SDR
-    adapter = "rtl.fixture"
-    snapshot = None
-    identity = None
-    if canonical:
-        snapshot = DeviceCapabilitySnapshot(
-            device_id="rtl-device", identity_key=stable_identity_key("rtl-device"),
-            label="RTL fixture", family=family, adapter_id=adapter,
-            transports=(CapabilityTransport.USB,),
-            acquisition_kinds=((AcquisitionKind.COMPLEX_IQ,) if complex_iq else
-                               (AcquisitionKind.SPECTRUM_TRACE,)),
-            tuning_ranges_hz=(CapabilityRange(100e6, 200e6, "Hz"),),
-            sample_rate_ranges_hz=(CapabilityRange(2_048_000, 2_400_000, "Hz"),),
-            runtime_control_contract=protocol,
-            evidence=tuple(CapabilityEvidence(field, CapabilityEvidenceOrigin.RUNTIME_READBACK,
-                                               f"rtl-{field.value}") for field in (
-                CapabilityField.TRANSPORT, CapabilityField.ACQUISITION_KIND,
-                CapabilityField.TUNING_RANGE, CapabilityField.SAMPLE_RATE_RANGE,
-                CapabilityField.RUNTIME_CONTROL_CONTRACT)),
-        )
-        identity = DeviceCalibrationIdentity(family, adapter, snapshot.identity_key,
-                                             stable_identity_key("rtl-fixture-firmware"))
-    binding = DeviceCapabilityBinding("rtl-source", family, adapter, snapshot, identity)
+    adapter = "rtl.librtlsdr.rx.v1"
+    route = (RtlSessionRouteAssurance("RTL", "SDR", "00000001", 5, 1, True, "a" * 64)
+             if selected_route else None)
+    binding = DeviceCapabilityBinding("rtl-source", family, adapter, rtl_session_route=route)
     observation = AdapterRuntimeSnapshot(adapter, family, runtime, "rtl-runtime")
     return AnalyzerSourceChoice(binding, observation, "RTL-SDR fixture", "USB")
 
@@ -75,7 +54,7 @@ class RtlPaneSetupTests(unittest.TestCase):
     def _editor(self, choice: AnalyzerSourceChoice, *, owner_ready=False) -> IndependentPaneSetupV2:
         editor = IndependentPaneSetupV2(
             install=self.installed.append, uninstall=lambda: None,
-            rtl_controls_available=lambda source, revision: owner_ready
+            rtl_candidate_stage_available=lambda source, revision: owner_ready
             and source == choice.device_id and revision == 17,
         )
         editor.update_sources(AnalyzerSourceSelection(revision=17, choices=(choice,)))
@@ -90,7 +69,7 @@ class RtlPaneSetupTests(unittest.TestCase):
         return item.isEnabled()
 
     def test_unavailable_observed_choice_is_visible_but_never_stage_ready(self) -> None:
-        choice = _choice(runtime=AdapterRuntimeAvailability.UNAVAILABLE, canonical=False)
+        choice = _choice(runtime=AdapterRuntimeAvailability.UNAVAILABLE)
         editor = self._editor(choice, owner_ready=True)
         try:
             row = editor._rows[3]
@@ -122,18 +101,12 @@ class RtlPaneSetupTests(unittest.TestCase):
             editor.release_after_shutdown()
             editor.close()
 
-    def test_runtime_alone_and_canonical_facts_alone_do_not_admit_owner(self) -> None:
+    def test_runtime_or_route_alone_do_not_admit_candidate(self) -> None:
         cases = (
-            (_choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=False), True,
-             "analyzer.pane.setup.rtl_capability_unverified"),
-            (_choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=True), False,
+            (_choice(runtime=AdapterRuntimeAvailability.AVAILABLE), False,
              "analyzer.pane.setup.rtl_owner_unavailable"),
-            (_choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=True,
-                     protocol="rtl.unsupported.rx.v1"), True,
-             "analyzer.pane.setup.rtl_capability_unverified"),
-            (_choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=True,
-                     complex_iq=False), True,
-             "analyzer.pane.setup.rtl_capability_unverified"),
+            (_choice(runtime=AdapterRuntimeAvailability.AVAILABLE, selected_route=True), False,
+             "analyzer.pane.setup.rtl_owner_unavailable"),
         )
         for choice, owner_ready, reason in cases:
             with self.subTest(reason=reason):
@@ -149,20 +122,40 @@ class RtlPaneSetupTests(unittest.TestCase):
                     editor.release_after_shutdown()
                     editor.close()
 
+    def test_wrong_adapter_refuses_even_when_callback_claims_stage_ready(self) -> None:
+        binding = DeviceCapabilityBinding("rtl-source", DeviceFamily.RTL_SDR, "rtl.other.rx")
+        runtime = AdapterRuntimeSnapshot("rtl.other.rx", DeviceFamily.RTL_SDR,
+                                         AdapterRuntimeAvailability.AVAILABLE, "rtl-runtime")
+        choice = AnalyzerSourceChoice(binding, runtime, "Wrong RTL adapter", "USB")
+        editor = self._editor(choice, owner_ready=True)
+        try:
+            row = editor._rows[3]
+            index = row.source.findData(choice.device_id)
+            self.assertFalse(self._item_enabled(row.source, index))
+            row.source.setCurrentIndex(index)
+            self.assertFalse(editor.prepare.isEnabled())
+            self.assertEqual(editor._rtl_unavailable_key(choice),
+                             "analyzer.pane.setup.rtl_capability_unverified")
+        finally:
+            editor.release_after_shutdown()
+            editor.close()
+
     def test_exact_owner_callback_only_enables_rtbw_draft_without_starting_receiver(self) -> None:
-        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=True)
+        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE)
         editor = self._editor(choice, owner_ready=False)
         try:
             row = editor._rows[3]
             index = row.source.findData(choice.device_id)
             self.assertFalse(self._item_enabled(row.source, index))
-            editor._rtl_controls_available = lambda source, revision: (
+            editor._rtl_candidate_stage_available = lambda source, revision: (
                 source == choice.device_id and revision == 17)
             editor.update_sources(editor._selection)
             index = row.source.findData(choice.device_id)
             self.assertTrue(self._item_enabled(row.source, index))
             row.source.setCurrentIndex(index)
             self.assertTrue(editor.prepare.isEnabled())
+            self.assertIn("inventory-only", row.source.toolTip())
+            self.assertIn("not yet a selected tuner", row.source.accessibleDescription())
             self.assertEqual(tuple(row.mode.itemData(i) for i in range(row.mode.count())),
                              (CaptureMeasurementMode.RTBW,))
             self.assertTrue(row.rate.isEnabled())
@@ -178,8 +171,48 @@ class RtlPaneSetupTests(unittest.TestCase):
             editor.release_after_shutdown()
             editor.close()
 
+    def test_cached_rtl_stage_candidate_does_not_require_default_pluto_selection(self) -> None:
+        rtl = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE)
+        ad = AnalyzerSourceChoice(DeviceCapabilityBinding(
+            "ad-source", DeviceFamily.AD936X, "ad.fixture"), None, "Pluto fixture", "USB")
+        editor = IndependentPaneSetupV2(
+            install=self.installed.append, uninstall=lambda: None,
+            rtl_candidate_stage_available=lambda source, revision: source == rtl.device_id and revision == 17)
+        try:
+            editor.update_sources(AnalyzerSourceSelection(
+                revision=17, choices=(ad, rtl), selected_id=ad.device_id))
+            row = editor._rows[3]
+            index = row.source.findData(rtl.device_id)
+            self.assertTrue(self._item_enabled(row.source, index))
+            row.source.setCurrentIndex(index)
+            self.assertTrue(editor.prepare.isEnabled())
+            self.assertIn("inventory-only", row.source.toolTip())
+            self.assertIsNone(rtl.binding.identity_key)
+            self.assertFalse(self.installed)
+        finally:
+            editor.release_after_shutdown()
+            editor.close()
+
+    def test_selected_session_route_is_not_stable_calibration_identity(self) -> None:
+        rtl = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE, selected_route=True)
+        editor = self._editor(rtl, owner_ready=True)
+        try:
+            row = editor._rows[3]
+            row.source.setCurrentIndex(row.source.findData(rtl.device_id))
+            self.assertTrue(editor.prepare.isEnabled())
+            self.assertIn("only for this USB session", row.source.toolTip())
+            self.assertIn("indistinguishable compatible replacement", row.source.toolTip())
+            self.assertIsNone(rtl.binding.identity_key)
+            self.assertIsNone(rtl.binding.calibration_identity)
+            set_active_locale(UiLocale.RU)
+            editor.set_locale()
+            self.assertIn("USB-сеанса", row.source.toolTip())
+        finally:
+            editor.release_after_shutdown()
+            editor.close()
+
     def test_rtl_preview_does_not_invent_filter_or_actual_readback(self) -> None:
-        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=True)
+        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE)
         editor = self._editor(choice, owner_ready=True)
         try:
             request = RtlLiveRequest(100_500_000, 2_400_000)
@@ -199,7 +232,8 @@ class RtlPaneSetupTests(unittest.TestCase):
             self.assertIn("planned digital analysis crop", preview)
             self.assertIn("not a guaranteed RF passband", preview)
             self.assertIn("uncalibrated dBFS/bin", preview)
-            self.assertIn("Actual Fs and gain remain unknown", preview)
+            self.assertIn("Actual Fs/center are unknown", preview)
+            self.assertIn("gain mode is auto, actual gain unknown", preview)
             self.assertNotIn("RF filter", preview)
             self.assertNotIn("HackRF acknowledges", preview)
         finally:
@@ -208,12 +242,12 @@ class RtlPaneSetupTests(unittest.TestCase):
             editor.close()
 
     def test_switching_from_ad_full_receive_resets_only_new_rtl_draft_band(self) -> None:
-        rtl = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=True)
+        rtl = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE)
         ad = AnalyzerSourceChoice(DeviceCapabilityBinding(
             "ad-source", DeviceFamily.AD936X, "ad.fixture"), None, "AD fixture", "USB")
         editor = IndependentPaneSetupV2(
             install=self.installed.append, uninstall=lambda: None,
-            rtl_controls_available=lambda source, revision: source == rtl.device_id and revision == 17)
+            rtl_candidate_stage_available=lambda source, revision: source == rtl.device_id and revision == 17)
         try:
             editor.update_sources(AnalyzerSourceSelection(revision=17, choices=(ad, rtl)))
             peer, target = editor._rows[0], editor._rows[3]
@@ -234,7 +268,7 @@ class RtlPaneSetupTests(unittest.TestCase):
             editor.close()
 
     def test_owner_callback_exception_and_stale_selection_keep_stage_inert(self) -> None:
-        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE, canonical=True)
+        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE)
         editor = self._editor(choice, owner_ready=False)
         try:
             row = editor._rows[3]
@@ -243,7 +277,7 @@ class RtlPaneSetupTests(unittest.TestCase):
             def broken_owner(_source: str, _revision: int) -> bool:
                 raise RuntimeError("internal owner detail must not reach UI")
 
-            editor._rtl_controls_available = broken_owner
+            editor._rtl_candidate_stage_available = broken_owner
             editor.update_sources(editor._selection)
             self.assertFalse(editor.prepare.isEnabled())
             self.assertEqual(editor._rtl_unavailable_key(choice),

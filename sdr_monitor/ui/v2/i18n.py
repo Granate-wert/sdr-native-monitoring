@@ -203,11 +203,29 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Контракт адаптера RTL-SDR недоступен или не подтверждён. Проверьте состояние устройства и необязательной среды выполнения вне приложения; подготовка и RX отключены.",
             UiLocale.EN: "RTL-SDR adapter runtime is unavailable or unverified. Check the device and optional runtime outside the app; Stage and RX are disabled."}),
         "analyzer.pane.setup.rtl_capability_unverified": MappingProxyType({
-            UiLocale.RU: "Идентификатор и пределы RTL-SDR не подтверждены наблюдаемыми данными. Диапазон антенны не является пределом настройки; подготовка и RX отключены.",
-            UiLocale.EN: "RTL-SDR identity and bounds lack observed evidence. Antenna range is not a tuner limit; Stage and RX are disabled."}),
+            UiLocale.RU: "Контракт адаптера RTL-SDR не совпадает или сведения о постоянном идентификаторе/калибровке несовместимы. Подготовка отключена; диапазон антенны не подтверждает пределы тюнера.",
+            UiLocale.EN: "RTL-SDR adapter contract differs or stable-identity/calibration facts conflict. Stage is disabled; an antenna range does not establish tuner limits."}),
         "analyzer.pane.setup.rtl_owner_unavailable": MappingProxyType({
-            UiLocale.RU: "Общий владелец RTL-SDR RTBW ещё не допущен для выбранного источника. Подготовка и RX отключены.",
-            UiLocale.EN: "The common RTL-SDR RTBW owner is not admitted for this exact source. Stage and RX are disabled."}),
+            UiLocale.RU: "Кандидат RTL-SDR ещё не допущен к подготовке: нет точной доступной среды выполнения или общего владельца RTBW для этого источника и ревизии. RX не запускается.",
+            UiLocale.EN: "This exact RTL-SDR candidate/revision is not Stage-ready: its runtime or common RTBW owner is unavailable. RX is not started."}),
+        "analyzer.pane.setup.rtl_inventory_only": MappingProxyType({
+            UiLocale.RU: "RTL-SDR пока только в списке USB. Подготовка заново обнаружит и выберет устройство; это ещё не выбранный тюнер, постоянный идентификатор или калибровка. RX не запускается.",
+            UiLocale.EN: "RTL-SDR is an inventory-only USB candidate. Stage will freshly discover and select it; this is not yet a selected tuner, stable identity or calibration. RX is not started."}),
+        "analyzer.pane.setup.rtl_session_scope": MappingProxyType({
+            UiLocale.RU: "RTL-SDR подтверждён только для текущего USB-сеанса, не как постоянный идентификатор или калибровка. Неотличимая совместимая замена возможна; после переподключения нужно заново обнаружить и выбрать устройство.",
+            UiLocale.EN: "RTL-SDR is assured only for this USB session, not as stable identity or calibration. An indistinguishable compatible replacement remains possible; reconnect requires fresh Discover and Select."}),
+        "analyzer.independent.rtl_actual_unknown": MappingProxyType({
+            UiLocale.RU: "RTL-SDR: фактические Fs/центр неизвестны до кадра текущего запуска",
+            UiLocale.EN: "RTL-SDR: actual Fs/center unknown until a frame from this Start"}),
+        "analyzer.independent.rtl_retained_unknown": MappingProxyType({
+            UiLocale.RU: "RTL-SDR: сохранённый кадр после Стоп; текущие Fs/центр неизвестны",
+            UiLocale.EN: "RTL-SDR: frame retained after Stop; current Fs/center unknown"}),
+        "analyzer.independent.rtl_actual": MappingProxyType({
+            UiLocale.RU: "RTL-SDR: фактически Fs {rate} MS/s · центр {center} МГц (текущий запуск)",
+            UiLocale.EN: "RTL-SDR: actual Fs {rate} MS/s · center {center} MHz (this Start)"}),
+        "analyzer.independent.rtl_scope": MappingProxyType({
+            UiLocale.RU: "Усиление: авто, фактическое значение неизвестно. Пределы тюнера неизвестны; некалиброванные dBFS/bin. Фильтр, потери и RF-время не подтверждены.",
+            UiLocale.EN: "Gain: auto, actual value unknown. Tuner limits unknown; uncalibrated dBFS/bin. Filter, loss and RF timing are unverified."}),
         "analyzer.pane.setup.preview_hackrf_capture": MappingProxyType({
             UiLocale.RU: "Окно {pane}: аппаратный план захвата HackRF {start}–{stop} МГц; спектр обрезается до точного запрошенного диапазона. Не аппаратное считывание.",
             UiLocale.EN: "Pane {pane}: planned HackRF hardware capture {start}–{stop} MHz; spectrum is cropped to the exact requested analysis range. Not hardware readback."}),
@@ -255,8 +273,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Окно {pane}, план RTBW: запрос Fs {rate} MS/s · RF-фильтр {filter} МГц · допустимая полоса анализа {usable} МГц · окно {start}…{stop} МГц · физическая FFT {fft} / шаг {hop} отсчётов.",
             UiLocale.EN: "Pane {pane}, RTBW plan: requested Fs {rate} MS/s · RF filter {filter} MHz · allowed analysis span {usable} MHz · pane {start}…{stop} MHz · physical FFT {fft} / hop {hop} samples."}),
         "analyzer.pane.setup.preview_rtl_rtbw": MappingProxyType({
-            UiLocale.RU: "Окно {pane}, план RTL-SDR RTBW: запрос Fs {rate} MS/s · плановая цифровая область анализа {usable} МГц (не гарантия RF-полосы) · окно {start}…{stop} МГц · физическая FFT {fft} / шаг {hop} отсчётов · некалиброванные dBFS/bin. Фактические Fs и усиление неизвестны до подтверждённого считывания.",
-            UiLocale.EN: "Pane {pane}, RTL-SDR RTBW plan: requested Fs {rate} MS/s · planned digital analysis crop {usable} MHz (not a guaranteed RF passband) · pane {start}…{stop} MHz · physical FFT {fft} / hop {hop} samples · uncalibrated dBFS/bin. Actual Fs and gain remain unknown until confirmed readback."}),
+            UiLocale.RU: "Окно {pane}, план RTL-SDR RTBW: запрос Fs {rate} MS/s · плановая цифровая область анализа {usable} МГц (не гарантия RF-полосы) · окно {start}…{stop} МГц · физическая FFT {fft} / шаг {hop} отсчётов · некалиброванные dBFS/bin. Фактические Fs/центр неизвестны до подтверждения запуска; режим усиления авто, фактическое усиление неизвестно.",
+            UiLocale.EN: "Pane {pane}, RTL-SDR RTBW plan: requested Fs {rate} MS/s · planned digital analysis crop {usable} MHz (not a guaranteed RF passband) · pane {start}…{stop} MHz · physical FFT {fft} / hop {hop} samples · uncalibrated dBFS/bin. Actual Fs/center are unknown until Start confirms them; gain mode is auto, actual gain unknown."}),
         "analyzer.pane.setup.rtl_rtbw_scope": MappingProxyType({
             UiLocale.RU: "Для RTL-SDR сканирование не подключено. Фильтр, ровность полосы, потери, RF-время и калибровка не подтверждаются этим планом; Применить не запускает RX.",
             UiLocale.EN: "RTL-SDR Sweep is not connected. This plan does not verify filter, passband flatness, loss, RF timing or calibration; Apply does not start RX."}),

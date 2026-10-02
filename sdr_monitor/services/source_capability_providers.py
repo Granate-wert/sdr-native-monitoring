@@ -20,6 +20,7 @@ from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID, HackrfCapabi
 from .libhackrf_read_only import LibhackrfReadOnlyPort
 from .native_live import NativeLiveSessionService
 from .source_capability_catalog import SourceCapabilityCatalog
+from .rtl_capability_provider import RtlCapabilityProvider, qualified_rtl_runtime
 from .tinysa_capability_adapter import TINYSA_READ_ONLY_ADAPTER_ID, TinySaCapabilityAdapter, TinySaCapabilityObservation
 from .tinysa_owned_acquisition import TinySaOwnedAcquisition
 from .tinysa_readonly_port import TinySaSerialReadOnlyPort
@@ -236,7 +237,8 @@ def build_source_capability_catalog(live: NativeLiveSessionService) -> SourceCap
         "official-factory2-and-manifest-matched-sdk" if folder is not None else "official-capability-runtime-unavailable")
     adapter = HackrfCapabilityAdapter(lambda: LibhackrfReadOnlyPort(folder / "hackrf.dll", folder)) if folder is not None else None
     return SourceCapabilityCatalog(
-        (NativeLiveCapabilityProvider(live), HackrfCapabilityProvider(adapter, runtime), TinySaCapabilityProvider()),
+        (NativeLiveCapabilityProvider(live), HackrfCapabilityProvider(adapter, runtime),
+         TinySaCapabilityProvider(), RtlCapabilityProvider(qualified_rtl_runtime(live._native))),
         control_transaction=live.capability_control_transaction,
     )
 

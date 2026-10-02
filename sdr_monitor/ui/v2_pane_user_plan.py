@@ -336,17 +336,22 @@ def compile_user_pane_plan(
                 raise PaneUserPlanError("RTL requires a bounded edge-trimmed RTBW profile")
             snapshot = choice.binding.snapshot
             identity = choice.binding.calibration_identity
-            if (snapshot is None or identity is None or snapshot.family is not DeviceFamily.RTL_SDR
-                    or snapshot.runtime_control_contract != "rtl.librtlsdr.rx.v1"
-                    or AcquisitionKind.COMPLEX_IQ not in snapshot.acquisition_kinds
-                    or choice.runtime is None
+            route = choice.binding.rtl_session_route
+            canonical = bool(snapshot is not None and identity is not None
+                and snapshot.family is DeviceFamily.RTL_SDR
+                and snapshot.runtime_control_contract == "rtl.librtlsdr.rx.v1"
+                and AcquisitionKind.COMPLEX_IQ in snapshot.acquisition_kinds
+                and snapshot.tuning_ranges_hz and snapshot.sample_rate_ranges_hz
+                and any(bounds.minimum <= draft.start_hz < draft.stop_hz <= bounds.maximum
+                        for bounds in snapshot.tuning_ranges_hz)
+                and any(bounds.minimum <= draft.sample_rate_hz <= bounds.maximum
+                        for bounds in snapshot.sample_rate_ranges_hz))
+            selected_session = bool(route is not None and route.normal_tuner_path
+                                    and snapshot is None and identity is None)
+            if (choice.runtime is None
                     or choice.runtime.availability is not AdapterRuntimeAvailability.AVAILABLE
-                    or not snapshot.tuning_ranges_hz or not snapshot.sample_rate_ranges_hz
-                    or not any(bounds.minimum <= draft.start_hz < draft.stop_hz <= bounds.maximum
-                               for bounds in snapshot.tuning_ranges_hz)
-                    or not any(bounds.minimum <= draft.sample_rate_hz <= bounds.maximum
-                               for bounds in snapshot.sample_rate_ranges_hz)):
-                raise PaneUserPlanError("RTL pane needs a selected tuner-specific capability and identity")
+                    or not (canonical or selected_session)):
+                raise PaneUserPlanError("RTL pane needs exact selected session or tuner capability")
             if not float(center).is_integer():
                 raise PaneUserPlanError("RTL center must be an exact whole hertz")
             # A conservative *digital* analysis crop, not tuner analog BW or
