@@ -2359,3 +2359,87 @@ engine/gain). Ruff1/mypy1/compile1/diff passed; post-gate all658/native/source
 verifiers passed. No test EXE remained. No physical RX retry/dual RF/paired
 application owner/GUI-input-DPI-DWM/performance/lossless/soak acceptance;
 historical SDK-9 cause remains UNKNOWN. Whole independent release review OPEN.
+
+
+### 2026-10-02: paired same-owner FixedBandEngine data plane (partial)
+
+The native backend now has explicit `PairedFixedBandConfig` and
+`FixedBandEngine.configure_paired`. It uses the SAME PlutoDevice/context,
+ONE IIO buffer, acquisition queue/worker, DSP worker and control lifecycle.
+There are two caller-exact RX1/RX2 producer IDs, not a BOTH Spectrum source
+or two competing engines. Common URI/LO/Fs/filter/gain/acquisition geometry,
+FFT timing/backend/cadence must agree; incompatible/unknown digital peer or
+aggregate budget refuses before RF. Ordinary single-producer BOTH still refuses.
+
+Native analytical pair consumers reuse per-chain persistence, continuous
+fixed-window Sweep lines, I/Q tee and native recording writers BEFORE final
+paired latest-wins reduction. Both partial DSP batches flush at terminal Stop;
+all recording workers join/finalize and common buffer closes. Per-channel
+recording artifacts are separate, not an atomic group ledger. Spectrum recording
+keeps existing selected-snapshot cadence, not every FFT. No raw I/Q, native
+callbacks or worker hooks are exposed to Python. Paired retuning Sweep coordinator
+and product paired admission/routing remain OPEN.
+
+Reduced readers are paired Spectrum poll/latest-drain and explicit receiver
+persistence/line reads. Legacy single Spectrum/history reads refuse paired mode.
+Stopped configure only arms; Start is separate. Next configure/Start preserves
+one context and refreshes both epochs/histories. Native-only staging drain keeps
+the recording reconfigure guard for BOTH channels. No hidden product restart.
+
+Shared discontinuity notifies the owner BEFORE the next synchronized epoch:
+stale queued/terminal pairs and history queues are abandoned, both densities
+reset, separate abandonment counters remain, and both frames expose exact shared
+gaps/BackendDiscontinuity. RF timestamps and hardware-overflow availability stay
+honest. Live metrics use protected DSP caches. Device/acquisition fields repeated
+in the two channel views are ONE common stream and MUST NOT be summed. Group
+wall processing time is charged once, not invented as two per-RX CPU durations.
+
+Both channels' pools/DSP outputs/recording/density/line reservations plus paired
+snapshots/common scratch use SAME128MiB component, density256MiB, total512MiB
+limits, not two independent full budgets. Single pool accounting now includes
+its actual minimum8 blocks. Writer-normalized canonical recording-base aliases
+refuse before RF (tested suffix/ASCII alias case). Unicode/case-alias coverage
+remains a follow-up before product admission. Payload reservation is not RSS,
+transient old+new replacement peak or vendor workspace. No Fs/FFT/quality
+reduction, firmware/driver/network/firewall/security change or TX.
+
+Dedicated UI-only design/review agent `gpt-6-sol/high` completed source review;
+no UI edits/whole-release review/physical dual-RF proof claimed. Keep selector
+disabled until fresh typed RX1/RX2 capability endpoints and a single paired job/
+owner/adapter route exist in the ACTUAL V2 graph. Required UI work: AD-only
+chain choice beside Source, compact common-tuning group summary, requested vs
+actual Stage preview and aggregate cost/refusal, all affected recording/history
+recipients, typed localized per-RX captions (not ID suffix inference), group
+Stop defaultCancel and separate common/per-RX/pane/paint metrics. Two digital
+chains are not independently tunable radios; two panes are not two streams.
+Root retains backend/native/RX/build/provenance; no other subagent used here.
+
+#### Exact paired-engine qualification, ea1f4e4
+
+Runtime implementation `109ac56d0d7ef43fc3f3f50046a2e4e4b611c30c` and
+whitespace-corrected exact product `ea1f4e493823a30d843743cbac7a19928b0ba0d3`.
+Candidate43/43CTest51.37s; official matching full43/43CTest47.17s and full
+658-file frozen/source534/native/shared9DLL/ONEUSB/default offscreen/IIO/
+tinySA pipeline passed. New mock native cases exercise actual paired acquisition,
+distinct digital FFT values, pre-coalescing consumers/recordings/lines, shared
+Stop/restart/cancel/gap/flush, aggregate preflight and absent peer/leak guards.
+The initial10ms gap injection FAILED (1532pairs/0gaps/0drops);80ms test-only
+injection exercised loss without changing product cadence or timeout. Failed
+observations retained, not relabelled as passes.
+
+Serial AFTER-freeze source V2 gate1265total/1199PASS/66skip/0fail-error490.139s;
+tracked clean before/after/exacttrue/deferred[]/outside[], four historical NaN
+warnings retained. Matching packaged native/mock bindings4PASS1.717s separately;
+Ruff1/mypy1/compile1/diffPASS. Post-gate frozen/native/source verifiers passed;
+no new diagnostic EXE process remained. No physical RX was started this increment.
+
+Diagnostic `APP07-PAIRPIPE-20261002-EA1F4E4` is NOT canonical/static/current/
+promoted: EXE5fc44c4e/native8bf23fbf/source-contentfeadce90/snapshot-file73ce8cbd
+belong toea1f, not subsequent documentation commits or historical85187/3075.
+Qt6.11.1/schema5/factory2/DSP1/persistence1/Sweep1/geometry1/2048segments128MiB
+remain unchanged. No physical dual-RF, visible GUI/DPI/DWM/FFT-LPS/50ms/lossless/
+duty-Pd/sustained/soak/Linux acceptance; SDK-9 cause remains UNKNOWN.
+APP07PARTIAL/fullAPP00–14 goalACTIVE/APP06Eplanned/APP05expired timer not restarted.
+NEXT typed paired graph admission/delivery/recording transaction and paired
+retuning Sweep, then dedicated UI implementation/review and matched EXE witness;
+whole independent release review remains pending.
