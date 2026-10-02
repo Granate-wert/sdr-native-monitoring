@@ -2165,3 +2165,43 @@ the product owner, explicit endpoint/group compiler/composition, combined
 resource budgets, group-wide recording/control/receipt transactions and only
 then capability-backed UI RX choice are still required. A dedicated UI agent
 prepared a future view/layout/refusal plan, not an enabled RX2 selector.
+
+### Exact c88 prerequisite qualification (not completed dual-RX product)
+
+Exact product `c88fbffbb97cf091ca14d35a6ce9a30860edc13b` passed the serial
+AFTER-freeze full UI V2 source gate using its matching packaged native:
+1265 total, 1199 passed, 66 skipped, no failures/errors, 445.192s; tracked
+clean before/after, exact provenance true, deferred/outside modules empty.
+Four historical NaN warnings remain. Packaged-native/mock binding 1/1 passed
+(0.088s), separately from that full suite. Linux source is equivalent but
+Linux compilation was not performed.
+
+The first full pipeline stopped safely before freezing at an installed-IIO
+versus HackRF shared-libusb collision; failed partial output is preserved.
+A new tagged R1 pipeline with the previously hash-admitted ONEUSB runtime
+inputs passed 41/41 CTest (31.23s), all658 frozen files, source531/native
+snapshot binding, fake/default offscreen shell, IIO/tinySA/shared9DLL checks.
+Qt6.11.1/schema5/factory2/DSP1/persistence1/Sweep1/geometry1 and existing
+2048segments/128MiB bounds remain. No system SDK/DLL/network/firewall changes.
+R1 diagnostic EXE hash9918d3d0/native72713f92/sourceCONTENT201beac2/snapshot
+FILE37f6d9b7; NOT canonical/static/current promoted. Later doc-only commits
+must not relabel c88 source/build/HW evidence.
+
+One bounded physical native-only RX1 regression with this packaged native
+passed (0.4849014s host elapsed): actual Fs61.44MS/s/filter56MHz/center2450MHz/
+gain20dB/RX1 per-chain readback/epoch1, three262144-sample blocks with retained
+quality8192. The observed digital scan pair was RX1 only; exact missing-pair
+RX2/BOTH refusals preserved RX1 streaming/epoch and subsequent refills.
+Final Stop/disconnect completed; post-test all658/native/source checks passed.
+Five selected package-local active DLL paths/current file hashes are not
+in-memory/exhaustive ABI attestation. ADC Fs readback is NOT uninterrupted
+61.44MS/s USB transport, dual RF independence/phase/gain calibration, FFT LPS,
+visible Windows UI/input/DPI/DWM timing or sustained-soak acceptance.
+
+Dedicated UI-agent follow-up separates one BOTH requested gain policy from
+per-RX actual readback and AGC instantaneous gain. It does not enable RX2 or
+independent gain knobs. Next native/product work must also distinguish DSP
+analytical burst capacity from latest-wins render queue capacity; existing
+DualRxDspPublisher uses one small capacity for both and a CPU-only backend.
+No new loss measurement, CPU/AUTO/CUDA equivalence or completed streaming
+integration is asserted. APP07 and the complete APP00–14 roadmap remain open.
