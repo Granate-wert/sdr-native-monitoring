@@ -2057,3 +2057,73 @@ sustained/layout/accessibility and complete independent release review remain
 open. APP06E Cut DC/spur remains planned; the expired APP05 timer is not reset.
 Private device identities, raw screenshots, runners and reports are not
 included in the public publication whitelist.
+
+## 2026-10-02: readable RF-impact summary — exact b257 qualification
+
+Product `490d2fe0089123f55bed47a775d633f7b4ce78ee` introduced an optional
+localized operator summary above the scrollable exact RF profiles.
+Corrected product `b2572c9e00c9815b55f6ca1daf6899f06154835f` fixes two Russian
+phrases, without relaxing the strict language catalog. The summary separately
+identifies the selected requested range, ALL history-reset panes, one physical
+RX's shared/time-sliced/dedicated jobs, unchanged independent receivers, and
+running approved Stop→Apply→Start versus stopped Apply-only/separate Start.
+Exact profiles/weights/revisit and default Cancel remain. The default
+Analyzer caller is unchanged. No native/DSP/SDK/Fs/FFT/queue/budget/owner/
+admission/recording/epoch/gap/quality/time behavior was modified.
+
+The first exact490 full gate failed:1265total/1197passed/66skipped/2failures.
+The new untranslated Russian word was corrected. An unchanged0.5s synthetic
+soak navigation-count failure remains historical with root cause UNKNOWN;
+its standalone rerun passed, but no threshold/duration or assertion changed.
+Corrected exactb257 serial full UI V2 gate passed1265total/1199passed/66skipped/
+zero failures-errors508.564s, clean source before/after, no deferred compiled
+tests or outside imports, unchanged native762 and four historical NaN warnings.
+Focused42 tests included strict localization. Two baseline Optional-QDialog
+diagnostics remain; targeted two-file mypy PASS is not whole-project PASS.
+
+Matching official no-skip tagged CPU/HackRF build passed40/40CTest33.71s,
+all658 frozen files/source530/native/shared9DLL/ONEUSB and runtime checks.
+Qt6.11.1/schema5/factory2/DSP1/persistence1/Sweep1/geometry1 and2048segment/
+128MiB limits remain unchanged. This diagnostic package was NOT promoted to
+canonical/static/current. Initial490 source/build/inert GUI evidence and later
+documentation SHA must never be relabelled correctedb257 qualification.
+
+A separate real source-Qt + matchingb257 native check passed with two shared
+HackRF Sweep20MS/s/FFT2048 windows, independent tinySA100–300MHz/1001points/
+LOW/target300kHz, and Empty4. Actual Qt held-middle proposals exercised default
+Return/Cancel and explicit approval. Only the target range shifted; ONE RX
+changed shared→time-sliced; both affected histories were cleared before Start.
+The independent instrument retained its epoch and produced newer data.
+The recorded0.2521566s control interval is host elapsed time, NOT RF/ADC gap,
+duty, detection probability or lossless proof. Normal Stop/shutdown left no
+test threads. Short success does not resolve historical instrument/SDK causes.
+
+The SAME corrected frozen Windows EXE separately exercised one HackRF RX
+with two shared100–220MHz Sweep windows and Empty3,4. Stage/Apply stayed inert;
+explicit Start produced changing Spectrum/Waterfall pairs. The new visible
+summary distinguished target105–225MHz, histories1,2 and shared1job→time-sliced
+2jobs. Default Return/Cancel preserved both ranges. Explicit StopApplyStart
+changed only pane1. After ordinary Stop, Apply-only shifted it to110–230MHz,
+cleared BOTH histories and kept RX stopped; a separate Start produced fresh
+pairs. Observed revisit about2.10–2.12s versus model2.06s is NOT a guaranteed
+maximum or RF-speed result. Final Stop/CloseLayout/normalClose removed the
+tested process/window; postclose full658-file/native/source checks passed.
+
+Dedicated UI-agent stills review accepted the EN modal hierarchy, readable
+summary/details/defaultCancel/pinned approval at1440×912logical, without
+overlap. Small crowded axis/pass labels, dense raw detail fields and unclear
+requested-range versus FFT-bin pane-header extent remain UX debt. Three popup
+capture errors recovered via one fresh unique-window binding each; accessibility
+transition/value lag and modal null-tree remain. No permanent helper repair,
+frozen independent-peer/Russian visual/FHD-QHD-DPI/DWM50ms/numericGUIepoch-gap/
+genuine Windows held-middle/RF accuracy/duty/Pd/lossless/sustained-soak claim.
+
+APP07 remains PARTIAL. Concrete capability-backed RX2/common tuning-group
+native-stream product integration is IMPLEMENTATION OPEN: existing C++ dual-RX
+primitives and fake contracts are not a connected product acquisition path.
+Strict independent AD identity/admission, genuine Ethernet, historical
+first-cause diagnostics, sustained/layout/accessibility and full independent
+release review remain open. Dedicated UI agent handles design/development/
+review; parent handles backend/RX/integration/provenance. Full APP00–14 goal
+remains ACTIVE, APP06E Cut DC/spur planned, APP05 expired timer not restarted.
+Private identities/screenshots/runners/reports stay outside public whitelist.
