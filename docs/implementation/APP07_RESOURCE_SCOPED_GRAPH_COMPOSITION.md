@@ -1,7 +1,7 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
-Current state: the final section documents the newer user-operated V2
-assignment editor and its bounded physical witness. Earlier "not yet present"
+Current state: the final section documents paired RTBW pane preparation and
+the future four-source matrix with RTL in pane4. Earlier "not yet present"
 statements below describe the historical intermediate checkpoints, not the
 current source. APP-07 is still partial: tagged frozen EXEs have passed bounded
 functional cells, but no EXE has release/soak/performance qualification here.
@@ -2664,3 +2664,94 @@ SDK linking/redistribution and whole independent release review remainOPEN.
 Two dedicated subagents used gpt-6-sol/high: RTL integration and UI V2 design/
 code/read-only review. Root retains integration/tests/RX/build/provenance/Git.
 APP07PARTIAL/APP06Eplanned/fullAPP00–14 goalACTIVE.
+
+## 2026-10-03: paired RTBW pane composition (runtime 7d89a34, partial)
+
+Runtime `7d89a34a207163edd2c4786674bfb841a50ca9f9` connects two typed AD936x
+RX endpoints to pane preparation through the existing paired Live/native
+owner. Both chains share ONE device context, buffer, resource lease, common
+tuning profile and control/recording transaction. It does not create two
+device openers, introduce Python raw I/Q or duplicate native FFT processing.
+
+Admission requires the currently selected device/session, stable canonical
+identity and an observed compatible BOTH topology. Single-route empty-serial
+admission is not transferred to the paired path. Paired Sweep, non-common
+profiles and incomplete endpoint jobs refuse rather than implying independent
+tuning. Explicit Start performs the common-profile transaction; Stop confirms
+owner release before clearing paired staging. Rearm produces a fresh epoch.
+
+Frames retain their actual distinct caller producer IDs and RX1/RX2 identity.
+Immutable endpoint-to-producer admission is resolved only from the active
+resource receipt. The operational device route remains available for captions
+but cannot authorize or relabel a producer frame. Shared synchronization epoch,
+first sample index and gap metadata travel with the analyzer bundle. Worker
+preparation clears all same-resource caches at a new pair context; independent
+resources remain untouched. Stale, regressive and foreign deliveries refuse.
+
+An actual native-to-analyzer mismatch was reproduced: native exact zero power
+is `-inf dB`, but the RTBW domain rejected both infinities. The shared contract
+now preserves measured `-inf`, retains NaN as unavailable and still refuses
+`+inf`. Waterfall peak reduction preserves a finite peak beside measured zero
+and an all-zero bucket at `-inf`; it does not invent a finite floor, bridge NaN
+or mutate analytical input. Native DSP, Fs/FFT, cadence, budgets, quality and
+time contracts are unchanged. Finite-only spectrum drawing may omit a zero
+ordinate; data preservation is not visible-GUI zero-power proof.
+
+Qualification and provenance:
+
+- Matching full diagnostic build `APP07-PAIRPANE-20261002-7D89A34` passed
+  45/45 native CTest (51.04 s), all 658 frozen files and the 551-source snapshot,
+  shared-runtime/one-libusb, default offscreen, IIO and tinySA checks.
+- Actual compiled MOCK-IIO pair through the same Live, product graph/session
+  and both prepared Spectrum/waterfall paths passed 8/8 matching-package tests
+  (11.384 s). Focused candidate checks passed 58 tests, Ruff and scoped mypy.
+  This is not physical dual-RF or a visible frozen GUI witness.
+- The first exact full V2 gate at runtime 7d89 ran 1281 tests (530.501 s) and
+  failed eight subcases of ONE obsolete APP04 scalar-reference method, with
+  66 skips. It incorrectly treated measured `-inf` as a NaN gap. The failed
+  log is retained; the reducer was not changed to satisfy that obsolete rule.
+- Test-only `b4116e61ff220a815056fa1220a24a8849ba0841` corrects that independent
+  scalar oracle while retaining integer-center assignment, physical edges,
+  immutable-source and bounded-scratch checks. Nine focused tests passed.
+  ONE subsequent serial exact full V2 gate passed 1281 total / 1215 passed /
+  66 skipped / 0 failures or errors (501.374 s), with tracked-clean before/after,
+  unchanged matching native and no deferred/outside-checkout modules.
+  Scope: V2 source with packaged native, NOT frozen GUI.
+- Post-gate 551-source and all-658/native verification passed. The EXE remains
+  built from runtime 7d89, never relabelled as test-only b411 or a later doc
+  commit: EXE SHA256
+  `2e22fe75d87a668fc8a040b0dfe37d5060d406ad9c3c89b34b150731135be05c`.
+  No current/static/canonical promotion, physical RX or system mutation.
+  The earlier exact69 partial-Stop observer failure is historical; this PASS
+  is not a causal repair claim for that observation.
+
+The paired user selector remains DISABLED; the ordinary user-plan compiler
+remains RX1-only. Still required: typed current-topology/common-tuning admission,
+paired retuning Sweep and group recording lifecycle, plus Qt board-wide visible
+Spectrum/persistence/waterfall reset BEFORE the first new synchronization epoch
+and rejection of queued old-epoch packets. Worker cache reset is not a visible
+history-reset or atomic GUI-pair proof.
+
+Future physical APP-07 four-source 2x2 acceptance MUST use:
+
+| Pane | Position | Actual source |
+| --- | --- | --- |
+| 1 | upper-left | Pluto / AD936x RX |
+| 2 | upper-right | HackRF RX |
+| 3 | lower-left | tinySA trace |
+| 4 | lower-right | RTL RX |
+
+This is a test assignment, not a product placement restriction. Use distinct
+requested RF ranges and actual admitted capabilities/readback; preserve SDR
+dBFS/bin versus tinySA dBm and report actual Fs/periods without lossless claims.
+Selected Stop/restart must leave the other three streams, epochs and histories
+intact. All four must publish current physical data. Missing actual RTL leaves
+acceptance OPEN: Empty, mock, duplicate or old three-plus-Empty evidence cannot
+substitute. RTL Sweep is not implemented and must not be silently emulated.
+
+One reused dedicated UI agent used gpt-6-sol/high for scoped UI implementation
+and read-only design/oracle review; root owns backend/integration/tests/build/
+provenance/Git. No new RTL integration agent work in this increment. Whole
+independent release review, physical four-source/dual-RF, genuine Ethernet,
+Windows/DPI/DWM/AT, throughput/duty/lossless/sustained/soak and SDK qualification
+remain OPEN. UI V2 only; APP07 PARTIAL, APP06E planned, full APP00-14 goal ACTIVE.
