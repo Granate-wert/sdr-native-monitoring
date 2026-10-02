@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from types import SimpleNamespace
@@ -111,6 +112,9 @@ def run_native_case(path: str, case: str) -> None:
     app = graph.live
     session = None
     preparer = None
+    board = None
+    qt_app = None
+    settings_directory = None
     leases = ReceiverLeaseManager()
     try:
         app.discover(startup=True)
@@ -158,6 +162,17 @@ def run_native_case(path: str, case: str) -> None:
         owner.poll_bundles = diagnostic_poll
         preparer = PaneDeliveryPreparer(layout, groups, PresentationAllocationBudget(),
             admitted_producer_source_id=session.admitted_producer_source_id)
+        if case == "qt-rearm":
+            from PySide6.QtCore import QSettings
+            from PySide6.QtWidgets import QApplication
+            from sdr_monitor.ui.v2.workspaces.independent_pane_board import IndependentPaneBoardV2
+            qt_app = QApplication.instance() or QApplication([])
+            settings_directory = tempfile.TemporaryDirectory(prefix="app07-paired-qt-")
+            settings = QSettings(str(Path(settings_directory.name) / "settings.ini"), QSettings.Format.IniFormat)
+            board = IndependentPaneBoardV2(preparer, settings=settings)
+            board.resize(1600, 920)
+            board.show()
+            qt_app.processEvents()
         assert session.admitted_producer_source_id("physical", "caller:rx1") is None
         assert hooks.mock_iio_rf_mutation_calls() == writes
         assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
@@ -186,9 +201,33 @@ def run_native_case(path: str, case: str) -> None:
         assert not (left.values == right.values).all()
         prepared = tuple(preparer.prepare(item) for item in deliveries)
         assert all(item.binding.source_id == source for item in prepared)
+        assert preparer.paired_resource_ids == frozenset({"physical"})
+        assert tuple(item.binding.receiver_selection for item in prepared) == (
+            ReceiverChainSelection.RX1, ReceiverChainSelection.RX2)
         assert tuple(item.producer_source_id for item in prepared) == ("caller:rx1", "caller:rx2")
         assert all(item.waterfall is not None and item.spectrum.view.source_frame is item.bundle for item in prepared)
         assert prepared[0].bundle.paired_capture == prepared[1].bundle.paired_capture
+        # A typed BOTH group cannot downgrade to a single RX packet, nor may
+        # a source-correct frame impersonate the other selected chain.
+        for malformed in (
+                replace(deliveries[0], bundle=replace(left, paired_capture=None)),
+                replace(deliveries[0], bundle=replace(left, spectrum=replace(
+                    left.spectrum, receiver_id="RX2"), receiver_id="RX2", identity=None,
+                    persistence=None, waterfall_line=None))):
+            try:
+                preparer.prepare(malformed)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("typed pair or receiver mismatch must refuse before preparation")
+        if board is not None:
+            assert board.apply_prepared(prepared[0])
+            assert board.apply_prepared(prepared[1])
+            qt_app.processEvents()
+            assert board.pane(1).last_bundle is left
+            assert board.pane(2).last_bundle is right
+            assert board.pane(1).waterfall_pane.history_rows == 1
+            assert board.pane(2).waterfall_pane.history_rows == 1
         assert session.accept_frame(first, "caller:rx1", right) == ()
         # Operational route ID and a forged producer ID cannot borrow RX1.
         for source_id in (source, "foreign"):
@@ -228,17 +267,46 @@ def run_native_case(path: str, case: str) -> None:
             time.sleep(.005)
         assert tuple(item.pane_id for item in fresh) == ("left", "right")
         assert all(item.bundle.acquisition_epoch > epoch for item in fresh)
-        assert all(preparer.prepare(item).bundle.paired_capture is not None for item in fresh)
+        fresh_prepared = tuple(preparer.prepare(item) for item in fresh)
+        assert all(item.bundle.paired_capture is not None for item in fresh_prepared)
+        if board is not None:
+            # A real native rearm changes actual acquisition/host activation,
+            # even when the native pair's local sync counter starts over.
+            assert board.apply_prepared(fresh_prepared[0])
+            assert board.pane(1).last_bundle is fresh[0].bundle
+            assert board.pane(1).waterfall_pane.history_rows == 1
+            # The other visible RX clears BEFORE its fresh packet is dequeued.
+            assert board.pane(2).last_bundle is None
+            assert board.pane(2).spectrum_scene.latest_frame is None
+            assert board.pane(2)._last_persistence is None
+            assert board.pane(2).waterfall_pane.history_rows == 0
+            for stale in prepared:
+                assert not board.apply_prepared(stale)
+            assert board.pane(2).last_bundle is None
+            assert board.pane(2).waterfall_pane.history_rows == 0
+            assert board.apply_prepared(fresh_prepared[1])
+            qt_app.processEvents()
+            assert board.pane(2).last_bundle is fresh[1].bundle
+            assert board.pane(2).waterfall_pane.history_rows == 1
+            assert not board.apply_prepared(fresh_prepared[0])
+            assert not board.apply_prepared(fresh_prepared[1])
         assert session.stop_all() == ()
     finally:
         if session is not None:
             assert session.stop_all() == ()
         app.shutdown()
+        if board is not None:
+            board.release_presentation_after_shutdown()
+            board.close()
+            qt_app.processEvents()
         if preparer is not None:
             preparer.clear()
-    assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
-    assert service._poller is service._engine is None and leases.active_resource_count == 0
-    print("same native Live/V2 paired pane composition PASS; MOCK only; no UI/physical RF acceptance")
+        if settings_directory is not None:
+            settings_directory.cleanup()
+        # Check terminal ownership even when the visible-state assertion fails.
+        assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
+        assert service._poller is service._engine is None and leases.active_resource_count == 0
+    print(f"same native Live/V2 paired pane {case} PASS; MOCK/offscreen only; no physical RF/Windows acceptance")
 
 
 @unittest.skipUnless(MODULE and MOCK.is_file(), "requires explicit native module and built Mock IIO")
@@ -248,6 +316,7 @@ class NativePairedPaneTests(unittest.TestCase):
         environment["LIBIIO_DLL_PATH"] = str(MOCK)
         environment["SDR_MOCK_LIBIIO_TOPOLOGY_DUAL"] = "1"
         environment["SDR_MOCK_LIBIIO_REFILL_DELAY_MS"] = "1"
+        environment["QT_QPA_PLATFORM"] = "offscreen"
         if case == "single-layout":
             environment.pop("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", None)
         if case == "empty-serial":
@@ -259,6 +328,9 @@ class NativePairedPaneTests(unittest.TestCase):
 
     def test_actual_pair_delivers_through_same_v2_graph_and_resource_lease(self):
         self.run_case("delivery")
+
+    def test_actual_native_rearm_clears_both_visible_qt_histories_before_second_packet(self):
+        self.run_case("qt-rearm")
 
     def test_missing_dual_topology_refuses_before_rf_or_lease(self):
         self.run_case("single-layout")

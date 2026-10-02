@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneCrop, PaneLayout
-from sdr_monitor.domain.receiver_topology import AcquisitionGroup
+from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverChainSelection, ReceiverEndpoint
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.services.pane_resource_session import PaneDelivery
@@ -42,6 +42,13 @@ class PanePresentationBinding:
     mode: AnalyzerMode
     measurement_mode: CaptureMeasurementMode
     unit: str
+    # Logical chain from the exact AcquisitionGroup, never an endpoint suffix
+    # or evidence of a verified physical RF connector.
+    receiver_selection: ReceiverChainSelection | None = None
+
+    def __post_init__(self) -> None:
+        if self.receiver_selection is not None and not isinstance(self.receiver_selection, ReceiverChainSelection):
+            raise TypeError("pane receiver selection must be an explicit typed chain")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +75,10 @@ class PreparedPaneDelivery:
                 or producer != producer.strip())
                 or delivery.bundle.paired_capture is not None and producer is None):
             raise ValueError("paired pane delivery requires an explicit admitted producer source")
+        if delivery.bundle.paired_capture is not None and (
+                binding.receiver_selection not in {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
+                or delivery.bundle.receiver_id != binding.receiver_selection.name):
+            raise ValueError("paired pane delivery differs from its typed receiver selection")
         if (delivery.pane_id != binding.pane_id
                 or delivery.physical_stream_resource_id != binding.physical_stream_resource_id
                 or delivery.capture_id != binding.capture_id
@@ -101,10 +112,18 @@ class PaneDeliveryPreparer:
         self.bindings = bindings
         self.allocation_budget = allocation_budget
         self._admitted_producer_source_id = admitted_producer_source_id
+        self._paired_resource_ids = frozenset(group.physical_stream_resource_id for group in groups
+            if {endpoint.selection for endpoint in group.endpoints if isinstance(endpoint, ReceiverEndpoint)}
+            == {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2})
         self._paired_sync_context: dict[str, tuple[int, str | None, int | None, int]] = {}
         self._grids = {pane_id: MeasurementGridCache(allocation_budget) for pane_id in bindings}
         self._layers = {pane_id: AnalyzerLayerCache(allocation_budget, grid_cache=self._grids[pane_id])
                         for pane_id in bindings}
+
+    @property
+    def paired_resource_ids(self) -> frozenset[str]:
+        """Logical paired groups from the compiled plan, not RF-path evidence."""
+        return self._paired_resource_ids
 
     @staticmethod
     def _bindings_for_layout(layout: PaneLayout, groups: tuple[AcquisitionGroup, ...]) -> dict[str, PanePresentationBinding]:
@@ -146,7 +165,8 @@ class PaneDeliveryPreparer:
                 slot.number, request.pane_id, resource_id, job.capture_id,
                 request.receiver_endpoint_id, endpoint.source_id, crop,
                 job.start_hz, job.stop_hz, mode,
-                job.profile.measurement_mode, job.profile.unit)
+                job.profile.measurement_mode, job.profile.unit,
+                endpoint.selection if isinstance(endpoint, ReceiverEndpoint) else None)
         if set(bindings) != set(jobs):
             raise ValueError("pane presentation has unmatched occupied slots")
         return bindings
@@ -161,6 +181,7 @@ class PaneDeliveryPreparer:
                 or any(proposed[key].physical_stream_resource_id != binding.physical_stream_resource_id
                        or proposed[key].slot_number != binding.slot_number
                        or proposed[key].receiver_endpoint_id != binding.receiver_endpoint_id
+                       or proposed[key].receiver_selection != binding.receiver_selection
                        or proposed[key].source_id != binding.source_id
                        for key, binding in self.bindings.items())):
             raise ValueError("RF change cannot replace pane identities or peer presentation")
@@ -221,6 +242,13 @@ class PaneDeliveryPreparer:
                 or identity is None or identity.source_id != producer
                 or bundle.mode != binding.mode.value or bundle.unit != binding.unit):
             raise ValueError("pane delivery source, mode or unit differs from the selected binding")
+        if ((binding.physical_stream_resource_id in self._paired_resource_ids)
+                != (bundle.paired_capture is not None)):
+            raise ValueError("pane delivery pair metadata differs from its typed acquisition group")
+        if bundle.paired_capture is not None and (
+                binding.receiver_selection not in {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
+                or bundle.receiver_id != binding.receiver_selection.name):
+            raise ValueError("pane delivery differs from its typed receiver selection")
         if bundle.paired_capture is not None:
             context = (delivery.host_activation_serial, bundle.session_id,
                        bundle.acquisition_epoch, bundle.paired_capture.synchronization_epoch)

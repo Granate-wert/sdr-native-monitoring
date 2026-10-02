@@ -8,6 +8,7 @@ thread and present them here through the exact PaneDeliveryPreparer binding.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 import math
 
 from PySide6.QtCore import QSettings, Signal, Qt
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushBut
 
 from sdr_monitor.domain.analyzer import AnalyzerPublicationKind
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
+from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PanePresentationBinding, PreparedPaneDelivery
 
@@ -23,6 +25,15 @@ from ..i18n import current_locale, text
 from ..spectrum.projection import SpectrumProjector
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_pane import AnalyzerPaneViewV2
+
+
+@dataclass(frozen=True, slots=True)
+class _PairedVisualContext:
+    run_serial: int
+    activation_serial: int
+    session_id: str
+    acquisition_epoch: int
+    synchronization_epoch: int
 
 
 class IndependentPaneBoardV2(QWidget):
@@ -41,6 +52,7 @@ class IndependentPaneBoardV2(QWidget):
         super().__init__(parent)
         self._preparer = preparer
         self._installed_bindings = dict(preparer.bindings)
+        self._paired_resources = preparer.paired_resource_ids
         self._retired_bindings: dict[str, PanePresentationBinding] = {}
         self._rf_control_available: Callable[[int], bool] | None = None
         self._source_labels = {} if source_labels is None else dict(source_labels)
@@ -54,6 +66,8 @@ class IndependentPaneBoardV2(QWidget):
         self._range_anchors: dict[int, tuple[object, ...]] = {}
         self._last_order: dict[int, tuple[int, int, int, int, int]] = {}
         self._last_run_serial: dict[int, int] = {}
+        self._paired_visual_context: dict[str, _PairedVisualContext] = {}
+        self._paired_awaiting_activation: set[str] = set()
         schedule = preparer.layout.schedule
         resource_job_counts = ({} if schedule is None else
                                {resource.physical_stream_resource_id: len(resource.jobs)
@@ -277,8 +291,9 @@ class IndependentPaneBoardV2(QWidget):
 
     @staticmethod
     def _binding_label(binding, source_label: str | None = None) -> str:
-        endpoint = ("RX1" if source_label is not None and binding.receiver_endpoint_id.endswith(":rx1") else
-                    "trace" if source_label is not None and binding.receiver_endpoint_id.endswith(":trace") else
+        endpoint = ("trace" if binding.measurement_mode is CaptureMeasurementMode.INSTRUMENT_TRACE else
+                    binding.receiver_selection.name if binding.receiver_selection in {
+                        ReceiverChainSelection.RX1, ReceiverChainSelection.RX2} else
                     binding.receiver_endpoint_id)
         return (f"{source_label or binding.source_id} / {endpoint} · "
                 f"{binding.crop.start_hz / 1e6:g}–{binding.crop.stop_hz / 1e6:g} MHz · "
@@ -338,8 +353,10 @@ class IndependentPaneBoardV2(QWidget):
             if binding.physical_stream_resource_id != resource_id:
                 continue
             previous = self._installed_bindings[key]
-            if (previous.slot_number, previous.source_id, previous.receiver_endpoint_id) != (
-                    binding.slot_number, binding.source_id, binding.receiver_endpoint_id):
+            if (previous.slot_number, previous.source_id, previous.receiver_endpoint_id,
+                    previous.receiver_selection) != (
+                    binding.slot_number, binding.source_id, binding.receiver_endpoint_id,
+                    binding.receiver_selection):
                 raise ValueError("RF presentation receipt changed pane identity")
         for binding in bindings.values():
             if binding.physical_stream_resource_id != resource_id:
@@ -358,6 +375,10 @@ class IndependentPaneBoardV2(QWidget):
             for view in (self._panes[number].spectrum_scene.view_box,
                          self._panes[number].waterfall_pane.view_box):
                 view.cancel_rf_drag()
+        if resource_id in self._paired_visual_context:
+            # A value-equal old binding can still be queued after this receipt.
+            # Keep its accepted context as a floor until a newer activation.
+            self._paired_awaiting_activation.add(resource_id)
         schedule = self._preparer.layout.schedule
         assert schedule is not None
         sliced = {item.physical_stream_resource_id for item in schedule.resources if len(item.jobs) > 1}
@@ -454,6 +475,60 @@ class IndependentPaneBoardV2(QWidget):
         previous = self._last_order.get(binding.slot_number)
         if previous is not None and order <= previous:
             return False
+        paired = prepared.bundle.paired_capture
+        resource_id = binding.physical_stream_resource_id
+        if ((resource_id in self._paired_resources) != (paired is not None)
+                or paired is None and resource_id in self._paired_visual_context):
+            # Typed RX1/RX2 binding must agree with the admitted paired
+            # payload, including the first delivery and after a plan receipt.
+            # A lone logical RX1 never turns another resource into a pair.
+            return False
+        next_context: _PairedVisualContext | None = None
+        clear_paired_resource = False
+        if paired is not None:
+            session_id = prepared.bundle.session_id
+            activation = prepared.delivery.host_activation_serial
+            if (prepared.producer_source_id is None or not isinstance(session_id, str)
+                    or not session_id or type(activation) is not int or activation < 0
+                    or type(epoch) is not int or epoch < 0):
+                return False
+            next_context = _PairedVisualContext(
+                prepared.delivery.host_run_serial, activation, session_id, epoch,
+                paired.synchronization_epoch)
+            current = self._paired_visual_context.get(resource_id)
+            if current is not None:
+                if (next_context.run_serial < current.run_serial
+                        or next_context.activation_serial < current.activation_serial):
+                    return False
+                same_activation = (next_context.run_serial == current.run_serial
+                                   and next_context.activation_serial == current.activation_serial)
+                if same_activation:
+                    if (resource_id in self._paired_awaiting_activation
+                            or next_context.session_id != current.session_id
+                            or next_context.acquisition_epoch != current.acquisition_epoch
+                            or next_context.synchronization_epoch < current.synchronization_epoch):
+                        return False
+                    clear_paired_resource = (next_context.synchronization_epoch
+                                             > current.synchronization_epoch)
+                else:
+                    if (next_context.activation_serial <= current.activation_serial
+                            or (next_context.run_serial == current.run_serial
+                                and next_context.session_id != current.session_id)
+                            or (next_context.session_id == current.session_id
+                                and next_context.acquisition_epoch <= current.acquisition_epoch)):
+                        return False
+                    clear_paired_resource = True
+            else:
+                clear_paired_resource = True
+            if clear_paired_resource:
+                # A common input gap invalidates BOTH visible RX histories,
+                # even if only the first new RX delivery has reached Qt.
+                for sibling in self._installed_bindings.values():
+                    if sibling.physical_stream_resource_id == resource_id:
+                        self._panes[sibling.slot_number].clear_paired_synchronization_history()
+                        self._last_order.pop(sibling.slot_number, None)
+                        self._last_run_serial.pop(sibling.slot_number, None)
+                previous = None
         scheduled_visit_boundary = (
             previous is not None and binding.pane_id in self._time_sliced_pane_ids
             and prepared.delivery.host_activation_serial > previous[0]
@@ -463,6 +538,9 @@ class IndependentPaneBoardV2(QWidget):
                                           scheduled_visit_boundary=scheduled_visit_boundary)
         self._last_order[binding.slot_number] = order
         self._last_run_serial[binding.slot_number] = prepared.delivery.host_run_serial
+        if next_context is not None:
+            self._paired_visual_context[binding.physical_stream_resource_id] = next_context
+            self._paired_awaiting_activation.discard(binding.physical_stream_resource_id)
         return True
 
     def release_presentation_after_shutdown(self) -> None:
@@ -474,6 +552,8 @@ class IndependentPaneBoardV2(QWidget):
         self._range_anchors.clear()
         self._last_order.clear()
         self._last_run_serial.clear()
+        self._paired_visual_context.clear()
+        self._paired_awaiting_activation.clear()
         self._terminal_released = True
 
 

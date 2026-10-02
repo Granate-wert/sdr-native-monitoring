@@ -10,7 +10,7 @@ import numpy as np
 
 from collections import Counter
 
-from sdr_monitor.domain.receiver_topology import ReceiverBindingMode, SchedulerPolicyKind
+from sdr_monitor.domain.receiver_topology import ReceiverBindingMode, ReceiverChainSelection, SchedulerPolicyKind
 from sdr_monitor.domain.pane_scheduler import Ad936xSweepPaneProfile, CaptureMeasurementMode, HackrfSweepPaneProfile
 from sdr_monitor.domain.device_capabilities import DeviceFamily, stable_identity_key
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, PairedCaptureMetadata
@@ -86,6 +86,24 @@ class PaneUserPlanTests(unittest.TestCase):
         self.assertEqual(len(plan.layout.schedule.resources[0].jobs), 1)
         self.assertEqual(plan.layout.schedule.resources[0].jobs[0].mode,
                          ReceiverBindingMode.SHARED_CAPTURE)
+
+    def test_presentation_selection_is_typed_and_rf_preview_cannot_replace_chain(self) -> None:
+        plan = self._compile((PaneSlotDraft(1, self.ad_id, 100e6, 108e6),))
+        preparer = PaneDeliveryPreparer(plan.layout, plan.groups, PresentationAllocationBudget())
+        try:
+            binding = preparer.bindings["pane-1"]
+            self.assertIs(binding.receiver_selection, ReceiverChainSelection.RX1)
+            self.assertEqual(preparer.paired_resource_ids, frozenset())
+            for invalid in ("rx1", "RX2", True, 1):
+                with self.subTest(invalid=invalid), self.assertRaises(TypeError):
+                    replace(binding, receiver_selection=invalid)
+            group = plan.groups[0]
+            switched = replace(group, endpoints=(replace(group.endpoints[0], selection=ReceiverChainSelection.RX2),))
+            with self.assertRaisesRegex(ValueError, "RF change"):
+                preparer.preview_resource_layout(plan.layout, (switched,), group.physical_stream_resource_id)
+            self.assertIs(preparer.bindings["pane-1"], binding)
+        finally:
+            preparer.clear()
 
     def test_explicit_wide_rtbw_56_and_20_mhz_keep_exact_native_intent(self) -> None:
         plan = self._compile((
@@ -230,7 +248,7 @@ class PaneUserPlanTests(unittest.TestCase):
             self.assertEqual(session.admitted_producer_source_id(resource, endpoint), endpoint)
             frame = live_frame(endpoint, "fake-live-session", 7, center_hz=150e6,
                                sample_rate_hz=20e6, receiver_id="RX1")
-            first = replace(frame, paired_capture=PairedCaptureMetadata(1, 0, 0))
+            first = frame
             deliveries = session.accept_frame(activation, endpoint, first)
             self.assertEqual(len(deliveries), 1)
             with patch.object(preparer, "clear_resource", wraps=preparer.clear_resource) as clear:
@@ -238,13 +256,13 @@ class PaneUserPlanTests(unittest.TestCase):
                 self.assertEqual(prepared.binding.source_id, self.hf_id)
                 self.assertEqual(prepared.producer_source_id, endpoint)
                 self.assertIs(prepared.bundle, first)
-                self.assertEqual(clear.call_count, 1)
+                self.assertEqual(clear.call_count, 0)
                 preparer.prepare(deliveries[0])
-                self.assertEqual(clear.call_count, 1)
+                self.assertEqual(clear.call_count, 0)
                 second = replace(first, paired_capture=PairedCaptureMetadata(2, 4096, 1))
-                preparer.prepare(replace(deliveries[0], bundle=second))
-                clear.assert_called_with(resource)
-                self.assertEqual(clear.call_count, 2)
+                with self.assertRaisesRegex(ValueError, "typed acquisition group"):
+                    preparer.prepare(replace(deliveries[0], bundle=second))
+                self.assertEqual(clear.call_count, 0)
             with self.assertRaisesRegex(ValueError, "source"):
                 preparer.prepare(replace(deliveries[0], bundle=replace(
                     first, spectrum=replace(first.spectrum, source_id=self.hf_id), identity=None)))

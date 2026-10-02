@@ -323,5 +323,16 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self._sweep_waterfall_error = False
         self._pending_waterfall_gap = False
 
+    def clear_paired_synchronization_history(self) -> None:
+        """Clear active visual roots at a shared input epoch, without RX control."""
+        if self._terminal_released:
+            return
+        self.spectrum_scene.clear_measurement()
+        self.waterfall_pane.clear_history(reset_kind=True)
+        self._last_bundle = self._last_waterfall = self._last_persistence = None
+        self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
+        self._sweep_waterfall_error = False
+        self._pending_waterfall_gap = False
+
 
 __all__ = ["AnalyzerPaneViewV2"]
