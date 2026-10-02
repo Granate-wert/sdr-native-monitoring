@@ -2443,3 +2443,47 @@ APP07PARTIAL/fullAPP00–14 goalACTIVE/APP06Eplanned/APP05expired timer not rest
 NEXT typed paired graph admission/delivery/recording transaction and paired
 retuning Sweep, then dedicated UI implementation/review and matched EXE witness;
 whole independent release review remains pending.
+
+## 2026-10-02: qualified UTF-8 recording paths before paired product admission
+
+Runtime exact `beb88946be4c02b3dcc8f3ec20f05421b6746dab` closes the explicitly
+open Unicode recording-path qualification from ea1f. A new regression test
+first reproduced UTF-8 filename corruption on Windows; native writers, recovery
+scan, replay reader, offline I/Q reprocess and Python boundaries now preserve
+UTF-8/native paths without an ANSI-code-page roundtrip. JSON artifact names
+are UTF-8. Repeated bare `.part` suffixes normalize to the actual writer stem.
+
+Paired aliases use SAME writer normalization/absolute weakly-canonical paths
+and Windows `CompareStringOrdinal(TRUE)`, independent of CRT locale; failed
+comparison refuses. Cyrillic/Latin case aliases, artifact/partial suffix aliases,
+embedded NUL and malformed UTF-8 refuse BEFORE RF/files in tests. Unicode
+case-equal paths conservatively refuse even in case-sensitive folders.
+Reference: [Microsoft ordinal comparison](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal).
+This is not exhaustive filesystem identity, Windows namespace, hard-link,
+external-writer/TOCTOU or atomic group-ledger proof.
+
+Native paired executable now9mock cases, including distinct Unicode directories
+and both I/Q+spectrum writers/replay/reprocess with channel provenance. Candidate
+full43CTest51.44s; official matching full43/43CTest51.57s/paired1.55s. Matching
+packaged bindings5PASS2.530s BEFORE ONE serial fullV2 gate1265total/1199PASS/
+66skip/0fail-error468.469s; clean before/after/exacttrue/deferred[]/outside[],
+native unchanged and four historical NaN warnings retained. Ruff1/mypy1/
+compile1/staged-diff PASS. Postgate658frozen/native/source535inputs PASS.
+No physical RX/dual-RF or visible GUI acceptance this increment.
+
+Diagnostic `APP07-UTFPATH-20261002-BEB8894` NOT canonical/static/current/promoted:
+EXE678fb8e8/nativea8e87d41/sourceCONTENT9786793a/snapshotFILE35fbf5ab belong to
+beb8894, NOT future doc-only commits or oldea1f/85187/3075/059 witnesses.
+Qt6.11.1/schema5/factory2/DSP1/persistence1/Sweep1/geometry1/2048segments128MiB
+unchanged. Default offscreen startup has no discovery/RX/native-engine creation;
+selected9shared DLL paths/diskhashes match, NOT in-memory/exhaustive ABI proof.
+DSP/Fs/FFT/gain/cadence/queues/budgets/quality/time/control semantics unchanged;
+current static EXE/firewall/main dirty Legacy-DFL preserved.
+
+APP07PARTIAL/fullAPP00–14 goalACTIVE/APP06Eplanned/APP05expiredtimer not restarted.
+Actual product compiler/owner remains RX1-only and pair selector disabled.
+NEXT typed fresh-topology RX1/RX2 group/capture job, SAME Live/native/control/
+recording owner adapter and both producer deliveries, paired retuning Sweep;
+then dedicated UI-agent development/design review and matched EXE witness.
+Root-owned backend increment used NO new subagents/UI edits. Whole independent
+release review, physical Ethernet/sustained/AT-DPI and SDK-9 cause remain OPEN.
