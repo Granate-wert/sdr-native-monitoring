@@ -4,13 +4,48 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QLabel, QPlainTextEdit,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QLabel, QPlainTextEdit,
     QVBoxLayout, QWidget,
 )
 
 from sdr_monitor.ui.v2_pane_rf_plan import PaneRfChangePreview
 
 from ..i18n import text
+
+
+def _pane_numbers(preview: PaneRfChangePreview) -> str:
+    return ", ".join(pane_id.rsplit("-", 1)[-1] for pane_id in preview.resource.affected_pane_ids)
+
+
+def _resource_topology(preview: PaneRfChangePreview, *, proposed: bool) -> str:
+    schedule = (preview.resource.proposed_schedule if proposed else preview.resource.expected_schedule)
+    resource = next(item for item in schedule.resources
+                    if item.physical_stream_resource_id == preview.proposal.physical_stream_resource_id)
+    if len(resource.jobs) > 1:
+        return text("analyzer.rf.summary.time_sliced", jobs=len(resource.jobs))
+    if len(resource.jobs[0].crops) > 1:
+        return text("analyzer.rf.summary.shared")
+    return text("analyzer.rf.summary.dedicated")
+
+
+def pane_rf_impact_summary(preview: PaneRfChangePreview) -> str:
+    """Localized, operator-first reading of the same exact immutable RF preview."""
+    proposal = preview.proposal
+    previous = proposal.expected_context.drafts[proposal.slot_number - 1]
+    changed = proposal.proposed_context.drafts[proposal.slot_number - 1]
+    assert previous.start_hz is not None and previous.stop_hz is not None
+    assert changed.start_hz is not None and changed.stop_hz is not None
+    return "\n".join((
+        text("analyzer.rf.summary.target", number=proposal.slot_number,
+             old_start=f"{previous.start_hz / 1e6:.6f}", old_stop=f"{previous.stop_hz / 1e6:.6f}",
+             start=f"{changed.start_hz / 1e6:.6f}", stop=f"{changed.stop_hz / 1e6:.6f}"),
+        text("analyzer.rf.summary.reset", panes=_pane_numbers(preview)),
+        text("analyzer.rf.summary.topology", before=_resource_topology(preview, proposed=False),
+             after=_resource_topology(preview, proposed=True)),
+        text("analyzer.rf.summary.peers"),
+        text("analyzer.rf.summary.running" if preview.resource.restart_required
+             else "analyzer.rf.summary.stopped"),
+    ))
 
 
 def pane_rf_preview_text(preview: PaneRfChangePreview) -> str:
@@ -20,7 +55,7 @@ def pane_rf_preview_text(preview: PaneRfChangePreview) -> str:
     lines = [text("analyzer.rf.delta", requested=f"{proposal.requested_shift_hz / 1e6:.6f}",
                   effective=f"{proposal.effective_shift_hz / 1e6:.6f}",
                   quantum=f"{proposal.quantum_hz:g}"),
-             text("analyzer.rf.impact", panes=", ".join(preview.resource.affected_pane_ids)),
+             text("analyzer.rf.impact", panes=_pane_numbers(preview)),
              text("analyzer.rf.restart" if preview.resource.restart_required else "analyzer.rf.armed")]
     schedule = new.plan.layout.schedule
     assert schedule is not None
@@ -64,7 +99,8 @@ def pane_rf_preview_text(preview: PaneRfChangePreview) -> str:
 class RfImpactDialog(QDialog):
     """Nonblocking Qt modal; Cancel/Escape do not reach a receiver."""
 
-    def __init__(self, detail: str, *, restart_required: bool, parent: QWidget | None = None) -> None:
+    def __init__(self, detail: str, *, restart_required: bool,
+                 impact_summary: str | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("rfImpactDialogV2")
         self.setWindowTitle(text("analyzer.rf.preview_title"))
@@ -75,6 +111,28 @@ class RfImpactDialog(QDialog):
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setWordWrap(True)
         layout.addWidget(label)
+        self.impact_summary: QLabel | None = None
+        if impact_summary is not None:
+            panel = QFrame(self)
+            panel.setObjectName("rfImpactSummaryPanelV2")
+            panel.setProperty("ui2Role", "panel")
+            panel.setFrameShape(QFrame.Shape.StyledPanel)
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(8, 6, 8, 6)
+            heading = QLabel(text("analyzer.rf.summary.title"), panel)
+            heading.setObjectName("rfImpactSummaryTitleV2")
+            font = heading.font()
+            font.setBold(True)
+            heading.setFont(font)
+            panel_layout.addWidget(heading)
+            self.impact_summary = QLabel(impact_summary, panel)
+            self.impact_summary.setObjectName("rfImpactSummaryV2")
+            self.impact_summary.setTextFormat(Qt.TextFormat.PlainText)
+            self.impact_summary.setWordWrap(True)
+            self.impact_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.impact_summary.setAccessibleName(text("analyzer.rf.summary.title"))
+            panel_layout.addWidget(self.impact_summary)
+            layout.addWidget(panel)
         self.details = QPlainTextEdit(self)
         self.details.setReadOnly(True)
         self.details.setObjectName("rfImpactDetailsV2")
@@ -130,4 +188,4 @@ class RfShiftEntryDialog(QDialog):
         self.offset.setFocus()
 
 
-__all__ = ["RfImpactDialog", "RfShiftEntryDialog", "pane_rf_preview_text"]
+__all__ = ["RfImpactDialog", "RfShiftEntryDialog", "pane_rf_impact_summary", "pane_rf_preview_text"]

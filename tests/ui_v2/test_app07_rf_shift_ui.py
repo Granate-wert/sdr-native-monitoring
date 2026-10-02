@@ -206,6 +206,10 @@ class RfShiftUiTests(unittest.TestCase):
             dialog = self.preview(product)
             dialog.resize(500, 300)
             self.app.processEvents()
+            self.assertIsNotNone(dialog.impact_summary)
+            self.assertTrue(dialog.impact_summary.isVisible())
+            self.assertTrue(dialog.rect().contains(dialog.impact_summary.mapTo(
+                dialog, dialog.impact_summary.rect().center())))
             self.assertGreater(dialog.details.verticalScrollBar().maximum(), 0)
             self.assertTrue(dialog.rect().contains(dialog.cancel_button.mapTo(dialog, dialog.cancel_button.rect().center())))
             self.assertTrue(dialog.cancel_button.isVisible())
@@ -323,7 +327,7 @@ class RfShiftUiTests(unittest.TestCase):
             peer = self.state(product, "pane-resource-2").activation
             dialog = self.preview(product, 20e6)
             self.assertEqual(product.ui._rf_preview.resource.affected_pane_ids, ("pane-1", "pane-2"))
-            self.assertIn("pane-1, pane-2", dialog.details.toPlainText())
+            self.assertIn("1, 2", dialog.details.toPlainText())
             dialog.confirm_button.click()
             self.wait(lambda: product.ui._rf_phase is None)
             self.assertIn("120–128", product.ui.board._captions[1].text())
@@ -333,6 +337,84 @@ class RfShiftUiTests(unittest.TestCase):
             self.assertIn("pane-resource-1", product.ui._time_sliced_resources)
             self.assertEqual(tuple(draft.priority for draft in product.handle.rf_context.drafts[:2]), (1, 3))
             self.assertEqual(self.state(product, "pane-resource-2").activation, peer)
+
+    def test_shared_to_sliced_impact_summary_is_distinct_and_localized(self):
+        previous_locale = current_locale()
+        self.addCleanup(set_active_locale, previous_locale)
+        with self.shared_product() as product:
+            self.start_and_publish(product)
+            for locale, expected in (
+                (UiLocale.EN, ("Only pane 1: 100.000000–108.000000 → 120.000000–128.000000 MHz",
+                               "Spectrum and Waterfall histories in panes 1, 2",
+                               "One physical RX: shared capture, 1 job for multiple panes → time-sliced, 2 capture jobs",
+                               "Independent receivers and their panes stay unchanged",
+                               "Approval: Stop this RX → Apply → new Start")),
+                (UiLocale.RU, ("Только окно 1: 100.000000–108.000000 → 120.000000–128.000000 МГц",
+                               "Spectrum и Waterfall окон 1, 2",
+                               "Один физический RX: общий capture, 1 задание для нескольких окон → чередование во времени, заданий 2",
+                               "Независимые RX и их окна не меняются",
+                               "Подтверждение: Стоп этого RX → Применить → новый Старт")),
+            ):
+                set_active_locale(locale)
+                dialog = self.preview(product, 20e6)
+                summary = dialog.impact_summary
+                self.assertIsNotNone(summary)
+                self.assertTrue(summary.isVisible())
+                self.assertEqual(summary.objectName(), "rfImpactSummaryV2")
+                for phrase in expected:
+                    self.assertIn(phrase, summary.text())
+                self.assertNotIn("pane-1", summary.text())
+                detail = dialog.details.toPlainText()
+                self.assertIn("Weight:" if locale is UiLocale.EN else "Вес:", detail)
+                self.assertIn(text("analyzer.rf.pane_range", number=1, old_start="100", old_stop="108",
+                                   start="120", stop="128"), detail)
+                self.assertIn(text("analyzer.rf.pane_range", number=2, old_start="100", old_stop="108",
+                                   start="100", stop="108"), detail)
+                self.assertIn("modeled max revisit" if locale is UiLocale.EN else "расчётный макс. revisit",
+                              detail)
+                self.assertIn("sample_rate_hz: 20000000.0", detail)
+                self.assertIn("fft_size: 4096", detail)
+                self.assertTrue(dialog.cancel_button.isDefault())
+                self.assertFalse(dialog.confirm_button.autoDefault())
+                dialog.cancel_button.click()
+                self.wait(lambda: product.ui._rf_phase is None)
+
+    def test_negative_one_hz_dedicated_summary_and_running_stopped_actions_in_both_locales(self):
+        previous_locale = current_locale()
+        self.addCleanup(set_active_locale, previous_locale)
+        for locale, target, topology, running, stopped in (
+            (UiLocale.EN, "Only pane 1: 100.000000–108.000000 → 99.999999–107.999999 MHz",
+             "One physical RX: dedicated single-pane capture, 1 job → dedicated single-pane capture, 1 job",
+             "Approval: Stop this RX → Apply → new Start",
+             "Approval: Apply only; the next Start is separate"),
+            (UiLocale.RU, "Только окно 1: 100.000000–108.000000 → 99.999999–107.999999 МГц",
+             "Один физический RX: отдельный захват одного окна, 1 задание → отдельный захват одного окна, 1 задание",
+             "Подтверждение: Стоп этого RX → Применить → новый Старт",
+             "Подтверждение: только Применить; следующий Старт — отдельно"),
+        ):
+            with self.subTest(locale=locale), self.harness.product() as product:
+                set_active_locale(locale)
+                self.start_and_publish(product)
+                old_activation = self.state(product).activation
+                running_dialog = self.preview(product, -1.0)
+                summary = running_dialog.impact_summary.text()
+                self.assertIn(target, summary)
+                self.assertIn(topology, summary)
+                self.assertIn(running, summary)
+                self.assertIn("1.", summary)
+                self.assertNotIn("pane-1", summary)
+                self.assertIn("-0.000001", running_dialog.details.toPlainText())
+                running_dialog.cancel_button.click()
+                self.wait(lambda: product.ui._rf_phase is None)
+                self.assertEqual(self.state(product).activation, old_activation)
+                product.ui.stop_selected.click()
+                self.wait(lambda: self.state(product).phase is PanePumpPhase.STOPPED)
+                stopped_dialog = self.preview(product, -1.0)
+                self.assertIn(stopped, stopped_dialog.impact_summary.text())
+                self.assertEqual(stopped_dialog.confirm_button.text(), text("analyzer.rf.confirm_apply"))
+                self.assertTrue(stopped_dialog.cancel_button.isDefault())
+                stopped_dialog.cancel_button.click()
+                self.wait(lambda: product.ui._rf_phase is None)
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ from ..state.analyzer_readouts import tinysa_settings_readout
 from .independent_pane_board import IndependentPaneBoardV2
 from .independent_pane_delivery import IndependentPaneDeliveryPort
 from .pane_failure_text import pane_failure_text
-from .rf_shift_dialog import RfImpactDialog, RfShiftEntryDialog, pane_rf_preview_text
+from .rf_shift_dialog import RfImpactDialog, RfShiftEntryDialog, pane_rf_impact_summary, pane_rf_preview_text
 
 
 class IndependentPaneSessionV2(QWidget):
@@ -262,7 +262,8 @@ class IndependentPaneSessionV2(QWidget):
         self._rf_preview = preview
         self._rf_phase = "confirm"
         dialog = RfImpactDialog(pane_rf_preview_text(preview),
-                                restart_required=preview.resource.restart_required, parent=self)
+                                restart_required=preview.resource.restart_required,
+                                impact_summary=pane_rf_impact_summary(preview), parent=self)
         self._rf_dialog = dialog
 
         def finished(result: int) -> None:
