@@ -400,14 +400,14 @@ class IndependentPaneSessionV2(QWidget):
         return " · " + text("analyzer.independent.timing." + key,
                              target=text("analyzer.independent.timing.seconds", value=f"{target:g}"))
 
-    def _timing_text(self, pane_id: str, phase: PanePumpPhase) -> str:
+    def _timing_text(self, pane_id: str, phase: PanePumpPhase, *, has_retained_frame: bool = False) -> str:
         if phase is not PanePumpPhase.RUNNING:
             key = {
-                PanePumpPhase.IDLE: "stopped",
+                PanePumpPhase.IDLE: "stopped" if has_retained_frame else "stopped_empty",
                 PanePumpPhase.STARTING: "starting",
                 PanePumpPhase.STOPPING: "stopping",
                 PanePumpPhase.STOP_REQUIRED: "stop_required",
-                PanePumpPhase.STOPPED: "stopped",
+                PanePumpPhase.STOPPED: "stopped" if has_retained_frame else "stopped_empty",
             }[phase]
             return text(f"analyzer.independent.timing.{key}")
         try:
@@ -492,10 +492,11 @@ class IndependentPaneSessionV2(QWidget):
                             detail += " " + text("analyzer.independent.failure.cleanup",
                                 detail=pane_failure_text(state.cleanup_failure))
                         failures.append(detail)
-                summary_text = self._timing_text(pane_id, state.phase)
                 pane = self.board.pane(slot.number)
                 bundle = None if pane is None else pane.last_bundle
                 frame = None if bundle is None else bundle.spectrum
+                summary_text = self._timing_text(pane_id, state.phase,
+                                                 has_retained_frame=frame is not None)
                 activation = state.activation
                 if (activation is not None and activation.planned_control_gap is not None
                         and activation.planned_control_gap.reason is PaneControlGapReason.PROFILE_OR_RF_PLAN_CHANGE):

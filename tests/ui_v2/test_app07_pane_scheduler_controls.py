@@ -225,6 +225,7 @@ class PaneSchedulerControlsTests(unittest.TestCase):
         self._wait(lambda: bool(self.installed))
         handle = self.installed[0]
         self.assertEqual(self.native.engines, [])
+
         schedule = handle.layout.schedule
         first = schedule.resources[0].slots[0].capture_id
         jobs = {item.capture_id: item for item in schedule.resources[0].jobs}
@@ -240,9 +241,32 @@ class PaneSchedulerControlsTests(unittest.TestCase):
                     value = self.pane_ui._timing_text("pane-1", PanePumpPhase.RUNNING)
                 self.assertIn(text("analyzer.independent.timing." + key,
                     target=text("analyzer.independent.timing.seconds", value="0.4")), value)
-            stopped = self.pane_ui._timing_text("pane-1", PanePumpPhase.STOPPED)
-            self.assertEqual(stopped, text("analyzer.independent.timing.stopped"))
+            retained = self.pane_ui._timing_text("pane-1", PanePumpPhase.STOPPED,
+                                                 has_retained_frame=True)
+            empty = self.pane_ui._timing_text("pane-1", PanePumpPhase.STOPPED)
+            self.assertEqual(retained, text("analyzer.independent.timing.stopped"))
+            self.assertEqual(empty, text("analyzer.independent.timing.stopped_empty"))
+            self.assertNotEqual(retained, empty)
         self.assertEqual(self.native.engines, [])
+
+    def test_applied_inert_layout_has_no_retained_frame_or_implicit_rx_in_both_locales(self) -> None:
+        self._assign(1, 100, 108)
+        self._prepare()
+        self.editor.apply.click()
+        self._wait(lambda: bool(self.installed))
+        handle = self.installed[0]
+        self.pane_ui = IndependentPaneSessionV2(handle)
+        self.assertIs(handle.pump.snapshot()[0].phase, PanePumpPhase.IDLE)
+        self.assertIsNone(self.pane_ui.board.pane(1).last_bundle)
+        self.assertEqual(self.native.engines, [])
+        for locale in (UiLocale.EN, UiLocale.RU):
+            set_active_locale(locale)
+            self.pane_ui.set_locale()
+            self.app.processEvents()
+            self.assertEqual(self.pane_ui.board._timing_labels[1].text(),
+                             text("analyzer.independent.timing.stopped_empty"))
+            self.assertIsNone(self.pane_ui.board.pane(1).last_bundle)
+            self.assertEqual(self.native.engines, [])
 
 
 if __name__ == "__main__":

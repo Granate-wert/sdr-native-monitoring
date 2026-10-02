@@ -340,6 +340,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.independent.timing.stopped": MappingProxyType({
             UiLocale.RU: "Приём остановлен · сохранённый кадр не новый",
             UiLocale.EN: "RX stopped · retained frame is not new"}),
+        "analyzer.independent.timing.stopped_empty": MappingProxyType({
+            UiLocale.RU: "Приём остановлен · кадра нет",
+            UiLocale.EN: "RX stopped · no frame"}),
         "analyzer.independent.timing.starting": MappingProxyType({
             UiLocale.RU: "Запуск приёма · ожидание кадра", UiLocale.EN: "Starting RX · awaiting frame"}),
         "analyzer.independent.timing.stopping": MappingProxyType({

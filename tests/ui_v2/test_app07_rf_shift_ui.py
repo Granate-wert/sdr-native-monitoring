@@ -20,6 +20,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.pane_scheduler import PaneControlGapReason
+from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
@@ -127,9 +128,17 @@ class RfShiftUiTests(unittest.TestCase):
 
     def test_stopped_apply_arms_without_rx_and_manual_start_is_distinct(self):
         with self.harness.product() as product:
+            previous_locale = current_locale()
+            self.addCleanup(set_active_locale, previous_locale)
             self.start_and_publish(product)
             product.ui.stop_selected.click()
             self.wait(lambda: self.state(product).phase is PanePumpPhase.STOPPED)
+            self.assertIsNotNone(product.ui.board.pane(1).last_bundle)
+            for locale in (UiLocale.EN, UiLocale.RU):
+                set_active_locale(locale)
+                product.ui.set_locale()
+                self.assertEqual(product.ui.board._timing_labels[1].text(),
+                                 text("analyzer.independent.timing.stopped"))
             count = len(product.native.engines)
             dialog = self.preview(product)
             self.assertFalse(product.ui._rf_preview.resource.restart_required)
@@ -138,6 +147,14 @@ class RfShiftUiTests(unittest.TestCase):
             self.assertEqual(len(product.native.engines), count)
             self.assertIs(self.state(product).phase, PanePumpPhase.STOPPED)
             self.assertIn("110–118", product.ui.board._captions[1].text())
+            self.assertIsNone(product.ui.board.pane(1).last_bundle)
+            self.assertEqual(product.ui.board._timing_labels[1].text(),
+                             text("analyzer.independent.timing.stopped_empty"))
+            for locale in (UiLocale.EN, UiLocale.RU):
+                set_active_locale(locale)
+                product.ui.set_locale()
+                self.assertEqual(product.ui.board._timing_labels[1].text(),
+                                 text("analyzer.independent.timing.stopped_empty"))
             product.ui.start_selected.click()
             self.wait(lambda: self.state(product).phase is PanePumpPhase.RUNNING)
             self.assertEqual(len(product.native.engines), count + 1)
