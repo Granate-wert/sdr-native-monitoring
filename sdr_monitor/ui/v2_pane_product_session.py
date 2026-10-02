@@ -119,6 +119,10 @@ class PaneProductSessionHandle:
             if (selection is None or selection.selected is not expected[1]
                     or selection.revision != expected[2]):
                 raise PaneUserPlanError("selected receiver changed before RF control")
+            for receipt in context.plan.paired_selections:
+                if receipt.source.device_id == source:
+                    receipt.validate_current(selection.selected, selection.revision,
+                                             self.pool.graph_for(resource).live.current_snapshot())
 
     def stop_for_rf_shift(self, preview: PaneRfChangePreview) -> Future[None]:
         if not isinstance(preview, PaneRfChangePreview):

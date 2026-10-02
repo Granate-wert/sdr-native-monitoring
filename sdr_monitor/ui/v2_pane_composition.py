@@ -88,7 +88,8 @@ def compose_v2_pane_resource_session(
             assert isinstance(first, ReceiverEndpoint) and isinstance(second, ReceiverEndpoint)
             owner_factories[resource_id] = partial(Ad936xPairedPaneOwner,
                 graph.live, physical_stream_resource_id=resource_id,
-                source_id=selected.device_id, endpoints=(first, second))
+                source_id=selected.device_id, endpoints=(first, second),
+                expected_selection=selection, expected_snapshot=graph.live.current_snapshot())
         elif len(group.endpoints) != 1:
             raise PaneResourceError("selected family has no paired acquisition owner")
         elif selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):

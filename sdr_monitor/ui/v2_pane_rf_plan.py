@@ -90,7 +90,8 @@ def compile_pane_rf_shift(context: PaneRfPlanContext, slot_number: int,
         raise PaneUserPlanError("RF shift is smaller than the admitted range quantum")
     changed = replace(draft, start_hz=draft.start_hz + effective, stop_hz=draft.stop_hz + effective)
     drafts = tuple(changed if item.number == slot_number else item for item in context.drafts)
-    plan = compile_user_pane_plan(drafts, selected, revisions)
+    plan = compile_user_pane_plan(drafts, selected, revisions,
+        paired_selections={receipt.source.device_id: receipt for receipt in context.plan.paired_selections})
     if (plan.groups != context.plan.groups or plan.resource_sources != context.plan.resource_sources):
         raise PaneUserPlanError("RF shift cannot change the selected resource topology")
     resource_id = next(resource for resource, source in plan.resource_sources if source == draft.source_id)

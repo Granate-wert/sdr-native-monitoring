@@ -22,7 +22,8 @@ from sdr_monitor.domain.hackrf_live import HackrfLiveRequest
 from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ, RtlLiveRequest
 from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.identity import SourceId
-from sdr_monitor.domain.live import BackendKind, LiveConfiguration
+from sdr_monitor.domain.live import BackendKind, LiveConfiguration, LiveSnapshot, LiveSessionState
+from sdr_monitor.domain.paired_live import validate_paired_selection_snapshot
 from sdr_monitor.domain.pane_scheduler import (
     Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
@@ -106,6 +107,7 @@ class PaneSlotDraft:
     maximum_revisit_s: float | None = field(default=None, kw_only=True)
     tinysa: TinySaPaneIntent | None = field(default=None, kw_only=True)
     rtbw_band: RtbwBandPolicy = field(default=RtbwBandPolicy.EDGE_TRIMMED, kw_only=True)
+    receiver_selection: ReceiverChainSelection = field(default=ReceiverChainSelection.RX1, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
@@ -116,6 +118,9 @@ class PaneSlotDraft:
             raise PaneUserPlanError("pane tinySA settings require typed intent")
         if not isinstance(self.rtbw_band, RtbwBandPolicy):
             raise PaneUserPlanError("RTBW receive band requires typed explicit intent")
+        if self.receiver_selection not in (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2) or not isinstance(
+                self.receiver_selection, ReceiverChainSelection):
+            raise PaneUserPlanError("pane receiver requires an explicit typed RX1 or RX2 chain")
         if type(self.priority) is not int or not 1 <= self.priority <= 100:
             raise PaneUserPlanError("pane scheduling priority must be an integer in [1, 100]")
         if self.maximum_revisit_s is not None and (
@@ -132,7 +137,8 @@ class PaneSlotDraft:
             if (self.start_hz is not None or self.stop_hz is not None
                     or self.measurement_mode is not None or self.priority != 1
                     or self.maximum_revisit_s is not None or self.tinysa is not None
-                    or self.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED):
+                    or self.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED
+                    or self.receiver_selection is not ReceiverChainSelection.RX1):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
         if (not isinstance(self.source_id, str) or not self.source_id.strip()
@@ -163,6 +169,44 @@ class PaneSchedulingIntent:
     effective: PaneSchedulerPolicy
 
 
+@dataclass(frozen=True, slots=True)
+class PanePairedSelectionReceipt:
+    """Current selected digital topology; not physical RF or rate evidence."""
+
+    source: AnalyzerSourceChoice
+    selection_revision: int
+    snapshot: LiveSnapshot
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.source, AnalyzerSourceChoice)
+                or self.source.family is not DeviceFamily.AD936X
+                or type(self.selection_revision) is not int or self.selection_revision < 0
+                or not isinstance(self.snapshot, LiveSnapshot)):
+            raise PaneUserPlanError("paired plan requires typed current AD936x selection facts")
+        self.validate_current(self.source, self.selection_revision, self.snapshot)
+
+    def validate_current(self, source: AnalyzerSourceChoice, revision: int, snapshot: LiveSnapshot) -> None:
+        device = snapshot.device if isinstance(snapshot, LiveSnapshot) else None
+        original = self.snapshot.device
+        if (source is not self.source or type(revision) is not int or revision != self.selection_revision
+                or device is None or original is None or device.device_id != source.device_id
+                or snapshot.state not in {LiveSessionState.CONNECTED, LiveSessionState.RUNNING}
+                or snapshot.error is not None
+                or snapshot.stop_required and snapshot.state is not LiveSessionState.RUNNING
+                or snapshot.session_id is None or snapshot.session_id != self.snapshot.session_id
+                or device.capabilities.receiver_topology is None
+                or device.capabilities.receiver_topology != original.capabilities.receiver_topology
+                or device.capability_snapshot != source.binding.snapshot
+                or device.identity_key != original.identity_key
+                or device.serial != original.serial or not device.serial):
+            raise PaneUserPlanError("paired current selection, session or topology changed")
+        try:
+            validate_paired_selection_snapshot(snapshot, device.device_id, str(snapshot.session_id),
+                                               device.capabilities.receiver_topology)
+        except (TypeError, ValueError):
+            raise PaneUserPlanError("paired plan lacks observed compatible topology and stable identity") from None
+
+
 def _shared_scheduler_policy(entries: list[tuple[PaneSlotDraft, PaneProfile]]) -> PaneSchedulerPolicy:
     # A common capture has one schedule, not a second RX for a view with a
     # different priority. Preserve individual requests beside this explicitly
@@ -186,12 +230,14 @@ class PaneUserPlan:
     hackrf_sweep_geometry: tuple[tuple[str, AnalyzerGeometryPreflight], ...] = ()
     hackrf_hardware_ranges: tuple[tuple[str, int, int], ...] = ()
     scheduler_intents: tuple[PaneSchedulingIntent, ...] = ()
+    paired_selections: tuple[PanePairedSelectionReceipt, ...] = ()
 
 
 def compile_user_pane_plan(
     drafts: tuple[PaneSlotDraft, ...],
     selected: Mapping[str, AnalyzerSourceChoice],
     selection_revisions: Mapping[str, int],
+    *, paired_selections: Mapping[str, PanePairedSelectionReceipt] | None = None,
 ) -> PaneUserPlan:
     """Compile explicit source assignments; reject unsupported family modes.
 
@@ -212,20 +258,40 @@ def compile_user_pane_plan(
         raise PaneUserPlanError("draft sources differ from the exact staged selections")
     resource_for = {source_id: f"pane-resource-{index}" for index, source_id in enumerate(source_order, 1)}
     groups: list[AcquisitionGroup] = []
-    endpoints: dict[str, str] = {}
+    endpoints: dict[tuple[str, ReceiverChainSelection], str] = {}
+    pairs = {} if paired_selections is None else dict(paired_selections)
+    paired_sources: set[str] = set()
     for source_id in source_order:
         choice = selected[source_id]
         if not isinstance(choice, AnalyzerSourceChoice) or choice.device_id != source_id:
             raise PaneUserPlanError("staged source identity changed before plan compilation")
         resource = resource_for[source_id]
-        endpoint_id = f"{resource}:trace" if choice.family is DeviceFamily.TINYSA else f"{resource}:rx1"
-        endpoint = (SpectrumTraceEndpoint(endpoint_id, source_id, resource)
-                    if choice.family is DeviceFamily.TINYSA else
-                    ReceiverEndpoint(endpoint_id, source_id, resource, ReceiverChainSelection.RX1))
         if choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.RTL_SDR, DeviceFamily.TINYSA}:
             raise PaneUserPlanError("selected source has no qualified pane owner")
-        groups.append(AcquisitionGroup(f"{resource}:group", resource, (endpoint,)))
-        endpoints[source_id] = endpoint_id
+        chains = {draft.receiver_selection for draft in drafts if draft.source_id == source_id}
+        if chains != {ReceiverChainSelection.RX1}:
+            if choice.family is not DeviceFamily.AD936X or chains != {
+                    ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}:
+                raise PaneUserPlanError("RX2 currently requires both AD936x chains in one common RTBW group")
+            receipt = pairs.get(source_id)
+            if not isinstance(receipt, PanePairedSelectionReceipt):
+                raise PaneUserPlanError("paired plan requires a current selected topology receipt")
+            receipt.validate_current(choice, selection_revisions[source_id], receipt.snapshot)
+            if any(draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW)
+                   for draft in drafts if draft.source_id == source_id):
+                raise PaneUserPlanError("paired Sweep is not implemented; use explicit common RTBW")
+            paired_sources.add(source_id)
+        source_endpoints: list[ReceiverEndpoint | SpectrumTraceEndpoint] = []
+        for chain in sorted(chains, key=lambda item: item.value):
+            endpoint_id = f"{resource}:trace" if choice.family is DeviceFamily.TINYSA else f"{resource}:{chain.value}"
+            endpoint = (SpectrumTraceEndpoint(endpoint_id, source_id, resource)
+                        if choice.family is DeviceFamily.TINYSA else
+                        ReceiverEndpoint(endpoint_id, source_id, resource, chain))
+            source_endpoints.append(endpoint)
+            endpoints[source_id, chain] = endpoint_id
+        groups.append(AcquisitionGroup(f"{resource}:group", resource, tuple(source_endpoints)))
+    if set(pairs) != paired_sources:
+        raise PaneUserPlanError("paired topology receipts differ from the exact requested paired sources")
 
     cost = CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005)
     trace_cost = CaptureEpochCost(0.01, 0.01, 8.0, 0.005, 0.005)
@@ -405,6 +471,8 @@ def compile_user_pane_plan(
                     and envelope <= entries[0][1].usable_capture_span_hz
                     else ReceiverBindingMode.TIME_SLICED)
         modes[source_id] = mode
+        if source_id in paired_sources and mode is not ReceiverBindingMode.SHARED_CAPTURE:
+            raise PaneUserPlanError("paired RX requires one common profile and one usable capture window; no implicit time slicing")
         if mode is ReceiverBindingMode.SHARED_CAPTURE:
             shared_policies[source_id] = _shared_scheduler_policy(entries)
     slots_list: list[PaneLayoutSlot] = []
@@ -424,7 +492,7 @@ def compile_user_pane_plan(
         scheduler_intents.append(PaneSchedulingIntent(
             f"pane-{draft.number}", requested_policy, effective_policy))
         slots_list.append(PaneLayoutSlot(draft.number, SweepPaneRequest(
-            f"pane-{draft.number}", endpoints[draft.source_id],
+            f"pane-{draft.number}", endpoints[draft.source_id, draft.receiver_selection],
             crop_start, crop_stop, profile_id=f"pane-{draft.number}",
             requested_binding_mode=modes[draft.source_id], scheduler_policy=effective_policy)))
     slots = tuple(slots_list)
@@ -459,7 +527,7 @@ def compile_user_pane_plan(
     return PaneUserPlan(layout, tuple(groups),
                         tuple((resource_for[source], source) for source in source_order),
                         tuple(initial_ad), tuple(ad_geometry), tuple(hf_geometry), tuple(hf_ranges),
-                        tuple(scheduler_intents))
+                        tuple(scheduler_intents), tuple(pairs[source] for source in source_order if source in paired_sources))
 
 
-__all__ = ["RtbwBandPolicy", "TinySaPaneIntent", "PaneSlotDraft", "PaneSchedulingIntent", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]
+__all__ = ["RtbwBandPolicy", "TinySaPaneIntent", "PaneSlotDraft", "PaneSchedulingIntent", "PanePairedSelectionReceipt", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]

@@ -12,8 +12,9 @@ from dataclasses import replace
 from sdr_monitor.application.analyzer_session import AnalyzerPhase
 from sdr_monitor.application.live_session import LiveSessionApplicationService
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, PairedCaptureMetadata
-from sdr_monitor.domain.live import LiveConfiguration, LiveSessionState
-from sdr_monitor.domain.paired_live import PairedLiveRequest
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
+from sdr_monitor.domain.live import LiveConfiguration, LiveSnapshot, LiveSessionState
+from sdr_monitor.domain.paired_live import PairedLiveRequest, validate_paired_selection_snapshot
 from sdr_monitor.domain.pane_scheduler import CaptureJob, CaptureMeasurementMode, PaneCaptureProfile
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
@@ -28,7 +29,9 @@ class Ad936xPairedPaneOwner(Ad936xRtbwPaneOwner):
 
     def __init__(self, live: LiveSessionApplicationService, *,
                  physical_stream_resource_id: str, source_id: str,
-                 endpoints: tuple[ReceiverEndpoint, ...]) -> None:
+                 endpoints: tuple[ReceiverEndpoint, ...],
+                 expected_selection: AnalyzerSourceSelection | None = None,
+                 expected_snapshot: LiveSnapshot | None = None) -> None:
         endpoints = tuple(endpoints)
         if (len(endpoints) != 2 or any(not isinstance(item, ReceiverEndpoint) for item in endpoints)
                 or {item.selection for item in endpoints} != {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
@@ -41,13 +44,27 @@ class Ad936xPairedPaneOwner(Ad936xRtbwPaneOwner):
         super().__init__(live, physical_stream_resource_id=physical_stream_resource_id,
                          source_id=source_id, receiver_endpoint_id=self._endpoints[0].endpoint_id)
         before = live.current_snapshot()
-        device = before.device
-        if device is None or device.capabilities.receiver_topology is None or before.applied is None:
-            raise ValueError("paired pane requires the currently observed topology and staged profile")
+        self._expected_snapshot = before if expected_snapshot is None else expected_snapshot
+        self._expected_selection = live.current_source_selection() if expected_selection is None else expected_selection
+        device = self._expected_snapshot.device
+        if device is None or device.capabilities.receiver_topology is None:
+            raise ValueError("paired pane requires the currently observed topology")
         self._topology = device.capabilities.receiver_topology
-        self._session_id = str(before.session_id)
-        self._request(before.applied.applied).validate_snapshot(before)
+        self._session_id = str(self._expected_snapshot.session_id)
+        self._validate_selected(before)
         self._last_pair_key: tuple[int, int, int] | None = None
+
+    def _validate_selected(self, snapshot: LiveSnapshot) -> None:
+        selection = self._live.current_source_selection()
+        expected = self._expected_selection
+        device, original = snapshot.device, self._expected_snapshot.device
+        if (selection is None or expected is None or expected.selected is None
+                or selection.selected is not expected.selected or selection.revision != expected.revision
+                or selection.release_pending or device is None or original is None
+                or device.serial != original.serial or device.identity_key != original.identity_key
+                or device.capability_snapshot != original.capability_snapshot):
+            raise ValueError("paired pane current selection differs from its original staged receipt")
+        validate_paired_selection_snapshot(snapshot, self._source_id, self._session_id, self._topology)
 
     def _request(self, configuration: LiveConfiguration) -> PairedLiveRequest:
         # Endpoint IDs are explicit caller-provided producer IDs, not inferred
@@ -83,6 +100,7 @@ class Ad936xPairedPaneOwner(Ad936xRtbwPaneOwner):
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission:
         self.validate_job(job)
         before = self._live.current_snapshot()
+        self._validate_selected(before)  # BEFORE any RF/configuration/Start mutation.
         state = self._live.analyzer_state
         if (state is None or state.phase is not AnalyzerPhase.IDLE or self._live.is_running()
                 or before.state is not LiveSessionState.CONNECTED or before.stop_required

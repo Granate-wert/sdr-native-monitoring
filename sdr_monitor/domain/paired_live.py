@@ -19,6 +19,18 @@ def _counter(value: int) -> None:
         raise ValueError("paired Live requires observed nonnegative integer counters")
 
 
+def validate_paired_selection_snapshot(snapshot: LiveSnapshot, device_id: str,
+                                       session_id: str, topology: ReceiverTopologySnapshot) -> None:
+    """Selection-only Stage admission; configuration remains a separate guard."""
+    device = snapshot.device
+    if (device is None or device.device_id != device_id or str(snapshot.session_id) != session_id
+            or device.capabilities.receiver_topology != topology
+            or not isinstance(topology, ReceiverTopologySnapshot)
+            or not topology.supports_selection(ReceiverChainSelection.BOTH)
+            or not device.serial or not device.identity_key or device.capability_snapshot is None):
+        raise ValueError("paired Live selection/topology or stable identity is no longer exact")
+
+
 @dataclass(frozen=True, slots=True)
 class PairedLiveRequest:
     """Explicit caller producer IDs, bound to the current observed selection.
@@ -47,12 +59,8 @@ class PairedLiveRequest:
             raise ValueError("paired Live requires an observed compatible dual-RX layout")
 
     def validate_snapshot(self, snapshot: LiveSnapshot) -> None:
-        device = snapshot.device
-        if (device is None or device.device_id != self.device_id
-                or str(snapshot.session_id) != self.session_id
-                or device.capabilities.receiver_topology != self.topology
-                or snapshot.applied is None or snapshot.applied.applied != self.configuration
-                or not device.serial or not device.identity_key or device.capability_snapshot is None):
+        validate_paired_selection_snapshot(snapshot, self.device_id, self.session_id, self.topology)
+        if snapshot.applied is None or snapshot.applied.applied != self.configuration:
             raise ValueError("paired Live selection/topology/profile or stable identity is no longer exact")
 
 
@@ -144,4 +152,4 @@ class PairedLivePublication:
             raise ValueError("paired publication lacks coherent actual source/chain/geometry/epoch provenance")
 
 
-__all__ = ["PairedLiveRequest", "PairedLivePublication", "PairedLivePerformance", "PairedReceiverPerformance"]
+__all__ = ["PairedLiveRequest", "PairedLivePublication", "PairedLivePerformance", "PairedReceiverPerformance", "validate_paired_selection_snapshot"]

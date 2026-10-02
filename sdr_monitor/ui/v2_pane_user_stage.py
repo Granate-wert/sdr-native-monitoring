@@ -12,13 +12,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sdr_monitor.domain.pane_scheduler import PaneRevisitEstimate
+from sdr_monitor.domain.live import LiveSessionState
+from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 
 from .v2_pane_graph_pool import PaneProductGraphPool
 from .v2_pane_product_session import PaneProductSessionHandle
 from .v2_pane_rf_plan import PaneRfPlanContext
-from .v2_pane_user_plan import PaneSlotDraft, PaneUserPlan, PaneUserPlanError, compile_user_pane_plan
+from .v2_pane_user_plan import PanePairedSelectionReceipt, PaneSlotDraft, PaneUserPlan, PaneUserPlanError, compile_user_pane_plan
 
 
 class PaneUserStageError(RuntimeError):
@@ -64,7 +66,12 @@ def prepare_user_pane_session(
             if selection is None or selection.selected is not selected[source_id]:
                 raise PaneUserStageError("pane source selection changed during Stage")
             revisions[source_id] = selection.revision
-        plan = compile_user_pane_plan(drafts, selected, revisions)
+        paired = {source: PanePairedSelectionReceipt(selected[source], revisions[source],
+                    pool.graph_for(f"pane-resource-{index}").live.current_snapshot())
+                  for index, source in enumerate(source_order, 1)
+                  if any(draft.source_id == source and draft.receiver_selection is ReceiverChainSelection.RX2
+                         for draft in drafts)}
+        plan = compile_user_pane_plan(drafts, selected, revisions, paired_selections=paired)
         session = pool.compose(plan.layout, plan.groups, ReceiverLeaseManager(max_active_resources=4))
         if session is None:
             raise PaneUserStageError("an occupied pane layout has no resource session")
@@ -91,6 +98,21 @@ def apply_user_pane_session(prepared: PreparedPaneUserSession) -> None:
         raise PaneUserStageError("pane plan was already applied or closed")
     if any(item.recording_conflict for item in prepared.preview):
         raise PaneUserStageError("recording conflicts with one or more proposed receiver plans")
+    # All paired receipts revalidate BEFORE any proposed resource RF write.
+    try:
+        for receipt in prepared.plan.paired_selections:
+            resource = next(resource for resource, source in prepared.plan.resource_sources
+                            if source == receipt.source.device_id)
+            live = handle.pool.graph_for(resource).live
+            selection = live.current_source_selection()
+            if selection is None or selection.selected is None or selection.release_pending:
+                raise PaneUserPlanError("paired selected source disappeared before Apply")
+            current = live.current_snapshot()
+            if live.is_running() or current.state is not LiveSessionState.CONNECTED:
+                raise PaneUserPlanError("paired Apply cannot stop or restart a running owner")
+            receipt.validate_current(selection.selected, selection.revision, current)
+    except PaneUserPlanError:
+        raise PaneUserStageError("paired selection or topology changed before Apply") from None
     for resource_id, configuration in prepared.plan.initial_ad_configurations:
         result = handle.pool.graph_for(resource_id).live.apply_configuration(configuration)
         if result.error is not None or result.applied is None:
