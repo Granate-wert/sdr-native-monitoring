@@ -1,6 +1,7 @@
 #include "sdr_core/recording_reprocess.hpp"
 
 #include "sdr_core/errors.hpp"
+#include "sdr_core/receiver_provenance.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -111,10 +112,13 @@ template <typename Integer>
 }
 
 [[nodiscard]] SampleFormat sample_format_from_wire(const std::string_view value) {
-    if (value == "ci8") {
+    if (value == to_wire(SampleFormat::ComplexInt8Interleaved) || value == "ci8") {
         return SampleFormat::ComplexInt8Interleaved;
     }
-    if (value == "ci12_le") {
+    // The native JSONL writer uses the contract wire name, whereas SigMF's
+    // global datatype uses ci12_le. Retain the older accepted alias without
+    // reinterpreting either as full 16-bit ADC samples.
+    if (value == to_wire(SampleFormat::ComplexInt12InInt16Le) || value == "ci12_le") {
         return SampleFormat::ComplexInt12InInt16Le;
     }
     if (value == "ci16_le") {
@@ -167,6 +171,9 @@ template <typename Integer>
     source.display_name = json_string(text, "display_name");
     source.uri = json_string(text, "uri");
     source.backend_id = json_string(text, "backend_id");
+    if (text.find("\"receiver_selection\"") != std::string::npos) {
+        restore_receiver_selection(source, json_string(text, "receiver_selection"));
+    }
     source.schema_version = contract_schema_version;
     validate(source);
     return source;

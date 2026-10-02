@@ -297,6 +297,10 @@ void validate(const ContinuousSweepLineConfig& value) {
 }
 
 void validate(const FixedBandConfig& value) {
+    if (value.receiver_selection != ReceiverSelection::Rx1 &&
+        value.receiver_selection != ReceiverSelection::Rx2) {
+        invalid("single-producer fixed-band engine requires RX1 or RX2; BOTH needs a paired group owner");
+    }
     if (value.schema_version != sdr_core::contract_schema_version) {
         invalid("unsupported fixed-band schema_version");
     }
@@ -448,6 +452,12 @@ public:
             .metadata_json = {},
         };
         sdr_core::validate(options.source);
+        // The caller supplies the producer ID; never fabricate an endpoint or
+        // infer RF-path verification from a digital RX selection. Preserve
+        // existing RX1 source metadata for compatibility.
+        if (config.receiver_selection == ReceiverSelection::Rx2) {
+            options.source.metadata_json["receiver_selection"] = "\"RX2\"";
+        }
         std::unique_ptr<sdr_core::SegmentedIqRecordingWriter> recording_writer;
         if (native_iq_recording_enabled(config)) {
             recording_writer = std::make_unique<sdr_core::SegmentedIqRecordingWriter>(
@@ -480,6 +490,7 @@ public:
                        : 0U);
         const auto applied = device_.configure(
             config.device,
+            config.receiver_selection,
             static_cast<std::uint32_t>(std::max<std::uint64_t>(
                 8U, retained_iq_blocks
             ))
@@ -627,6 +638,8 @@ public:
     }
 
     AppliedConfig reconfigure(const FixedBandConfig& config) {
+        // Invalid selection/budget/host intent must not stop a valid run.
+        validate(config);
         const bool resume = state() == sdr_core::EngineState::Running;
         if (resume) {
             stop();
@@ -893,6 +906,7 @@ public:
     [[nodiscard]] FixedBandMetrics metrics() const {
         std::lock_guard lock(lifecycle_mutex_);
         FixedBandMetrics result;
+        result.receiver_selection = config_.receiver_selection;
         result.state = state_.load(std::memory_order_acquire);
         result.has_error = has_error_.load(std::memory_order_relaxed);
         result.engine = assemble_engine_metrics();
@@ -1271,7 +1285,16 @@ private:
             while (!stop_->stop_requested()) {
                 sdr_core::IqBlock block;
                 try {
-                    block = device_.refill();
+                    if (config_.receiver_selection == ReceiverSelection::Rx1) {
+                        block = device_.refill();
+                    } else {
+                        auto receivers = device_.refill_receivers();
+                        if (receivers.selection != ReceiverSelection::Rx2 ||
+                            !receivers.rx2 || receivers.rx1) {
+                            throw sdr_core::SdrNativeError("RX2 engine received a different receiver selection");
+                        }
+                        block = std::move(*receivers.rx2);
+                    }
                 } catch (const std::exception& error) {
                     if (stop_->stop_requested()) {
                         expected_cancellations_.fetch_add(

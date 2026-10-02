@@ -1,6 +1,7 @@
 #include "sdr_core/recording_writer.hpp"
 
 #include "sdr_core/errors.hpp"
+#include "sdr_core/receiver_provenance.hpp"
 
 #include <algorithm>
 #include <array>
@@ -354,6 +355,7 @@ SegmentedIqRecordingWriter::SegmentedIqRecordingWriter(
     gaps_path_(base_path_.string() + ".sigmf-gaps.jsonl") {
     validate(config_);
     validate(source_);
+    static_cast<void>(receiver_selection_json_suffix(source_));
     if (!config_.enabled || !config_.record_iq) {
         throw ConfigurationError("native I/Q writer requires enabled record_iq configuration");
     }
@@ -689,7 +691,7 @@ void SegmentedIqRecordingWriter::write_manifest(
              << quote_json(source_.display_name) << ",\"uri\":"
              << quote_json(source_.uri) << ",\"backend_id\":"
              << quote_json(source_.backend_id) << ",\"schema_version\":"
-             << source_.schema_version << "},\"index_file\":"
+             << source_.schema_version << receiver_selection_json_suffix(source_) << "},\"index_file\":"
              << quote_json(index_path_.filename().string()) << ",\"gaps_file\":"
              << quote_json(gaps_path_.filename().string()) << ",\"segment_count\":"
              << metrics_.segments << ",\"chunk_samples\":" << config_.chunk_samples
@@ -741,6 +743,7 @@ SpectrumFrameRecordingWriter::SpectrumFrameRecordingWriter(
     index_path_(base_path_.string() + ".sdr-spectrum-index.jsonl") {
     validate(config_);
     validate(source_);
+    static_cast<void>(receiver_selection_json_suffix(source_));
     if (!config_.enabled || !config_.record_spectrum) {
         throw ConfigurationError("native spectrum writer requires enabled record_spectrum configuration");
     }
@@ -809,6 +812,10 @@ void SpectrumFrameRecordingWriter::write_frame(const SpectrumFrame& frame) {
     std::lock_guard lock(mutex_);
     require_active();
     validate(frame);
+    const auto receiver_suffix = receiver_selection_json_suffix(frame.source);
+    if (receiver_suffix != receiver_selection_json_suffix(source_)) {
+        throw ConfigurationError("native spectrum writer receiver selection changed within one manifest");
+    }
     const auto bin_count = static_cast<std::uint64_t>(frame.values->size());
     if (bin_count == 0U || frame.frequencies_hz->size() != frame.values->size() ||
         bin_count > (std::numeric_limits<std::uint64_t>::max() -
@@ -859,6 +866,7 @@ void SpectrumFrameRecordingWriter::write_frame(const SpectrumFrame& frame) {
         ",\"first_sample_index\":" + std::to_string(frame.first_sample_index) +
         ",\"timestamp_ns\":" + std::to_string(frame.timestamp_ns) +
         ",\"source_id\":" + quote_json(frame.source.source_id) +
+        receiver_suffix +
         ",\"config_generation\":" + std::to_string(frame.config_generation) +
         ",\"bin_count\":" + std::to_string(bin_count) +
         ",\"center_frequency_hz\":" + json_number(frame.center_frequency_hz) +
@@ -978,7 +986,7 @@ void SpectrumFrameRecordingWriter::write_manifest(
              << quote_json(source_.display_name) << ",\"uri\":"
              << quote_json(source_.uri) << ",\"backend_id\":"
              << quote_json(source_.backend_id) << ",\"schema_version\":"
-             << source_.schema_version << "},\"spectrum_file\":"
+             << source_.schema_version << receiver_selection_json_suffix(source_) << "},\"spectrum_file\":"
              << quote_json(data_path_.filename().string()) << ",\"index_file\":"
              << quote_json(index_path_.filename().string()) << ",\"written_frames\":"
              << metrics_.written_frames << ",\"written_bytes\":"
@@ -1320,6 +1328,9 @@ NativeSpectrumReplayFrame NativeSpectrumRecordingReader::read_frame(
     NativeSpectrumReplayFrame result;
     result.source.source_type = SourceType::RecordedSpectrum;
     result.source.source_id = json_string(line, "source_id");
+    if (line.find("\"receiver_selection\"") != std::string::npos) {
+        restore_receiver_selection(result.source, json_string(line, "receiver_selection"));
+    }
     result.source.display_name = result.source.source_id;
     result.source.backend_id = "native-recording-reader";
     result.calibration_profile_id = json_string(line, "calibration_profile_id");

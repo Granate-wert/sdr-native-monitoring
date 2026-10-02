@@ -691,7 +691,8 @@ void bind_pluto(py::module_& module) {
             const bool dc_removal_block_mean,
             const PersistenceConfig& persistence,
             const RecordingConfig& recording,
-            const std::optional<sdr_pluto::ContinuousSweepLineConfig>& continuous_sweep_line
+            const std::optional<sdr_pluto::ContinuousSweepLineConfig>& continuous_sweep_line,
+            const sdr_pluto::ReceiverSelection receiver_selection
         ) {
             sdr_pluto::FixedBandConfig result;
             result.device = device;
@@ -708,6 +709,7 @@ void bind_pluto(py::module_& module) {
             result.persistence = persistence;
             result.recording = recording;
             result.continuous_sweep_line = continuous_sweep_line;
+            result.receiver_selection = receiver_selection;
             sdr_pluto::validate(result);
             return result;
         }),
@@ -724,9 +726,11 @@ void bind_pluto(py::module_& module) {
             py::arg("dc_removal_block_mean") = false,
             py::arg("persistence") = PersistenceConfig{},
             py::arg("recording") = RecordingConfig{},
-            py::arg("continuous_sweep_line") = std::nullopt
+            py::arg("continuous_sweep_line") = std::nullopt,
+            py::arg("receiver_selection") = sdr_pluto::ReceiverSelection::Rx1
         )
         .def_readonly("device", &sdr_pluto::FixedBandConfig::device)
+        .def_readonly("receiver_selection", &sdr_pluto::FixedBandConfig::receiver_selection)
         .def_readonly("dsp", &sdr_pluto::FixedBandConfig::dsp)
         .def_readonly("persistence", &sdr_pluto::FixedBandConfig::persistence)
         .def_readonly("recording", &sdr_pluto::FixedBandConfig::recording)
@@ -746,6 +750,7 @@ void bind_pluto(py::module_& module) {
 
     py::class_<sdr_pluto::FixedBandMetrics>(module, "FixedBandMetrics")
         .def_readonly("state", &sdr_pluto::FixedBandMetrics::state)
+        .def_readonly("receiver_selection", &sdr_pluto::FixedBandMetrics::receiver_selection)
         .def_readonly("has_error", &sdr_pluto::FixedBandMetrics::has_error)
         .def_readonly("engine", &sdr_pluto::FixedBandMetrics::engine)
         .def_readonly("device", &sdr_pluto::FixedBandMetrics::device)

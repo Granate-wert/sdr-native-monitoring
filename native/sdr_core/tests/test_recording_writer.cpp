@@ -1,6 +1,7 @@
 #include "sdr_core/errors.hpp"
 #include "sdr_core/recording_reprocess.hpp"
 #include "sdr_core/recording_writer.hpp"
+#include "sdr_core/receiver_provenance.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -178,6 +179,26 @@ int main() {
                       ("sdr_core_recording_writer_" + unique);
     try {
         std::filesystem::create_directories(root);
+        auto legacy_source = source();
+        require(sdr_core::receiver_selection_json_suffix(legacy_source).empty(),
+            "legacy source must not imply a selected receiver");
+        for (const auto selection : {"RX1", "RX2", "BOTH"}) {
+            sdr_core::restore_receiver_selection(legacy_source, selection);
+            require(sdr_core::receiver_selection_json_suffix(legacy_source) ==
+                ",\"receiver_selection\":\"" + std::string(selection) + "\"",
+                "canonical receiver provenance roundtrip mismatch");
+        }
+        bool invalid_selection_refused = false;
+        try { sdr_core::restore_receiver_selection(legacy_source, "RX3"); }
+        catch (const sdr_core::ConfigurationError&) { invalid_selection_refused = true; }
+        require(invalid_selection_refused, "unknown receiver provenance must not be accepted");
+        legacy_source.metadata_json["receiver_selection"] = "{\"RX2\":true}";
+        bool invalid_writer_refused = false;
+        try {
+            sdr_core::SegmentedIqRecordingWriter invalid(recording_config(root / "invalid"), legacy_source);
+        } catch (const sdr_core::ConfigurationError&) { invalid_writer_refused = true; }
+        require(invalid_writer_refused && !std::filesystem::exists(root / "invalid.sigmf-meta.part"),
+            "invalid receiver provenance must refuse before creating recording artifacts");
         const auto base = root / "capture";
         sdr_core::SegmentedIqRecordingWriter writer(recording_config(base), source());
         writer.start();
@@ -272,6 +293,14 @@ int main() {
             spectrum_recording_config(spectrum_base), source()
         );
         spectrum_writer.start();
+        auto wrong_receiver = spectrum_frame();
+        sdr_core::restore_receiver_selection(wrong_receiver.source, "RX2");
+        bool selection_change_refused = false;
+        try { spectrum_writer.write_frame(wrong_receiver); }
+        catch (const sdr_core::ConfigurationError&) { selection_change_refused = true; }
+        require(selection_change_refused && spectrum_writer.metrics().written_frames == 0U &&
+            spectrum_writer.metrics().written_bytes == 0U,
+            "writer must refuse changed receiver before appending frame payload");
         spectrum_writer.write_frame(spectrum_frame());
         auto second_spectrum = spectrum_frame();
         second_spectrum.frame_sequence = 12U;
@@ -335,6 +364,7 @@ int main() {
                     replay_entry.record_bytes > 8U && replay_entry.frame_sequence == 4108U &&
                     replay_entry.timestamp_ns == 8'004'095 &&
                     replay_frame.source.source_id == "r08b-mock" &&
+                    replay_frame.source.metadata_json.empty() &&
                     replay_frame.config_generation == 9U && replay_frame.values &&
                     replay_frame.values->size() == 4U && replay_frame.values->at(3U) == -60.0F,
                 "native spectrum reader did not preserve physical index/frame provenance");
@@ -385,6 +415,36 @@ int main() {
 
         sdr_core::DspBackendSelectionOptions cpu_selection;
         cpu_selection.preference = sdr_core::ComputeBackendKind::Cpu;
+        // Writer/reprocessor roundtrip every canonical wire format. CI8 and
+        // CI12 writer names differ from their SigMF global datatype aliases.
+        for (const auto format : {sdr_core::SampleFormat::ComplexInt8Interleaved,
+                sdr_core::SampleFormat::ComplexInt12InInt16Le,
+                sdr_core::SampleFormat::ComplexInt16Le,
+                sdr_core::SampleFormat::ComplexFloat32Le}) {
+            const auto input_base = root / ("format-in-" + std::to_string(static_cast<int>(format)));
+            const auto output_base = root / ("format-out-" + std::to_string(static_cast<int>(format)));
+            auto sample = reprocess_block(0U, 0U);
+            sample.sample_format = format;
+            const std::size_t width = format == sdr_core::SampleFormat::ComplexInt8Interleaved ? 2U :
+                format == sdr_core::SampleFormat::ComplexFloat32Le ? 8U : 4U;
+            sample.samples = std::make_shared<const std::vector<std::uint8_t>>(sample.sample_count * width, std::uint8_t{});
+            auto selected_source = source();
+            sdr_core::restore_receiver_selection(selected_source, "RX2");
+            sdr_core::SegmentedIqRecordingWriter input(recording_config(input_base), selected_source);
+            input.start();
+            input.write_block(sample);
+            input.finalize();
+            sdr_core::NativeIqRecordingReprocessor roundtrip(input_base, output_base,
+                reprocess_dsp_config(), cpu_selection, 64U);
+            require(!roundtrip.process(1U) && roundtrip.process(1U) &&
+                roundtrip.progress().state == sdr_core::NativeIqReprocessState::Completed &&
+                roundtrip.progress().discarded_fft_frames == 0U,
+                "canonical native recording sample format failed bounded roundtrip");
+            const sdr_core::NativeSpectrumRecordingReader output(output_base);
+            require(output.frame_count() != 0U &&
+                output.read_frame(0).source.metadata_json.at("receiver_selection") == "\"RX2\"",
+                "canonical format reprocess lost explicit selected-chain provenance");
+        }
         const auto reprocess_output_base = root / "reprocess-output";
         sdr_core::NativeIqRecordingReprocessor reprocessor(
             reprocess_input_base,

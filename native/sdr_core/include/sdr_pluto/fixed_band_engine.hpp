@@ -82,6 +82,9 @@ struct FixedBandConfig {
     std::uint32_t discard_blocks_after_start{2U};
     bool dc_removal_block_mean{false};
     std::uint32_t schema_version{sdr_core::contract_schema_version};
+    // A single native producer selects one admitted digital chain. BOTH needs
+    // a paired group owner/publication contract, not two calls to this engine.
+    ReceiverSelection receiver_selection{ReceiverSelection::Rx1};
 };
 
 void validate(const FixedBandConfig& value);
@@ -153,6 +156,7 @@ struct FixedBandMetrics {
     std::uint64_t backend_fallback_count{};
     std::uint64_t backend_switch_count{};
     sdr_core::BackendErrorCode last_backend_error{sdr_core::BackendErrorCode::None};
+    ReceiverSelection receiver_selection{ReceiverSelection::Rx1};
 };
 
 // One bounded native-to-Python bridge read.  It never represents analytical

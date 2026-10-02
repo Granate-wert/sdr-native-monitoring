@@ -59,7 +59,7 @@ struct StageTimingCounters {
     const ContinuousSweepCoordinatorConfig& config
 ) {
     const auto& device = config.segments.front().fixed_band.device;
-    return {
+    sdr_core::SourceDescriptor result{
         .source_type = sdr_core::SourceType::LiveIq,
         .source_id = device.source_id,
         .display_name = "AD936x native continuous sweep",
@@ -69,6 +69,10 @@ struct StageTimingCounters {
         .schema_version = sdr_core::contract_schema_version,
         .metadata_json = {},
     };
+    if (config.segments.front().fixed_band.receiver_selection == ReceiverSelection::Rx2) {
+        result.metadata_json["receiver_selection"] = "\"RX2\"";
+    }
+    return result;
 }
 
 [[nodiscard]] sdr_core::SweepLineDefinition planned_definition(
@@ -137,7 +141,8 @@ struct StageTimingCounters {
         left.dsp.calibration_profile_id == right.dsp.calibration_profile_id &&
         left.backend == right.backend &&
         left.allow_runtime_fallback == right.allow_runtime_fallback &&
-        left.dc_removal_block_mean == right.dc_removal_block_mean;
+        left.dc_removal_block_mean == right.dc_removal_block_mean &&
+        left.receiver_selection == right.receiver_selection;
 }
 
 [[nodiscard]] bool covers_usable_range(

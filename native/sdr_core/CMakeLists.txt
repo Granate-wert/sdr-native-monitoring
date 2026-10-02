@@ -651,6 +651,15 @@ if(SDR_CORE_BUILD_TESTS)
             ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>"
         )
         add_executable(sdr_core_pluto_receiver_gain_test tests/test_pluto_receiver_gain.cpp)
+        add_executable(sdr_core_fixed_band_receiver_selection_test tests/test_fixed_band_receiver_selection.cpp)
+        target_link_libraries(sdr_core_fixed_band_receiver_selection_test PRIVATE sdr_pluto sdr_core::sdr_core)
+        sdr_core_apply_platform_defaults(sdr_core_fixed_band_receiver_selection_test)
+        add_dependencies(sdr_core_fixed_band_receiver_selection_test sdr_core_mock_libiio)
+        add_test(NAME sdr_core.fixed_band_receiver_selection COMMAND sdr_core_fixed_band_receiver_selection_test)
+        set_tests_properties(sdr_core.fixed_band_receiver_selection PROPERTIES
+            TIMEOUT 30
+            ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_REFILL_DELAY_MS=1"
+        )
         target_link_libraries(sdr_core_pluto_receiver_gain_test PRIVATE sdr_pluto sdr_core::sdr_core)
         sdr_core_apply_platform_defaults(sdr_core_pluto_receiver_gain_test)
         add_dependencies(sdr_core_pluto_receiver_gain_test sdr_core_mock_libiio)

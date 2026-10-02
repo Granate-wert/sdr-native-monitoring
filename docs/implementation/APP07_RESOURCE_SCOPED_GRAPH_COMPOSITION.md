@@ -2205,3 +2205,47 @@ analytical burst capacity from latest-wins render queue capacity; existing
 DualRxDspPublisher uses one small capacity for both and a CPU-only backend.
 No new loss measurement, CPU/AUTO/CUDA equivalence or completed streaming
 integration is asserted. APP07 and the complete APP00–14 roadmap remain open.
+
+### Selected single-chain native engine prerequisite (not paired product owner)
+
+The existing `PlutoFixedBandEngine` now accepts a trailing typed
+`FixedBandConfig.receiver_selection` for RX1 or RX2. Legacy positional calls
+still select RX1. RX2 obtains its actual I/Q lane from the same
+`PlutoDevice.refill_receivers` owner and passes that block through the existing
+native acquisition queue, selectable DSP backend, recorder, persistence and
+Spectrum/Sweep-line paths; it does not create a second stream/context or a raw
+Python processing loop. Configuration, metrics and actual applied readbacks
+identify the selection. Caller-supplied `source_id` remains unchanged; RX2
+frames carry explicit `receiver_selection` metadata, not inferred RF identity.
+
+Retuning continuous Sweep requires the same receiver selection in every
+segment and preserves RX2 selection in planned/actual completed or cancelled
+publication. BOTH is refused by this single-producer engine: one ordinary
+SpectrumFrame must never stand in for a pair. Invalid host configuration is
+validated before a running `reconfigure` can Stop; this is not a promise that
+every device capability refusal during a valid reconfigure occurs before Stop.
+Existing explicit native reconfigure semantics and product approval/control
+transactions are not replaced or bypassed.
+
+New native I/Q and Spectrum recordings optionally persist the canonical
+digital `receiver_selection` in their JSON sidecars. Spectrum replay and
+native I/Q reprocess retain that selection. Missing legacy metadata remains
+unspecified, not RX1 by assumption. Unknown/noncanonical values are refused,
+and a spectrum writer cannot change selection within one manifest. Existing
+binary payload/version, legacy RX1 artifacts, queues, loss accounting and
+memory/Fs/FFT/quality/time bounds are unchanged. This field is digital-chain
+provenance, not RF connector, calibration, independence or simultaneous-RX
+qualification.
+
+The selected-chain durable roundtrip also exposed a pre-existing native
+reprocess format mismatch: the writer's canonical `ci12_in_i16_le` (Pluto)
+and `ci8_interleaved` (e.g. HackRF) were not recognized by the reader. It now
+accepts those exact contract names and retains the earlier `ci12_le`/`ci8`
+aliases; ADC precision, binary payload, units and sample interpretation are
+not changed. Native tests exercise writer→reprocess→replay for all four
+supported sample formats, separately from physical receive qualification.
+
+The product compiler/group adapter and UI selector remain RX1-only. Required
+paired acquisition/publication, combined budgets, group-wide control/recording
+receipts, actual endpoint admission and only then capability-backed RX choice
+remain OPEN. This prerequisite does not complete APP07 or narrow APP00–14.
