@@ -101,7 +101,7 @@ class Ad936xRtbwPaneOwner:
         self.validate_job(job)
         return self.recording_active()
 
-    def receiver_identity(self, endpoint_id: str) -> None:
+    def receiver_identity(self, endpoint_id: str) -> str | None:
         if endpoint_id != self._endpoint_id:
             raise ValueError("foreign RX endpoint")
         # The current AD936x Live bundle has no proven producer RX ID.

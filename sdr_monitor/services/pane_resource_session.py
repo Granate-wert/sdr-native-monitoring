@@ -59,6 +59,9 @@ class PaneCaptureAdmission:
     instrument_model_id: str | None = None
     instrument_identity_key: str | None = None
     firmware_fingerprint: str | None = None
+    # The operational device route above is not necessarily a frame producer.
+    # Paired native RX keeps its two caller-provided SourceDescriptors intact.
+    endpoint_source_ids: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not all(isinstance(value, str) and value for value in (self.capture_id, self.source_id, self.unit)):
@@ -69,6 +72,17 @@ class PaneCaptureAdmission:
                 not isinstance(value, str) or not value for value in endpoints):
             raise ValueError("capture admission requires exact receiver endpoint identities")
         object.__setattr__(self, "receiver_endpoint_ids", endpoints)
+        bindings = tuple(self.endpoint_source_ids)
+        if bindings and (
+                len(bindings) != len(endpoints)
+                or any(not isinstance(item, tuple) or len(item) != 2
+                       or any(not isinstance(value, str) or not value or value != value.strip()
+                              for value in item) for item in bindings)
+                or tuple(item[0] for item in bindings) != endpoints
+                or len({item[1] for item in bindings}) != len(bindings)
+                or self.mode is not CaptureMeasurementMode.RTBW):
+            raise ValueError("endpoint producer bindings require exact ordered RTBW endpoint/source identities")
+        object.__setattr__(self, "endpoint_source_ids", bindings)
         if type(self.acquisition_epoch) is not int or self.acquisition_epoch < 0:
             raise ValueError("capture admission requires a non-negative producer epoch")
         if self.config_generation is not None and (
@@ -98,6 +112,11 @@ class PaneCaptureAdmission:
             raise ValueError("RTBW admission requires a producer session")
         if self.mode is not CaptureMeasurementMode.RTBW and self.session_id is not None:
             raise ValueError("Sweep admission cannot claim an RTBW session")
+
+    def producer_source_id(self, endpoint_id: str) -> str:
+        if endpoint_id not in self.receiver_endpoint_ids:
+            raise ValueError("producer source requires an admitted endpoint")
+        return dict(self.endpoint_source_ids).get(endpoint_id, self.source_id)
 
 
 class PaneCaptureOwner(Protocol):
@@ -752,7 +771,7 @@ class PaneResourceSession:
                     or endpoint is None or endpoint_id not in job.receiver_endpoint_ids
                     or endpoint.physical_stream_resource_id != resource_id
                     or not isinstance(bundle, AnalyzerFrameBundle) or identity is None
-                    or identity.source_id != admission.source_id
+                    or identity.source_id != admission.producer_source_id(endpoint_id)
                     or (admission.mode is CaptureMeasurementMode.INSTRUMENT_TRACE
                         and (bundle.mode != "sweep" or not isinstance(bundle.spectrum, SweepLineFrame)
                              or bundle.spectrum.instrument is None
@@ -967,6 +986,21 @@ class PaneResourceSession:
     def rejected_publications(self, resource_id: str) -> int:
         with self._state_lock:
             return self._required_runtime(resource_id).rejected_publications
+
+    def admitted_producer_source_id(self, resource_id: str, endpoint_id: str) -> str | None:
+        """Read-only current producer binding, never a frame-derived authority.
+
+        The operational source identifies a selected device route. Paired
+        native frames identify explicit producers instead. No active receipt
+        means no presentation admission, even if a retained frame exists.
+        """
+        with self._state_lock:
+            runtime = self._required_runtime(resource_id)
+            admission = runtime.admission
+            if (not runtime.active or runtime.stop_required or runtime.current_activation is None
+                    or admission is None or endpoint_id not in admission.receiver_endpoint_ids):
+                return None
+            return admission.producer_source_id(endpoint_id)
 
     def _recording_conflict(self, runtime: _Runtime) -> bool:
         try:

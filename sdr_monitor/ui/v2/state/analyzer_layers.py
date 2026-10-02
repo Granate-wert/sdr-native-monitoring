@@ -114,8 +114,8 @@ def waterfall_line_from_spectrum(frame: LiveSpectrumFrame, *,
     complete native span.  Power-of-two FFT sizes therefore use exact integer
     groups (4096 -> 2048, 16384 -> 2048); other widths use the same regular
     physical output grid and assign every source-bin centre to exactly one
-    cell.  A cell containing any unknown sample remains NaN, so display LOD
-    cannot bridge an acquisition/analysis gap with a neighbouring peak.
+    cell. NaN/+inf remain unavailable and cannot be bridged by a peak;
+    measured zero power (-inf dB) remains a valid bucket input.
     """
     reduced_values, reduced_edges = _waterfall_projection(frame.frequencies_hz, frame.values, grid_cache=grid_cache)
     return WaterfallLineFrame(
@@ -170,15 +170,11 @@ def _reduce_waterfall_columns(values: np.ndarray, native_edges: np.ndarray) -> t
     cells: np.ndarray = np.arange(columns, dtype=np.int64)
     starts = (2 * source.size * cells + columns - 1) // (2 * columns)
     # source.size > columns: monotonic centre assignment covers every output
-    # cell, so reduceat has no empty group. Retain NaN for a cell containing
-    # *any* non-finite source value, including +/-inf. This performs the same
-    # peak-preserving display reduction without 2048 Python loops per frame.
+    # cell, so reduceat has no empty group. Maximum preserves finite peaks
+    # beside measured -inf and leaves an all--inf bucket at -inf. NaN
+    # propagates; +inf is unavailable, not a measured peak.
     reduced: np.ndarray = np.maximum.reduceat(source, starts)
-    # max propagates NaN/+inf; min additionally detects any -inf. Checking both
-    # preserves the original any-nonfinite rule without an N-element bool mask.
-    minimum = np.minimum.reduceat(source, starts)
-    finite = np.isfinite(reduced) & np.isfinite(minimum)
-    reduced[~finite] = np.nan
+    reduced[~(reduced < np.inf)] = np.nan
     span = float(native_edges[-1] - native_edges[0])
     edges = float(native_edges[0]) + np.arange(columns + 1, dtype=np.float64) * (span / columns)
     edges[-1] = native_edges[-1]

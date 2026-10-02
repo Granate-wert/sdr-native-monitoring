@@ -15,6 +15,7 @@ from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
 from sdr_monitor.services.ad936x_pane_owner import Ad936xPaneOwner
+from sdr_monitor.services.ad936x_paired_pane_owner import Ad936xPairedPaneOwner
 from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
 from sdr_monitor.services.rtl_rtbw_pane_owner import RtlRtbwPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
@@ -75,13 +76,22 @@ def compose_v2_pane_resource_session(
         selected = None if selection is None else selection.selected
         if (selection is None or selected is None or selection.release_pending
                 or graph.sources is None or graph.sources.current() is not selection
-                or len(group.endpoints) != 1
-                or group.endpoints[0].source_id != selected.device_id):
+                or any(endpoint.source_id != selected.device_id for endpoint in group.endpoints)):
             raise PaneResourceError("pane source lacks one current selected binding")
         endpoint = group.endpoints[0]
         identities[selected.device_id] = selected.binding.identity_key
         families[selected.device_id] = selected.family
-        if selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):
+        if selected.family is DeviceFamily.AD936X and len(group.endpoints) == 2:
+            if any(not isinstance(item, ReceiverEndpoint) for item in group.endpoints):
+                raise PaneResourceError("paired AD936x requires two digital RX endpoints")
+            first, second = group.endpoints
+            assert isinstance(first, ReceiverEndpoint) and isinstance(second, ReceiverEndpoint)
+            owner_factories[resource_id] = partial(Ad936xPairedPaneOwner,
+                graph.live, physical_stream_resource_id=resource_id,
+                source_id=selected.device_id, endpoints=(first, second))
+        elif len(group.endpoints) != 1:
+            raise PaneResourceError("selected family has no paired acquisition owner")
+        elif selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):
             owner_factories[resource_id] = partial(Ad936xPaneOwner,
                 graph.live, graph.sweep_router, physical_stream_resource_id=resource_id,
                 source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)

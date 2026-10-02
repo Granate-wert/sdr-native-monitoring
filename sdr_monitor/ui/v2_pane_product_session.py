@@ -52,7 +52,8 @@ class PaneProductSessionHandle:
             raise ValueError("pane display labels require selected, bounded source facts")
         self.source_labels = labels
         self.preparer = PaneDeliveryPreparer(layout, groups,
-            allocation_budget if allocation_budget is not None else PresentationAllocationBudget())
+            allocation_budget if allocation_budget is not None else PresentationAllocationBudget(),
+            admitted_producer_source_id=session.admitted_producer_source_id)
         self.queue = PaneFairDeliveryQueue(tuple(slot.request.pane_id for slot in layout.slots
                                                  if slot.request is not None))
         self.pump = PaneResourcePump(session, layout, self.preparer, self.queue)

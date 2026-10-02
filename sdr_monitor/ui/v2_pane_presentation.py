@@ -7,6 +7,7 @@ waterfall presentation adapters are reused without changing its measurement.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
@@ -52,6 +53,9 @@ class PreparedPaneDelivery:
     spectrum: PreparedSpectrumFrame
     waterfall: WaterfallLineFrame | SweepWaterfallLine | None
     persistence: PersistenceDensityFrame | None
+    # The selected device route remains binding.source_id. A paired native
+    # frame instead carries its admitted per-RX producer SourceDescriptor.
+    producer_source_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.spectrum.view.source_frame is not self.delivery.bundle:
@@ -59,13 +63,18 @@ class PreparedPaneDelivery:
         if type(self.delivery.host_run_serial) is not int or self.delivery.host_run_serial < 0:
             raise ValueError("pane publication requires an explicit non-negative host run serial")
         binding, delivery = self.binding, self.delivery
+        producer = self.producer_source_id
+        if (producer is not None and (not isinstance(producer, str) or not producer
+                or producer != producer.strip())
+                or delivery.bundle.paired_capture is not None and producer is None):
+            raise ValueError("paired pane delivery requires an explicit admitted producer source")
         if (delivery.pane_id != binding.pane_id
                 or delivery.physical_stream_resource_id != binding.physical_stream_resource_id
                 or delivery.capture_id != binding.capture_id
                 or delivery.receiver_endpoint_id != binding.receiver_endpoint_id
                 or delivery.crop != binding.crop
                 or delivery.bundle.identity is None
-                or delivery.bundle.identity.source_id != binding.source_id
+                or delivery.bundle.identity.source_id != (producer or binding.source_id)
                 or delivery.bundle.mode != binding.mode.value
                 or delivery.bundle.unit != binding.unit):
             raise ValueError("prepared delivery differs from its exact pane binding")
@@ -83,13 +92,16 @@ class PaneDeliveryPreparer:
     """
 
     def __init__(self, layout: PaneLayout, groups: tuple[AcquisitionGroup, ...],
-                 allocation_budget: PresentationAllocationBudget) -> None:
+                 allocation_budget: PresentationAllocationBudget, *,
+                 admitted_producer_source_id: Callable[[str, str], str | None] | None = None) -> None:
         if not isinstance(layout, PaneLayout) or not isinstance(allocation_budget, PresentationAllocationBudget):
             raise TypeError("pane presentation needs a compiled layout and shared allocation budget")
         bindings = self._bindings_for_layout(layout, groups)
         self.layout = layout
         self.bindings = bindings
         self.allocation_budget = allocation_budget
+        self._admitted_producer_source_id = admitted_producer_source_id
+        self._paired_sync_context: dict[str, tuple[int, str | None, int | None, int]] = {}
         self._grids = {pane_id: MeasurementGridCache(allocation_budget) for pane_id in bindings}
         self._layers = {pane_id: AnalyzerLayerCache(allocation_budget, grid_cache=self._grids[pane_id])
                         for pane_id in bindings}
@@ -169,6 +181,7 @@ class PaneDeliveryPreparer:
 
     def clear(self) -> None:
         """Release worker-owned comparison/layer roots after its worker joins."""
+        self._paired_sync_context.clear()
         for layers in self._layers.values():
             layers.clear()
         for grid in self._grids.values():
@@ -184,6 +197,7 @@ class PaneDeliveryPreparer:
                          if binding.physical_stream_resource_id == resource_id)
         if not pane_ids:
             raise ValueError("unknown pane resource cannot clear peer preparation")
+        self._paired_sync_context.pop(resource_id, None)
         for pane_id in pane_ids:
             self._layers[pane_id].clear()
             self._grids[pane_id].clear()
@@ -199,9 +213,23 @@ class PaneDeliveryPreparer:
             raise ValueError("pane delivery does not belong to this exact slot and capture")
         bundle = delivery.bundle
         identity = bundle.identity
-        if (identity is None or identity.source_id != binding.source_id
+        producer = (binding.source_id if self._admitted_producer_source_id is None else
+                    self._admitted_producer_source_id(binding.physical_stream_resource_id,
+                                                      binding.receiver_endpoint_id))
+        if (not isinstance(producer, str) or not producer or producer != producer.strip()
+                or bundle.paired_capture is not None and self._admitted_producer_source_id is None
+                or identity is None or identity.source_id != producer
                 or bundle.mode != binding.mode.value or bundle.unit != binding.unit):
             raise ValueError("pane delivery source, mode or unit differs from the selected binding")
+        if bundle.paired_capture is not None:
+            context = (delivery.host_activation_serial, bundle.session_id,
+                       bundle.acquisition_epoch, bundle.paired_capture.synchronization_epoch)
+            resource_id = binding.physical_stream_resource_id
+            if self._paired_sync_context.get(resource_id) != context:
+                # One shared input gap invalidates both RX histories before
+                # either new-epoch frame enters a pane comparison cache.
+                self.clear_resource(resource_id)
+                self._paired_sync_context[resource_id] = context
         grid = bundle.frequencies_hz
         if grid.size < 2:
             raise ValueError("pane delivery has no usable physical frequency grid")
@@ -243,7 +271,7 @@ class PaneDeliveryPreparer:
             with self.allocation_budget.reserve(int(columns * 12 + 8), frame) as allocation:
                 waterfall = waterfall_line_from_sweep(frame, grid_cache=self._grids[binding.pane_id])
                 allocation.commit(waterfall)
-        return PreparedPaneDelivery(binding, delivery, prepared, waterfall, persistence)
+        return PreparedPaneDelivery(binding, delivery, prepared, waterfall, persistence, producer)
 
 
 __all__ = ["PanePresentationBinding", "PreparedPaneDelivery", "PaneDeliveryPreparer"]

@@ -32,7 +32,7 @@ class AnalyzerLayerTests(unittest.TestCase):
                 expected = np.full(2048, np.nan, dtype=np.float32)
                 for index in range(2048):
                     samples = values[bucket == index]
-                    if samples.size and np.all(np.isfinite(samples)):
+                    if samples.size and not np.any(np.isnan(samples) | np.isposinf(samples)):
                         expected[index] = np.max(samples)
                 actual = waterfall_line_from_spectrum(_frame(size, values))
                 np.testing.assert_array_equal(actual.values, expected)
@@ -65,6 +65,21 @@ class AnalyzerLayerTests(unittest.TestCase):
         line = waterfall_line_from_spectrum(_frame(4096, values))
         self.assertTrue(np.isnan(line.values[5]))
         self.assertEqual(float(line.values[6]), -5.0)
+
+    def test_measured_zero_power_survives_bounded_waterfall_lod(self) -> None:
+        values = np.full(4096, -100.0, dtype=np.float32)
+        values[20:22] = (-np.inf, -12.0)
+        values[22:24] = -np.inf
+        values[24:26] = (np.nan, -3.0)
+        values[26:28] = (+np.inf, -2.0)
+        original = values.copy()
+        line = waterfall_line_from_spectrum(_frame(4096, values))
+        self.assertEqual(float(line.values[10]), -12.0)
+        self.assertTrue(np.isneginf(line.values[11]))
+        self.assertTrue(np.isnan(line.values[12]))
+        self.assertTrue(np.isnan(line.values[13]))
+        np.testing.assert_array_equal(values, original)
+        self.assertFalse(line.values.flags.writeable)
 
     def test_all_nan_and_nondivisible_native_width_remain_explicitly_unknown(self) -> None:
         unknown = waterfall_line_from_spectrum(_frame(4096, np.full(4096, np.nan, dtype=np.float32)))

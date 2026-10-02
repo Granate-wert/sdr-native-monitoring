@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -12,7 +13,7 @@ from collections import Counter
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode, SchedulerPolicyKind
 from sdr_monitor.domain.pane_scheduler import Ad936xSweepPaneProfile, CaptureMeasurementMode, HackrfSweepPaneProfile
 from sdr_monitor.domain.device_capabilities import DeviceFamily, stable_identity_key
-from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, PairedCaptureMetadata
 from sdr_monitor.services.pane_resource_session import PaneResourceSession
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer
@@ -198,6 +199,60 @@ class PaneUserPlanTests(unittest.TestCase):
                                         valid.acquisition_epoch, valid.rtbw)
         finally:
             self.assertEqual(session.stop_all(), ())
+            preparer.clear()
+
+    def test_presentation_uses_current_admitted_producer_not_operational_route(self) -> None:
+        plan = self._compile((PaneSlotDraft(1, self.hf_id, 140e6, 160e6,
+                                          rtbw_band=RtbwBandPolicy.FULL_RECEIVE),))
+        resource = plan.layout.schedule.resources[0].physical_stream_resource_id
+        endpoint = plan.groups[0].endpoints[0].endpoint_id
+
+        class EndpointProducerOwner(FakeOwner):
+            def start_capture(self, job):
+                admitted = super().start_capture(job)
+                return replace(admitted, endpoint_source_ids=tuple(
+                    (source_endpoint, source_endpoint) for source_endpoint in job.receiver_endpoint_ids))
+
+        owner = EndpointProducerOwner(resource)
+        owner.admission_source_id = self.hf_id
+        owner.admission_mode = "rtbw"
+        owner.admission_generation = 5
+        owner.receiver_ids[endpoint] = "RX1"
+        session = PaneResourceSession(plan.layout.schedule, plan.groups, {resource: owner},
+            ReceiverLeaseManager(max_active_resources=4),
+            source_identity_keys={self.hf_id: stable_identity_key(self.hf_id)})
+        preparer = PaneDeliveryPreparer(plan.layout, plan.groups, PresentationAllocationBudget(),
+            admitted_producer_source_id=session.admitted_producer_source_id)
+        self.assertIsNone(session.admitted_producer_source_id(resource, endpoint))
+        session.apply()
+        activation = session.start_resource(resource)
+        try:
+            self.assertEqual(session.admitted_producer_source_id(resource, endpoint), endpoint)
+            frame = live_frame(endpoint, "fake-live-session", 7, center_hz=150e6,
+                               sample_rate_hz=20e6, receiver_id="RX1")
+            first = replace(frame, paired_capture=PairedCaptureMetadata(1, 0, 0))
+            deliveries = session.accept_frame(activation, endpoint, first)
+            self.assertEqual(len(deliveries), 1)
+            with patch.object(preparer, "clear_resource", wraps=preparer.clear_resource) as clear:
+                prepared = preparer.prepare(deliveries[0])
+                self.assertEqual(prepared.binding.source_id, self.hf_id)
+                self.assertEqual(prepared.producer_source_id, endpoint)
+                self.assertIs(prepared.bundle, first)
+                self.assertEqual(clear.call_count, 1)
+                preparer.prepare(deliveries[0])
+                self.assertEqual(clear.call_count, 1)
+                second = replace(first, paired_capture=PairedCaptureMetadata(2, 4096, 1))
+                preparer.prepare(replace(deliveries[0], bundle=second))
+                clear.assert_called_with(resource)
+                self.assertEqual(clear.call_count, 2)
+            with self.assertRaisesRegex(ValueError, "source"):
+                preparer.prepare(replace(deliveries[0], bundle=replace(
+                    first, spectrum=replace(first.spectrum, source_id=self.hf_id), identity=None)))
+        finally:
+            self.assertEqual(session.stop_all(), ())
+            self.assertIsNone(session.admitted_producer_source_id(resource, endpoint))
+            with self.assertRaisesRegex(ValueError, "source"):
+                preparer.prepare(deliveries[0])
             preparer.clear()
 
     def test_high_fs_rf_filter_is_distinct_from_36mhz_usable_capture(self) -> None:

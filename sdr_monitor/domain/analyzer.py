@@ -39,6 +39,20 @@ class RtbwFrameMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class PairedCaptureMetadata:
+    """Actual common-buffer synchronization evidence, not an RF clock/phase claim."""
+
+    synchronization_epoch: int
+    first_sample_index: int
+    shared_input_gaps_before: int
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value < 0 for value in (
+                self.synchronization_epoch, self.first_sample_index, self.shared_input_gaps_before)):
+            raise ValueError("paired capture metadata requires observed nonnegative integer counters")
+
+
+@dataclass(frozen=True, slots=True)
 class AnalyzerFrameBundle:
     """One coherent spectrum publication, without inferred auxiliary layers.
 
@@ -56,8 +70,14 @@ class AnalyzerFrameBundle:
     persistence: object | None = None
     waterfall_line: object | None = None
     coherence_issues: tuple[str, ...] = ()
+    paired_capture: PairedCaptureMetadata | None = None
 
     def __post_init__(self) -> None:
+        if self.paired_capture is not None and (
+                not isinstance(self.paired_capture, PairedCaptureMetadata)
+                or not isinstance(self.spectrum, LiveSpectrumFrame)
+                or self.receiver_id not in {"RX1", "RX2"}):
+            raise ValueError("paired synchronization evidence requires an actual per-chain RTBW frame")
         if isinstance(self.spectrum, LiveSpectrumFrame):
             if self.rtbw is None:
                 raise ValueError("RTBW publication requires RTBW metadata")
@@ -68,8 +88,11 @@ class AnalyzerFrameBundle:
                 raise ValueError("RTBW measurement arrays must be read-only")
             if not np.all(np.isfinite(frequencies)) or np.any(np.diff(frequencies) <= 0.0):
                 raise ValueError("RTBW frequency grid must be finite and strictly ascending")
-            if np.any(np.isinf(values)):
-                raise ValueError("RTBW values may contain NaN gaps but not infinity")
+            # Native CPU/CUDA publish exact zero linear power as -infinity
+            # dB, just as Sweep does. It owns measured coverage, not a gap or
+            # an arbitrary finite floor. +infinity remains malformed data.
+            if np.any(np.isposinf(values)):
+                raise ValueError("RTBW values may contain measured -infinity or NaN gaps, not +infinity")
             if (not isfinite(frame.center_frequency_hz) or not isfinite(frame.sample_rate_hz)
                     or frame.sample_rate_hz <= 0.0 or frame.fft_size <= 0
                     or frame.hop_size <= 0 or frame.hop_size > frame.fft_size):
