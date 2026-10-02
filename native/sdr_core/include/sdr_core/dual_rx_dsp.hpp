@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -67,6 +68,7 @@ struct DualRxDspMetrics {
     std::uint64_t input_epochs_received{};
     std::uint64_t shared_input_gaps{};
     std::uint64_t pairing_mismatches{};
+    std::uint64_t paired_frames_formed{};
     std::uint64_t paired_frames_published{};
     std::uint64_t paired_frames_superseded{};
     std::uint64_t paired_frames_abandoned{};
@@ -99,6 +101,16 @@ public:
     // resets both DSP histories and becomes an explicit shared gap; neither
     // channel is processed independently past a missing peer.
     void push(const IqBlock& primary, const IqBlock& secondary);
+    // Native owner only: every validated analytical pair is delivered before
+    // final latest-wins reduction. Returning false transfers publication to
+    // the owner; no raw payload or callback is exposed through Python.
+    using AnalyticalConsumer = std::function<bool(
+        DualRxSpectrumFrame&, const DspBackendMetrics&, const DspBackendMetrics&)>;
+    void set_analytical_consumer(AnalyticalConsumer consumer);
+    // Same native worker only; clears owner-side stale histories BEFORE a new
+    // synchronization epoch can reach analytical consumers. Not Python-bound.
+    void set_shared_gap_consumer(std::function<void()> consumer);
+    void flush();
     void mark_shared_gap();
     void reset();
 
@@ -110,13 +122,15 @@ public:
 
 private:
     void reset_for_shared_gap();
-    void publish_ready_frames();
+    void publish_ready_frames(bool flush_partial_batch = false);
 
     DualRxDspConfig config_{};
+    DualRxDspResourceBudget resource_budget_{};
     bool configured_{};
     std::uint64_t synchronization_epoch_{};
     std::uint64_t shared_input_gaps_{};
     std::uint64_t pairing_mismatches_{};
+    std::uint64_t paired_frames_formed_{};
     std::uint64_t input_epochs_received_{};
     std::uint64_t paired_frames_published_{};
     std::uint64_t paired_frames_superseded_{};
@@ -131,6 +145,8 @@ private:
     std::unique_ptr<DspBackend> primary_backend_;
     std::unique_ptr<DspBackend> secondary_backend_;
     std::unique_ptr<BoundedQueue<DualRxSpectrumFrame>> output_queue_;
+    AnalyticalConsumer analytical_consumer_;
+    std::function<void()> shared_gap_consumer_;
 };
 
 }  // namespace sdr_core

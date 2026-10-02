@@ -164,13 +164,14 @@ DualRxDspResourceBudget dual_rx_dsp_resource_budget(const DualRxDspConfig& value
 
 void DualRxDspPublisher::configure(const DualRxDspConfig& config) {
     validate(config);
+    const auto resource_budget = dual_rx_dsp_resource_budget(config);
     const auto shared_plan = make_cpu_dsp_shared_plan(config.primary.dsp);
     DspOptions primary_options;
     primary_options.dc_removal = config.dc_removal_block_mean
                                      ? DcRemovalMode::BlockMean
                                      : DcRemovalMode::Off;
     primary_options.source = config.primary.source;
-    primary_options.output_capacity = dual_rx_dsp_resource_budget(config).analytical_output_capacity;
+    primary_options.output_capacity = resource_budget.analytical_output_capacity;
     primary_options.cpu_shared_plan = shared_plan;
     DspOptions secondary_options = primary_options;
     secondary_options.source = config.secondary.source;
@@ -192,6 +193,7 @@ void DualRxDspPublisher::configure(const DualRxDspConfig& config) {
     );
 
     config_ = config;
+    resource_budget_ = resource_budget;
     primary_backend_ = std::move(primary);
     secondary_backend_ = std::move(secondary);
     output_queue_ = std::move(output);
@@ -199,6 +201,9 @@ void DualRxDspPublisher::configure(const DualRxDspConfig& config) {
     synchronization_epoch_ = 1U;
     shared_input_gaps_ = 0U;
     pairing_mismatches_ = 0U;
+    paired_frames_formed_ = 0U;
+    analytical_consumer_ = {};
+    shared_gap_consumer_ = {};
     input_epochs_received_ = 0U;
     paired_frames_published_ = 0U;
     paired_frames_superseded_ = 0U;
@@ -255,6 +260,26 @@ void DualRxDspPublisher::mark_shared_gap() {
     reset_for_shared_gap();
 }
 
+void DualRxDspPublisher::set_analytical_consumer(AnalyticalConsumer consumer) {
+    require_configured(configured_);
+    analytical_consumer_ = std::move(consumer);
+}
+
+void DualRxDspPublisher::flush() {
+    require_configured(configured_);
+    try {
+        publish_ready_frames(true);
+    } catch (...) {
+        reset_for_shared_gap();
+        throw;
+    }
+}
+
+void DualRxDspPublisher::set_shared_gap_consumer(std::function<void()> consumer) {
+    require_configured(configured_);
+    shared_gap_consumer_ = std::move(consumer);
+}
+
 void DualRxDspPublisher::reset() {
     require_configured(configured_);
     primary_backend_->reset();
@@ -295,10 +320,11 @@ DualRxDspMetrics DualRxDspPublisher::metrics() const {
     result.input_epochs_received = input_epochs_received_;
     result.shared_input_gaps = shared_input_gaps_;
     result.pairing_mismatches = pairing_mismatches_;
+    result.paired_frames_formed = paired_frames_formed_;
     result.paired_frames_published = paired_frames_published_;
     result.paired_frames_superseded = paired_frames_superseded_;
     result.paired_frames_abandoned = paired_frames_abandoned_;
-    result.resource_budget = dual_rx_dsp_resource_budget(config_);
+    result.resource_budget = resource_budget_;
     result.output_queue = output_queue_->stats();
     result.primary = primary_backend_->metrics();
     result.secondary = secondary_backend_->metrics();
@@ -316,17 +342,20 @@ void DualRxDspPublisher::reset_for_shared_gap() {
     ++shared_input_gaps_;
     ++synchronization_epoch_;
     input_epoch_valid_ = false;
+    if (shared_gap_consumer_) shared_gap_consumer_();
 }
 
-void DualRxDspPublisher::publish_ready_frames() {
-    auto primary = primary_backend_->poll_spectrum(0U, false);
-    auto secondary = secondary_backend_->poll_spectrum(0U, false);
+void DualRxDspPublisher::publish_ready_frames(const bool flush_partial_batch) {
+    auto primary = primary_backend_->poll_spectrum(0U, flush_partial_batch);
+    auto secondary = secondary_backend_->poll_spectrum(0U, flush_partial_batch);
     if (primary.size() != secondary.size()) {
         ++pairing_mismatches_;
         reset_for_shared_gap();
         return;
     }
     // Validate the entire burst before publishing any constituent pair.
+    const auto primary_metrics = primary_backend_->metrics();
+    const auto secondary_metrics = secondary_backend_->metrics();
     for (std::size_t index = 0U; index < primary.size(); ++index) {
         if (!same_spectrum_epoch(primary[index], secondary[index])) {
             ++pairing_mismatches_;
@@ -343,6 +372,15 @@ void DualRxDspPublisher::publish_ready_frames() {
         frame.shared_input_gaps_before = shared_input_gaps_;
         frame.primary = std::move(primary[index]);
         frame.secondary = std::move(secondary[index]);
+        if (shared_input_gaps_ != 0U) {
+            frame.primary.quality_flags = frame.primary.quality_flags | QualityFlag::BackendDiscontinuity;
+            frame.secondary.quality_flags = frame.secondary.quality_flags | QualityFlag::BackendDiscontinuity;
+        }
+        ++paired_frames_formed_;
+        if (analytical_consumer_ &&
+            !analytical_consumer_(frame, primary_metrics, secondary_metrics)) {
+            continue;
+        }
         const auto result = output_queue_->try_push(std::move(frame));
         if (result == PushResult::Stopped || result == PushResult::Dropped ||
             result == PushResult::Full) {

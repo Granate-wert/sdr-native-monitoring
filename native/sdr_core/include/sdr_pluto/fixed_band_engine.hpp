@@ -3,6 +3,7 @@
 #include "sdr_core/bounded_queue.hpp"
 #include "sdr_core/configuration.hpp"
 #include "sdr_core/events.hpp"
+#include "sdr_core/dual_rx_dsp.hpp"
 #include "sdr_core/metrics.hpp"
 #include "sdr_core/persistence.hpp"
 #include "sdr_core/types.hpp"
@@ -89,6 +90,17 @@ struct FixedBandConfig {
 
 void validate(const FixedBandConfig& value);
 
+// Two producer IDs, one device/context/common RF+gain policy and acquisition
+// geometry. Per-channel persistence/recording/line consumers remain separate.
+// Never two competing FixedBandEngine openers, nor one SpectrumFrame labelled BOTH.
+struct PairedFixedBandConfig {
+    FixedBandConfig primary;
+    FixedBandConfig secondary;
+    std::uint32_t output_queue_capacity{4U};
+};
+
+void validate(const PairedFixedBandConfig& value);
+
 // One coherent diagnostic snapshot. Snapshot queue loss is deliberately
 // separate from analytical FFT loss: a slow Python poller may supersede
 // render snapshots without discarding an FFT from the native DSP pipeline.
@@ -169,6 +181,21 @@ struct LatestSpectrumFrameDrain {
     std::uint32_t coalesced_frames{};
 };
 
+struct PairedFixedBandMetrics {
+    // The channel diagnostic views repeat common stream/acquisition fields
+    // for compatibility; do NOT sum these as two physical streams.
+    FixedBandMetrics primary;
+    FixedBandMetrics secondary;
+    sdr_core::DualRxDspMetrics dsp;
+    sdr_core::QueueStats paired_spectrum_queue;
+    std::uint64_t paired_snapshots_emitted{};
+    std::uint64_t paired_snapshots_superseded{};
+    std::uint64_t paired_snapshots_abandoned{};
+    std::uint64_t history_queue_snapshots_abandoned{};
+    // Group wall processing time, not attributed twice as per-chain CPU time.
+    double paired_processing_ms{};
+};
+
 // Windows Pluto/libiio acquisition -> bounded native queue -> CPU DSP ->
 // bounded latest-wins SpectrumFrame engine. No Python callback participates
 // in the high-rate path.
@@ -184,6 +211,7 @@ public:
     FixedBandEngine& operator=(FixedBandEngine&&) = delete;
 
     [[nodiscard]] AppliedConfig configure(const FixedBandConfig& config);
+    [[nodiscard]] AppliedConfig configure_paired(const PairedFixedBandConfig& config);
     // Stop -> apply/readback -> reset DSP/queues -> optional resume.
     [[nodiscard]] AppliedConfig reconfigure(const FixedBandConfig& config);
     void start();
@@ -199,6 +227,16 @@ public:
     [[nodiscard]] FixedBandConfig config() const;
     [[nodiscard]] AppliedConfig applied_config() const;
     [[nodiscard]] FixedBandMetrics metrics() const;
+    [[nodiscard]] PairedFixedBandMetrics paired_metrics() const;
+    [[nodiscard]] std::vector<sdr_core::DualRxSpectrumFrame> poll_paired_spectrum_frames(std::size_t max_items);
+    [[nodiscard]] sdr_core::LatestDualRxSpectrumFrameDrain drain_latest_paired_spectrum_frame();
+    [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_receiver_persistence_snapshots(
+        ReceiverSelection receiver, std::size_t max_items);
+    [[nodiscard]] std::vector<sdr_core::SweepLineFrame> poll_receiver_sweep_line_frames(
+        ReceiverSelection receiver, std::size_t max_items);
+    // Native-only staging access; never bind raw I/Q to Python.
+    [[nodiscard]] std::vector<sdr_core::IqBlock> poll_receiver_recorded_iq_blocks(
+        ReceiverSelection receiver, std::size_t max_items);
 
     [[nodiscard]] std::vector<sdr_core::SpectrumFrame> poll_spectrum_frames(
         std::size_t max_items

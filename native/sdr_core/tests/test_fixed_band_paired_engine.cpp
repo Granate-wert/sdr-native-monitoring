@@ -1,0 +1,380 @@
+#include "sdr_pluto/fixed_band_engine.hpp"
+#include "sdr_pluto/continuous_sweep_coordinator.hpp"
+#include "sdr_core/dsp_backend.hpp"
+#include "sdr_core/errors.hpp"
+#include "sdr_core/recording_reprocess.hpp"
+#include "sdr_core/recording_writer.hpp"
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+
+namespace {
+void require(bool condition, const char* message) {
+    if (!condition) throw std::runtime_error(message);
+}
+struct Hooks {
+    static HMODULE load_mock() {
+        const auto size = GetEnvironmentVariableW(L"LIBIIO_DLL_PATH", nullptr, 0);
+        require(size != 0, "explicit mock path missing");
+        std::wstring path(size, L'\0');
+        const auto written = GetEnvironmentVariableW(L"LIBIIO_DLL_PATH", path.data(), size);
+        require(written != 0 && written < size, "explicit mock path changed while reading");
+        path.resize(written);
+        return LoadLibraryW(path.c_str());
+    }
+    HMODULE module{load_mock()};
+    using count_fn = int (*)();
+    using gain_fn = double (*)(int);
+    count_fn contexts{reinterpret_cast<count_fn>(GetProcAddress(module, "mock_iio_live_contexts"))};
+    count_fn created{reinterpret_cast<count_fn>(GetProcAddress(module, "mock_iio_created_contexts"))};
+    count_fn buffers{reinterpret_cast<count_fn>(GetProcAddress(module, "mock_iio_live_buffers"))};
+    count_fn mutations{reinterpret_cast<count_fn>(GetProcAddress(module, "mock_iio_rf_mutation_calls"))};
+    gain_fn gain{reinterpret_cast<gain_fn>(GetProcAddress(module, "mock_iio_gain"))};
+    Hooks() { require(module && contexts && created && buffers && mutations && gain, "mock hooks missing"); }
+    ~Hooks() { if (module) FreeLibrary(module); }
+};
+struct CaptureDirectory {
+    std::filesystem::path root{std::filesystem::temp_directory_path() /
+        ("sdr_rx2_engine_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+    CaptureDirectory() { require(std::filesystem::create_directory(root), "unique capture directory creation failed"); }
+    ~CaptureDirectory() { std::error_code error; std::filesystem::remove_all(root, error); }
+};
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    require(static_cast<bool>(input), "recording artifact missing");
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+sdr_pluto::FixedBandConfig config(sdr_pluto::ReceiverSelection receiver) {
+    sdr_pluto::FixedBandConfig result;
+    result.device = {.source_id = "fixed-rx2", .context_uri = "usb:mock",
+        .center_frequency_hz = 2'450'000'000., .sample_rate_hz = 61'440'000.,
+        .analog_bandwidth_hz = 56'000'000., .gain_mode = sdr_core::GainMode::Manual,
+        .manual_gain_db = 43., .buffer_samples = 4096U};
+    result.dsp = {.fft_size = 1024U, .hop_size = 512U,
+        .precision_mode = sdr_core::PrecisionMode::ReferenceF64};
+    result.backend = sdr_core::ComputeBackendKind::Cpu;
+    result.allow_runtime_fallback = false;
+    result.receiver_selection = receiver;
+    result.discard_blocks_after_start = 0U;
+    result.snapshot_rate_hz = 2000.;
+    result.persistence.enabled = true;
+    result.persistence.mode = sdr_core::PersistenceMode::RollingExact;
+    result.persistence.window_frames = 8U;
+    result.persistence.power_bins = 16U;
+    result.persistence.snapshot_rate_hz = 30.;
+    return result;
+}
+void check_values(const sdr_core::SpectrumFrame& frame, const sdr_core::DspConfig& dsp, bool rx2) {
+    // Compare against the known RX2 digital lanes, not merely a relabelled RX1 frame.
+    auto bytes = std::make_shared<std::vector<std::uint8_t>>(dsp.fft_size * 4U);
+    for (std::uint32_t k = 0; k < dsp.fft_size; ++k) {
+        const auto index = frame.first_sample_index + k;
+        const auto i = static_cast<std::int16_t>(rx2 ? 1000 + (index % 1024) : static_cast<int>(index % 4096) - 2048);
+        const auto q = static_cast<std::int16_t>(rx2 ? -i : 2047 - static_cast<int>(index % 4096));
+        std::memcpy(bytes->data() + k * 4U, &i, 2U);
+        std::memcpy(bytes->data() + k * 4U + 2U, &q, 2U);
+    }
+    sdr_core::DspOptions options;
+    options.source = frame.source;
+    auto reference = sdr_core::make_cpu_dsp_backend(options);
+    reference->configure(dsp);
+    reference->push_iq({.source_sequence = 0U, .first_sample_index = frame.first_sample_index,
+        .timestamp_ns = frame.timestamp_ns, .center_frequency_hz = frame.center_frequency_hz,
+        .sample_rate_hz = frame.sample_rate_hz,
+        .sample_format = sdr_core::SampleFormat::ComplexInt12InInt16Le,
+        .sample_count = dsp.fft_size, .samples = bytes, .config_generation = frame.config_generation});
+    const auto expected = reference->poll_spectrum(0U, false);
+    require(expected.size() == 1 && frame.values && expected[0].values &&
+        frame.values->size() == expected[0].values->size(), "reference FFT shape mismatch");
+    for (std::size_t k = 0; k < frame.values->size(); ++k) {
+        require(std::abs((*frame.values)[k] - (*expected[0].values)[k]) < 1e-4f,
+            "selected RX2 FFT contains wrong-chain values");
+    }
+}
+template<class F> void refused(F call, const char* message) {
+    bool failed = false;
+    try { call(); } catch (const sdr_core::ConfigurationError&) { failed = true; }
+    require(failed, message);
+}
+
+using Selection = sdr_pluto::ReceiverSelection;
+sdr_pluto::PairedFixedBandConfig paired_config() {
+    auto primary = config(Selection::Rx1);
+    auto secondary = config(Selection::Rx2);
+    primary.device.source_id = "paired-rx1";
+    secondary.device.source_id = "paired-rx2";
+    return {primary, secondary, 1U};
+}
+template<class Predicate> void wait_pair(sdr_pluto::FixedBandEngine& engine, Predicate predicate) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto m = engine.paired_metrics();
+        require(!m.primary.has_error && !m.secondary.has_error, "paired owner error");
+        if (predicate(m)) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto m = engine.paired_metrics();
+    throw std::runtime_error("paired mock data-plane deadline expired: formed=" +
+        std::to_string(m.dsp.paired_frames_formed) + " gaps=" +
+        std::to_string(m.dsp.shared_input_gaps) + " acquisition_drops=" +
+        std::to_string(m.primary.acquisition_queue_blocks_dropped) + " lines=" +
+        std::to_string(m.primary.completed_sweep_lines) + "/" +
+        std::to_string(m.secondary.completed_sweep_lines) + " recording=" +
+        std::to_string(m.primary.spectrum_writer_frames_written) + "/" +
+        std::to_string(m.secondary.spectrum_writer_frames_written));
+}
+void test_pair_consumers_and_same_owner_restart(Hooks& hooks) {
+    auto p = paired_config();
+    p.primary.recorder_enabled = p.secondary.recorder_enabled = true;
+    const auto created = hooks.created();
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto first = engine.configure_paired(p);
+    require(first.receiver_selection == Selection::Both && first.receiver_gains.size() == 2 &&
+        hooks.contexts() == 1 && hooks.created() == created + 1 &&
+        hooks.gain(1) == 43 && hooks.gain(2) == 43, "one-context common gain/readback");
+    require(!engine.streaming() && engine.poll_paired_spectrum_frames(0).empty(),
+        "Configure pair must not start acquisition");
+    engine.start();
+    wait_pair(engine, [](const auto& m) { return m.dsp.paired_frames_formed >= 32; });
+    require(hooks.buffers() == 1, "one buffer while BOTH running");
+    refused([&] { static_cast<void>(engine.poll_spectrum_frames(0)); }, "no one-Spectrum BOTH alias");
+    engine.stop();
+    auto m = engine.paired_metrics();
+    require(m.dsp.primary.fft_frames_computed == m.dsp.secondary.fft_frames_computed &&
+        m.dsp.paired_frames_formed == m.dsp.primary.fft_frames_computed &&
+        m.dsp.primary.fft_frames_dropped == 0 && m.dsp.secondary.fft_frames_dropped == 0 &&
+        m.dsp.paired_frames_published == 0 && m.paired_spectrum_queue.depth == 1 &&
+        m.paired_snapshots_superseded > 0 && hooks.buffers() == 0, "analytical consumers before pair queue");
+    require(m.primary.engine.persistence_updates == m.dsp.paired_frames_formed &&
+        m.secondary.engine.persistence_updates == m.dsp.paired_frames_formed,
+        "both densities must consume ALL analytical pairs");
+    const auto pairs = engine.poll_paired_spectrum_frames(0);
+    require(pairs.size() == 1, "bounded atomic pair output");
+    const auto& pair = pairs.back();
+    require(pair.primary.source.source_id == "paired-rx1" &&
+        pair.secondary.source.source_id == "paired-rx2" &&
+        pair.primary.source.metadata_json.at("receiver_selection") == "\"RX1\"" &&
+        pair.secondary.source.metadata_json.at("receiver_selection") == "\"RX2\"" &&
+        pair.primary.first_sample_index == pair.secondary.first_sample_index &&
+        pair.config_generation == first.config_generation &&
+        pair.primary.config_generation == pair.secondary.config_generation, "pair source/epoch provenance");
+    check_values(pair.primary, p.primary.dsp, false);
+    check_values(pair.secondary, p.secondary.dsp, true);
+    for (const auto receiver : {Selection::Rx1, Selection::Rx2}) {
+        const auto blocks = engine.poll_receiver_recorded_iq_blocks(receiver, 0);
+        require(!blocks.empty(), "both native I/Q tees receive admitted epochs");
+        require((*blocks[0].samples)[0] == (receiver == Selection::Rx1 ? 0 : 0xe8) &&
+            (*blocks[0].samples)[1] == (receiver == Selection::Rx1 ? 0xf8 : 3),
+            "tee must use actual selected digital bytes");
+        const auto snapshots = engine.poll_receiver_persistence_snapshots(receiver, 0);
+        require(!snapshots.empty() && snapshots.back().config_generation == first.config_generation,
+            "per-chain persistence source/epoch");
+    }
+    p.primary.recorder_enabled = p.secondary.recorder_enabled = false;
+    p.primary.device.center_frequency_hz += 1'000'000.;
+    p.secondary.device.center_frequency_hz += 1'000'000.;
+    const auto next = engine.configure_paired(p);
+    require(next.config_generation > first.config_generation &&
+        engine.poll_paired_spectrum_frames(0).empty() &&
+        engine.poll_receiver_persistence_snapshots(Selection::Rx2, 0).empty() && !engine.streaming(),
+        "stopped Apply resets both, no hidden Start");
+    engine.start();
+    wait_pair(engine, [](const auto& m) { return m.dsp.paired_frames_formed >= 8; });
+    engine.stop();
+    auto drain = engine.drain_latest_paired_spectrum_frame();
+    require(drain.frame && drain.frame->config_generation == next.config_generation &&
+        hooks.created() == created + 1, "explicit next Start same context/fresh epoch");
+    engine.disconnect();
+}
+void test_pair_guards_before_rf(Hooks& hooks) {
+    auto p = paired_config();
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto writes = hooks.mutations();
+    auto bad = p;
+    bad.secondary.device.center_frequency_hz += 1;
+    refused([&] { static_cast<void>(engine.configure_paired(bad)); }, "different LO refusal");
+    bad = p; bad.secondary.device.source_id = p.primary.device.source_id;
+    refused([&] { static_cast<void>(engine.configure_paired(bad)); }, "duplicate identity refusal");
+    bad = p; bad.secondary.dsp.hop_size /= 2;
+    refused([&] { static_cast<void>(engine.configure_paired(bad)); }, "different FFT geometry refusal");
+    bad = p;
+    bad.primary.device.buffer_samples = bad.secondary.device.buffer_samples = 262144;
+    bad.primary.acquisition_queue_capacity = bad.secondary.acquisition_queue_capacity = 64;
+    // EACH 67-MiB pool is admitted singly, but the combined pool exceeds 128 MiB.
+    sdr_pluto::validate(bad.primary); sdr_pluto::validate(bad.secondary);
+    refused([&] { static_cast<void>(engine.configure_paired(bad)); }, "aggregate budget refusal");
+    CaptureDirectory capture;
+    bad = p;
+    bad.primary.recording = {.enabled = true, .output_uri = (capture.root / "same").string(),
+        .record_iq = true, .stop_on_overflow = false};
+    bad.secondary.recording = bad.primary.recording;
+    bad.secondary.recording.output_uri += ".sigmf-meta.part";
+    refused([&] { static_cast<void>(engine.configure_paired(bad)); }, "writer-normalized alias refusal");
+    require(hooks.mutations() == writes && hooks.buffers() == 0 &&
+        engine.state() == sdr_core::EngineState::Created, "host preflight must precede RF mutation");
+    engine.disconnect();
+}
+void test_pair_lines_and_metric_polling() {
+    auto p = paired_config();
+    p.primary.continuous_sweep_line = sdr_pluto::ContinuousSweepLineConfig{
+        .enabled = true, .epoch = 5, .display_start_hz = 2'440'000'000.,
+        .display_stop_hz = 2'460'000'000., .usable_window_hz = 36'000'000.};
+    p.secondary.continuous_sweep_line = p.primary.continuous_sweep_line;
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    static_cast<void>(engine.configure_paired(p));
+    engine.start();
+    std::atomic<bool> finished{}, failed{};
+    std::thread observer([&] {
+        try {
+            while (!finished.load()) {
+                const auto metrics = engine.paired_metrics();
+                if (metrics.primary.receiver_selection != Selection::Rx1 ||
+                    metrics.secondary.receiver_selection != Selection::Rx2) failed = true;
+            }
+        } catch (...) { failed = true; }
+    });
+    try {
+        wait_pair(engine, [](const auto& m) {
+            return m.primary.completed_sweep_lines >= 2 && m.secondary.completed_sweep_lines >= 2;
+        });
+        engine.stop();
+    } catch (...) {
+        finished = true; observer.join(); throw;
+    }
+    finished = true; observer.join();
+    require(!failed, "concurrent pair metrics must use protected DSP snapshots");
+    for (const auto receiver : {Selection::Rx1, Selection::Rx2}) {
+        const auto lines = engine.poll_receiver_sweep_line_frames(receiver, 0);
+        require(!lines.empty() && lines.back().epoch == 5 &&
+            lines.back().source.source_id == (receiver == Selection::Rx1 ? "paired-rx1" : "paired-rx2"),
+            "both native line consumers retain source/line epoch");
+    }
+    engine.disconnect();
+}
+void test_pair_durable_recordings() {
+    CaptureDirectory capture;
+    auto p = paired_config();
+    for (auto* channel : {&p.primary, &p.secondary}) {
+        channel->recording = {.enabled = true,
+            .output_uri = (capture.root / channel->device.source_id).string(),
+            .record_iq = true, .record_spectrum = true, .chunk_samples = 4096,
+            .queue_capacity = 32, .stop_on_overflow = false};
+    }
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto applied = engine.configure_paired(p);
+    engine.start();
+    wait_pair(engine, [](const auto& m) {
+        return m.primary.spectrum_writer_frames_written >= 2 &&
+               m.secondary.spectrum_writer_frames_written >= 2 &&
+               m.primary.recorder_writer_blocks_written >= 2 &&
+               m.secondary.recorder_writer_blocks_written >= 2;
+    });
+    engine.stop();
+    const auto m = engine.paired_metrics();
+    require(!m.primary.recorder_writer_failed && !m.secondary.recorder_writer_failed &&
+        !m.primary.spectrum_writer_failed && !m.secondary.spectrum_writer_failed,
+        "both channel writers normal-finalize after DSP join");
+    for (const auto* channel : {&p.primary, &p.secondary}) {
+        const auto base = capture.root / channel->device.source_id;
+        const auto info = sdr_core::inspect_final_native_recording(base);
+        require(info.iq_manifest_final && info.spectrum_manifest_final &&
+            info.spectrum_frame_count > 0, "both independent native artifacts finalized");
+        sdr_core::NativeSpectrumRecordingReader reader(base);
+        const auto frame = reader.read_frame(0);
+        require(frame.source.source_id == channel->device.source_id &&
+            frame.source.metadata_json.at("receiver_selection") ==
+                (channel == &p.primary ? "\"RX1\"" : "\"RX2\"") &&
+            frame.config_generation == applied.config_generation, "replay per-chain provenance");
+    }
+    engine.disconnect();
+}
+void test_pair_cancel_refill(Hooks& hooks) {
+    auto p = paired_config();
+    _putenv_s("SDR_MOCK_LIBIIO_REFILL_DELAY_MS", "60");
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    static_cast<void>(engine.configure_paired(p));
+    engine.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    engine.request_stop(); engine.join();
+    require(engine.state() == sdr_core::EngineState::Stopped && hooks.buffers() == 0,
+        "cancel/join releases the ONLY paired IIO buffer");
+    engine.disconnect();
+    _putenv_s("SDR_MOCK_LIBIIO_REFILL_DELAY_MS", "1");
+}
+void test_pair_shared_queue_gap_and_terminal_flush() {
+    auto p = paired_config();
+    p.primary.acquisition_queue_capacity = p.secondary.acquisition_queue_capacity = 1;
+    p.primary.dsp.batch_size = p.secondary.dsp.batch_size = 4;
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    static_cast<void>(engine.configure_paired(p));
+    // Sleep(1) may be ~15.6 ms on Windows. A 10-ms DSP hook did not
+    // force any queue loss on this host (1532 pairs, 0 gaps, 0 drops).
+    // This is fault injection, not a product cadence/quality change.
+    engine.set_dsp_delay_for_test(80);
+    engine.start();
+    wait_pair(engine, [](const auto& m) {
+        return m.dsp.shared_input_gaps >= 2 && m.dsp.paired_frames_formed >= 24;
+    });
+    engine.stop();
+    const auto m = engine.paired_metrics();
+    const auto latest = engine.drain_latest_paired_spectrum_frame();
+    require(latest.frame && latest.frame->shared_input_gaps_before == m.dsp.shared_input_gaps &&
+        m.primary.acquisition_queue_blocks_dropped > 0 &&
+        m.primary.acquisition_queue_blocks_dropped == m.secondary.acquisition_queue_blocks_dropped &&
+        m.primary.engine.fft_frames_dropped == 0 && m.secondary.engine.fft_frames_dropped == 0,
+        "shared queue loss distinct from analytical loss and no stale terminal epoch");
+    require(sdr_core::has_flag(latest.frame->primary.quality_flags,
+        sdr_core::QualityFlag::BackendDiscontinuity) &&
+        sdr_core::has_flag(latest.frame->secondary.quality_flags,
+        sdr_core::QualityFlag::BackendDiscontinuity), "both frames expose shared DSP discontinuity");
+    require(m.dsp.primary.output_pending == 0 && m.dsp.secondary.output_pending == 0,
+        "Stop flushes BOTH partial DSP batches");
+    engine.disconnect();
+}
+void test_pair_absent_rx2(Hooks& hooks) {
+    _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "");
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto writes = hooks.mutations();
+    refused([&] { static_cast<void>(engine.configure_paired(paired_config())); },
+        "absent peer must refuse paired configuration");
+    require(hooks.mutations() == writes && hooks.buffers() == 0, "absent peer no RF/buffer writes");
+    engine.disconnect();
+    _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "1");
+}
+} // namespace
+
+int main() {
+    try {
+        Hooks hooks;
+        _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "1");
+        test_pair_consumers_and_same_owner_restart(hooks);
+        test_pair_guards_before_rf(hooks);
+        test_pair_lines_and_metric_polling();
+        test_pair_durable_recordings();
+        test_pair_cancel_refill(hooks);
+        std::cout << "shared queue gap/flush case\n";
+        test_pair_shared_queue_gap_and_terminal_flush();
+        test_pair_absent_rx2(hooks);
+        require(hooks.contexts() == 0 && hooks.buffers() == 0, "paired ownership leaks");
+        _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "");
+        std::cout << "paired same-owner data plane 7 cases PASS (mock ONLY)\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}
+

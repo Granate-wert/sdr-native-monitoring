@@ -344,6 +344,10 @@ struct NewlineScan {
 
 }  // namespace
 
+std::filesystem::path native_recording_base_path(const std::string& output_uri) {
+    return normalized_base_path(output_uri);
+}
+
 SegmentedIqRecordingWriter::SegmentedIqRecordingWriter(
     RecordingConfig config,
     SourceDescriptor source

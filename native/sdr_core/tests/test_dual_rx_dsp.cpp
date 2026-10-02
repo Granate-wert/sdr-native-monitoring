@@ -107,6 +107,69 @@ sdr_core::IqBlock burst_block(
     return result;
 }
 
+
+void test_native_consumer_precedes_coalescing_and_flushes_partial_batch() {
+    auto value = config(1U);
+    value.primary.dsp.batch_size = value.secondary.dsp.batch_size = 4U;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    std::uint64_t received{};
+    publisher.set_analytical_consumer([&](auto& pair, const auto& p, const auto& q) {
+        expect(pair.primary.first_sample_index == pair.secondary.first_sample_index &&
+            p.fft_frames_computed == q.fft_frames_computed, "native pair consumer epoch");
+        ++received;
+        return false; // Same-owner engine controls its final publication.
+    });
+    publisher.push(block(0, 0, 1'000'000, 12), block(0, 0, 1'000'000, -20));
+    expect(received == 0, "partial batch retained until terminal flush");
+    publisher.flush();
+    auto metrics = publisher.metrics();
+    expect(received == 1 && metrics.paired_frames_formed == 1 &&
+        metrics.paired_frames_published == 0 && metrics.output_queue.depth == 0,
+        "native consumer receives terminal partial pair without bridge publication");
+    publisher.configure(value);
+    publisher.push(block(0, 0, 1'000'000, 12), block(0, 0, 1'000'000, -20));
+    publisher.flush();
+    expect(received == 1 && publisher.poll_spectrum_frames(0).size() == 1,
+        "successful reconfigure cannot retain old owner callback");
+}
+void test_native_consumer_sees_every_large_burst_before_latest_wins() {
+    auto value = config(1U);
+    value.primary.dsp.fft_size = value.secondary.dsp.fft_size = 1024;
+    value.primary.dsp.hop_size = value.secondary.dsp.hop_size = 512;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    std::uint64_t received{};
+    publisher.set_analytical_consumer([&](auto&, const auto&, const auto&) {
+        ++received;
+        return true;
+    });
+    publisher.push(burst_block(0, 0, 12), burst_block(0, 0, -20));
+    auto metrics = publisher.metrics();
+    expect(received == 511 && metrics.paired_frames_formed == 511 &&
+        metrics.paired_frames_published == 511 && metrics.paired_frames_superseded == 510 &&
+        metrics.primary.fft_frames_dropped == 0 && metrics.secondary.fft_frames_dropped == 0,
+        "native pre-coalescing consumer must see every analytical FFT pair");
+}
+void test_gap_observer_precedes_new_epoch_delivery() {
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(config(1U));
+    std::uint64_t observed_gaps{}, delivered_after_gap{};
+    publisher.set_shared_gap_consumer([&] { ++observed_gaps; });
+    publisher.set_analytical_consumer([&](auto& frame, const auto&, const auto&) {
+        if (frame.shared_input_gaps_before) {
+            expect(observed_gaps == frame.shared_input_gaps_before,
+                "owner gap notification BEFORE new epoch delivery");
+            ++delivered_after_gap;
+        }
+        return true;
+    });
+    publisher.push(block(0, 0, 1'000'000, 12), block(0, 0, 1'000'000, -20));
+    publisher.push(block(2, 512, 3'000'000, 12), block(2, 512, 3'000'000, -20));
+    expect(observed_gaps == 1 && delivered_after_gap == 1,
+        "one common discontinuity, both channels delivered only after owner notification");
+}
+
 void test_large_burst_retains_analytical_fft_before_pair_coalescing() {
     auto value = config(4U);
     value.primary.dsp.fft_size = value.secondary.dsp.fft_size = 1024U;
@@ -456,6 +519,9 @@ void test_shared_plan_preserves_single_cpu_numerics() {
 
 int main() {
     try {
+        test_native_consumer_precedes_coalescing_and_flushes_partial_batch();
+        test_gap_observer_precedes_new_epoch_delivery();
+        test_native_consumer_sees_every_large_burst_before_latest_wins();
         test_paired_cpu_spectra_keep_channel_identity();
         test_shared_gap_restarts_both_channel_histories();
         test_sample_index_gap_is_shared_even_when_sequence_is_consecutive();

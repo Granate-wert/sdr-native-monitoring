@@ -14,6 +14,11 @@
 
 namespace sdr_core {
 
+// The exact writer artifact stem, shared with native multi-channel admission.
+// This only normalizes a path; it does not create or open a recording.
+[[nodiscard]] std::filesystem::path native_recording_base_path(
+    const std::string& output_uri);
+
 // Bounded snapshot of a durable raw-I/Q writer.  Segment/block detail belongs
 // to the append-only on-disk index; the writer retains only O(1) current
 // segment/capture state regardless of recording duration.

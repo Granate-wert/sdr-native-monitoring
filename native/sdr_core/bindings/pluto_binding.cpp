@@ -139,6 +139,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("input_epochs_received", &sdr_core::DualRxDspMetrics::input_epochs_received)
         .def_readonly("shared_input_gaps", &sdr_core::DualRxDspMetrics::shared_input_gaps)
         .def_readonly("pairing_mismatches", &sdr_core::DualRxDspMetrics::pairing_mismatches)
+        .def_readonly("paired_frames_formed", &sdr_core::DualRxDspMetrics::paired_frames_formed)
         .def_readonly("paired_frames_published", &sdr_core::DualRxDspMetrics::paired_frames_published)
         .def_readonly("paired_frames_superseded", &sdr_core::DualRxDspMetrics::paired_frames_superseded)
         .def_readonly("paired_frames_abandoned", &sdr_core::DualRxDspMetrics::paired_frames_abandoned)
@@ -769,6 +770,18 @@ void bind_pluto(py::module_& module) {
         .def_readonly("dc_removal_block_mean", &sdr_pluto::FixedBandConfig::dc_removal_block_mean)
         .def_readonly("schema_version", &sdr_pluto::FixedBandConfig::schema_version);
 
+    py::class_<sdr_pluto::PairedFixedBandConfig>(module, "PairedFixedBandConfig")
+        .def(py::init([](sdr_pluto::FixedBandConfig primary,
+                        sdr_pluto::FixedBandConfig secondary, std::uint32_t capacity) {
+                 sdr_pluto::PairedFixedBandConfig value{std::move(primary), std::move(secondary), capacity};
+                 sdr_pluto::validate(value);
+                 return value;
+             }),
+             py::arg("primary"), py::arg("secondary"), py::arg("output_queue_capacity") = 4U)
+        .def_readonly("primary", &sdr_pluto::PairedFixedBandConfig::primary)
+        .def_readonly("secondary", &sdr_pluto::PairedFixedBandConfig::secondary)
+        .def_readonly("output_queue_capacity", &sdr_pluto::PairedFixedBandConfig::output_queue_capacity);
+
     py::class_<sdr_pluto::FixedBandMetrics>(module, "FixedBandMetrics")
         .def_readonly("state", &sdr_pluto::FixedBandMetrics::state)
         .def_readonly("receiver_selection", &sdr_pluto::FixedBandMetrics::receiver_selection)
@@ -1024,9 +1037,26 @@ void bind_pluto(py::module_& module) {
 
     // pybind11 3.x rejects call_guard as a def_property_readonly attribute.
     // Wrap each native getter so the Python property and GIL policy both remain.
+    py::class_<sdr_pluto::PairedFixedBandMetrics>(module, "PairedFixedBandMetrics")
+        .def_readonly("primary", &sdr_pluto::PairedFixedBandMetrics::primary)
+        .def_readonly("secondary", &sdr_pluto::PairedFixedBandMetrics::secondary)
+        .def_readonly("dsp", &sdr_pluto::PairedFixedBandMetrics::dsp)
+        .def_readonly("paired_spectrum_queue", &sdr_pluto::PairedFixedBandMetrics::paired_spectrum_queue)
+        .def_readonly("paired_snapshots_emitted", &sdr_pluto::PairedFixedBandMetrics::paired_snapshots_emitted)
+        .def_readonly("paired_snapshots_superseded", &sdr_pluto::PairedFixedBandMetrics::paired_snapshots_superseded)
+        .def_readonly("paired_snapshots_abandoned", &sdr_pluto::PairedFixedBandMetrics::paired_snapshots_abandoned)
+        .def_readonly("history_queue_snapshots_abandoned", &sdr_pluto::PairedFixedBandMetrics::history_queue_snapshots_abandoned)
+        .def_readonly("paired_processing_ms", &sdr_pluto::PairedFixedBandMetrics::paired_processing_ms);
+
     py::class_<sdr_pluto::FixedBandEngine>(module, "PlutoFixedBandEngine")
         .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def("configure", &sdr_pluto::FixedBandEngine::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
+        .def("configure_paired", &sdr_pluto::FixedBandEngine::configure_paired, py::arg("config"), py::call_guard<py::gil_scoped_release>())
+        .def("paired_metrics", &sdr_pluto::FixedBandEngine::paired_metrics, py::call_guard<py::gil_scoped_release>())
+        .def("poll_paired_spectrum_frames", &sdr_pluto::FixedBandEngine::poll_paired_spectrum_frames, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
+        .def("drain_latest_paired_spectrum_frame", &sdr_pluto::FixedBandEngine::drain_latest_paired_spectrum_frame, py::call_guard<py::gil_scoped_release>())
+        .def("poll_receiver_persistence_snapshots", &sdr_pluto::FixedBandEngine::poll_receiver_persistence_snapshots, py::arg("receiver"), py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
+        .def("poll_receiver_sweep_line_frames", &sdr_pluto::FixedBandEngine::poll_receiver_sweep_line_frames, py::arg("receiver"), py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("reconfigure", &sdr_pluto::FixedBandEngine::reconfigure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("start", &sdr_pluto::FixedBandEngine::start, py::call_guard<py::gil_scoped_release>())
         .def("request_stop", &sdr_pluto::FixedBandEngine::request_stop, py::call_guard<py::gil_scoped_release>())

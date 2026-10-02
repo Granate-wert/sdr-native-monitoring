@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <filesystem>
+#include <cwctype>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -148,7 +150,10 @@ constexpr std::uint64_t max_total_bytes = 512U * mebibyte;
                : config.recorder_queue_capacity;
 }
 
-void validate_resource_budget(const FixedBandConfig& config) {
+struct LiveResourceBudget {
+    std::uint64_t iq{}, dsp{}, spectrum{}, persistence{}, sweep{}, total{};
+};
+[[nodiscard]] LiveResourceBudget validate_resource_budget(const FixedBandConfig& config) {
     const auto retained_iq_blocks = checked_add(
         static_cast<std::uint64_t>(config.acquisition_queue_capacity) + 3U,
         recorder_enabled(config)
@@ -158,7 +163,7 @@ void validate_resource_budget(const FixedBandConfig& config) {
     );
     const auto iq_pool_bytes = checked_multiply(
         checked_multiply(config.device.buffer_samples, 4U, "I/Q pool"),
-        retained_iq_blocks,
+        std::max<std::uint64_t>(8U, retained_iq_blocks),
         "I/Q pool"
     );
     const auto dsp_working_bytes = checked_multiply(
@@ -261,6 +266,8 @@ void validate_resource_budget(const FixedBandConfig& config) {
         total_bytes > max_total_bytes) {
         invalid("fixed-band configuration exceeds bounded live-engine memory budget");
     }
+    return {iq_pool_bytes, dsp_working_bytes, spectrum_backlog_bytes,
+            persistence_bytes, sweep_line_bytes, total_bytes};
 }
 
 }  // namespace
@@ -352,10 +359,164 @@ void validate(const FixedBandConfig& value) {
         value.dsp.unit == sdr_core::SpectrumUnit::DbmHz) {
         invalid("fixed-band P07 supports only uncalibrated dBFS units");
     }
-    validate_resource_budget(value);
+    static_cast<void>(validate_resource_budget(value));
 }
 
-class FixedBandEngine::Impl final {
+
+namespace {
+[[nodiscard]] sdr_core::SourceDescriptor producer_source(
+    const FixedBandConfig& config, const ContextProbe& probe, const bool paired
+) {
+    sdr_core::SourceDescriptor source{
+        .source_type = sdr_core::SourceType::LiveIq,
+        .source_id = config.device.source_id,
+        .display_name = probe.model.empty() ? "PlutoSDR / AD936x" : probe.model,
+        .uri = config.device.context_uri, .device_serial = probe.serial,
+        .backend_id = "pluto-libiio", .schema_version = sdr_core::contract_schema_version,
+        .metadata_json = {},
+    };
+    if (paired || config.receiver_selection == ReceiverSelection::Rx2) {
+        source.metadata_json["receiver_selection"] =
+            config.receiver_selection == ReceiverSelection::Rx1 ? "\"RX1\"" : "\"RX2\"";
+    }
+    sdr_core::validate(source);
+    return source;
+}
+[[nodiscard]] sdr_core::DualRxDspConfig paired_dsp_config(
+    const PairedFixedBandConfig& config, const ContextProbe& probe
+) {
+    return {
+        .primary = {producer_source(config.primary, probe, true), config.primary.dsp},
+        .secondary = {producer_source(config.secondary, probe, true), config.secondary.dsp},
+        .dc_removal_block_mean = config.primary.dc_removal_block_mean,
+        .output_queue_capacity = 1U, // Owner consumes every pair before its final queue.
+        .max_input_samples_per_push = config.primary.device.buffer_samples,
+        .backend = {.preference = config.primary.backend,
+                    .allow_runtime_fallback = config.primary.allow_runtime_fallback},
+    };
+}
+} // namespace
+
+void validate(const PairedFixedBandConfig& value) {
+    validate(value.primary);
+    validate(value.secondary);
+    const auto& p = value.primary;
+    const auto& q = value.secondary;
+    if (p.receiver_selection != ReceiverSelection::Rx1 ||
+        q.receiver_selection != ReceiverSelection::Rx2 ||
+        p.device.source_id == q.device.source_id) {
+        invalid("paired engine requires distinct producer IDs in RX1/RX2 order");
+    }
+    if (value.output_queue_capacity == 0U || value.output_queue_capacity > 64U) {
+        invalid("paired spectrum queue capacity must be in [1, 64]");
+    }
+    if (p.device.context_uri != q.device.context_uri ||
+        p.device.center_frequency_hz != q.device.center_frequency_hz ||
+        p.device.sample_rate_hz != q.device.sample_rate_hz ||
+        p.device.analog_bandwidth_hz != q.device.analog_bandwidth_hz ||
+        p.device.gain_mode != q.device.gain_mode ||
+        p.device.manual_gain_db != q.device.manual_gain_db ||
+        p.device.channel_index != q.device.channel_index ||
+        p.device.buffer_samples != q.device.buffer_samples ||
+        p.backend != q.backend || p.allow_runtime_fallback != q.allow_runtime_fallback ||
+        p.dc_removal_block_mean != q.dc_removal_block_mean ||
+        p.acquisition_queue_capacity != q.acquisition_queue_capacity ||
+        p.acquisition_overflow != q.acquisition_overflow ||
+        p.snapshot_rate_hz != q.snapshot_rate_hz ||
+        p.discard_blocks_after_start != q.discard_blocks_after_start) {
+        invalid("paired engine requires one common RF/gain/acquisition/cadence policy");
+    }
+    const auto dsp = paired_dsp_config(value, {});
+    sdr_core::validate(dsp);
+    const auto a = validate_resource_budget(p);
+    const auto b = validate_resource_budget(q);
+    const auto sum = [](std::uint64_t x, std::uint64_t y) {
+        return checked_add(x, y, "paired engine memory");
+    };
+    // Reserve paired final snapshots, a constructing pair and terminal pair.
+    // Include the bridge input/scratch reservation and one common IIO scan.
+    const auto pair_snapshots = checked_multiply(
+        checked_multiply(p.dsp.fft_size, 32U, "paired snapshots"),
+        value.output_queue_capacity + 2U, "paired snapshots");
+    const auto scratch = checked_multiply(p.device.buffer_samples, 24U, "paired input scratch");
+    const auto iq = sum(sum(a.iq, b.iq), scratch);
+    const auto spectrum = sum(sum(a.spectrum, b.spectrum), pair_snapshots);
+    if (iq > max_iq_pool_bytes || sum(a.dsp, b.dsp) > max_dsp_working_bytes ||
+        spectrum > max_spectrum_backlog_bytes ||
+        sum(a.persistence, b.persistence) > max_persistence_bytes ||
+        sum(a.sweep, b.sweep) > max_sweep_line_backlog_bytes ||
+        sum(sum(a.total, b.total), sum(pair_snapshots, scratch)) > max_total_bytes) {
+        invalid("paired configuration exceeds aggregate live-engine memory budget");
+    }
+    if (p.recording.enabled && q.recording.enabled) {
+        // Separate native artifacts are not an atomic multi-channel ledger.
+        // Reject aliases using the SAME writer normalization, before RF writes.
+        auto left = sdr_core::native_recording_base_path(p.recording.output_uri);
+        auto right = sdr_core::native_recording_base_path(q.recording.output_uri);
+        left = std::filesystem::weakly_canonical(std::filesystem::absolute(left));
+        right = std::filesystem::weakly_canonical(std::filesystem::absolute(right));
+#if defined(_WIN32)
+        auto l = left.native(), r = right.native();
+        std::transform(l.begin(), l.end(), l.begin(), ::towlower);
+        std::transform(r.begin(), r.end(), r.begin(), ::towlower);
+        if (l == r) invalid("paired recordings require distinct canonical base paths");
+#else
+        if (left == right) invalid("paired recordings require distinct canonical base paths");
+#endif
+    }
+}
+
+// Per-producer native consumers; no device, acquisition thread or control lease.
+struct FixedBandChannelState {
+    FixedBandConfig config_{};
+    std::unique_ptr<sdr_core::DspBackend> backend_;
+    std::unique_ptr<sdr_core::SegmentedIqRecordingWriter> recording_writer_;
+    std::unique_ptr<sdr_core::SpectrumFrameRecordingWriter> spectrum_recording_writer_;
+    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::IqBlock>> recorder_queue_;
+    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>> spectrum_queue_;
+    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>> sweep_line_queue_;
+    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>> spectrum_recorder_queue_;
+    std::unique_ptr<sdr_core::PersistenceAccumulator> persistence_;
+    std::unique_ptr<sdr_core::ContinuousSweepLineAssembler> sweep_line_assembler_;
+    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>> persistence_queue_;
+    sdr_core::EngineMetricsCounters counters_{};
+    std::atomic<std::uint64_t> snapshots_superseded_{};
+    std::atomic<std::uint64_t> sweep_line_snapshots_superseded_{};
+    std::atomic<std::uint64_t> completed_sweep_lines_{};
+    std::atomic<std::uint64_t> gapped_sweep_lines_{};
+    std::atomic<std::uint64_t> sweep_line_capacity_evicted_{};
+    std::atomic<std::uint64_t> persistence_snapshots_superseded_{};
+    std::atomic<std::uint64_t> recorder_queue_blocks_dropped_{};
+    std::atomic<std::uint64_t> recorder_queue_samples_dropped_{};
+    std::atomic<std::uint64_t> recorder_shutdown_blocks_discarded_{};
+    std::atomic<std::uint64_t> recorder_shutdown_samples_discarded_{};
+    std::atomic<std::uint64_t> recorder_queue_overflow_notifications_{};
+    std::atomic<std::uint64_t> recorder_writer_blocks_written_{};
+    std::atomic<std::uint64_t> recorder_writer_samples_written_{};
+    std::atomic<std::uint64_t> recorder_writer_bytes_written_{};
+    std::atomic<std::uint64_t> recorder_writer_blocks_unavailable_{};
+    std::atomic<std::uint64_t> recorder_writer_samples_unavailable_{};
+    std::atomic<bool> recorder_writer_failed_{false};
+    std::atomic<std::uint64_t> spectrum_recorder_frames_dropped_{};
+    std::atomic<std::uint64_t> spectrum_recorder_frames_unavailable_{};
+    std::atomic<std::uint64_t> spectrum_recorder_shutdown_frames_discarded_{};
+    std::atomic<std::uint64_t> spectrum_recorder_overflow_notifications_{};
+    std::atomic<std::uint64_t> spectrum_writer_frames_written_{};
+    std::atomic<std::uint64_t> spectrum_writer_bytes_written_{};
+    std::atomic<bool> spectrum_writer_failed_{false};
+    std::atomic<double> end_to_end_latency_ms_{};
+    std::thread recorder_thread_;
+    std::thread spectrum_recorder_thread_;
+    mutable std::mutex backend_metrics_mutex_;
+    sdr_core::DspBackendMetrics backend_metrics_cache_;
+};
+
+struct FixedBandIqEnvelope {
+    sdr_core::IqBlock primary;
+    std::optional<sdr_core::IqBlock> secondary;
+};
+
+class FixedBandEngine::Impl final : private FixedBandChannelState {
 public:
     Impl(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
         : device_(std::move(uri), timeout_ms, std::move(expected_serial)) {}
@@ -366,6 +527,15 @@ public:
     }
 
     AppliedConfig configure(const FixedBandConfig& config) {
+        return configure_internal(config, nullptr);
+    }
+
+    AppliedConfig configure_paired(const PairedFixedBandConfig& config) {
+        validate(config);
+        return configure_internal(config.primary, &config);
+    }
+
+    AppliedConfig configure_internal(const FixedBandConfig& config, const PairedFixedBandConfig* pair) {
         std::lock_guard lock(lifecycle_mutex_);
         if (disconnect_requested_.load(std::memory_order_acquire)) {
             throw sdr_core::ConfigurationError(
@@ -385,204 +555,68 @@ public:
                 "fixed-band recorder staging queue must be drained before reconfigure"
             );
         }
-        validate(config);
 
-        auto acquisition = std::make_unique<sdr_core::BoundedQueue<sdr_core::IqBlock>>(
-            config.acquisition_queue_capacity,
-            config.acquisition_overflow
-        );
-        std::unique_ptr<sdr_core::BoundedQueue<sdr_core::IqBlock>> recorder;
-        if (recorder_enabled(config)) {
-            recorder = std::make_unique<sdr_core::BoundedQueue<sdr_core::IqBlock>>(
-                recorder_queue_capacity(config),
-                config.recorder_overflow
-            );
+        if (secondary_ && secondary_->recorder_queue_ && secondary_->recorder_queue_->depth() != 0U) {
+            invalid("secondary recorder staging queue must be drained before reconfigure");
         }
-        auto spectrum =
-            std::make_unique<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>>(
-                config.spectrum_queue_capacity,
-                sdr_core::OverflowPolicy::LatestWins
-            );
-        std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>> sweep_lines;
-        if (config.continuous_sweep_line.has_value() &&
-            config.continuous_sweep_line->enabled) {
-            sweep_lines = std::make_unique<
-                sdr_core::BoundedQueue<sdr_core::SweepLineFrame>
-            >(
-                continuous_sweep_line_relay_capacity(config),
-                sdr_core::OverflowPolicy::LatestWins
-            );
+        if (pair) validate(*pair); else validate(config);
+        const auto probe = device_.probe(); // Same owned context, no second opener.
+        auto primary = prepare_channel(config, probe, pair != nullptr);
+        auto secondary = pair ? prepare_channel(pair->secondary, probe, true) : nullptr;
+        auto acquisition = std::make_unique<sdr_core::BoundedQueue<FixedBandIqEnvelope>>(
+            config.acquisition_queue_capacity, config.acquisition_overflow);
+        auto events = std::make_unique<sdr_core::BoundedQueue<sdr_core::DiagnosticEvent>>(
+            config.event_queue_capacity, sdr_core::OverflowPolicy::DropNewest);
+        std::unique_ptr<sdr_core::DualRxDspPublisher> paired_dsp;
+        std::unique_ptr<sdr_core::BoundedQueue<sdr_core::DualRxSpectrumFrame>> paired_output;
+        if (pair) {
+            paired_dsp = std::make_unique<sdr_core::DualRxDspPublisher>();
+            paired_dsp->configure(paired_dsp_config(*pair, probe)); // All DSP admission before RF.
+            paired_output = std::make_unique<sdr_core::BoundedQueue<sdr_core::DualRxSpectrumFrame>>(
+                pair->output_queue_capacity, sdr_core::OverflowPolicy::LatestWins);
+            const auto metrics = paired_dsp->metrics();
+            primary->backend_metrics_cache_ = metrics.primary;
+            secondary->backend_metrics_cache_ = metrics.secondary;
         }
-        std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>>
-            spectrum_recorder;
-        if (native_spectrum_recording_enabled(config)) {
-            spectrum_recorder =
-                std::make_unique<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>>(
-                    config.recording.queue_capacity,
-                    sdr_core::OverflowPolicy::DropNewest
-                );
-        }
-        auto events =
-            std::make_unique<sdr_core::BoundedQueue<sdr_core::DiagnosticEvent>>(
-                config.event_queue_capacity,
-                sdr_core::OverflowPolicy::DropNewest
-            );
-        auto persistence = std::make_unique<sdr_core::PersistenceAccumulator>(
-            config.persistence
-        );
-        auto persistence_queue =
-            std::make_unique<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>>(
-                2U, sdr_core::OverflowPolicy::LatestWins
-            );
-
-        const auto probe = device_.probe();
-        sdr_core::CpuDspOptions options;
-        options.output_capacity = dsp_output_capacity(config);
-        options.dc_removal = config.dc_removal_block_mean
-                                 ? sdr_core::DcRemovalMode::BlockMean
-                                 : sdr_core::DcRemovalMode::Off;
-        options.source = {
-            .source_type = sdr_core::SourceType::LiveIq,
-            .source_id = config.device.source_id,
-            .display_name = probe.model.empty() ? "PlutoSDR / AD936x" : probe.model,
-            .uri = config.device.context_uri,
-            .device_serial = probe.serial,
-            .backend_id = "pluto-libiio",
-            .schema_version = sdr_core::contract_schema_version,
-            .metadata_json = {},
+        const auto retain = [](const FixedBandConfig& c) {
+            return static_cast<std::uint64_t>(c.acquisition_queue_capacity) + 3U +
+                (recorder_enabled(c) ? recorder_queue_capacity(c) : 0U);
         };
-        sdr_core::validate(options.source);
-        // The caller supplies the producer ID; never fabricate an endpoint or
-        // infer RF-path verification from a digital RX selection. Preserve
-        // existing RX1 source metadata for compatibility.
-        if (config.receiver_selection == ReceiverSelection::Rx2) {
-            options.source.metadata_json["receiver_selection"] = "\"RX2\"";
-        }
-        std::unique_ptr<sdr_core::SegmentedIqRecordingWriter> recording_writer;
-        if (native_iq_recording_enabled(config)) {
-            recording_writer = std::make_unique<sdr_core::SegmentedIqRecordingWriter>(
-                config.recording,
-                options.source
-            );
-        }
-        std::unique_ptr<sdr_core::SpectrumFrameRecordingWriter> spectrum_recording_writer;
-        if (native_spectrum_recording_enabled(config)) {
-            spectrum_recording_writer =
-                std::make_unique<sdr_core::SpectrumFrameRecordingWriter>(
-                    config.recording,
-                    options.source
-                );
-        }
-        // P08: the DSP stage is selected through the vendor-neutral factory
-        // (CPU / CUDA with runtime failover per configuration).
-        sdr_core::DspBackendSelectionOptions selection;
-        selection.preference = config.backend;
-        selection.allow_runtime_fallback = config.allow_runtime_fallback;
-        const auto sweep_source = options.source;
-        auto backend = sdr_core::make_dsp_backend(selection, std::move(options));
-        backend->configure(config.dsp);
-
-        // PlutoDevice guarantees transactional hardware configure/readback.
-        const auto retained_iq_blocks = static_cast<std::uint64_t>(
-            config.acquisition_queue_capacity
-        ) + 3U + (recorder_enabled(config)
-                       ? static_cast<std::uint64_t>(recorder_queue_capacity(config))
-                       : 0U);
-        const auto applied = device_.configure(
-            config.device,
-            config.receiver_selection,
-            static_cast<std::uint32_t>(std::max<std::uint64_t>(
-                8U, retained_iq_blocks
-            ))
-        );
-        std::unique_ptr<sdr_core::ContinuousSweepLineAssembler> sweep_line_assembler;
-        if (config.continuous_sweep_line.has_value() &&
-            config.continuous_sweep_line->enabled) {
-            const auto& profile = *config.continuous_sweep_line;
-            const auto display_span_hz = profile.display_stop_hz - profile.display_start_hz;
-            const auto display_center_hz =
-                profile.display_start_hz + display_span_hz / 2.0;
-            const auto required_half_window_hz = std::abs(
-                display_center_hz - applied.center_frequency_hz
-            ) + display_span_hz / 2.0;
-            if (applied.sample_rate_hz < profile.usable_window_hz ||
-                applied.analog_bandwidth_hz < profile.usable_window_hz ||
-                required_half_window_hz > profile.usable_window_hz / 2.0) {
-                throw sdr_core::ConfigurationError(
-                    "continuous sweep applied readback cannot satisfy declared usable window"
-                );
-            }
-            const auto physical_spacing_hz = applied.sample_rate_hz /
-                static_cast<double>(config.dsp.fft_size);
-            const auto line_spacing_hz = profile.analysis_bins_per_usable_window == 0U
-                ? physical_spacing_hz
-                : profile.usable_window_hz /
-                    static_cast<double>(profile.analysis_bins_per_usable_window);
-            if (line_spacing_hz + 1e-9 < physical_spacing_hz) {
-                throw sdr_core::ConfigurationError(
-                    "continuous sweep analysis grid requires a denser physical FFT transform"
-                );
-            }
-            sweep_line_assembler = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(
-                sdr_core::SweepLineDefinition{
-                    .source = sweep_source,
-                    .epoch = profile.epoch,
-                    .start_frequency_hz = profile.display_start_hz,
-                    .stop_frequency_hz = profile.display_stop_hz,
-                    .target_spacing_hz = line_spacing_hz,
-                    .analysis_window_hz = profile.analysis_bins_per_usable_window == 0U
-                        ? 0.0 : profile.usable_window_hz,
-                    .analysis_bins_per_usable_window = profile.analysis_bins_per_usable_window,
-                    .physical_fft_bin_width_hz = profile.analysis_bins_per_usable_window == 0U
-                        ? 0.0 : physical_spacing_hz,
-                    .physical_fft_size = profile.analysis_bins_per_usable_window == 0U
-                        ? 0U : config.dsp.fft_size,
-                    .unit = config.dsp.unit,
-                    .max_inflight_lines = 1U,
-                    .segments = {
-                        {
-                            .segment_index = 0U,
-                            .config_generation = applied.config_generation,
-                            .usable_start_hz = profile.display_start_hz,
-                            .usable_stop_hz = profile.display_stop_hz,
-                        },
-                    },
-                }
-            );
-        }
+        const auto pool_blocks = std::max<std::uint64_t>(
+            8U, pair ? checked_add(retain(config), retain(pair->secondary), "paired pool") : retain(config));
+        if (pool_blocks > std::numeric_limits<std::uint32_t>::max()) invalid("paired pool bound overflow");
+        const auto applied = device_.configure(config.device,
+            pair ? ReceiverSelection::Both : config.receiver_selection,
+            static_cast<std::uint32_t>(pool_blocks));
         try {
-            if (recording_writer) {
-                recording_writer->start();
-            }
-            if (spectrum_recording_writer) {
-                spectrum_recording_writer->start();
-            }
+            prepare_sweep_line(*primary, applied, probe, pair != nullptr);
+            if (secondary) prepare_sweep_line(*secondary, applied, probe, true);
+            start_channel_writers(*primary);
+            if (secondary) start_channel_writers(*secondary);
         } catch (...) {
-            if (recording_writer) {
-                recording_writer->abort("configure_writer_start_failure");
-            }
-            if (spectrum_recording_writer) {
-                spectrum_recording_writer->abort("configure_writer_start_failure");
-            }
+            abort_channel_writers(*primary, "configure_writer_start_failure");
+            if (secondary) abort_channel_writers(*secondary, "configure_writer_start_failure");
             throw;
         }
-
-        config_ = config;
+        install_primary(std::move(primary));
+        secondary_ = std::move(secondary);
+        paired_dsp_ = std::move(paired_dsp);
+        paired_spectrum_queue_ = std::move(paired_output);
+        {
+            std::lock_guard cache_lock(paired_metrics_mutex_);
+            paired_dsp_metrics_cache_ = paired_dsp_ ? paired_dsp_->metrics() : sdr_core::DualRxDspMetrics{};
+        }
         applied_ = applied;
-        backend_ = std::move(backend);
         acquisition_queue_ = std::move(acquisition);
-        recorder_queue_ = std::move(recorder);
-        recording_writer_ = std::move(recording_writer);
-        spectrum_queue_ = std::move(spectrum);
-        sweep_line_queue_ = std::move(sweep_lines);
-        sweep_line_assembler_ = std::move(sweep_line_assembler);
-        spectrum_recorder_queue_ = std::move(spectrum_recorder);
-        spectrum_recording_writer_ = std::move(spectrum_recording_writer);
         event_queue_ = std::move(events);
-        persistence_ = std::move(persistence);
-        persistence_queue_ = std::move(persistence_queue);
         stop_ = sdr_core::make_stop_token();
         counters_.reset();
+        end_to_end_latency_ms_.store(0., std::memory_order_relaxed);
+        paired_snapshots_emitted_.store(0U);
+        paired_snapshots_superseded_.store(0U);
+        paired_processing_ms_.store(0.);
+        paired_snapshots_abandoned_.store(0U);
+        history_queue_snapshots_abandoned_.store(0U);
         transient_blocks_discarded_.store(0U, std::memory_order_relaxed);
         transient_samples_discarded_.store(0U, std::memory_order_relaxed);
         snapshots_superseded_.store(0U, std::memory_order_relaxed);
@@ -671,12 +705,8 @@ public:
         device_.start_stream();
         state_.store(sdr_core::EngineState::Running, std::memory_order_release);
         try {
-            if (recording_writer_) {
-                recorder_thread_ = std::thread([this] { recorder_run(); });
-            }
-            if (spectrum_recording_writer_) {
-                spectrum_recorder_thread_ = std::thread([this] { spectrum_recorder_run(); });
-            }
+            start_channel_threads(*this);
+            if (secondary_) start_channel_threads(*secondary_);
             dsp_thread_ = std::thread([this] { dsp_run(); });
             acquisition_thread_ = std::thread([this] { acquisition_run(); });
         } catch (...) {
@@ -687,18 +717,10 @@ public:
             if (dsp_thread_.joinable()) {
                 dsp_thread_.join();
             }
-            if (recorder_thread_.joinable()) {
-                recorder_thread_.join();
-            }
-            if (spectrum_recorder_thread_.joinable()) {
-                spectrum_recorder_thread_.join();
-            }
-            if (recording_writer_) {
-                recording_writer_->abort("engine_start_failure");
-            }
-            if (spectrum_recording_writer_) {
-                spectrum_recording_writer_->abort("engine_start_failure");
-            }
+            join_channel_threads(*this);
+            if (secondary_) join_channel_threads(*secondary_);
+            abort_channel_writers(*this, "engine_start_failure");
+            if (secondary_) abort_channel_writers(*secondary_, "engine_start_failure");
             device_.stop_stream();
             mark_error();
             throw;
@@ -748,71 +770,8 @@ public:
         if (dsp_thread_.joinable()) {
             dsp_thread_.join();
         }
-        if (recorder_thread_.joinable()) {
-            recorder_thread_.join();
-        }
-        if (spectrum_recorder_thread_.joinable()) {
-            spectrum_recorder_thread_.join();
-        }
-        if (recording_writer_ &&
-            recorder_writer_failed_.load(std::memory_order_relaxed)) {
-            account_recorder_abandoned();
-        }
-        if (recording_writer_ &&
-            !recorder_writer_failed_.load(std::memory_order_relaxed)) {
-            try {
-                recording_writer_->set_recorder_queue_loss(
-                    recorder_queue_blocks_dropped_.load(std::memory_order_relaxed),
-                    recorder_queue_samples_dropped_.load(std::memory_order_relaxed)
-                );
-                recording_writer_->finalize();
-            } catch (const std::exception& error) {
-                recorder_writer_failed_.store(true, std::memory_order_relaxed);
-                recording_writer_->abort("finalize_failure");
-                emit_event(
-                    sdr_core::EventSeverity::Warning,
-                    "recorder_finalize_failure",
-                    error.what()
-                );
-            } catch (...) {
-                recorder_writer_failed_.store(true, std::memory_order_relaxed);
-                recording_writer_->abort("finalize_failure");
-                emit_event(
-                    sdr_core::EventSeverity::Warning,
-                    "recorder_finalize_failure",
-                    "native recorder finalization failed"
-                );
-            }
-        }
-        if (spectrum_recording_writer_ &&
-            spectrum_writer_failed_.load(std::memory_order_relaxed)) {
-            account_spectrum_recorder_abandoned();
-        }
-        if (spectrum_recording_writer_ &&
-            !spectrum_writer_failed_.load(std::memory_order_relaxed)) {
-            try {
-                spectrum_recording_writer_->set_recorder_queue_loss(
-                    spectrum_recorder_frames_dropped_.load(std::memory_order_relaxed)
-                );
-                spectrum_recording_writer_->finalize();
-            } catch (const std::exception& error) {
-                spectrum_writer_failed_.store(true, std::memory_order_relaxed);
-                spectrum_recording_writer_->abort("finalize_failure");
-                emit_event(
-                    sdr_core::EventSeverity::Warning,
-                    "spectrum_recorder_finalize_failure",
-                    error.what()
-                );
-            } catch (...) {
-                spectrum_writer_failed_.store(true, std::memory_order_relaxed);
-                spectrum_recording_writer_->abort("finalize_failure");
-                emit_event(
-                    sdr_core::EventSeverity::Warning,
-                    "spectrum_recorder_finalize_failure",
-                    "native spectrum recorder finalization failed"
-                );
-            }
-        }
+        finalize_channel(*this);
+        if (secondary_) finalize_channel(*secondary_);
         device_.stop_stream();
         account_abandoned();
         state_.store(sdr_core::EngineState::Stopped, std::memory_order_release);
@@ -848,15 +807,23 @@ public:
         configured_ = false;
         config_ = {};
         applied_ = {};
+        if (secondary_) {
+            account_recorder_abandoned(*secondary_);
+            account_spectrum_recorder_abandoned(*secondary_);
+            abort_channel_writers(*secondary_, "disconnect");
+        }
+        secondary_.reset();
+        paired_dsp_.reset();
+        paired_spectrum_queue_.reset();
         backend_.reset();
         acquisition_queue_.reset();
-        account_recorder_abandoned();
+        account_recorder_abandoned(*this);
         recorder_queue_.reset();
         if (recording_writer_) {
             recording_writer_->abort("disconnect");
         }
         recording_writer_.reset();
-        account_spectrum_recorder_abandoned();
+        account_spectrum_recorder_abandoned(*this);
         spectrum_recorder_queue_.reset();
         if (spectrum_recording_writer_) {
             spectrum_recording_writer_->abort("disconnect");
@@ -905,29 +872,58 @@ public:
 
     [[nodiscard]] FixedBandMetrics metrics() const {
         std::lock_guard lock(lifecycle_mutex_);
+        return channel_metrics(*this);
+    }
+
+    [[nodiscard]] PairedFixedBandMetrics paired_metrics() const {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (!secondary_) invalid("paired metrics require a paired configuration");
+        PairedFixedBandMetrics result;
+        result.primary = channel_metrics(*this);
+        result.secondary = channel_metrics(*secondary_);
+        {
+            std::lock_guard cache_lock(paired_metrics_mutex_);
+            result.dsp = paired_dsp_metrics_cache_;
+        }
+        result.paired_spectrum_queue = paired_spectrum_queue_->stats();
+        result.paired_snapshots_emitted = paired_snapshots_emitted_.load();
+        result.paired_snapshots_superseded = paired_snapshots_superseded_.load();
+        result.paired_processing_ms = paired_processing_ms_.load();
+        result.paired_snapshots_abandoned = paired_snapshots_abandoned_.load();
+        result.history_queue_snapshots_abandoned = history_queue_snapshots_abandoned_.load();
+        return result;
+    }
+
+    [[nodiscard]] FixedBandMetrics channel_metrics(const FixedBandChannelState& channel) const {
         FixedBandMetrics result;
-        result.receiver_selection = config_.receiver_selection;
+        result.receiver_selection = channel.config_.receiver_selection;
         result.state = state_.load(std::memory_order_acquire);
         result.has_error = has_error_.load(std::memory_order_relaxed);
-        result.engine = assemble_engine_metrics();
+        result.engine = assemble_channel_engine_metrics(channel);
         result.device = device_.metrics();
+        // Common acquisition counters describe ONE stream epoch, repeated in the
+        // channel views for compatibility; they must not be summed as two streams.
+        result.engine.iq_blocks_received = counters_.iq_blocks_received.load();
+        result.engine.iq_samples_received = counters_.iq_samples_received.load();
+        result.engine.iq_blocks_dropped = counters_.iq_blocks_dropped.load();
+        result.engine.iq_samples_dropped = counters_.iq_samples_dropped.load();
         if (acquisition_queue_) {
             result.acquisition_queue = acquisition_queue_->stats();
         }
-        if (recorder_queue_) {
-            result.recorder_queue = recorder_queue_->stats();
+        if (channel.recorder_queue_) {
+            result.recorder_queue = channel.recorder_queue_->stats();
         }
-        if (spectrum_queue_) {
-            result.spectrum_queue = spectrum_queue_->stats();
+        if (channel.spectrum_queue_) {
+            result.spectrum_queue = channel.spectrum_queue_->stats();
         }
-        if (sweep_line_queue_) {
-            result.sweep_line_queue = sweep_line_queue_->stats();
+        if (channel.sweep_line_queue_) {
+            result.sweep_line_queue = channel.sweep_line_queue_->stats();
         }
-        if (spectrum_recorder_queue_) {
-            result.spectrum_recorder_queue = spectrum_recorder_queue_->stats();
+        if (channel.spectrum_recorder_queue_) {
+            result.spectrum_recorder_queue = channel.spectrum_recorder_queue_->stats();
         }
-        if (persistence_queue_) {
-            result.persistence_queue = persistence_queue_->stats();
+        if (channel.persistence_queue_) {
+            result.persistence_queue = channel.persistence_queue_->stats();
         }
         result.acquisition_queue_blocks_dropped =
             acquisition_queue_blocks_dropped_.load(std::memory_order_relaxed);
@@ -946,53 +942,53 @@ public:
         // host sequence or timestamp checks.
         result.hardware_overflow_counter_available = false;
         result.recorder_queue_blocks_dropped =
-            recorder_queue_blocks_dropped_.load(std::memory_order_relaxed);
+            channel.recorder_queue_blocks_dropped_.load(std::memory_order_relaxed);
         result.recorder_queue_samples_dropped =
-            recorder_queue_samples_dropped_.load(std::memory_order_relaxed);
+            channel.recorder_queue_samples_dropped_.load(std::memory_order_relaxed);
         result.recorder_shutdown_blocks_discarded =
-            recorder_shutdown_blocks_discarded_.load(std::memory_order_relaxed);
+            channel.recorder_shutdown_blocks_discarded_.load(std::memory_order_relaxed);
         result.recorder_shutdown_samples_discarded =
-            recorder_shutdown_samples_discarded_.load(std::memory_order_relaxed);
+            channel.recorder_shutdown_samples_discarded_.load(std::memory_order_relaxed);
         result.recorder_writer_blocks_written =
-            recorder_writer_blocks_written_.load(std::memory_order_relaxed);
+            channel.recorder_writer_blocks_written_.load(std::memory_order_relaxed);
         result.recorder_writer_samples_written =
-            recorder_writer_samples_written_.load(std::memory_order_relaxed);
+            channel.recorder_writer_samples_written_.load(std::memory_order_relaxed);
         result.recorder_writer_bytes_written =
-            recorder_writer_bytes_written_.load(std::memory_order_relaxed);
+            channel.recorder_writer_bytes_written_.load(std::memory_order_relaxed);
         result.recorder_writer_blocks_unavailable =
-            recorder_writer_blocks_unavailable_.load(std::memory_order_relaxed);
+            channel.recorder_writer_blocks_unavailable_.load(std::memory_order_relaxed);
         result.recorder_writer_samples_unavailable =
-            recorder_writer_samples_unavailable_.load(std::memory_order_relaxed);
+            channel.recorder_writer_samples_unavailable_.load(std::memory_order_relaxed);
         result.recorder_writer_failed =
-            recorder_writer_failed_.load(std::memory_order_relaxed);
+            channel.recorder_writer_failed_.load(std::memory_order_relaxed);
         result.spectrum_recorder_frames_dropped =
-            spectrum_recorder_frames_dropped_.load(std::memory_order_relaxed);
+            channel.spectrum_recorder_frames_dropped_.load(std::memory_order_relaxed);
         result.spectrum_recorder_frames_unavailable =
-            spectrum_recorder_frames_unavailable_.load(std::memory_order_relaxed);
+            channel.spectrum_recorder_frames_unavailable_.load(std::memory_order_relaxed);
         result.spectrum_recorder_shutdown_frames_discarded =
-            spectrum_recorder_shutdown_frames_discarded_.load(std::memory_order_relaxed);
+            channel.spectrum_recorder_shutdown_frames_discarded_.load(std::memory_order_relaxed);
         result.spectrum_writer_frames_written =
-            spectrum_writer_frames_written_.load(std::memory_order_relaxed);
+            channel.spectrum_writer_frames_written_.load(std::memory_order_relaxed);
         result.spectrum_writer_bytes_written =
-            spectrum_writer_bytes_written_.load(std::memory_order_relaxed);
+            channel.spectrum_writer_bytes_written_.load(std::memory_order_relaxed);
         result.spectrum_writer_failed =
-            spectrum_writer_failed_.load(std::memory_order_relaxed);
+            channel.spectrum_writer_failed_.load(std::memory_order_relaxed);
         result.transient_blocks_discarded =
             transient_blocks_discarded_.load(std::memory_order_relaxed);
         result.transient_samples_discarded =
             transient_samples_discarded_.load(std::memory_order_relaxed);
         result.spectrum_snapshots_superseded =
-            snapshots_superseded_.load(std::memory_order_relaxed);
+            channel.snapshots_superseded_.load(std::memory_order_relaxed);
         result.sweep_line_snapshots_superseded =
-            sweep_line_snapshots_superseded_.load(std::memory_order_relaxed);
+            channel.sweep_line_snapshots_superseded_.load(std::memory_order_relaxed);
         result.completed_sweep_lines =
-            completed_sweep_lines_.load(std::memory_order_relaxed);
+            channel.completed_sweep_lines_.load(std::memory_order_relaxed);
         result.gapped_sweep_lines =
-            gapped_sweep_lines_.load(std::memory_order_relaxed);
+            channel.gapped_sweep_lines_.load(std::memory_order_relaxed);
         result.sweep_line_capacity_evicted =
-            sweep_line_capacity_evicted_.load(std::memory_order_relaxed);
+            channel.sweep_line_capacity_evicted_.load(std::memory_order_relaxed);
         result.persistence_snapshots_superseded =
-            persistence_snapshots_superseded_.load(std::memory_order_relaxed);
+            channel.persistence_snapshots_superseded_.load(std::memory_order_relaxed);
         result.shutdown_blocks_discarded =
             shutdown_blocks_discarded_.load(std::memory_order_relaxed);
         result.shutdown_samples_discarded =
@@ -1001,8 +997,9 @@ public:
             expected_cancellations_.load(std::memory_order_relaxed);
         result.diagnostic_events_lost =
             events_lost_.load(std::memory_order_relaxed);
-        if (backend_) {
-            const auto dsp_metrics = backend_->metrics();
+        if (configured_) {
+            std::lock_guard metrics_lock(channel.backend_metrics_mutex_);
+            const auto& dsp_metrics = channel.backend_metrics_cache_;
             result.requested_backend = dsp_metrics.requested_preference;
             result.active_backend = dsp_metrics.active_backend;
             result.backend_self_test_passed = dsp_metrics.backend_self_test_passed;
@@ -1010,16 +1007,73 @@ public:
             result.backend_switch_count = dsp_metrics.backend_switch_count;
             result.last_backend_error = dsp_metrics.last_backend_error;
         } else {
-            result.requested_backend = config_.backend;
-            result.active_backend = config_.backend;
+            result.requested_backend = channel.config_.backend;
+            result.active_backend = channel.config_.backend;
         }
         return result;
+    }
+
+
+    [[nodiscard]] FixedBandChannelState& receiver_channel(ReceiverSelection receiver) {
+        if (receiver == ReceiverSelection::Both) invalid("per-channel consumer requires RX1 or RX2");
+        if (receiver == config_.receiver_selection) return *this;
+        if (secondary_ && receiver == ReceiverSelection::Rx2) return *secondary_;
+        invalid("receiver is not admitted by this engine");
+    }
+
+    template<class T>
+    [[nodiscard]] std::vector<T> poll_channel_queue(
+        std::unique_ptr<sdr_core::BoundedQueue<T>>& queue, std::size_t max_items
+    ) {
+        std::vector<T> result;
+        if (!queue) return result;
+        T item;
+        while (max_items == 0U || result.size() < max_items) {
+            if (!queue->try_pop(item)) break;
+            result.push_back(std::move(item));
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::vector<sdr_core::DualRxSpectrumFrame> poll_paired_spectrum_frames(std::size_t max_items) {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (!secondary_) invalid("paired Spectrum read requires a paired engine");
+        return poll_channel_queue(paired_spectrum_queue_, max_items);
+    }
+
+    [[nodiscard]] sdr_core::LatestDualRxSpectrumFrameDrain drain_latest_paired_spectrum_frame() {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (!secondary_) invalid("paired Spectrum drain requires a paired engine");
+        sdr_core::LatestDualRxSpectrumFrameDrain result;
+        sdr_core::DualRxSpectrumFrame frame;
+        while (paired_spectrum_queue_->try_pop(frame)) {
+            if (result.frame) ++result.coalesced_frames;
+            result.frame = std::move(frame);
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_receiver_persistence_snapshots(
+        ReceiverSelection receiver, std::size_t max_items) {
+        std::lock_guard lock(lifecycle_mutex_);
+        return poll_channel_queue(receiver_channel(receiver).persistence_queue_, max_items);
+    }
+    [[nodiscard]] std::vector<sdr_core::SweepLineFrame> poll_receiver_sweep_line_frames(
+        ReceiverSelection receiver, std::size_t max_items) {
+        std::lock_guard lock(lifecycle_mutex_);
+        return poll_channel_queue(receiver_channel(receiver).sweep_line_queue_, max_items);
+    }
+    [[nodiscard]] std::vector<sdr_core::IqBlock> poll_receiver_recorded_iq_blocks(
+        ReceiverSelection receiver, std::size_t max_items) {
+        std::lock_guard lock(lifecycle_mutex_);
+        return poll_channel_queue(receiver_channel(receiver).recorder_queue_, max_items);
     }
 
     [[nodiscard]] std::vector<sdr_core::SpectrumFrame> poll_spectrum_frames(
         const std::size_t max_items
     ) {
         std::lock_guard lock(lifecycle_mutex_);
+        if (secondary_) invalid("paired engine requires an explicit paired or receiver-scoped read");
         std::vector<sdr_core::SpectrumFrame> result;
         if (!spectrum_queue_) {
             return result;
@@ -1038,6 +1092,7 @@ public:
         const std::size_t max_items
     ) {
         std::lock_guard lock(lifecycle_mutex_);
+        if (secondary_) invalid("paired engine requires an explicit paired or receiver-scoped read");
         std::vector<sdr_core::SweepLineFrame> result;
         if (!sweep_line_queue_) {
             return result;
@@ -1054,6 +1109,7 @@ public:
 
     [[nodiscard]] LatestSpectrumFrameDrain drain_latest_spectrum_frame() {
         std::lock_guard lock(lifecycle_mutex_);
+        if (secondary_) invalid("paired engine requires an explicit paired or receiver-scoped read");
         LatestSpectrumFrameDrain result;
         if (!spectrum_queue_) {
             return result;
@@ -1072,6 +1128,7 @@ public:
         const std::size_t max_items
     ) {
         std::lock_guard lock(lifecycle_mutex_);
+        if (secondary_) invalid("paired engine requires an explicit paired or receiver-scoped read");
         std::vector<sdr_core::IqBlock> result;
         if (!recorder_queue_) {
             return result;
@@ -1090,6 +1147,7 @@ public:
         const std::size_t max_items
     ) {
         std::lock_guard lock(lifecycle_mutex_);
+        if (secondary_) invalid("paired engine requires an explicit paired or receiver-scoped read");
         std::vector<sdr_core::PersistenceSnapshot> result;
         if (!persistence_queue_) {
             return result;
@@ -1169,6 +1227,265 @@ public:
     }
 #endif
 private:
+    void finalize_channel(FixedBandChannelState& channel) {
+        if (channel.recorder_thread_.joinable()) {
+            channel.recorder_thread_.join();
+        }
+        if (channel.spectrum_recorder_thread_.joinable()) {
+            channel.spectrum_recorder_thread_.join();
+        }
+        if (channel.recording_writer_ &&
+            channel.recorder_writer_failed_.load(std::memory_order_relaxed)) {
+            account_recorder_abandoned(channel);
+        }
+        if (channel.recording_writer_ &&
+            !channel.recorder_writer_failed_.load(std::memory_order_relaxed)) {
+            try {
+                channel.recording_writer_->set_recorder_queue_loss(
+                    channel.recorder_queue_blocks_dropped_.load(std::memory_order_relaxed),
+                    channel.recorder_queue_samples_dropped_.load(std::memory_order_relaxed)
+                );
+                channel.recording_writer_->finalize();
+            } catch (const std::exception& error) {
+                channel.recorder_writer_failed_.store(true, std::memory_order_relaxed);
+                channel.recording_writer_->abort("finalize_failure");
+                emit_event(
+                    sdr_core::EventSeverity::Warning,
+                    "recorder_finalize_failure",
+                    error.what()
+                );
+            } catch (...) {
+                channel.recorder_writer_failed_.store(true, std::memory_order_relaxed);
+                channel.recording_writer_->abort("finalize_failure");
+                emit_event(
+                    sdr_core::EventSeverity::Warning,
+                    "recorder_finalize_failure",
+                    "native recorder finalization failed"
+                );
+            }
+        }
+        if (channel.spectrum_recording_writer_ &&
+            channel.spectrum_writer_failed_.load(std::memory_order_relaxed)) {
+            account_spectrum_recorder_abandoned(channel);
+        }
+        if (channel.spectrum_recording_writer_ &&
+            !channel.spectrum_writer_failed_.load(std::memory_order_relaxed)) {
+            try {
+                channel.spectrum_recording_writer_->set_recorder_queue_loss(
+                    channel.spectrum_recorder_frames_dropped_.load(std::memory_order_relaxed)
+                );
+                channel.spectrum_recording_writer_->finalize();
+            } catch (const std::exception& error) {
+                channel.spectrum_writer_failed_.store(true, std::memory_order_relaxed);
+                channel.spectrum_recording_writer_->abort("finalize_failure");
+                emit_event(
+                    sdr_core::EventSeverity::Warning,
+                    "spectrum_recorder_finalize_failure",
+                    error.what()
+                );
+            } catch (...) {
+                channel.spectrum_writer_failed_.store(true, std::memory_order_relaxed);
+                channel.spectrum_recording_writer_->abort("finalize_failure");
+                emit_event(
+                    sdr_core::EventSeverity::Warning,
+                    "spectrum_recorder_finalize_failure",
+                    "native spectrum recorder finalization failed"
+                );
+            }
+        }
+    }
+
+
+    [[nodiscard]] std::unique_ptr<FixedBandChannelState> prepare_channel(
+        const FixedBandConfig& config, const ContextProbe& probe, bool paired
+    ) {
+        auto channel = std::make_unique<FixedBandChannelState>();
+        std::unique_ptr<sdr_core::BoundedQueue<sdr_core::IqBlock>> recorder;
+        if (recorder_enabled(config)) {
+            recorder = std::make_unique<sdr_core::BoundedQueue<sdr_core::IqBlock>>(
+                recorder_queue_capacity(config),
+                config.recorder_overflow
+            );
+        }
+        auto spectrum =
+            std::make_unique<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>>(
+                config.spectrum_queue_capacity,
+                sdr_core::OverflowPolicy::LatestWins
+            );
+        std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>> sweep_lines;
+        if (config.continuous_sweep_line.has_value() &&
+            config.continuous_sweep_line->enabled) {
+            sweep_lines = std::make_unique<
+                sdr_core::BoundedQueue<sdr_core::SweepLineFrame>
+            >(
+                continuous_sweep_line_relay_capacity(config),
+                sdr_core::OverflowPolicy::LatestWins
+            );
+        }
+        std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>>
+            spectrum_recorder;
+        if (native_spectrum_recording_enabled(config)) {
+            spectrum_recorder =
+                std::make_unique<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>>(
+                    config.recording.queue_capacity,
+                    sdr_core::OverflowPolicy::DropNewest
+                );
+        }
+
+        auto persistence = std::make_unique<sdr_core::PersistenceAccumulator>(config.persistence);
+        auto persistence_queue =
+            std::make_unique<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>>(
+                2U, sdr_core::OverflowPolicy::LatestWins);
+        sdr_core::CpuDspOptions options;
+        options.output_capacity = dsp_output_capacity(config);
+        options.dc_removal = config.dc_removal_block_mean
+                                 ? sdr_core::DcRemovalMode::BlockMean
+                                 : sdr_core::DcRemovalMode::Off;
+        options.source = producer_source(config, probe, paired);
+        std::unique_ptr<sdr_core::SegmentedIqRecordingWriter> recording_writer;
+        if (native_iq_recording_enabled(config)) {
+            recording_writer = std::make_unique<sdr_core::SegmentedIqRecordingWriter>(
+                config.recording,
+                options.source
+            );
+        }
+        std::unique_ptr<sdr_core::SpectrumFrameRecordingWriter> spectrum_recording_writer;
+        if (native_spectrum_recording_enabled(config)) {
+            spectrum_recording_writer =
+                std::make_unique<sdr_core::SpectrumFrameRecordingWriter>(
+                    config.recording,
+                    options.source
+                );
+        }
+        // P08: the DSP stage is selected through the vendor-neutral factory
+        // (CPU / CUDA with runtime failover per configuration).
+        sdr_core::DspBackendSelectionOptions selection;
+        selection.preference = config.backend;
+        selection.allow_runtime_fallback = config.allow_runtime_fallback;
+        std::unique_ptr<sdr_core::DspBackend> backend;
+        if (!paired) {
+            backend = sdr_core::make_dsp_backend(selection, std::move(options));
+            backend->configure(config.dsp);
+        }
+
+
+        channel->config_ = config;
+        if (backend) channel->backend_metrics_cache_ = backend->metrics();
+        channel->backend_ = std::move(backend);
+        channel->recorder_queue_ = std::move(recorder);
+        channel->recording_writer_ = std::move(recording_writer);
+        channel->spectrum_queue_ = std::move(spectrum);
+        channel->sweep_line_queue_ = std::move(sweep_lines);
+        channel->spectrum_recorder_queue_ = std::move(spectrum_recorder);
+        channel->spectrum_recording_writer_ = std::move(spectrum_recording_writer);
+        channel->persistence_ = std::move(persistence);
+        channel->persistence_queue_ = std::move(persistence_queue);
+
+        return channel;
+    }
+
+    void prepare_sweep_line(FixedBandChannelState& channel, const AppliedConfig& applied,
+                            const ContextProbe& probe, bool paired) {
+        const auto& config = channel.config_;
+        const auto sweep_source = producer_source(config, probe, paired);
+        if (config.continuous_sweep_line.has_value() &&
+            config.continuous_sweep_line->enabled) {
+            const auto& profile = *config.continuous_sweep_line;
+            const auto display_span_hz = profile.display_stop_hz - profile.display_start_hz;
+            const auto display_center_hz =
+                profile.display_start_hz + display_span_hz / 2.0;
+            const auto required_half_window_hz = std::abs(
+                display_center_hz - applied.center_frequency_hz
+            ) + display_span_hz / 2.0;
+            if (applied.sample_rate_hz < profile.usable_window_hz ||
+                applied.analog_bandwidth_hz < profile.usable_window_hz ||
+                required_half_window_hz > profile.usable_window_hz / 2.0) {
+                throw sdr_core::ConfigurationError(
+                    "continuous sweep applied readback cannot satisfy declared usable window"
+                );
+            }
+            const auto physical_spacing_hz = applied.sample_rate_hz /
+                static_cast<double>(config.dsp.fft_size);
+            const auto line_spacing_hz = profile.analysis_bins_per_usable_window == 0U
+                ? physical_spacing_hz
+                : profile.usable_window_hz /
+                    static_cast<double>(profile.analysis_bins_per_usable_window);
+            if (line_spacing_hz + 1e-9 < physical_spacing_hz) {
+                throw sdr_core::ConfigurationError(
+                    "continuous sweep analysis grid requires a denser physical FFT transform"
+                );
+            }
+            channel.sweep_line_assembler_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(
+                sdr_core::SweepLineDefinition{
+                    .source = sweep_source,
+                    .epoch = profile.epoch,
+                    .start_frequency_hz = profile.display_start_hz,
+                    .stop_frequency_hz = profile.display_stop_hz,
+                    .target_spacing_hz = line_spacing_hz,
+                    .analysis_window_hz = profile.analysis_bins_per_usable_window == 0U
+                        ? 0.0 : profile.usable_window_hz,
+                    .analysis_bins_per_usable_window = profile.analysis_bins_per_usable_window,
+                    .physical_fft_bin_width_hz = profile.analysis_bins_per_usable_window == 0U
+                        ? 0.0 : physical_spacing_hz,
+                    .physical_fft_size = profile.analysis_bins_per_usable_window == 0U
+                        ? 0U : config.dsp.fft_size,
+                    .unit = config.dsp.unit,
+                    .max_inflight_lines = 1U,
+                    .segments = {
+                        {
+                            .segment_index = 0U,
+                            .config_generation = applied.config_generation,
+                            .usable_start_hz = profile.display_start_hz,
+                            .usable_stop_hz = profile.display_stop_hz,
+                        },
+                    },
+                }
+            );
+        }
+
+    }
+
+    void start_channel_writers(FixedBandChannelState& channel) {
+        if (channel.recording_writer_) channel.recording_writer_->start();
+        if (channel.spectrum_recording_writer_) channel.spectrum_recording_writer_->start();
+    }
+
+    void abort_channel_writers(FixedBandChannelState& channel, const char* reason) noexcept {
+        if (channel.recording_writer_) channel.recording_writer_->abort(reason);
+        if (channel.spectrum_recording_writer_) channel.spectrum_recording_writer_->abort(reason);
+    }
+
+    void install_primary(std::unique_ptr<FixedBandChannelState> channel) {
+        config_ = std::move(channel->config_);
+        backend_ = std::move(channel->backend_);
+        recording_writer_ = std::move(channel->recording_writer_);
+        spectrum_recording_writer_ = std::move(channel->spectrum_recording_writer_);
+        recorder_queue_ = std::move(channel->recorder_queue_);
+        spectrum_queue_ = std::move(channel->spectrum_queue_);
+        sweep_line_queue_ = std::move(channel->sweep_line_queue_);
+        spectrum_recorder_queue_ = std::move(channel->spectrum_recorder_queue_);
+        persistence_ = std::move(channel->persistence_);
+        sweep_line_assembler_ = std::move(channel->sweep_line_assembler_);
+        persistence_queue_ = std::move(channel->persistence_queue_);
+        std::lock_guard metrics_lock(backend_metrics_mutex_);
+        backend_metrics_cache_ = channel->backend_metrics_cache_;
+    }
+
+    void start_channel_threads(FixedBandChannelState& channel) {
+        if (channel.recording_writer_) {
+            channel.recorder_thread_ = std::thread([this, &channel] { recorder_run(channel); });
+        }
+        if (channel.spectrum_recording_writer_) {
+            channel.spectrum_recorder_thread_ =
+                std::thread([this, &channel] { spectrum_recorder_run(channel); });
+        }
+    }
+
+    void join_channel_threads(FixedBandChannelState& channel) {
+        if (channel.recorder_thread_.joinable()) channel.recorder_thread_.join();
+        if (channel.spectrum_recorder_thread_.joinable()) channel.spectrum_recorder_thread_.join();
+    }
+
     void shutdown_noexcept() noexcept {
         try {
             const auto current = state_.load(std::memory_order_acquire);
@@ -1188,18 +1505,10 @@ private:
             if (dsp_thread_.joinable()) {
                 dsp_thread_.join();
             }
-            if (recorder_thread_.joinable()) {
-                recorder_thread_.join();
-            }
-            if (spectrum_recorder_thread_.joinable()) {
-                spectrum_recorder_thread_.join();
-            }
-            if (recording_writer_) {
-                recording_writer_->abort("shutdown_exception");
-            }
-            if (spectrum_recording_writer_) {
-                spectrum_recording_writer_->abort("shutdown_exception");
-            }
+            join_channel_threads(*this);
+            if (secondary_) join_channel_threads(*secondary_);
+            abort_channel_writers(*this, "shutdown_exception");
+            if (secondary_) abort_channel_writers(*secondary_, "shutdown_exception");
             device_.stop_stream();
         }
     }
@@ -1213,6 +1522,10 @@ private:
             }
             if (recorder_queue_) {
                 recorder_queue_->request_stop();
+            }
+            if (secondary_) {
+                if (secondary_->recorder_queue_) secondary_->recorder_queue_->request_stop();
+                if (secondary_->spectrum_recorder_queue_) secondary_->spectrum_recorder_queue_->request_stop();
             }
             if (spectrum_recorder_queue_) {
                 spectrum_recorder_queue_->request_stop();
@@ -1283,9 +1596,18 @@ private:
         std::optional<std::int64_t> previous_timestamp_ns;
         try {
             while (!stop_->stop_requested()) {
-                sdr_core::IqBlock block;
+                FixedBandIqEnvelope envelope;
+                auto& block = envelope.primary;
                 try {
-                    if (config_.receiver_selection == ReceiverSelection::Rx1) {
+                    if (secondary_) {
+                        auto receivers = device_.refill_receivers();
+                        if (receivers.selection != ReceiverSelection::Both ||
+                            !receivers.rx1 || !receivers.rx2) {
+                            throw sdr_core::SdrNativeError("paired engine received incomplete receiver epoch");
+                        }
+                        block = std::move(*receivers.rx1);
+                        envelope.secondary = std::move(*receivers.rx2);
+                    } else if (config_.receiver_selection == ReceiverSelection::Rx1) {
                         block = device_.refill();
                     } else {
                         auto receivers = device_.refill_receivers();
@@ -1351,9 +1673,9 @@ private:
                 const auto sample_count = block.sample_count;
                 std::uint64_t discarded_samples = sample_count;
                 const auto pushed = acquisition_queue_->push_with_eviction(
-                    std::move(block),
-                    [&discarded_samples](const sdr_core::IqBlock& evicted) noexcept {
-                        discarded_samples = evicted.sample_count;
+                    std::move(envelope),
+                    [&discarded_samples](const FixedBandIqEnvelope& evicted) noexcept {
+                        discarded_samples = evicted.primary.sample_count;
                     }
                 );
                 if (pushed == sdr_core::PushResult::Stopped) {
@@ -1419,7 +1741,151 @@ private:
         }
     }
 
+
+    void consume_analytical(FixedBandChannelState& channel, sdr_core::SpectrumFrame& frame,
+                    const sdr_core::DspBackendMetrics& backend_metrics,
+                    std::chrono::steady_clock::time_point started_at,
+                    std::uint64_t& emitted_line_slots) {
+        const auto line_profile = channel.config_.continuous_sweep_line.has_value() &&
+            channel.config_.continuous_sweep_line->enabled
+        ? &*channel.config_.continuous_sweep_line : nullptr;
+        annotate_frame(channel, frame, backend_metrics);
+        publish_persistence(channel, frame);
+        if (line_profile != nullptr) {
+            const auto elapsed_ns = std::max<std::int64_t>(
+                0LL,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started_at
+                ).count()
+            );
+            const auto allowed_line_slots = static_cast<std::uint64_t>(
+                std::floor(
+                    static_cast<long double>(elapsed_ns) *
+                    static_cast<long double>(line_profile->line_snapshot_rate_hz) /
+                    1'000'000'000.0L
+                )
+            );
+            if (emitted_line_slots < allowed_line_slots) {
+                publish_sweep_line(channel, frame);
+                ++emitted_line_slots;
+            }
+        }
+
+    }
+
+    void publish_pair(sdr_core::DualRxSpectrumFrame frame) {
+        const double latency_ms = std::max(
+            0.0, static_cast<double>(system_time_ns() - frame.timestamp_ns) / 1.0e6);
+        end_to_end_latency_ms_.store(latency_ms, std::memory_order_relaxed);
+        secondary_->end_to_end_latency_ms_.store(latency_ms, std::memory_order_relaxed);
+        // Record native selected snapshots BEFORE the final pair latest-wins queue.
+        // The recording cadence is unchanged; this is not an all-FFT recorder.
+        tee_spectrum_frame(*this, frame.primary);
+        tee_spectrum_frame(*secondary_, frame.secondary);
+        const auto result = paired_spectrum_queue_->try_push(std::move(frame));
+        if (result == sdr_core::PushResult::Pushed || result == sdr_core::PushResult::Evicted) {
+            paired_snapshots_emitted_.fetch_add(1U);
+            counters_.spectrum_snapshots_emitted.fetch_add(1U);
+            secondary_->counters_.spectrum_snapshots_emitted.fetch_add(1U);
+        }
+        if (result == sdr_core::PushResult::Evicted) paired_snapshots_superseded_.fetch_add(1U);
+    }
+
+    void cache_paired_metrics(std::chrono::steady_clock::time_point started_at) {
+        const auto metrics = paired_dsp_->metrics();
+        const auto now = std::chrono::steady_clock::now();
+        update_dsp_metrics(*this, metrics.primary, started_at, now, false);
+        update_dsp_metrics(*secondary_, metrics.secondary, started_at, now, false);
+        std::lock_guard cache_lock(paired_metrics_mutex_);
+        paired_dsp_metrics_cache_ = metrics;
+    }
+
+    void paired_dsp_run() noexcept {
+        try {
+            const auto started_at = std::chrono::steady_clock::now();
+            const auto period = std::max<std::int64_t>(1LL, static_cast<std::int64_t>(
+                std::llround(1'000'000'000. / config_.snapshot_rate_hz)));
+            std::int64_t next_timestamp{};
+            bool deadline_initialized = false;
+            std::uint64_t primary_line_slots{}, secondary_line_slots{};
+            std::optional<sdr_core::DualRxSpectrumFrame> terminal_pair;
+            paired_dsp_->set_shared_gap_consumer([&] {
+                terminal_pair.reset();
+                deadline_initialized = false;
+                paired_snapshots_abandoned_.fetch_add(paired_spectrum_queue_->abandon());
+                for (auto* channel : {static_cast<FixedBandChannelState*>(this), secondary_.get()}) {
+                    channel->persistence_->reset();
+                    if (channel->persistence_queue_)
+                        history_queue_snapshots_abandoned_.fetch_add(channel->persistence_queue_->abandon());
+                    if (channel->sweep_line_queue_)
+                        history_queue_snapshots_abandoned_.fetch_add(channel->sweep_line_queue_->abandon());
+                }
+            });
+            paired_dsp_->set_analytical_consumer(
+                [&](sdr_core::DualRxSpectrumFrame& pair,
+                    const sdr_core::DspBackendMetrics& primary_metrics,
+                    const sdr_core::DspBackendMetrics& secondary_metrics) {
+                    counters_.fft_frames_computed.store(primary_metrics.fft_frames_computed);
+                    secondary_->counters_.fft_frames_computed.store(secondary_metrics.fft_frames_computed);
+                    consume_analytical(*this, pair.primary, primary_metrics, started_at, primary_line_slots);
+                    consume_analytical(*secondary_, pair.secondary, secondary_metrics,
+                                       started_at, secondary_line_slots);
+                    if (!deadline_initialized || pair.timestamp_ns >= next_timestamp) {
+                        const auto scheduled = deadline_initialized
+                            ? next_timestamp + period : pair.timestamp_ns + period;
+                        next_timestamp = scheduled > pair.timestamp_ns ? scheduled : pair.timestamp_ns + period;
+                        deadline_initialized = true;
+                        terminal_pair.reset();
+                        publish_pair(std::move(pair));
+                    } else {
+                        terminal_pair = std::move(pair);
+                    }
+                    return false;
+                });
+            while (true) {
+                FixedBandIqEnvelope envelope;
+                if (acquisition_queue_->pop(envelope) == sdr_core::PopResult::Stopped) break;
+                if (!envelope.secondary) throw sdr_core::SdrNativeError("paired acquisition epoch lost peer");
+                tee_recorder_block(*this, envelope.primary);
+                tee_recorder_block(*secondary_, *envelope.secondary);
+                const auto processing_started = std::chrono::steady_clock::now();
+                paired_dsp_->push(envelope.primary, *envelope.secondary);
+#if defined(SDR_CORE_ENABLE_TEST_HOOKS)
+                const auto delay = dsp_delay_for_test_ms_.load();
+                if (delay) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+#endif
+                cache_paired_metrics(started_at);
+                paired_processing_ms_.fetch_add(std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - processing_started).count());
+            }
+            const auto flush_started = std::chrono::steady_clock::now();
+            paired_dsp_->flush(); // Both partial FFT batches through the SAME consumers.
+            cache_paired_metrics(started_at);
+            if (terminal_pair) publish_pair(std::move(*terminal_pair));
+            paired_processing_ms_.fetch_add(std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - flush_started).count());
+            paired_dsp_->set_shared_gap_consumer({});
+            paired_dsp_->set_analytical_consumer({}); // Never retain worker-stack captures.
+        } catch (const std::exception& error) {
+            paired_dsp_->set_shared_gap_consumer({});
+            paired_dsp_->set_analytical_consumer({});
+            emit_event(sdr_core::EventSeverity::Critical, "dsp_failure", error.what());
+            mark_error();
+            initiate_shutdown();
+        } catch (...) {
+            paired_dsp_->set_shared_gap_consumer({});
+            paired_dsp_->set_analytical_consumer({});
+            emit_event(sdr_core::EventSeverity::Critical, "dsp_failure", "unknown paired DSP failure");
+            mark_error();
+            initiate_shutdown();
+        }
+    }
+
     void dsp_run() noexcept {
+        if (secondary_) {
+            paired_dsp_run();
+            return;
+        }
         try {
             const auto started_at = std::chrono::steady_clock::now();
             // A device refill can contain many completed overlapping FFTs.
@@ -1438,9 +1904,6 @@ private:
             );
             std::int64_t next_snapshot_timestamp_ns{};
             bool snapshot_deadline_initialized{false};
-            const auto line_profile = config_.continuous_sweep_line.has_value() &&
-                config_.continuous_sweep_line->enabled
-                ? &*config_.continuous_sweep_line : nullptr;
             // Sweep-line LPS is a host wall-clock throughput metric.  It
             // must not be paced by the nominal ADC timestamp: a transport
             // that returns a 5-ms nominal I/Q refill every 40 ms would then
@@ -1459,31 +1922,10 @@ private:
                 &snapshot_deadline_initialized,
                 snapshot_period_ns,
                 &latest_unpublished,
-                line_profile,
                 line_started_at,
                 &emitted_line_slots
             ](sdr_core::SpectrumFrame frame, const sdr_core::DspBackendMetrics& backend_metrics) mutable {
-                annotate_frame(frame, backend_metrics);
-                publish_persistence(frame);
-                if (line_profile != nullptr) {
-                    const auto elapsed_ns = std::max<std::int64_t>(
-                        0LL,
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - line_started_at
-                        ).count()
-                    );
-                    const auto allowed_line_slots = static_cast<std::uint64_t>(
-                        std::floor(
-                            static_cast<long double>(elapsed_ns) *
-                            static_cast<long double>(line_profile->line_snapshot_rate_hz) /
-                            1'000'000'000.0L
-                        )
-                    );
-                    if (emitted_line_slots < allowed_line_slots) {
-                        publish_sweep_line(frame);
-                        ++emitted_line_slots;
-                    }
-                }
+                consume_analytical(*this, frame, backend_metrics, line_started_at, emitted_line_slots);
                 if (!snapshot_deadline_initialized ||
                     frame.timestamp_ns >= next_snapshot_timestamp_ns) {
                     // Retain the requested cadence phase across quantised FFT
@@ -1501,21 +1943,22 @@ private:
                         : frame.timestamp_ns + snapshot_period_ns;
                     snapshot_deadline_initialized = true;
                     latest_unpublished.reset();
-                    publish(std::move(frame));
+                    publish(*this, std::move(frame));
                     return;
                 }
                 latest_unpublished = std::move(frame);
             };
             while (true) {
-                sdr_core::IqBlock block;
-                if (acquisition_queue_->pop(block) == sdr_core::PopResult::Stopped) {
+                FixedBandIqEnvelope envelope;
+                if (acquisition_queue_->pop(envelope) == sdr_core::PopResult::Stopped) {
                     break;
                 }
                 // The recorder receives the same immutable native I/Q block
                 // before the DSP backend.  Its non-blocking bounded queue
                 // may lose recording data, but can never backpressure or
                 // suppress an analytical block.
-                tee_recorder_block(block);
+                const auto& block = envelope.primary;
+                tee_recorder_block(*this, block);
                 const auto processing_started = std::chrono::steady_clock::now();
                 backend_->push_iq(block);
 #if defined(SDR_CORE_ENABLE_TEST_HOOKS)
@@ -1536,7 +1979,7 @@ private:
                 for (auto& frame : ready) {
                     consider_for_publication(std::move(frame), backend_metrics);
                 }
-                update_dsp_metrics(backend_metrics, started_at, processing_started);
+                update_dsp_metrics(*this, backend_metrics, started_at, processing_started);
             }
             auto final_frames = backend_->poll_spectrum(0U, true);
             const auto final_metrics = backend_->metrics();
@@ -1547,14 +1990,14 @@ private:
                 consider_for_publication(std::move(frame), final_metrics);
             }
             update_dsp_metrics(
-                final_metrics,
+                *this, final_metrics,
                 started_at,
                 std::chrono::steady_clock::now()
             );
             // Preserve the existing terminal latest-frame contract without
             // creating a producer-rate backlog while running.
             if (latest_unpublished.has_value()) {
-                publish(std::move(*latest_unpublished));
+                publish(*this, std::move(*latest_unpublished));
             }
         } catch (const std::exception& error) {
             emit_event(
@@ -1575,34 +2018,34 @@ private:
         }
     }
 
-    void recorder_run() noexcept {
+    void recorder_run(FixedBandChannelState& channel) noexcept {
         try {
             while (true) {
                 sdr_core::IqBlock block;
-                if (recorder_queue_->pop(block) == sdr_core::PopResult::Stopped) {
+                if (channel.recorder_queue_->pop(block) == sdr_core::PopResult::Stopped) {
                     return;
                 }
-                recording_writer_->write_block(block);
-                recorder_writer_blocks_written_.fetch_add(
+                channel.recording_writer_->write_block(block);
+                channel.recorder_writer_blocks_written_.fetch_add(
                     1U,
                     std::memory_order_relaxed
                 );
-                recorder_writer_samples_written_.fetch_add(
+                channel.recorder_writer_samples_written_.fetch_add(
                     block.sample_count,
                     std::memory_order_relaxed
                 );
-                recorder_writer_bytes_written_.fetch_add(
+                channel.recorder_writer_bytes_written_.fetch_add(
                     block.samples->size(),
                     std::memory_order_relaxed
                 );
             }
         } catch (const std::exception& error) {
-            recorder_writer_failed_.store(true, std::memory_order_relaxed);
-            if (recording_writer_) {
-                recording_writer_->abort("writer_failure");
+            channel.recorder_writer_failed_.store(true, std::memory_order_relaxed);
+            if (channel.recording_writer_) {
+                channel.recording_writer_->abort("writer_failure");
             }
-            if (recorder_queue_) {
-                recorder_queue_->request_stop();
+            if (channel.recorder_queue_) {
+                channel.recorder_queue_->request_stop();
             }
             emit_event(
                 sdr_core::EventSeverity::Warning,
@@ -1610,12 +2053,12 @@ private:
                 error.what()
             );
         } catch (...) {
-            recorder_writer_failed_.store(true, std::memory_order_relaxed);
-            if (recording_writer_) {
-                recording_writer_->abort("writer_failure");
+            channel.recorder_writer_failed_.store(true, std::memory_order_relaxed);
+            if (channel.recording_writer_) {
+                channel.recording_writer_->abort("writer_failure");
             }
-            if (recorder_queue_) {
-                recorder_queue_->request_stop();
+            if (channel.recorder_queue_) {
+                channel.recorder_queue_->request_stop();
             }
             emit_event(
                 sdr_core::EventSeverity::Warning,
@@ -1625,31 +2068,31 @@ private:
         }
     }
 
-    void spectrum_recorder_run() noexcept {
+    void spectrum_recorder_run(FixedBandChannelState& channel) noexcept {
         try {
             while (true) {
                 sdr_core::SpectrumFrame frame;
-                if (spectrum_recorder_queue_->pop(frame) == sdr_core::PopResult::Stopped) {
+                if (channel.spectrum_recorder_queue_->pop(frame) == sdr_core::PopResult::Stopped) {
                     return;
                 }
-                spectrum_recording_writer_->write_frame(frame);
-                const auto writer_metrics = spectrum_recording_writer_->metrics();
-                spectrum_writer_frames_written_.store(
+                channel.spectrum_recording_writer_->write_frame(frame);
+                const auto writer_metrics = channel.spectrum_recording_writer_->metrics();
+                channel.spectrum_writer_frames_written_.store(
                     writer_metrics.written_frames,
                     std::memory_order_relaxed
                 );
-                spectrum_writer_bytes_written_.store(
+                channel.spectrum_writer_bytes_written_.store(
                     writer_metrics.written_bytes,
                     std::memory_order_relaxed
                 );
             }
         } catch (const std::exception& error) {
-            spectrum_writer_failed_.store(true, std::memory_order_relaxed);
-            if (spectrum_recording_writer_) {
-                spectrum_recording_writer_->abort("writer_failure");
+            channel.spectrum_writer_failed_.store(true, std::memory_order_relaxed);
+            if (channel.spectrum_recording_writer_) {
+                channel.spectrum_recording_writer_->abort("writer_failure");
             }
-            if (spectrum_recorder_queue_) {
-                spectrum_recorder_queue_->request_stop();
+            if (channel.spectrum_recorder_queue_) {
+                channel.spectrum_recorder_queue_->request_stop();
             }
             emit_event(
                 sdr_core::EventSeverity::Warning,
@@ -1657,12 +2100,12 @@ private:
                 error.what()
             );
         } catch (...) {
-            spectrum_writer_failed_.store(true, std::memory_order_relaxed);
-            if (spectrum_recording_writer_) {
-                spectrum_recording_writer_->abort("writer_failure");
+            channel.spectrum_writer_failed_.store(true, std::memory_order_relaxed);
+            if (channel.spectrum_recording_writer_) {
+                channel.spectrum_recording_writer_->abort("writer_failure");
             }
-            if (spectrum_recorder_queue_) {
-                spectrum_recorder_queue_->request_stop();
+            if (channel.spectrum_recorder_queue_) {
+                channel.spectrum_recorder_queue_->request_stop();
             }
             emit_event(
                 sdr_core::EventSeverity::Warning,
@@ -1672,13 +2115,13 @@ private:
         }
     }
 
-    void tee_recorder_block(const sdr_core::IqBlock& block) noexcept {
-        if (!recorder_enabled(config_) || !recorder_queue_) {
+    void tee_recorder_block(FixedBandChannelState& channel, const sdr_core::IqBlock& block) noexcept {
+        if (!recorder_enabled(channel.config_) || !channel.recorder_queue_) {
             return;
         }
         try {
             std::uint64_t discarded_samples = block.sample_count;
-            const auto recorded = recorder_queue_->push_with_eviction(
+            const auto recorded = channel.recorder_queue_->push_with_eviction(
                 block,
                 [&discarded_samples](const sdr_core::IqBlock& evicted) noexcept {
                     discarded_samples = evicted.sample_count;
@@ -1688,21 +2131,21 @@ private:
                 return;
             }
             if (recorded == sdr_core::PushResult::Stopped) {
-                if (recorder_writer_failed_.load(std::memory_order_relaxed)) {
-                    recorder_writer_blocks_unavailable_.fetch_add(
+                if (channel.recorder_writer_failed_.load(std::memory_order_relaxed)) {
+                    channel.recorder_writer_blocks_unavailable_.fetch_add(
                         1U,
                         std::memory_order_relaxed
                     );
-                    recorder_writer_samples_unavailable_.fetch_add(
+                    channel.recorder_writer_samples_unavailable_.fetch_add(
                         block.sample_count,
                         std::memory_order_relaxed
                     );
                 } else {
-                    recorder_shutdown_blocks_discarded_.fetch_add(
+                    channel.recorder_shutdown_blocks_discarded_.fetch_add(
                         1U,
                         std::memory_order_relaxed
                     );
-                    recorder_shutdown_samples_discarded_.fetch_add(
+                    channel.recorder_shutdown_samples_discarded_.fetch_add(
                         block.sample_count,
                         std::memory_order_relaxed
                     );
@@ -1712,12 +2155,12 @@ private:
             // DropNewest rejects the incoming block; DropOldest/LatestWins
             // evict a retained block.  In both cases precisely one recording
             // block is lost and the DSP path still consumes `block` below.
-            recorder_queue_blocks_dropped_.fetch_add(1U, std::memory_order_relaxed);
-            recorder_queue_samples_dropped_.fetch_add(
+            channel.recorder_queue_blocks_dropped_.fetch_add(1U, std::memory_order_relaxed);
+            channel.recorder_queue_samples_dropped_.fetch_add(
                 discarded_samples,
                 std::memory_order_relaxed
             );
-            const auto drops = recorder_queue_overflow_notifications_.fetch_add(
+            const auto drops = channel.recorder_queue_overflow_notifications_.fetch_add(
                 1U,
                 std::memory_order_relaxed
             ) + 1U;
@@ -1732,39 +2175,39 @@ private:
             // A recorder staging failure must not transform into a DSP
             // failure.  The next R08 phase replaces this staging drain with a
             // native binary writer and an explicit writer-failure contract.
-            recorder_queue_blocks_dropped_.fetch_add(1U, std::memory_order_relaxed);
-            recorder_queue_samples_dropped_.fetch_add(
+            channel.recorder_queue_blocks_dropped_.fetch_add(1U, std::memory_order_relaxed);
+            channel.recorder_queue_samples_dropped_.fetch_add(
                 block.sample_count,
                 std::memory_order_relaxed
             );
         }
     }
 
-    void tee_spectrum_frame(const sdr_core::SpectrumFrame& frame) noexcept {
-        if (!spectrum_recording_writer_ || !spectrum_recorder_queue_) {
+    void tee_spectrum_frame(FixedBandChannelState& channel, const sdr_core::SpectrumFrame& frame) noexcept {
+        if (!channel.spectrum_recording_writer_ || !channel.spectrum_recorder_queue_) {
             return;
         }
         try {
-            const auto recorded = spectrum_recorder_queue_->try_push(frame);
+            const auto recorded = channel.spectrum_recorder_queue_->try_push(frame);
             if (recorded == sdr_core::PushResult::Pushed) {
                 return;
             }
             if (recorded == sdr_core::PushResult::Stopped) {
-                if (spectrum_writer_failed_.load(std::memory_order_relaxed)) {
-                    spectrum_recorder_frames_unavailable_.fetch_add(
+                if (channel.spectrum_writer_failed_.load(std::memory_order_relaxed)) {
+                    channel.spectrum_recorder_frames_unavailable_.fetch_add(
                         1U,
                         std::memory_order_relaxed
                     );
                 } else {
-                    spectrum_recorder_shutdown_frames_discarded_.fetch_add(
+                    channel.spectrum_recorder_shutdown_frames_discarded_.fetch_add(
                         1U,
                         std::memory_order_relaxed
                     );
                 }
                 return;
             }
-            spectrum_recorder_frames_dropped_.fetch_add(1U, std::memory_order_relaxed);
-            const auto drops = spectrum_recorder_overflow_notifications_.fetch_add(
+            channel.spectrum_recorder_frames_dropped_.fetch_add(1U, std::memory_order_relaxed);
+            const auto drops = channel.spectrum_recorder_overflow_notifications_.fetch_add(
                 1U,
                 std::memory_order_relaxed
             ) + 1U;
@@ -1776,19 +2219,19 @@ private:
                 );
             }
         } catch (...) {
-            spectrum_recorder_frames_dropped_.fetch_add(1U, std::memory_order_relaxed);
+            channel.spectrum_recorder_frames_dropped_.fetch_add(1U, std::memory_order_relaxed);
         }
     }
 
-    void annotate_frame(
+    void annotate_frame(const FixedBandChannelState& channel,
         sdr_core::SpectrumFrame& frame,
         const sdr_core::DspBackendMetrics& backend_metrics
     ) const noexcept {
         frame.analog_bandwidth_hz = applied_.analog_bandwidth_hz;
         frame.dropped_samples_before =
-            counters_.iq_samples_dropped.load(std::memory_order_relaxed);
+            channel.counters_.iq_samples_dropped.load(std::memory_order_relaxed);
         frame.dropped_iq_blocks_before =
-            counters_.iq_blocks_dropped.load(std::memory_order_relaxed);
+            channel.counters_.iq_blocks_dropped.load(std::memory_order_relaxed);
         frame.dropped_fft_frames_before = backend_metrics.fft_frames_dropped;
         if (backend_metrics.fft_frames_dropped != 0U) {
             frame.quality_flags =
@@ -1800,45 +2243,50 @@ private:
         }
     }
 
-    void update_dsp_metrics(
+    void update_dsp_metrics(FixedBandChannelState& channel,
         const sdr_core::DspBackendMetrics& backend_metrics,
         const std::chrono::steady_clock::time_point started_at,
-        const std::chrono::steady_clock::time_point processing_started
-    ) noexcept {
-        counters_.fft_frames_computed.store(
+        const std::chrono::steady_clock::time_point processing_started,
+        const bool attribute_wall_time = true
+    ) {
+        {
+            std::lock_guard cache_lock(channel.backend_metrics_mutex_);
+            channel.backend_metrics_cache_ = backend_metrics;
+        }
+        channel.counters_.fft_frames_computed.store(
             backend_metrics.fft_frames_computed,
             std::memory_order_relaxed
         );
-        counters_.fft_frames_dropped.store(
+        channel.counters_.fft_frames_dropped.store(
             backend_metrics.fft_frames_dropped,
             std::memory_order_relaxed
         );
-        counters_.stage_timing_mask.fetch_or(
+        channel.counters_.stage_timing_mask.fetch_or(
             backend_metrics.stage_timing_mask,
             std::memory_order_relaxed
         );
-        counters_.input_unpack_ms.store(
+        channel.counters_.input_unpack_ms.store(
             static_cast<double>(backend_metrics.input_unpack_ns) / 1.0e6,
             std::memory_order_relaxed
         );
-        counters_.window_ms.store(
+        channel.counters_.window_ms.store(
             static_cast<double>(backend_metrics.window_ns) / 1.0e6,
             std::memory_order_relaxed
         );
-        counters_.fft_ms.store(
+        channel.counters_.fft_ms.store(
             static_cast<double>(backend_metrics.fft_ns) / 1.0e6,
             std::memory_order_relaxed
         );
-        counters_.detector_ms.store(
+        channel.counters_.detector_ms.store(
             static_cast<double>(backend_metrics.detector_ns) / 1.0e6,
             std::memory_order_relaxed
         );
         const auto now = std::chrono::steady_clock::now();
         const double elapsed_ms =
             std::chrono::duration<double, std::milli>(now - processing_started).count();
-        if (backend_metrics.active_backend == sdr_core::ComputeBackendKind::Cpu) {
-            double current = counters_.cpu_processing_ms.load(std::memory_order_relaxed);
-            while (!counters_.cpu_processing_ms.compare_exchange_weak(
+        if (attribute_wall_time && backend_metrics.active_backend == sdr_core::ComputeBackendKind::Cpu) {
+            double current = channel.counters_.cpu_processing_ms.load(std::memory_order_relaxed);
+            while (!channel.counters_.cpu_processing_ms.compare_exchange_weak(
                 current,
                 current + elapsed_ms,
                 std::memory_order_relaxed
@@ -1847,15 +2295,15 @@ private:
         } else {
             // Backend stage counters are cumulative; expose them without
             // charging CUDA work to the CPU wall-time metric.
-            counters_.gpu_processing_ms.store(
+            channel.counters_.gpu_processing_ms.store(
                 static_cast<double>(backend_metrics.gpu_processing_ns) / 1.0e6,
                 std::memory_order_relaxed
             );
-            counters_.h2d_ms.store(
+            channel.counters_.h2d_ms.store(
                 static_cast<double>(backend_metrics.h2d_ns) / 1.0e6,
                 std::memory_order_relaxed
             );
-            counters_.d2h_ms.store(
+            channel.counters_.d2h_ms.store(
                 static_cast<double>(backend_metrics.d2h_ns) / 1.0e6,
                 std::memory_order_relaxed
             );
@@ -1863,7 +2311,7 @@ private:
         const double run_seconds =
             std::chrono::duration<double>(now - started_at).count();
         if (run_seconds > 0.0) {
-            counters_.analytical_fft_rate.store(
+            channel.counters_.analytical_fft_rate.store(
                 static_cast<double>(backend_metrics.fft_frames_computed) /
                     run_seconds,
                 std::memory_order_relaxed
@@ -1871,24 +2319,24 @@ private:
         }
     }
 
-    void publish_persistence(const sdr_core::SpectrumFrame& frame) noexcept {
-        if (!persistence_ || !persistence_queue_) {
+    void publish_persistence(FixedBandChannelState& channel, const sdr_core::SpectrumFrame& frame) noexcept {
+        if (!channel.persistence_ || !channel.persistence_queue_) {
             return;
         }
         try {
 #if SDR_CORE_PROFILING_ENABLED
             const auto persistence_started = std::chrono::steady_clock::now();
 #endif
-            auto snapshot = persistence_->update(frame);
-            counters_.persistence_updates.store(
-                persistence_->processed_frames(), std::memory_order_relaxed
+            auto snapshot = channel.persistence_->update(frame);
+            channel.counters_.persistence_updates.store(
+                channel.persistence_->processed_frames(), std::memory_order_relaxed
             );
 #if SDR_CORE_PROFILING_ENABLED
             add_profile_elapsed_ms(
-                counters_.persistence_processing_ms,
+                channel.counters_.persistence_processing_ms,
                 persistence_started
             );
-            counters_.stage_timing_mask.fetch_or(
+            channel.counters_.stage_timing_mask.fetch_or(
                 sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Persistence),
                 std::memory_order_relaxed
             );
@@ -1896,9 +2344,9 @@ private:
             if (!snapshot.has_value()) {
                 return;
             }
-            const auto result = persistence_queue_->try_push(std::move(*snapshot));
+            const auto result = channel.persistence_queue_->try_push(std::move(*snapshot));
             if (result == sdr_core::PushResult::Evicted) {
-                persistence_snapshots_superseded_.fetch_add(
+                channel.persistence_snapshots_superseded_.fetch_add(
                     1U, std::memory_order_relaxed
                 );
             }
@@ -1911,7 +2359,7 @@ private:
         }
     }
 
-    void publish(sdr_core::SpectrumFrame frame) noexcept {
+    void publish(FixedBandChannelState& channel, sdr_core::SpectrumFrame frame) noexcept {
         try {
 #if SDR_CORE_PROFILING_ENABLED
             const auto publication_started = std::chrono::steady_clock::now();
@@ -1920,31 +2368,31 @@ private:
                 0.0,
                 static_cast<double>(system_time_ns() - frame.timestamp_ns) / 1.0e6
             );
-            end_to_end_latency_ms_.store(latency_ms, std::memory_order_relaxed);
+            channel.end_to_end_latency_ms_.store(latency_ms, std::memory_order_relaxed);
             std::optional<sdr_core::SpectrumFrame> spectrum_recording_frame;
-            if (spectrum_recording_writer_ && spectrum_recorder_queue_) {
+            if (channel.spectrum_recording_writer_ && channel.spectrum_recorder_queue_) {
                 spectrum_recording_frame = frame;
             }
-            const auto result = spectrum_queue_->try_push(std::move(frame));
+            const auto result = channel.spectrum_queue_->try_push(std::move(frame));
             if (result == sdr_core::PushResult::Pushed ||
                 result == sdr_core::PushResult::Evicted) {
-                counters_.spectrum_snapshots_emitted.fetch_add(
+                channel.counters_.spectrum_snapshots_emitted.fetch_add(
                     1U,
                     std::memory_order_relaxed
                 );
                 if (result == sdr_core::PushResult::Evicted) {
-                    snapshots_superseded_.fetch_add(1U, std::memory_order_relaxed);
+                    channel.snapshots_superseded_.fetch_add(1U, std::memory_order_relaxed);
                 }
                 if (spectrum_recording_frame.has_value()) {
-                    tee_spectrum_frame(*spectrum_recording_frame);
+                    tee_spectrum_frame(channel, *spectrum_recording_frame);
                 }
             }
 #if SDR_CORE_PROFILING_ENABLED
             add_profile_elapsed_ms(
-                counters_.publication_processing_ms,
+                channel.counters_.publication_processing_ms,
                 publication_started
             );
-            counters_.stage_timing_mask.fetch_or(
+            channel.counters_.stage_timing_mask.fetch_or(
                 sdr_core::stage_timing_mask(sdr_core::DspStageTimingFlag::Publication),
                 std::memory_order_relaxed
             );
@@ -1958,13 +2406,13 @@ private:
         }
     }
 
-    [[nodiscard]] sdr_core::EngineMetrics assemble_engine_metrics() const {
-        auto result = counters_.snapshot();
+    [[nodiscard]] sdr_core::EngineMetrics assemble_channel_engine_metrics(const FixedBandChannelState& channel) const {
+        auto result = channel.counters_.snapshot();
         if (acquisition_queue_) {
             result.acquisition_queue_depth = acquisition_queue_->depth();
         }
         result.end_to_end_latency_ms =
-            end_to_end_latency_ms_.load(std::memory_order_relaxed);
+            channel.end_to_end_latency_ms_.load(std::memory_order_relaxed);
         return result;
     }
 
@@ -1975,8 +2423,8 @@ private:
             }
             std::uint64_t abandoned_samples = 0U;
             const auto abandoned = acquisition_queue_->abandon_with(
-                [&abandoned_samples](const sdr_core::IqBlock& block) noexcept {
-                    abandoned_samples += block.sample_count;
+                [&abandoned_samples](const FixedBandIqEnvelope& block) noexcept {
+                    abandoned_samples += block.primary.sample_count;
                 }
             );
             if (abandoned == 0U) {
@@ -1997,12 +2445,12 @@ private:
         }
     }
 
-    void publish_sweep_line(const sdr_core::SpectrumFrame& frame) noexcept {
-        if (!sweep_line_assembler_ || !sweep_line_queue_) {
+    void publish_sweep_line(FixedBandChannelState& channel, const sdr_core::SpectrumFrame& frame) noexcept {
+        if (!channel.sweep_line_assembler_ || !channel.sweep_line_queue_) {
             return;
         }
         try {
-            auto lines = sweep_line_assembler_->admit(
+            auto lines = channel.sweep_line_assembler_->admit(
                 frame.frame_sequence,
                 frame.timestamp_ns,
                 sdr_core::SweepLineSegmentFrame{
@@ -2010,25 +2458,25 @@ private:
                     .spectrum = frame,
                 }
             );
-            const auto assembly_metrics = sweep_line_assembler_->metrics();
-            completed_sweep_lines_.store(
+            const auto assembly_metrics = channel.sweep_line_assembler_->metrics();
+            channel.completed_sweep_lines_.store(
                 assembly_metrics.completed_lines, std::memory_order_relaxed
             );
-            gapped_sweep_lines_.store(
+            channel.gapped_sweep_lines_.store(
                 assembly_metrics.gapped_lines, std::memory_order_relaxed
             );
-            sweep_line_capacity_evicted_.store(
+            channel.sweep_line_capacity_evicted_.store(
                 assembly_metrics.capacity_evicted_lines, std::memory_order_relaxed
             );
             for (auto& line : lines) {
-                if (config_.sweep_statistics_sink) {
+                if (channel.config_.sweep_statistics_sink) {
                     const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now().time_since_epoch()).count();
-                    config_.sweep_statistics_sink->consume(line, now);
+                    channel.config_.sweep_statistics_sink->consume(line, now);
                 }
-                const auto pushed = sweep_line_queue_->try_push(std::move(line));
+                const auto pushed = channel.sweep_line_queue_->try_push(std::move(line));
                 if (pushed == sdr_core::PushResult::Evicted) {
-                    sweep_line_snapshots_superseded_.fetch_add(
+                    channel.sweep_line_snapshots_superseded_.fetch_add(
                         1U, std::memory_order_relaxed
                     );
                 }
@@ -2052,13 +2500,13 @@ private:
         }
     }
 
-    void account_recorder_abandoned() noexcept {
+    void account_recorder_abandoned(FixedBandChannelState& channel) noexcept {
         try {
-            if (!recorder_queue_) {
+            if (!channel.recorder_queue_) {
                 return;
             }
             std::uint64_t abandoned_samples = 0U;
-            const auto abandoned = recorder_queue_->abandon_with(
+            const auto abandoned = channel.recorder_queue_->abandon_with(
                 [&abandoned_samples](const sdr_core::IqBlock& block) noexcept {
                     abandoned_samples += block.sample_count;
                 }
@@ -2067,22 +2515,22 @@ private:
                 return;
             }
             const bool writer_failed =
-                recorder_writer_failed_.load(std::memory_order_relaxed);
+                channel.recorder_writer_failed_.load(std::memory_order_relaxed);
             if (writer_failed) {
-                recorder_writer_blocks_unavailable_.fetch_add(
+                channel.recorder_writer_blocks_unavailable_.fetch_add(
                     abandoned,
                     std::memory_order_relaxed
                 );
-                recorder_writer_samples_unavailable_.fetch_add(
+                channel.recorder_writer_samples_unavailable_.fetch_add(
                     abandoned_samples,
                     std::memory_order_relaxed
                 );
             } else {
-                recorder_shutdown_blocks_discarded_.fetch_add(
+                channel.recorder_shutdown_blocks_discarded_.fetch_add(
                     abandoned,
                     std::memory_order_relaxed
                 );
-                recorder_shutdown_samples_discarded_.fetch_add(
+                channel.recorder_shutdown_samples_discarded_.fetch_add(
                     abandoned_samples,
                     std::memory_order_relaxed
                 );
@@ -2099,22 +2547,22 @@ private:
         }
     }
 
-    void account_spectrum_recorder_abandoned() noexcept {
+    void account_spectrum_recorder_abandoned(FixedBandChannelState& channel) noexcept {
         try {
-            if (!spectrum_recorder_queue_) {
+            if (!channel.spectrum_recorder_queue_) {
                 return;
             }
-            const auto abandoned = spectrum_recorder_queue_->abandon();
+            const auto abandoned = channel.spectrum_recorder_queue_->abandon();
             if (abandoned == 0U) {
                 return;
             }
-            if (spectrum_writer_failed_.load(std::memory_order_relaxed)) {
-                spectrum_recorder_frames_unavailable_.fetch_add(
+            if (channel.spectrum_writer_failed_.load(std::memory_order_relaxed)) {
+                channel.spectrum_recorder_frames_unavailable_.fetch_add(
                     abandoned,
                     std::memory_order_relaxed
                 );
             } else {
-                spectrum_recorder_shutdown_frames_discarded_.fetch_add(
+                channel.spectrum_recorder_shutdown_frames_discarded_.fetch_add(
                     abandoned,
                     std::memory_order_relaxed
                 );
@@ -2134,57 +2582,29 @@ private:
     std::atomic<sdr_core::EngineState> state_{sdr_core::EngineState::Created};
     std::atomic<bool> disconnect_requested_{false};
     std::atomic<bool> has_error_{false};
-    FixedBandConfig config_{};
     AppliedConfig applied_{};
     std::uint64_t config_generation_{};
     bool configured_{};
     sdr_core::StopToken stop_{sdr_core::make_stop_token()};
-    std::unique_ptr<sdr_core::DspBackend> backend_;
-    std::unique_ptr<sdr_core::SegmentedIqRecordingWriter> recording_writer_;
-    std::unique_ptr<sdr_core::SpectrumFrameRecordingWriter> spectrum_recording_writer_;
-    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::IqBlock>> acquisition_queue_;
-    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::IqBlock>> recorder_queue_;
-    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>> spectrum_queue_;
-    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>> sweep_line_queue_;
-    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>> spectrum_recorder_queue_;
+    std::unique_ptr<sdr_core::BoundedQueue<FixedBandIqEnvelope>> acquisition_queue_;
+    std::unique_ptr<FixedBandChannelState> secondary_;
+    std::unique_ptr<sdr_core::DualRxDspPublisher> paired_dsp_;
+    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::DualRxSpectrumFrame>> paired_spectrum_queue_;
+    mutable std::mutex paired_metrics_mutex_;
+    sdr_core::DualRxDspMetrics paired_dsp_metrics_cache_;
+    std::atomic<std::uint64_t> paired_snapshots_emitted_{}, paired_snapshots_superseded_{};
+    std::atomic<double> paired_processing_ms_{};
+    std::atomic<std::uint64_t> paired_snapshots_abandoned_{}, history_queue_snapshots_abandoned_{};
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::DiagnosticEvent>> event_queue_;
-    std::unique_ptr<sdr_core::PersistenceAccumulator> persistence_;
-    std::unique_ptr<sdr_core::ContinuousSweepLineAssembler> sweep_line_assembler_;
-    std::unique_ptr<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>> persistence_queue_;
-    sdr_core::EngineMetricsCounters counters_{};
     std::atomic<std::uint32_t> transient_remaining_{};
     std::atomic<std::uint64_t> transient_blocks_discarded_{};
     std::atomic<std::uint64_t> transient_samples_discarded_{};
-    std::atomic<std::uint64_t> snapshots_superseded_{};
-    std::atomic<std::uint64_t> sweep_line_snapshots_superseded_{};
-    std::atomic<std::uint64_t> completed_sweep_lines_{};
-    std::atomic<std::uint64_t> gapped_sweep_lines_{};
-    std::atomic<std::uint64_t> sweep_line_capacity_evicted_{};
-    std::atomic<std::uint64_t> persistence_snapshots_superseded_{};
     std::atomic<std::uint64_t> acquisition_queue_blocks_dropped_{};
     std::atomic<std::uint64_t> acquisition_queue_samples_dropped_{};
     std::atomic<std::uint64_t> source_sequence_discontinuities_{};
     std::atomic<std::uint64_t> source_sample_index_discontinuities_{};
     std::atomic<std::uint64_t> source_timestamp_regressions_{};
     std::atomic<std::uint64_t> source_estimated_timestamp_blocks_{};
-    std::atomic<std::uint64_t> recorder_queue_blocks_dropped_{};
-    std::atomic<std::uint64_t> recorder_queue_samples_dropped_{};
-    std::atomic<std::uint64_t> recorder_shutdown_blocks_discarded_{};
-    std::atomic<std::uint64_t> recorder_shutdown_samples_discarded_{};
-    std::atomic<std::uint64_t> recorder_queue_overflow_notifications_{};
-    std::atomic<std::uint64_t> recorder_writer_blocks_written_{};
-    std::atomic<std::uint64_t> recorder_writer_samples_written_{};
-    std::atomic<std::uint64_t> recorder_writer_bytes_written_{};
-    std::atomic<std::uint64_t> recorder_writer_blocks_unavailable_{};
-    std::atomic<std::uint64_t> recorder_writer_samples_unavailable_{};
-    std::atomic<bool> recorder_writer_failed_{false};
-    std::atomic<std::uint64_t> spectrum_recorder_frames_dropped_{};
-    std::atomic<std::uint64_t> spectrum_recorder_frames_unavailable_{};
-    std::atomic<std::uint64_t> spectrum_recorder_shutdown_frames_discarded_{};
-    std::atomic<std::uint64_t> spectrum_recorder_overflow_notifications_{};
-    std::atomic<std::uint64_t> spectrum_writer_frames_written_{};
-    std::atomic<std::uint64_t> spectrum_writer_bytes_written_{};
-    std::atomic<bool> spectrum_writer_failed_{false};
     std::atomic<std::uint64_t> shutdown_blocks_discarded_{};
     std::atomic<std::uint64_t> shutdown_samples_discarded_{};
     std::atomic<std::uint64_t> expected_cancellations_{};
@@ -2195,12 +2615,9 @@ private:
 #endif
     mutable std::mutex priority_event_mutex_;
     std::optional<sdr_core::DiagnosticEvent> pending_error_event_;
-    std::atomic<double> end_to_end_latency_ms_{};
     std::uint64_t events_lost_reported_{};
     std::thread acquisition_thread_;
     std::thread dsp_thread_;
-    std::thread recorder_thread_;
-    std::thread spectrum_recorder_thread_;
 };
 
 FixedBandEngine::FixedBandEngine(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
@@ -2209,6 +2626,32 @@ FixedBandEngine::~FixedBandEngine() noexcept = default;
 AppliedConfig FixedBandEngine::configure(const FixedBandConfig& config) {
     return impl_->configure(config);
 }
+
+AppliedConfig FixedBandEngine::configure_paired(const PairedFixedBandConfig& config) {
+    return impl_->configure_paired(config);
+}
+PairedFixedBandMetrics FixedBandEngine::paired_metrics() const {
+    return impl_->paired_metrics();
+}
+std::vector<sdr_core::DualRxSpectrumFrame> FixedBandEngine::poll_paired_spectrum_frames(std::size_t max_items) {
+    return impl_->poll_paired_spectrum_frames(max_items);
+}
+sdr_core::LatestDualRxSpectrumFrameDrain FixedBandEngine::drain_latest_paired_spectrum_frame() {
+    return impl_->drain_latest_paired_spectrum_frame();
+}
+std::vector<sdr_core::PersistenceSnapshot> FixedBandEngine::poll_receiver_persistence_snapshots(
+    ReceiverSelection receiver, std::size_t max_items) {
+    return impl_->poll_receiver_persistence_snapshots(receiver, max_items);
+}
+std::vector<sdr_core::SweepLineFrame> FixedBandEngine::poll_receiver_sweep_line_frames(
+    ReceiverSelection receiver, std::size_t max_items) {
+    return impl_->poll_receiver_sweep_line_frames(receiver, max_items);
+}
+std::vector<sdr_core::IqBlock> FixedBandEngine::poll_receiver_recorded_iq_blocks(
+    ReceiverSelection receiver, std::size_t max_items) {
+    return impl_->poll_receiver_recorded_iq_blocks(receiver, max_items);
+}
+
 AppliedConfig FixedBandEngine::reconfigure(const FixedBandConfig& config) {
     return impl_->reconfigure(config);
 }
