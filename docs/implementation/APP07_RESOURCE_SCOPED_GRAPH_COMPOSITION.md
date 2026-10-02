@@ -2866,4 +2866,3 @@ whole-backend independent approval. Paired Sweep/group recording and physical
 four-source Pluto1/HackRF2/tinySA3/RTL4 lower-right acceptance remain OPEN.
 APP07 PARTIAL/APP06E planned/full APP00–14 goal ACTIVE/APP05 timer not restarted.
 Main user changes and old UI are preserved; only this public contract mirrored.
-
