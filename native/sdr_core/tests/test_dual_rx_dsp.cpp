@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -85,6 +86,251 @@ sdr_core::IqBlock block(
         .samples = std::move(bytes),
         .config_generation = generation,
     };
+}
+
+sdr_core::IqBlock burst_block(
+    const std::uint64_t sequence, const std::uint64_t first_index, const double bin
+) {
+    constexpr std::uint32_t count = 262'144U;
+    auto result = block(sequence, first_index, 1'000'000U + sequence * 4'266'667U, bin);
+    auto bytes = std::make_shared<std::vector<std::uint8_t>>(count * 8U);
+    for (std::uint32_t index = 0U; index < count; ++index) {
+        const auto phase = two_pi * bin * static_cast<double>(first_index + index) / 1024.0;
+        const float real = static_cast<float>(std::cos(phase));
+        const float imag = static_cast<float>(std::sin(phase));
+        std::memcpy(bytes->data() + index * 8U, &real, sizeof(real));
+        std::memcpy(bytes->data() + index * 8U + 4U, &imag, sizeof(imag));
+    }
+    result.sample_count = count;
+    result.sample_rate_hz = 61'440'000.0;
+    result.samples = std::move(bytes);
+    return result;
+}
+
+void test_large_burst_retains_analytical_fft_before_pair_coalescing() {
+    auto value = config(4U);
+    value.primary.dsp.fft_size = value.secondary.dsp.fft_size = 1024U;
+    value.primary.dsp.hop_size = value.secondary.dsp.hop_size = 512U;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    const auto primary = burst_block(0U, 0U, 13.0);
+    const auto secondary = burst_block(0U, 0U, 31.0);
+
+    // Reproduce the old coupling without modifying the baseline implementation:
+    // four analytical slots for a 511-frame input discard 507 FFT outputs.
+    auto coupled = sdr_core::make_cpu_dsp_backend({
+        .source = value.primary.source, .output_capacity = value.output_queue_capacity});
+    coupled->configure(value.primary.dsp);
+    coupled->push_iq(primary);
+    expect(coupled->metrics().fft_frames_computed == 511U &&
+               coupled->metrics().fft_frames_dropped == 507U,
+           "small analytical capacity must reproduce the former burst-loss defect");
+
+    publisher.push(primary, secondary);
+    auto metrics = publisher.metrics();
+    expect(metrics.resource_budget.analytical_output_capacity == 515U &&
+               metrics.primary.fft_frames_computed == 511U &&
+               metrics.secondary.fft_frames_computed == 511U &&
+               metrics.primary.fft_frames_dropped == 0U &&
+               metrics.secondary.fft_frames_dropped == 0U &&
+               metrics.paired_frames_published == 511U &&
+               metrics.paired_frames_superseded == 507U,
+           "render cap4 may supersede pairs only after all 511 channel FFTs are paired");
+    const auto drained = publisher.drain_latest_spectrum_frame();
+    expect(drained.frame && drained.coalesced_frames == 3U &&
+               drained.frame->first_sample_index == 510U * 512U &&
+               drained.frame->primary.dropped_fft_frames_before == 0U &&
+               drained.frame->secondary.dropped_fft_frames_before == 0U &&
+               (*drained.frame->primary.values)[512U + 13U] > -0.001F &&
+               (*drained.frame->secondary.values)[512U + 31U] > -0.001F,
+           "latest pair must retain both numerics and honest analytical-loss provenance");
+    publisher.push(burst_block(1U, 262'144U, 13.0), burst_block(1U, 262'144U, 31.0));
+    metrics = publisher.metrics();
+    expect(metrics.primary.fft_frames_computed == 1023U &&
+               metrics.secondary.fft_frames_computed == 1023U &&
+               metrics.paired_frames_published == 1023U &&
+               metrics.primary.fft_frames_dropped == 0U &&
+               metrics.secondary.fft_frames_dropped == 0U && metrics.shared_input_gaps == 0U,
+           "steady input must retain all additional 512 FFTs without an invented transport gap");
+}
+
+void test_batched_burst_keeps_partial_batch_without_internal_loss() {
+    auto value = config(1U);
+    value.primary.dsp.fft_size = value.secondary.dsp.fft_size = 1024U;
+    value.primary.dsp.hop_size = value.secondary.dsp.hop_size = 512U;
+    value.primary.dsp.batch_size = value.secondary.dsp.batch_size = 4U;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    publisher.push(burst_block(0U, 0U, 13.0), burst_block(0U, 0U, 31.0));
+    expect(publisher.metrics().paired_frames_published == 508U,
+           "paired polling must not flush a partial analytical batch for render cadence");
+    publisher.push(burst_block(1U, 262'144U, 13.0), burst_block(1U, 262'144U, 31.0));
+    const auto metrics = publisher.metrics();
+    expect(metrics.paired_frames_published == 1020U &&
+               metrics.primary.fft_frames_dropped == 0U &&
+               metrics.secondary.fft_frames_dropped == 0U &&
+               metrics.resource_budget.analytical_output_capacity == 518U,
+           "both channels must retain identical partial batches across contiguous inputs");
+}
+
+void test_combined_budget_and_failed_reconfigure_preserve_previous_result() {
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(config());
+    publisher.push(block(0U, 0U, 1'000U, 3.0), block(0U, 0U, 1'000U, 7.0));
+    std::vector<sdr_core::DualRxDspConfig> invalid;
+    auto bad = config();
+    bad.max_input_samples_per_push = 0U;
+    invalid.push_back(bad);
+    bad = config();
+    bad.max_input_samples_per_push = 8'388'609U; // two CF32 payloads > 128 MiB
+    invalid.push_back(bad);
+    bad = config();
+    bad.primary.dsp.fft_size = bad.secondary.dsp.fft_size = 8192U;
+    bad.primary.dsp.hop_size = bad.secondary.dsp.hop_size = 1U;
+    bad.max_input_samples_per_push = 512U; // combined spectra >128 MiB, each <128
+    invalid.push_back(bad);
+    bad = config();
+    bad.primary.dsp.fft_size = bad.secondary.dsp.fft_size = 262'144U;
+    bad.primary.dsp.hop_size = bad.secondary.dsp.hop_size = 131'072U;
+    bad.primary.dsp.batch_size = bad.secondary.dsp.batch_size = 4U;
+    invalid.push_back(bad); // combined DSP >128 MiB, each <128
+    bad = config();
+    bad.max_input_samples_per_push = std::numeric_limits<std::uint32_t>::max();
+    bad.primary.dsp.hop_size = bad.secondary.dsp.hop_size = 1U;
+    invalid.push_back(bad);
+    for (const auto& candidate : invalid) {
+        bool refused = false;
+        try { publisher.configure(candidate); }
+        catch (const sdr_core::ConfigurationError&) { refused = true; }
+        expect(refused && publisher.metrics().input_epochs_received == 1U &&
+                   publisher.metrics().output_queue.depth == 1U,
+               "budget refusal must precede allocation/commit and preserve existing paired result");
+    }
+    expect(publisher.poll_spectrum_frames(0U).size() == 1U,
+           "failed reconfigure must not discard accepted output");
+}
+
+void test_input_preflight_is_pair_atomic_and_refuses_oversized_blocks() {
+    auto value = config();
+    value.max_input_samples_per_push = 256U;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    auto left = block(0U, 0U, 1'000U, 3.0);
+    auto right = block(0U, 0U, 1'000U, 7.0);
+    right.samples = std::make_shared<std::vector<std::uint8_t>>(1U);
+    bool refused = false;
+    try { publisher.push(left, right); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused && publisher.metrics().primary.samples_processed == 0U &&
+               publisher.metrics().secondary.samples_processed == 0U &&
+               publisher.metrics().input_epochs_received == 0U,
+           "invalid secondary payload must be refused before primary DSP changes");
+    refused = false;
+    try { publisher.push(burst_block(0U, 0U, 3.0), burst_block(0U, 0U, 7.0)); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused && publisher.metrics().input_epochs_received == 0U,
+           "actual input cannot expand the declared burst reservation");
+    left.first_sample_index = right.first_sample_index =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    right.samples = block(0U, 0U, 1'000U, 7.0).samples;
+    refused = false;
+    try { publisher.push(left, right); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused && publisher.metrics().input_epochs_received == 0U,
+           "sample index must not wrap the signed CPU stream range");
+    publisher.push(block(0U, 0U, 1'000U, 3.0), block(0U, 0U, 1'000U, 7.0));
+    expect(publisher.metrics().paired_frames_published == 1U,
+           "refused inputs must leave the previous configuration usable");
+}
+
+void test_gap_discards_stale_pairs_with_exact_abandon_accounting() {
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(config());
+    publisher.push(block(0U, 0U, 1'000U, 3.0), block(0U, 0U, 1'000U, 7.0));
+    publisher.mark_shared_gap();
+    expect(publisher.poll_spectrum_frames(0U).empty() &&
+               publisher.metrics().paired_frames_abandoned == 1U &&
+               publisher.metrics().output_queue.abandoned == 1U &&
+               publisher.metrics().primary.fft_frames_dropped == 0U,
+           "explicit gap must not leak pre-gap pending snapshots or count them as DSP loss");
+    publisher.push(block(1U, 256U, 2'000U, 3.0), block(1U, 256U, 2'000U, 7.0));
+    publisher.reset();
+    expect(publisher.metrics().paired_frames_abandoned == 2U &&
+               publisher.metrics().shared_input_gaps == 1U &&
+               publisher.poll_spectrum_frames(0U).empty(),
+           "explicit reset abandons pending pairs without inventing a second transport gap");
+}
+
+void test_nonfinite_peer_is_refused_before_partial_batch_history() {
+    auto value = config();
+    value.primary.dsp.batch_size = value.secondary.dsp.batch_size = 4U;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    auto bad = block(0U, 0U, 1'000U, 7.0);
+    auto bytes = std::make_shared<std::vector<std::uint8_t>>(*bad.samples);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    std::memcpy(bytes->data(), &nan, sizeof(nan));
+    bad.samples = std::move(bytes);
+    bool refused = false;
+    try { publisher.push(block(0U, 0U, 1'000U, 3.0), bad); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused && publisher.metrics().primary.samples_processed == 0U &&
+               publisher.metrics().secondary.samples_processed == 0U &&
+               publisher.metrics().paired_frames_published == 0U &&
+               publisher.metrics().input_epochs_received == 0U,
+           "a non-finite peer must not silently strand an unpaired primary partial batch");
+}
+
+void test_common_rf_geometry_change_creates_shared_epoch_and_clears_pending_pairs() {
+    for (const bool change_rate : {false, true}) {
+        sdr_core::DualRxDspPublisher publisher;
+        publisher.configure(config());
+        publisher.push(block(0U, 0U, 1'000U, 3.0), block(0U, 0U, 1'000U, 7.0));
+        auto left = block(1U, 256U, 2'000U, 3.0);
+        auto right = block(1U, 256U, 2'000U, 7.0);
+        if (change_rate) {
+            left.sample_rate_hz = right.sample_rate_hz = 512'000.0;
+        } else {
+            left.center_frequency_hz = right.center_frequency_hz = 434'920'000.0;
+        }
+        publisher.push(left, right);
+        const auto frames = publisher.poll_spectrum_frames(0U);
+        expect(frames.size() == 1U && frames.front().synchronization_epoch == 2U &&
+                   frames.front().shared_input_gaps_before == 1U &&
+                   frames.front().first_sample_index == 256U &&
+                   publisher.metrics().paired_frames_abandoned == 1U,
+               "common rate/center changes cannot leak old snapshots under an unchanged pair epoch");
+    }
+}
+
+void test_factory_policy_is_honest_and_forced_unavailable_does_not_fallback() {
+    auto value = config();
+    value.backend.preference = sdr_core::ComputeBackendKind::Auto;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    auto metrics = publisher.metrics();
+    expect(metrics.primary.requested_preference == sdr_core::ComputeBackendKind::Auto &&
+               metrics.secondary.requested_preference == sdr_core::ComputeBackendKind::Auto &&
+               metrics.primary.active_backend == sdr_core::ComputeBackendKind::Cpu &&
+               metrics.secondary.active_backend == sdr_core::ComputeBackendKind::Cpu &&
+               metrics.primary.backend_fallback_count == 0U,
+           "safe AUTO CPU policy must retain requested AUTO, not claim CUDA or runtime fallback");
+    publisher.push(block(0U, 0U, 1'000U, 3.0), block(0U, 0U, 1'000U, 7.0));
+    value.backend.preference = sdr_core::ComputeBackendKind::Hip;
+    bool refused = false;
+    try { publisher.configure(value); }
+    catch (const sdr_core::BackendUnavailableError&) { refused = true; }
+    expect(refused && publisher.metrics().output_queue.depth == 1U &&
+               publisher.metrics().primary.requested_preference == sdr_core::ComputeBackendKind::Auto,
+           "forced unavailable factory choice must refuse without silent CPU replacement");
+    if (!sdr_core::backend_availability(sdr_core::ComputeBackendKind::Cuda).compiled) {
+        value.backend.preference = sdr_core::ComputeBackendKind::Cuda;
+        refused = false;
+        try { publisher.configure(value); }
+        catch (const sdr_core::BackendUnavailableError&) { refused = true; }
+        expect(refused && publisher.metrics().output_queue.depth == 1U,
+               "CPU build must refuse forced CUDA, not publish a CPU pair labelled CUDA");
+    }
 }
 
 void test_paired_cpu_spectra_keep_channel_identity() {
@@ -166,8 +412,10 @@ void test_latest_wins_is_pair_atomic() {
                drained.frame->secondary.source.source_id == "receiver-rx2",
            "latest-wins must supersede a whole pair, never one receiver frame");
     const auto metrics = publisher.metrics();
-    expect(metrics.paired_frames_superseded == 1U && metrics.output_queue.dropped == 1U,
-           "pair-level publication supersession must be exact and visible");
+    expect(metrics.paired_frames_published == 3U && metrics.paired_frames_superseded == 2U &&
+               metrics.output_queue.dropped == 2U && metrics.primary.fft_frames_dropped == 0U &&
+               metrics.secondary.fft_frames_dropped == 0U,
+           "all three analytical pairs must precede two exact publication supersessions");
 }
 
 void test_invalid_channel_dsp_is_rejected_before_processing() {
@@ -215,6 +463,14 @@ int main() {
         test_latest_wins_is_pair_atomic();
         test_invalid_channel_dsp_is_rejected_before_processing();
         test_shared_plan_preserves_single_cpu_numerics();
+        test_large_burst_retains_analytical_fft_before_pair_coalescing();
+        test_batched_burst_keeps_partial_batch_without_internal_loss();
+        test_combined_budget_and_failed_reconfigure_preserve_previous_result();
+        test_input_preflight_is_pair_atomic_and_refuses_oversized_blocks();
+        test_gap_discards_stale_pairs_with_exact_abandon_accounting();
+        test_nonfinite_peer_is_refused_before_partial_batch_history();
+        test_common_rf_geometry_change_creates_shared_epoch_and_clears_pending_pairs();
+        test_factory_policy_is_honest_and_forced_unavailable_does_not_fallback();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

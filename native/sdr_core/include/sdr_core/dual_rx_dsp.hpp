@@ -27,9 +27,27 @@ struct DualRxDspConfig {
     DualRxChannelDspConfig secondary;
     bool dc_removal_block_mean{};
     std::uint32_t output_queue_capacity{4U};
+    // Admission bound for ONE push, not a render-queue size. Internal DSP
+    // capacity is derived from this bound and the common hop/batch geometry.
+    std::uint32_t max_input_samples_per_push{262'144U};
+    DspBackendSelectionOptions backend{.preference = ComputeBackendKind::Cpu};
 };
 
 void validate(const DualRxDspConfig& value);
+
+// Conservative combined host payload reservation for this synchronous bridge
+// only. An acquisition owner must additionally account for its pools, tees,
+// recordings and persistence under the SAME aggregate limits. This is not
+// an RSS measurement or a bound on vendor GPU/FFT-plan workspace.
+struct DualRxDspResourceBudget {
+    std::uint32_t analytical_output_capacity{};
+    std::uint64_t input_payload_bytes{};
+    std::uint64_t dsp_working_bytes{};
+    std::uint64_t spectrum_backlog_bytes{};
+    std::uint64_t total_bytes{};
+};
+
+[[nodiscard]] DualRxDspResourceBudget dual_rx_dsp_resource_budget(const DualRxDspConfig& value);
 
 // One immutable reduced result for a single common acquisition epoch.  Raw
 // I/Q is intentionally absent.  The constituent SpectrumFrames preserve
@@ -51,6 +69,8 @@ struct DualRxDspMetrics {
     std::uint64_t pairing_mismatches{};
     std::uint64_t paired_frames_published{};
     std::uint64_t paired_frames_superseded{};
+    std::uint64_t paired_frames_abandoned{};
+    DualRxDspResourceBudget resource_budget;
     QueueStats output_queue;
     DspBackendMetrics primary;
     DspBackendMetrics secondary;
@@ -100,9 +120,13 @@ private:
     std::uint64_t input_epochs_received_{};
     std::uint64_t paired_frames_published_{};
     std::uint64_t paired_frames_superseded_{};
+    std::uint64_t paired_frames_abandoned_{};
     std::uint64_t last_source_sequence_{};
     std::uint64_t last_sample_end_{};
     std::uint64_t last_config_generation_{};
+    double last_sample_rate_hz_{};
+    double last_center_frequency_hz_{};
+    SampleFormat last_sample_format_{SampleFormat::ComplexInt16Le};
     bool input_epoch_valid_{};
     std::unique_ptr<DspBackend> primary_backend_;
     std::unique_ptr<DspBackend> secondary_backend_;

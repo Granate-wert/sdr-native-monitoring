@@ -2,6 +2,11 @@
 
 #include "sdr_core/errors.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <string>
 #include <utility>
 
 namespace sdr_core {
@@ -48,6 +53,54 @@ void require_configured(const bool configured) {
     }
 }
 
+[[nodiscard]] std::uint64_t checked_multiply(
+    const std::uint64_t left, const std::uint64_t right
+) {
+    if (left != 0U && right > std::numeric_limits<std::uint64_t>::max() / left) {
+        throw ConfigurationError("dual-RX DSP resource accounting overflow");
+    }
+    return left * right;
+}
+
+[[nodiscard]] std::uint64_t checked_add(
+    const std::uint64_t left, const std::uint64_t right
+) {
+    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+        throw ConfigurationError("dual-RX DSP resource accounting overflow");
+    }
+    return left + right;
+}
+
+void validate_input(const IqBlock& block, const std::uint32_t maximum) {
+    if (block.sample_count == 0U || block.sample_count > maximum || !block.samples) {
+        throw ConfigurationError("dual-RX input exceeds admitted sample bound or has no payload");
+    }
+    std::uint64_t width = 0U;
+    switch (block.sample_format) {
+    case SampleFormat::ComplexInt8Interleaved: width = 2U; break;
+    case SampleFormat::ComplexInt12InInt16Le:
+    case SampleFormat::ComplexInt16Le: width = 4U; break;
+    case SampleFormat::ComplexFloat32Le: width = 8U; break;
+    default: throw ConfigurationError("dual-RX input sample format is invalid");
+    }
+    if (block.samples->size() != checked_multiply(block.sample_count, width) ||
+        !std::isfinite(block.sample_rate_hz) || block.sample_rate_hz <= 0.0 ||
+        !std::isfinite(block.center_frequency_hz) || block.center_frequency_hz <= 0.0 ||
+        block.first_sample_index > static_cast<std::uint64_t>(
+            std::numeric_limits<std::int64_t>::max()) - block.sample_count) {
+        throw ConfigurationError("dual-RX input payload, RF geometry or sample-index range is invalid");
+    }
+    if (block.sample_format == SampleFormat::ComplexFloat32Le) {
+        for (std::size_t offset = 0U; offset < block.samples->size(); offset += sizeof(float)) {
+            float sample = 0.0F;
+            std::memcpy(&sample, block.samples->data() + offset, sizeof(sample));
+            if (!std::isfinite(sample)) {
+                throw ConfigurationError("dual-RX input contains a non-finite sample");
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void validate(const DualRxDspConfig& value) {
@@ -55,6 +108,7 @@ void validate(const DualRxDspConfig& value) {
     validate(value.secondary.source);
     validate(value.primary.dsp);
     validate(value.secondary.dsp);
+    validate(value.backend);
     if (value.primary.source.source_id == value.secondary.source.source_id) {
         throw ConfigurationError("dual-RX DSP channels require distinct source identifiers");
     }
@@ -66,6 +120,46 @@ void validate(const DualRxDspConfig& value) {
     if (value.output_queue_capacity == 0U || value.output_queue_capacity > 64U) {
         throw ConfigurationError("dual-RX DSP output queue capacity must be in [1, 64]");
     }
+    static_cast<void>(dual_rx_dsp_resource_budget(value));
+}
+
+DualRxDspResourceBudget dual_rx_dsp_resource_budget(const DualRxDspConfig& value) {
+    if (value.max_input_samples_per_push == 0U || value.primary.dsp.hop_size == 0U) {
+        throw ConfigurationError("dual-RX DSP input bound and hop must be positive");
+    }
+    const auto capacity = checked_add(
+        value.max_input_samples_per_push / value.primary.dsp.hop_size,
+        static_cast<std::uint64_t>(value.primary.dsp.batch_size) + 2U
+    );
+    if (capacity > std::numeric_limits<std::uint32_t>::max()) {
+        throw ConfigurationError("dual-RX analytical output capacity exceeds accounting range");
+    }
+    DualRxDspResourceBudget result;
+    result.analytical_output_capacity = static_cast<std::uint32_t>(capacity);
+    // Reserve both payloads at the widest supported CF32 representation.
+    result.input_payload_bytes = checked_multiply(value.max_input_samples_per_push, 16U);
+    result.dsp_working_bytes = checked_multiply(
+        checked_multiply(value.primary.dsp.fft_size, 2U),
+        116U + 48U * static_cast<std::uint64_t>(value.primary.dsp.batch_size)
+    );
+    // Both analytical buffers/drained vectors, existing final pairs and one
+    // constructing pair. Moving shared spectral arrays does not duplicate them.
+    result.spectrum_backlog_bytes = checked_multiply(
+        checked_multiply(value.primary.dsp.fft_size, 32U),
+        checked_add(capacity, static_cast<std::uint64_t>(value.output_queue_capacity) + 1U)
+    );
+    result.total_bytes = checked_add(
+        checked_add(result.input_payload_bytes, result.dsp_working_bytes),
+        result.spectrum_backlog_bytes
+    );
+    // Same combined component/total ceilings as the single live engine; never
+    // two independent reservations of 128/512 MiB for a synchronized pair.
+    constexpr std::uint64_t mib = 1024U * 1024U;
+    if (result.input_payload_bytes > 128U * mib || result.dsp_working_bytes > 128U * mib ||
+        result.spectrum_backlog_bytes > 128U * mib || result.total_bytes > 512U * mib) {
+        throw ConfigurationError("dual-RX DSP configuration exceeds combined host payload budget");
+    }
+    return result;
 }
 
 void DualRxDspPublisher::configure(const DualRxDspConfig& config) {
@@ -76,22 +170,31 @@ void DualRxDspPublisher::configure(const DualRxDspConfig& config) {
                                      ? DcRemovalMode::BlockMean
                                      : DcRemovalMode::Off;
     primary_options.source = config.primary.source;
-    primary_options.output_capacity = config.output_queue_capacity;
+    primary_options.output_capacity = dual_rx_dsp_resource_budget(config).analytical_output_capacity;
     primary_options.cpu_shared_plan = shared_plan;
     DspOptions secondary_options = primary_options;
     secondary_options.source = config.secondary.source;
 
-    auto primary = make_cpu_dsp_backend(std::move(primary_options));
-    auto secondary = make_cpu_dsp_backend(std::move(secondary_options));
+    auto primary = make_dsp_backend(config.backend, std::move(primary_options));
+    auto secondary = make_dsp_backend(config.backend, std::move(secondary_options));
+    // The host reservation below does not cover cuFFT workspaces or the
+    // generic GPU failover replay ledger. Do not admit a vendor pair under a
+    // CPU-only memory promise. Forced unavailable choices retain the factory's
+    // typed refusal; a self-tested GPU still needs explicit paired admission.
+    if (primary->info().kind != ComputeBackendKind::Cpu ||
+        secondary->info().kind != ComputeBackendKind::Cpu) {
+        throw ConfigurationError("dual-RX vendor working-set/replay budget is not yet qualified");
+    }
     primary->configure(config.primary.dsp);
     secondary->configure(config.secondary.dsp);
+    auto output = std::make_unique<BoundedQueue<DualRxSpectrumFrame>>(
+        config.output_queue_capacity, OverflowPolicy::LatestWins
+    );
 
     config_ = config;
     primary_backend_ = std::move(primary);
     secondary_backend_ = std::move(secondary);
-    output_queue_ = std::make_unique<BoundedQueue<DualRxSpectrumFrame>>(
-        config.output_queue_capacity, OverflowPolicy::LatestWins
-    );
+    output_queue_ = std::move(output);
     configured_ = true;
     synchronization_epoch_ = 1U;
     shared_input_gaps_ = 0U;
@@ -99,6 +202,7 @@ void DualRxDspPublisher::configure(const DualRxDspConfig& config) {
     input_epochs_received_ = 0U;
     paired_frames_published_ = 0U;
     paired_frames_superseded_ = 0U;
+    paired_frames_abandoned_ = 0U;
     last_source_sequence_ = 0U;
     last_sample_end_ = 0U;
     last_config_generation_ = 0U;
@@ -112,21 +216,38 @@ void DualRxDspPublisher::push(const IqBlock& primary, const IqBlock& secondary) 
         reset_for_shared_gap();
         return;
     }
+    // Check BOTH payloads before either channel mutates its DSP history.
+    validate_input(primary, config_.max_input_samples_per_push);
+    validate_input(secondary, config_.max_input_samples_per_push);
     if (input_epoch_valid_ &&
-        (primary.source_sequence != last_source_sequence_ + 1U ||
+        (last_source_sequence_ == std::numeric_limits<std::uint64_t>::max() ||
+         primary.source_sequence != last_source_sequence_ + 1U ||
          primary.first_sample_index != last_sample_end_ ||
-         primary.config_generation != last_config_generation_)) {
+         primary.config_generation != last_config_generation_ ||
+         primary.sample_rate_hz != last_sample_rate_hz_ ||
+         primary.center_frequency_hz != last_center_frequency_hz_ ||
+         primary.sample_format != last_sample_format_)) {
         reset_for_shared_gap();
     }
     input_epoch_valid_ = true;
     last_source_sequence_ = primary.source_sequence;
     last_sample_end_ = primary.first_sample_index + primary.sample_count;
     last_config_generation_ = primary.config_generation;
+    last_sample_rate_hz_ = primary.sample_rate_hz;
+    last_center_frequency_hz_ = primary.center_frequency_hz;
+    last_sample_format_ = primary.sample_format;
     ++input_epochs_received_;
 
-    primary_backend_->push_iq(primary);
-    secondary_backend_->push_iq(secondary);
-    publish_ready_frames();
+    try {
+        primary_backend_->push_iq(primary);
+        secondary_backend_->push_iq(secondary);
+        publish_ready_frames();
+    } catch (...) {
+        // A typed backend failure must not leave a processed primary waiting
+        // to be paired with a later secondary. Preserve the failure for owner.
+        reset_for_shared_gap();
+        throw;
+    }
 }
 
 void DualRxDspPublisher::mark_shared_gap() {
@@ -138,9 +259,7 @@ void DualRxDspPublisher::reset() {
     require_configured(configured_);
     primary_backend_->reset();
     secondary_backend_->reset();
-    output_queue_ = std::make_unique<BoundedQueue<DualRxSpectrumFrame>>(
-        config_.output_queue_capacity, OverflowPolicy::LatestWins
-    );
+    paired_frames_abandoned_ += output_queue_->abandon();
     ++synchronization_epoch_;
     input_epoch_valid_ = false;
 }
@@ -178,15 +297,22 @@ DualRxDspMetrics DualRxDspPublisher::metrics() const {
     result.pairing_mismatches = pairing_mismatches_;
     result.paired_frames_published = paired_frames_published_;
     result.paired_frames_superseded = paired_frames_superseded_;
+    result.paired_frames_abandoned = paired_frames_abandoned_;
+    result.resource_budget = dual_rx_dsp_resource_budget(config_);
     result.output_queue = output_queue_->stats();
     result.primary = primary_backend_->metrics();
     result.secondary = secondary_backend_->metrics();
+    // AUTO currently resolves to safe CPU in the common factory. Retain the
+    // requested policy as well as the actual per-channel backend/fallback.
+    result.primary.requested_preference = config_.backend.preference;
+    result.secondary.requested_preference = config_.backend.preference;
     return result;
 }
 
 void DualRxDspPublisher::reset_for_shared_gap() {
     primary_backend_->reset();
     secondary_backend_->reset();
+    paired_frames_abandoned_ += output_queue_->abandon();
     ++shared_input_gaps_;
     ++synchronization_epoch_;
     input_epoch_valid_ = false;
@@ -200,12 +326,15 @@ void DualRxDspPublisher::publish_ready_frames() {
         reset_for_shared_gap();
         return;
     }
+    // Validate the entire burst before publishing any constituent pair.
     for (std::size_t index = 0U; index < primary.size(); ++index) {
         if (!same_spectrum_epoch(primary[index], secondary[index])) {
             ++pairing_mismatches_;
             reset_for_shared_gap();
             return;
         }
+    }
+    for (std::size_t index = 0U; index < primary.size(); ++index) {
         DualRxSpectrumFrame frame;
         frame.synchronization_epoch = synchronization_epoch_;
         frame.first_sample_index = primary[index].first_sample_index;

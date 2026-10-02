@@ -2293,3 +2293,50 @@ FFT/s, completed Sweep LPS, one-stream throughput, pane delivery and actual
 paint/DWM metrics. Shared panes must not double acquisition counts; absent
 or stale metrics/legacy channel metadata are not zero or implicit RX1. This
 is a design note, not implemented multi-RX UI or independent release review.
+
+### Paired DSP burst admission prerequisite — 2026-10-02
+
+The existing native `DualRxDspPublisher` separates bounded analytical burst
+from final latest-wins paired publication. Trailing
+`max_input_samples_per_push` (default262144) derives analytical capacity as
+`B / hop + batch + 2`; final queue remains1..64/default4. For
+B262144/FFT1024/hop512/batch1 it reserves515 outputs per channel.
+Old positional constructors retain defaults. No raw Python input is added.
+
+Native regression reproduces the former four-slot analytical defect:511
+computed FFTs/507 dropped outputs. The corrected bridge pairs all511 first
+and512 next FFTs per channel with zero analytical drops; render cap4 can
+supersede already-paired outputs independently. Batch4 retains partial batches
+across blocks without render-driven flushing. These are deterministic counts,
+not FFT/s, LPS, transport-rate or physical dual-RF measurements.
+
+Both payloads undergo structural/sample-bound/RF/index/non-finite preflight
+before either DSP mutates. Common sequence/index/generation/rate/center/format
+discontinuity resets both histories. Pending pre-gap pairs are abandoned and
+counted separately from analytical drops and final-queue supersession; entire
+ready burst is checked for pairing before publication. Backend exceptions
+reset shared state and propagate to the owner.
+
+Read-only diagnostics conservatively combine both input payloads, DSP working
+sets, analytical outputs and final pairs. Existing128MiB component/512MiB
+total host-payload ceilings are not doubled. This synchronous bridge estimate
+does NOT cover whole-owner pools/tees/recorders/persistence/Sweep, RSS,
+transient replacement peak or vendor FFT workspace. Future owner must add
+all consumers under the SAME aggregate limits, not reuse two full budgets.
+
+The common backend factory is used. CPU remains compatible default; AUTO
+reports requestedAUTO/actualCPU/no invented fallback for each channel.
+Forced unavailable CUDA/HIP retains typed refusal, not silent CPU substitution.
+A self-tested non-CPU pair also explicitly refuses until vendor working-set/
+fallback-replay reservation is qualified. Paired CUDA remains OPEN; ordinary
+single-channel backend is unchanged. No Fs/FFT/quality/timestamps are lowered
+or changed to satisfy tests, and no hidden restart is introduced.
+
+Acquisition/group owner, pre-coalescing persistence/recording/Sweep consumers,
+whole-owner admission and product compiler/UI RX selection remain OPEN. This
+is not a simultaneous application stream or a second opener, and does not
+complete APP07 or narrow APP00–14. UI V2 development and design review use
+a dedicated UI-only agent; root retains native/backend/RX/build/provenance.
+Its read-only review identified typed endpoint, common-tuning Stage preview/
+refusal, group-impact copy, scoped metrics and Replay channel provenance as
+future integration requirements. No new selector/physical dual proof claimed.

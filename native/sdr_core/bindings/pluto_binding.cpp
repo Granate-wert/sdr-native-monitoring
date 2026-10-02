@@ -86,24 +86,43 @@ void bind_pluto(py::module_& module) {
             const sdr_core::DualRxChannelDspConfig& primary,
             const sdr_core::DualRxChannelDspConfig& secondary,
             const bool dc_removal_block_mean,
-            const std::uint32_t output_queue_capacity
+            const std::uint32_t output_queue_capacity,
+            const std::uint32_t max_input_samples_per_push,
+            const sdr_core::DspBackendSelectionOptions& backend
         ) {
             sdr_core::DualRxDspConfig result{
                 .primary = primary,
                 .secondary = secondary,
                 .dc_removal_block_mean = dc_removal_block_mean,
                 .output_queue_capacity = output_queue_capacity,
+                .max_input_samples_per_push = max_input_samples_per_push,
+                .backend = backend,
             };
             sdr_core::validate(result);
             return result;
         }),
             py::arg("primary"), py::arg("secondary"),
             py::arg("dc_removal_block_mean") = false,
-            py::arg("output_queue_capacity") = 4U)
+            py::arg("output_queue_capacity") = 4U,
+            py::arg("max_input_samples_per_push") = 262'144U,
+            py::arg("backend") = sdr_core::DspBackendSelectionOptions{
+                .preference = sdr_core::ComputeBackendKind::Cpu})
         .def_readonly("primary", &sdr_core::DualRxDspConfig::primary)
         .def_readonly("secondary", &sdr_core::DualRxDspConfig::secondary)
         .def_readonly("dc_removal_block_mean", &sdr_core::DualRxDspConfig::dc_removal_block_mean)
-        .def_readonly("output_queue_capacity", &sdr_core::DualRxDspConfig::output_queue_capacity);
+        .def_readonly("output_queue_capacity", &sdr_core::DualRxDspConfig::output_queue_capacity)
+        .def_readonly("max_input_samples_per_push", &sdr_core::DualRxDspConfig::max_input_samples_per_push)
+        .def_readonly("backend", &sdr_core::DualRxDspConfig::backend);
+
+    py::class_<sdr_core::DualRxDspResourceBudget>(module, "DualRxDspResourceBudget")
+        .def_readonly("analytical_output_capacity", &sdr_core::DualRxDspResourceBudget::analytical_output_capacity)
+        .def_readonly("input_payload_bytes", &sdr_core::DualRxDspResourceBudget::input_payload_bytes)
+        .def_readonly("dsp_working_bytes", &sdr_core::DualRxDspResourceBudget::dsp_working_bytes)
+        .def_readonly("spectrum_backlog_bytes", &sdr_core::DualRxDspResourceBudget::spectrum_backlog_bytes)
+        .def_readonly("total_bytes", &sdr_core::DualRxDspResourceBudget::total_bytes);
+
+    module.def("dual_rx_dsp_resource_budget", &sdr_core::dual_rx_dsp_resource_budget,
+               py::arg("config"));
 
     py::class_<sdr_core::DualRxSpectrumFrame>(module, "DualRxSpectrumFrame")
         .def_readonly("synchronization_epoch", &sdr_core::DualRxSpectrumFrame::synchronization_epoch)
@@ -122,6 +141,8 @@ void bind_pluto(py::module_& module) {
         .def_readonly("pairing_mismatches", &sdr_core::DualRxDspMetrics::pairing_mismatches)
         .def_readonly("paired_frames_published", &sdr_core::DualRxDspMetrics::paired_frames_published)
         .def_readonly("paired_frames_superseded", &sdr_core::DualRxDspMetrics::paired_frames_superseded)
+        .def_readonly("paired_frames_abandoned", &sdr_core::DualRxDspMetrics::paired_frames_abandoned)
+        .def_readonly("resource_budget", &sdr_core::DualRxDspMetrics::resource_budget)
         .def_readonly("output_queue", &sdr_core::DualRxDspMetrics::output_queue)
         .def_readonly("primary", &sdr_core::DualRxDspMetrics::primary)
         .def_readonly("secondary", &sdr_core::DualRxDspMetrics::secondary);
