@@ -7,18 +7,19 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QResizeEvent
+from PySide6.QtGui import QResizeEvent, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
-from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
+from sdr_monitor.domain.device_capabilities import AcquisitionKind, AdapterRuntimeAvailability, DeviceFamily
 from sdr_monitor.domain.pane_scheduler import (
-    CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile,
+    CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile, RtlRtbwPaneProfile,
     PaneRevisitEstimate, TinySaTracePaneProfile,
 )
+from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ
 from sdr_monitor.domain.tinysa_settings import TinySaInputMode
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
@@ -102,6 +103,7 @@ class IndependentPaneSetupV2(QWidget):
     def __init__(self, *, install: Callable[[PaneProductSessionHandle], None],
                  uninstall: Callable[[], None],
                  can_prepare: Callable[[], bool] = lambda: True,
+                 rtl_controls_available: Callable[[str, int], bool] = lambda _source_id, _revision: False,
                  calibration_profiles: CalibrationProfileViewModel | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -109,6 +111,7 @@ class IndependentPaneSetupV2(QWidget):
         self.setProperty("ui2Root", True)
         self._install = install
         self._uninstall = uninstall
+        self._rtl_controls_available = rtl_controls_available
         self._can_prepare = can_prepare
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-pane-control")
         self._future: Future[Any] | None = None
@@ -119,6 +122,7 @@ class IndependentPaneSetupV2(QWidget):
         self._released = False
         self._choices: tuple[AnalyzerSourceChoice, ...] = ()
         self._selection: AnalyzerSourceSelection | None = None
+        self._rtl_admission_state: tuple[tuple[str, str | None], ...] = ()
         self._rows = tuple(_SlotRow(number, self) for number in range(1, 5))
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -156,7 +160,7 @@ class IndependentPaneSetupV2(QWidget):
                                              row.stop, row.rate, row.fft, row.mode_points)):
                 grid.addWidget(widget, row_index, column)
             row.source.currentIndexChanged.connect(
-                lambda _index, target=row: self._source_changed(target))
+                lambda _index, target=row: self._source_user_changed(target))
             row.mode.currentIndexChanged.connect(
                 lambda _index, target=row: self._mode_changed(target))
         layout.addLayout(grid)
@@ -389,10 +393,42 @@ class IndependentPaneSetupV2(QWidget):
     def can_close(self) -> bool:
         return not self.blocks_single_source and self._closing_handle is None
 
+    def _rtl_unavailable_key(self, choice: AnalyzerSourceChoice) -> str | None:
+        if choice.family is not DeviceFamily.RTL_SDR:
+            return None
+        if self._selection is None or self._selection.release_pending:
+            return "analyzer.pane.setup.rtl_selection_unavailable"
+        if choice.runtime is None or choice.runtime.availability is not AdapterRuntimeAvailability.AVAILABLE:
+            return "analyzer.pane.setup.rtl_runtime_unavailable"
+        snapshot = choice.binding.snapshot
+        if (snapshot is None or choice.binding.identity_key is None
+                or snapshot.runtime_control_contract != "rtl.librtlsdr.rx.v1"
+                or AcquisitionKind.COMPLEX_IQ not in snapshot.acquisition_kinds
+                or not snapshot.tuning_ranges_hz or not snapshot.sample_rate_ranges_hz):
+            return "analyzer.pane.setup.rtl_capability_unverified"
+        try:
+            ready = self._rtl_controls_available(choice.device_id, self._selection.revision)
+        except Exception:
+            ready = False
+        if ready is not True:
+            return "analyzer.pane.setup.rtl_owner_unavailable"
+        return None
+
+    def _source_user_changed(self, row: _SlotRow) -> None:
+        self._source_changed(row)
+        self._refresh_actions()
+
     def update_sources(self, selection: AnalyzerSourceSelection | None) -> None:
-        if self._released or self.blocks_single_source or selection is self._selection:
+        if self._released or self.blocks_single_source:
             return
+        previous_selection = self._selection
         self._selection = selection
+        admission_state = (() if selection is None else
+                           tuple((choice.device_id, self._rtl_unavailable_key(choice))
+                                 for choice in selection.choices if choice.family is DeviceFamily.RTL_SDR))
+        if selection is previous_selection and admission_state == self._rtl_admission_state:
+            return
+        self._rtl_admission_state = admission_state
         self._choices = () if selection is None else selection.choices
         for row in self._rows:
             previous = row.source.currentData()
@@ -400,9 +436,18 @@ class IndependentPaneSetupV2(QWidget):
                 row.source.clear()
                 row.source.addItem(text("analyzer.pane.setup.empty"), None)
                 for choice in self._choices:
-                    row.source.addItem(choice.label, choice.device_id)
-                    row.source.setItemData(row.source.count() - 1, choice.device_id,
+                    reason = self._rtl_unavailable_key(choice)
+                    label = (choice.label if reason is None else
+                             text("analyzer.pane.setup.rtl_unavailable_choice", source=choice.label))
+                    row.source.addItem(label, choice.device_id)
+                    index = row.source.count() - 1
+                    row.source.setItemData(index, choice.device_id if reason is None else text(reason),
                                            Qt.ItemDataRole.ToolTipRole)
+                    model = row.source.model()
+                    if reason is not None and isinstance(model, QStandardItemModel):
+                        item = model.item(index)
+                        if item is not None:
+                            item.setEnabled(False)
                 index = row.source.findData(previous)
                 row.source.setCurrentIndex(max(index, 0))
             self._source_changed(row, preserve_range=True)
@@ -412,16 +457,32 @@ class IndependentPaneSetupV2(QWidget):
         source_id = row.source.currentData()
         choice = next((item for item in self._choices if item.device_id == source_id), None)
         family = None if choice is None else choice.family
+        reason = None if choice is None else self._rtl_unavailable_key(choice)
+        rtl_ready = choice is not None and reason is None
+        # This is only the new row draft. Never carry AD/HackRF's explicit
+        # full-receive request into RTL, whose compiler admits edge trim only.
+        if family is DeviceFamily.RTL_SDR:
+            edge_index = row.band.findData(RtbwBandPolicy.EDGE_TRIMMED.value)
+            if edge_index >= 0 and row.band.currentIndex() != edge_index:
+                with QSignalBlocker(row.band):
+                    row.band.setCurrentIndex(edge_index)
+        row.source.setToolTip("" if reason is None else text(reason))
+        row.source.setAccessibleDescription("" if reason is None else text(reason))
         previous_rate = row.rate.currentData()
         with QSignalBlocker(row.rate):
             row.rate.clear()
-            rates: tuple[tuple[str, float], ...]
+            rates: tuple[tuple[str, float | None], ...]
             if family is DeviceFamily.AD936X:
                 rates = (("20 MS/s", 20_000_000.0), ("61.44 MS/s", 61_440_000.0))
             elif family is DeviceFamily.HACKRF:
                 rates = (("16 MS/s", 16_000_000.0), ("20 MS/s", 20_000_000.0))
-            else:
+            elif family is DeviceFamily.RTL_SDR:
+                rates = tuple((f"{value / 1_000_000:g} MS/s", float(value))
+                              for value in sorted(RTL_RATE_CHOICES_HZ))
+            elif family is DeviceFamily.TINYSA:
                 rates = (("—", 20_000_000.0),)
+            else:
+                rates = (("—", None),)
             for label, value in rates:
                 row.rate.addItem(label, value)
             index = row.rate.findData(previous_rate)
@@ -434,6 +495,8 @@ class IndependentPaneSetupV2(QWidget):
                 modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
             elif family is DeviceFamily.AD936X:
                 modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
+            elif family is DeviceFamily.RTL_SDR:
+                modes = (CaptureMeasurementMode.RTBW,)
             elif family is DeviceFamily.TINYSA:
                 modes = (CaptureMeasurementMode.INSTRUMENT_TRACE,)
             else:
@@ -446,13 +509,15 @@ class IndependentPaneSetupV2(QWidget):
             row.mode.setCurrentIndex(max(index, 0))
         row.mode_points.setCurrentWidget(row.points if family is DeviceFamily.TINYSA else row.mode)
         self._mode_changed(row)
-        row.start.setEnabled(family is not None and not self.blocks_single_source)
-        row.stop.setEnabled(family is not None and not self.blocks_single_source)
-        row.priority.setEnabled(family is not None and not self.blocks_single_source)
-        row.maximum_revisit.setEnabled(family is not None and not self.blocks_single_source)
+        editable = family is not None and (family is not DeviceFamily.RTL_SDR or rtl_ready)
+        row.start.setEnabled(editable and not self.blocks_single_source)
+        row.stop.setEnabled(editable and not self.blocks_single_source)
+        row.priority.setEnabled(editable and not self.blocks_single_source)
+        row.maximum_revisit.setEnabled(editable and not self.blocks_single_source)
         if family is not None and not preserve_range:
             lower, upper = ((200, 210) if family is DeviceFamily.TINYSA else
-                            (140, 148) if family is DeviceFamily.HACKRF else (100, 108))
+                            (140, 148) if family is DeviceFamily.HACKRF else
+                            (100, 101) if family is DeviceFamily.RTL_SDR else (100, 108))
             row.start.setValue(lower)
             row.stop.setValue(upper)
         self._refresh_tinysa_row(row)
@@ -510,7 +575,8 @@ class IndependentPaneSetupV2(QWidget):
                 with QSignalBlocker(row.rate):
                     row.rate.setCurrentIndex(index)
         previous_fft = row.fft.currentData()
-        sizes = ((1024, 2048, 4096) if family is DeviceFamily.HACKRF
+        sizes = (tuple(sorted(RTL_FFT_CHOICES)) if family is DeviceFamily.RTL_SDR else
+                 (1024, 2048, 4096) if family is DeviceFamily.HACKRF
                  and mode is CaptureMeasurementMode.SWEEP else (1024, 4096, 16384))
         if row.fft.count() != len(sizes) or any(row.fft.itemData(i) != value
                                                  for i, value in enumerate(sizes)):
@@ -521,9 +587,12 @@ class IndependentPaneSetupV2(QWidget):
                 index = row.fft.findData(previous_fft)
                 row.fft.setCurrentIndex(index if index >= 0 else row.fft.findData(4096))
         blocked = self.blocks_single_source
-        row.rate.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
+        ready_sdr = family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} or (
+            family is DeviceFamily.RTL_SDR and choice is not None
+            and self._rtl_unavailable_key(choice) is None)
+        row.rate.setEnabled(ready_sdr
                             and mode is not CaptureMeasurementMode.SWEEP and not blocked)
-        row.fft.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
+        row.fft.setEnabled(ready_sdr and not blocked)
         row.points.setEnabled(family is DeviceFamily.TINYSA and not blocked)
         row.mode.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
         row.band.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
@@ -534,6 +603,12 @@ class IndependentPaneSetupV2(QWidget):
     def _begin_prepare(self) -> None:
         if self.blocks_single_source or self._released:
             return
+        for row in self._rows:
+            choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
+            reason = None if choice is None else self._rtl_unavailable_key(choice)
+            if reason is not None:
+                self._set_error(reason)
+                return
         if not self._can_prepare():
             self._set_error("analyzer.pane.setup.base_busy")
             return
@@ -563,6 +638,12 @@ class IndependentPaneSetupV2(QWidget):
         if (self._released or self._future is not None or self._prepared is None
                 or any(item.recording_conflict for item in self._prepared.preview)):
             return
+        for row in self._rows:
+            choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
+            reason = None if choice is None else self._rtl_unavailable_key(choice)
+            if reason is not None:
+                self._set_error(reason)
+                return
         if not self._can_prepare():
             self._set_error("analyzer.pane.setup.base_busy")
             return
@@ -723,12 +804,24 @@ class IndependentPaneSetupV2(QWidget):
                               stop=stop // 1_000_000))
         schedule = prepared.plan.layout.schedule
         assert schedule is not None
+        has_standard_rtbw = False
         for resource_schedule in schedule.resources:
             for job in resource_schedule.jobs:
                 profile = job.profile
+                if isinstance(profile, RtlRtbwPaneProfile):
+                    for crop in job.crops:
+                        lines.append(text("analyzer.pane.setup.preview_rtl_rtbw",
+                                          pane=crop.pane_id.rsplit("-", 1)[-1],
+                                          rate=f"{profile.sample_rate_hz / 1e6:g}",
+                                          usable=f"{profile.usable_capture_span_hz / 1e6:g}",
+                                          start=f"{crop.start_hz / 1e6:g}",
+                                          stop=f"{crop.stop_hz / 1e6:g}",
+                                          fft=profile.fft_size, hop=profile.hop_size))
+                    continue
                 if (not isinstance(profile, (PaneCaptureProfile, HackrfRtbwPaneProfile))
                         or profile.measurement_mode is not CaptureMeasurementMode.RTBW):
                     continue
+                has_standard_rtbw = True
                 bandwidth = (profile.request_template.baseband_filter_hz
                              if isinstance(profile, HackrfRtbwPaneProfile)
                              else profile.analog_bandwidth_hz)
@@ -740,9 +833,11 @@ class IndependentPaneSetupV2(QWidget):
                                       usable=f"{profile.usable_capture_span_hz / 1e6:g}",
                                       start=f"{crop.start_hz / 1e6:g}", stop=f"{crop.stop_hz / 1e6:g}",
                                       fft=profile.fft_size, hop=profile.hop_size))
-        if any(job.profile.measurement_mode is CaptureMeasurementMode.RTBW
-               for resource in schedule.resources for job in resource.jobs):
+        if has_standard_rtbw:
             lines.append(text("analyzer.pane.setup.rtbw_band_scope"))
+        if any(isinstance(job.profile, RtlRtbwPaneProfile)
+               for resource in schedule.resources for job in resource.jobs):
+            lines.append(text("analyzer.pane.setup.rtl_rtbw_scope"))
         tiny_requests = {crop.pane_id: job.profile.request_template
                          for resource in schedule.resources for job in resource.jobs
                          if isinstance(job.profile, TinySaTracePaneProfile) for crop in job.crops}
@@ -794,10 +889,17 @@ class IndependentPaneSetupV2(QWidget):
 
     def _refresh_actions(self) -> None:
         blocked = self._future is not None
-        self.prepare.setEnabled(not blocked and self._prepared is None and self._retained_pool is None)
+        rtl_reason = next((reason for row in self._rows
+                           for choice in self._choices if choice.device_id == row.source.currentData()
+                           for reason in (self._rtl_unavailable_key(choice),) if reason is not None), None)
+        self.prepare.setEnabled(not blocked and rtl_reason is None
+                                and self._prepared is None and self._retained_pool is None)
         self.apply.setEnabled(not blocked and self._prepared is not None
+                              and rtl_reason is None
                               and not self._prepared.handle.applied
                               and not any(item.recording_conflict for item in self._prepared.preview))
+        self.prepare.setToolTip("" if rtl_reason is None else text(rtl_reason))
+        self.prepare.setAccessibleDescription("" if rtl_reason is None else text(rtl_reason))
         self.discard.setEnabled(not blocked and (self._prepared is not None or self._retained_pool is not None))
         self.details.setEnabled(bool(self.preview.text() or self.error.text()))
         for row in self._rows:
@@ -832,6 +934,22 @@ class IndependentPaneSetupV2(QWidget):
                     row.band.setItemText(index, text("analyzer.pane.setup.rtbw_band_" + policy.value))
             if row.source.count():
                 row.source.setItemText(0, text("analyzer.pane.setup.empty"))
+            for index in range(1, row.source.count()):
+                choice = next((item for item in self._choices
+                               if item.device_id == row.source.itemData(index)), None)
+                if choice is None:
+                    continue
+                reason = self._rtl_unavailable_key(choice)
+                row.source.setItemText(index, choice.label if reason is None else
+                                       text("analyzer.pane.setup.rtl_unavailable_choice",
+                                            source=choice.label))
+                row.source.setItemData(index, choice.device_id if reason is None else text(reason),
+                                       Qt.ItemDataRole.ToolTipRole)
+            choice = next((item for item in self._choices
+                           if item.device_id == row.source.currentData()), None)
+            reason = None if choice is None else self._rtl_unavailable_key(choice)
+            row.source.setToolTip("" if reason is None else text(reason))
+            row.source.setAccessibleDescription("" if reason is None else text(reason))
             # A staged draft cannot rebuild source/geometry selectors. Translate
             # the existing mode items in place, without changing their data or
             # issuing a source/mode command through currentIndexChanged.
@@ -884,6 +1002,11 @@ class IndependentPaneSetupV2(QWidget):
             self._refresh_preview()
         self._set_error(self._error_key, revisit_violations=self._revisit_violations,
                         cleanup_required=self._cleanup_required)
+        reason = next((reason for row in self._rows for choice in self._choices
+                       if choice.device_id == row.source.currentData()
+                       for reason in (self._rtl_unavailable_key(choice),) if reason is not None), None)
+        self.prepare.setToolTip("" if reason is None else text(reason))
+        self.prepare.setAccessibleDescription("" if reason is None else text(reason))
 
     def release_after_shutdown(self) -> None:
         if self._released:

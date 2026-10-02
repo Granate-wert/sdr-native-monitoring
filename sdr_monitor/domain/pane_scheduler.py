@@ -15,6 +15,7 @@ from itertools import combinations
 import math
 
 from .hackrf_live import HackrfLiveRequest
+from .rtl_live import RtlLiveRequest
 from .hackrf_sweep import HackrfSweepRequest
 from .analyzer_sources import AnalyzerSourceChoice
 from .continuous_sweep_request import ContinuousSweepPlanRequest
@@ -292,6 +293,50 @@ class HackrfRtbwPaneProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class RtlRtbwPaneProfile:
+    """One uncalibrated RTL RX/DSP intent, never a HackRF/Pluto profile."""
+
+    request_template: RtlLiveRequest
+    usable_capture_span_hz: float
+    epoch_cost: CaptureEpochCost
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_template, RtlLiveRequest):
+            raise PaneScheduleError("RTL pane requires a typed RTL request")
+        _positive_finite(self.usable_capture_span_hz, "usable RTL capture span")
+        if self.usable_capture_span_hz > self.request_template.sample_rate_hz:
+            raise PaneScheduleError("RTL usable span exceeds the requested Fs")
+        if not isinstance(self.epoch_cost, CaptureEpochCost):
+            raise PaneScheduleError("RTL pane requires a declared epoch cost")
+
+    @property
+    def measurement_mode(self) -> CaptureMeasurementMode:
+        return CaptureMeasurementMode.RTBW
+
+    @property
+    def unit(self) -> str:
+        return "dBFS/bin"
+
+    @property
+    def sample_rate_hz(self) -> float:
+        return float(self.request_template.sample_rate_hz)
+
+    @property
+    def fft_size(self) -> int:
+        return self.request_template.fft_size
+
+    @property
+    def hop_size(self) -> int:
+        return self.request_template.hop_size
+
+    @property
+    def compatibility_key(self) -> tuple[object, ...]:
+        template = replace(self.request_template, center_frequency_hz=1,
+                           configuration_generation=1)
+        return ("rtl-rtbw", template, self.usable_capture_span_hz, self.epoch_cost)
+
+
+@dataclass(frozen=True, slots=True)
 class HackrfSweepPaneProfile:
     """One typed, bounded host Sweep on the selected HackRF owner.
 
@@ -424,7 +469,7 @@ class Ad936xSweepPaneProfile:
                 self.configuration, replace(self.request_template, epoch=0), self.epoch_cost)
 
 
-PaneProfile = (PaneCaptureProfile | Ad936xSweepPaneProfile | HackrfRtbwPaneProfile | HackrfSweepPaneProfile
+PaneProfile = (PaneCaptureProfile | Ad936xSweepPaneProfile | HackrfRtbwPaneProfile | RtlRtbwPaneProfile | HackrfSweepPaneProfile
                | SpectrumTracePaneProfile | TinySaTracePaneProfile)
 
 
@@ -1056,6 +1101,7 @@ __all__ = [
     "PaneCaptureProfile",
     "Ad936xSweepPaneProfile",
     "HackrfRtbwPaneProfile",
+    "RtlRtbwPaneProfile",
     "HackrfSweepPaneProfile",
     "SpectrumTracePaneProfile",
     "TinySaTracePaneProfile",

@@ -17,14 +17,16 @@ from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
 from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
 from sdr_monitor.domain.calibration import CalibrationProfile
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
-from sdr_monitor.domain.device_capabilities import DeviceFamily
+from sdr_monitor.domain.device_capabilities import AcquisitionKind, AdapterRuntimeAvailability, DeviceFamily
 from sdr_monitor.domain.hackrf_live import HackrfLiveRequest
+from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ, RtlLiveRequest
 from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.identity import SourceId
 from sdr_monitor.domain.live import BackendKind, LiveConfiguration
 from sdr_monitor.domain.pane_scheduler import (
     Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
+    RtlRtbwPaneProfile,
     PaneLayoutSlot, PaneProfile, PaneRevisitEstimate, PaneScheduleDeadlineError,
     TinySaTracePaneProfile, compile_pane_layout,
 )
@@ -140,7 +142,7 @@ class PaneSlotDraft:
                 or not isfinite(self.start_hz) or not isfinite(self.stop_hz)
                 or self.start_hz < 100_000 or self.stop_hz <= self.start_hz):
             raise PaneUserPlanError("occupied pane needs a source and an increasing RF range")
-        if (self.sample_rate_hz not in {16_000_000.0, 20_000_000.0, 61_440_000.0}
+        if (self.sample_rate_hz not in {2_048_000.0, 2_400_000.0, 16_000_000.0, 20_000_000.0, 61_440_000.0}
                 or type(self.fft_size) is not int or self.fft_size not in {1024, 2048, 4096, 16384}
                 or type(self.points) is not int or not 2 <= self.points <= 10001):
             raise PaneUserPlanError("pane sample rate, FFT or trace points are outside the qualified draft choices")
@@ -220,7 +222,7 @@ def compile_user_pane_plan(
         endpoint = (SpectrumTraceEndpoint(endpoint_id, source_id, resource)
                     if choice.family is DeviceFamily.TINYSA else
                     ReceiverEndpoint(endpoint_id, source_id, resource, ReceiverChainSelection.RX1))
-        if choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.TINYSA}:
+        if choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.RTL_SDR, DeviceFamily.TINYSA}:
             raise PaneUserPlanError("selected source has no qualified pane owner")
         groups.append(AcquisitionGroup(f"{resource}:group", resource, (endpoint,)))
         endpoints[source_id] = endpoint_id
@@ -245,6 +247,7 @@ def compile_user_pane_plan(
             raise PaneUserPlanError("wide receive band is only an explicit SDR RTBW intent")
         assert draft.start_hz is not None and draft.stop_hz is not None
         if draft.fft_size == 2048 and not (
+                choice.family is DeviceFamily.RTL_SDR or
                 choice.family is DeviceFamily.HACKRF
                 and draft.measurement_mode is CaptureMeasurementMode.SWEEP):
             raise PaneUserPlanError("2048 is a physical FFT choice for the qualified HackRF Sweep pane")
@@ -324,6 +327,35 @@ def compile_user_pane_plan(
                     16, 20, fft_size=draft.fft_size, hop_size=draft.fft_size // 2,
                     detector="peak", source_id=SourceId(source_id))
                 profile = HackrfRtbwPaneProfile(hackrf_request, usable, cost)
+        elif choice.family is DeviceFamily.RTL_SDR:
+            if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
+                raise PaneUserPlanError("RTL Sweep is not qualified; select RTBW")
+            if (draft.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED
+                    or draft.sample_rate_hz not in RTL_RATE_CHOICES_HZ
+                    or draft.fft_size not in RTL_FFT_CHOICES):
+                raise PaneUserPlanError("RTL requires a bounded edge-trimmed RTBW profile")
+            snapshot = choice.binding.snapshot
+            identity = choice.binding.calibration_identity
+            if (snapshot is None or identity is None or snapshot.family is not DeviceFamily.RTL_SDR
+                    or snapshot.runtime_control_contract != "rtl.librtlsdr.rx.v1"
+                    or AcquisitionKind.COMPLEX_IQ not in snapshot.acquisition_kinds
+                    or choice.runtime is None
+                    or choice.runtime.availability is not AdapterRuntimeAvailability.AVAILABLE
+                    or not snapshot.tuning_ranges_hz or not snapshot.sample_rate_ranges_hz
+                    or not any(bounds.minimum <= draft.start_hz < draft.stop_hz <= bounds.maximum
+                               for bounds in snapshot.tuning_ranges_hz)
+                    or not any(bounds.minimum <= draft.sample_rate_hz <= bounds.maximum
+                               for bounds in snapshot.sample_rate_ranges_hz)):
+                raise PaneUserPlanError("RTL pane needs a selected tuner-specific capability and identity")
+            if not float(center).is_integer():
+                raise PaneUserPlanError("RTL center must be an exact whole hertz")
+            # A conservative *digital* analysis crop, not tuner analog BW or
+            # guaranteed RF response. Hardware readback still gates Start.
+            usable = draft.sample_rate_hz / 2.0
+            rtl_request = RtlLiveRequest(int(center), int(draft.sample_rate_hz),
+                                         fft_size=draft.fft_size, hop_size=draft.fft_size // 2,
+                                         detector="peak", source_id=SourceId(source_id))
+            profile = RtlRtbwPaneProfile(rtl_request, usable, cost)
         else:
             if draft.measurement_mode not in (None, CaptureMeasurementMode.INSTRUMENT_TRACE):
                 raise PaneUserPlanError("tinySA pane is a device trace, not an SDR receiver")

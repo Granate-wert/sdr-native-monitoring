@@ -14,6 +14,7 @@ class DeviceFamily(StrEnum):
     UNKNOWN = "unknown"
     AD936X = "ad936x"
     HACKRF = "hackrf"
+    RTL_SDR = "rtl_sdr"
     ADRV9009_ZYNQ = "adrv9009_zynq"
     TINYSA = "tinysa"
     GENERIC_IQ = "generic_iq"

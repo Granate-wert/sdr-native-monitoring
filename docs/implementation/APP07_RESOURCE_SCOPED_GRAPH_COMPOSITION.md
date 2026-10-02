@@ -2524,6 +2524,9 @@ group transactions and paired retuning Sweep remain OPEN before UI enablement.
 The user added RTL-SDR and explicitly delegated RTL integration to a backend
 subagent, with the root orchestrating and a separate UI V2 design agent. Future
 four-source tests assign pane1 Pluto, pane2 HackRF, pane3 tinySA, pane4 RTL-SDR.
+The user's explicit follow-up makes RTL in pane4 mandatory in future APP-07
+RTL hardware tests. If RTL has no admitted driver/runtime/owner, this acceptance
+case stays OPEN; Empty, a duplicated source or a mock cannot substitute for RTL.
 Historical three-source+Empty4 witnesses remain unchanged. Empty behavior still
 has separate coverage. Each pane must retain a distinct actual owner/binding;
 RTL is not a clone, HackRF alias or another receiver of the same stream.
