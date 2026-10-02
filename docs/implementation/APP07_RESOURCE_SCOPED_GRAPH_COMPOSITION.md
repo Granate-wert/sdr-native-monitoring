@@ -2755,3 +2755,69 @@ provenance/Git. No new RTL integration agent work in this increment. Whole
 independent release review, physical four-source/dual-RF, genuine Ethernet,
 Windows/DPI/DWM/AT, throughput/duty/lossless/sustained/soak and SDK qualification
 remain OPEN. UI V2 only; APP07 PARTIAL, APP06E planned, full APP00-14 goal ACTIVE.
+
+
+## 2026-10-03: paired visible UI V2 epoch guard (runtime 97d4f53, partial)
+
+Runtime `97d4f53db5e1704964263903629c6ce1b5ee98db` clears BOTH paired panes'
+visible Spectrum, persistence and waterfall histories before applying the first
+accepted frame of a new shared synchronization context. A queued older packet
+or late projection cannot restore the cleared peer. Independent physical
+resources retain their data. This is sequential group invalidation, not atomic
+paired painting or physical dual-RF evidence.
+
+Presentation bindings now carry the explicit receiver-chain enum from the exact
+AcquisitionGroup. Preparation requires paired metadata if and only if the group
+is paired, and verifies the actual RX chain before cache mutation/allocation.
+The board uses that same authority and retains a resource context floor across
+value-equal RF-plan receipts. Older run/activation/session/acquisition/sync data,
+metadata downgrade/injection and duplicate deliveries refuse before visual
+mutation. RX1/RX2 captions come from typed selection rather than endpoint suffix;
+instrument trace is identified by measurement mode, not a fabricated RX chain.
+
+Qualification:
+
+- The actual compiled MOCK-IIO -> same Live/product/resource/preparer -> actual
+  offscreen Qt rearm test reproduced stale RX2 history BEFORE the fix and passed
+  AFTER the correction. New focused Qt tests cover peer preservation, stale
+  contexts and late Spectrum/persistence results. No physical RX was used.
+- Full matching diagnostic build `APP07-PAIRUI-20261003-97D4F53` passed 45/45
+  native CTest (55.36 s), all 658 frozen files, the 551-source snapshot, shared
+  runtime/one-libusb, default offscreen, IIO and tinySA checks.
+- Matching-package native/Qt composition passed 9/9 tests (6.543 s). ONE serial
+  after-freeze exact full V2 gate passed 1288 total / 1222 passed / 66 skipped /
+  zero failures or errors (473.005 s); tracked-clean before/after, unchanged
+  matching native, no deferred or outside-checkout modules. Scope: V2 source
+  with matching packaged native, not visible frozen GUI. Four historical NaN
+  RuntimeWarnings were retained.
+- Post-gate source/native/all-658 verification passed and no test EXE or mock RX
+  remained running. EXE SHA256:
+  `64b048c5fe1868db1b5859b1c42fc4e53bfadf1591c6a5d6e00562133a872419`.
+  This EXE is built from runtime 97d4f53, never relabelled as later documentation.
+  It is diagnostic, not current/static/canonical/promoted.
+- Root's earlier candidate command had one nonexistent test-module ImportError
+  alongside 78 passing tests; the target error is retained, not a product-fix
+  claim. The correct RF shift/gesture modules separately passed 37 tests.
+  Scoped Ruff, mypy, compilation and staged-diff checks passed.
+
+The visible-history prerequisite is now implemented; paired user selection
+remains DISABLED and the ordinary compiler RX1-only. Typed current-topology/
+common-tuning user admission and impact preview, paired retuning Sweep/group
+recording lifecycle and physical acceptance still remain. DSP/Fs/FFT/cadence,
+queues/budgets, control/lease/recording, quality/time contracts are unchanged.
+
+Future physical APP-07 2x2 MUST retain Pluto upper-left, HackRF upper-right,
+tinySA lower-left and **RTL lower-right (pane 4)**. All four must deliver current
+physical data with distinct requested ranges and actual readback; stopping or
+restarting one must preserve the other streams/epochs/histories. This is a test
+assignment, not a global placement restriction. Empty/mock/duplicate cannot
+substitute for RTL; RTL Sweep remains unavailable, never silently emulated.
+
+One reused dedicated UI agent used gpt-6-sol/high for scoped design/development
+and final read-only committed-diff review; no new scoped defect found. Root
+retains backend/native/integration/tests/build/provenance/Git. This is not whole
+independent release approval. APP07 PARTIAL, APP06E planned, APP00-14 goal ACTIVE;
+APP05 expired timer not restarted. Physical dual-RF/four-source, genuine Ethernet,
+SDK first-cause, Windows/AT/DPI/DWM, throughput/duty/lossless/sustained/soak and
+whole independent release review remain OPEN. UI V2 only; old UI, user changes,
+current/static EXE and system/firewall/driver/firmware/security are untouched.
