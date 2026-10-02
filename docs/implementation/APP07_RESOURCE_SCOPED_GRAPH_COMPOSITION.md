@@ -2923,3 +2923,43 @@ tinySA3 and RTL4 lower-right. No new subagents/models were used for RTL setup or
 this native fix; earlier gpt-6-sol/high UI review is separate, not whole-backend
 approval. APP07 PARTIAL/APP06E planned/full APP00–14 goal ACTIVE; APP05 timer
 not restarted. All bounded RX sessions stopped; no installer/test EXE left open.
+
+## 2026-10-03: full APP-07 orchestrator plan accepted
+
+The human adopted all 33 sections of the long-running orchestration specification,
+APP07-A…L and milestones M0…M12. Compact local `docs/codex/` now contains bootstrap,
+invariants, current state/work, roadmap/acceptance, HIL/performance plans, task/agent
+contracts, ADR, session summaries and evidence index. Private conversation/state/
+evidence remain ignored, not published here; export separately before moving the
+workspace, because a fresh Git clone does not restore these private files.
+
+M0 read-only rehydration completed: Git/source/artifact/existing evidence reconciliation,
+two scoped audits and independent plan review. Seven JSON-syntax YAML files and
+39 mandatory criteria checked. No feature/native/UI edits, new build/test-suite,
+SDK/SDR access, system mutation or static promotion. Runtime remains da3df7b;
+this later documentation cannot relabel its source/native/EXE/physical evidence.
+
+Blocks: A resources; B paired user assignment; C lifecycle/epoch; D paired retuning
+Sweep; E RTL production; F physical four-source 2x2; G fault isolation; H performance;
+I long-run; J visible Windows UI; K release; L closure. Source/mock/physical/release
+scopes remain distinct. Fixed-band paired lines are NOT paired retuning Sweep;
+local RTL DLL and short RX are NOT production/soak/HIL. PASS needs indexed evidence;
+relevant implementation changes invalidate previous PASS to VERIFY.
+
+Bounded Native/UI/Sweep/HIL/QA/Performance/Review/Release delegation is accepted for
+APP-07; root retains contracts/integration/acceptance. Source writers use isolated
+worktrees/disjoint allowlists; reviewer differs from author. Eight child roles run
+in waves with root plus at most three active children in this environment. Hardware,
+exact build/gates and performance are serialized; one HIL owner, real lock before
+parallel hardware-capable agents. YAML lease alone is not interprocess enforcement.
+No new TX/bias/firmware/driver/firewall/security authority follows from this plan.
+Dispatch configured two gpt-6-luna/high audits and one gpt-6-sol/high reviewer;
+runtime model attestation is not exposed by the collaboration tools.
+
+NEXT: M1 shared resource/refusal contract freeze; M2 paired user UI; M3 paired Sweep;
+M4 RTL production; M5 harness; M6 physical Pluto1/HackRF2/tinySA3/RTL4; M7 faults;
+M8 measured baseline/performance; M9 stability/soak; M10 visible UI; M11 release;
+M12 all mandatory PASS with evidence/root closure. APP07 remains PARTIAL. Full
+APP00–14 objective and expired APP05 timer unchanged. Fresh goal API returned paused,
+not ACTIVE; this plan adoption did not create or change a goal. Main dirty work and
+current/static EXE remain preserved.
