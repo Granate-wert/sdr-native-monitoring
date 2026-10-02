@@ -111,8 +111,19 @@ int main(int argc, char** argv) {
     assert(scenario != nullptr);
     scenario(0);
     selected_route_and_cu8(external);
+    scenario(3);
+    selected_route_and_cu8(external);  // exact owned-handle identity, no second USB opener
+    {
+        auto port = sdr_rtlsdr::make_official_rtl_port(external);
+        assert(port->open_exact_unique_serial("00000001") == 0);
+        assert(port->close() == 0);
+    }
     scenario(1);
     count_changed_after_open(external);
+    scenario(4);
+    count_changed_after_open(external);  // owned-handle identity change still refuses
+    scenario(5);
+    count_changed_after_open(external);  // owned descriptor read failure still refuses
     scenario(0);
     FreeLibrary(module);
     return 0;

@@ -439,7 +439,7 @@ public:
             if (status != 0) return status;
             try {
                 if (api_->count() == count &&
-                    same_strings(before, strings_by_index(*api_, index))) return 0;
+                    same_strings(before, strings_after_open(*api_, device_))) return 0;
             } catch (...) {
                 const auto close_status = close();
                 return close_status == 0 ? -13 : -14;
@@ -458,7 +458,9 @@ public:
             const auto status = open_checked(0U, before, expected.tuner_type);
             if (status != 0) return status;
             try {
-                if (api_->count() == 1U && same_strings(before, strings_by_index(*api_, 0U))) return 0;
+                // Revalidate the SAME owned handle, not a second index-based
+                // USB open that WinUSB can refuse while this interface is held.
+                if (api_->count() == 1U && same_strings(before, strings_after_open(*api_, device_))) return 0;
             } catch (...) {
                 const auto close_status = close();
                 return close_status == 0 ? -25 : -26;

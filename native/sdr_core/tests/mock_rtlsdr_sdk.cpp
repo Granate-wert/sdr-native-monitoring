@@ -16,6 +16,7 @@ std::atomic<int> scenario{};
 std::atomic<bool> opened{};
 std::atomic<bool> reading{};
 std::atomic<bool> cancelled{};
+std::atomic<int> owned_descriptor_reads{};
 
 void strings(char* manufacturer, char* product, char* serial) {
     std::memcpy(manufacturer, "Mock", sizeof("Mock"));
@@ -32,12 +33,16 @@ __declspec(dllexport) std::uint32_t __cdecl rtlsdr_get_device_count() {
 __declspec(dllexport) int __cdecl rtlsdr_get_device_usb_strings(std::uint32_t index,
                                                                char* manufacturer, char* product, char* serial) {
     if (index != 0U) return -1;
+    // On Windows the index-based descriptor helper opens a SECOND USB handle.
+    // WinUSB may refuse it while the acquisition handle owns the interface.
+    if (scenario.load() == 3 && opened.load()) return -13;
     strings(manufacturer, product, serial);
     return 0;
 }
 __declspec(dllexport) int __cdecl rtlsdr_open(void** device, std::uint32_t index) {
     if (index != 0U || device == nullptr) return -2;
     selected = {};
+    owned_descriptor_reads.store(0);
     opened.store(true);
     cancelled.store(false);
     *device = &selected;
@@ -52,7 +57,12 @@ __declspec(dllexport) int __cdecl rtlsdr_close(void* device) {
 __declspec(dllexport) int __cdecl rtlsdr_get_usb_strings(void* device,
                                                          char* manufacturer, char* product, char* serial) {
     if (device != &selected) return -5;
+    const auto subsequent = owned_descriptor_reads.fetch_add(1) > 0;
+    if (scenario.load() == 5 && subsequent) return -14;
     strings(manufacturer, product, serial);
+    if (scenario.load() == 4 && subsequent) {
+        std::memcpy(product, "Changed tuner", sizeof("Changed tuner"));
+    }
     return 0;
 }
 __declspec(dllexport) int __cdecl rtlsdr_get_tuner_type(void* device) {
