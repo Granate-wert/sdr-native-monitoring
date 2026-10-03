@@ -18,7 +18,10 @@ from sdr_monitor.domain.device_capabilities import (
     AdapterRuntimeAvailability, AdapterRuntimeSnapshot, DeviceCapabilityBinding,
     DeviceFamily, RtlSessionRouteAssurance,
 )
-from sdr_monitor.domain.pane_scheduler import CaptureEpochCost, CaptureMeasurementMode, RtlRtbwPaneProfile
+from sdr_monitor.domain.pane_scheduler import (
+    CaptureEpochCost, CaptureMeasurementMode, PaneLayoutSlot, RtlRtbwPaneProfile,
+)
+from sdr_monitor.domain.receiver_topology import SweepPaneRequest
 from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ, RtlLiveRequest
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale
 from sdr_monitor.ui.v2.workspaces.independent_pane_setup import IndependentPaneSetupV2
@@ -220,15 +223,28 @@ class RtlPaneSetupTests(unittest.TestCase):
                                          CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005))
             crop = SimpleNamespace(pane_id="pane-4", start_hz=100_000_000, stop_hz=101_000_000)
             job = SimpleNamespace(profile=profile, crops=(crop,))
-            schedule = SimpleNamespace(resources=(SimpleNamespace(jobs=(job,)),))
-            plan = SimpleNamespace(resource_sources=(), groups=(), scheduler_intents=(),
+            resource_id = "pane-resource-4"
+            schedule = SimpleNamespace(resources=(SimpleNamespace(
+                physical_stream_resource_id=resource_id, jobs=(job,)),))
+            slots = tuple(PaneLayoutSlot(number) for number in range(1, 4)) + (
+                PaneLayoutSlot(4, SweepPaneRequest(
+                    "pane-4", "rtl-endpoint-4", 100_000_000, 101_000_000)),)
+            plan = SimpleNamespace(resource_sources=((resource_id, choice.device_id),),
+                                   groups=(), scheduler_intents=(),
                                    ad_sweep_geometry=(), paired_sweep_geometry=(),
                                    paired_sweep_requested_crops=(), hackrf_sweep_geometry=(),
-                                   hackrf_hardware_ranges=(), layout=SimpleNamespace(schedule=schedule))
+                                   hackrf_hardware_ranges=(),
+                                   layout=SimpleNamespace(slots=slots, schedule=schedule))
+            resource_preview = SimpleNamespace(
+                physical_stream_resource_id=resource_id, affected_pane_ids=("pane-4",),
+                capture_job_count=1, recording_conflict=False, revisit_estimates=())
             editor._prepared = cast(PreparedPaneUserSession, SimpleNamespace(
-                plan=plan, preview=(), handle=SimpleNamespace(source_labels={})))
+                plan=plan, preview=(resource_preview,),
+                handle=SimpleNamespace(source_labels={choice.device_id: choice.label}, applied=False)))
             editor._refresh_preview()
             preview = editor.preview.text()
+            self.assertIn("panes 4", editor.impact_summary.text())
+            self.assertIn("Empty 1, 2, 3", editor.impact_summary.text())
             self.assertIn("requested Fs 2.4 MS/s", preview)
             self.assertIn("planned digital analysis crop", preview)
             self.assertIn("not a guaranteed RF passband", preview)
@@ -237,6 +253,8 @@ class RtlPaneSetupTests(unittest.TestCase):
             self.assertIn("gain mode is auto, actual gain unknown", preview)
             self.assertNotIn("RF filter", preview)
             self.assertNotIn("HackRF acknowledges", preview)
+            self.assertIsNone(editor._future)
+            self.assertFalse(self.installed)
         finally:
             editor._prepared = None
             editor.release_after_shutdown()
