@@ -705,6 +705,10 @@ public:
     }
 
     void start() {
+        static_cast<void>(start_guarded(nullptr));
+    }
+
+    bool start_guarded(const std::shared_ptr<StartAdmissionGate>& gate) {
         std::lock_guard lock(lifecycle_mutex_);
         if (disconnect_requested_.load(std::memory_order_acquire)) {
             throw sdr_core::ConfigurationError(
@@ -721,7 +725,13 @@ public:
             config_.discard_blocks_after_start,
             std::memory_order_relaxed
         );
+        if (gate && !gate->claim()) return false;
         device_.start_stream();
+        if (gate && gate->cancelled()) {
+            device_.stop_stream();
+            state_.store(sdr_core::EngineState::Stopped, std::memory_order_release);
+            return false;
+        }
         state_.store(sdr_core::EngineState::Running, std::memory_order_release);
         try {
             start_channel_threads(*this);
@@ -749,6 +759,7 @@ public:
             "fixed_band_started",
             "fixed-band acquisition and CPU DSP started"
         );
+        return true;
     }
 
     void request_stop() {
@@ -2689,6 +2700,10 @@ AppliedConfig FixedBandEngine::reconfigure(const FixedBandConfig& config) {
     return impl_->reconfigure(config);
 }
 void FixedBandEngine::start() { impl_->start(); }
+bool FixedBandEngine::start_guarded(const std::shared_ptr<StartAdmissionGate>& gate) {
+    if (!gate) invalid("guarded Start requires an admission gate");
+    return impl_->start_guarded(gate);
+}
 void FixedBandEngine::request_stop() { impl_->request_stop(); }
 void FixedBandEngine::join() { impl_->join(); }
 void FixedBandEngine::stop() { impl_->stop(); }

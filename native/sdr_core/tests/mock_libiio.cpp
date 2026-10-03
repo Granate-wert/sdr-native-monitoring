@@ -70,6 +70,7 @@ std::atomic<bool> phase_gate_entered{}, phase_gate_release{true}, phase_gate_exp
 std::atomic<int> live_buffers{}, created_buffers{};
 std::atomic<int> live_contexts{}, created_contexts{}, destroyed_contexts{};
 std::atomic<int> rf_mutation_calls{};
+std::atomic<int> lo_write_calls{};
 
 void phase_gate(int kind, long long center) {
     if (phase_gate_kind.load() != kind || phase_gate_frequency.load() != center) return;
@@ -154,6 +155,7 @@ __declspec(dllexport) int mock_iio_live_contexts() { return live_contexts.load()
 __declspec(dllexport) int mock_iio_created_contexts() { return created_contexts.load(); }
 __declspec(dllexport) int mock_iio_destroyed_contexts() { return destroyed_contexts.load(); }
 __declspec(dllexport) int mock_iio_rf_mutation_calls() { return rf_mutation_calls.load(); }
+__declspec(dllexport) int mock_iio_lo_write_calls() { return lo_write_calls.load(); }
 __declspec(dllexport) double mock_iio_gain(int receiver) { return receiver == 2 ? gain2 : gain; }
 __declspec(dllexport) const char* mock_iio_gain_mode(int receiver) { return receiver == 2 ? gain_mode2.c_str() : gain_mode.c_str(); }
 __declspec(dllexport) iio_scan_context* iio_create_scan_context(const char*, unsigned int) { return new iio_scan_context; }
@@ -319,6 +321,7 @@ __declspec(dllexport) int iio_channel_attr_write_longlong(const iio_channel* cha
         if (value < 200'000LL || value > 56'000'000LL) return -EINVAL; bandwidth = value; return 0;
     }
     if (channel == &lo && std::strcmp(attr, "frequency") == 0) {
+        ++lo_write_calls;
         phase_gate(1, value);
         const auto fail_at = std::getenv("SDR_MOCK_LIBIIO_LO_WRITE_FAIL_AT_HZ");
         if (fail_at && value == std::strtoll(fail_at, nullptr, 10)) return -EIO;

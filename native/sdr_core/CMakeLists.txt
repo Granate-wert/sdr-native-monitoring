@@ -842,6 +842,15 @@ if(SDR_CORE_BUILD_TESTS)
             ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_REFILL_DELAY_MS=1"
         )
         add_executable(sdr_core_multi_receiver_supervisor_test tests/test_multi_receiver_supervisor.cpp)
+        add_executable(sdr_core_paired_sweep_coordinator_test tests/test_paired_sweep_coordinator.cpp)
+        target_link_libraries(sdr_core_paired_sweep_coordinator_test PRIVATE sdr_pluto sdr_core::sdr_core)
+        sdr_core_apply_platform_defaults(sdr_core_paired_sweep_coordinator_test)
+        add_dependencies(sdr_core_paired_sweep_coordinator_test sdr_core_mock_libiio)
+        add_test(NAME sdr_core.paired_sweep_coordinator COMMAND sdr_core_paired_sweep_coordinator_test)
+        set_tests_properties(sdr_core.paired_sweep_coordinator PROPERTIES
+            TIMEOUT 120
+            ENVIRONMENT "LIBIIO_DLL_PATH=$<TARGET_FILE:sdr_core_mock_libiio>;SDR_MOCK_LIBIIO_REFILL_DELAY_MS=1;SDR_MOCK_LIBIIO_TOPOLOGY_DUAL=1"
+        )
         target_link_libraries(sdr_core_multi_receiver_supervisor_test PRIVATE sdr_pluto sdr_core::sdr_core)
         sdr_core_apply_platform_defaults(sdr_core_multi_receiver_supervisor_test)
         sdr_core_apply_sanitizers(sdr_core_multi_receiver_supervisor_test)

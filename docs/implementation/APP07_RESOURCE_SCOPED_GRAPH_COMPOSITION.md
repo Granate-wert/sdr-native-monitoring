@@ -3210,3 +3210,49 @@ paired Sweep admission. The existing refusal remains. M2 positive paired/readbac
 and annotation matching ENRU visible witness, R14 lifecycle fault, M4 RTL and
 M5..M12 qualification remain OPEN. UI V2 ONLY/main dirty work/static firewall
 preserved; full APP00..14 goal ACTIVE, APP05 expiredtimer not restarted.
+## M3 native paired Sweep coordinator — 2026-10-03
+
+ContinuousSweepCoordinator now has an explicit paired native configuration.
+ONE FixedBandEngine/context/buffer performs each common retune; a native
+analytical sink, before render reduction, feeds separate RX1/RX2 assemblers.
+The bounded output publishes complete/gapped pairs and progressive paired
+previews with distinct source data and actual step generation, synchronization
+epoch, sample index/time, center, Fs, filter and FFT. Common-plan/profile
+mismatches and the combined reduced-memory budget refuse before RF. The
+existing shared 128MiB Sweep / 512MiB total limits are not doubled.
+
+One-window capture remains continuous, with no per-line retune; reduced-line
+host cadence stays separate from calculated FFT and render cadence. Paired
+rearm allocates a fresh Sweep epoch and clears old results. Common IQ counters
+are counted once; analytical RX1 and RX2 counters are separate. This native
+step DTO is NOT yet the full owner-bound session/acquisition-clock/intent receipt.
+
+Independent R0 review found three P1 defects: Critical worker causes were
+masked, Stop could race between the final flag check and Start, and one-sided
+final-step failure could lose the paired terminal gap. R1 joins the failed
+owner before reading the earliest Error/Critical, uses a native one-shot Start
+admission gate, validates BOTH spectra before assembly, and commits receipts
+after both admissions. Exceptional asymmetric assembly invalidates both lines
+as gaps; already-emitted failure gaps are not duplicated by cleanup.
+A pre-claim Stop prevents Start. An already-claimed control operation may be
+in flight; this does NOT promise zero RF writes after a Stop request.
+Ordinary unguarded Start stays unchanged; native test/gate APIs are not Python controls.
+
+Matching all-target Windows CPU HF+RTL build passed. Full46/46CTest55.18s,
+new coordinator target1.62s; serial explicit-current-module regression of
+28 existing binding/application/Sweep contracts passed12.444s with zero skips.
+Native SHA25624637297ccb6bc6afa25eff919bec2066626e5314ee551262703ec6170ba6a4a.
+The distinct configured gpt-6-sol/high reviewer source-closed all three findings
+in immutable seven-file R1 patch
+7c043a092112e9d390d7c6f06e5cb083656e525a64ac1a3ae73a48933d523c47.
+Read-only QA used configured gpt-6-luna/high. Runtime model attestation unavailable.
+The reproduced Critical failure and intermediate duplicate-gap failure remain
+retained; green final results do not erase them.
+
+This is bounded native source progress, NOT enabled product paired Sweep.
+Reduced Python bindings, full owner receipts, SAME Live/control/recording owner
+and exclusive mode lease, paired statistics, adversarial integration and
+physical qualification remain M3 gates. No UI guard removed, no new EXE/fullV2/
+frozen-package/physicalRX/dualRF/GUI/throughput/DPI/soak/Linux/release proof.
+Prior FF02 EXE and static firewall path remain unchanged. M2 positive paired/
+matching ENRU/readback, R14 cleanup, M4 RTL and M5..M12 remain OPEN.

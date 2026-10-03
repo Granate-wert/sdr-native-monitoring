@@ -11,6 +11,7 @@
 #include "sdr_pluto/pluto_backend.hpp"
 
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -221,6 +222,21 @@ struct PairedFixedBandMetrics {
 // Windows Pluto/libiio acquisition -> bounded native queue -> CPU DSP ->
 // bounded latest-wins SpectrumFrame engine. No Python callback participates
 // in the high-rate path.
+// Native coordinator-only one-shot admission. Stop and Start claim have one
+// atomic ordering point. A claimed operation is already in flight; cancellation
+// does not promise to undo control/RF writes that began before Stop.
+class StartAdmissionGate final {
+public:
+    bool claim() noexcept {
+        unsigned expected = 0;
+        return state_.compare_exchange_strong(expected, 1U, std::memory_order_acq_rel);
+    }
+    void cancel() noexcept { state_.store(2U, std::memory_order_release); }
+    bool cancelled() const noexcept { return state_.load(std::memory_order_acquire) == 2U; }
+private:
+    std::atomic<unsigned> state_{};
+};
+
 class FixedBandEngine final {
 public:
     explicit FixedBandEngine(std::string uri, std::uint32_t timeout_ms = 3000U,
@@ -237,6 +253,9 @@ public:
     // Stop -> apply/readback -> reset DSP/queues -> optional resume.
     [[nodiscard]] AppliedConfig reconfigure(const FixedBandConfig& config);
     void start();
+    // Not Python-bound. False means cancellation refused admission or ended
+    // an already-admitted buffer setup before acquisition threads launched.
+    [[nodiscard]] bool start_guarded(const std::shared_ptr<StartAdmissionGate>& gate);
     void request_stop();
     void join();
     void stop();

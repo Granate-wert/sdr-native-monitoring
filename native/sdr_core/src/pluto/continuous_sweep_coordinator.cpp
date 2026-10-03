@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -306,6 +307,265 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
     }
 }
 
+namespace {
+
+std::uint64_t paired_sweep_payload_bytes(const PairedContinuousSweepCoordinatorConfig& config) {
+    const auto definition = planned_definition(config.primary);
+    const double count = std::ceil((definition.stop_frequency_hz - definition.start_frequency_hz) /
+                                  definition.target_spacing_hz) + 1.0;
+    if (!std::isfinite(count) || count > static_cast<double>(sdr_core::sweep_max_reduced_bytes / 40U))
+        invalid("paired Sweep grid exceeds shared reduced budget");
+    const auto bins = static_cast<std::uint64_t>(count);
+    const auto slots = 2ULL * config.primary.output_queue_capacity + 5ULL;
+    // BOTH assemblers/pending FFT prefixes, queued + drained pairs, latest
+    // previews and constructing snapshots. Shared pointers may save memory,
+    // but admission does not assume sharing. Scalar step vectors included.
+    const auto bytes = 2ULL * (bins * (20ULL * slots + 28ULL) +
+        config.primary.segments.size() * config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
+        config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
+        config.primary.segments.size() * (slots * sizeof(PairedSweepStepReceipt) + 512ULL));
+    if (bytes > sdr_core::sweep_max_reduced_bytes)
+        invalid("paired Sweep exceeds aggregate 128MiB reduced budget");
+    return bytes;
+}
+
+// A reservation-only observer lets FixedBand admission count the whole Sweep
+// before any grid allocation, topology probe, RF write or worker launch.
+class SweepReservation final : public PairedSpectrumAnalyticalSink {
+public:
+    explicit SweepReservation(std::uint64_t bytes) : bytes_(bytes) {}
+    std::uint64_t payload_bytes() const noexcept override { return bytes_; }
+    void begin(const AppliedConfig&) override {}
+    void consume(const sdr_core::DualRxSpectrumFrame&) override {}
+    void shared_gap() override {}
+    void finish(bool) noexcept override {}
+private:
+    std::uint64_t bytes_;
+};
+
+class PairedSweepConsumer final : public PairedSpectrumAnalyticalSink {
+public:
+    explicit PairedSweepConsumer(PairedContinuousSweepCoordinatorConfig config)
+        : config_(std::move(config)), bytes_(paired_sweep_payload_bytes(config_)),
+          output_(config_.primary.output_queue_capacity, sdr_core::OverflowPolicy::LatestWins) {
+        steps_.reserve(config_.primary.segments.size());
+    }
+
+    std::uint64_t payload_bytes() const noexcept override { return bytes_; }
+
+    // Coordinator ONLY, preceding owner joined. No worker can call consume
+    // while these step controls are installed. begin confirms SAME readback.
+    void arm(std::size_t index, const AppliedConfig& applied) {
+        index_ = index;
+        applied_ = applied;
+        accepted_.store(false, std::memory_order_release);
+        accepted_count_.store(0, std::memory_order_release);
+        failed_.store(false, std::memory_order_release);
+        if (index == 0) { primary_.reset(); secondary_.reset(); steps_.clear(); }
+    }
+    void invalidate() noexcept { invalidated_.store(true, std::memory_order_release); }
+    bool accepted() const noexcept { return accepted_.load(std::memory_order_acquire); }
+    bool failed() const noexcept { return failed_.load(std::memory_order_acquire); }
+    bool failure_gap_ready() const noexcept { return failure_gap_ready_.load(std::memory_order_acquire); }
+    std::uint64_t accepted_count() const noexcept { return accepted_count_.load(std::memory_order_acquire); }
+    std::uint64_t completed() const noexcept { return completed_.load(std::memory_order_relaxed); }
+    std::uint64_t gaps() const noexcept { return gaps_.load(std::memory_order_relaxed); }
+    std::uint64_t superseded() const noexcept { return superseded_.load(std::memory_order_relaxed); }
+    sdr_core::QueueStats queue_stats() const { return output_.stats(); }
+    void set_secondary_nan_step_for_test(std::int32_t index) { nan_step_ = index; }
+
+    void begin(const AppliedConfig& applied) override {
+        if (applied.config_generation != applied_.config_generation ||
+            applied.receiver_selection != ReceiverSelection::Both)
+            throw std::runtime_error("paired Sweep begin readback changed");
+    }
+
+    void consume(const sdr_core::DualRxSpectrumFrame& pair) override {
+        if (invalidated_.load(std::memory_order_acquire)) return;
+        if (accepted() && config_.primary.segments.size() > 1) return;
+        const auto& p = pair.primary;
+        std::optional<sdr_core::SpectrumFrame> corrupted;
+        if (nan_step_ >= 0 && index_ == static_cast<std::size_t>(nan_step_)) {
+            corrupted = pair.secondary;
+            auto values = std::make_shared<std::vector<float>>(*corrupted->values);
+            values->front() = std::numeric_limits<float>::quiet_NaN();
+            corrupted->values = std::move(values);
+        }
+        const auto& q = corrupted ? *corrupted : pair.secondary;
+        if (pair.config_generation != applied_.config_generation ||
+            pair.synchronization_epoch == 0 || p.config_generation != pair.config_generation ||
+            q.config_generation != pair.config_generation ||
+            p.source.source_id != config_.primary.segments[index_].fixed_band.device.source_id ||
+            q.source.source_id != config_.secondary.segments[index_].fixed_band.device.source_id ||
+            p.source.metadata_json.at("receiver_selection") != "\"RX1\"" ||
+            q.source.metadata_json.at("receiver_selection") != "\"RX2\"" ||
+            p.frame_sequence != q.frame_sequence || p.first_sample_index != q.first_sample_index ||
+            p.timestamp_ns != q.timestamp_ns || pair.first_sample_index != p.first_sample_index ||
+            pair.timestamp_ns != p.timestamp_ns ||
+            p.center_frequency_hz != applied_.center_frequency_hz ||
+            q.center_frequency_hz != applied_.center_frequency_hz ||
+            p.sample_rate_hz != applied_.sample_rate_hz || q.sample_rate_hz != applied_.sample_rate_hz ||
+            p.analog_bandwidth_hz != applied_.analog_bandwidth_hz ||
+            q.analog_bandwidth_hz != applied_.analog_bandwidth_hz ||
+            !covers_usable_range(p, config_.primary.segments[index_]) ||
+            !covers_usable_range(q, config_.secondary.segments[index_]))
+            throw std::runtime_error("paired Sweep analytical step provenance/readback mismatch");
+        // BOTH complete contracts before either assembler or receipt mutates.
+        // The publisher checks temporal alignment, not finite spectrum values.
+        sdr_core::validate(p); sdr_core::validate(q);
+        if (config_.primary.segments.size() == 1) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < next_single_line_) return;
+            const auto rate = config_.primary.line_snapshot_rate_hz > 0
+                ? config_.primary.line_snapshot_rate_hz
+                : config_.primary.segments.front().fixed_band.snapshot_rate_hz;
+            next_single_line_ = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(1.0 / rate));
+        }
+        if (!primary_) {
+            if (index_ != 0) throw std::runtime_error("paired Sweep missing acquired prefix");
+            primary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(
+                applied_definition(config_.primary, {p}));
+            secondary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(
+                applied_definition(config_.secondary, {q}));
+        } else if (index_ > 0) {
+            primary_->bind_segment_generation(static_cast<std::uint32_t>(index_), pair.config_generation);
+            secondary_->bind_segment_generation(static_cast<std::uint32_t>(index_), pair.config_generation);
+        }
+        auto left = primary_->admit(sequence_, pair.timestamp_ns, {static_cast<std::uint32_t>(index_), p});
+        auto right = secondary_->admit(sequence_, pair.timestamp_ns, {static_cast<std::uint32_t>(index_), q});
+        if (left.size() != right.size() || left.size() > 1)
+            throw std::runtime_error("paired Sweep assemblers diverged");
+        steps_.push_back({static_cast<std::uint32_t>(index_), pair.config_generation,
+            pair.synchronization_epoch, pair.shared_input_gaps_before, p.frame_sequence,
+            p.first_sample_index, p.timestamp_ns, applied_.center_frequency_hz,
+            applied_.sample_rate_hz, applied_.analog_bandwidth_hz, p.fft_size});
+        if (!left.empty()) {
+            if (left.front().state != sdr_core::SweepLineState::Complete ||
+                right.front().state != sdr_core::SweepLineState::Complete)
+                throw std::runtime_error("paired Sweep did not complete both chains");
+            publish(std::move(left.front()), std::move(right.front()));
+            completed_.fetch_add(1, std::memory_order_relaxed);
+            ++sequence_;
+            steps_.clear();
+        } else {
+            const auto now = std::chrono::steady_clock::now();
+            if (last_preview_ == std::chrono::steady_clock::time_point{} ||
+                now - last_preview_ >= std::chrono::milliseconds(33)) {
+                auto a = primary_->preview(sequence_);
+                auto b = secondary_->preview(sequence_);
+                if (!a || !b) throw std::runtime_error("paired Sweep progress missing peer");
+                std::lock_guard lock(progress_mutex_);
+                progress_ = PairedSweepProgressFrame{config_.resource_id, std::move(*a), std::move(*b), steps_};
+                last_preview_ = now;
+            }
+        }
+        accepted_.store(true, std::memory_order_release);
+        accepted_count_.fetch_add(1, std::memory_order_release);
+    }
+
+    void shared_gap() override {
+        if (invalidated_.load(std::memory_order_acquire)) return;
+        // SAME DSP worker, before next synchronization epoch. No old pending
+        // history or output may cross this boundary. Multi-step pass aborts
+        // rather than mixing the acquired prefix with a different capture.
+        while (output_.depth() != 0) { PairedSweepLineFrame line; if (!output_.try_pop(line)) break; }
+        terminal(sdr_core::SweepLineGapReason::Reconfigure);
+        primary_.reset(); secondary_.reset(); steps_.clear();
+        accepted_.store(false, std::memory_order_release);
+        if (config_.primary.segments.size() > 1) {
+            failure_gap_ready_.store(true, std::memory_order_release);
+            throw std::runtime_error("shared acquisition gap invalidated paired Sweep pass");
+        }
+    }
+    void finish(bool failed) noexcept override { failed_.store(failed, std::memory_order_release); }
+
+    // Only after join: terminal partial prefix is returned as aligned gaps.
+    void terminal(sdr_core::SweepLineGapReason reason) {
+        if (!primary_) {
+            auto definition = planned_definition(config_.primary);
+            definition.source.metadata_json["receiver_selection"] = "\"RX1\"";
+            primary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(std::move(definition));
+            secondary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(planned_definition(config_.secondary));
+        }
+        auto left = primary_->flush(reason);
+        auto right = secondary_->flush(reason);
+        if (left.size() != right.size() || left.size() > 1) {
+            // An exceptional allocation/admission can leave one assembler
+            // committed ahead of its peer. Never suppress the group gap or
+            // claim that prefix as a valid pair: invalidate both full lines.
+            steps_.clear();
+            left.clear(); right.clear();
+        }
+        auto a = left.empty() ? primary_->emit_gap(sequence_, monotonic_now_ns(), reason) : std::move(left.front());
+        auto b = right.empty() ? secondary_->emit_gap(sequence_, a.completed_ns, reason) : std::move(right.front());
+        publish(std::move(a), std::move(b));
+        gaps_.fetch_add(1, std::memory_order_relaxed);
+        ++sequence_;
+    }
+    std::vector<PairedSweepLineFrame> poll(std::size_t maximum) {
+        const auto depth = static_cast<std::size_t>(output_.depth());
+        const auto limit = maximum == 0 ? depth : std::min(maximum, depth);
+        std::vector<PairedSweepLineFrame> lines;
+        lines.reserve(limit);
+        PairedSweepLineFrame line;
+        while (lines.size() < limit && output_.try_pop(line)) lines.push_back(std::move(line));
+        return lines;
+    }
+    std::optional<PairedSweepProgressFrame> progress() {
+        std::lock_guard lock(progress_mutex_);
+        auto result = std::move(progress_); progress_.reset(); return result;
+    }
+private:
+    void publish(sdr_core::SweepLineFrame a, sdr_core::SweepLineFrame b) {
+        { std::lock_guard lock(progress_mutex_); progress_.reset(); }
+        if (output_.try_push({config_.resource_id, std::move(a), std::move(b), steps_}) == sdr_core::PushResult::Evicted)
+            superseded_.fetch_add(1, std::memory_order_relaxed);
+    }
+    PairedContinuousSweepCoordinatorConfig config_;
+    const std::uint64_t bytes_;
+    sdr_core::BoundedQueue<PairedSweepLineFrame> output_;
+    std::mutex progress_mutex_;
+    std::optional<PairedSweepProgressFrame> progress_;
+    std::unique_ptr<sdr_core::ContinuousSweepLineAssembler> primary_, secondary_;
+    std::vector<PairedSweepStepReceipt> steps_;
+    AppliedConfig applied_;
+    std::size_t index_{};
+    std::int32_t nan_step_{-1};
+    std::uint64_t sequence_{1};
+    std::chrono::steady_clock::time_point last_preview_;
+    std::chrono::steady_clock::time_point next_single_line_;
+    std::atomic<bool> accepted_{}, failed_{}, invalidated_{};
+    std::atomic<bool> failure_gap_ready_{};
+    std::atomic<std::uint64_t> accepted_count_{};
+    std::atomic<std::uint64_t> completed_{}, gaps_{}, superseded_{};
+};
+} // namespace
+
+void validate(const PairedContinuousSweepCoordinatorConfig& value) {
+    validate(value.primary); validate(value.secondary);
+    const auto& p = value.primary;
+    const auto& q = value.secondary;
+    if (value.resource_id.empty() || value.resource_id.find('\0') != std::string::npos)
+        invalid("paired Sweep requires explicit resource identity");
+    if (p.statistics || q.statistics)
+        invalid("paired coordinator statistics integration not yet qualified");
+    if (p.epoch != q.epoch || p.display_start_hz != q.display_start_hz ||
+        p.display_stop_hz != q.display_stop_hz || p.usable_window_hz != q.usable_window_hz ||
+        p.analysis_bins_per_usable_window != q.analysis_bins_per_usable_window ||
+        p.line_snapshot_rate_hz != q.line_snapshot_rate_hz ||
+        p.output_queue_capacity != q.output_queue_capacity ||
+        p.segment_frame_timeout_ms != q.segment_frame_timeout_ms || p.segments.size() != q.segments.size())
+        invalid("paired Sweep requires one explicit common plan");
+    const auto sink = std::make_shared<SweepReservation>(paired_sweep_payload_bytes(value));
+    for (std::size_t index = 0; index < p.segments.size(); ++index) {
+        if (p.segments[index].usable_start_hz != q.segments[index].usable_start_hz ||
+            p.segments[index].usable_stop_hz != q.segments[index].usable_stop_hz)
+            invalid("paired Sweep usable boundaries differ");
+        validate(PairedFixedBandConfig{p.segments[index].fixed_band, q.segments[index].fixed_band, 1U, sink});
+    }
+}
+
 class ContinuousSweepCoordinator::Impl final {
 public:
     Impl(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
@@ -318,6 +578,10 @@ public:
 
     void configure(ContinuousSweepCoordinatorConfig config) {
         std::lock_guard lock(lifecycle_mutex_);
+        configure_unlocked(std::move(config));
+    }
+
+    void configure_unlocked(ContinuousSweepCoordinatorConfig config) {
         const auto current = state_.load(std::memory_order_acquire);
         if (current != sdr_core::EngineState::Created &&
             current != sdr_core::EngineState::Configured &&
@@ -353,6 +617,9 @@ public:
                 grid.frequencies(), config.statistics_snapshot_rate_hz, slots);
         }
         config_ = std::move(config);
+        paired_.reset();
+        paired_config_.reset();
+        { std::lock_guard error_lock(error_mutex_); last_error_.clear(); }
         statistics_ = std::move(statistics);
         output_ = std::make_unique<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>>(
             config_.output_queue_capacity, sdr_core::OverflowPolicy::LatestWins
@@ -383,6 +650,9 @@ public:
         device_iq_samples_.store(0U, std::memory_order_relaxed);
         device_iq_blocks_.store(0U, std::memory_order_relaxed);
         analytical_fft_frames_.store(0U, std::memory_order_relaxed);
+        secondary_analytical_fft_frames_.store(0U, std::memory_order_relaxed);
+        last_secondary_fft_ = 0;
+        start_gate_.store(nullptr, std::memory_order_release);
         source_short_reads_.store(0U, std::memory_order_relaxed);
         source_refill_errors_.store(0U, std::memory_order_relaxed);
         source_output_pool_exhaustions_.store(0U, std::memory_order_relaxed);
@@ -419,6 +689,22 @@ public:
         state_.store(sdr_core::EngineState::Configured, std::memory_order_release);
     }
 
+    void configure_paired(PairedContinuousSweepCoordinatorConfig config) {
+        std::lock_guard lock(lifecycle_mutex_);
+        validate(config);
+        if (last_paired_epoch_ == std::numeric_limits<std::uint64_t>::max())
+            invalid("paired Sweep epoch exhausted");
+        config.primary.epoch = std::max(config.primary.epoch, last_paired_epoch_ + 1U);
+        config.secondary.epoch = config.primary.epoch;
+        auto sink = std::make_shared<PairedSweepConsumer>(config);
+        // Install ordinary state and paired controls under the SAME lifecycle
+        // lock; another Start cannot observe an intermediate single profile.
+        configure_unlocked(config.primary);
+        last_paired_epoch_ = config.primary.epoch;
+        paired_config_ = std::move(config);
+        paired_ = std::move(sink);
+    }
+
     void start() {
         std::lock_guard lock(lifecycle_mutex_);
         if (state_.load(std::memory_order_acquire) != sdr_core::EngineState::Configured ||
@@ -431,7 +717,7 @@ public:
         }
         stop_requested_.store(false, std::memory_order_release);
         state_.store(sdr_core::EngineState::Running, std::memory_order_release);
-        worker_ = std::thread([this] { run(); });
+        worker_ = std::thread([this] { if (paired_) run_paired(); else run(); });
     }
 
     void request_stop() {
@@ -440,7 +726,9 @@ public:
                 expected, sdr_core::EngineState::Stopping, std::memory_order_acq_rel
             )) {
             expected_stop_requests_.fetch_add(1U, std::memory_order_relaxed);
+            if (paired_) paired_->invalidate();
             stop_requested_.store(true, std::memory_order_release);
+            if (const auto gate = start_gate_.load(std::memory_order_acquire)) gate->cancel();
             return;
         }
         if (expected == sdr_core::EngineState::Stopping || expected == sdr_core::EngineState::Stopped ||
@@ -492,6 +780,7 @@ public:
         result.device_iq_samples = device_iq_samples_.load(std::memory_order_relaxed);
         result.device_iq_blocks = device_iq_blocks_.load(std::memory_order_relaxed);
         result.analytical_fft_frames = analytical_fft_frames_.load(std::memory_order_relaxed);
+        result.secondary_analytical_fft_frames = secondary_analytical_fft_frames_.load(std::memory_order_relaxed);
         {
             std::lock_guard segment_metrics_lock(segment_frame_metrics_mutex_);
             result.completed_current_generation_fft_frames = completed_current_generation_fft_frames_;
@@ -519,6 +808,12 @@ public:
         result.fft_frames_dropped = fft_frames_dropped_.load(std::memory_order_relaxed);
         result.acquisition_queue_high_water = acquisition_queue_high_water_.load(std::memory_order_relaxed);
         result.spectrum_queue_high_water = spectrum_queue_high_water_.load(std::memory_order_relaxed);
+        if (paired_) {
+            result.output_queue = paired_->queue_stats();
+            result.completed_lines = paired_->completed();
+            result.gapped_lines = paired_->gaps();
+            result.output_snapshots_superseded = paired_->superseded();
+        }
         return result;
     }
 
@@ -528,6 +823,7 @@ public:
     }
 
     [[nodiscard]] std::vector<sdr_core::SweepLineFrame> poll_lines(const std::size_t max_items) {
+        if (paired_) invalid("paired coordinator requires poll_paired_lines");
         std::vector<sdr_core::SweepLineFrame> result;
         if (!output_) {
             return result;
@@ -546,6 +842,7 @@ public:
     }
 
     [[nodiscard]] std::optional<sdr_core::SweepProgressFrame> poll_progress() {
+        if (paired_) invalid("paired coordinator requires poll_paired_progress");
         std::lock_guard lock(progress_mutex_);
         auto result = std::move(progress_);
         progress_.reset();
@@ -553,6 +850,7 @@ public:
     }
 
     [[nodiscard]] std::size_t discard_lines(const std::size_t max_items) {
+        if (paired_) return paired_->poll(max_items).size();
         if (!output_) {
             return 0U;
         }
@@ -569,7 +867,136 @@ public:
         engine_.disconnect();
     }
 
+    std::vector<PairedSweepLineFrame> poll_paired_lines(std::size_t maximum) {
+        if (!paired_) invalid("coordinator has no paired plan");
+        return paired_->poll(maximum);
+    }
+    std::optional<PairedSweepProgressFrame> poll_paired_progress() {
+        if (!paired_) invalid("coordinator has no paired plan");
+        return paired_->progress();
+    }
+    std::string last_error() const {
+        std::lock_guard lock(error_mutex_); return last_error_;
+    }
+    void set_start_delay_for_test(std::uint32_t milliseconds) {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (state() != sdr_core::EngineState::Configured || milliseconds > 1000)
+            invalid("Start test delay requires CONFIGURED and [0,1000]ms");
+        start_delay_for_test_ = milliseconds;
+    }
+    bool start_pending_for_test() const noexcept { return start_pending_for_test_.load(std::memory_order_acquire); }
+    void set_secondary_nan_step_for_test(std::int32_t index) {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (state() != sdr_core::EngineState::Configured || !paired_ || index < -1 ||
+            index >= static_cast<std::int32_t>(config_.segments.size()))
+            invalid("NaN test seam requires configured paired step");
+        paired_->set_secondary_nan_step_for_test(index);
+    }
+
 private:
+    [[noreturn]] void throw_native_failure(const char* fallback) {
+        // has_error is observable before emit_event finishes enqueueing its
+        // Critical diagnostic. Join BOTH writers before reading the cause.
+        try {
+            if (engine_.state() == sdr_core::EngineState::Running) engine_.stop();
+            else if (engine_.state() == sdr_core::EngineState::Error || engine_.state() == sdr_core::EngineState::Stopping) engine_.join();
+        } catch (...) {}
+        std::string message = fallback;
+        std::uint64_t first = std::numeric_limits<std::uint64_t>::max();
+        for (const auto& event : engine_.poll_events(0)) {
+            if ((event.severity == sdr_core::EventSeverity::Error || event.severity == sdr_core::EventSeverity::Critical) &&
+                event.sequence < first) { message = event.message; first = event.sequence; }
+        }
+        throw std::runtime_error(message);
+    }
+
+    void run_paired() noexcept {
+        try {
+            while (!stop_requested_.load(std::memory_order_acquire)) {
+                { std::lock_guard lock(applied_segments_mutex_); current_applied_segments_.clear(); }
+                for (std::size_t index = 0; index < config_.segments.size(); ++index) {
+                    if (stop_requested_.load(std::memory_order_acquire)) break;
+                    const auto configure_started = StageTimingCounters::Clock::now();
+                    const auto applied = engine_.configure_paired({
+                        config_.segments[index].fixed_band,
+                        paired_config_->secondary.segments[index].fixed_band, 1U, paired_});
+                    segment_configure_timing_.record(configure_started);
+                    segment_reconfigurations_.fetch_add(1, std::memory_order_relaxed);
+                    paired_->arm(index, applied);
+                    { std::lock_guard lock(applied_segments_mutex_); current_applied_segments_.push_back(applied); }
+                    auto gate = std::make_shared<StartAdmissionGate>();
+                    start_gate_.store(gate, std::memory_order_release);
+                    if (stop_requested_.load(std::memory_order_acquire)) { gate->cancel(); break; }
+                    if (start_delay_for_test_ != 0) {
+                        start_pending_for_test_.store(true, std::memory_order_release);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(start_delay_for_test_));
+                        start_pending_for_test_.store(false, std::memory_order_release);
+                    }
+                    const auto start_started = StageTimingCounters::Clock::now();
+                    if (!engine_.start_guarded(gate)) break;
+                    segment_start_timing_.record(start_started);
+                    const auto wait_started = StageTimingCounters::Clock::now();
+                    const auto deadline = wait_started + std::chrono::milliseconds(config_.segment_frame_timeout_ms);
+                    std::uint64_t accounted_admissions = 0;
+                    const auto account_pair = [&] {
+                        account_accepted_segment_metrics(applied.config_generation);
+                        const auto admitted = paired_->accepted_count();
+                        std::lock_guard lock(segment_frame_metrics_mutex_);
+                        completed_current_generation_fft_frames_[index] += admitted - accounted_admissions;
+                        accounted_admissions = admitted;
+                    };
+                    while (!stop_requested_.load(std::memory_order_acquire)) {
+                        account_pair();
+                        if (engine_.metrics().has_error || paired_->failed()) {
+                            throw_native_failure("paired Sweep fixed-band worker failed");
+                        }
+                        if (paired_->accepted() && config_.segments.size() > 1) break;
+                        if (!paired_->accepted() && std::chrono::steady_clock::now() >= deadline) {
+                            segment_frame_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                            throw std::runtime_error("paired Sweep analytical step timeout");
+                        }
+                        std::this_thread::sleep_for(std::chrono::microseconds(100));
+                    }
+                    segment_frame_wait_timing_.record(wait_started);
+                    const auto stop_started = StageTimingCounters::Clock::now();
+                    engine_.stop();
+                    segment_stop_timing_.record(stop_started);
+                    account_pair();
+                    if (engine_.metrics().has_error || paired_->failed()) {
+                        throw_native_failure("paired Sweep worker/terminal drain failed");
+                    }
+                    if (config_.segments.size() == 1 && paired_->completed() > 0) {
+                        std::lock_guard lock(applied_segments_mutex_);
+                        completed_applied_segments_ = current_applied_segments_;
+                    }
+                    if (stop_requested_.load(std::memory_order_acquire)) break;
+                }
+                if (stop_requested_.load(std::memory_order_acquire)) break;
+                { std::lock_guard lock(applied_segments_mutex_); completed_applied_segments_ = current_applied_segments_; }
+            }
+            paired_->invalidate();
+            paired_->terminal(sdr_core::SweepLineGapReason::Cancellation);
+            terminal_control_gaps_.fetch_add(1, std::memory_order_relaxed);
+            expected_cancellations_.fetch_add(1, std::memory_order_relaxed);
+            state_.store(sdr_core::EngineState::Stopped, std::memory_order_release);
+        } catch (...) {
+            const auto cause = std::current_exception();
+            paired_->invalidate();
+            try { std::rethrow_exception(cause); }
+            catch (const std::exception& error) { std::lock_guard lock(error_mutex_); last_error_ = error.what(); }
+            catch (...) { std::lock_guard lock(error_mutex_); last_error_ = "unknown paired Sweep failure"; }
+            has_error_.store(true, std::memory_order_relaxed);
+            try {
+                if (engine_.state() == sdr_core::EngineState::Running) engine_.stop();
+                else if (engine_.state() == sdr_core::EngineState::Error || engine_.state() == sdr_core::EngineState::Stopping) engine_.join();
+            } catch (...) {}
+            if (!paired_->failure_gap_ready()) {
+                try { paired_->terminal(sdr_core::SweepLineGapReason::Reconfigure); } catch (...) {}
+            }
+            state_.store(sdr_core::EngineState::Error, std::memory_order_release);
+        }
+    }
+
     void publish(sdr_core::SweepLineFrame line) {
         if (statistics_ && config_.segments.size() > 1) {
             statistics_->consume(line, monotonic_now_ns(), line.state == sdr_core::SweepLineState::Gap);
@@ -760,6 +1187,13 @@ private:
     // both paths without double-counting a continuous one-window stream.
     void account_accepted_segment_metrics(const std::uint64_t generation) noexcept {
         const auto metrics = engine_.metrics();
+        if (paired_) {
+            const auto secondary = engine_.paired_metrics().secondary.engine.fft_frames_computed;
+            secondary_analytical_fft_frames_.fetch_add(
+                last_accounted_generation_ == generation ? counter_delta(secondary, last_secondary_fft_) : secondary,
+                std::memory_order_relaxed);
+            last_secondary_fft_ = secondary;
+        }
         const auto previous = last_accounted_metrics_.has_value() &&
             last_accounted_generation_ == generation
             ? &*last_accounted_metrics_ : nullptr;
@@ -1097,6 +1531,8 @@ private:
             const auto current = state();
             if (current == sdr_core::EngineState::Running || current == sdr_core::EngineState::Stopping) {
                 stop_requested_.store(true, std::memory_order_release);
+                if (paired_) paired_->invalidate();
+                if (const auto gate = start_gate_.load(std::memory_order_acquire)) gate->cancel();
             }
             if (worker_.joinable()) {
                 worker_.join();
@@ -1111,6 +1547,14 @@ private:
     std::string uri_;
     FixedBandEngine engine_;
     ContinuousSweepCoordinatorConfig config_;
+    std::optional<PairedContinuousSweepCoordinatorConfig> paired_config_;
+    std::shared_ptr<PairedSweepConsumer> paired_;
+    std::uint64_t last_paired_epoch_{};
+    std::atomic<std::shared_ptr<StartAdmissionGate>> start_gate_;
+    std::uint32_t start_delay_for_test_{};
+    std::atomic<bool> start_pending_for_test_{};
+    mutable std::mutex error_mutex_;
+    std::string last_error_;
     std::shared_ptr<sdr_core::SweepStatisticsPublisher> statistics_;
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>> output_;
     std::mutex progress_mutex_;
@@ -1138,6 +1582,8 @@ private:
     std::atomic<std::uint64_t> device_iq_samples_{};
     std::atomic<std::uint64_t> device_iq_blocks_{};
     std::atomic<std::uint64_t> analytical_fft_frames_{};
+    std::atomic<std::uint64_t> secondary_analytical_fft_frames_{};
+    std::uint64_t last_secondary_fft_{};
     mutable std::mutex segment_frame_metrics_mutex_;
     std::vector<std::uint64_t> completed_current_generation_fft_frames_;
     bool completed_line_analysis_geometry_available_{};
@@ -1172,6 +1618,7 @@ ContinuousSweepCoordinator::ContinuousSweepCoordinator(std::string uri, const st
 
 ContinuousSweepCoordinator::~ContinuousSweepCoordinator() noexcept = default;
 void ContinuousSweepCoordinator::configure(ContinuousSweepCoordinatorConfig config) { impl_->configure(std::move(config)); }
+void ContinuousSweepCoordinator::configure_paired(PairedContinuousSweepCoordinatorConfig config) { impl_->configure_paired(std::move(config)); }
 void ContinuousSweepCoordinator::start() { impl_->start(); }
 void ContinuousSweepCoordinator::request_stop() { impl_->request_stop(); }
 void ContinuousSweepCoordinator::join() { impl_->join(); }
@@ -1192,5 +1639,16 @@ std::optional<sdr_core::SweepProgressFrame> ContinuousSweepCoordinator::poll_pro
 std::size_t ContinuousSweepCoordinator::discard_lines(const std::size_t max_items) {
     return impl_->discard_lines(max_items);
 }
+
+std::vector<PairedSweepLineFrame> ContinuousSweepCoordinator::poll_paired_lines(std::size_t maximum) {
+    return impl_->poll_paired_lines(maximum);
+}
+std::optional<PairedSweepProgressFrame> ContinuousSweepCoordinator::poll_paired_progress() {
+    return impl_->poll_paired_progress();
+}
+std::string ContinuousSweepCoordinator::last_error() const { return impl_->last_error(); }
+void ContinuousSweepCoordinator::set_start_delay_for_test(std::uint32_t milliseconds) { impl_->set_start_delay_for_test(milliseconds); }
+bool ContinuousSweepCoordinator::start_pending_for_test() const noexcept { return impl_->start_pending_for_test(); }
+void ContinuousSweepCoordinator::set_secondary_nan_step_for_test(std::int32_t index) { impl_->set_secondary_nan_step_for_test(index); }
 
 }  // namespace sdr_pluto

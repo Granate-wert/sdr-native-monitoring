@@ -51,6 +51,45 @@ struct ContinuousSweepCoordinatorConfig {
 
 void validate(const ContinuousSweepCoordinatorConfig& value);
 
+// Two explicit views of ONE hardware plan. The second plan must not request
+// independent tuning. Resource identity is supplied by the admitted owner,
+// never parsed from a producer name. Not yet a product/lease admission API.
+struct PairedContinuousSweepCoordinatorConfig {
+    std::string resource_id;
+    ContinuousSweepCoordinatorConfig primary;
+    ContinuousSweepCoordinatorConfig secondary;
+};
+
+struct PairedSweepStepReceipt {
+    std::uint32_t step_index{};
+    std::uint64_t config_generation{};
+    std::uint64_t synchronization_epoch{};
+    std::uint64_t shared_input_gaps_before{};
+    std::uint64_t frame_sequence{};
+    std::uint64_t first_sample_index{};
+    std::int64_t timestamp_ns{}; // Retained producer time, not invented RF time.
+    double center_frequency_hz{};
+    double sample_rate_hz{};
+    double analog_bandwidth_hz{};
+    std::uint32_t fft_size{};
+};
+
+struct PairedSweepLineFrame {
+    std::string resource_id;
+    sdr_core::SweepLineFrame primary;
+    sdr_core::SweepLineFrame secondary;
+    std::vector<PairedSweepStepReceipt> steps;
+};
+
+struct PairedSweepProgressFrame {
+    std::string resource_id;
+    sdr_core::SweepProgressFrame primary;
+    sdr_core::SweepProgressFrame secondary;
+    std::vector<PairedSweepStepReceipt> steps;
+};
+
+void validate(const PairedContinuousSweepCoordinatorConfig& value);
+
 // Multi-segment coordinator wall-clock stages, not RF dwell or ADC timestamps.
 // A live metrics() call is an independent relaxed snapshot of these counters;
 // a post-Stop snapshot is required for exact count/total consistency.
@@ -92,6 +131,9 @@ struct ContinuousSweepCoordinatorMetrics {
     std::uint64_t device_iq_samples{};
     std::uint64_t device_iq_blocks{};
     std::uint64_t analytical_fft_frames{};
+    // In paired mode the legacy analytical count above is RX1 only, NOT two
+    // streams summed. This separate RX2 count excludes repeated common IQ.
+    std::uint64_t secondary_analytical_fft_frames{};
     // Every entry is incremented only after the coordinator receives a
     // SpectrumFrame for the segment's currently applied configuration
     // generation and verifies that it covers the declared usable range. It is
@@ -133,6 +175,7 @@ public:
     ContinuousSweepCoordinator& operator=(const ContinuousSweepCoordinator&) = delete;
 
     void configure(ContinuousSweepCoordinatorConfig config);
+    void configure_paired(PairedContinuousSweepCoordinatorConfig config);
     void start();
     void request_stop();
     void join();
@@ -149,6 +192,15 @@ public:
     // Drain at most the entry queue depth; zero means that finite entry bound.
     [[nodiscard]] std::vector<sdr_core::SweepLineFrame> poll_lines(std::size_t max_items);
     [[nodiscard]] std::optional<sdr_core::SweepProgressFrame> poll_progress();
+    [[nodiscard]] std::vector<PairedSweepLineFrame> poll_paired_lines(std::size_t max_items);
+    [[nodiscard]] std::optional<PairedSweepProgressFrame> poll_paired_progress();
+    // Native paired first-cause diagnostic. Legacy single failure reporting
+    // remains in its metrics; this string is not an RF validity claim.
+    [[nodiscard]] std::string last_error() const;
+    // Native test-only seams, deliberately not Python/product controls.
+    void set_start_delay_for_test(std::uint32_t milliseconds);
+    [[nodiscard]] bool start_pending_for_test() const noexcept;
+    void set_secondary_nan_step_for_test(std::int32_t step_index);
     // Native-only queue drain for benchmark/evidence consumers. It releases
     // completed line buffers without materialising their spectrum arrays at
     // the Python boundary.
