@@ -3339,3 +3339,31 @@ recording owner, exclusive modelease and full owner-bound observed receipts.
 Sequential exceptional allocations are not an atomic persistent group ledger.
 No new EXE/fullV2/frozen-package/physicalRX/GUI/performance/soak/Linux/release
 qualification; FF02 EXE/staticfirewall path unchanged. APP07/fullAPP00..14 OPEN.
+
+## M3 SAME NativeLive ownership authority prerequisite
+
+Sweep reservations now carry an individual opaque owner token. An expired lease
+cannot authorize a newer reservation; repeated old release is inert. Actual
+NativeLive still supplies the recorder/control transaction and selected route.
+Arm/Start recording and Live Apply/Stop/Close/shutdown refuse before changing state
+while Sweep owns it; callers must close Sweep first, not invalidate its route.
+The token also fences the SAME selected session, URI, device and immutable
+applied-profile objects. A changed owner snapshot refuses before construction.
+
+The continuous plan factory binds its constructed coordinator/display owner to
+that same reservation. It refuses stale construction and a second constructor
+even through another factory holding the same lease. Lease release first closes
+the registered owner. Failed cleanup retains owner and lease, bars new Start,
+and allows explicit cleanup retry. Start uses the same low-rate control lock;
+acquisition/DSP/polling remain outside it. Reentrant construction/release cannot
+retire a pending owner. Failed native construction relies on the native
+constructor's RAII contract; it does not fabricate a cleanup receipt or retry.
+
+Standalone/fake leases retain optional callbacks for compatibility, not actual
+product ownership authority. Direct native evidence callers must still use the
+factory control transaction for Start. Sequential Sweep adapter lifecycle is
+separate; this prerequisite does not certify every external native caller.
+Paired product admission, selection/session/epoch/full per-step receipts and the
+actual paired pane CaptureJob bridge remain OPEN. No UI enablement, matched EXE,
+physical multi-source, performance or release qualification follows from this
+ownership prerequisite.

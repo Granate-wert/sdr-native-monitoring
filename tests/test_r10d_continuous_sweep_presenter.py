@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import os
 import time
 import threading
@@ -122,6 +124,8 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
                 events.append("display-close")
 
         class Factory:
+            control_transaction = staticmethod(nullcontext)
+
             @classmethod
             def from_native_live(cls, _live: object) -> "Factory":
                 events.append("lease")

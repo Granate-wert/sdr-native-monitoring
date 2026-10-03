@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import math
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from ..domain import BackendKind, LiveConfiguration
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
@@ -231,10 +231,12 @@ class NativeContinuousSweepPlanFactory:
             self._closed = True
 
     def create_display_service(self) -> NativeContinuousSweepDisplayService:
-        self._require_open()
-        return NativeContinuousSweepDisplayService(
-            self._lease.native_module, self._lease.source.context_uri,
-            expected_serial=self._lease.source.expected_serial,
+        return self._construct_owner(
+            lambda: NativeContinuousSweepDisplayService(
+                self._lease.native_module, self._lease.source.context_uri,
+                expected_serial=self._lease.source.expected_serial,
+            ),
+            lambda owner: owner.close(),
         )
 
     def create_coordinator(self, *, timeout_ms: int = 3000) -> Any:
@@ -248,11 +250,29 @@ class NativeContinuousSweepPlanFactory:
         self._require_open()
         if timeout_ms <= 0:
             raise ValueError("continuous sweep coordinator timeout must be positive")
-        return create_identity_bound_owner(
-            self._lease.native_module, "NativeContinuousSweepCoordinator",
-            self._lease.source.context_uri, timeout_ms,
-            expected_serial=self._lease.source.expected_serial,
+        return self._construct_owner(
+            lambda: create_identity_bound_owner(
+                self._lease.native_module, "NativeContinuousSweepCoordinator",
+                self._lease.source.context_uri, timeout_ms,
+                expected_serial=self._lease.source.expected_serial,
+            ),
+            lambda owner: owner.disconnect(),
         )
+
+    @contextmanager
+    def control_transaction(self):
+        control = self._lease.control_transaction
+        with control() if control is not None else nullcontext():
+            self._require_open()
+            self._lease.assert_active()
+            yield
+
+    def _construct_owner(self, construct: Callable[[], Any], cleanup: Callable[[Any], None]) -> Any:
+        with self.control_transaction():
+            owned_construct = self._lease.construct_owner
+            if owned_construct is not None:
+                return owned_construct(construct, cleanup)
+            return construct()  # Older explicit adapter; not SAME Live admission.
 
     def evidence_build_info(self) -> dict[str, str]:
         """Return a small, route-free native-build identity for evidence."""
@@ -346,7 +366,8 @@ class NativeLiveContinuousSweepDisplayService:
             config = factory.build(request)
             display = factory.create_display_service()
             self._display = display
-            display.start(config)
+            with factory.control_transaction():
+                display.start(config)
         except Exception:
             # No successfully started publication stream was exposed. Cleanup
             # retries must not poll a failed or already closing display.

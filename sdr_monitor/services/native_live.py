@@ -21,7 +21,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import Any, cast
+from typing import Any, Callable, cast
 from ..domain.live import LiveAdmissionRejected
 from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 
@@ -244,6 +244,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         # or DSP hot paths and prevents an accidental second context/stream.
         self._sweep_lease_lock = threading.RLock()
         self._sweep_lease_active = False
+        self._sweep_lease_token: object | None = None
+        self._sweep_lease_snapshot: LiveSnapshot | None = None
+        self._sweep_lease_uri: str | None = None
+        self._sweep_native_owner: tuple[Any, Callable[[Any], None]] | None = None
+        self._sweep_owner_constructing = False
+        self._sweep_owner_closing = False
+        self._sweep_owner_release_failed = False
         self._native_recording_armed: _NativeRecordingRequest | None = None
         self._native_recording_active: _NativeRecordingRequest | None = None
         self._native_recording_epoch = 0
@@ -516,6 +523,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._recording_transaction_lock:
             self._require_no_external_analyzer_owner()
             self._require_single_receiver_control()
+            self._require_no_native_sweep_lease()
             return self._apply_configuration_unlocked(requested)
 
     def _apply_configuration_unlocked(self, requested: LiveConfiguration) -> LiveSnapshot:
@@ -975,6 +983,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             return self._stop_unlocked()
 
     def _stop_unlocked(self) -> LiveSnapshot:
+        self._require_no_native_sweep_lease()
         with self._lock:
             stopped_uri = self._native_uri
         self._release_stream(timeout_s=5.0)
@@ -1004,6 +1013,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         # constructing it, return, and let that Start publish a live engine
         # after the application had already completed its cleanup pass.
         with self._recording_transaction_lock:
+            self._require_no_native_sweep_lease()
             self._release_stream(timeout_s=max(0.0, timeout_s))
             with self._lock:
                 super().stop()
@@ -1227,26 +1237,95 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     snapshot.applied.applied,
                     expected_serial=normalized_pluto_serial(snapshot.device.serial),
                 )
+                token = object()
+                self._sweep_lease_token = token
+                self._sweep_lease_snapshot = snapshot
+                self._sweep_lease_uri = uri
                 self._sweep_lease_active = True
                 return NativeSweepLease(
                     self._native,
                     source,
-                    self._assert_native_sweep_lease,
-                    self._release_native_sweep_lease,
+                    lambda: self._assert_native_sweep_lease(token),
+                    lambda: self._release_native_sweep_lease(token),
                     validate_continuous_request,
+                    control_transaction=lambda: self._native_sweep_control_transaction(token),
+                    construct_owner=lambda construct, cleanup: self._construct_native_sweep_owner(
+                        token, construct, cleanup),
                 )
 
-    def _assert_native_sweep_lease(self) -> None:
+    def _assert_native_sweep_lease(self, token: object) -> None:
         with self._sweep_lease_lock:
-            if not self._sweep_lease_active:
+            if not self._sweep_lease_active or self._sweep_lease_token is not token:
                 raise RuntimeError("native sweep lease is no longer active")
             with self._lock:
-                if self._engine is not None or self._snapshot.state is _running_state():
+                if (self._engine is not None or self._poller is not None
+                        or self._external_analyzer_owner is not None
+                        or self._stream_release_failed or self._observation_owner.cleanup_pending
+                        or self._snapshot.state is _running_state()):
                     raise RuntimeError("Live owns the device; native sweep lease is invalid")
+                selected = self._sweep_lease_snapshot
+                if (selected is None or self._native_uri != self._sweep_lease_uri
+                        or self._snapshot.device is not selected.device
+                        or self._snapshot.applied is not selected.applied
+                        or self._snapshot.session_id != selected.session_id):
+                    raise RuntimeError("native Sweep lease selected session/identity/profile changed")
 
-    def _release_native_sweep_lease(self) -> None:
-        with self._sweep_lease_lock:
+    @contextmanager
+    def _native_sweep_control_transaction(self, token: object):
+        # SAME low-rate recorder/control lock, never acquisition/DSP polling.
+        with self._recording_transaction_lock:
+            self._assert_native_sweep_lease(token)
+            if self._sweep_owner_closing or self._sweep_owner_release_failed:
+                raise RuntimeError("native Sweep owner requires confirmed cleanup before Start")
+            yield
+
+    def _construct_native_sweep_owner(
+        self, token: object, construct: Callable[[], Any], cleanup: Callable[[Any], None],
+    ) -> Any:
+        with self._native_sweep_control_transaction(token):
+            if self._sweep_native_owner is not None or self._sweep_owner_constructing:
+                raise RuntimeError("native Sweep lease already has a continuous owner")
+            # Reserve before the constructor, including reentrant callbacks.
+            # Native owner constructors have RAII cleanup on failed construction;
+            # no handle is published and no implicit retry is performed here.
+            self._sweep_owner_constructing = True
+            try:
+                owner = construct()
+                self._sweep_native_owner = (owner, cleanup)
+                return owner
+            finally:
+                self._sweep_owner_constructing = False
+
+    def _release_native_sweep_lease(self, token: object) -> None:
+        with self._recording_transaction_lock, self._sweep_lease_lock:
+            # Idempotent stale release must NEVER clear a newer reservation.
+            if self._sweep_lease_token is not token:
+                return
+            if self._sweep_owner_constructing:
+                raise RuntimeError("native Sweep owner construction is pending")
+            if self._sweep_owner_closing:
+                raise RuntimeError("native Sweep owner cleanup is pending")
+            if self._sweep_native_owner is not None:
+                owner, cleanup = self._sweep_native_owner
+                self._sweep_owner_closing = True
+                try:
+                    cleanup(owner)  # Failed join/disconnect retains BOTH authorities.
+                except BaseException:
+                    self._sweep_owner_release_failed = True
+                    raise
+                finally:
+                    self._sweep_owner_closing = False
+                self._sweep_native_owner = None
+            self._sweep_owner_release_failed = False
+            self._sweep_lease_token = None
+            self._sweep_lease_snapshot = None
+            self._sweep_lease_uri = None
             self._sweep_lease_active = False
+
+    def _require_no_native_sweep_lease(self) -> None:
+        with self._sweep_lease_lock:
+            if self._sweep_lease_active:
+                raise LiveAdmissionRejected("Native Sweep owns the selected device; release Sweep before Live control")
 
     # ---- R08-C1 native RTBW recording lifecycle -------------------------
 
@@ -1261,6 +1340,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._recording_transaction_lock:
             self._require_no_external_analyzer_owner()
             self._require_single_receiver_control()
+            self._require_no_native_sweep_lease()
             if self._native_recording_active is not None:
                 raise RuntimeError("native recording is already active")
             self._native_recording_epoch += 1
@@ -1295,6 +1375,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._recording_transaction_lock:
             self._require_no_external_analyzer_owner()
             self._require_single_receiver_control()
+            self._require_no_native_sweep_lease()
             if self._native_recording_active is not None:
                 raise RuntimeError("native recording is already active")
             was_running = self.is_running()

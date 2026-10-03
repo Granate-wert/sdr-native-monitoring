@@ -8,6 +8,7 @@ batches; raw I/Q never reaches Python or Qt.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from contextlib import AbstractContextManager
 from contextlib import contextmanager
 import json
 import math
@@ -76,6 +77,10 @@ class NativeSweepLease:
     # Pure guard bound to the same immutable catalog/profile as the lease.
     # None preserves older explicit/fake lease contracts, not stable admission.
     validate_continuous_request: Callable[[ContinuousSweepPlanRequest], None] | None = None
+    # Supplied by actual NativeLive, not synthesized by a widget/fake owner.
+    # Defaults preserve standalone explicit adapters and older test leases.
+    control_transaction: Callable[[], AbstractContextManager[None]] | None = None
+    construct_owner: Callable[[Callable[[], Any], Callable[[Any], None]], Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

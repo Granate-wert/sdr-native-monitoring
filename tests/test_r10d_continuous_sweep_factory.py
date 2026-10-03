@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import threading
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -248,6 +249,8 @@ class R10DContinuousSweepFactoryTests(unittest.TestCase):
                 events.append("display-close")
 
         class Factory:
+            control_transaction = staticmethod(nullcontext)
+
             @classmethod
             def from_native_live(cls, live):
                 events.append("lease")
@@ -297,6 +300,8 @@ class R10DContinuousSweepFactoryTests(unittest.TestCase):
                 return object()
 
         class Factory:
+            control_transaction = staticmethod(nullcontext)
+
             @classmethod
             def from_native_live(cls, _live: object) -> "Factory":
                 events.append("lease")
