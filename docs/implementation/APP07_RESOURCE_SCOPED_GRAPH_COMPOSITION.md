@@ -3960,3 +3960,64 @@ pairedRX/Sweep, actual RTL workflow, four-source HIL, rotation, faults,
 performance, soak, visible Windows/DPI and full release remain OPEN.
 Configured agents: gpt-6-sol/high UI writer and distinct reviewer,
 gpt-6-luna/high private lease helper; runtime model attestation unavailable.
+
+## 2026-10-03 — explicit USB discovery and physical RTL lifecycle
+
+UI commit `d6895e5` and backend commit
+`6b3e86bcb0f4202f711770e631f4bd2723ff6405` separate explicit local discovery
+from automatic startup. The USB action and fresh local pane Stage now enumerate
+RTL; AD local discovery uses the existing USB-only method without an IP fallback.
+Automatic startup still skips RTL, while deliberate full discovery keeps USB+IP.
+Missing AD local-provider support fails that provider closed. Source identity,
+Stage-without-RX, ownership and stale-route guards remain unchanged.
+
+Root checks passed 104 targeted source/mock/offscreen tests, Ruff and scoped
+mypy. A distinct configured gpt-6-sol/high immutable review found no scoped
+blocker; this is not whole-release approval. One old runtime-count fixture failed
+on the unchanged baseline and was corrected to the exact four-family tuple.
+
+Fresh diagnostic tag `APP07-LOCAL-20261003-6B3E86B` binds the exact source above:
+561 source inputs and 665 verified frozen files. EXE SHA-256
+`b3f3eacb93f1314996234e1c0e1a1dc18fada262c6072525b944184250a1078f`;
+native SHA-256
+`8dabdb1d27a4e4568a5e0665ef431f34cc32190d10617bf226383705aa44f14f`.
+Unchanged C++ was incrementally verified, not recompiled; 46 CTest passed in
+58.91 seconds. Shared nine-DLL/one-libUSB, static RTL runtime/notices and default
+offscreen checks passed. Later documentation commits do not relabel this build.
+Serial full V2 regression: 1341 total, 1275 passed, 66 skipped, zero failures/
+errors, 542.761 seconds; tracked clean before/after, exact provenance true,
+deferred[]/outside[], unchanged native, and postgate source/package verification.
+Historic NaN and freezer warnings remain recorded, not suppressed.
+
+Actual local discovery through the same V2 services and new packaged native
+found USB AD936x, HackRF, tinySA candidate and RTL with no provider failures.
+Fresh RTL pane-graph Stage observed the selected RTL2838/R820T route without RX.
+Separate physical RTL service qualification then exercised five bounded cycles:
+100 MHz/2.4 MS/s/FFT4096 Start, Stop/Start, 145 MHz retune, 433.92 MHz/2.048 MS/s
+rate application, and closed-graph reopen at 100 MHz/2.4 MS/s. Each produced 47
+distinct observed reduced spectra; epochs advanced 1..5, requested center/Fs/
+FFT/generation matched frame metadata, Stop was confirmed, final shutdown left
+no SDR worker threads or quarantine. Total host test time was 18.611 seconds.
+An initial harness request-source mismatch was refused before Start and retained;
+the corrected harness used the selected source ID, without changing product guards.
+
+This is bounded service/native functionality, not frozen visible UI, four-source
+coexistence, RF accuracy, sustained throughput, render FPS, lossless capture or
+soak. SDK stderr retained direct-sampling initialization messages and `PLL not
+locked`; their exact operation-phase cause is not established. Reported quality
+8209 includes Uncalibrated, TimestampEstimated and AdcOverload; rate-change cycle
+8193 retains Uncalibrated/TimestampEstimated. Overload flags are not removed or
+declared clean RF. Generic `snapshots_emitted` remains zero for RTL despite real
+frames; use the defined RTL bridge counters, not that default as emission proof.
+Automatic gain is exercised; manual tuner gain/table/readback remains OPEN.
+
+The separately expected IP AD9363 is not yet currently qualified: an earlier
+`ip:pluto.local` discovery does not supersede the later TCP timeout or prove a
+distinct physical device/chip/topology. No network/driver/firewall change or
+restart of the existing old diagnostic UI was performed. Canonical four-source
+HIL, AD9363 replacement/dual-AD/slot rotation, faults, performance, soak, visible
+DPI and release remain OPEN. M4/APP-07 stays PARTIAL/IN_PROGRESS; redistribution/
+static-component/corresponding-source HOLD and no current/static promotion remain.
+No new agents were dispatched for the build/RX continuation; prior scoped UI
+writer and distinct reviewer were configured gpt-6-sol/high, without runtime
+model attestation.
