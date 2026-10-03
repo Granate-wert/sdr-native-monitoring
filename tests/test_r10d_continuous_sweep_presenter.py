@@ -227,13 +227,17 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
     def test_failed_stop_latches_restart_and_reports_once(self) -> None:
         class FailedService(_Service):
             starts = 0
+            stops = 0
 
             def start(self, config):
                 self.starts += 1
                 super().start(config)
 
             def stop(self):
-                raise RuntimeError("stop ownership unresolved")
+                self.stops += 1
+                if self.stops == 1:
+                    raise RuntimeError("stop ownership unresolved")
+                super().stop()
 
         service = FailedService()
         presenter = ContinuousSweepPresenter(service)
@@ -254,6 +258,54 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
         presenter.shutdown()
         _APP.processEvents()
         self.assertEqual(errors, ["stop ownership unresolved"])
+        self.assertEqual(service.stops, 2)
+        self.assertFalse(service.started)
+        self.assertTrue(service.closed)
+
+    def test_permanent_stop_failure_reports_once_per_attempt_and_latches_restart(self) -> None:
+        class PermanentlyFailedService(_Service):
+            starts = 0
+            stops = 0
+
+            def start(self, config):
+                self.starts += 1
+                super().start(config)
+
+            def stop(self):
+                self.stops += 1
+                raise RuntimeError("stop ownership unresolved")
+
+            def close(self):
+                # This mock makes close independently succeed; it does not
+                # claim that a failed receiver Stop released hardware.
+                self.closed = True
+
+        service = PermanentlyFailedService()
+        presenter = ContinuousSweepPresenter(service)
+        errors = []
+        presenter.task_failed.connect(errors.append)
+        presenter.start(object())
+        _finish_start(presenter)
+        presenter.stop()
+        deadline = time.monotonic() + 2
+        while presenter.is_stopping and time.monotonic() < deadline:
+            _APP.processEvents()
+            time.sleep(0.001)
+        self.assertFalse(presenter.is_stopping)
+        self.assertEqual(service.stops, 1)
+        self.assertEqual(errors, ["stop ownership unresolved"])
+        with self.assertRaisesRegex(RuntimeError, "cleanup is unresolved"):
+            presenter.start(object())
+        self.assertEqual(service.starts, 1)
+
+        # Legacy shutdown retries cleanup. Its completion signal may already
+        # be queued when shutdown consumes the same future synchronously.
+        presenter.shutdown()
+        _APP.processEvents()
+        self.assertEqual(service.stops, 2)
+        self.assertEqual(errors, ["stop ownership unresolved", "stop ownership unresolved"])
+        self.assertEqual(service.starts, 1)
+        self.assertTrue(service.closed)
 
     def test_poll_failure_stops_acquisition_before_reporting_stopped(self) -> None:
         entered = threading.Event()
@@ -288,7 +340,13 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
         _finish_start(presenter)
         try:
             presenter._poll()
-            self.assertTrue(entered.wait(1))
+            deadline = time.monotonic() + 1
+            while not entered.is_set() and time.monotonic() < deadline:
+                # Poll completion is explicitly queued to the Qt thread; keep
+                # that thread moving while waiting for its owned Stop request.
+                _APP.processEvents()
+                time.sleep(0.001)
+            self.assertTrue(entered.is_set())
             self.assertEqual(running, [True])
             self.assertTrue(presenter.is_stopping)
             self.assertEqual(errors, ["publication failed"])
