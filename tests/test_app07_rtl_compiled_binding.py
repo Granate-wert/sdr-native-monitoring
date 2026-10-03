@@ -8,6 +8,8 @@ external librtlsdr qualification, and the mock DLL is never packaged.
 from __future__ import annotations
 
 import hashlib
+import ctypes
+from dataclasses import replace
 import faulthandler
 import importlib.util
 import os
@@ -228,6 +230,18 @@ class RtlCompiledBindingTests(unittest.TestCase):
                 self.assertEqual(current.spectrum.config_generation,
                     current.rtl_request.configuration_generation)
                 self.assertEqual(current.rtl_cached_tuner_gain_tenth_db, gain)
+                from sdr_monitor.domain.analyzer import bundle_from_live
+
+                bundle = bundle_from_live(current)
+                self.assertIsNotNone(bundle)
+                assert bundle is not None and bundle.rtl_tuner_gain is not None
+                self.assertEqual(bundle.rtl_tuner_gain.requested_manual_tenth_db, gain)
+                self.assertEqual(bundle.rtl_tuner_gain.cached_tenth_db, gain)
+                for changed in ({"source_id": "different-source"},
+                                {"config_generation": current.spectrum.config_generation + 1},
+                                {"acquisition_epoch": current.spectrum.acquisition_epoch + 1}):
+                    with self.subTest(changed=changed), self.assertRaises(ValueError):
+                        replace(bundle, rtl_tuner_gain=replace(bundle.rtl_tuner_gain, **changed))
                 self.assertTrue(exclusion.claimed)
             finally:
                 released = service.stop()
@@ -236,6 +250,34 @@ class RtlCompiledBindingTests(unittest.TestCase):
                 self.assertFalse(exclusion.claimed)
                 self.assertFalse(native.rtl_process_is_quarantined())
         phase("product_gain_complete")
+
+        # The advertisement above remains valid in Python, but the SAME owned
+        # native handle must reject a changed table before gain setters/reader.
+        mock_sdk = ctypes.CDLL(str(mock_path))
+        mock_sdk.mock_rtl_set_scenario.argtypes = [ctypes.c_int]
+        mock_sdk.mock_rtl_set_scenario.restype = None
+        mock_sdk.mock_rtl_reset_counters.restype = None
+        mock_sdk.mock_rtl_counter.argtypes = [ctypes.c_int]
+        mock_sdk.mock_rtl_counter.restype = ctypes.c_int
+        service.stage(RtlConfigurationPatch(RtlLiveRequest(150_000_000, 2_400_000,
+            detector="peak", source_id=RTL_SOURCE_ID, manual_tuner_gain_tenth_db=144),
+            selection.revision, service.current_snapshot().generation))
+        mock_sdk.mock_rtl_reset_counters()
+        mock_sdk.mock_rtl_set_scenario(11)  # duplicate table after selected observation
+        try:
+            phase("product_changed_table")
+            refused = service.start()
+            self.assertIs(refused.state, LiveSessionState.ERROR)
+            self.assertTrue(refused.stop_required)
+            self.assertTrue(exclusion.claimed)
+            self.assertEqual([mock_sdk.mock_rtl_counter(i) for i in range(5)], [1, 1, 0, 0, 0])
+            self.assertFalse(native.rtl_process_is_quarantined())
+        finally:
+            mock_sdk.mock_rtl_set_scenario(0)
+            released = service.stop()
+            self.assertFalse(released.stop_required)
+            self.assertFalse(exclusion.claimed)
+        phase("product_changed_table_complete")
 
 
 if __name__ == "__main__":

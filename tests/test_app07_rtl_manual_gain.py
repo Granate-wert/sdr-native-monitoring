@@ -208,6 +208,72 @@ class RtlManualGainTests(unittest.TestCase):
                 self.assertFalse(exclusion.claimed)
                 self.assertEqual(native.control.stops, 1)
 
+    def test_factory_failure_releases_only_confirmed_nonquarantined_cleanup(self):
+        class FailedFactory(GainNative):
+            quarantined = False
+
+            def rtl_process_is_quarantined(self):
+                return self.quarantined
+
+            def create_rtl_runtime_control(self, *_args, **_kwargs):
+                self.create_calls += 1
+                raise RuntimeError("mock manual setter failure; no control returned")
+
+        for ambiguous in (False, True):
+            native = FailedFactory()
+            _, _, _, selection, exclusion, service = fixture(native)
+            service.stage(RtlConfigurationPatch(request(144), selection.revision, 0))
+            # Factory can set quarantine during a failed close, but only AFTER
+            # pre-admission observed a nonquarantined process.
+            factory = native.create_rtl_runtime_control
+
+            def fail(*args, **kwargs):
+                native.quarantined = ambiguous
+                return factory(*args, **kwargs)
+
+            native.create_rtl_runtime_control = fail
+            failed = service.start()
+            self.assertIs(failed.state, LiveSessionState.ERROR)
+            self.assertTrue(failed.stop_required)
+            self.assertTrue(exclusion.claimed)
+            self.assertIsNone(native.control)
+            stopped = service.stop()
+            self.assertIs(stopped.state, LiveSessionState.ERROR if ambiguous else LiveSessionState.CONNECTED)
+            self.assertEqual(stopped.stop_required, ambiguous)
+            self.assertEqual(exclusion.claimed, ambiguous)
+            self.assertEqual(native.create_calls, 1)
+            if ambiguous:
+                repeated = service.stop()
+                self.assertTrue(repeated.stop_required)
+                self.assertTrue(exclusion.claimed)
+                with self.assertRaises(LiveAdmissionRejected):
+                    service.start()
+
+    def test_superficially_complete_stop_does_not_release_quarantined_owner(self):
+        native, _, _, selection, exclusion, service = fixture()
+        service.stage(RtlConfigurationPatch(request(144), selection.revision, 0))
+        self.assertIs(service.start().state, LiveSessionState.RUNNING)
+        native.rtl_process_is_quarantined = lambda: True
+        stopped = service.stop()
+        self.assertIs(stopped.state, LiveSessionState.ERROR)
+        self.assertTrue(stopped.stop_required)
+        self.assertTrue(exclusion.claimed)
+        self.assertEqual(native.control.stops, 1)
+
+    def test_unknown_cleanup_status_keeps_owner_and_first_cause(self):
+        native, _, _, selection, exclusion, service = fixture()
+        service.stage(RtlConfigurationPatch(request(144), selection.revision, 0))
+        self.assertIs(service.start().state, LiveSessionState.RUNNING)
+
+        def unconfirmed():
+            raise RuntimeError("mock status observation failed")
+
+        native.rtl_process_is_quarantined = unconfirmed
+        stopped = service.stop()
+        self.assertTrue(stopped.stop_required)
+        self.assertTrue(exclusion.claimed)
+        self.assertEqual(service.first_fault_diagnostic()[0], "native_cleanup_status")
+
     def test_bridge_manifest_must_match_exact_native_gain_version(self):
         names = ("RtlExternalFile", "RtlExternalRuntime", "RtlSessionRoute", "rtl_enumerate_candidates",
                  "rtl_observe_single_candidate", "create_rtl_runtime_control", "rtl_process_is_quarantined")
@@ -276,6 +342,20 @@ class RtlManualGainTests(unittest.TestCase):
             self.assertEqual(shifted.compatibility_key, profile.compatibility_key)
             self.assertEqual(shifted.request_template.manual_tuner_gain_tenth_db,
                 profile.request_template.manual_tuner_gain_tenth_db)
+
+    def test_publication_receipt_does_not_invent_rf_mode_or_cache(self):
+        from sdr_monitor.domain.analyzer import RtlTunerGainReceipt
+
+        auto = RtlTunerGainReceipt(RTL_SOURCE_ID, 1, 17, None, None)
+        self.assertIsNone(auto.cached_tenth_db)
+        for gain in (-99, 0, 144):
+            self.assertEqual(RtlTunerGainReceipt(RTL_SOURCE_ID, 1, 17, gain, gain).cached_tenth_db, gain)
+        for changes in ({"source_id": ""}, {"config_generation": True}, {"acquisition_epoch": 0},
+                {"cached_tenth_db": 0}, {"requested_manual_tenth_db": True, "cached_tenth_db": True},
+                {"requested_manual_tenth_db": 144},
+                {"requested_manual_tenth_db": 144, "cached_tenth_db": 145}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(auto, **changes)
 
 
 if __name__ == "__main__":

@@ -247,6 +247,16 @@ class RtlAnalyzerService:
                 except Exception as error:  # noqa: BLE001 - never release an ambiguous owner.
                     self._retain_fault("native_stop", error)
                     return self._error("RTL native Stop failed; owner retained")
+            if self._claimed or control is not None:
+                # A factory may throw BEFORE returning control after an
+                # ambiguous close. No returned handle is not a cleanup receipt.
+                try:
+                    quarantined = getattr(self._native, "rtl_process_is_quarantined", None)
+                    if not callable(quarantined) or quarantined() is not False:
+                        return self._error("RTL native cleanup quarantined/unconfirmed; owner retained")
+                except Exception as error:  # noqa: BLE001 - unknown process state cannot release RX.
+                    self._retain_fault("native_cleanup_status", error)
+                    return self._error("RTL native cleanup status failed; owner retained")
             if self._claimed:
                 self._exclusion.release_external_analyzer_rx(self._token)
                 self._claimed = False

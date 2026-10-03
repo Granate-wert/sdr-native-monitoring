@@ -54,6 +54,30 @@ class PairedCaptureMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class RtlTunerGainReceipt:
+    """Requested intent and SDK cache tied to a publication, never RF readback."""
+
+    source_id: str
+    config_generation: int
+    acquisition_epoch: int
+    requested_manual_tenth_db: int | None
+    cached_tenth_db: int | None
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.source_id, str) or not self.source_id
+                or type(self.config_generation) is not int or self.config_generation <= 0
+                or type(self.acquisition_epoch) is not int or self.acquisition_epoch <= 0):
+            raise ValueError("RTL gain receipt requires exact source/config/epoch")
+        value = self.requested_manual_tenth_db
+        if value is None:
+            if self.cached_tenth_db is not None:
+                raise ValueError("Auto RTL has no admitted manual cache")
+        elif (type(value) is not int or not -1000 <= value <= 1000
+                or type(self.cached_tenth_db) is not int or self.cached_tenth_db != value):
+            raise ValueError("RTL gain receipt requires the exact requested SDK cached value")
+
+
+@dataclass(frozen=True, slots=True)
 class AnalyzerFrameBundle:
     """One coherent spectrum publication, without inferred auxiliary layers.
 
@@ -73,8 +97,17 @@ class AnalyzerFrameBundle:
     coherence_issues: tuple[str, ...] = ()
     paired_capture: PairedCaptureMetadata | None = None
     paired_sweep: PairedSweepPublication | None = None
+    rtl_tuner_gain: RtlTunerGainReceipt | None = None
 
     def __post_init__(self) -> None:
+        gain = self.rtl_tuner_gain
+        if gain is not None and (
+                not isinstance(gain, RtlTunerGainReceipt) or not isinstance(self.spectrum, LiveSpectrumFrame)
+                or self.paired_capture is not None or self.paired_sweep is not None
+                or gain.source_id != self.spectrum.source_id
+                or gain.config_generation != self.spectrum.config_generation
+                or gain.acquisition_epoch != self.spectrum.acquisition_epoch):
+            raise ValueError("RTL gain receipt must match its own unpaired RTBW publication")
         if self.paired_sweep is not None and (
                 not isinstance(self.paired_sweep, PairedSweepPublication)
                 or not isinstance(self.spectrum, (SweepLineFrame, SweepProgressFrame))
@@ -318,4 +351,9 @@ def bundle_from_live(snapshot: LiveSnapshot) -> AnalyzerFrameBundle | None:
         ),
         identity=identity, persistence=persistence, waterfall_line=waterfall,
         coherence_issues=tuple(issues),
+        rtl_tuner_gain=(RtlTunerGainReceipt(snapshot.rtl_request.source_id,
+            snapshot.rtl_request.configuration_generation,
+            snapshot.acquisition_epoch, snapshot.rtl_request.manual_tuner_gain_tenth_db,
+            snapshot.rtl_cached_tuner_gain_tenth_db) if snapshot.rtl_request is not None
+            and snapshot.acquisition_epoch is not None else None),
     )
