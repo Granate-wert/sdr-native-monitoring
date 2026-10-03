@@ -3724,3 +3724,67 @@ The old diagnostic8fb9 EXE retains its original source/toolchain identity and is
 not current/static/promoted. Next: a new tagged full matching build with the
 explicit pinned interpreter, then admitted paired visible/independent-peer tests.
 APP-07/M3 and the full APP00–14 roadmap remain in progress.
+
+## Matching pinned diagnostic package and full V2 gate
+
+The next build used exact clean source
+`5facbd8f2c8f95c2d0cc60130b51ff7ac52b84c3`, runtime7829852,
+QA5a8e25c and build-toolsa90a5ae. A new diagnostic package,
+`APP07-PINNED-20261003-5FACBD8`, used explicit local Python3.13.1,
+PyInstaller6.22.3, hooks2026.8 and actual Qt6.11.1. This environment inherits
+system packages; it is NOT hermetic or a full uv.lock reproduction.
+Global Python, SDKs, current/static EXE and firewall settings are unchanged.
+
+The ordinary no-skip CPU/HackRF/external-RTL bridge build passed 46/46
+native CTest cases in 60.94 seconds. The package contains660 files and a559-input
+source snapshot. Frozen/native/schema, offscreen shells, package-local IIO,
+tinySA and shared-runtime checks passed. Matching packaged compiled-mock
+bindings passed20/20 in30.701 seconds. These are not hardware tests.
+
+The original private build launcher exited1 AFTER successful package/runtime
+and binding checks: its full-V2 launcher redirected stdout into the SAME log
+file opened by the test runner, causing a Windows handle PermissionError
+BEFORE the suite started. That failure is retained and is not relabelled.
+A separate gate-only launcher used distinct stdout/log paths; no native build,
+freeze or binding rerun. The actual one full V2 suite passed1,334 testcases:
+1,268 passed,66 skipped, zero failures/errors,536.487 seconds. Exact provenance,
+tracked-clean before/after, deferred[] and product-outside-checkout[] were
+verified; four existing NaN warnings remain. Absence of the historical
+deleted-label trace in this run does NOT establish its cause or a causal fix.
+
+The matched EXE SHA256 is
+`cab0e7aa4d7db534375b218dc5940e7b464f0216c49ed75c4a008aa501c3f76a`;
+native SHA256 remains
+`8dabdb1d27a4e4568a5e0665ef431f34cc32190d10617bf226383705aa44f14f`.
+Source snapshot content SHA256:
+`d5629fc1dc57b31264a56965154d0e1fe6c97b5ea254c5023c941df4c874920e`.
+Source snapshot file SHA256:
+`2bc0c48aa762d1667af1f6b673449ca7cb1b75e06cbcef60bf8685ebc9eb8368`.
+Release manifest SHA256:
+`c45ef7b487cc95847c834b7de28664abaff4097c630a67440f47ceb9e0b151e0`.
+An independent read-only reviewer checked selected source/binary/runtime hashes
+and gate receipts without rerunning them; no scoped mismatch was found.
+Reviewer configured as gpt-6-sol/high; runtime model attestation unavailable.
+This selected review is not a whole-release approval.
+
+The SAME new Windows EXE was launched and maximized, its pane editor opened,
+and USB discovery completed. Offered entries: AD936x USB, HackRF USB and an
+UNVERIFIED tinySA candidate; no RTL was offered in this bounded inventory.
+This is not proof of physical RTL absence, RX2 capability, tinySA admission or
+four-device HIL. All panes remained Empty; no Stage/Apply/Start/RX occurred.
+Four observations/five original JPEGs are retained locally. Logical1440x912
+screenshots do not certify physical FHD/QHD/scaling or render smoothness.
+
+Normal Close was followed by a fresh empty target-window inventory and zero
+SDRNativeMonitoring processes. Source snapshot and all660 package hashes
+were verified unchanged after Close. No system/security/TX changes or other
+user-app closure occurred. The Computer Use observe/action/refresh workflow
+was used for actual Windows observation, not as a substitute for SDR testing.
+
+All33 sections of the adopted orchestration plan remain reconciled. APP-07/M3
+remain IN_PROGRESS; the package is diagnostic, NOT current/static/promoted.
+Next is fresh admitted positivepaired/independent-peer Stop/history/epoch
+isolation on this matched package, with explicit refusal if RX2 is unavailable,
+then RTL production and exclusive four-source HIL. Faults, performance, soak,
+visible DPI/gesture acceptance and full release qualification remain mandatory.
+Later documentation commits do NOT relabel this5fac source/build evidence.
