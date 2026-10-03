@@ -38,6 +38,7 @@ from ..domain import (
     SweepState,
 )
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.paired_sweep import PairedSweepRequest
 from .native_live import build_native_fixed_band_config
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .sweep_stitching import SweepStitchOptions, stitch_sweep_segments
@@ -81,6 +82,12 @@ class NativeSweepLease:
     # Defaults preserve standalone explicit adapters and older test leases.
     control_transaction: Callable[[], AbstractContextManager[None]] | None = None
     construct_owner: Callable[[Callable[[], Any], Callable[[Any], None]], Any] | None = None
+    # Only the actual application/native admission path supplies a paired plan.
+    # Native configs are immutable, validated together BEFORE owner construction.
+    paired_request: PairedSweepRequest | None = None
+    paired_configuration: Any = None
+    # Exact owner/control lock for cleanup; unlike Start it permits stale selection.
+    cleanup_transaction: Callable[[], AbstractContextManager[None]] | None = None
 
 
 @dataclass(frozen=True, slots=True)

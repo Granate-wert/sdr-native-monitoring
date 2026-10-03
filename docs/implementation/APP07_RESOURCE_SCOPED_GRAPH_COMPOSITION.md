@@ -3367,3 +3367,39 @@ Paired product admission, selection/session/epoch/full per-step receipts and the
 actual paired pane CaptureJob bridge remain OPEN. No UI enablement, matched EXE,
 physical multi-source, performance or release qualification follows from this
 ownership prerequisite.
+
+## M3 paired application lease and native plan admission
+
+An internal paired Sweep factory now obtains authority through the actual
+Live application graph. Admission reads the selected source/revision inside
+the SAME native recording/control transaction, pins the selected choice by
+object identity, and reserves an individual application claim. The native
+lease still fences its own stopped session/route/device/applied profile.
+Every factory control/constructor action rechecks both boundaries. A caller's
+request revision is not accepted as the current application's revision.
+
+Both chain plans preserve the explicit producer IDs and typed RX1/RX2 selection.
+They use the same requested Sweep geometry, physical Fs/FFT/filter/gain policy,
+buffer and cadence; native combined configuration validates BOTH reduced and
+statistics payloads against ONE aggregate budget before any context opens.
+Paired reduced/statistics protocol v1 is mandatory; no single-producer display
+fallback is allowed. Building/configuring a stopped plan does not Start RX.
+
+The factory may then construct ONE identity-bound native coordinator and an
+explicit native Start can produce both reduced streams/statistics. A second
+constructor refuses. Its paired adapter accepts ONLY the exact prebuilt paired
+configuration and always rechecks app/native authority on Start; it exposes no
+single-plan configure or unrestricted native coordinator. Cleanup uses the
+same owner/control lock but permits stale selection, so it cannot strand RX.
+Cleanup failure retains BOTH application and native
+authorities; successful retry releases them only after native disconnect.
+Closed application factories cannot reacquire a stale reservation.
+Existing-lease operations require an already-held exact application claim under
+the application lock; a paused old Start/cleanup cannot recreate its claim after
+concurrent release, even if it passed an earlier released-flag check.
+
+This is a backend prerequisite verified on the compiled mock IIO lane, not
+enabled paired Sweep in product panes. Product-assigned acquisition/run epochs,
+full observed per-step receipts, paired display conversion and both-producer
+CaptureJob delivery remain OPEN. No physical RX, UI change, new EXE, full V2
+gate, four-source HIL, throughput, soak or release qualification is claimed.

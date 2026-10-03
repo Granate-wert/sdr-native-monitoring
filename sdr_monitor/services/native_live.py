@@ -58,6 +58,7 @@ from ..domain import (
 )
 from .live_session import InMemoryLiveSessionService
 from ..domain.paired_live import PairedLiveRequest, PairedLivePublication, PairedLivePerformance
+from ..domain.paired_sweep import PairedSweepRequest
 from .native_paired_live import pair_performance, pair_publication
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .ad936x_capability_adapter import (
@@ -1181,7 +1182,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     # ---- R10-B exclusive native Sweep lease -----------------------------
 
-    def acquire_native_sweep_lease(self) -> Any:
+    def acquire_native_sweep_lease(self, *, paired_request: PairedSweepRequest | None = None) -> Any:
         """Lease the selected stopped CPU route for one NativeSweepService.
 
         The caller receives no engine, raw I/Q or mutable Live state.  It can
@@ -1211,6 +1212,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     raise RuntimeError("native RTBW recording must be stopped/unarmed before Sweep")
                 if uri is None or snapshot.device is None or snapshot.applied is None:
                     raise RuntimeError("select a device and apply a CPU Live configuration before Sweep")
+                if paired_request is not None:
+                    if not isinstance(paired_request, PairedSweepRequest):
+                        raise TypeError("paired Sweep requires the exact typed application request")
+                    # Application checks the actual selection revision while holding
+                    # SAME recording/control authority; native checks its own facts.
+                    paired_request.validate_applied(snapshot, paired_request.selection_revision)
                 if snapshot.applied.applied.backend is not BackendKind.CPU:
                     raise RuntimeError("native Sweep currently requires an explicitly applied CPU Live configuration")
                 reason = self._start_capability_refusal(snapshot)
@@ -1237,6 +1244,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     snapshot.applied.applied,
                     expected_serial=normalized_pluto_serial(snapshot.device.serial),
                 )
+                paired_configuration = None
+                if paired_request is not None:
+                    from .native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
+                    validate_continuous_request(paired_request.sweep)
+                    paired_configuration = NativeContinuousSweepPlanFactory.build_paired_native_config(
+                        self._native, source, paired_request)
                 token = object()
                 self._sweep_lease_token = token
                 self._sweep_lease_snapshot = snapshot
@@ -1251,6 +1264,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     control_transaction=lambda: self._native_sweep_control_transaction(token),
                     construct_owner=lambda construct, cleanup: self._construct_native_sweep_owner(
                         token, construct, cleanup),
+                    paired_request=paired_request,
+                    paired_configuration=paired_configuration,
+                    cleanup_transaction=lambda: self._native_sweep_cleanup_transaction(token),
                 )
 
     def _assert_native_sweep_lease(self, token: object) -> None:
@@ -1269,6 +1285,15 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                         or self._snapshot.applied is not selected.applied
                         or self._snapshot.session_id != selected.session_id):
                     raise RuntimeError("native Sweep lease selected session/identity/profile changed")
+
+    @contextmanager
+    def _native_sweep_cleanup_transaction(self, token: object):
+        with self._recording_transaction_lock, self._sweep_lease_lock:
+            if self._sweep_lease_token is not token or not self._sweep_lease_active:
+                raise RuntimeError("native Sweep cleanup lease is no longer active")
+            if self._sweep_owner_constructing or self._sweep_owner_closing:
+                raise RuntimeError("native Sweep owner construction/cleanup is pending")
+            yield
 
     @contextmanager
     def _native_sweep_control_transaction(self, token: object):
@@ -2480,6 +2505,7 @@ def build_native_fixed_band_config(
     context_uri: str,
     *,
     source_id: str = "live",
+    receiver_selection: Any = None,
     discard_blocks_after_start: int | None = None,
     device_buffer_samples: int = _DEFAULT_DEVICE_BUFFER_SAMPLES,
     snapshot_rate_hz: float | None = None,
@@ -2501,6 +2527,7 @@ def build_native_fixed_band_config(
         live,
         context_uri,
         source_id=source_id,
+        receiver_selection=receiver_selection,
         discard_blocks_after_start=discard_blocks_after_start,
         device_buffer_samples=device_buffer_samples,
         snapshot_rate_hz=snapshot_rate_hz,

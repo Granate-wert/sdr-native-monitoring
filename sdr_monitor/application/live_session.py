@@ -27,6 +27,7 @@ from .analyzer_rf_change import (
 from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
 from ..domain.rtl_live import RtlConfigurationPatch
 from ..domain.paired_live import PairedLiveRequest, PairedLivePublication, PairedLivePerformance
+from ..domain.paired_sweep import PairedSweepRequest
 from ..domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 
 from ..domain import DeviceDescriptor, LiveConfiguration, LiveSnapshot, ConfigurationGeneration, FrameSequence
@@ -372,7 +373,8 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             raise AnalyzerRfChangeRejected("A pending or failed RF receipt bars Start; acknowledge it or explicitly Stop")
 
     @contextmanager
-    def pane_control_transaction(self, claim: object | None = None) -> Iterator[None]:
+    def pane_control_transaction(self, claim: object | None = None, *,
+                                 require_existing_claim: bool = False) -> Iterator[None]:
         """Use this graph's native recorder/receiver exclusion for APP-07.
 
         Inert/non-native graphs do not silently provide a no-op transaction.
@@ -385,6 +387,11 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
         if not self._pane_application_lock.acquire(blocking=False):
             raise RuntimeError("Another receiver control operation is pending")
         try:
+            # Existing lease operations MUST NOT recreate a reservation after
+            # concurrent release. Test under this lock BEFORE entering native
+            # control; a released closure's earlier bool check is not authority.
+            if require_existing_claim and (claim is None or self._pane_control_claim is not claim):
+                raise RuntimeError("Receiver reservation was released or belongs to another owner")
             with transaction():
                 if claim is None:
                     if self._pane_control_claim is not None:
@@ -421,6 +428,92 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
         if not isinstance(state, RecordingState):
             raise RuntimeError("Pane capture could not verify native recording state")
         return state not in (RecordingState.IDLE, RecordingState.COMPLETED)
+
+    def acquire_paired_sweep_lease(self, request: PairedSweepRequest):
+        """Reserve actual selection AND the SAME native owner, without RF/Start.
+
+        This backend seam does not lift the product pane Sweep refusal. Keep
+        the app claim until native join/disconnect is confirmed, including a
+        failed cleanup retry. Never accept a caller's revision as current truth.
+        """
+        from ..services.native_sweep import NativeSweepLease
+
+        if not isinstance(request, PairedSweepRequest):
+            raise TypeError("paired Sweep requires a typed request")
+        claim = object()
+        with self.pane_control_transaction(claim):
+            try:
+                self._configuration_admission(idle_only=True)
+                self._require_native_family()
+                selected = self.current_source_selection()
+                if (selected is None or selected.selected is None or selected.release_pending
+                        or selected.refusal is not None or selected.selected_id != request.pair.device_id):
+                    raise RuntimeError("paired Sweep requires an actual current source selection")
+                request.validate_applied(self.current_snapshot(), selected.revision)
+                if self.pane_recording_conflict():
+                    raise RuntimeError("stop/unarm recording before paired Sweep")
+                acquire = getattr(self._port, "acquire_native_sweep_lease", None)
+                if not callable(acquire):
+                    raise RuntimeError("paired Sweep requires the SAME native lease owner")
+                lease = acquire(paired_request=request)
+            except BaseException:
+                self.release_pane_control(claim)
+                raise
+
+        released = False
+
+        def assert_active():
+            if released:
+                raise RuntimeError("paired Sweep application lease was released")
+            current = self.current_source_selection()
+            if (current is None or current.selected is not selected.selected
+                    or current.revision != selected.revision or current.release_pending
+                    or current.refusal is not None):
+                raise RuntimeError("paired Sweep application selection changed after admission")
+            request.validate_applied(self.current_snapshot(), current.revision)
+            lease.assert_active()
+
+        @contextmanager
+        def control_transaction():
+            if released:
+                raise RuntimeError("paired Sweep application lease was released")
+            with self.pane_control_transaction(claim, require_existing_claim=True):
+                assert_active()
+                if lease.control_transaction is None:
+                    raise RuntimeError("paired Sweep lacks native control authority")
+                with lease.control_transaction():
+                    yield
+
+        def release():
+            nonlocal released
+            if released:
+                return
+            # Cleanup must remain possible after stale selection; do not require
+            # Start's admission fence here. Native failure retains BOTH claims.
+            with self.pane_control_transaction(claim, require_existing_claim=True):
+                lease.release()
+                self.release_pane_control(claim)
+                released = True
+
+        def construct_owner(construct, cleanup):
+            with control_transaction():
+                if lease.construct_owner is None:
+                    raise RuntimeError("paired Sweep lacks native constructor authority")
+                return lease.construct_owner(construct, cleanup)
+
+        @contextmanager
+        def cleanup_transaction():
+            if released:
+                raise RuntimeError("paired Sweep application lease was released")
+            with self.pane_control_transaction(claim, require_existing_claim=True):
+                if lease.cleanup_transaction is None:
+                    raise RuntimeError("paired Sweep lacks native cleanup authority")
+                with lease.cleanup_transaction():
+                    yield
+
+        return NativeSweepLease(lease.native_module, lease.source, assert_active, release,
+            lease.validate_continuous_request, control_transaction, construct_owner,
+            lease.paired_request, lease.paired_configuration, cleanup_transaction)
 
     def _require_native_family(self) -> None:
         if self._sources is not None:
