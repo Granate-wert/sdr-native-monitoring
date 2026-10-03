@@ -18,6 +18,7 @@ def run_case(path: str, case: str) -> None:
     from unittest.mock import patch
 
     from sdr_monitor.domain.identity import SessionId
+    from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
     from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
     from sdr_monitor.services.native_live import NativeLiveSessionService
     from sdr_monitor.services.source_capability_catalog import SourceCapabilityCatalog
@@ -60,6 +61,8 @@ def run_case(path: str, case: str) -> None:
                 prepare_user_pane_session(drafts, pool_factory=lambda: PaneProductGraphPool(factory))
             except PaneUserStageError as error:
                 assert error.pool is None  # Failed Stage confirmed cleanup.
+                assert error.reason is (PaneUserRefusal.PAIRED_TOPOLOGY_UNAVAILABLE if case == "single-layout"
+                                        else PaneUserRefusal.PAIRED_STABLE_IDENTITY_REQUIRED)
             else:
                 raise AssertionError("unqualified current selected pair must refuse")
             assert hooks.mock_iio_rf_mutation_calls() == writes
@@ -81,8 +84,8 @@ def run_case(path: str, case: str) -> None:
                     current, session_id=SessionId("stale-session"))):
                 try:
                     apply_user_pane_session(prepared)
-                except PaneUserStageError:
-                    pass
+                except PaneUserStageError as error:
+                    assert error.reason is PaneUserRefusal.SELECTION_CHANGED
                 else:
                     raise AssertionError("stale paired Apply must refuse")
             assert not handle.applied and not handle.pump.activated

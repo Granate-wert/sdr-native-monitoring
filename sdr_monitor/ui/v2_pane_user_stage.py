@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from sdr_monitor.domain.pane_scheduler import PaneRevisitEstimate
 from sdr_monitor.domain.live import LiveSessionState
+from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
@@ -27,9 +28,18 @@ class PaneUserStageError(RuntimeError):
     """Fixed refusal. Retained pool means an explicit cleanup retry is needed."""
 
     def __init__(self, message: str, pool: PaneProductGraphPool | None = None, *,
+                 reason: PaneUserRefusal = PaneUserRefusal.STAGE_NOT_CONFIRMED,
+                 failed_reason: PaneUserRefusal | None = None,
                  revisit_violations: tuple[PaneRevisitEstimate, ...] = ()) -> None:
+        if not isinstance(reason, PaneUserRefusal) or (failed_reason is not None
+                and not isinstance(failed_reason, PaneUserRefusal)):
+            raise TypeError("pane refusal requires typed reasons")
         super().__init__(message)
         self.pool = pool
+        self.reason = reason
+        # Cleanup is the actionable refusal; preserve the earlier admission
+        # reason separately without exposing raw driver/SDK exception text.
+        self.failed_reason = failed_reason
         self.revisit_violations = revisit_violations
 
 
@@ -53,7 +63,8 @@ def prepare_user_pane_session(
             if draft.source_id is None:
                 continue
             if draft.source_id in network_intent and network_intent[draft.source_id] != draft.network_discovery:
-                raise PaneUserStageError("one source has conflicting network discovery intent")
+                raise PaneUserStageError("one source has conflicting network discovery intent",
+                                         reason=PaneUserRefusal.NETWORK_INTENT_CONFLICT)
             network_intent[draft.source_id] = draft.network_discovery
         selected = {}
         revisions = {}
@@ -64,7 +75,8 @@ def prepare_user_pane_session(
                 resource_id, source_id, include_network=network_intent[source_id])
             selection = pool.graph_for(resource_id).live.current_source_selection()
             if selection is None or selection.selected is not selected[source_id]:
-                raise PaneUserStageError("pane source selection changed during Stage")
+                raise PaneUserStageError("pane source selection changed during Stage",
+                                         reason=PaneUserRefusal.SELECTION_CHANGED)
             revisions[source_id] = selection.revision
         paired = {source: PanePairedSelectionReceipt(selected[source], revisions[source],
                     pool.graph_for(f"pane-resource-{index}").live.current_snapshot())
@@ -81,13 +93,20 @@ def prepare_user_pane_session(
                                               (source, selected[source], revisions[source]) for source in source_order)))
         return PreparedPaneUserSession(plan, handle, handle.preview())
     except Exception as error:
-        violations = error.revisit_violations if isinstance(error, PaneUserPlanError) else ()
+        if isinstance(error, (PaneUserPlanError, PaneUserStageError)):
+            reason = error.reason
+            violations = error.revisit_violations
+        else:
+            reason = PaneUserRefusal.STAGE_NOT_CONFIRMED
+            violations = ()
         try:
             pool.close()
         except Exception:
             raise PaneUserStageError("pane Stage failed and graph cleanup requires an explicit retry", pool,
+                                     reason=PaneUserRefusal.CLEANUP_REQUIRED, failed_reason=reason,
                                      revisit_violations=violations) from None
         raise PaneUserStageError("pane sources or ranges did not confirm on fresh Stage",
+                                 reason=reason,
                                  revisit_violations=violations) from None
 
 
@@ -95,9 +114,11 @@ def apply_user_pane_session(prepared: PreparedPaneUserSession) -> None:
     """Explicit Apply; no RX Start or hidden retry of a failed owner."""
     handle = prepared.handle
     if handle.applied or handle.shutdown_complete:
-        raise PaneUserStageError("pane plan was already applied or closed")
+        raise PaneUserStageError("pane plan was already applied or closed",
+                                 reason=PaneUserRefusal.PLAN_ALREADY_APPLIED_OR_CLOSED)
     if any(item.recording_conflict for item in prepared.preview):
-        raise PaneUserStageError("recording conflicts with one or more proposed receiver plans")
+        raise PaneUserStageError("recording conflicts with one or more proposed receiver plans",
+                                 reason=PaneUserRefusal.RECORDING_CONFLICT)
     # All paired receipts revalidate BEFORE any proposed resource RF write.
     try:
         for receipt in prepared.plan.paired_selections:
@@ -106,17 +127,21 @@ def apply_user_pane_session(prepared: PreparedPaneUserSession) -> None:
             live = handle.pool.graph_for(resource).live
             selection = live.current_source_selection()
             if selection is None or selection.selected is None or selection.release_pending:
-                raise PaneUserPlanError("paired selected source disappeared before Apply")
+                raise PaneUserPlanError("paired selected source disappeared before Apply",
+                                        reason=PaneUserRefusal.SELECTION_CHANGED)
             current = live.current_snapshot()
             if live.is_running() or current.state is not LiveSessionState.CONNECTED:
-                raise PaneUserPlanError("paired Apply cannot stop or restart a running owner")
+                raise PaneUserPlanError("paired Apply cannot stop or restart a running owner",
+                                        reason=PaneUserRefusal.OWNER_NOT_STOPPED)
             receipt.validate_current(selection.selected, selection.revision, current)
-    except PaneUserPlanError:
-        raise PaneUserStageError("paired selection or topology changed before Apply") from None
+    except PaneUserPlanError as error:
+        raise PaneUserStageError("paired selection or topology changed before Apply",
+                                 reason=error.reason) from None
     for resource_id, configuration in prepared.plan.initial_ad_configurations:
         result = handle.pool.graph_for(resource_id).live.apply_configuration(configuration)
         if result.error is not None or result.applied is None:
-            raise PaneUserStageError("AD936x initial configuration did not confirm on Apply")
+            raise PaneUserStageError("AD936x initial configuration did not confirm on Apply",
+                                     reason=PaneUserRefusal.CONFIGURATION_NOT_CONFIRMED)
     handle.apply()
 
 

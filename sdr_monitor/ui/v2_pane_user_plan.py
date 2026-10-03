@@ -24,6 +24,7 @@ from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.identity import SourceId
 from sdr_monitor.domain.live import BackendKind, LiveConfiguration, LiveSnapshot, LiveSessionState
 from sdr_monitor.domain.paired_live import validate_paired_selection_snapshot
+from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.pane_scheduler import (
     Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
@@ -45,8 +46,12 @@ class PaneUserPlanError(ValueError):
     """A bounded, user-facing draft cannot be admitted as an exact plan."""
 
     def __init__(self, message: str, *,
+                 reason: PaneUserRefusal = PaneUserRefusal.INVALID_PLAN,
                  revisit_violations: tuple[PaneRevisitEstimate, ...] = ()) -> None:
+        if not isinstance(reason, PaneUserRefusal):
+            raise TypeError("pane refusal requires a typed reason")
         super().__init__(message)
+        self.reason = reason
         self.revisit_violations = revisit_violations
 
 
@@ -120,7 +125,8 @@ class PaneSlotDraft:
             raise PaneUserPlanError("RTBW receive band requires typed explicit intent")
         if self.receiver_selection not in (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2) or not isinstance(
                 self.receiver_selection, ReceiverChainSelection):
-            raise PaneUserPlanError("pane receiver requires an explicit typed RX1 or RX2 chain")
+            raise PaneUserPlanError("pane receiver requires an explicit typed RX1 or RX2 chain",
+                                    reason=PaneUserRefusal.INVALID_RECEIVER_SELECTION)
         if type(self.priority) is not int or not 1 <= self.priority <= 100:
             raise PaneUserPlanError("pane scheduling priority must be an integer in [1, 100]")
         if self.maximum_revisit_s is not None and (
@@ -182,7 +188,8 @@ class PanePairedSelectionReceipt:
                 or self.source.family is not DeviceFamily.AD936X
                 or type(self.selection_revision) is not int or self.selection_revision < 0
                 or not isinstance(self.snapshot, LiveSnapshot)):
-            raise PaneUserPlanError("paired plan requires typed current AD936x selection facts")
+            raise PaneUserPlanError("paired plan requires typed current AD936x selection facts",
+                                    reason=PaneUserRefusal.PAIRED_SELECTION_REQUIRED)
         self.validate_current(self.source, self.selection_revision, self.snapshot)
 
     def validate_current(self, source: AnalyzerSourceChoice, revision: int, snapshot: LiveSnapshot) -> None:
@@ -194,17 +201,27 @@ class PanePairedSelectionReceipt:
                 or snapshot.error is not None
                 or snapshot.stop_required and snapshot.state is not LiveSessionState.RUNNING
                 or snapshot.session_id is None or snapshot.session_id != self.snapshot.session_id
-                or device.capabilities.receiver_topology is None
-                or device.capabilities.receiver_topology != original.capabilities.receiver_topology
                 or device.capability_snapshot != source.binding.snapshot
                 or device.identity_key != original.identity_key
-                or device.serial != original.serial or not device.serial):
-            raise PaneUserPlanError("paired current selection, session or topology changed")
+                or device.serial != original.serial):
+            raise PaneUserPlanError("paired current selection, session or topology changed",
+                                    reason=PaneUserRefusal.SELECTION_CHANGED)
+        if not device.serial or not device.identity_key or device.capability_snapshot is None:
+            raise PaneUserPlanError("paired plan lacks observed compatible topology and stable identity",
+                                    reason=PaneUserRefusal.PAIRED_STABLE_IDENTITY_REQUIRED)
+        topology = device.capabilities.receiver_topology
+        if topology is None:
+            raise PaneUserPlanError("paired plan lacks observed compatible topology and stable identity",
+                                    reason=PaneUserRefusal.PAIRED_TOPOLOGY_UNAVAILABLE)
+        if topology != original.capabilities.receiver_topology:
+            raise PaneUserPlanError("paired current selection, session or topology changed",
+                                    reason=PaneUserRefusal.SELECTION_CHANGED)
         try:
             validate_paired_selection_snapshot(snapshot, device.device_id, str(snapshot.session_id),
-                                               device.capabilities.receiver_topology)
+                                               topology)
         except (TypeError, ValueError):
-            raise PaneUserPlanError("paired plan lacks observed compatible topology and stable identity") from None
+            raise PaneUserPlanError("paired plan lacks observed compatible topology and stable identity",
+                                    reason=PaneUserRefusal.PAIRED_TOPOLOGY_UNAVAILABLE) from None
 
 
 def _shared_scheduler_policy(entries: list[tuple[PaneSlotDraft, PaneProfile]]) -> PaneSchedulerPolicy:
@@ -255,7 +272,8 @@ def compile_user_pane_plan(
     if not source_order:
         raise PaneUserPlanError("at least one pane must have a source before Apply")
     if set(source_order) != set(selected) or set(source_order) != set(selection_revisions):
-        raise PaneUserPlanError("draft sources differ from the exact staged selections")
+        raise PaneUserPlanError("draft sources differ from the exact staged selections",
+                                reason=PaneUserRefusal.SELECTION_CHANGED)
     resource_for = {source_id: f"pane-resource-{index}" for index, source_id in enumerate(source_order, 1)}
     groups: list[AcquisitionGroup] = []
     endpoints: dict[tuple[str, ReceiverChainSelection], str] = {}
@@ -264,7 +282,8 @@ def compile_user_pane_plan(
     for source_id in source_order:
         choice = selected[source_id]
         if not isinstance(choice, AnalyzerSourceChoice) or choice.device_id != source_id:
-            raise PaneUserPlanError("staged source identity changed before plan compilation")
+            raise PaneUserPlanError("staged source identity changed before plan compilation",
+                                    reason=PaneUserRefusal.SELECTION_CHANGED)
         resource = resource_for[source_id]
         if choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.RTL_SDR, DeviceFamily.TINYSA}:
             raise PaneUserPlanError("selected source has no qualified pane owner")
@@ -272,14 +291,17 @@ def compile_user_pane_plan(
         if chains != {ReceiverChainSelection.RX1}:
             if choice.family is not DeviceFamily.AD936X or chains != {
                     ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}:
-                raise PaneUserPlanError("RX2 currently requires both AD936x chains in one common RTBW group")
+                raise PaneUserPlanError("RX2 currently requires both AD936x chains in one common RTBW group",
+                                        reason=PaneUserRefusal.PAIRED_ASSIGNMENT_UNSUPPORTED)
             receipt = pairs.get(source_id)
             if not isinstance(receipt, PanePairedSelectionReceipt):
-                raise PaneUserPlanError("paired plan requires a current selected topology receipt")
+                raise PaneUserPlanError("paired plan requires a current selected topology receipt",
+                                        reason=PaneUserRefusal.PAIRED_SELECTION_REQUIRED)
             receipt.validate_current(choice, selection_revisions[source_id], receipt.snapshot)
             if any(draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW)
                    for draft in drafts if draft.source_id == source_id):
-                raise PaneUserPlanError("paired Sweep is not implemented; use explicit common RTBW")
+                raise PaneUserPlanError("paired Sweep is not implemented; use explicit common RTBW",
+                                        reason=PaneUserRefusal.PAIRED_MODE_UNSUPPORTED)
             paired_sources.add(source_id)
         source_endpoints: list[ReceiverEndpoint | SpectrumTraceEndpoint] = []
         for chain in sorted(chains, key=lambda item: item.value):
@@ -291,7 +313,8 @@ def compile_user_pane_plan(
             endpoints[source_id, chain] = endpoint_id
         groups.append(AcquisitionGroup(f"{resource}:group", resource, tuple(source_endpoints)))
     if set(pairs) != paired_sources:
-        raise PaneUserPlanError("paired topology receipts differ from the exact requested paired sources")
+        raise PaneUserPlanError("paired topology receipts differ from the exact requested paired sources",
+                                reason=PaneUserRefusal.PAIRED_RECEIPTS_MISMATCH)
 
     cost = CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005)
     trace_cost = CaptureEpochCost(0.01, 0.01, 8.0, 0.005, 0.005)
@@ -448,12 +471,14 @@ def compile_user_pane_plan(
                 draft.points, draft.stop_hz - draft.start_hz,
                 "tinysa-request-v1", trace_cost, request_template=tiny_request)
         if draft.stop_hz - draft.start_hz > profile.usable_capture_span_hz:
-            raise PaneUserPlanError("pane range exceeds the source's current usable capture span")
+            raise PaneUserPlanError("pane range exceeds the source's current usable capture span",
+                                    reason=PaneUserRefusal.CAPTURE_SPAN_EXCEEDED)
         snapshot = choice.binding.snapshot
         if (snapshot is not None and snapshot.tuning_ranges_hz
                 and not any(item.minimum <= draft.start_hz < draft.stop_hz <= item.maximum
                             for item in snapshot.tuning_ranges_hz)):
-            raise PaneUserPlanError("pane range is outside the selected device's observed tuning range")
+            raise PaneUserPlanError("pane range is outside the selected device's observed tuning range",
+                                    reason=PaneUserRefusal.OBSERVED_RANGE_EXCEEDED)
         pane_id = f"pane-{draft.number}"
         profiles[pane_id] = profile
         by_source[source_id].append((draft, profile))
@@ -472,7 +497,11 @@ def compile_user_pane_plan(
                     else ReceiverBindingMode.TIME_SLICED)
         modes[source_id] = mode
         if source_id in paired_sources and mode is not ReceiverBindingMode.SHARED_CAPTURE:
-            raise PaneUserPlanError("paired RX requires one common profile and one usable capture window; no implicit time slicing")
+            reason = (PaneUserRefusal.PAIRED_PROFILE_CONFLICT if not same_profile
+                      else PaneUserRefusal.PAIRED_WINDOW_CONFLICT)
+            raise PaneUserPlanError(
+                "paired RX requires one common profile and one usable capture window; no implicit time slicing",
+                reason=reason)
         if mode is ReceiverBindingMode.SHARED_CAPTURE:
             shared_policies[source_id] = _shared_scheduler_policy(entries)
     slots_list: list[PaneLayoutSlot] = []
@@ -500,6 +529,7 @@ def compile_user_pane_plan(
         layout = compile_pane_layout(slots, tuple(groups), profiles)
     except PaneScheduleDeadlineError as error:
         raise PaneUserPlanError("pane revisit targets are infeasible in the declared cost model",
+                                reason=PaneUserRefusal.REVISIT_INFEASIBLE,
                                 revisit_violations=error.violations) from None
     initial_ad: list[tuple[str, LiveConfiguration]] = []
     assert layout.schedule is not None
