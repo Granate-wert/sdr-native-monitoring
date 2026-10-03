@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from concurrent.futures import Future
 
 from sdr_monitor.domain.pane_scheduler import PaneLayout
+from sdr_monitor.domain.pane_scheduler import Ad936xPairedSweepPaneProfile
+from sdr_monitor.domain.live import LiveSessionState
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview, PaneResourceSession
 
@@ -135,10 +137,46 @@ class PaneProductSessionHandle:
             raise PaneUserPlanError("RF impact preview is stale")
 
         def commit() -> None:
+            # Paired Sweep Start requires an exact stopped applied profile.
+            # RF Apply is the explicit point to stage it; routing alone would
+            # leave the old profile armed and reject the next separate Start.
+            self._stage_paired_sweep_rf_profile(preview)
             self.rf_context = preview.proposal.proposed_context
             self.layout = self.rf_context.plan.layout
         return self.pump.apply_rf_shift(preview, commit,
                                        lambda: self._validate_rf_context(preview.proposal.expected_context))
+
+    def _stage_paired_sweep_rf_profile(self, preview: PaneRfChangePreview) -> None:
+        plan = preview.proposal.proposed_context.plan
+        assert plan.layout.schedule is not None
+        resource_id = preview.proposal.physical_stream_resource_id
+        resource = next(item for item in plan.layout.schedule.resources
+                        if item.physical_stream_resource_id == resource_id)
+        profiles = tuple(job.profile for job in resource.jobs
+                         if isinstance(job.profile, Ad936xPairedSweepPaneProfile))
+        if not profiles:
+            return  # Established single/paired RTBW and instrument paths.
+        if len(resource.jobs) != 1 or len(profiles) != 1:
+            raise PaneUserPlanError("paired Sweep RF Apply requires one exact common profile")
+        profile = profiles[0]
+        live = self.pool.graph_for(resource_id).live
+        # SAME application/recorder transaction, no claim acquisition or RF.
+        # Failure is caught by the pump's routing-consistency fault guard:
+        # no Start/hidden retry; explicit Stop and layout close remain possible.
+        with live.pane_control_transaction():
+            self._validate_rf_context(preview.proposal.expected_context)
+            current = live.current_snapshot()
+            selected = live.current_source_selection()
+            if (selected is None or live.is_running()
+                    or current.state is not LiveSessionState.CONNECTED
+                    or current.stop_required or current.error is not None
+                    or live.pane_recording_conflict()):
+                raise PaneUserPlanError("paired Sweep RF Apply requires the released stopped owner without recording")
+            profile.paired_request.validate_selected(current, selected.revision)
+            applied = live.apply_configuration(profile.configuration)
+            if (applied.error is not None or applied.applied is None
+                    or applied.applied.applied != profile.configuration):
+                raise PaneUserPlanError("paired Sweep RF Apply did not stage its exact common configuration")
 
     def shutdown_after_stop(self) -> None:
         """Run off Qt only after explicit Stop has released every lease."""

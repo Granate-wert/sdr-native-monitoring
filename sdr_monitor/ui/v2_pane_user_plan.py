@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from math import ceil, isfinite
+from math import ceil, floor, isfinite
 from typing import Mapping
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
@@ -23,10 +23,11 @@ from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ, Rt
 from sdr_monitor.domain.hackrf_sweep import HackrfSweepRequest
 from sdr_monitor.domain.identity import SourceId
 from sdr_monitor.domain.live import BackendKind, LiveConfiguration, LiveSnapshot, LiveSessionState
-from sdr_monitor.domain.paired_live import validate_paired_selection_snapshot
+from sdr_monitor.domain.paired_live import PairedLiveRequest, validate_paired_selection_snapshot
+from sdr_monitor.domain.paired_sweep import PairedSweepRequest
 from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.pane_scheduler import (
-    Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
+    Ad936xPairedSweepPaneProfile, Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
     RtlRtbwPaneProfile,
     PaneLayoutSlot, PaneProfile, PaneRevisitEstimate, PaneScheduleDeadlineError,
@@ -40,6 +41,7 @@ from sdr_monitor.domain.receiver_topology import (
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
 from sdr_monitor.domain.tinysa_settings import TinySaInputMode, TinySaSweepSettingsPlan
 from sdr_monitor.services.native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
+from sdr_monitor.services.ad936x_identity_admission import normalized_pluto_serial
 
 
 class PaneUserPlanError(ValueError):
@@ -248,6 +250,23 @@ class PaneUserPlan:
     hackrf_hardware_ranges: tuple[tuple[str, int, int], ...] = ()
     scheduler_intents: tuple[PaneSchedulingIntent, ...] = ()
     paired_selections: tuple[PanePairedSelectionReceipt, ...] = ()
+    paired_sweep_geometry: tuple[tuple[str, AnalyzerGeometryPreflight], ...] = ()
+    paired_sweep_requested_crops: tuple[tuple[str, str, float, float], ...] = ()
+
+
+def _paired_sweep_crop_stop(start_hz: float, stop_hz: float, common_start_hz: float,
+                            spacing_hz: float, common_bins: int) -> float:
+    """Return the last common-grid center strictly inside a pane's Stop edge."""
+    index = min(common_bins - 1, floor((stop_hz - common_start_hz) / spacing_hz))
+    while index >= 0 and common_start_hz + index * spacing_hz >= stop_hz:
+        index -= 1
+    while index + 1 < common_bins and common_start_hz + (index + 1) * spacing_hz < stop_hz:
+        index += 1
+    last_center = common_start_hz + index * spacing_hz
+    if index < 0 or last_center <= start_hz:
+        raise PaneUserPlanError("paired Sweep pane crop has no representable common-grid span",
+                                reason=PaneUserRefusal.PAIRED_WINDOW_CONFLICT)
+    return last_center
 
 
 def compile_user_pane_plan(
@@ -258,7 +277,8 @@ def compile_user_pane_plan(
 ) -> PaneUserPlan:
     """Compile explicit source assignments; reject unsupported family modes.
 
-    AD936x RX1 can use RTBW or its existing native continuous Sweep. HackRF RX1 can use
+    AD936x RX1 can use RTBW or its existing native continuous Sweep. A selected
+    RX1/RX2 pair can use one common RTBW or continuous Sweep plan. HackRF RX1 can use
     RTBW or its existing bounded host Sweep owner; tinySA panes are device
     dBm traces. A repeated source shares a capture only if *all* its panes
     have one compatible profile and fit its usable span; otherwise it receives
@@ -279,6 +299,7 @@ def compile_user_pane_plan(
     endpoints: dict[tuple[str, ReceiverChainSelection], str] = {}
     pairs = {} if paired_selections is None else dict(paired_selections)
     paired_sources: set[str] = set()
+    paired_sweep_sources: set[str] = set()
     for source_id in source_order:
         choice = selected[source_id]
         if not isinstance(choice, AnalyzerSourceChoice) or choice.device_id != source_id:
@@ -291,16 +312,22 @@ def compile_user_pane_plan(
         if chains != {ReceiverChainSelection.RX1}:
             if choice.family is not DeviceFamily.AD936X or chains != {
                     ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}:
-                raise PaneUserPlanError("RX2 currently requires both AD936x chains in one common RTBW group",
+                raise PaneUserPlanError("RX2 requires both AD936x chains in one common group",
                                         reason=PaneUserRefusal.PAIRED_ASSIGNMENT_UNSUPPORTED)
             receipt = pairs.get(source_id)
             if not isinstance(receipt, PanePairedSelectionReceipt):
                 raise PaneUserPlanError("paired plan requires a current selected topology receipt",
                                         reason=PaneUserRefusal.PAIRED_SELECTION_REQUIRED)
             receipt.validate_current(choice, selection_revisions[source_id], receipt.snapshot)
-            if any(draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW)
-                   for draft in drafts if draft.source_id == source_id):
-                raise PaneUserPlanError("paired Sweep is not implemented; use explicit common RTBW",
+            source_drafts = tuple(draft for draft in drafts if draft.source_id == source_id)
+            source_modes = {draft.measurement_mode for draft in source_drafts}
+            if CaptureMeasurementMode.SWEEP in source_modes:
+                if source_modes != {CaptureMeasurementMode.SWEEP}:
+                    raise PaneUserPlanError("paired RX cannot mix Sweep and RTBW in one owner",
+                                            reason=PaneUserRefusal.PAIRED_MODE_UNSUPPORTED)
+                paired_sweep_sources.add(source_id)
+            elif not source_modes <= {None, CaptureMeasurementMode.RTBW}:
+                raise PaneUserPlanError("paired RX requires a common RTBW or Sweep mode",
                                         reason=PaneUserRefusal.PAIRED_MODE_UNSUPPORTED)
             paired_sources.add(source_id)
         source_endpoints: list[ReceiverEndpoint | SpectrumTraceEndpoint] = []
@@ -318,6 +345,65 @@ def compile_user_pane_plan(
 
     cost = CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005)
     trace_cost = CaptureEpochCost(0.01, 0.01, 8.0, 0.005, 0.005)
+    paired_sweep_profiles: dict[str, Ad936xPairedSweepPaneProfile] = {}
+    paired_geometry: list[tuple[str, AnalyzerGeometryPreflight]] = []
+    for source_id in source_order:
+        if source_id not in paired_sweep_sources:
+            continue
+        source_drafts = tuple(draft for draft in drafts if draft.source_id == source_id)
+        if (len({draft.sample_rate_hz for draft in source_drafts}) != 1
+                or len({draft.fft_size for draft in source_drafts}) != 1
+                or any(draft.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED for draft in source_drafts)):
+            raise PaneUserPlanError("paired Sweep needs one common Fs, analysis N and settings",
+                                    reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT)
+        rate = source_drafts[0].sample_rate_hz
+        analysis_bins = source_drafts[0].fft_size
+        if rate != 61_440_000.0 or analysis_bins == 2048:
+            raise PaneUserPlanError("paired Sweep requires the qualified 61.44 MS/s analysis profile",
+                                    reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT)
+        starts = tuple(float(draft.start_hz) for draft in source_drafts if draft.start_hz is not None)
+        stops = tuple(float(draft.stop_hz) for draft in source_drafts if draft.stop_hz is not None)
+        common_start, common_stop = min(starts), max(stops)
+        capability = selected[source_id].binding.snapshot
+        if (capability is not None and capability.tuning_ranges_hz
+                and not any(bounds.minimum <= common_start < common_stop <= bounds.maximum
+                            for bounds in capability.tuning_ranges_hz)):
+            raise PaneUserPlanError("paired Sweep common LO sequence exceeds one observed tuning range",
+                                    reason=PaneUserRefusal.OBSERVED_RANGE_EXCEEDED)
+        minimum_f = ceil(rate * analysis_bins / 36_000_000.0)
+        physical_f = 1 << (minimum_f - 1).bit_length()
+        configuration = LiveConfiguration(
+            center_hz=(common_start + common_stop) / 2.0, sample_rate_hz=rate,
+            analog_bandwidth_hz=40_000_000.0, gain_db=20.0,
+            fft_size=physical_f, overlap_ratio=0.5, detector="sample", window="hann",
+            snapshot_rate_hz=240.0, backend=BackendKind.CPU,
+            persistence_enabled=False, persistence_mode="disabled")
+        request = ContinuousSweepPlanRequest(
+            common_start, common_stop, usable_window_hz=36_000_000.0,
+            overlap_hz=2_000_000.0, output_queue_capacity=2,
+            analysis_bins_per_usable_window=analysis_bins)
+        receipt = pairs[source_id]
+        device = receipt.snapshot.device
+        assert device is not None and device.capabilities.receiver_topology is not None
+        if normalized_pluto_serial(device.serial) is None:
+            raise PaneUserPlanError("paired Sweep requires a known observed device serial",
+                                    reason=PaneUserRefusal.PAIRED_STABLE_IDENTITY_REQUIRED)
+        try:
+            geometry = NativeContinuousSweepPlanFactory.preflight_profile(configuration, request)
+            pair = PairedLiveRequest(source_id, str(receipt.snapshot.session_id),
+                                     device.capabilities.receiver_topology, configuration,
+                                     endpoints[source_id, ReceiverChainSelection.RX1],
+                                     endpoints[source_id, ReceiverChainSelection.RX2])
+            paired_intent = PairedSweepRequest(resource_for[source_id], pair, request,
+                                               selection_revisions[source_id], receipt.snapshot)
+            paired_profile = Ad936xPairedSweepPaneProfile(
+                selected[source_id], selection_revisions[source_id], configuration, request,
+                CaptureEpochCost(0.01, 0.01, 1.0, 0.005, 0.005), paired_request=paired_intent)
+        except (TypeError, ValueError, RuntimeError):
+            raise PaneUserPlanError("paired Sweep exceeds exact selected topology, geometry or memory bounds",
+                                    reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT) from None
+        paired_sweep_profiles[source_id] = paired_profile
+        paired_geometry.append((resource_for[source_id], geometry))
     profiles: dict[str, PaneProfile] = {}
     ad_geometry: list[tuple[str, AnalyzerGeometryPreflight]] = []
     hf_geometry: list[tuple[str, AnalyzerGeometryPreflight]] = []
@@ -341,8 +427,11 @@ def compile_user_pane_plan(
                 and draft.measurement_mode is CaptureMeasurementMode.SWEEP):
             raise PaneUserPlanError("2048 is a physical FFT choice for the qualified HackRF Sweep pane")
         center = (draft.start_hz + draft.stop_hz) / 2.0
+        profile: PaneProfile
         if choice.family is DeviceFamily.AD936X:
-            if draft.measurement_mode is CaptureMeasurementMode.SWEEP:
+            if source_id in paired_sweep_profiles:
+                profile = paired_sweep_profiles[source_id]
+            elif draft.measurement_mode is CaptureMeasurementMode.SWEEP:
                 if draft.sample_rate_hz != 61_440_000.0:
                     raise PaneUserPlanError("AD936x pane Sweep requires its explicit 61.44 MS/s profile")
                 # The displayed selection is analysis N INSIDE W=36 MHz.
@@ -364,7 +453,7 @@ def compile_user_pane_plan(
                     geometry = NativeContinuousSweepPlanFactory.preflight_profile(configuration, request)
                 except (TypeError, ValueError, RuntimeError):
                     raise PaneUserPlanError("AD936x Sweep exceeds native geometry or reduced-data memory bounds") from None
-                profile: PaneProfile = Ad936xSweepPaneProfile(
+                profile = Ad936xSweepPaneProfile(
                     choice, selection_revisions[source_id], configuration, request,
                     CaptureEpochCost(0.01, 0.01, 1.0, 0.005, 0.005))
                 ad_geometry.append((f"pane-{draft.number}", geometry))
@@ -506,16 +595,27 @@ def compile_user_pane_plan(
             shared_policies[source_id] = _shared_scheduler_policy(entries)
     slots_list: list[PaneLayoutSlot] = []
     scheduler_intents: list[PaneSchedulingIntent] = []
+    paired_sweep_crops: list[tuple[str, str, float, float]] = []
     for draft in drafts:
         if draft.source_id is None:
             slots_list.append(PaneLayoutSlot(draft.number))
             continue
         assert draft.start_hz is not None and draft.stop_hz is not None
         profile = profiles[f"pane-{draft.number}"]
-        crop_start = (profile.pane_crop_start_hz if isinstance(profile, (Ad936xSweepPaneProfile, HackrfSweepPaneProfile))
-                      else draft.start_hz)
-        crop_stop = (profile.pane_crop_stop_hz if isinstance(profile, (Ad936xSweepPaneProfile, HackrfSweepPaneProfile))
-                     else draft.stop_hz)
+        if isinstance(profile, Ad936xPairedSweepPaneProfile):
+            crop_start = draft.start_hz
+            paired_sweep_crops.append((resource_for[draft.source_id], f"pane-{draft.number}",
+                                       draft.start_hz, draft.stop_hz))
+            geometry = next(item for resource, item in paired_geometry
+                            if resource == resource_for[draft.source_id])
+            crop_stop = _paired_sweep_crop_stop(
+                draft.start_hz, draft.stop_hz, profile.request_template.start_hz,
+                geometry.output_spacing_hz, geometry.reduced.output_bins)
+        else:
+            crop_start = (profile.pane_crop_start_hz if isinstance(profile, (Ad936xSweepPaneProfile, HackrfSweepPaneProfile))
+                          else draft.start_hz)
+            crop_stop = (profile.pane_crop_stop_hz if isinstance(profile, (Ad936xSweepPaneProfile, HackrfSweepPaneProfile))
+                         else draft.stop_hz)
         requested_policy = draft.scheduler_policy
         effective_policy = shared_policies.get(draft.source_id, requested_policy)
         scheduler_intents.append(PaneSchedulingIntent(
@@ -557,7 +657,8 @@ def compile_user_pane_plan(
     return PaneUserPlan(layout, tuple(groups),
                         tuple((resource_for[source], source) for source in source_order),
                         tuple(initial_ad), tuple(ad_geometry), tuple(hf_geometry), tuple(hf_ranges),
-                        tuple(scheduler_intents), tuple(pairs[source] for source in source_order if source in paired_sources))
+                        tuple(scheduler_intents), tuple(pairs[source] for source in source_order if source in paired_sources),
+                        tuple(paired_geometry), tuple(paired_sweep_crops))
 
 
 __all__ = ["RtbwBandPolicy", "TinySaPaneIntent", "PaneSlotDraft", "PaneSchedulingIntent", "PanePairedSelectionReceipt", "PaneUserPlan", "PaneUserPlanError", "compile_user_pane_plan"]

@@ -12,10 +12,11 @@ from collections.abc import Callable, Mapping
 from functools import partial
 
 from sdr_monitor.domain.device_capabilities import DeviceFamily
-from sdr_monitor.domain.pane_scheduler import PaneLayout
+from sdr_monitor.domain.pane_scheduler import Ad936xPairedSweepPaneProfile, CaptureMeasurementMode, PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
 from sdr_monitor.services.ad936x_pane_owner import Ad936xPaneOwner
 from sdr_monitor.services.ad936x_paired_pane_owner import Ad936xPairedPaneOwner
+from sdr_monitor.services.ad936x_paired_sweep_pane_owner import Ad936xPairedSweepPaneOwner
 from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
 from sdr_monitor.services.rtl_rtbw_pane_owner import RtlRtbwPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
@@ -86,10 +87,19 @@ def compose_v2_pane_resource_session(
                 raise PaneResourceError("paired AD936x requires two digital RX endpoints")
             first, second = group.endpoints
             assert isinstance(first, ReceiverEndpoint) and isinstance(second, ReceiverEndpoint)
-            owner_factories[resource_id] = partial(Ad936xPairedPaneOwner,
-                graph.live, physical_stream_resource_id=resource_id,
-                source_id=selected.device_id, endpoints=(first, second),
-                expected_selection=selection, expected_snapshot=graph.live.current_snapshot())
+            resource = next(item for item in layout.schedule.resources
+                            if item.physical_stream_resource_id == resource_id)
+            if all(isinstance(job.profile, Ad936xPairedSweepPaneProfile) for job in resource.jobs):
+                owner_factories[resource_id] = partial(Ad936xPairedSweepPaneOwner,
+                    graph.live, physical_stream_resource_id=resource_id,
+                    source_id=selected.device_id, endpoints=(first, second))
+            elif all(job.profile.measurement_mode is CaptureMeasurementMode.RTBW for job in resource.jobs):
+                owner_factories[resource_id] = partial(Ad936xPairedPaneOwner,
+                    graph.live, physical_stream_resource_id=resource_id,
+                    source_id=selected.device_id, endpoints=(first, second),
+                    expected_selection=selection, expected_snapshot=graph.live.current_snapshot())
+            else:
+                raise PaneResourceError("paired AD936x requires one coherent RTBW or typed paired Sweep mode")
         elif len(group.endpoints) != 1:
             raise PaneResourceError("selected family has no paired acquisition owner")
         elif selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):

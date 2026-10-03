@@ -215,6 +215,45 @@ class PairedSetupTests(unittest.TestCase):
             editor.release_after_shutdown()
             editor.close()
 
+    def test_paired_sweep_preview_shows_one_requested_plan_and_distinct_crops(self) -> None:
+        choice, snapshot = _choice(2)
+        receipt = PanePairedSelectionReceipt(choice, 17, snapshot)
+        drafts = (PaneSlotDraft(1, choice.device_id, 100e6, 104e6,
+                                sample_rate_hz=61_440_000., measurement_mode=CaptureMeasurementMode.SWEEP),
+                  PaneSlotDraft(2, choice.device_id, 170e6, 180e6,
+                                sample_rate_hz=61_440_000., measurement_mode=CaptureMeasurementMode.SWEEP,
+                                receiver_selection=ReceiverChainSelection.RX2),
+                  PaneSlotDraft(3), PaneSlotDraft(4))
+        plan = compile_user_pane_plan(drafts, {choice.device_id: choice},
+                                      {choice.device_id: 17}, paired_selections={choice.device_id: receipt})
+        preview = SimpleNamespace(physical_stream_resource_id="pane-resource-1",
+                                  affected_pane_ids=("pane-1", "pane-2"), capture_job_count=1,
+                                  recording_conflict=False, revisit_estimates=())
+        editor = self._editor(choice)
+        try:
+            editor._prepared = SimpleNamespace(plan=plan, preview=(preview,),
+                                               handle=SimpleNamespace(source_labels={choice.device_id: choice.label}))
+            for locale, common, first, second, unknown, budget in (
+                    (UiLocale.EN, "Common Sweep request 100…180 MHz", "Pane 1: requested display crop 100…104",
+                     "Pane 2: requested display crop 170…180", "Actual LO/Fs/filter/gain",
+                     "one-chain reduced-data estimate"),
+                    (UiLocale.RU, "Общий запрос сканирования 100…180 МГц",
+                     "Окно 1: запрос отображения 100…104", "Окно 2: запрос отображения 170…180",
+                     "Фактические LO/Fs/фильтр/усиление", "расчёт спектральных данных одной цепи")):
+                set_active_locale(locale)
+                editor.set_locale()
+                result = editor.preview.text()
+                for fragment in (common, first, second, unknown, budget, "RX1", "RX2"):
+                    self.assertIn(fragment, result)
+                self.assertNotIn("for the pair together", result)
+                self.assertNotIn("Paired Sweep is not yet available", result)
+                self.assertEqual(result.count("MiB") if locale is UiLocale.EN else result.count("МиБ"), 1)
+                self.assertEqual(editor.preview.accessibleName(), result)
+        finally:
+            editor._prepared = None
+            editor.release_after_shutdown()
+            editor.close()
+
     def test_typed_deadline_refusal_preserves_inert_stage_assurance_in_both_locales(self) -> None:
         key = "analyzer.pane.setup.refusal.revisit_infeasible"
         english = text(key, UiLocale.EN)

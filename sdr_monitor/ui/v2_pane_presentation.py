@@ -73,12 +73,22 @@ class PreparedPaneDelivery:
         producer = self.producer_source_id
         if (producer is not None and (not isinstance(producer, str) or not producer
                 or producer != producer.strip())
-                or delivery.bundle.paired_capture is not None and producer is None):
+                or (delivery.bundle.paired_capture is not None or delivery.bundle.paired_sweep is not None)
+                and producer is None):
             raise ValueError("paired pane delivery requires an explicit admitted producer source")
-        if delivery.bundle.paired_capture is not None and (
+        if (delivery.bundle.paired_capture is not None or delivery.bundle.paired_sweep is not None) and (
                 binding.receiver_selection not in {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
                 or delivery.bundle.receiver_id != binding.receiver_selection.name):
             raise ValueError("paired pane delivery differs from its typed receiver selection")
+        if delivery.bundle.paired_sweep is not None:
+            request = delivery.bundle.paired_sweep.run.request
+            expected = (request.pair.primary_source_id if binding.receiver_selection is ReceiverChainSelection.RX1
+                        else request.pair.secondary_source_id)
+            if (not delivery.bundle.paired_sweep.steps
+                    or request.resource_id != binding.physical_stream_resource_id
+                    or request.pair.device_id != binding.source_id
+                    or expected != producer):
+                raise ValueError("paired Sweep delivery differs from its selected producer and resource")
         if (delivery.pane_id != binding.pane_id
                 or delivery.physical_stream_resource_id != binding.physical_stream_resource_id
                 or delivery.capture_id != binding.capture_id
@@ -115,7 +125,10 @@ class PaneDeliveryPreparer:
         self._paired_resource_ids = frozenset(group.physical_stream_resource_id for group in groups
             if {endpoint.selection for endpoint in group.endpoints if isinstance(endpoint, ReceiverEndpoint)}
             == {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2})
-        self._paired_sync_context: dict[str, tuple[int, str | None, int | None, int]] = {}
+        # Sweep gaps are cumulative only within one line; native DSP resets
+        # its count for the next LO sequence. Keep the line identity beside it.
+        self._paired_sync_context: dict[str, tuple[
+            int, int, str | None, int | None, CaptureMeasurementMode, int, tuple[int, int] | None]] = {}
         self._grids = {pane_id: MeasurementGridCache(allocation_budget) for pane_id in bindings}
         self._layers = {pane_id: AnalyzerLayerCache(allocation_budget, grid_cache=self._grids[pane_id])
                         for pane_id in bindings}
@@ -237,27 +250,63 @@ class PaneDeliveryPreparer:
         producer = (binding.source_id if self._admitted_producer_source_id is None else
                     self._admitted_producer_source_id(binding.physical_stream_resource_id,
                                                       binding.receiver_endpoint_id))
+        paired_capture = bundle.paired_capture
+        paired_sweep = bundle.paired_sweep
+        paired = paired_capture is not None or paired_sweep is not None
         if (not isinstance(producer, str) or not producer or producer != producer.strip()
-                or bundle.paired_capture is not None and self._admitted_producer_source_id is None
+                or paired and self._admitted_producer_source_id is None
                 or identity is None or identity.source_id != producer
                 or bundle.mode != binding.mode.value or bundle.unit != binding.unit):
             raise ValueError("pane delivery source, mode or unit differs from the selected binding")
-        if ((binding.physical_stream_resource_id in self._paired_resource_ids)
-                != (bundle.paired_capture is not None)):
+        if ((binding.physical_stream_resource_id in self._paired_resource_ids) != paired
+                or paired_capture is not None and binding.measurement_mode is not CaptureMeasurementMode.RTBW
+                or paired_sweep is not None and binding.measurement_mode is not CaptureMeasurementMode.SWEEP):
             raise ValueError("pane delivery pair metadata differs from its typed acquisition group")
-        if bundle.paired_capture is not None and (
+        if paired and (
                 binding.receiver_selection not in {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
                 or bundle.receiver_id != binding.receiver_selection.name):
             raise ValueError("pane delivery differs from its typed receiver selection")
-        if bundle.paired_capture is not None:
-            context = (delivery.host_activation_serial, bundle.session_id,
-                       bundle.acquisition_epoch, bundle.paired_capture.synchronization_epoch)
+        if paired_sweep is not None:
+            request = paired_sweep.run.request
+            expected = (request.pair.primary_source_id if binding.receiver_selection is ReceiverChainSelection.RX1
+                        else request.pair.secondary_source_id)
+            if (not paired_sweep.steps or request.resource_id != binding.physical_stream_resource_id
+                    or request.pair.device_id != binding.source_id
+                    or expected != producer):
+                raise ValueError("paired Sweep delivery lacks acquired prefix or selected producer")
+        if paired:
+            # Sweep steps retune under one admitted attempt. Their per-step
+            # synchronization epochs change normally and are NOT gap signals.
+            if paired_capture is not None:
+                marker = paired_capture.synchronization_epoch
+            else:
+                assert paired_sweep is not None
+                marker = sum(step.primary.shared_input_gaps_before for step in paired_sweep.steps)
+            sweep_line = (None if paired_sweep is None else
+                          (paired_sweep.primary.epoch, paired_sweep.primary.sequence))
+            context = (delivery.host_run_serial, delivery.host_activation_serial, bundle.session_id,
+                       bundle.acquisition_epoch, binding.measurement_mode, marker, sweep_line)
             resource_id = binding.physical_stream_resource_id
-            if self._paired_sync_context.get(resource_id) != context:
+            previous = self._paired_sync_context.get(resource_id)
+            clear = previous is None or context[:2] != previous[:2]
+            if paired_sweep is not None and previous is not None:
+                if (context[:2] < previous[:2]
+                        or context[:2] == previous[:2] and context[2:5] != previous[2:5]):
+                    raise ValueError("pane paired publication is stale or differs from the current attempt")
+                if context[:2] == previous[:2]:
+                    prior_line = previous[6]
+                    assert sweep_line is not None and prior_line is not None
+                    if (sweep_line < prior_line or sweep_line == prior_line and marker < previous[5]):
+                        raise ValueError("pane paired Sweep line or observed gap prefix regressed")
+                    clear = ((sweep_line == prior_line and marker > previous[5])
+                             or (sweep_line > prior_line and marker > 0))
+            elif previous is not None:
+                clear = context != previous
+            if clear:
                 # One shared input gap invalidates both RX histories before
                 # either new-epoch frame enters a pane comparison cache.
                 self.clear_resource(resource_id)
-                self._paired_sync_context[resource_id] = context
+            self._paired_sync_context[resource_id] = context
         grid = bundle.frequencies_hz
         if grid.size < 2:
             raise ValueError("pane delivery has no usable physical frequency grid")

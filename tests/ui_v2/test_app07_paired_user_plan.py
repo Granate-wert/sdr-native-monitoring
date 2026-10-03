@@ -3,9 +3,10 @@
 from dataclasses import replace
 import unittest
 
+from sdr_monitor.domain.device_capabilities import CapabilityRange
 from sdr_monitor.domain.identity import SessionId
 from sdr_monitor.domain.live import LiveSessionState
-from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
+from sdr_monitor.domain.pane_scheduler import Ad936xPairedSweepPaneProfile, CaptureMeasurementMode
 from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.receiver_topology import (
     IqComponent, ReceiverBindingMode, ReceiverChain, ReceiverChainSelection,
@@ -143,10 +144,94 @@ class PairedUserPlanTests(unittest.TestCase):
                 self.compile((self.drafts[0], changed))
             self.assertIs(caught.exception.reason, reason)
 
-    def test_paired_sweep_refuses_before_implicit_fallback(self):
-        with self.assertRaisesRegex(PaneUserPlanError, "paired Sweep") as caught:
+    def test_mixed_sweep_and_rtbw_refuse_before_implicit_fallback(self):
+        with self.assertRaisesRegex(PaneUserPlanError, "cannot mix") as caught:
             self.compile((replace(self.drafts[0], measurement_mode=CaptureMeasurementMode.SWEEP), self.drafts[1]))
         self.assertIs(caught.exception.reason, PaneUserRefusal.PAIRED_MODE_UNSUPPORTED)
+
+    def test_distinct_disjoint_sweep_crops_use_one_exact_common_plan(self):
+        left = replace(self.drafts[0], start_hz=2_400e6, stop_hz=2_410e6,
+                       measurement_mode=CaptureMeasurementMode.SWEEP)
+        right = replace(self.drafts[1], start_hz=2_470e6, stop_hz=2_480e6,
+                        measurement_mode=CaptureMeasurementMode.SWEEP)
+        plan = self.compile((left, right))
+        resource = plan.layout.schedule.resources[0]
+        self.assertEqual(len(resource.jobs), 1)
+        job = resource.jobs[0]
+        self.assertIsInstance(job.profile, Ad936xPairedSweepPaneProfile)
+        intent = job.profile.paired_request
+        self.assertEqual((job.start_hz, job.stop_hz), (2_400e6, 2_480e6))
+        self.assertEqual((intent.sweep.start_hz, intent.sweep.stop_hz), (2_400e6, 2_480e6))
+        self.assertEqual((intent.pair.primary_source_id, intent.pair.secondary_source_id),
+                         job.receiver_endpoint_ids)
+        self.assertIs(intent.selected_snapshot, self.snapshot)
+        self.assertEqual(plan.paired_selections, (self.receipt,))
+        self.assertEqual(len(plan.paired_sweep_geometry), 1)
+        self.assertEqual(plan.ad_sweep_geometry, ())
+        self.assertEqual(tuple(item[:2] for item in plan.paired_sweep_requested_crops),
+                         (("pane-resource-1", "pane-1"), ("pane-resource-1", "pane-2")))
+        self.assertEqual(tuple(crop.start_hz for crop in job.crops), (2_400e6, 2_470e6))
+        self.assertTrue(all(crop.stop_hz < draft.stop_hz for crop, draft in zip(job.crops, (left, right))))
+        self.assertEqual(self.native.engines, [])
+
+    def test_offset_crop_uses_common_grid_and_excludes_requested_stop(self):
+        left = replace(self.drafts[0], start_hz=2_400e6, stop_hz=2_410_001_000.,
+                       measurement_mode=CaptureMeasurementMode.SWEEP)
+        right = replace(self.drafts[1], start_hz=2_470_001_000., stop_hz=2_480_003_000.,
+                        measurement_mode=CaptureMeasurementMode.SWEEP)
+        plan = self.compile((left, right))
+        job = plan.layout.schedule.resources[0].jobs[0]
+        spacing = plan.paired_sweep_geometry[0][1].output_spacing_hz
+        for crop, draft in zip(job.crops, (left, right)):
+            self.assertLess(crop.stop_hz, draft.stop_hz)
+            self.assertGreaterEqual(crop.stop_hz + spacing, draft.stop_hz)
+            self.assertGreater(crop.stop_hz, crop.start_hz)
+
+    def test_paired_sweep_rejects_mismatched_analysis_or_rate(self):
+        left = replace(self.drafts[0], measurement_mode=CaptureMeasurementMode.SWEEP)
+        right = replace(self.drafts[1], measurement_mode=CaptureMeasurementMode.SWEEP)
+        for changed in (replace(right, fft_size=16384), replace(right, sample_rate_hz=20e6)):
+            with self.subTest(changed=changed), self.assertRaises(PaneUserPlanError) as caught:
+                self.compile((left, changed))
+            self.assertIs(caught.exception.reason, PaneUserRefusal.PAIRED_PROFILE_CONFLICT)
+
+    def test_paired_sweep_common_envelope_cannot_cross_observed_tuning_gap(self):
+        capability = replace(self.source.binding.snapshot, tuning_ranges_hz=(
+            CapabilityRange(2_390e6, 2_420e6, "Hz"),
+            CapabilityRange(2_460e6, 2_490e6, "Hz")))
+        source = replace(self.source, binding=replace(self.source.binding, snapshot=capability))
+        snapshot = replace(self.snapshot, device=replace(self.snapshot.device,
+                                                           capability_snapshot=capability))
+        receipt = PanePairedSelectionReceipt(source, self.revision, snapshot)
+        drafts = (replace(self.drafts[0], start_hz=2_400e6, stop_hz=2_410e6,
+                          measurement_mode=CaptureMeasurementMode.SWEEP),
+                  replace(self.drafts[1], start_hz=2_470e6, stop_hz=2_480e6,
+                          measurement_mode=CaptureMeasurementMode.SWEEP))
+        with self.assertRaises(PaneUserPlanError) as caught:
+            compile_user_pane_plan(drafts, {source.device_id: source},
+                                   {source.device_id: self.revision},
+                                   paired_selections={source.device_id: receipt})
+        self.assertIs(caught.exception.reason, PaneUserRefusal.OBSERVED_RANGE_EXCEEDED)
+        self.assertEqual(self.native.engines, [])
+
+    def test_paired_sweep_stale_receipt_refuses_before_common_plan(self):
+        drafts = tuple(replace(draft, measurement_mode=CaptureMeasurementMode.SWEEP)
+                       if draft.source_id is not None else draft for draft in self.drafts)
+        with self.assertRaises(PaneUserPlanError) as caught:
+            self.compile(drafts, {self.source.device_id: replace(self.receipt,
+                                                                  selection_revision=self.revision + 1)})
+        self.assertIs(caught.exception.reason, PaneUserRefusal.SELECTION_CHANGED)
+        self.assertEqual(self.native.engines, [])
+
+    def test_paired_sweep_placeholder_serial_refuses_before_common_plan(self):
+        snapshot = replace(self.snapshot, device=replace(self.snapshot.device, serial="unknown"))
+        receipt = PanePairedSelectionReceipt(self.source, self.revision, snapshot)
+        drafts = tuple(replace(draft, measurement_mode=CaptureMeasurementMode.SWEEP)
+                       if draft.source_id is not None else draft for draft in self.drafts)
+        with self.assertRaises(PaneUserPlanError) as caught:
+            self.compile(drafts, {self.source.device_id: receipt})
+        self.assertIs(caught.exception.reason, PaneUserRefusal.PAIRED_STABLE_IDENTITY_REQUIRED)
+        self.assertEqual(self.native.engines, [])
 
     def test_rf_shift_preserves_pair_receipt_common_profile_and_other_crop(self):
         plan = self.compile()

@@ -33,7 +33,10 @@ class _PairedVisualContext:
     activation_serial: int
     session_id: str
     acquisition_epoch: int
-    synchronization_epoch: int
+    mode: CaptureMeasurementMode
+    synchronization_epoch: int | None
+    shared_gaps: int | None
+    sweep_line: tuple[int, int] | None
 
 
 class IndependentPaneBoardV2(QWidget):
@@ -475,26 +478,47 @@ class IndependentPaneBoardV2(QWidget):
         previous = self._last_order.get(binding.slot_number)
         if previous is not None and order <= previous:
             return False
-        paired = prepared.bundle.paired_capture
+        paired_capture = prepared.bundle.paired_capture
+        paired_sweep = prepared.bundle.paired_sweep
+        paired = paired_capture is not None or paired_sweep is not None
         resource_id = binding.physical_stream_resource_id
-        if ((resource_id in self._paired_resources) != (paired is not None)
-                or paired is None and resource_id in self._paired_visual_context):
+        if ((resource_id in self._paired_resources) != paired
+                or not paired and resource_id in self._paired_visual_context
+                or paired_capture is not None and binding.measurement_mode is not CaptureMeasurementMode.RTBW
+                or paired_sweep is not None and binding.measurement_mode is not CaptureMeasurementMode.SWEEP):
             # Typed RX1/RX2 binding must agree with the admitted paired
             # payload, including the first delivery and after a plan receipt.
             # A lone logical RX1 never turns another resource into a pair.
             return False
         next_context: _PairedVisualContext | None = None
         clear_paired_resource = False
-        if paired is not None:
+        if paired:
             session_id = prepared.bundle.session_id
             activation = prepared.delivery.host_activation_serial
             if (prepared.producer_source_id is None or not isinstance(session_id, str)
                     or not session_id or type(activation) is not int or activation < 0
-                    or type(epoch) is not int or epoch < 0):
+                    or type(epoch) is not int or epoch < 0
+                    or binding.receiver_selection not in {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
+                    or prepared.bundle.receiver_id != binding.receiver_selection.name):
                 return False
+            if paired_sweep is not None:
+                request = paired_sweep.run.request
+                expected = (request.pair.primary_source_id if binding.receiver_selection is ReceiverChainSelection.RX1
+                            else request.pair.secondary_source_id)
+                if (not paired_sweep.steps or request.resource_id != resource_id
+                        or request.pair.device_id != binding.source_id
+                        or request.pair.session_id != session_id
+                        or paired_sweep.run.acquisition_epoch != epoch
+                        or expected != prepared.producer_source_id):
+                    return False
             next_context = _PairedVisualContext(
                 prepared.delivery.host_run_serial, activation, session_id, epoch,
-                paired.synchronization_epoch)
+                binding.measurement_mode,
+                None if paired_capture is None else paired_capture.synchronization_epoch,
+                None if paired_sweep is None else sum(
+                    step.primary.shared_input_gaps_before for step in paired_sweep.steps),
+                None if paired_sweep is None else
+                    (paired_sweep.primary.epoch, paired_sweep.primary.sequence))
             current = self._paired_visual_context.get(resource_id)
             if current is not None:
                 if (next_context.run_serial < current.run_serial
@@ -506,10 +530,28 @@ class IndependentPaneBoardV2(QWidget):
                     if (resource_id in self._paired_awaiting_activation
                             or next_context.session_id != current.session_id
                             or next_context.acquisition_epoch != current.acquisition_epoch
-                            or next_context.synchronization_epoch < current.synchronization_epoch):
+                            or next_context.mode is not current.mode):
                         return False
-                    clear_paired_resource = (next_context.synchronization_epoch
-                                             > current.synchronization_epoch)
+                    if paired_sweep is None:
+                        next_sync = next_context.synchronization_epoch
+                        current_sync = current.synchronization_epoch
+                        if next_sync is None or current_sync is None or next_sync < current_sync:
+                            return False
+                        clear_paired_resource = next_sync > current_sync
+                    else:
+                        next_line, current_line = next_context.sweep_line, current.sweep_line
+                        next_gaps, current_gaps = next_context.shared_gaps, current.shared_gaps
+                        if (next_line is None or current_line is None
+                                or next_gaps is None or current_gaps is None
+                                or next_line < current_line
+                                or next_line == current_line and next_gaps < current_gaps):
+                            return False
+                        # Native's gap prefix is cumulative within one Sweep
+                        # line, then resets on the next tune line. A new line
+                        # with zero gaps is ordinary progression, not a reset.
+                        clear_paired_resource = (
+                            next_line == current_line and next_gaps > current_gaps
+                            or next_line > current_line and next_gaps > 0)
                 else:
                     if (next_context.activation_serial <= current.activation_serial
                             or (next_context.run_serial == current.run_serial

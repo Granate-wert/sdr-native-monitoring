@@ -222,7 +222,8 @@ class RtlPaneSetupTests(unittest.TestCase):
             job = SimpleNamespace(profile=profile, crops=(crop,))
             schedule = SimpleNamespace(resources=(SimpleNamespace(jobs=(job,)),))
             plan = SimpleNamespace(resource_sources=(), groups=(), scheduler_intents=(),
-                                   ad_sweep_geometry=(), hackrf_sweep_geometry=(),
+                                   ad_sweep_geometry=(), paired_sweep_geometry=(),
+                                   paired_sweep_requested_crops=(), hackrf_sweep_geometry=(),
                                    hackrf_hardware_ranges=(), layout=SimpleNamespace(schedule=schedule))
             editor._prepared = cast(PreparedPaneUserSession, SimpleNamespace(
                 plan=plan, preview=(), handle=SimpleNamespace(source_labels={})))

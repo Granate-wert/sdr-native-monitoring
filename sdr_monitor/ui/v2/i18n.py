@@ -350,8 +350,20 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.value_unknown": MappingProxyType({
             UiLocale.RU: "неизвестен", UiLocale.EN: "unknown"}),
         "analyzer.pane.setup.preview_paired_scope": MappingProxyType({
-            UiLocale.RU: "Оба RX и их истории затрагиваются вместе; независимые источники сохраняются. Это запрос, не аппаратное считывание: фактические центр/Fs/фильтр/усиление ещё неизвестны. Подготовка не настраивает RF; Применить не запускает RX. Парное сканирование пока недоступно.",
-            UiLocale.EN: "Both RX histories are affected together; independent sources remain unchanged. This is a request, not hardware readback: actual center/Fs/filter/gain are still unknown. Stage does not configure RF; Apply does not Start RX. Paired Sweep is not yet available."}),
+            UiLocale.RU: "Оба RX и их истории затрагиваются вместе; независимые источники сохраняются. Это запрос RTBW, не аппаратное считывание: фактические центр/Fs/фильтр/усиление ещё неизвестны. Подготовка не настраивает RF; Применить не запускает RX.",
+            UiLocale.EN: "Both RX histories are affected together; independent sources remain unchanged. This is an RTBW request, not hardware readback: actual center/Fs/filter/gain are still unknown. Stage does not configure RF; Apply does not Start RX."}),
+        "analyzer.pane.setup.preview_paired_sweep_request": MappingProxyType({
+            UiLocale.RU: "Общий запрос сканирования {start}…{stop} МГц: один план перестройки LO · Fs {rate} MS/s · RF-фильтр {filter} · усиление {gain} dB · физическая FFT {fft} · N {bins} в W · перекрытие {overlap} МГц · детектор {detector} · окно {window} · усреднение {averaging}.",
+            UiLocale.EN: "Common Sweep request {start}…{stop} MHz: one LO sequence · Fs {rate} MS/s · RF filter {filter} · gain {gain} dB · physical FFT {fft} · N {bins} in W · overlap {overlap} MHz · detector {detector} · window {window} · averaging {averaging}."}),
+        "analyzer.pane.setup.preview_paired_sweep_crop": MappingProxyType({
+            UiLocale.RU: "Окно {pane}: запрос отображения {start}…{stop} МГц (Stop исключён).",
+            UiLocale.EN: "Pane {pane}: requested display crop {start}…{stop} MHz (Stop excluded)."}),
+        "analyzer.pane.setup.preview_paired_sweep_geometry": MappingProxyType({
+            UiLocale.RU: "Общий план окон {panes}: W {window} МГц · шаг LO {step} МГц · участков {segments} · сетка {spacing} Гц (не RBW) · расчёт спектральных данных одной цепи ≤ {memory} МиБ (не RSS); суммарная парная память проверяется отдельно перед открытием контекста, здесь неизвестна.",
+            UiLocale.EN: "One plan for panes {panes}: W {window} MHz · LO step {step} MHz · segments {segments} · grid {spacing} Hz (not RBW) · one-chain reduced-data estimate ≤ {memory} MiB (not RSS); combined paired memory is checked separately before context open and is unknown here."}),
+        "analyzer.pane.setup.preview_paired_sweep_scope": MappingProxyType({
+            UiLocale.RU: "Оба RX и их истории затрагиваются вместе; независимые источники сохраняются. Это один запрошенный план и две отдельные области отображения, не два тюнера. Фактические LO/Fs/фильтр/усиление и ещё не измеренные участки неизвестны. Подготовка не настраивает RF; Применить не запускает RX; Старт отдельно.",
+            UiLocale.EN: "Both RX histories are affected together; independent sources remain unchanged. This is one requested plan with two display crops, not two tuners. Actual LO/Fs/filter/gain and unmeasured steps are unknown. Stage does not configure RF; Apply does not Start RX; Start is separate."}),
         "analyzer.pane.setup.recording_conflict": MappingProxyType({
             UiLocale.RU: "конфликт с записью", UiLocale.EN: "recording conflict"}),
         "analyzer.pane.setup.preview_ad_sweep": MappingProxyType({
@@ -404,8 +416,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Подтверждения парных источников не совпадают с точным назначением окон; подготовьте план заново.",
             UiLocale.EN: "Paired source receipts differ from the exact pane assignments; Stage the plan again."}),
         "analyzer.pane.setup.refusal.paired_assignment_unsupported": MappingProxyType({
-            UiLocale.RU: "RX2 требует RX1 и RX2 одного AD936x в общей группе RTBW; отдельный RX2 не допускается.",
-            UiLocale.EN: "RX2 requires RX1 and RX2 of one AD936x in a common RTBW group; lone RX2 is unsupported."}),
+            UiLocale.RU: "RX2 требует RX1 и RX2 одного AD936x в общей группе RTBW или сканирования; отдельный RX2 не допускается.",
+            UiLocale.EN: "RX2 requires RX1 and RX2 of one AD936x in a common RTBW or Sweep group; lone RX2 is unsupported."}),
         "analyzer.pane.setup.refusal.paired_topology_unavailable": MappingProxyType({
             UiLocale.RU: "Свежая топология не подтверждает совместимую пару RX1/RX2. RF и RX не запускались.",
             UiLocale.EN: "Fresh topology does not confirm a compatible RX1/RX2 pair. RF and RX were not started."}),
@@ -413,8 +425,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Для парного RX нет обязательного постоянного идентификатора текущего устройства; подготовка отклонена.",
             UiLocale.EN: "The current device lacks the stable identity required for paired RX; Stage was refused."}),
         "analyzer.pane.setup.refusal.paired_mode_unsupported": MappingProxyType({
-            UiLocale.RU: "Парное сканирование ещё не подключено. Для RX1/RX2 выберите общий RTBW.",
-            UiLocale.EN: "Paired Sweep is not connected yet. Choose common RTBW for RX1/RX2."}),
+            UiLocale.RU: "Для пары RX1/RX2 выберите один режим: оба RTBW или оба сканирование. Смешанные режимы отклоняются до RF.",
+            UiLocale.EN: "Choose one mode for RX1/RX2: both RTBW or both Sweep. Mixed modes are refused before RF."}),
         "analyzer.pane.setup.refusal.paired_profile_conflict": MappingProxyType({
             UiLocale.RU: "Профили двух RX несовместимы для одного захвата; Fs/FFT/качество не меняются автоматически.",
             UiLocale.EN: "The two RX profiles conflict for one capture; Fs/FFT/quality are not changed automatically."}),

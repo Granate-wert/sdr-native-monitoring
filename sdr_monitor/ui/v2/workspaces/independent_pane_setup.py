@@ -19,7 +19,7 @@ from sdr_monitor.domain.device_capabilities import (
 )
 from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.pane_scheduler import (
-    CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile, RtlRtbwPaneProfile,
+    Ad936xPairedSweepPaneProfile, CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile, RtlRtbwPaneProfile,
     PaneRevisitEstimate, TinySaTracePaneProfile,
 )
 from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ
@@ -883,7 +883,33 @@ class IndependentPaneSetupV2(QWidget):
             configuration = next((configuration for resource_id, configuration
                                   in prepared.plan.initial_ad_configurations
                                   if resource_id == group.physical_stream_resource_id), None)
-            if configuration is not None:
+            paired_sweep = next((job.profile for resource in schedule.resources
+                                 if resource.physical_stream_resource_id == group.physical_stream_resource_id
+                                 for job in resource.jobs
+                                 if isinstance(job.profile, Ad936xPairedSweepPaneProfile)), None)
+            if isinstance(paired_sweep, Ad936xPairedSweepPaneProfile):
+                paired_request = paired_sweep.paired_request.sweep
+                configuration = paired_sweep.configuration
+                lines.append(text("analyzer.pane.setup.preview_paired_sweep_request",
+                                  start=f"{paired_request.start_hz / 1e6:g}",
+                                  stop=f"{paired_request.stop_hz / 1e6:g}",
+                                  rate=f"{configuration.sample_rate_hz / 1e6:g}",
+                                  filter=(text("analyzer.pane.setup.value_unknown")
+                                          if configuration.analog_bandwidth_hz is None else
+                                          f"{configuration.analog_bandwidth_hz / 1e6:g}"
+                                          f"{text('analyzer.rf.unit.mhz')}"),
+                                  gain=f"{configuration.gain_db:g}", fft=configuration.fft_size,
+                                  bins=paired_request.analysis_bins_per_usable_window,
+                                  overlap=f"{paired_request.overlap_hz / 1e6:g}",
+                                  detector=configuration.detector, window=configuration.window,
+                                  averaging=configuration.averaging_frames))
+                for resource_id, pane_id, start, stop in prepared.plan.paired_sweep_requested_crops:
+                    if resource_id == group.physical_stream_resource_id:
+                        lines.append(text("analyzer.pane.setup.preview_paired_sweep_crop",
+                                          pane=pane_id.rsplit("-", 1)[-1],
+                                          start=f"{start / 1e6:g}", stop=f"{stop / 1e6:g}"))
+                lines.append(text("analyzer.pane.setup.preview_paired_sweep_scope"))
+            elif configuration is not None:
                 hop = round(configuration.fft_size * (1.0 - configuration.overlap_ratio))
                 lines.append(text("analyzer.pane.setup.preview_paired_request",
                                   center=f"{configuration.center_hz / 1e6:g}",
@@ -896,7 +922,7 @@ class IndependentPaneSetupV2(QWidget):
                                   hop=hop, detector=configuration.detector,
                                   window=configuration.window,
                                   averaging=configuration.averaging_frames))
-            lines.append(text("analyzer.pane.setup.preview_paired_scope"))
+                lines.append(text("analyzer.pane.setup.preview_paired_scope"))
         intents = {item.pane_id: item for item in prepared.plan.scheduler_intents}
         for resource in prepared.preview:
             for estimate in resource.revisit_estimates:
@@ -921,6 +947,16 @@ class IndependentPaneSetupV2(QWidget):
                               bins=geometry.analysis_bins_per_usable_window,
                               fft=geometry.physical_fft_size,
                               step=f"{geometry.segment_stride_hz / 1_000_000:g}",
+                              segments=geometry.segment_count,
+                              spacing=f"{geometry.output_spacing_hz:.2f}",
+                              memory=f"{geometry.reduced.total_bytes / (1024 * 1024):.2f}"))
+        for resource_id, geometry in prepared.plan.paired_sweep_geometry:
+            affected = next((item.affected_pane_ids for item in prepared.preview
+                             if item.physical_stream_resource_id == resource_id), ())
+            lines.append(text("analyzer.pane.setup.preview_paired_sweep_geometry",
+                              panes=", ".join(pane_id.rsplit("-", 1)[-1] for pane_id in affected),
+                              window=f"{geometry.usable_window_hz / 1e6:g}",
+                              step=f"{geometry.segment_stride_hz / 1e6:g}",
                               segments=geometry.segment_count,
                               spacing=f"{geometry.output_spacing_hz:.2f}",
                               memory=f"{geometry.reduced.total_bytes / (1024 * 1024):.2f}"))
