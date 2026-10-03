@@ -222,6 +222,51 @@ class ProductCloseTests(unittest.TestCase):
             self.assertEqual(len(attempts), 2)
             other.assert_called_once()
 
+    def test_analyzer_close_retry_retains_same_executor_and_caches_until_full_ack(self):
+        presenter = self.composition.analyzer_presenter
+        service = presenter._service
+        executor = presenter._stop_executor
+        original_close = service.close
+        calibration = self.composition._calibration_presenter
+        gui_thread = threading.get_ident()
+        close_threads = []
+
+        def close_twice_failed():
+            close_threads.append(threading.get_ident())
+            if len(close_threads) <= 2:
+                raise RuntimeError("analyzer Close still owns cleanup")
+            original_close()
+
+        with patch.object(service, "close", side_effect=close_twice_failed), \
+             patch.object(calibration, "finish_shutdown", wraps=calibration.finish_shutdown) as peer:
+            for attempt in (1, 2):
+                self.assertFalse(self.shell.close())
+                self.wait(lambda: self.composition.close_lifecycle.state.phase == "failed")
+                self.assertEqual(len(close_threads), attempt)
+                self.assertNotEqual(close_threads[-1], gui_thread)
+                self.assertIs(presenter._service, service)
+                self.assertIs(presenter._stop_executor, executor)
+                self.assertFalse(executor._shutdown)
+                self.assertTrue(presenter._closing)
+                self.assertFalse(presenter._closed)
+                self.assertFalse(self.composition._terminal_presentation_released)
+                self.assertFalse(self.page.visualization.spectrum_scene._graphics_terminal_released)
+                self.assertTrue(self.shell.isVisible())
+                self.assertFalse(presenter._timer.isActive())
+                with self.assertRaisesRegex(RuntimeError, "closing"):
+                    presenter.start(object())
+                with self.assertRaisesRegex(RuntimeError, "requires completed shutdown"):
+                    presenter.release_presentation_after_shutdown()
+                peer.assert_called_once()  # Independently completed owner never retries.
+            self.assertFalse(self.shell.close())
+            self.wait(lambda: self.shell._is_closed)
+            self.assertEqual(len(close_threads), 3)
+            self.assertTrue(all(worker != gui_thread for worker in close_threads))
+            self.assertTrue(presenter._closed)
+            self.assertTrue(executor._shutdown)
+            self.assertTrue(self.composition._terminal_presentation_released)
+            peer.assert_called_once()
+
     def test_active_rx_requires_explicit_stop_and_does_not_start_cleanup(self):
         self.select_and_apply()
         self.page.primary.click()

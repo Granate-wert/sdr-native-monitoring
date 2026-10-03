@@ -342,10 +342,10 @@ class ContinuousSweepPresenter(QObject):
             return
         if not self._closing:
             raise RuntimeError("Sweep must be quiesced before cleanup")
-        try:
-            self._service.close()
-        finally:
-            self._stop_executor.shutdown(wait=True)
+        # A failed service Close retains this exact owner for an explicit V2
+        # retry. Retiring its control lane first would strand that ownership.
+        self._service.close()
+        self._stop_executor.shutdown(wait=True)
         self._closed = True
 
     def release_presentation_after_shutdown(self) -> None:
@@ -398,10 +398,11 @@ class ContinuousSweepPresenter(QObject):
             except Exception:
                 pass  # Reported exactly once by _finish_stop.
             self._finish_stop(stop_future)
-        try:
-            self._service.close()
-        finally:
-            self._stop_executor.shutdown(wait=True)
+        # Keep the SAME serialized control executor until service Close has
+        # actually acknowledged cleanup. A failed Close remains retryable;
+        # _closing still bars Start, polling and hidden automatic recovery.
+        self._service.close()
+        self._stop_executor.shutdown(wait=True)
         self._closed = True
 
     def _poll(self) -> None:

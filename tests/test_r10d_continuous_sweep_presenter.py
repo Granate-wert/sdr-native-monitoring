@@ -311,6 +311,64 @@ class R10DContinuousSweepPresenterTests(unittest.TestCase):
         self.assertEqual(service.starts, 1)
         self.assertTrue(service.closed)
 
+    def test_failed_stop_and_repeated_failed_close_keep_same_executor_for_explicit_retry(self) -> None:
+        class RetryService(_Service):
+            def __init__(self) -> None:
+                super().__init__()
+                self.stop_calls = 0
+                self.close_calls = 0
+
+            @property
+            def stop_required(self) -> bool:
+                return self.started
+
+            def stop(self) -> None:
+                self.stop_calls += 1
+                if self.stop_calls == 1:
+                    raise RuntimeError("first Stop ownership failure")
+                super().stop()
+
+            def close(self) -> None:
+                self.close_calls += 1
+                if self.close_calls <= 2:
+                    raise RuntimeError("Close still retains owner")
+                if self.started:
+                    raise RuntimeError("Close cannot release a running owner")
+                super().close()
+
+        service = RetryService()
+        presenter = ContinuousSweepPresenter(service)
+        executor = presenter._stop_executor
+        failures: list[str] = []
+        presenter.task_failed.connect(failures.append)
+        presenter.start(object())
+        _finish_start(presenter)
+        for attempt in (1, 2):
+            with self.assertRaisesRegex(RuntimeError, "Close still retains owner"):
+                presenter.shutdown()
+            self.assertEqual(service.close_calls, attempt)
+            self.assertIs(presenter._stop_executor, executor)
+            self.assertFalse(executor._shutdown)
+            self.assertTrue(presenter._closing)
+            self.assertFalse(presenter._closed)
+            self.assertFalse(presenter._timer.isActive())
+            with self.assertRaisesRegex(RuntimeError, "closing"):
+                presenter.start(object())
+            with self.assertRaisesRegex(RuntimeError, "requires completed shutdown"):
+                presenter.release_presentation_after_shutdown()
+        self.assertEqual(service.stop_calls, 2)
+        self.assertEqual(failures, ["first Stop ownership failure"])
+        self.assertFalse(service.started)
+        presenter.shutdown()  # Third explicit Close; no hidden new Stop.
+        _APP.processEvents()  # Queued completion cannot report the old Stop twice.
+        self.assertEqual((service.stop_calls, service.close_calls), (2, 3))
+        self.assertEqual(failures, ["first Stop ownership failure"])
+        self.assertTrue(service.closed)
+        self.assertTrue(presenter._closed)
+        self.assertTrue(executor._shutdown)
+        presenter.shutdown()  # Terminal idempotence.
+        self.assertEqual((service.stop_calls, service.close_calls), (2, 3))
+
     def test_poll_failure_stops_acquisition_before_reporting_stopped(self) -> None:
         entered = threading.Event()
         release = threading.Event()
