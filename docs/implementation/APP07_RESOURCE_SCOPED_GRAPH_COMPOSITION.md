@@ -3601,3 +3601,51 @@ EXE/manifest and exact full-V2 gate, followed by admitted paired visible and
 independent-peer isolation checks, then RTL production and remaining HIL,
 fault, performance, stability and release gates. UI V2 only; dirty legacy
 checkout and current static EXE/firewall remain unchanged.
+
+## Matched diagnostic build and confirmed-Stop QA qualification
+
+The subsequent full pipeline built diagnostic tag
+APP07-PAIRSWEEP-20261003-8FB9ED5 from exact source
+8fb9ed51299cb833e2b1ebc4b99738bab2190357, which is documentation atop runtime
+dad2f2e. Native SHA256 remains 8dabdb1d27a4e4568a5e0665ef431f34cc32190d10617bf226383705aa44f14f;
+actual configure/build and 46/46 CTest (56.78 seconds) regenerated matching
+build metadata. The 660-file package, 559-input source snapshot, shared nine-DLL
+runtime/one USB runtime, default/native offscreen shell, IIO and tinySA checks
+passed. Twenty packaged compiled-mock tests passed separately in 31.035 seconds.
+EXE SHA256 f405ae8884050d3f9ab854ef916552b95bc3942f4118a83ae4f3ed72bb48cd43.
+These are build/package checks, not physical RX or visible Windows acceptance.
+
+Two initial full V2 attempts failed and remain recorded. The first used an
+incorrect Qt6.11.2 test environment against actual frozen Qt6.11.1; the exact
+experimental-version guard was preserved. The corrected environment exposed
+one independent-restart method with four failure entries. A continuous tinySA
+or HackRF source can validly deliver a newer same-run trace between a pre-click
+snapshot and confirmed Stop; requiring the earlier object at STOPPED was invalid.
+A failed subtest then skipped its Restart and caused later resource-count errors.
+Controlled mock/Qt witnesses exercised this schedule; the historical failing
+run's exact dynamic timeline is not claimed to have been captured.
+
+QA-only commit 98f600632aff4df6ecefdd7c5369fabfac96aba3 changes two test files,
+not product acquisition, DSP, presentation cadence, owners, epochs or budgets.
+Both continuous fake sources must advance before Stop, then the exact confirmed
+STOPPED bundle must remain stable across another delivery tick. Explicit Restart
+still requires a fresh owner/epoch, correct source and unchanged independent peers.
+The projection-Stop test now holds a real projector Future after settling an
+existing poll under a test-only timer interval; terminal delivery and pending-poll
+clear remain required. Distinct immutable review and root 22/22 focused tests
+passed. Patch SHA256 fe039a4007ccc58b7d966ff7ec117ad1ab3aeb7833a7214fb07adbaad7cedc8b.
+
+One serial exact full V2 gate at this QA-only commit passed: 1,331 testcases,
+1,265 passed, 66 skipped, zero failures/errors, 528.011 seconds; actual Qt6.11.1.
+Tracked source stayed clean before/after, no deferred compiled tests or product
+modules outside the checkout, native hash unchanged. Four historical NaN warnings
+remain visible. Postgate source snapshot and all 660 package hashes verified.
+The EXE/build source identity remains 8fb9, NOT the later QA-only commit.
+
+This package remains diagnostic, not current/static/promoted. Actual freezer
+PyInstaller6.21.0 differs from project dev pin6.22.3; a pinned local build lane
+and version admission remain release requirements. APP-07/M3 remain IN_PROGRESS:
+cleanup-retry/lifecycle cause work, admitted paired Windows workflow, genuine
+four-source HIL/peer isolation, RTL production, performance/soak and release
+qualification are still open. No new physical RX, Computer Use, device/system/
+firewall/driver/firmware changes or dirty-legacy product synchronization occurred.
