@@ -3841,3 +3841,47 @@ Stage/Apply/Start and resource guards. Positive paired Sweep/RX2, four physical
 sources, faults, performance, soak, visible DPI/gesture and full release remain
 OPEN. APP-07/M3 remain IN_PROGRESS; full APP00..14 goal unchanged. Configured
 reviewer model IDs were checked; runtime model attestation unavailable.
+
+## 2026-10-03 — M4 explicit RTL runtime source admission
+
+Build-tool source commit `19afb68cf79056faff6d7cd7f35c9013bf6add81`
+adds optional paired `-RtlRuntimeDirectory` / `-RtlRuntimeManifest`
+inputs to a tagged full CPU pipeline. Bridge-only `-EnableRtlOfficial`
+without these inputs remains supported. No system SDK or static/current
+package is changed. This source qualification does not relabel the existing
+5facbd8 diagnostic EXE or its native/physical witnesses.
+
+Input schema `app07-rtl-runtime-input-v1` binds `rtlsdr.dll`, up to eight
+dependencies, origin and one to eight notices to exact SHA-256 values.
+Bounded strict JSON/filenames and x64 PE/DLL/export/import validation reject
+incomplete or conflicting sets; dependency reachability is rooted at
+rtlsdr.dll. Static export validation is not ABI or RF accuracy proof.
+Shared libUSB must have identical selected bytes. Combined HF+RTL freezing
+runs the unchanged exact-nine shared-runtime guard before the separate
+RTL guard; generic CPU and HF-only paths are not weakened.
+
+Admission binds native source commit, actual source snapshot and input
+hashes. Freeze revalidates those bindings before generating the spec.
+Canonical sibling DLLs, external-runtime sidecar and notices are included
+in the checked payload; final verification checks the actual release
+inventory, provenance, closure, notices and duplicate/canonical paths.
+Generated PowerShell provenance alone permits UTF-8 BOM; input/admission
+metadata remain bounded strict UTF-8 with duplicate-key refusal.
+
+Root independently reproduced R0 null-export and unreachable-cycle gaps,
+retained their failing evidence, then qualified corrected R1/R2/R3.
+R3 integrated serial source/mock/static gate: 57/57 PASS, zero skips or
+failures, 13.3140955 seconds, six source hashes unchanged during the gate.
+Ruff, compileall, scoped five-file mypy and staged diff checks passed.
+Distinct gpt-6-sol/high reviewed the frozen source; gpt-6-luna/high wrote
+the isolated candidate. Dedicated gpt-6-sol/high completed a UI V2
+P2 design-only packet; no UI implementation was performed here.
+Configured model IDs are known; runtime attestation is unavailable.
+
+M4 and APP07-E02 remain PARTIAL/IN_PROGRESS: actual admitted vendor set,
+component notices/redistribution review, matching new package, RTL service
+workflow, shared-runtime coexistence, four physical sources, faults,
+performance, soak, visible DPI and full release qualification are still
+OPEN. Notice hashes do not establish redistribution rights. Positive
+paired RF/Sweep acceptance remains separate. No build, EXE, SDK load,
+RX, ComputerUse or system/security mutation occurred in this increment.
