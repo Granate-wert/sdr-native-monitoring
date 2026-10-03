@@ -4056,3 +4056,39 @@ VERIFY because relevant native code changed; earlier `6b3e86b` automatic RX proo
 is retained as historical evidence, not relabeled for this module. No new EXE,
 full V2 gate, physical manual RX, four-source HIL, soak or release qualification
 is claimed. APP-07/M4 remains partial; static EXE and system configuration unchanged.
+
+## Typed RTL gain backend — 2026-10-04
+
+Product source `26e2c46` plus corrective `73a03c9` integrates the native gain
+prerequisite into immutable requests, selected-session discrete capabilities,
+inert Stage admission, Start, SDK-cache snapshots and strict build/runtime
+version checks. None remains Auto; zero is an explicit Manual value. Unsupported
+or stale capabilities refuse instead of rounding or fabricating a gain range.
+Legacy Auto-only modules remain compatible when both gain-contract declarations
+are absent. Full pane profile compatibility distinguishes different gains.
+
+Independent read-only Sol review found an ambiguous-cleanup defect: a native
+factory could quarantine after failed close without returning a control, while
+Python Stop released the common graph claim. Corrective `73a03c9` requires
+confirmed nonquarantined cleanup before release, including superficially complete
+Stops. Clean failures release only on explicit Stop. Unknown cleanup retains
+the claim and error. Tests cover both paths and a table change after Stage that
+refuses before native gain setters or RX reader startup.
+
+A typed publication receipt separates requested gain from the SDK cached
+setting and binds it to the exact frame source/configuration/epoch. This is
+not independently measured RF gain, gain-mode readback or calibrated dBm.
+Auto has no admitted manual cache. UI must preserve that distinction.
+
+Matching Windows CPU stage for `73a03c9`: 46/46 CTest passed in 55.37 seconds;
+61 source and compiled synthetic-ABI/product tests passed in 6.920 seconds.
+Native bytes remain `312236334b50f730723b1f30a472b0e2bd209ef27a40fcd0b279612138f303a8`;
+the incremental build declares source `73a03c9` and gain contract version 1.
+Scoped Ruff, type, compilation and diff checks passed. Corrected backend and
+publication-source review is approved, not a full release qualification.
+
+Dedicated UI V2 work follows in an isolated worktree: Auto default, confirmed
+discrete Manual choices, requested versus SDK-cache captions and stale/retained
+guards. No new EXE, full V2 gate, physical manual-gain acceptance, four-source
+HIL, performance, soak or production-release approval is claimed by this packet.
+APP-07/M4 remains partial. The static executable and system settings are unchanged.
