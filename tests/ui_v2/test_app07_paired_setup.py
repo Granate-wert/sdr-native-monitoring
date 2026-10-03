@@ -87,6 +87,8 @@ class PairedSetupTests(unittest.TestCase):
                 row.source.setCurrentIndex(row.source.findData(dual.device_id))
             rx2 = second.chain.findData(ReceiverChainSelection.RX2.value)
             self.assertTrue(_enabled(second.chain, rx2))
+            self.assertEqual(second.chain.itemText(rx2), "RX2")
+            self.assertEqual(second.chain.itemData(rx2), ReceiverChainSelection.RX2.value)
             self.assertIn("candidate", second.chain.toolTip())
             second.chain.setCurrentIndex(rx2)
             drafts = editor._read_drafts()
@@ -105,12 +107,30 @@ class PairedSetupTests(unittest.TestCase):
             editor.update_sources(AnalyzerSourceSelection(revision=18, choices=(single,)))
             self.assertIs(editor._read_drafts()[1].receiver_selection, ReceiverChainSelection.RX2)
             self.assertFalse(_enabled(second.chain, rx2))
+            self.assertEqual(second.chain.itemText(rx2), "RX2 · unavailable")
+            self.assertEqual(second.chain.itemData(rx2), ReceiverChainSelection.RX2.value)
+            self.assertGreaterEqual(second.chain.view().minimumWidth(),
+                                    second.chain.fontMetrics().horizontalAdvance(second.chain.itemText(rx2)) + 36)
+            self.assertEqual(second.chain.maximumWidth(), 90)
             self.assertTrue(second.chain.isEnabled())  # Correctable even while RX2 is disabled.
             self.assertFalse(editor.prepare.isEnabled())
             with patch.object(editor, "_submit") as submit:
                 editor._begin_prepare()
                 submit.assert_not_called()
             self.assertIn("one digital I/Q pair", editor.error.text())
+            for locale, annotation in ((UiLocale.RU, "RX2 · недоступен"),
+                                       (UiLocale.EN, "RX2 · unavailable")):
+                set_active_locale(locale)
+                editor.set_locale()
+                self.assertEqual(second.chain.itemText(rx2), annotation)
+                self.assertIn("RX2", second.chain.toolTip())
+                self.assertEqual(second.chain.accessibleDescription(), second.chain.toolTip())
+                self.assertIs(editor._read_drafts()[1].receiver_selection, ReceiverChainSelection.RX2)
+                self.assertFalse(_enabled(second.chain, rx2))
+            editor.update_sources(AnalyzerSourceSelection(revision=19, choices=(dual,)))
+            self.assertEqual(second.chain.itemText(rx2), "RX2")
+            self.assertTrue(_enabled(second.chain, rx2))
+            self.assertIs(editor._read_drafts()[1].receiver_selection, ReceiverChainSelection.RX2)
             second.chain.setCurrentIndex(second.chain.findData(ReceiverChainSelection.RX1.value))
             self.assertTrue(editor.prepare.isEnabled())
             second.chain.setCurrentIndex(rx2)
@@ -129,6 +149,7 @@ class PairedSetupTests(unittest.TestCase):
             row.source.setCurrentIndex(row.source.findData(unknown.device_id))
             rx2 = row.chain.findData(ReceiverChainSelection.RX2.value)
             self.assertFalse(_enabled(row.chain, rx2))
+            self.assertEqual(row.chain.itemText(rx2), "RX2 · unavailable")
             self.assertIn("unknown", row.chain.toolTip())
             self.assertIs(editor._read_drafts()[0].receiver_selection, ReceiverChainSelection.RX1)
         finally:

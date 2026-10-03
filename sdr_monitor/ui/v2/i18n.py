@@ -238,6 +238,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Цепь приёма окна {pane}", UiLocale.EN: "Pane {pane} receive chain"}),
         "analyzer.pane.setup.chain_rx1": MappingProxyType({UiLocale.RU: "RX1", UiLocale.EN: "RX1"}),
         "analyzer.pane.setup.chain_rx2": MappingProxyType({UiLocale.RU: "RX2", UiLocale.EN: "RX2"}),
+        "analyzer.pane.setup.chain_rx2_unavailable": MappingProxyType({
+            UiLocale.RU: "RX2 · недоступен", UiLocale.EN: "RX2 · unavailable"}),
         "analyzer.pane.setup.rx2_candidate": MappingProxyType({
             UiLocale.RU: "Наблюдаются две цифровые I/Q-пары. RX2 — только кандидат: подготовка заново проверит сеанс и топологию; отдельный RF-вход не подтверждён.",
             UiLocale.EN: "Two digital I/Q pairs were observed. RX2 is only a candidate: Stage rechecks session and topology; a separate RF input is unverified."}),

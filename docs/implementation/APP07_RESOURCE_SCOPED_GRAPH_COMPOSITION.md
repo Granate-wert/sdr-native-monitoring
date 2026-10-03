@@ -3137,3 +3137,35 @@ OPEN. APP07 PARTIAL; paired Sweep still refuses until M3. R14 cleanup retry defe
 remains separate OPEN. No new physical RX/dualRF/HIL/DPI/DWM/performance/soak/Linux/
 release acceptance; current static EXE/firewall and main dirty LegacyDFL preserved.
 Root owns backend/build; configured gpt-6-sol/high UI author and distinct reviewer.
+
+## M2 visible single-RX witness and receiver affordance — 2026-10-03
+
+The immutable FF02C7D diagnostic EXE was exercised on real Windows with a
+physical USB AD936x reporting only digital RX1. Stage/Apply did not start RX;
+two explicit Start/Stop cycles produced changing spectrum and waterfall, followed
+by normal Close and verified process absence. The unavailable RX2 popup choice
+did not change RX1. This is SINGLE-RX evidence, not positive paired-RX acceptance.
+Post-close the same554 source inputs and658 frozen files verified unchanged.
+Native analytical FFT and publication counters are not Qt/DWM paint FPS, RF duty,
+continuous transport, or a four-source performance baseline.
+
+A dedicated UI writer and distinct read-only reviewer, both configured
+gpt-6-sol/high, then prepared and reviewed a bounded three-file source correction:
+RX2 has the explicit localized `RX2 · unavailable` / `RX2 · недоступен` label
+whenever the existing topology guard disables it. Typed item data, selected RX2
+intent, refusal policy, tooltip/accessibility reason, and explicit Start semantics
+are preserved. The popup expands for the label; the compact closed selector may
+elide its suffix and still needs a matching EN/RU Windows readability witness.
+Root verified byte-identical reviewed/integrated patches,40 focused offscreen
+tests PASS6.597s, Ruff3/compile3/diff PASS. An initial guessed nonexistent test
+module caused an import error; the corrected real module suite passed. That
+diagnostic is retained and is not a production defect.
+
+No native/backend/RF/epoch/quality/budget change. The annotation source is NOT
+contained in the prior FF02C7D EXE: its matching new build/regression/visible
+witness remains OPEN. Dense Preview and visible requested-versus-actual readback
+are separate UX debt. M2 remains IN_PROGRESS, APP07 PARTIAL; M3 paired native
+retuning and M4 RTL production precede four-source HIL/fault/performance/soak/
+visual/release closure. R14 cleanup retry defect remains OPEN. No physical dualRF,
+DPI/DWM/50ms/lossless/soak/Linux or release acceptance, static promotion, main
+product sync, firewall/security/system change is claimed.

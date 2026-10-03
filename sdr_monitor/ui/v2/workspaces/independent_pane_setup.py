@@ -51,6 +51,9 @@ class _SlotRow:
         self.chain.setObjectName(f"independentPaneChain{number}V2")
         self.chain.setProperty("ui2Role", "utility-select")
         self.chain.setMinimumWidth(76)
+        self.chain.setMaximumWidth(90)
+        self.chain.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.chain.setMinimumContentsLength(3)
         for chain in (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2):
             self.chain.addItem(chain.name, chain.value)
         self.source_chain = QWidget(parent)
@@ -487,8 +490,13 @@ class IndependentPaneSetupV2(QWidget):
     def _refresh_chain(self, row: _SlotRow, choice: AnalyzerSourceChoice | None) -> None:
         reason = self._rx2_unavailable_key(choice)
         model = row.chain.model()
+        rx2_index = row.chain.findData(ReceiverChainSelection.RX2.value)
+        row.chain.setItemText(rx2_index, text("analyzer.pane.setup.chain_rx2_unavailable"
+                                              if reason else "analyzer.pane.setup.chain_rx2"))
+        row.chain.view().setMinimumWidth(
+            row.chain.fontMetrics().horizontalAdvance(row.chain.itemText(rx2_index)) + 36)
         if isinstance(model, QStandardItemModel):
-            item = model.item(row.chain.findData(ReceiverChainSelection.RX2.value))
+            item = model.item(rx2_index)
             if item is not None:
                 item.setEnabled(not reason)
         explanation = text(reason or "analyzer.pane.setup.rx2_candidate")
