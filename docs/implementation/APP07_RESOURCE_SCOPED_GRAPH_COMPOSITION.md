@@ -3788,3 +3788,56 @@ isolation on this matched package, with explicit refusal if RX2 is unavailable,
 then RTL production and exclusive four-source HIL. Faults, performance, soak,
 visible DPI/gesture acceptance and full release qualification remain mandatory.
 Later documentation commits do NOT relabel this5fac source/build evidence.
+
+## Matching 5FAC physical peer witness and RTL production audit — 2026-10-03
+
+The SAME diagnostic source/build5facbd8/runtime7829852/native8dab EXEcab0,
+not the later documentation HEAD, was exercised in actual Windows UI V2.
+Stage showed requested AD936x USB RX1 RTBW2400..2456MHz/Fs61.44MS/s/
+FFT4096/filter56MHz and HackRF USB RX1 RTBW100..120MHz/Fs20MS/s/
+FFT4096/filter20MHz. Pane3 used physical tinySA Sweep100..300MHz/1001points,
+LOW input, ManualRBW300kHz, Normal accuracy, preserved LNA/atten/spur and no
+extra correction. Pane4 Empty created no receiver. Apply armed the layout
+without RX or frames; separate Start all produced changing spectra/waterfalls
+on all three sources. tinySA displayed post-pass RBW300kHz. The SDR rates and
+filters here are requests, not a collected native readback or continuity claim.
+
+Stop selected Pluto reached two running resources and one stopped, with the
+AD plot explicitly marked retained/not-new. HF/tinySA continued visibly fresh
+and tinySA pass history advanced. Separate Start selected restored Pluto and
+three running resources without clearing the visible peer histories. Numeric
+GUI peer epochs/control receipts were not captured, so this is visible peer
+continuation, not exact epoch preservation proof. RX2 was explicitly unavailable
+in the chain selector and was not selected; no positive physical paired claim.
+
+Stop all reached running0/starting0/Stoprequired0/stopped3; Close layout and
+normal Close followed. Immediate closing inventory was retained; fresh inventory
+was empty and no SDRNativeMonitoring processes remained. The559-input source
+snapshot and all660 package file hashes were unchanged after Close. Original
+21 observations/21 JPEGs are retained locally. No product/build/system/security/
+firewall/TX/amp/bias mutation; current/static package remains unchanged.
+
+A distinct gpt-6-sol/high read-only stills review identified P2 cramped nested
+scrolling in tinySA settings and P2 dense Stage impact below the viewport near
+Apply, plus P3 small low-contrast headers/status/axis labels. The operator
+observed a wheel gesture change Preserve to Normal in the stopped draft; Normal
+was explicitly shown in the Stage command preview before RX. Stills alone do
+not establish wheel-event causality. Track these as dedicated UI V2 tasks, not
+DSP faults. Logical1440x912 is not FHD/QHD/DPI or smoothness qualification.
+
+A gpt-6-luna/high read-only M4 packaging audit, checked by root against source
+and files, explains why RTL is not offered: the bridge is compiled but this660-
+file package lacks rtlsdr.dll and rtl_external_runtime.json. Runtime qualification
+therefore refuses BEFORE native USB enumeration. This does not establish that
+physical RTL is absent. The prior DA3 local runtime add-on and its short RX proof
+are separate artifacts and cannot be transferred to this build or treated as
+production redistribution approval.
+
+Next M4 packet: explicit opt-in RTL runtime inputs, hash-admitted sidecar,
+exact dependency set/shared-libUSB collision checks, frozen package verification
+and independent review. License/notices approval and matching new-package RTL
+workflow precede production claims. Dedicated UI fixes must retain typed
+Stage/Apply/Start and resource guards. Positive paired Sweep/RX2, four physical
+sources, faults, performance, soak, visible DPI/gesture and full release remain
+OPEN. APP-07/M3 remain IN_PROGRESS; full APP00..14 goal unchanged. Configured
+reviewer model IDs were checked; runtime model attestation unavailable.
