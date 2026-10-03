@@ -16,6 +16,7 @@ from sdr_monitor.domain.pane_scheduler import Ad936xPairedSweepPaneProfile, Capt
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
 from .ad936x_rtbw_pane_owner import Ad936xRtbwPaneOwner
+from .ad936x_identity_admission import normalized_pluto_serial
 from .native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
 from .pane_resource_session import PaneCaptureAdmission
 
@@ -66,10 +67,24 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         selected = self._live.current_source_selection()
         if selected is None or selected.selected is not profile.source or selected.release_pending:
             raise ValueError("paired Sweep staged source is no longer selected")
-        profile.paired_request.validate_applied(self._live.current_snapshot(), selected.revision)
+        # Stage/Preview may propose a different stopped profile. Selection
+        # facts must stay exact, but applying that profile belongs to Apply.
+        # Requiring it here would make inert pre-Apply composition impossible.
+        snapshot = self._live.current_snapshot()
+        profile.paired_request.validate_selected(snapshot, selected.revision)
+        if snapshot.device is None or normalized_pluto_serial(snapshot.device.serial) is None:
+            raise ValueError("paired Sweep requires known actual serial before staging")
 
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission:
         self.validate_job(job)
+        profile = job.profile
+        assert isinstance(profile, Ad936xPairedSweepPaneProfile)
+        selected = self._live.current_source_selection()
+        if selected is None:
+            raise RuntimeError("paired Sweep has no current selected owner")
+        # Exact stopped applied profile still gates Start BEFORE factory/context,
+        # clearing retired output, or any RF/lease mutation.
+        profile.paired_request.validate_applied(self._live.current_snapshot(), selected.revision)
         if self._factory is not None:
             raise RuntimeError("paired Sweep still owns a prior capture; explicit Stop required")
         # One bounded retained drain, not another active queue. Release the
@@ -77,8 +92,6 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         self._terminal_archive = None
         self._terminal_archive_error = None
         self._started_run = None
-        profile = job.profile
-        assert isinstance(profile, Ad936xPairedSweepPaneProfile)
         # PaneResourceSession already owns this SAME application transaction.
         # Retain factory immediately so partial construction/Start can be closed.
         self._factory = NativeContinuousSweepPlanFactory.from_paired_application(

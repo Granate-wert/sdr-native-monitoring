@@ -603,6 +603,7 @@ class PairedSweepProductLeaseTests(unittest.TestCase):
     def test_paired_analyzer_epoch_refuses_boolean(self): self.run_native("run-bundle-bool")
     def test_paired_analyzer_refuses_borrowed_instrument_provenance(self): self.run_native("run-bundle-instrument")
     def test_actual_common_capture_job_pair_poll_stop_restart(self): self.run_native("pane-workflow")
+    def test_new_paired_sweep_proposal_stages_inert_then_requires_exact_apply_before_start(self): self.run_native("pane-stage-proposal")
     def test_atomic_pair_rejects_half_foreign_run_and_invalid_second_without_freshness(self): self.run_native("pane-atomic")
     def test_progress_pending_crop_is_not_a_measured_fresh_visit(self): self.run_native("pane-pending")
     def test_pane_and_factory_share_one_control_claim_without_external_borrow(self): self.run_native("pane-claim")

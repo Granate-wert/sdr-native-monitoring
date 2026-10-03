@@ -16,6 +16,9 @@ from tests.test_app07_shared_capture_schedule import pane
 
 
 def run_pane_case(graph, intent, case, hooks):
+    if case == "pane-stage-proposal":
+        intent = replace(intent, pair=replace(intent.pair, configuration=replace(
+            intent.pair.configuration, center_hz=2440e6)))
     selection = graph.live.current_source_selection()
     profile = Ad936xPairedSweepPaneProfile(selection.selected, selection.revision,
         intent.pair.configuration, intent.sweep, CaptureEpochCost(.01, .01, .05, .005, .005),
@@ -51,6 +54,27 @@ def run_pane_case(graph, intent, case, hooks):
 
     try:
         session.apply()
+        if case == "pane-stage-proposal":
+            # New profile can be staged/composed/previewed without applying RF.
+            # Explicit Start with old applied profile still refuses, before RF.
+            assert len(session.preview()) == 1
+            assert hooks.mock_iio_created_contexts() == created and hooks.mock_iio_rf_mutation_calls() == writes
+            refused(lambda: session.start_resource(intent.resource_id))
+            assert hooks.mock_iio_created_contexts() == created and hooks.mock_iio_rf_mutation_calls() == writes
+            session.stop_resource(intent.resource_id)
+            session.rearm_resource(intent.resource_id)
+            staged = graph.live.apply_configuration(intent.pair.configuration)
+            assert staged.error is None and staged.applied.applied == intent.pair.configuration
+            assert hooks.mock_iio_created_contexts() == created and hooks.mock_iio_rf_mutation_calls() == writes
+            session.start_resource(intent.resource_id)
+            deadline = time.monotonic() + 5
+            deliveries = ()
+            while not deliveries and time.monotonic() < deadline:
+                deliveries = session.poll_resource(intent.resource_id)
+                time.sleep(.001)
+            assert len(deliveries) in (2, 4)
+            assert hooks.mock_iio_created_contexts() == created + 1
+            return
         if case == "pane-profile":
             refused(lambda: replace(profile, selection_revision=selection.revision + 1))
             refused(lambda: replace(job, receiver_endpoint_ids=(endpoints[0].endpoint_id,)))
