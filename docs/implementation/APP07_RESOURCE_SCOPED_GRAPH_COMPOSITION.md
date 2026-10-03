@@ -2963,3 +2963,45 @@ M12 all mandatory PASS with evidence/root closure. APP07 remains PARTIAL. Full
 APP00–14 objective and expired APP05 timer unchanged. Fresh goal API returned paused,
 not ACTIVE; this plan adoption did not create or change a goal. Main dirty work and
 current/static EXE remain preserved.
+
+## 2026-10-03: M1 typed paired admission refusals — source-only increment
+
+Product source `1e72f9bb5b3f84fc96309c71cef76dcb8bf6684d` adds the domain
+`PaneUserRefusal` contract and propagates typed reasons through user-plan Stage
+and the all-receipt before-RF Apply preflight. Initial missing stable identity,
+unavailable dual topology, changed selection/session, unsupported paired assignment
+or mode, common profile conflict and common window conflict are distinguishable.
+Existing guards and explicit paired Sweep refusal remain; no time slicing/fallback,
+second opener, hidden Start/restart, lower Fs/FFT or altered RF/DSP/budget policy.
+
+Only known typed plan/Stage errors propagate their reason. Unexpected SDK/graph
+operation failures keep fixed generic text; no string parsing or driver-path leak.
+Cleanup failure remains the actionable CLEANUP_REQUIRED with retained pool and
+separate original failed_reason; existing revisit estimates remain available.
+Legacy exception constructors and the current generic visible messages remain
+compatible. The paired selector is STILL DISABLED; localized reason presentation,
+typed RX preview and group Start confirmation belong to the dedicated UI V2 packet.
+
+The frozen six-file candidate passed 86 focused pure/offscreen tests (5.781 s),
+64 broader source-isolation/RF/geometry/tinySA tests (40.956 s), and five compiled
+native MOCK-IIO Stage cases (7.946 s) using the unchanged da3df7b native artifact.
+Ruff/compile on six files and staged-diff check passed. Scoped mypy on three touched
+modules passed with follow-imports=silent. Initial full-follow mypy found 11 errors:
+two introduced narrowing errors were fixed; nine in unchanged dependencies remain.
+This is NOT whole-tree mypy success. Deliberate fault-test messages are retained.
+
+Independent gpt-6-sol/high read-only review checked immutable patch SHA256
+`15dab1fc058e8b4b3356301821526bc93d9d40a852687ad4b888d521fd9c43b2` and found
+no blocking issue in scope; it did not rerun tests or approve the whole release.
+Impact of the shared control boundary is high, protection partial. Root integrated
+a source progress commit, not an automatic production merge/promotion. No new build,
+full regression, physical RX, visible GUI, four-source HIL, performance, soak or Linux
+qualification occurred. Existing EXE/native/physical witnesses remain da3df7b;
+neither this source commit nor later docs can relabel those artifacts.
+
+M0 is complete; M1 remains IN_PROGRESS with the refusal subpacket complete and
+paired retuning Sweep step/epoch/arbitration contract freeze still next. All final
+APP07-A…L acceptance guards remain. APP07 PARTIAL/full APP00–14 goal freshly
+confirmed ACTIVE; expired APP05 timer not restarted. Main dirty work and static EXE
+unchanged. Only the public contract is mirrored/published; private state/evidence
+remain local. Configured model IDs are recorded, runtime attestation unavailable.
