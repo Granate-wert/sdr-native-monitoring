@@ -58,12 +58,34 @@ def run_pane_case(graph, intent, case, hooks):
             refused(lambda: replace(job, crops=(job.crops[0], replace(job.crops[1],
                                         receiver_endpoint_id=endpoints[0].endpoint_id))))
             return
+        if case == "pane-archive-start-error":
+            with patch("sdr_monitor.services.native_continuous_sweep_factory._AdmittedPairedSweepCoordinator.start",
+                       side_effect=RuntimeError("injected unadmitted Start failure")):
+                refused(lambda: session.start_resource(intent.resource_id))
+            assert owner.terminal_archive is None and owner.terminal_archive_error is None
+            session.stop_resource(intent.resource_id)
+            assert owner.terminal_archive is None and owner.terminal_archive_error is None
+            assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
+            assert graph.live._pane_control_claim is None
+            return
+        if case.startswith("pane-archive"):
+            import ctypes
+            from sdr_monitor.domain.continuous_sweep_geometry import sweep_step_geometry
+
+            hooks.mock_iio_set_phase_gate.argtypes = [ctypes.c_int, ctypes.c_longlong, ctypes.c_int]
+            geometry = sweep_step_geometry(intent.sweep, 1)
+            hooks.mock_iio_set_phase_gate(1, int((geometry.usable_start_hz + geometry.usable_stop_hz) / 2), 1)
         activation = session.start_resource(intent.resource_id)
         assert graph.live._pane_control_claim is owner._control_claim
         assert hooks.mock_iio_created_contexts() == created + 1
         coordinator = owner._coordinator
         run = coordinator.active_run
         assert run is not None
+        if case.startswith("pane-archive"):
+            from tests.test_app07_paired_sweep_terminal_archive import run_pane_archive_case
+
+            run_pane_archive_case(session, owner, activation, intent, hooks, case, refused)
+            return
         if case == "pane-claim":
             # A captured token outside the owner transaction cannot borrow admission.
             refused(lambda: NativeContinuousSweepPlanFactory.from_paired_application(
@@ -170,6 +192,8 @@ def run_pane_case(graph, intent, case, hooks):
         assert len(delivered) in (2, 4)
         assert all(item.bundle.acquisition_epoch > run.acquisition_epoch for item in delivered)
     finally:
+        if case.startswith("pane-archive"):
+            hooks.mock_iio_release_phase_gate()
         session.stop_resource(intent.resource_id)
     assert graph.live._pane_control_claim is None
     assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0

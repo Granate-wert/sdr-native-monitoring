@@ -10,6 +10,8 @@ from typing import Any
 
 from sdr_monitor.application.live_session import LiveSessionApplicationService
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, bundles_from_paired_sweep
+from sdr_monitor.domain.paired_sweep_archive import PairedSweepTerminalArchive
+from sdr_monitor.domain.paired_sweep import PairedSweepRunIdentity
 from sdr_monitor.domain.pane_scheduler import Ad936xPairedSweepPaneProfile, CaptureJob
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
@@ -37,6 +39,9 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         self._coordinator: Any = None
         self._last_line: tuple[int, int] | None = None
         self._last_progress: tuple[int, int, int] | None = None
+        self._terminal_archive: PairedSweepTerminalArchive | None = None
+        self._terminal_archive_error: str | None = None
+        self._started_run: PairedSweepRunIdentity | None = None
 
     def validate_endpoint(self, endpoint: ReceiverEndpoint | SpectrumTraceEndpoint) -> None:
         if endpoint not in self._endpoints:
@@ -67,6 +72,11 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         self.validate_job(job)
         if self._factory is not None:
             raise RuntimeError("paired Sweep still owns a prior capture; explicit Stop required")
+        # One bounded retained drain, not another active queue. Release the
+        # previous archive BEFORE a new native/publication reservation begins.
+        self._terminal_archive = None
+        self._terminal_archive_error = None
+        self._started_run = None
         profile = job.profile
         assert isinstance(profile, Ad936xPairedSweepPaneProfile)
         # PaneResourceSession already owns this SAME application transaction.
@@ -76,6 +86,7 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         self._coordinator = self._factory.create_coordinator()
         self._coordinator.configure_paired(self._factory.build_paired())
         run = self._coordinator.start()
+        self._started_run = run
         self._last_line = self._last_progress = None
         return PaneCaptureAdmission(job.capture_id, self._source_id, profile.measurement_mode,
             profile.unit, job.receiver_endpoint_ids, run.acquisition_epoch,
@@ -85,13 +96,37 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
             paired_sweep_run=run)
 
     def stop_capture_and_wait(self) -> None:
+        archive_error = None
         if self._factory is not None:
             if self._coordinator is not None:
                 self._coordinator.stop()  # retires active run BEFORE native Stop
-            self._factory.close()  # confirmed join/context release, borrowed claim retained
+                if self._started_run is not None and self._terminal_archive is None:
+                    try:
+                        self._terminal_archive = self._coordinator.poll_retired_archive()
+                    except Exception as error:
+                        archive_error = error
+                        self._terminal_archive_error = f"{type(error).__name__}: {error}"
+            try:
+                self._factory.close()  # confirmed join/context release, borrowed claim retained
+            except Exception as cleanup_error:
+                if archive_error is not None:
+                    raise ExceptionGroup("paired Sweep archival and cleanup failed", [archive_error, cleanup_error])
+                raise
         self._factory = None
         self._coordinator = None
+        self._started_run = None
         self._last_line = self._last_progress = None
+        if archive_error is not None:
+            raise RuntimeError("paired Sweep terminal archive failed; hardware cleanup completed") from archive_error
+
+    @property
+    def terminal_archive(self) -> PairedSweepTerminalArchive | None:
+        """Stopped retained output only; not polled into current pane histories."""
+        return self._terminal_archive
+
+    @property
+    def terminal_archive_error(self) -> str | None:
+        return self._terminal_archive_error
 
     def poll_bundles(self) -> tuple[tuple[str, AnalyzerFrameBundle], ...]:
         if self._coordinator is None or self._coordinator.active_run is None:

@@ -12,6 +12,7 @@ from ..domain import BackendKind, LiveConfiguration
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ..domain.paired_sweep import PairedSweepRequest, PairedSweepRunIdentity
 from ..domain.paired_sweep_publication import PairedSweepPublication
+from ..domain.paired_sweep_archive import PairedSweepTerminalArchive, PairedSweepUnobservedTerminal
 from .native_paired_sweep_receipts import observed_paired_publication
 from ..domain.continuous_sweep_geometry import sweep_segment_count, sweep_step_geometry
 from ..domain.sweep_speed import SweepSpeedProfile
@@ -21,6 +22,7 @@ from .native_live import build_native_fixed_band_config, _SPECTRUM_QUEUE_CAPACIT
 from .native_continuous_sweep import (
     ContinuousSweepDisplaySnapshot,
     NativeContinuousSweepDisplayService,
+    _to_domain_line,
 )
 from .native_sweep import NativeSweepLease, NativeSweepSource
 from .ad936x_identity_admission import create_identity_bound_owner
@@ -418,6 +420,8 @@ class _AdmittedPairedSweepCoordinator:
         self._factory, self._owner, self._configuration = factory, owner, configuration
         self._operation_lock = threading.RLock()
         self._run: PairedSweepRunIdentity | None = None
+        self._retired_run: PairedSweepRunIdentity | None = None
+        self._retired_joined = False
         self._observed_sweep_epoch: int | None = None
         self._last_sweep_epoch: int | None = None
 
@@ -430,6 +434,8 @@ class _AdmittedPairedSweepCoordinator:
                 raise RuntimeError("paired Sweep owner requires its exact admitted configuration")
             self._owner.configure_paired(configuration)
             self._run = None
+            self._retired_run = None
+            self._retired_joined = False
 
     def start(self) -> PairedSweepRunIdentity:
         with self._operation_lock, self._factory.control_transaction():
@@ -439,6 +445,8 @@ class _AdmittedPairedSweepCoordinator:
             if allocate is None:
                 raise RuntimeError("paired Sweep Start lacks application run authority")
             self._run = None
+            self._retired_run = None
+            self._retired_joined = False
             run = allocate()  # Attempt consumed even if native Start partially fails.
             self._owner.start()
             self._observed_sweep_epoch = None
@@ -456,7 +464,7 @@ class _AdmittedPairedSweepCoordinator:
 
     def request_stop(self) -> None:
         with self._cleanup():
-            self._run = None  # Invalidate BEFORE native Stop, including failed cleanup.
+            self._retire_run()  # Invalidate BEFORE native Stop, including failed cleanup.
             state = self._owner.state()
             native_state = self._factory._lease.native_module.EngineState
             if state not in (native_state.CREATED, native_state.CONFIGURED):
@@ -464,19 +472,59 @@ class _AdmittedPairedSweepCoordinator:
 
     def join(self) -> None:
         with self._cleanup():
+            if self._run is not None and self._owner.state() == self._factory._lease.native_module.EngineState.RUNNING:
+                raise RuntimeError("paired Sweep join requires request_stop or terminal worker failure")
+            self._retire_run()
             self._owner.join()
+            self._retired_joined = True
 
     def stop(self) -> None:
         with self._cleanup():
-            self._run = None
+            self._retire_run()
             state = self._owner.state()
             native_state = self._factory._lease.native_module.EngineState
             if state not in (native_state.CREATED, native_state.CONFIGURED):
                 self._owner.stop()
+            self._retired_joined = True
+
+    def _retire_run(self) -> None:
+        if self._run is not None:
+            self._retired_run = self._run
+            self._retired_joined = False
+        self._run = None
+
+    def poll_retired_archive(self) -> PairedSweepTerminalArchive:
+        """Drain retained output only after join, under SAME cleanup authority.
+
+        No active run is restored. A zero-prefix gap is explicitly UNOBSERVED,
+        not an identity-qualified measurement. Each drain is bounded by the
+        existing output reservation and never starts or opens hardware.
+        """
+        with self._cleanup():
+            run = self._retired_run
+            if self._run is not None or run is None or not self._retired_joined:
+                raise RuntimeError("paired Sweep archive requires a retired confirmed-joined run")
+            native = self._factory._lease.native_module
+            terminals: list[PairedSweepPublication | PairedSweepUnobservedTerminal] = []
+            for value in self._owner.poll_paired_lines(run.request.sweep.output_queue_capacity):
+                if type(value) is not native.PairedSweepLineFrame:
+                    raise TypeError("retired Sweep requires immutable native terminal output")
+                self._check_epoch(value.primary.epoch)
+                if value.steps:
+                    terminals.append(observed_paired_publication(value, run))
+                else:
+                    if value.resource_id != run.request.resource_id:
+                        raise ValueError("unobserved terminal differs from retired resource")
+                    terminals.append(PairedSweepUnobservedTerminal(run,
+                        _to_domain_line(value.primary), _to_domain_line(value.secondary)))
+            archive = PairedSweepTerminalArchive(run, tuple(terminals))
+            if terminals:
+                self._observed_sweep_epoch = self._last_sweep_epoch = terminals[0].primary.epoch
+            return archive
 
     def disconnect(self) -> None:
         with self._operation_lock:
-            self._run = None
+            self._retire_run()
             self._factory.close()  # NativeLive closes raw owner before releasing both claims.
 
     @property
@@ -496,13 +544,16 @@ class _AdmittedPairedSweepCoordinator:
         if type(value) is not frame_type:
             raise TypeError("paired Sweep requires the immutable native publication type")
         epoch = value.primary.epoch
+        self._check_epoch(epoch)
+        publication = observed_paired_publication(value, run, progress=progress)
+        self._observed_sweep_epoch = self._last_sweep_epoch = epoch
+        return publication
+
+    def _check_epoch(self, epoch: int) -> None:
         if (self._observed_sweep_epoch is not None and epoch != self._observed_sweep_epoch
                 or self._observed_sweep_epoch is None and self._last_sweep_epoch is not None
                 and epoch <= self._last_sweep_epoch):
             raise ValueError("paired Sweep native epoch is stale or changed within the active run")
-        publication = observed_paired_publication(value, run, progress=progress)
-        self._observed_sweep_epoch = self._last_sweep_epoch = epoch
-        return publication
 
     def poll_observed_lines(self, max_items: int | None = None) -> tuple[PairedSweepPublication, ...]:
         with self._operation_lock, self._factory.control_transaction():

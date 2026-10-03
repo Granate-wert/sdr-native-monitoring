@@ -3496,3 +3496,25 @@ This backend path is exercised with the actual NativeLive/factory/coordinator
 using compiled mock IIO. It does not yet enable the UI V2 plan compiler's
 paired Sweep selector or qualify full gain/readback, terminal archival,
 matching EXE/visible UI, dual physical RF, four-device HIL or release.
+
+## Paired Sweep Stop-terminal archive
+
+The SAME admitted coordinator retires active authority BEFORE Stop and permits
+`poll_retired_archive` only after a confirmed join. It drains at most the
+already reserved output queue capacity; ordinary active observed polling still
+refuses, and configure/Start removes the previous retired identity.
+
+The pane owner retains one bounded terminal archive before native context/lease
+close and releases it before a new capture reservation. Acquired prefixes keep
+both actual step receipts and explicit terminal gaps. A zero-prefix terminal
+uses a separate `PairedSweepUnobservedTerminal`: planned, all-missing, no acquired
+RF/serial/step claim and not an Analyzer bundle. Retired output never feeds the
+active pane pump. Failed archival still attempts hardware cleanup, reports its
+cause, and requires explicit release confirmation; failed cleanup retains owner
+authority for retry. An unadmitted failed Start does not invent an archive run.
+
+This is reduced-output retention, not a lossless recorder or atomic recording
+ledger. Callers retaining output own its lifetime. Actual per-step RX gains
+remain unavailable in the current native receipt and need a native extension;
+requested gain must not be reported as actual. GUI/physical/release acceptance
+is not implied by the archive backend path.

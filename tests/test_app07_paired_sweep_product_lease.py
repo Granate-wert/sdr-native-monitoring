@@ -96,6 +96,12 @@ def run_case(path: str, case: str) -> None:
             run_pane_case(graph, request(), case, hooks)
             return
 
+        if case.startswith("archive-"):
+            from tests.test_app07_paired_sweep_terminal_archive import run_archive_case
+
+            run_archive_case(graph, request(), case, hooks)
+            return
+
         if case == "placeholder-serial":
             # Unknown observations must not downgrade paired admission to the
             # legacy unbound single-route constructor, even when nonblank.
@@ -561,3 +567,8 @@ class PairedSweepProductLeaseTests(unittest.TestCase):
     def test_paired_capture_job_requires_both_endpoints_and_exact_common_plan(self): self.run_native("pane-profile")
     def test_foreign_terminal_segment_index_refuses_before_either_pane_commit(self): self.run_native("pane-index")
     def test_overlap_new_contribution_refreshes_despite_retained_first_bin_owner(self): self.run_native("pane-overlap")
+    def test_retired_archive_requires_join_and_preserves_acquired_prefix(self): self.run_native("archive-prefix")
+    def test_zero_prefix_terminal_is_unobserved_not_a_measurement(self): self.run_native("archive-zero")
+    def test_resource_stop_archives_prefix_without_restoring_pane_history(self): self.run_native("pane-archive")
+    def test_archive_failure_still_closes_hardware_then_requires_explicit_release_retry(self): self.run_native("pane-archive-error")
+    def test_unadmitted_start_failure_cleans_without_fabricating_archive(self): self.run_native("pane-archive-start-error")
