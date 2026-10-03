@@ -249,6 +249,7 @@ struct Api final {
     using SetUint32 = int (__cdecl *)(Device*, std::uint32_t);
     using GetUint32 = std::uint32_t (__cdecl *)(Device*);
     using SetInt = int (__cdecl *)(Device*, int);
+    using GetGains = int (__cdecl *)(Device*, int*);
     using Reset = int (__cdecl *)(Device*);
     using ReadAsync = int (__cdecl *)(Device*, VendorCallback, void*, std::uint32_t, std::uint32_t);
     using Cancel = int (__cdecl *)(Device*);
@@ -268,6 +269,9 @@ struct Api final {
     SetUint32 set_center{};
     GetUint32 get_center{};
     SetInt set_gain_mode{};
+    GetGains get_gains{};
+    SetInt set_gain{};
+    GetMode get_gain{};
     Reset reset{};
     ReadAsync read_async{};
     Cancel cancel{};
@@ -381,6 +385,10 @@ template <typename Function>
     api->set_center = symbol<Api::SetUint32>(api->module, "rtlsdr_set_center_freq");
     api->get_center = symbol<Api::GetUint32>(api->module, "rtlsdr_get_center_freq");
     api->set_gain_mode = symbol<Api::SetInt>(api->module, "rtlsdr_set_tuner_gain_mode");
+    // Optional exports: absence must not disable the established automatic lane.
+    api->get_gains = reinterpret_cast<Api::GetGains>(GetProcAddress(api->module, "rtlsdr_get_tuner_gains"));
+    api->set_gain = reinterpret_cast<Api::SetInt>(GetProcAddress(api->module, "rtlsdr_set_tuner_gain"));
+    api->get_gain = reinterpret_cast<Api::GetMode>(GetProcAddress(api->module, "rtlsdr_get_tuner_gain"));
     api->reset = symbol<Api::Reset>(api->module, "rtlsdr_reset_buffer");
     api->read_async = symbol<Api::ReadAsync>(api->module, "rtlsdr_read_async");
     api->cancel = symbol<Api::Cancel>(api->module, "rtlsdr_cancel_async");
@@ -415,6 +423,26 @@ template <typename Function>
 
 [[nodiscard]] bool same_strings(const RtlObservedCandidate& a, const RtlObservedCandidate& b) {
     return a.manufacturer == b.manufacturer && a.product == b.product && a.serial == b.serial;
+}
+
+[[nodiscard]] std::vector<int> tuner_gains(Api& api, Device* device) {
+    if (!api.get_gains || !api.set_gain || !api.get_gain) return {};
+    // The provisioned SDK ABI has no buffer-length argument. Its trusted table
+    // is static per tuner (V1.4.0 maximum29); allow bounded extensions up to256.
+    // This is not containment of a malicious/native ABI-violating DLL.
+    const auto count = api.get_gains(device, nullptr);
+    if (count <= 0 || count > 256) throw sdr_core::DeviceError("RTL gain table count invalid");
+    std::array<int, 256> values{};
+    if (api.get_gains(device, values.data()) != count) {
+        throw sdr_core::DeviceError("RTL gain table changed during owned observation");
+    }
+    std::vector<int> result(values.begin(), values.begin() + count);
+    if (std::any_of(result.begin(), result.end(), [](int value) { return value < -1000 || value > 1000; }) ||
+        !std::is_sorted(result.begin(), result.end()) ||
+        std::adjacent_find(result.begin(), result.end()) != result.end()) {
+        throw sdr_core::DeviceError("RTL gain table values invalid");
+    }
+    return result;
 }
 
 class OfficialPort final : public RtlRuntimePort {
@@ -484,6 +512,20 @@ public:
     }
     int set_automatic_tuner_gain() noexcept override {
         return device_ != nullptr ? api_->set_gain_mode(device_, 0) : -1;
+    }
+    int set_manual_tuner_gain(const int gain) noexcept override {
+        if (!device_ || !api_->get_gains || !api_->set_gain || !api_->get_gain) return -103;
+        try {
+            const auto gains = tuner_gains(*api_, device_);
+            if (!std::binary_search(gains.begin(), gains.end(), gain)) return -104;
+            auto status = api_->set_gain_mode(device_, 1);
+            if (status == 0) status = api_->set_gain(device_, gain);
+            return status;
+        } catch (...) { return -105; }
+    }
+    std::optional<int> get_cached_tuner_gain() noexcept override {
+        if (!device_ || !api_->get_gain) return std::nullopt;
+        return api_->get_gain(device_);
     }
     int reset_buffer() noexcept override { return device_ != nullptr ? api_->reset(device_) : -1; }
     int verify_normal_tuner_mode() noexcept override {
@@ -614,6 +656,7 @@ RtlObservedCandidate observe_single_rtl_candidate(const RtlExternalRuntime& runt
             candidate.tuner_type = static_cast<std::uint32_t>(tuner);
             candidate.direct_sampling = false;
             candidate.offset_tuning = false;
+            candidate.tuner_gains_tenth_db = tuner_gains(*api, device);
         }
     } catch (...) { valid = false; }
     const auto close_status = api->close(device);

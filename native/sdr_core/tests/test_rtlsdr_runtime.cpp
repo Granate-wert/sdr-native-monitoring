@@ -126,6 +126,17 @@ sdr_rtlsdr::RtlProfile profile() {
 }
 
 void check_inert_validation() {
+    auto invalid_gain = profile();
+    invalid_gain.manual_tuner_gain_tenth_db = 1001;
+    try {
+        sdr_rtlsdr::validate_rtl_profile(invalid_gain);
+        assert(false);
+    } catch (const sdr_core::ConfigurationError&) {}
+    invalid_gain.manual_tuner_gain_tenth_db = -1001;
+    try {
+        sdr_rtlsdr::validate_rtl_profile(invalid_gain);
+        assert(false);
+    } catch (const sdr_core::ConfigurationError&) {}
     auto request = profile();
     request.expected_unique_serial = "00000001";
     try {
@@ -153,6 +164,26 @@ void check_inert_validation() {
         sdr_rtlsdr::validate_rtl_profile(request);
         assert(false);
     } catch (const sdr_core::ConfigurationError&) {}
+}
+
+void check_manual_gain_refusal_before_rx() {
+    for (const int gain : {-1001, 1001, 0, 144}) {
+        auto observed = std::make_shared<Observed>();
+        auto request = profile();
+        request.manual_tuner_gain_tenth_db = gain;
+        const bool invalid = gain < -1000 || gain > 1000;
+        bool refused{};
+        try {
+            static_cast<void>(sdr_rtlsdr::RtlRuntimeSession::start(
+                std::make_unique<MockRtlPort>(observed), request));
+        } catch (const sdr_core::ConfigurationError&) { assert(invalid); refused = true;
+        } catch (const sdr_core::DeviceError&) { assert(!invalid); refused = true; }
+        assert(refused);
+        assert(observed->opens.load() == (invalid ? 0 : 1));
+        assert(observed->closes.load() == (invalid ? 0 : 1));
+        assert(observed->reads.load() == 0 && observed->cancels.load() == 0);
+        assert(!sdr_rtlsdr::rtl_process_quarantined());
+    }
 }
 
 void check_callback_dsp_and_stop(const bool delayed, const bool malformed,
@@ -380,6 +411,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     check_inert_validation();
+    check_manual_gain_refusal_before_rx();
     check_pre_rx_failure_releases_owner(Fault::Open);
     check_pre_rx_failure_releases_owner(Fault::RateReadback);
     check_callback_dsp_and_stop(false, false);

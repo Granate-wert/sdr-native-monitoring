@@ -19,6 +19,7 @@ namespace sdr_core::python {
 
 void bind_rtl(py::module_& module) {
     module.attr("RTLSDR_RX_CONTROL_CONTRACT_VERSION") = 1;
+    module.attr("RTLSDR_TUNER_GAIN_CONTRACT_VERSION") = 1;
     module.def("rtl_process_is_quarantined", &sdr_rtlsdr::rtl_process_quarantined);
     py::class_<sdr_rtlsdr::RtlExternalFile>(module, "RtlExternalFile")
         .def(py::init([](std::string path, std::string hash) {
@@ -39,7 +40,8 @@ void bind_rtl(py::module_& module) {
         .def_readonly("serial", &sdr_rtlsdr::RtlObservedCandidate::serial)
         .def_readonly("tuner_type", &sdr_rtlsdr::RtlObservedCandidate::tuner_type)
         .def_readonly("direct_sampling", &sdr_rtlsdr::RtlObservedCandidate::direct_sampling)
-        .def_readonly("offset_tuning", &sdr_rtlsdr::RtlObservedCandidate::offset_tuning);
+        .def_readonly("offset_tuning", &sdr_rtlsdr::RtlObservedCandidate::offset_tuning)
+        .def_readonly("tuner_gains_tenth_db", &sdr_rtlsdr::RtlObservedCandidate::tuner_gains_tenth_db);
     py::class_<sdr_rtlsdr::RtlSessionRoute>(module, "RtlSessionRoute")
         .def(py::init([](std::string manufacturer, std::string product, std::string serial,
                          std::uint32_t tuner_type, std::uint64_t selection_revision) {
@@ -57,7 +59,8 @@ void bind_rtl(py::module_& module) {
         .def_readonly("session_epoch", &sdr_rtlsdr::RtlAcquisitionReadback::session_epoch)
         .def_readonly("actual_sample_rate_hz", &sdr_rtlsdr::RtlAcquisitionReadback::actual_sample_rate_hz)
         .def_readonly("actual_center_hz", &sdr_rtlsdr::RtlAcquisitionReadback::actual_center_hz)
-        .def_readonly("tuner_gain_readback_known", &sdr_rtlsdr::RtlAcquisitionReadback::tuner_gain_readback_known);
+        .def_readonly("tuner_gain_readback_known", &sdr_rtlsdr::RtlAcquisitionReadback::tuner_gain_readback_known)
+        .def_readonly("cached_tuner_gain_tenth_db", &sdr_rtlsdr::RtlAcquisitionReadback::cached_tuner_gain_tenth_db);
     py::class_<sdr_rtlsdr::RtlLatestFrame>(module, "RtlLatestFrame")
         .def_readonly("frame", &sdr_rtlsdr::RtlLatestFrame::frame)
         .def_readonly("coalesced_frames", &sdr_rtlsdr::RtlLatestFrame::coalesced_frames);
@@ -119,7 +122,8 @@ void bind_rtl(py::module_& module) {
         const std::uint32_t dsp_output_capacity, const std::uint32_t presentation_capacity,
         const std::uint64_t configuration_generation, std::string source_id,
         const sdr_core::DetectorType detector, std::string expected_unique_serial,
-        std::optional<sdr_rtlsdr::RtlSessionRoute> session_route) {
+        std::optional<sdr_rtlsdr::RtlSessionRoute> session_route,
+        std::optional<int> manual_tuner_gain_tenth_db) {
         sdr_rtlsdr::RtlProfile profile;
         profile.center_hz = center_hz;
         profile.sample_rate_hz = sample_rate_hz;
@@ -134,6 +138,7 @@ void bind_rtl(py::module_& module) {
         profile.detector = detector;
         profile.expected_unique_serial = std::move(expected_unique_serial);
         profile.session_route = std::move(session_route);
+        profile.manual_tuner_gain_tenth_db = manual_tuner_gain_tenth_db;
         profile.official_unbundled_runtime = true;
         sdr_rtlsdr::validate_rtl_profile(profile);
         py::gil_scoped_release release;
@@ -144,7 +149,8 @@ void bind_rtl(py::module_& module) {
        py::arg("ready_capacity"), py::arg("dsp_output_capacity"),
        py::arg("presentation_capacity"), py::arg("configuration_generation"),
        py::arg("source_id"), py::arg("detector"), py::arg("expected_unique_serial") = "",
-       py::arg("session_route") = py::none());
+       py::arg("session_route") = py::none(),
+       py::arg("manual_tuner_gain_tenth_db") = py::none());
 }
 
 }  // namespace sdr_core::python

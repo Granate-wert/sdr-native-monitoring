@@ -382,13 +382,22 @@ if(SDR_CORE_BUILD_TESTS)
         set_target_properties(sdr_core_rtl_mock_sdk PROPERTIES PREFIX "" OUTPUT_NAME "rtlsdr")
         target_compile_features(sdr_core_rtl_mock_sdk PRIVATE cxx_std_20)
         sdr_core_apply_platform_defaults(sdr_core_rtl_mock_sdk)
+        add_library(sdr_core_rtl_mock_legacy_sdk SHARED tests/mock_rtlsdr_sdk.cpp)
+        set_target_properties(sdr_core_rtl_mock_legacy_sdk PROPERTIES
+            PREFIX "" OUTPUT_NAME "rtlsdr"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/rtl-legacy-fixture"
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/rtl-legacy-fixture")
+        target_compile_definitions(sdr_core_rtl_mock_legacy_sdk PRIVATE MOCK_RTL_NO_MANUAL_GAIN=1)
+        target_compile_features(sdr_core_rtl_mock_legacy_sdk PRIVATE cxx_std_20)
+        sdr_core_apply_platform_defaults(sdr_core_rtl_mock_legacy_sdk)
         add_executable(sdr_core_rtlsdr_official_port_test tests/test_rtlsdr_official_port.cpp)
         target_link_libraries(sdr_core_rtlsdr_official_port_test
             PRIVATE sdr_core::sdr_rtlsdr_official bcrypt)
-        add_dependencies(sdr_core_rtlsdr_official_port_test sdr_core_rtl_mock_sdk)
+        add_dependencies(sdr_core_rtlsdr_official_port_test sdr_core_rtl_mock_sdk sdr_core_rtl_mock_legacy_sdk)
         sdr_core_apply_platform_defaults(sdr_core_rtlsdr_official_port_test)
         add_test(NAME sdr_core_rtlsdr_official_port_test
-            COMMAND sdr_core_rtlsdr_official_port_test $<TARGET_FILE:sdr_core_rtl_mock_sdk>)
+            COMMAND sdr_core_rtlsdr_official_port_test $<TARGET_FILE:sdr_core_rtl_mock_sdk>
+                $<TARGET_FILE:sdr_core_rtl_mock_legacy_sdk>)
         set_tests_properties(sdr_core_rtlsdr_official_port_test PROPERTIES TIMEOUT 30)
     endif()
     add_executable(sdr_core_rtlsdr_runtime_test tests/test_rtlsdr_runtime.cpp)

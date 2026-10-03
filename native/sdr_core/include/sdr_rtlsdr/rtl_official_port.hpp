@@ -27,6 +27,7 @@ struct RtlObservedCandidate {
     std::uint32_t tuner_type{};  // zero until selected open/read-only probe
     bool direct_sampling{};
     bool offset_tuning{};
+    std::vector<int> tuner_gains_tenth_db;  // selected owned-handle observation only
 };
 
 // All calls explicitly load a provisioned, hash-admitted, absolute DLL. The

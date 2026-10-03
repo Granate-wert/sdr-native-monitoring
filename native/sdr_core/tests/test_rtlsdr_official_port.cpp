@@ -51,11 +51,14 @@ namespace {
 }
 
 using Scenario = void (__cdecl *)(int);
+using ResetCounters = void (__cdecl *)();
+using Counter = int (__cdecl *)(int);
 
-void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external) {
+void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external, bool has_gain_api = true) {
     const auto observed = sdr_rtlsdr::observe_single_rtl_candidate(external);
     assert(observed.enumeration_index == 0U && observed.serial == "00000001");
     assert(observed.tuner_type == 5U && !observed.direct_sampling && !observed.offset_tuning);
+    assert(observed.tuner_gains_tenth_db == (has_gain_api ? std::vector<int>({-99, 0, 144, 496}) : std::vector<int>{}));
     sdr_rtlsdr::RtlProfile profile;
     profile.center_hz = 150'000'000U;
     profile.sample_rate_hz = 2'400'000U;
@@ -69,6 +72,7 @@ void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external) {
     assert(readback.session_epoch > 0U);
     assert(readback.actual_center_hz == profile.center_hz);
     assert(readback.actual_sample_rate_hz == profile.sample_rate_hz);
+    assert(!readback.tuner_gain_readback_known && !readback.cached_tuner_gain_tenth_db);
     for (int trial = 0; trial < 200 && owner->metrics().dsp.fft_frames_computed == 0U; ++trial) {
         std::this_thread::sleep_for(2ms);
     }
@@ -97,10 +101,36 @@ void count_changed_after_open(const sdr_rtlsdr::RtlExternalRuntime& external) {
     } catch (const sdr_core::DeviceError&) { refused = true; }
     assert(refused);  // post-open count/descriptor recheck, before RX
 }
+
+void manual_gain(const sdr_rtlsdr::RtlExternalRuntime& external, const int gain, const bool success,
+                 ResetCounters reset_counters, Counter counter, bool before_gain_setters = false) {
+    reset_counters();
+    sdr_rtlsdr::RtlProfile profile;
+    profile.center_hz = 150'000'000U;
+    profile.sample_rate_hz = 2'400'000U;
+    profile.session_route = sdr_rtlsdr::RtlSessionRoute{"Mock", "RTL tuner", "00000001", 5U, 1U};
+    profile.manual_tuner_gain_tenth_db = gain;
+    bool refused{};
+    try {
+        auto owner = sdr_rtlsdr::RtlRuntimeSession::start(sdr_rtlsdr::make_official_rtl_port(external), profile);
+        const auto readback = owner->readback();
+        assert(readback.tuner_gain_readback_known && readback.cached_tuner_gain_tenth_db == gain);
+        assert(owner->stop(2000ms).complete());
+    } catch (const sdr_core::DeviceError&) { refused = true; }
+    assert(refused != success);
+    assert(counter(0) == 1 && counter(1) == 1);
+    if (!success) assert(counter(2) == 0);  // no reader, not merely no crash
+    if (before_gain_setters) assert(counter(3) == 0 && counter(4) == 0);
+    assert(!sdr_rtlsdr::rtl_process_quarantined());
+    // A failed configuration must have closed the exact owner before RX.
+    auto port = sdr_rtlsdr::make_official_rtl_port(external);
+    assert(port->open_exact_unique_serial("00000001") == 0);
+    assert(port->close() == 0);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
-    assert(argc == 2);
+    assert(argc == 3);
     const auto library = std::filesystem::weakly_canonical(std::filesystem::path(argv[1]));
     const sdr_rtlsdr::RtlExternalRuntime external{
         {utf8_path(library), sha256(library)}, {}};
@@ -108,7 +138,9 @@ int main(int argc, char** argv) {
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     assert(module != nullptr);
     const auto scenario = reinterpret_cast<Scenario>(GetProcAddress(module, "mock_rtl_set_scenario"));
-    assert(scenario != nullptr);
+    const auto reset_counters = reinterpret_cast<ResetCounters>(GetProcAddress(module, "mock_rtl_reset_counters"));
+    const auto counter = reinterpret_cast<Counter>(GetProcAddress(module, "mock_rtl_counter"));
+    assert(scenario && reset_counters && counter);
     scenario(0);
     selected_route_and_cu8(external);
     scenario(3);
@@ -125,6 +157,30 @@ int main(int argc, char** argv) {
     scenario(5);
     count_changed_after_open(external);  // owned descriptor read failure still refuses
     scenario(0);
+    manual_gain(external, -99, true, reset_counters, counter);
+    manual_gain(external, 0, true, reset_counters, counter);
+    manual_gain(external, 144, true, reset_counters, counter);
+    manual_gain(external, 145, false, reset_counters, counter, true);  // no rounding
+    for (const int failure : {6, 7, 8, 9, 10, 11, 12, 13}) {
+        scenario(failure);
+        manual_gain(external, 144, false, reset_counters, counter,
+                    failure == 6 || failure == 7 || failure >= 11);
+    }
+    scenario(0);
     FreeLibrary(module);
+    // A legacy DLL with no optional gain exports retains automatic RX, while
+    // manual requests fail before mode/value setters and the async reader.
+    const auto legacy_library = std::filesystem::weakly_canonical(std::filesystem::path(argv[2]));
+    const sdr_rtlsdr::RtlExternalRuntime legacy{{utf8_path(legacy_library), sha256(legacy_library)}, {}};
+    const auto legacy_module = LoadLibraryExW(legacy_library.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    assert(legacy_module);
+    assert(!GetProcAddress(legacy_module, "rtlsdr_get_tuner_gains"));
+    const auto legacy_reset = reinterpret_cast<ResetCounters>(GetProcAddress(legacy_module, "mock_rtl_reset_counters"));
+    const auto legacy_counter = reinterpret_cast<Counter>(GetProcAddress(legacy_module, "mock_rtl_counter"));
+    assert(legacy_reset && legacy_counter);
+    selected_route_and_cu8(legacy, false);
+    manual_gain(legacy, 0, false, legacy_reset, legacy_counter, true);
+    FreeLibrary(legacy_module);
     return 0;
 }

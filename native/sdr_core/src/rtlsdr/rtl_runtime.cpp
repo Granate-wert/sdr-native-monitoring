@@ -95,6 +95,10 @@ void validate_rtl_profile(const RtlProfile& profile) {
     } else if (!serial_is_unique_claim(profile.expected_unique_serial)) {
         throw sdr_core::ConfigurationError("RTL RX requires a unique serial or an explicit session route");
     }
+    if (profile.manual_tuner_gain_tenth_db &&
+        (*profile.manual_tuner_gain_tenth_db < -1000 || *profile.manual_tuner_gain_tenth_db > 1000)) {
+        throw sdr_core::ConfigurationError("RTL manual gain outside bounded tenth-dB range");
+    }
     const auto minimum_outputs = (input_samples + profile.hop_size - 1U) / profile.hop_size + 2U;
     if (profile.dsp_output_capacity < minimum_outputs || profile.dsp_output_capacity > 256U) {
         throw sdr_core::ConfigurationError("RTL analytical burst queue is too small or unbounded");
@@ -424,13 +428,20 @@ std::unique_ptr<RtlRuntimeSession> RtlRuntimeSession::start(
     }
     state.device_open = true;
     state.cleanup_pending.store(true, std::memory_order_release);
-    auto configuration_status = state.runtime->set_automatic_tuner_gain();
+    auto configuration_status = state.profile.manual_tuner_gain_tenth_db ?
+        state.runtime->set_manual_tuner_gain(*state.profile.manual_tuner_gain_tenth_db) :
+        state.runtime->set_automatic_tuner_gain();
+    std::optional<int> cached_gain;
     if (configuration_status == 0) configuration_status = state.runtime->set_sample_rate(state.profile.sample_rate_hz);
     if (configuration_status == 0 && state.runtime->get_sample_rate() != state.profile.sample_rate_hz) configuration_status = -101;
     if (configuration_status == 0) configuration_status = state.runtime->set_center_frequency(state.profile.center_hz);
     if (configuration_status == 0 && state.runtime->get_center_frequency() != state.profile.center_hz) configuration_status = -102;
     if (configuration_status == 0) configuration_status = state.runtime->reset_buffer();
     if (configuration_status == 0) configuration_status = state.runtime->verify_normal_tuner_mode();
+    if (configuration_status == 0 && state.profile.manual_tuner_gain_tenth_db) {
+        cached_gain = state.runtime->get_cached_tuner_gain();
+        if (cached_gain != state.profile.manual_tuner_gain_tenth_db) configuration_status = -106;
+    }
     if (configuration_status != 0) {
         state.stop_result.close_called = true;
         state.stop_result.close_status = state.runtime->close();
@@ -452,7 +463,7 @@ std::unique_ptr<RtlRuntimeSession> RtlRuntimeSession::start(
     }
     state.readback = RtlAcquisitionReadback{
         next_session_epoch.fetch_add(1U, std::memory_order_acq_rel),
-        state.profile.sample_rate_hz, state.profile.center_hz, false};
+        state.profile.sample_rate_hz, state.profile.center_hz, cached_gain.has_value(), cached_gain};
     state.processor = std::thread([&state] { state.process(); });
     state.reader = std::thread([&state] {
         const auto status = state.runtime->read_async(&Impl::callback, &state, input_bytes);

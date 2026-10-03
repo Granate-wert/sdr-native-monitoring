@@ -41,6 +41,7 @@ class RtlCompiledBindingTests(unittest.TestCase):
         module_spec.loader.exec_module(native)
         self.assertIs(native.RTLSDR_OFFICIAL_COMPILED, True)
         self.assertEqual(native.RTLSDR_RX_CONTROL_CONTRACT_VERSION, 1)
+        self.assertEqual(native.RTLSDR_TUNER_GAIN_CONTRACT_VERSION, 1)
         self.assertFalse(native.rtl_process_is_quarantined())
         phase("enumerate")
         digest = hashlib.sha256(mock_path.read_bytes()).hexdigest()
@@ -52,6 +53,7 @@ class RtlCompiledBindingTests(unittest.TestCase):
         self.assertEqual((observed.enumeration_index, observed.serial, observed.tuner_type),
                          (0, "00000001", 5))
         self.assertFalse(observed.direct_sampling or observed.offset_tuning)
+        self.assertEqual(observed.tuner_gains_tenth_db, [-99, 0, 144, 496])
         route = native.RtlSessionRoute(observed.manufacturer, observed.product,
                                        observed.serial, observed.tuner_type, 3)
         phase("create")
@@ -65,6 +67,7 @@ class RtlCompiledBindingTests(unittest.TestCase):
             self.assertEqual((readback.actual_center_hz, readback.actual_sample_rate_hz),
                              (150_000_000, 2_400_000))
             self.assertFalse(readback.tuner_gain_readback_known)
+            self.assertIsNone(readback.cached_tuner_gain_tenth_db)
             deadline = time.monotonic() + 2.0
             frame = None
             phase("frame")
@@ -95,6 +98,27 @@ class RtlCompiledBindingTests(unittest.TestCase):
             self.assertFalse(owner.cleanup_required())
             self.assertFalse(native.rtl_process_is_quarantined())
             phase("complete")
+
+        # Exact integer tenths of dB, including negative and zero. This remains
+        # native mock proof: get_tuner_gain is an SDK cache, not an RF measurement.
+        for gain in (-99, 0, 144):
+            phase(f"manual_gain_{gain}")
+            manual = native.create_rtl_runtime_control(runtime, 150_000_000, 2_400_000,
+                4096, 2048, 8, 6, 16, 4, 7, "rtl-compiled-mock",
+                native.DetectorType.PEAK, "", route, manual_tuner_gain_tenth_db=gain)
+            try:
+                readback = manual.readback()
+                self.assertTrue(readback.tuner_gain_readback_known)
+                self.assertEqual(readback.cached_tuner_gain_tenth_db, gain)
+            finally:
+                self.assertTrue(manual.stop(2000).complete())
+                self.assertFalse(manual.cleanup_required())
+        for gain in (145, -1001, 1001):
+            with self.subTest(refused_gain=gain), self.assertRaises(Exception):
+                native.create_rtl_runtime_control(runtime, 150_000_000, 2_400_000,
+                    4096, 2048, 8, 6, 16, 4, 7, "rtl-compiled-mock",
+                    native.DetectorType.PEAK, "", route, manual_tuner_gain_tenth_db=gain)
+            self.assertFalse(native.rtl_process_is_quarantined())
 
         # Drive the actual Python RTL owner over this exact mock C ABI, not
         # the default product importer or an inferred hardware provision.

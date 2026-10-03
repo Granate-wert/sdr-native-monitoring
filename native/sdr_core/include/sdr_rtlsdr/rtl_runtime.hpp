@@ -41,6 +41,8 @@ struct RtlProfile {
     std::optional<RtlSessionRoute> session_route;
     bool official_unbundled_runtime{};  // set by the native official factory only
     sdr_core::DetectorType detector{sdr_core::DetectorType::Sample};
+    // Absent = existing automatic default. Integer tenths of dB, exact table entry.
+    std::optional<int> manual_tuner_gain_tenth_db;
 };
 
 void validate_rtl_profile(const RtlProfile& profile);
@@ -63,6 +65,9 @@ public:
     virtual int set_center_frequency(std::uint32_t value) noexcept = 0;
     virtual std::uint32_t get_center_frequency() noexcept = 0;
     virtual int set_automatic_tuner_gain() noexcept = 0;
+    // Optional protocol: unsupported injected ports fail closed, preserving auto.
+    virtual int set_manual_tuner_gain(int) noexcept { return -103; }
+    virtual std::optional<int> get_cached_tuner_gain() noexcept { return std::nullopt; }
     virtual int reset_buffer() noexcept = 0;
     virtual int verify_normal_tuner_mode() noexcept = 0;
     // Blocks on the caller's native RX thread until cancellation or failure.
@@ -120,6 +125,8 @@ struct RtlAcquisitionReadback {
     std::uint32_t actual_sample_rate_hz{};
     std::uint32_t actual_center_hz{};
     bool tuner_gain_readback_known{};  // no gain-mode getter is asserted
+    // SDK cached setting, NOT independently measured RF gain or mode readback.
+    std::optional<int> cached_tuner_gain_tenth_db;
 };
 
 // One RX thread and one CPU-DSP worker. The C ABI callback never calls Python,
