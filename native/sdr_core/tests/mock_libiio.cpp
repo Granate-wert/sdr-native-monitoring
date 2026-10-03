@@ -120,12 +120,23 @@ bool has_attr(const iio_channel* channel, const char* attr) {
         std::strcmp(attr, "gain_control_mode") == 0 || std::strcmp(attr, "gain_control_mode_available") == 0;
     return channel == &lo && (std::strcmp(attr, "frequency") == 0 || std::strcmp(attr, "frequency_available") == 0);
 }
+double actual_gain(const iio_channel* channel) {
+    double actual = channel == &phy_rx2 ? gain2 : gain;
+    // MOCK DLL ONLY: successful writes with quantized/common readback or
+    // RX2 divergence on a selected LO. Both numeric/text SDK reads agree.
+    if (const char* center = std::getenv("SDR_MOCK_LIBIIO_GAIN_READBACK_AT");
+        center && frequency == std::strtoll(center, nullptr, 10)) {
+        const char* rx2_only = std::getenv("SDR_MOCK_LIBIIO_GAIN_READBACK_RX2_ONLY");
+        if (!rx2_only || channel == &phy_rx2) actual -= 1.;
+    }
+    return actual;
+}
 std::string value_text(const iio_channel* channel, const char* attr) {
     if (std::strcmp(attr, "sampling_frequency") == 0) return std::to_string(sample_rate);
     if (std::strcmp(attr, "sampling_frequency_available") == 0) return "[2083333 1 61440000]";
     if (std::strcmp(attr, "rf_bandwidth") == 0) return std::to_string(bandwidth);
     if (std::strcmp(attr, "rf_bandwidth_available") == 0) return "[200000 1 56000000]";
-    if (std::strcmp(attr, "hardwaregain") == 0) return std::to_string(channel == &phy_rx2 ? gain2 : gain);
+    if (std::strcmp(attr, "hardwaregain") == 0) return std::to_string(actual_gain(channel));
     if (std::strcmp(attr, "hardwaregain_available") == 0) return "[-3 1 71]";
     if (std::strcmp(attr, "gain_control_mode") == 0) return channel == &phy_rx2 ? gain_mode2 : gain_mode;
     if (std::strcmp(attr, "gain_control_mode_available") == 0) return "manual slow_attack fast_attack hybrid";
@@ -334,7 +345,7 @@ __declspec(dllexport) int iio_channel_attr_write_longlong(const iio_channel* cha
 }
 __declspec(dllexport) int iio_channel_attr_read_double(const iio_channel* channel, const char* attr, double* value) {
     if ((channel != &phy_rx && channel != &phy_rx2) || std::strcmp(attr, "hardwaregain") != 0) return -EINVAL;
-    *value = channel == &phy_rx2 ? gain2 : gain; return 0;
+    *value = actual_gain(channel); return 0;
 }
 __declspec(dllexport) int iio_channel_attr_write_double(const iio_channel* channel, const char* attr, double value) {
     ++rf_mutation_calls;

@@ -259,10 +259,11 @@ class NativeContinuousSweepPlanFactory:
         """Pure combined native budget/geometry admission BEFORE context open."""
         for name in ("PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION",
                      "PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION",
-                     "PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION"):
+                     "PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION",
+                     "PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION"):
             value = getattr(native, name, None)
             if type(value) is not int or value != 1:
-                raise RuntimeError("paired Sweep native reduced/statistics/product reservation protocol v1 required")
+                raise RuntimeError("paired Sweep native reduced/statistics/product reservation/gain receipt protocol v1 required")
         if request.pair.configuration != source.live_configuration:
             raise ValueError("paired Sweep profile differs from admitted Live profile")
         preflight = NativeContinuousSweepPlanFactory.preflight_native_profile(

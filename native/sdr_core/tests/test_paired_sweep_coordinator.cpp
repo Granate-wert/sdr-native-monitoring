@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <thread>
@@ -124,6 +125,44 @@ void validation(Hooks& hooks) {
             "validation performed hardware access");
     std::cout << "paired validation 7 cases preRF PASS\n";
 }
+
+void gain_readback_validation() {
+    auto requested = config().primary.segments.front().fixed_band.device;
+    sdr_pluto::AppliedConfig applied;
+    applied.requested = requested;
+    applied.receiver_selection = sdr_pluto::ReceiverSelection::Both;
+    applied.gain_mode = sdr_core::GainMode::Manual;
+    applied.manual_gain_db = 19.; // Actual quantized value is NOT request20.
+    applied.receiver_gains = {{sdr_pluto::ReceiverSelection::Rx1, sdr_core::GainMode::Manual, 19.},
+                             {sdr_pluto::ReceiverSelection::Rx2, sdr_core::GainMode::Manual, 19.}};
+    sdr_pluto::validate_paired_sweep_gain_readback(applied, requested);
+    for (int variant = 0; variant < 11; ++variant) {
+        auto bad = applied;
+        if (variant == 0) bad.receiver_gains.pop_back();
+        if (variant == 1) std::swap(bad.receiver_gains[0], bad.receiver_gains[1]);
+        if (variant == 2) bad.receiver_gains[1].receiver = sdr_pluto::ReceiverSelection::Both;
+        if (variant == 3) bad.receiver_gains[1].gain_mode = sdr_core::GainMode::FastAttack;
+        if (variant == 4) bad.receiver_gains[0].manual_gain_db = std::numeric_limits<double>::quiet_NaN();
+        if (variant == 5) bad.receiver_gains[1].manual_gain_db = std::numeric_limits<double>::infinity();
+        if (variant == 6) bad.receiver_gains[1].manual_gain_db += 1e-9;
+        if (variant == 7) bad.manual_gain_db = 20.;
+        if (variant == 8) bad.receiver_selection = sdr_pluto::ReceiverSelection::Rx1;
+        if (variant == 9) bad.gain_mode = sdr_core::GainMode::SlowAttack;
+        if (variant == 10) bad.requested.gain_mode = sdr_core::GainMode::Hybrid;
+        refused([&] { sdr_pluto::validate_paired_sweep_gain_readback(bad, requested); });
+    }
+    // Do not narrow the already generic native mode contract to product Manual.
+    for (const auto mode : {sdr_core::GainMode::SlowAttack, sdr_core::GainMode::FastAttack, sdr_core::GainMode::Hybrid}) {
+        auto actual = applied; auto intent = requested;
+        actual.gain_mode = actual.requested.gain_mode = intent.gain_mode = mode;
+        for (auto& gain : actual.receiver_gains) gain.gain_mode = mode;
+        actual.receiver_gains[1].manual_gain_db = 18.;
+        sdr_pluto::validate_paired_sweep_gain_readback(actual, intent);
+    }
+    requested.gain_mode = static_cast<sdr_core::GainMode>(999);
+    refused([&] { sdr_pluto::validate_paired_sweep_gain_readback(applied, requested); });
+    std::cout << "pure paired actual gain validation/order/mode/finite/manual exact/quantization/AGC PASS\n";
+}
 void completed(Hooks& hooks, bool single) {
     const int contexts = hooks.created_contexts(), lo = hooks.lo();
     sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
@@ -163,6 +202,12 @@ void completed(Hooks& hooks, bool single) {
         require(differs, "RX2 is duplicated RX1 data");
         for (std::size_t k = 0; k < pair.steps.size(); ++k) {
             const auto& step = pair.steps[k];
+            require(step.receiver_gains[0].receiver == sdr_pluto::ReceiverSelection::Rx1 &&
+                step.receiver_gains[1].receiver == sdr_pluto::ReceiverSelection::Rx2 &&
+                step.receiver_gains[0].gain_mode == sdr_core::GainMode::Manual &&
+                step.receiver_gains[1].gain_mode == sdr_core::GainMode::Manual &&
+                step.receiver_gains[0].manual_gain_db == 20. && step.receiver_gains[1].manual_gain_db == 20.,
+                "actual per-chain step gains missing or aliased");
             require(step.step_index == k && step.synchronization_epoch > 0 &&
                 step.config_generation == pair.primary.acquired_segments[k].config_generation &&
                 step.config_generation == pair.secondary.acquired_segments[k].config_generation &&
@@ -185,6 +230,50 @@ void completed(Hooks& hooks, bool single) {
     owner.disconnect(); require(hooks.contexts() == 0 && hooks.buffers() == 0, "disconnect leaked hardware");
     std::cout << "paired " << (single ? "single continuous" : "retuning") << " receipt/data/LO/rearm PASS\n";
 }
+void gain_readback_retuning(Hooks& hooks) {
+    for (const bool divergence : {false, true}) {
+        _putenv_s("SDR_MOCK_LIBIIO_GAIN_READBACK_AT", divergence ? "2470000000" : "2440000000");
+        _putenv_s("SDR_MOCK_LIBIIO_GAIN_READBACK_RX2_ONLY", divergence ? "1" : "");
+        {
+            sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+            owner.configure_paired(config());
+            owner.start();
+            if (divergence) {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                while (!owner.metrics().has_error && std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            } else wait_lines(owner, 1);
+            owner.stop();
+            const auto lines = owner.poll_paired_lines(0);
+            if (divergence) {
+                require(owner.metrics().has_error && owner.last_error().find("manual gains do not agree") != std::string::npos,
+                    "later divergent actual gain did not preserve first cause");
+                require(lines.size() == 1 && lines[0].primary.state == sdr_core::SweepLineState::Gap &&
+                    lines[0].steps.size() == 1 && lines[0].steps[0].step_index == 0 &&
+                    lines[0].steps[0].receiver_gains[1].manual_gain_db == 20.,
+                    "invalid later gain fabricated step or lost valid prefix");
+            } else {
+                bool saw_actual = false;
+                for (const auto& line : lines) if (line.primary.state == sdr_core::SweepLineState::Complete) {
+                    require(line.steps.size() == 2 &&
+                        line.steps[0].receiver_gains[0].manual_gain_db == 19. &&
+                        line.steps[0].receiver_gains[1].manual_gain_db == 19. &&
+                        line.steps[1].receiver_gains[0].manual_gain_db == 20. &&
+                        line.steps[1].receiver_gains[1].manual_gain_db == 20.,
+                        "actual per-retune quantized gain replaced with requested value");
+                    saw_actual = true;
+                }
+                require(saw_actual, "quantized gain completed receipt missing");
+            }
+            owner.disconnect();
+            require(hooks.contexts() == 0 && hooks.buffers() == 0, "gain refusal/quantization leaked owner");
+        }
+        _putenv_s("SDR_MOCK_LIBIIO_GAIN_READBACK_AT", "");
+        _putenv_s("SDR_MOCK_LIBIIO_GAIN_READBACK_RX2_ONLY", "");
+    }
+    std::cout << "actual per-retune quantization and later divergent gain prefix/refusal PASS\n";
+}
+
 void cancellation(Hooks& hooks) {
     for (int path = 0; path < 3; ++path) for (int phase = 1; phase <= 4; ++phase) {
         sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
@@ -436,7 +525,7 @@ void statistics_shared_gap(Hooks& hooks) {
 }
 }
 int main() {
-    try { Hooks hooks; validation(hooks); completed(hooks, false); completed(hooks, true); cancellation(hooks); progress_and_failure(hooks); start_race_and_one_sided_failure(hooks);
+    try { gain_readback_validation(); Hooks hooks; validation(hooks); completed(hooks, false); completed(hooks, true); gain_readback_retuning(hooks); cancellation(hooks); progress_and_failure(hooks); start_race_and_one_sided_failure(hooks);
         statistics_validation(hooks); statistics_pressure(hooks, false, false); statistics_pressure(hooks, true, false);
         statistics_pressure(hooks, true, true); statistics_prefix(hooks); statistics_shared_gap(hooks); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

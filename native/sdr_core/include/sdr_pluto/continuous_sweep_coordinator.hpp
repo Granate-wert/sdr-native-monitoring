@@ -5,6 +5,7 @@
 #include "sdr_core/sweep_line_assembler.hpp"
 #include "sdr_pluto/fixed_band_engine.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -75,6 +76,9 @@ struct PairedSweepStepReceipt {
     double sample_rate_hz{};
     double analog_bandwidth_hz{};
     std::uint32_t fft_size{};
+    // Ordered actual PHY RX1/RX2 readback, not requested/common RX1 aliases.
+    // Fixed payload: accounted by sizeof in SAME paired Sweep budget.
+    std::array<ReceiverGainReadback, 2> receiver_gains{};
 };
 
 struct PairedSweepLineFrame {
@@ -92,6 +96,13 @@ struct PairedSweepProgressFrame {
 };
 
 void validate(const PairedContinuousSweepCoordinatorConfig& value);
+
+// Side-effect-free actual step fence. Manual chains agree exactly with the
+// actual scalar, not necessarily the requested number (device quantization).
+// Generic native AGC modes retain per-chain actual values; the product profile
+// separately admits Manual only. Not a Python/test control.
+void validate_paired_sweep_gain_readback(const AppliedConfig& applied,
+                                        const sdr_core::DeviceConfig& requested);
 
 // Multi-segment coordinator wall-clock stages, not RF dwell or ADC timestamps.
 // A live metrics() call is an independent relaxed snapshot of these counters;

@@ -3514,7 +3514,40 @@ cause, and requires explicit release confirmation; failed cleanup retains owner
 authority for retry. An unadmitted failed Start does not invent an archive run.
 
 This is reduced-output retention, not a lossless recorder or atomic recording
-ledger. Callers retaining output own its lifetime. Actual per-step RX gains
-remain unavailable in the current native receipt and need a native extension;
-requested gain must not be reported as actual. GUI/physical/release acceptance
-is not implied by the archive backend path.
+ledger. Callers retaining output own its lifetime. That terminal-only increment
+did not include actual per-step RX gains; the additive contract below supplies
+them. GUI/physical/release acceptance is not implied by the archive backend path.
+
+## Paired Sweep actual gain readback
+
+Every accepted step now retains two ordered actual PHY readbacks: typed RX1
+and RX2, gain mode and numeric gain in dB. The SAME native coordinator validates
+the transactional AppliedConfig before arming a step and confirms unchanged
+readback when its analytical consumer begins. Missing, reordered, nonfinite
+or wrong-mode values refuse; no second device open or Python IQ path is added.
+The receipt is a fixed-size array, counted by sizeof in the existing aggregate
+Sweep payload budget. Product conversion remains inside the SAME reserved
+4KiB/step metadata envelope; no additional memory allowance is created.
+
+The current product supports a common manual-gain profile: BOTH actual chain
+values must agree exactly with the actual common scalar. They need not equal
+the requested number after existing device clamp/quantization. The request is
+retained separately and is never substituted for an unknown readback. Neither
+the backend rollback tolerance nor a hardware-test assertion is a new product
+acceptance tolerance. Generic native AGC modes are not narrowed by this
+validator, but they do NOT become supported paired product modes.
+
+The binding exposes an immutable tuple of read-only gain objects and additive
+PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION=1. An older module refuses
+product admission before context open. Reduced and statistics protocol versions
+remain unchanged. Python observations require typed per-chain gain; BOTH
+metadata sets validate before either reduced grid is converted. Progressive,
+completed and observed terminal-prefix receipts retain those values; a
+zero-prefix planned terminal still has no actual gain observations.
+
+Native/compiled-mock tests cover multi-retune gain retention, actual values
+different from intent, malformed receipt refusals, and a later RX2 mismatch
+ending the scan with its valid acquired prefix and original cause. This is
+source/native qualification, not physical gain calibration or RF accuracy.
+The UI V2 paired Sweep plan compiler, matched EXE, visible Windows workflow,
+four-source HIL, performance/soak and release qualification remain separate.

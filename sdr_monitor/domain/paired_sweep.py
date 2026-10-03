@@ -5,6 +5,7 @@ stale-result fence, not an enabled backend or evidence of dual physical RF.
 """
 
 from dataclasses import dataclass
+from enum import StrEnum
 import math
 
 from .continuous_sweep_geometry import SweepStepGeometry, sweep_segment_count, sweep_step_geometry
@@ -142,6 +143,30 @@ class PairedSweepStepIdentity:
             raise ValueError("paired Sweep step requires actual power-of-two FFT")
 
 
+class PairedSweepGainMode(StrEnum):
+    """Current product policy only; generic native AGC is not product admission."""
+
+    MANUAL = "manual"
+
+
+@dataclass(frozen=True, slots=True)
+class PairedSweepGainReadback:
+    """Actual per-chain gain; never substituted from requested profile."""
+
+    receiver_selection: ReceiverChainSelection
+    mode: PairedSweepGainMode
+    gain_db: float
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.receiver_selection, ReceiverChainSelection)
+                or self.receiver_selection not in (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2)):
+            raise ValueError("paired Sweep gain readback requires one typed RX chain")
+        if not isinstance(self.mode, PairedSweepGainMode):
+            raise TypeError("paired Sweep gain readback requires a typed supported mode")
+        if type(self.gain_db) not in (int, float) or not math.isfinite(self.gain_db):
+            raise ValueError("paired Sweep gain readback requires an actual finite value")
+
+
 @dataclass(frozen=True, slots=True)
 class PairedSweepStepObservation:
     """Actual one-chain segment provenance, not a full-line RF timestamp."""
@@ -159,6 +184,7 @@ class PairedSweepStepObservation:
     clock_domain: str | None
     quality_flags: int
     shared_input_gaps_before: int
+    gain: PairedSweepGainReadback
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, PairedSweepStepIdentity):
@@ -167,6 +193,10 @@ class PairedSweepStepObservation:
                 or self.receiver_selection not in (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2)):
             raise ValueError("paired Sweep observation requires one typed RX chain")
         _text(self.producer_source_id)
+        if not isinstance(self.gain, PairedSweepGainReadback):
+            raise TypeError("paired Sweep observation requires actual typed gain readback")
+        if self.gain.receiver_selection is not self.receiver_selection:
+            raise ValueError("paired Sweep observation gain belongs to a different chain")
         if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
                for v in (self.center_hz, self.sample_rate_hz)):
             raise ValueError("paired Sweep requires actual finite positive center and Fs")
@@ -196,6 +226,8 @@ class PairedSweepStepPair:
         a, b = self.primary, self.secondary
         if not isinstance(a, PairedSweepStepObservation) or not isinstance(b, PairedSweepStepObservation):
             raise TypeError("paired Sweep needs both typed observations")
+        if (a.gain.mode is not b.gain.mode or a.gain.gain_db != b.gain.gain_db):
+            raise ValueError("paired Sweep actual common manual gains do not agree")
         if (a.receiver_selection is not ReceiverChainSelection.RX1
                 or b.receiver_selection is not ReceiverChainSelection.RX2
                 or a.producer_source_id == b.producer_source_id

@@ -220,6 +220,29 @@ struct StageTimingCounters {
 
 }  // namespace
 
+void validate_paired_sweep_gain_readback(const AppliedConfig& applied,
+                                        const sdr_core::DeviceConfig& requested) {
+    using Mode = sdr_core::GainMode;
+    const auto mode = requested.gain_mode;
+    if (mode != Mode::Manual && mode != Mode::SlowAttack &&
+        mode != Mode::FastAttack && mode != Mode::Hybrid)
+        invalid("paired Sweep gain mode is invalid");
+    if (applied.receiver_selection != ReceiverSelection::Both ||
+        applied.gain_mode != mode || applied.requested.gain_mode != mode ||
+        applied.receiver_gains.size() != 2 || !std::isfinite(applied.manual_gain_db))
+        invalid("paired Sweep actual gain readback missing or mode mismatch");
+    const auto& first = applied.receiver_gains[0];
+    const auto& second = applied.receiver_gains[1];
+    if (first.receiver != ReceiverSelection::Rx1 || second.receiver != ReceiverSelection::Rx2 ||
+        first.gain_mode != mode || second.gain_mode != mode ||
+        !std::isfinite(first.manual_gain_db) || !std::isfinite(second.manual_gain_db))
+        invalid("paired Sweep actual gain readback order/mode/finite mismatch");
+    if (mode == Mode::Manual &&
+        (first.manual_gain_db != applied.manual_gain_db ||
+         second.manual_gain_db != applied.manual_gain_db))
+        invalid("paired Sweep actual manual gains do not agree");
+}
+
 void validate(const ContinuousSweepCoordinatorConfig& value) {
     if (!std::isfinite(value.display_start_hz) || !std::isfinite(value.display_stop_hz) ||
         value.display_start_hz <= 0.0 || value.display_stop_hz <= value.display_start_hz) {
@@ -379,6 +402,7 @@ public:
     // Coordinator ONLY, preceding owner joined. No worker can call consume
     // while these step controls are installed. begin confirms SAME readback.
     void arm(std::size_t index, const AppliedConfig& applied) {
+        validate_paired_sweep_gain_readback(applied, config_.primary.segments.at(index).fixed_band.device);
         index_ = index;
         applied_ = applied;
         accepted_.store(false, std::memory_order_release);
@@ -399,9 +423,16 @@ public:
     void set_secondary_nan_step_for_test(std::int32_t index) { nan_step_ = index; }
 
     void begin(const AppliedConfig& applied) override {
+        validate_paired_sweep_gain_readback(applied, config_.primary.segments.at(index_).fixed_band.device);
         if (applied.config_generation != applied_.config_generation ||
-            applied.receiver_selection != ReceiverSelection::Both)
+            applied.receiver_selection != ReceiverSelection::Both ||
+            applied.gain_mode != applied_.gain_mode || applied.manual_gain_db != applied_.manual_gain_db)
             throw std::runtime_error("paired Sweep begin readback changed");
+        for (std::size_t k = 0; k < applied.receiver_gains.size(); ++k)
+            if (applied.receiver_gains[k].receiver != applied_.receiver_gains[k].receiver ||
+                applied.receiver_gains[k].gain_mode != applied_.receiver_gains[k].gain_mode ||
+                applied.receiver_gains[k].manual_gain_db != applied_.receiver_gains[k].manual_gain_db)
+                throw std::runtime_error("paired Sweep begin gain readback changed");
     }
 
     void consume(const sdr_core::DualRxSpectrumFrame& pair) override {
@@ -467,7 +498,8 @@ public:
         steps_.push_back({static_cast<std::uint32_t>(index_), pair.config_generation,
             pair.synchronization_epoch, pair.shared_input_gaps_before, p.frame_sequence,
             p.first_sample_index, p.timestamp_ns, applied_.center_frequency_hz,
-            applied_.sample_rate_hz, applied_.analog_bandwidth_hz, p.fft_size});
+            applied_.sample_rate_hz, applied_.analog_bandwidth_hz, p.fft_size,
+            {applied_.receiver_gains[0], applied_.receiver_gains[1]}});
         if (!left.empty()) {
             if (left.front().state != sdr_core::SweepLineState::Complete ||
                 right.front().state != sdr_core::SweepLineState::Complete)

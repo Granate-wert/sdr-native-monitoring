@@ -9,7 +9,7 @@ from typing import Any
 from ..domain.identity import TimestampQuality
 from ..domain.paired_sweep import (
     PairedSweepRunIdentity, PairedSweepStepIdentity, PairedSweepStepObservation,
-    PairedSweepStepPair,
+    PairedSweepStepPair, PairedSweepGainMode, PairedSweepGainReadback,
 )
 from ..domain.paired_sweep_publication import PairedSweepPublication
 from ..domain.receiver_topology import ReceiverChainSelection
@@ -59,9 +59,21 @@ def observed_paired_publication(native: Any, run: PairedSweepRunIdentity,
             receipt.center_frequency_hz, receipt.sample_rate_hz,
             receipt.analog_bandwidth_hz, receipt.fft_size)
         observations = []
-        for chain, selection, producer in (
+        readbacks = getattr(receipt, "receiver_gains", None)
+        if type(readbacks) is not tuple or len(readbacks) != 2:
+            raise ValueError("native paired Sweep actual gain readbacks require ordered RX1/RX2")
+        gains = []
+        for readback, selection in zip(readbacks, (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2)):
+            if (getattr(getattr(readback, "receiver", None), "name", None) != selection.name
+                    or getattr(getattr(readback, "gain_mode", None), "name", None) != "MANUAL"):
+                raise ValueError("native paired Sweep actual gain readback chain/mode mismatch")
+            # Untrusted SDK scalar; the typed value constructor refuses
+            # missing/bool/string/nonfinite data, never fills it from intent.
+            actual_gain: Any = getattr(readback, "manual_gain_db", None)
+            gains.append(PairedSweepGainReadback(selection, PairedSweepGainMode.MANUAL, actual_gain))
+        for gain, (chain, selection, producer) in zip(gains, (
                 (acquired[0], ReceiverChainSelection.RX1, request.pair.primary_source_id),
-                (acquired[1], ReceiverChainSelection.RX2, request.pair.secondary_source_id)):
+                (acquired[1], ReceiverChainSelection.RX2, request.pair.secondary_source_id))):
             segment = chain[index]
             if ((segment.segment_index, segment.config_generation, segment.frame_sequence,
                  segment.first_sample_index, segment.timestamp_ns, segment.sample_rate_hz, segment.fft_size)
@@ -73,7 +85,7 @@ def observed_paired_publication(native: Any, run: PairedSweepRunIdentity,
             observations.append(PairedSweepStepObservation(identity, selection, producer,
                 receipt.center_frequency_hz, receipt.sample_rate_hz, receipt.fft_size,
                 receipt.frame_sequence, receipt.first_sample_index, receipt.timestamp_ns,
-                TimestampQuality.UNKNOWN, None, segment.quality_flags, receipt.shared_input_gaps_before))
+                TimestampQuality.UNKNOWN, None, segment.quality_flags, receipt.shared_input_gaps_before, gain))
         pair = PairedSweepStepPair(*observations)
         pair.validate_active(request, identity)
         pairs.append(pair)

@@ -19,6 +19,7 @@ from sdr_monitor.domain.live import (
 from sdr_monitor.domain.paired_live import PairedLiveRequest
 from sdr_monitor.domain.paired_sweep import (
     PairedSweepRequest, PairedSweepStepIdentity, PairedSweepStepObservation, PairedSweepStepPair,
+    PairedSweepGainMode, PairedSweepGainReadback,
 )
 from sdr_monitor.domain.receiver_topology import (
     IqComponent, ReceiverChain, ReceiverChainSelection, ReceiverTopologySnapshot, StreamScanElement,
@@ -58,9 +59,11 @@ def pair_fixture(request, *, segment=0, epoch=5):
         request.pair.configuration.fft_size)
     first = PairedSweepStepObservation(identity, ReceiverChainSelection.RX1, request.pair.primary_source_id,
         identity.center_hz, identity.sample_rate_hz, identity.fft_size, 29, 57344, 0,
-        TimestampQuality.UNKNOWN, None, 8192, 2)
+        TimestampQuality.UNKNOWN, None, 8192, 2,
+        PairedSweepGainReadback(ReceiverChainSelection.RX1, PairedSweepGainMode.MANUAL, 20.))
     second = replace(first, receiver_selection=ReceiverChainSelection.RX2,
-                     producer_source_id=request.pair.secondary_source_id, quality_flags=8193)
+                     producer_source_id=request.pair.secondary_source_id, quality_flags=8193,
+                     gain=replace(first.gain, receiver_selection=ReceiverChainSelection.RX2))
     return PairedSweepStepPair(first, second)
 
 
@@ -189,6 +192,31 @@ class PairedSweepStepTests(unittest.TestCase):
         for step in range(sweep_segment_count(self.request.sweep)):
             pair = pair_fixture(self.request, segment=step)
             pair.validate_active(self.request, pair.primary.identity)
+
+    def test_actual_gain_retained_without_requested_value_alias_or_tolerance(self):
+        a, b = self.pair.primary, self.pair.secondary
+        actual = PairedSweepStepPair(replace(a, gain=replace(a.gain, gain_db=19.)),
+                                    replace(b, gain=replace(b.gain, gain_db=19.)))
+        actual.validate_active(self.request, actual.primary.identity)
+        self.assertEqual(actual.primary.gain.gain_db, 19.)
+        self.assertNotEqual(actual.primary.gain.gain_db, self.request.pair.configuration.gain_db)
+        with self.assertRaisesRegex(ValueError, "do not agree"):
+            PairedSweepStepPair(a, replace(b, gain=replace(b.gain, gain_db=20.000000001)))
+
+    def test_missing_untyped_nonfinite_wrong_chain_gain_refuses(self):
+        a = self.pair.primary
+        with self.assertRaises(TypeError):
+            replace(a, gain=None)
+        for value in (True, "20", float("nan"), float("inf"), -float("inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                replace(a.gain, gain_db=value)
+        with self.assertRaises(TypeError):
+            replace(a.gain, mode="manual")
+        for selection in ("RX1", ReceiverChainSelection.BOTH):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                replace(a.gain, receiver_selection=selection)
+        with self.assertRaises(ValueError):
+            replace(a, gain=replace(a.gain, receiver_selection=ReceiverChainSelection.RX2))
 
     def test_stopped_or_changed_namespace_step_or_epoch_is_stale(self):
         identity = self.pair.primary.identity

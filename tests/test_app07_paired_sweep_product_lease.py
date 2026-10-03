@@ -133,6 +133,17 @@ def run_case(path: str, case: str) -> None:
             elif case == "reservation-protocol":
                 with patch.object(native, "PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION", 0):
                     refuses(lambda: NativeContinuousSweepPlanFactory.from_paired_application(graph.live, intent))
+            elif case in ("gain-protocol", "gain-protocol-missing"):
+                if case == "gain-protocol":
+                    with patch.object(native, "PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION", 0):
+                        refuses(lambda: NativeContinuousSweepPlanFactory.from_paired_application(graph.live, intent))
+                elif not hasattr(native, "PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION"):
+                    # Actual old module boundary, before rebuilding it.
+                    refuses(lambda: NativeContinuousSweepPlanFactory.from_paired_application(graph.live, intent))
+                else:
+                    with patch.object(native, "PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION"):
+                        delattr(native, "PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION")
+                        refuses(lambda: NativeContinuousSweepPlanFactory.from_paired_application(graph.live, intent))
             elif case in ("domain-budget", "statistics-budget"):
                 from sdr_monitor.services.native_sweep import NativeSweepSource
 
@@ -350,6 +361,13 @@ def run_case(path: str, case: str) -> None:
                     assert observed
                     publication = observed[0]
                     assert publication.run is run and len(publication.steps) == 3
+                    if case in ("run-gains", "run-gains-quantized"):
+                        for index, step in enumerate(publication.steps):
+                            actual = 19. if case == "run-gains-quantized" and index == 0 else 20.
+                            assert step.primary.gain.gain_db == step.secondary.gain.gain_db == actual
+                            assert step.primary.gain.receiver_selection.name == "RX1"
+                            assert step.secondary.gain.receiver_selection.name == "RX2"
+                            assert step.primary.gain.mode.name == step.secondary.gain.mode.name == "MANUAL"
                     for item in (*observed, *((progress,) if progress is not None else ())):
                         for step in item.steps:
                             assert step.primary.identity.acquisition_epoch == run.acquisition_epoch
@@ -412,7 +430,7 @@ def run_case(path: str, case: str) -> None:
                         time.sleep(.001)
                     assert packets
                     packet = packets[0]
-                    if case == "run-forged":
+                    if case in ("run-forged", "run-forged-gains"):
                         def copied(value, **changes):
                             fields = {name: getattr(value, name) for name in dir(value)
                                       if not name.startswith('_') and not callable(getattr(value, name))}
@@ -429,6 +447,29 @@ def run_case(path: str, case: str) -> None:
                             copied(packet, steps=()),
                             copied(packet, steps=(copied(packet.steps[0], config_generation=99999), *packet.steps[1:])),
                             copied(packet, steps=(copied(packet.steps[0], center_frequency_hz=1e6), *packet.steps[1:]))]
+                        if case == "run-forged-gains":
+                            first = packet.steps[0]
+                            gains = first.receiver_gains
+                            assert type(gains) is tuple and len(gains) == 2
+                            try:
+                                gains[0].manual_gain_db = 19.
+                            except AttributeError:
+                                pass
+                            else:
+                                raise AssertionError("bound actual gain must be immutable")
+                            bad_gains = [None, (), (gains[0],), tuple(reversed(gains)),
+                                (gains[0], copied(gains[1], receiver=native.PlutoReceiverSelection.RX1)),
+                                (gains[0], copied(gains[1], gain_mode=native.GainMode.FAST_ATTACK)),
+                                (gains[0], copied(gains[1], manual_gain_db=20.000000001))]
+                            bad_gains += [(copied(gains[0], manual_gain_db=value), gains[1])
+                                          for value in (None, True, "20", float("nan"), float("inf"))]
+                            mutations = [copied(packet, steps=(copied(first, receiver_gains=value), *packet.steps[1:]))
+                                         for value in bad_gains]
+                            # Both metadata gates precede conversion of either reduced grid.
+                            with patch("sdr_monitor.services.native_paired_sweep_receipts._to_domain_line") as convert:
+                                for mutation in mutations:
+                                    refuses(lambda: observed_paired_publication(mutation, run))
+                                convert.assert_not_called()
                         for mutation in mutations:
                             refuses(lambda: observed_paired_publication(mutation, run))
                         assert coordinator.active_run is run
@@ -525,6 +566,8 @@ class PairedSweepProductLeaseTests(unittest.TestCase):
             environment.pop("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", None)
         if case == "empty-serial":
             environment["SDR_MOCK_LIBIIO_EMPTY_SERIAL"] = "1"
+        if case == "run-gains-quantized":
+            environment["SDR_MOCK_LIBIIO_GAIN_READBACK_AT"] = "2418000000"
         result = subprocess.run([sys.executable, "-c",
             "from tests.test_app07_paired_sweep_product_lease import run_case; import sys; run_case(sys.argv[1],sys.argv[2])",
             MODULE, case], cwd=ROOT, env=environment, text=True, capture_output=True, timeout=30, check=False)
@@ -572,3 +615,8 @@ class PairedSweepProductLeaseTests(unittest.TestCase):
     def test_resource_stop_archives_prefix_without_restoring_pane_history(self): self.run_native("pane-archive")
     def test_archive_failure_still_closes_hardware_then_requires_explicit_release_retry(self): self.run_native("pane-archive-error")
     def test_unadmitted_start_failure_cleans_without_fabricating_archive(self): self.run_native("pane-archive-start-error")
+    def test_actual_per_chain_gain_survives_each_retuned_step(self): self.run_native("run-gains")
+    def test_actual_quantized_gain_is_not_replaced_by_requested_profile(self): self.run_native("run-gains-quantized")
+    def test_malformed_actual_gain_receipts_refuse_before_either_grid_converts(self): self.run_native("run-forged-gains")
+    def test_gain_receipt_protocol_refuses_before_open(self): self.run_native("gain-protocol")
+    def test_missing_gain_receipt_protocol_refuses_before_open(self): self.run_native("gain-protocol-missing")

@@ -77,6 +77,7 @@ void bind_pluto(py::module_& module) {
     module.attr("PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION") = 1;
     module.attr("PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION") = 1;
     module.attr("PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION") = 1;
+    module.attr("PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION") = 1;
     py::class_<sdr_core::DualRxChannelDspConfig>(module, "DualRxChannelDspConfig")
         .def(py::init([](
             const sdr_core::SourceDescriptor& source,
@@ -1010,7 +1011,10 @@ void bind_pluto(py::module_& module) {
         .def_readonly("center_frequency_hz", &sdr_pluto::PairedSweepStepReceipt::center_frequency_hz)
         .def_readonly("sample_rate_hz", &sdr_pluto::PairedSweepStepReceipt::sample_rate_hz)
         .def_readonly("analog_bandwidth_hz", &sdr_pluto::PairedSweepStepReceipt::analog_bandwidth_hz)
-        .def_readonly("fft_size", &sdr_pluto::PairedSweepStepReceipt::fft_size);
+        .def_readonly("fft_size", &sdr_pluto::PairedSweepStepReceipt::fft_size)
+        .def_property_readonly("receiver_gains", [](const sdr_pluto::PairedSweepStepReceipt& value) {
+            return py::make_tuple(value.receiver_gains[0], value.receiver_gains[1]);
+        });
 
     py::class_<sdr_pluto::PairedSweepLineFrame>(module, "PairedSweepLineFrame")
         .def_readonly("resource_id", &sdr_pluto::PairedSweepLineFrame::resource_id)
