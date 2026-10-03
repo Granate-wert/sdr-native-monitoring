@@ -3686,3 +3686,41 @@ A direct test-scene retirement gap is a candidate, not an established cause;
 a later successful suite without the trace is not a causal fix. APP-07/M3 stay
 IN_PROGRESS. Matching build/visible paired workflow, physical peer isolation,
 RTL production, four-source HIL, performance, soak and release remain required.
+
+## Direct-scene QA retirement and exact freezer admission
+
+QA-only commit 5a8e25c79255b7b7347e0b4a5d1617b97044d666 makes direct UI V2
+scene fixtures follow the existing terminal contract: producer shutdown must
+acknowledge first, then graphics retire while Qt objects remain valid, then
+close/deferred deletion. A failed producer join or partial graphics retirement
+keeps the SAME scene for an explicit retry. Two injected regressions caught
+premature deletion in the initial candidate; that rejected candidate was not
+integrated. Independent immutable review accepted the corrected fixture;
+root scoped regression passed 41/41 in 13.249 seconds. This changes tests only,
+not product rendering. The historical Qt deleted-label trace remains unexplained.
+
+Build-tool commit a90a5aee270990d54c1ab18d07cca71c8265dc6f enforces the sole
+exact PyInstaller dev pin from pyproject.toml before generating a spec, creating
+release outputs or starting native work. Direct official-freezer invocation
+uses the same guard. Existing console/stdout + hide-early policy and source,
+native, shared-DLL and child-PATH guards are unchanged. Full pipeline provenance
+now records the selected interpreter, required/actual freezer version and module
+path; it remains pipeline-bound, NOT binary-attested. Diagnostic skip modes do
+not manufacture this provenance.
+
+A new ignored workspace-local environment actually has Python3.13.1,
+PyInstaller6.22.3 and Qt6.11.1. It inherits existing system packages and is NOT
+a hermetic/full-lock reproduction. Global Python and the application .venv are
+unchanged. The actual older6.21.0 generator is rejected by the CLI and PowerShell7
+pipeline before native work/output creation. An initial WindowsPowerShell5
+argument-quoting failure happened before preflight and is retained as a separate
+shell compatibility issue, not counted as pin-admission evidence.
+
+Independent immutable source review passed. One serial combined scoped gate at
+exact clean a90a5ae passed 67/67 tests with no skips in 18.690 seconds, using
+Qt6.11.1 and the unchanged native8dab module. Ruff/compilation/diff checks passed.
+This is NOT a full V2 gate, new frozen EXE, physical RX or release qualification.
+The old diagnostic8fb9 EXE retains its original source/toolchain identity and is
+not current/static/promoted. Next: a new tagged full matching build with the
+explicit pinned interpreter, then admitted paired visible/independent-peer tests.
+APP-07/M3 and the full APP00–14 roadmap remain in progress.
