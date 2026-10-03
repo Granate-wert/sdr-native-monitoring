@@ -6,6 +6,8 @@ param(
     [switch]$SkipFreeze,
     [switch]$SkipTests,
     [switch]$EnableRtlOfficial,
+    [string]$RtlRuntimeDirectory = "",
+    [string]$RtlRuntimeManifest = "",
     # Explicit opt-in package. The canonical CPU module is never activated.
     [string]$HackrfIncludeDirectory = "",
     [string]$HackrfLibrary = ""
@@ -13,8 +15,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 $hackrfRequested = [bool]($HackrfIncludeDirectory -or $HackrfLibrary)
+$rtlInputRequested = [bool]($RtlRuntimeDirectory -or $RtlRuntimeManifest)
+if ($rtlInputRequested -and -not $EnableRtlOfficial) { throw 'RTL runtime inputs require -EnableRtlOfficial' }
 if ($EnableRtlOfficial -and ($Lane -ne 'CPU' -or -not $OutputTag -or $SkipNative -or $SkipFreeze -or $SkipTests)) {
     throw 'External RTL bridge package requires a tagged full CPU pipeline (no skip modes); no vendor RTL SDK is bundled'
+}
+if ($rtlInputRequested -and (-not $RtlRuntimeDirectory -or -not $RtlRuntimeManifest)) {
+    throw 'RTL official packaging requires both RtlRuntimeDirectory and RtlRuntimeManifest'
+}
+if ($rtlInputRequested -and (-not (Test-Path -LiteralPath $RtlRuntimeDirectory -PathType Container) -or
+    -not (Test-Path -LiteralPath $RtlRuntimeManifest -PathType Leaf))) { throw 'RTL runtime input directory or manifest is missing' }
+if ($rtlInputRequested -and ($RtlRuntimeDirectory.Contains(';') -or $RtlRuntimeDirectory.Contains([char]0))) {
+    throw 'RTL runtime directory cannot contain freezer-delimiter or NUL characters'
 }
 if ($hackrfRequested) {
     if ($Lane -ne 'CPU' -or -not $OutputTag -or $SkipNative -or $SkipFreeze -or $SkipTests) {
@@ -80,6 +92,9 @@ $freezeNativeHash = (Get-FileHash -LiteralPath $nativeModules[0].FullName -Algor
 $libiioRuntimeNames = @("libiio.dll", "libserialport-0.dll", "libusb-1.0.dll", "libxml2-2.dll", "libiconv-2.dll", "liblzma-5.dll", "zlib1.dll")
 $libiioPyInstallerArgs = @()
 $sharedRuntimeReportPath = Join-Path $buildRoot 'shared_runtime_inputs.json'
+$rtlAdmissionRoot = Join-Path $buildRoot 'rtl-runtime-admission'
+$rtlAdmissionReportPath = Join-Path $rtlAdmissionRoot 'rtl_runtime_inputs.json'
+$rtlExternalManifestPath = Join-Path $rtlAdmissionRoot 'rtl_external_runtime.json'
 if (-not $SkipFreeze) {
     $libiioRuntimeDir = if ($env:SDR_LIBIIO_RUNTIME_DIR) { $env:SDR_LIBIIO_RUNTIME_DIR } else { Join-Path $env:ProgramFiles "IIO Oscilloscope\bin" }
     if (-not (Test-Path -LiteralPath $libiioRuntimeDir -PathType Container)) { throw "R12-I requires a local libiio runtime directory: $libiioRuntimeDir" }
@@ -98,6 +113,11 @@ if (-not $SkipFreeze) {
         & $python (Join-Path $repoRoot 'scripts\preflight_sdr_shared_runtime.py') --module $nativeModules[0].FullName --manifest $freezeNativeManifestPath --libiio-directory $libiioRuntimeDir --lane CPU --output $sharedRuntimeReportPath
         if ($LASTEXITCODE -ne 0) { throw 'Official shared-runtime input report failed' }
     }
+    if ($rtlInputRequested) {
+        if (Test-Path -LiteralPath $rtlAdmissionRoot) { throw 'RTL admission output directory already exists; refusing overwrite' }
+        & $python (Join-Path $repoRoot 'scripts\preflight_sdr_rtl_runtime.py') --module $nativeModules[0].FullName --native-manifest $freezeNativeManifestPath --runtime-directory $RtlRuntimeDirectory --runtime-manifest $RtlRuntimeManifest --libiio-directory $libiioRuntimeDir --source-snapshot $sourceSnapshotPath --output-directory $rtlAdmissionRoot
+        if ($LASTEXITCODE -ne 0) { throw 'External RTL runtime static admission failed before freeze' }
+    }
     # Codex helper runtimes can put Poppler/ICU and libheif DLL directories on
     # PATH. They are not product dependencies: collecting their ICU shadows
     # Windows ICU and breaks Qt's unversioned ucnv_* imports. Isolate only the
@@ -107,7 +127,15 @@ if (-not $SkipFreeze) {
         $env:PATH = ($freezeOriginalPath.Split(';') | Where-Object { $_ -notmatch '[\\/]codex-runtimes[\\/]' }) -join ';'
         # Preserve stdout for --version and frozen metadata/smoke commands.
         # Hide only a console owned by this GUI launch, never a caller's shell.
-        if ($hackrfRequested) {
+        if ($rtlInputRequested) {
+            $rtlFreezeArgs = @('--repo-root', $repoRoot, '--native-directory', $freezeNativeDirectory,
+                '--libiio-directory', $libiioRuntimeDir, '--release-root', $releaseRoot, '--build-root', $buildRoot,
+                '--rtl-runtime-directory', $RtlRuntimeDirectory, '--rtl-input-manifest', $RtlRuntimeManifest,
+                '--rtl-admission-report', $rtlAdmissionReportPath, '--rtl-external-manifest', $rtlExternalManifestPath,
+                '--source-snapshot', $sourceSnapshotPath)
+            if ($hackrfRequested) { $rtlFreezeArgs += '--include-hackrf' }
+            & $python (Join-Path $repoRoot 'scripts\freeze_sdr_official.py') @rtlFreezeArgs
+        } elseif ($hackrfRequested) {
             & $python (Join-Path $repoRoot 'scripts\freeze_sdr_official.py') --repo-root $repoRoot --native-directory $freezeNativeDirectory --libiio-directory $libiioRuntimeDir --release-root $releaseRoot --build-root $buildRoot
         } else {
             $rtlManifestArgs = if ($EnableRtlOfficial) { @('--add-data', "$freezeNativeManifestPath;sdr_monitor") } else { @() }
@@ -129,6 +157,7 @@ if ($bindSource) {
     }
     Copy-Item -LiteralPath $sourceSnapshotPath -Destination (Join-Path $packageDir 'source_inputs.json')
     if ($hackrfRequested) { Copy-Item -LiteralPath $sharedRuntimeReportPath -Destination (Join-Path $packageDir 'shared_runtime_inputs.json') }
+    if ($rtlInputRequested) { Copy-Item -LiteralPath $rtlAdmissionReportPath -Destination (Join-Path $packageDir 'rtl_runtime_inputs.json') }
     $provenance = [ordered]@{
         schema = 'sdr-pipeline-provenance-v1'
         evidence_kind = 'pipeline-bound-not-binary-attested'
@@ -139,6 +168,13 @@ if ($bindSource) {
         native_build_and_tests_executed = $true
         source_verified_after_native_and_freeze = $true
         freezer_preflight = $freezerReport
+    }
+    if ($rtlInputRequested) {
+        $provenance['rtl_official_requested'] = $true
+        $rtlAdmission = Get-Content -LiteralPath $rtlAdmissionReportPath -Raw | ConvertFrom-Json
+        $provenance['source_commit'] = $rtlAdmission.source_commit
+        $provenance['rtl_source_commit'] = $rtlAdmission.source_commit
+        $provenance['rtl_runtime_input_sha256'] = $rtlAdmission.input_manifest_sha256
     }
     $provenance | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $packageDir 'build_provenance.json') -Encoding UTF8
 } else {
@@ -169,5 +205,9 @@ if ($LASTEXITCODE -ne 0) { throw "standalone frozen tinySA UI/serial runtime ver
 if ($hackrfRequested) {
     & $python (Join-Path $repoRoot 'scripts\verify_sdr_frozen_shared_runtime.py') --package-dir $packageDir --manifest $manifestPath --version $version
     if ($LASTEXITCODE -ne 0) { throw 'standalone official HackRF/shared-DLL frozen verification failed' }
+}
+if ($rtlInputRequested) {
+    & $python (Join-Path $repoRoot 'scripts\verify_sdr_frozen_rtl_runtime.py') --package-dir $packageDir --manifest $manifestPath --version $version
+    if ($LASTEXITCODE -ne 0) { throw 'standalone official RTL frozen runtime verification failed' }
 }
 Write-Host "SDR Native Monitoring $Lane release ready: $packageDir"
