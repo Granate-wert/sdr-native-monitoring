@@ -194,6 +194,18 @@ class PairedSetupTests(unittest.TestCase):
             editor.release_after_shutdown()
             editor.close()
 
+    def test_typed_deadline_refusal_preserves_inert_stage_assurance_in_both_locales(self) -> None:
+        key = "analyzer.pane.setup.refusal.revisit_infeasible"
+        english = text(key, UiLocale.EN)
+        russian = text(key, UiLocale.RU)
+        for phrase in ("modeled revisit", "target", "weights/ranges",
+                       "timing model", "not an RF measurement", "no Apply or RX occurred"):
+            self.assertIn(phrase, english)
+        for phrase in ("расчётный период возврата", "целевой период", "веса/диапазоны",
+                       "расчётная модель", "не RF-измерение", "настройки не применены",
+                       "приём не запущен"):
+            self.assertIn(phrase, russian)
+
     def test_all_typed_refusals_are_translated_and_cleanup_takes_precedence(self) -> None:
         choice, _ = _choice(2)
         editor = self._editor(choice)

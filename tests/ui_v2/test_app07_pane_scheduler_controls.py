@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
+from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.services.pane_resource_session import PaneHostTiming
 from sdr_monitor.ui.v2.design import ThemeId
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
@@ -128,11 +129,15 @@ class PaneSchedulerControlsTests(unittest.TestCase):
         self.assertEqual(self.native.engines, [])
         self.assertEqual(self.installed, [])
         self.assertEqual(self.pools[0].staged_resource_ids, ())
+        self.assertIsNone(self.graph.live.current_snapshot().applied)
+        self.assertFalse(self.graph.live.is_running())
         for locale in (UiLocale.RU, UiLocale.EN):
             set_active_locale(locale)
             self.editor.set_locale()
             detail = self.editor.error.text()
-            self.assertIn(text("analyzer.pane.setup.deadline_refused"), detail)
+            key = "analyzer.pane.setup.refusal.revisit_infeasible"
+            self.assertEqual(self.editor._error_key, key)
+            self.assertIn(text(self.editor._refusal_key(PaneUserRefusal.REVISIT_INFEASIBLE)), detail)
             for number in (1, 2):
                 self.assertIn(text("analyzer.pane.setup.deadline_detail",
                     pane=number, modeled="0.160", target="0.01"), detail)
@@ -140,6 +145,9 @@ class PaneSchedulerControlsTests(unittest.TestCase):
             self.assertEqual(self.editor.error.toolTip(), detail)
             self.assertNotIn("PRIVATE", detail)
             self.assertNotIn(self.choice.device_id, detail)
+            self.assertEqual(self.native.engines, [])
+            self.assertIsNone(self.graph.live.current_snapshot().applied)
+            self.assertFalse(self.graph.live.is_running())
         self.assertTrue(self.editor.can_close)
 
     def test_all_themes_use_common_numeric_roles_without_spreading_mode_rows(self) -> None:

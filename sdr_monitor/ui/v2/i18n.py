@@ -313,9 +313,6 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.preview_scheduler": MappingProxyType({
             UiLocale.RU: "Окно {pane}: вес {priority} → захват {effective_priority}; цель {target} → захват {effective_target}; расчётный максимум {modeled} с, посещений за цикл {visits}. Не измерение скорости RF.",
             UiLocale.EN: "Pane {pane}: weight {priority} → capture {effective_priority}; target {target} → capture {effective_target}; modeled maximum {modeled} s, visits per cycle {visits}. Not measured RF speed."}),
-        "analyzer.pane.setup.deadline_refused": MappingProxyType({
-            UiLocale.RU: "Расписание не подготовлено: расчётная модель превышает заданный период возврата. Увеличьте период или измените веса/диапазоны; настройки не применены, приём не запущен.",
-            UiLocale.EN: "Schedule not staged: the timing model exceeds a requested revisit target. Increase the target or change weights/ranges; no Apply or RX occurred."}),
         "analyzer.pane.setup.deadline_detail": MappingProxyType({
             UiLocale.RU: "Окно {pane}: расчётный максимум {modeled} с > цель {target} с.",
             UiLocale.EN: "Pane {pane}: modeled maximum {modeled} s > target {target} s."}),
@@ -429,8 +426,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Диапазон окна выходит за наблюдаемые пределы настройки выбранного устройства.",
             UiLocale.EN: "The pane range exceeds the selected device's observed tuning limits."}),
         "analyzer.pane.setup.refusal.revisit_infeasible": MappingProxyType({
-            UiLocale.RU: "Расписание не подготовлено: расчётный период возврата превышает запрос. Измените цель или диапазоны; это не RF-измерение.",
-            UiLocale.EN: "Schedule not staged: modeled revisit exceeds the request. Change the target or ranges; this is not an RF measurement."}),
+            UiLocale.RU: "Расписание не подготовлено: расчётный период возврата превышает запрос. Увеличьте целевой период или измените веса/диапазоны. Это расчётная модель, не RF-измерение; настройки не применены, приём не запущен.",
+            UiLocale.EN: "Schedule not staged: modeled revisit exceeds the requested target. Increase the target or change weights/ranges. This is a timing model, not an RF measurement; no Apply or RX occurred."}),
         "analyzer.pane.setup.refusal.network_intent_conflict": MappingProxyType({
             UiLocale.RU: "Для одного источника заданы противоречивые варианты сетевого поиска; подготовка отклонена.",
             UiLocale.EN: "One source has conflicting network-discovery intents; Stage was refused."}),
