@@ -350,6 +350,47 @@ def run_case(path: str, case: str) -> None:
                     if case == "run-progress":
                         assert progress is not None, "no progressive observed publication before terminal"
                         assert 1 <= len(progress.steps) < 3
+                    if case == "run-bundle-bool":
+                        from sdr_monitor.domain.analyzer import bundles_from_paired_sweep
+
+                        bundle = bundles_from_paired_sweep(publication)[0][1]
+                        refuses(lambda: replace(bundle, acquisition_epoch=True))
+                    if case == "run-bundle-instrument":
+                        from sdr_monitor.domain.analyzer import bundles_from_paired_sweep
+                        from sdr_monitor.domain.paired_sweep_publication import PairedSweepPublication
+                        from tests.test_app07_mixed_source_trace import trace_bundle
+
+                        primary = trace_bundle("product-left", publication.primary.epoch).spectrum
+                        secondary = replace(primary, source_id="product-right")
+                        # Real typed instrument frames, not a bypass of their
+                        # validation. They are not AD paired RF provenance.
+                        forged = PairedSweepPublication(run, (), primary, secondary)
+                        refuses(lambda: bundles_from_paired_sweep(forged))
+                    if case == "run-bundles":
+                        from sdr_monitor.domain.analyzer import bundles_from_paired_sweep
+
+                        assert progress is not None
+                        for item in (publication, progress):
+                            bundles = bundles_from_paired_sweep(item)
+                            assert tuple(key for key, _ in bundles) == ("product-left", "product-right")
+                            for (producer, bundle), receiver, frame in zip(bundles, ("RX1", "RX2"),
+                                    (item.primary, item.secondary), strict=True):
+                                assert bundle.spectrum is frame and bundle.paired_sweep is item
+                                assert bundle.frequencies_hz is frame.frequencies_hz
+                                assert bundle.identity.source_id == producer
+                                assert bundle.identity.session_id == run.request.pair.session_id
+                                assert bundle.identity.receiver_id == receiver
+                                assert bundle.identity.acquisition_epoch == run.acquisition_epoch
+                                assert frame.epoch != run.acquisition_epoch
+                                assert bundle.identity.clock_domain is None
+                                assert bundle.identity.config_generation is None
+                                assert bundle.rtbw is None and bundle.mode == "sweep"
+                                assert bundle.identity.accumulation_id == (
+                                    f"paired-attempt:{run.acquisition_epoch}:epoch:{frame.epoch}")
+                                for mutation in ({"receiver_id": "RX2" if receiver == "RX1" else "RX1"},
+                                        {"session_id": "foreign"}, {"acquisition_epoch": frame.epoch},
+                                        {"paired_sweep": None}, {"spectrum": replace(frame)}):
+                                    refuses(lambda: replace(bundle, **mutation))
                     # Capture a genuine immutable native packet for adversarial
                     # conversion tests and stale replay across a new run.
                     deadline = time.monotonic() + 5
@@ -397,6 +438,11 @@ def run_case(path: str, case: str) -> None:
                         time.sleep(.001)
                     assert fresh and fresh[0].run is new_run
                     assert fresh[0].primary.epoch > publication.primary.epoch
+                    if case == "run-bundles":
+                        old = bundles_from_paired_sweep(publication)
+                        new = bundles_from_paired_sweep(fresh[0])
+                        assert old[0][1].identity.acquisition_epoch != new[0][1].identity.acquisition_epoch
+                        assert old[0][1].identity.accumulation_id != new[0][1].identity.accumulation_id
                     coordinator.stop()
                     coordinator.disconnect()
                     assert coordinator.active_run is None
@@ -498,3 +544,6 @@ class PairedSweepProductLeaseTests(unittest.TestCase):
     def test_product_reservation_counts_in_native_budget_before_open(self): self.run_native("reservation")
     def test_full_converted_array_budget_refuses_near_boundary_before_open(self): self.run_native("domain-budget")
     def test_density_cell_validation_budget_refuses_before_open(self): self.run_native("statistics-budget")
+    def test_actual_observed_pair_uses_common_analyzer_envelope_without_epoch_rewrite(self): self.run_native("run-bundles")
+    def test_paired_analyzer_epoch_refuses_boolean(self): self.run_native("run-bundle-bool")
+    def test_paired_analyzer_refuses_borrowed_instrument_provenance(self): self.run_native("run-bundle-instrument")

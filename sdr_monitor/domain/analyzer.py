@@ -15,6 +15,7 @@ from .live import LiveSnapshot, LiveSpectrumFrame
 from .sweep_lines import SweepLineFrame
 from .sweep_progress import SweepProgressFrame
 from .sweep_statistics import SweepStatisticsFrame
+from .paired_sweep_publication import PairedSweepPublication
 from .analyzer_identity import (
     MeasurementIdentity, identities_equal, layer_matches_measurement, matches_active_identity,
     persistence_is_pending,
@@ -71,8 +72,14 @@ class AnalyzerFrameBundle:
     waterfall_line: object | None = None
     coherence_issues: tuple[str, ...] = ()
     paired_capture: PairedCaptureMetadata | None = None
+    paired_sweep: PairedSweepPublication | None = None
 
     def __post_init__(self) -> None:
+        if self.paired_sweep is not None and (
+                not isinstance(self.paired_sweep, PairedSweepPublication)
+                or not isinstance(self.spectrum, (SweepLineFrame, SweepProgressFrame))
+                or self.paired_capture is not None):
+            raise ValueError("paired Sweep evidence requires a typed reduced pair, not RTBW metadata")
         if self.paired_capture is not None and (
                 not isinstance(self.paired_capture, PairedCaptureMetadata)
                 or not isinstance(self.spectrum, LiveSpectrumFrame)
@@ -140,23 +147,45 @@ class AnalyzerFrameBundle:
             if self.waterfall_line is not None and not layer_matches_measurement(identity, self.waterfall_line):
                 raise ValueError("waterfall identity/grid/unit does not match measurement")
         elif isinstance(self.spectrum, (SweepLineFrame, SweepProgressFrame)):
-            if self.session_id is not None or self.receiver_id is not None:
-                raise ValueError("Sweep producer does not declare session or receiver identity")
-            if self.rtbw is not None or self.acquisition_epoch != self.spectrum.epoch:
+            pair = self.paired_sweep
+            if pair is None:
+                if self.session_id is not None or self.receiver_id is not None:
+                    raise ValueError("Sweep producer does not declare session or receiver identity")
+                expected_epoch = self.spectrum.epoch
+            else:
+                if (type(self.acquisition_epoch) is not int
+                        or isinstance(self.spectrum, SweepLineFrame)
+                        and self.spectrum.instrument is not None):
+                    raise ValueError("paired Sweep requires an exact attempt integer and no instrument provenance")
+                # Exact admitted reduced object, never suffix inference or a
+                # caller-relabelled grid. The native Sweep epoch stays on the
+                # original frame; application attempt epoch stays on the bundle.
+                if self.spectrum is pair.primary:
+                    expected_receiver = "RX1"
+                elif self.spectrum is pair.secondary:
+                    expected_receiver = "RX2"
+                else:
+                    raise ValueError("paired Sweep bundle must retain its exact chain publication")
+                if (self.session_id != pair.run.request.pair.session_id
+                        or self.receiver_id != expected_receiver):
+                    raise ValueError("paired Sweep session/receiver differs from its observed run")
+                expected_epoch = pair.run.acquisition_epoch
+            if self.rtbw is not None or self.acquisition_epoch != expected_epoch:
                 raise ValueError("Sweep publication must retain its own epoch and no RTBW metadata")
             if self.persistence is not None or self.waterfall_line is not None:
                 raise ValueError("Sweep auxiliary layers require a separately validated producer contract")
             base = MeasurementIdentity.from_frame(self.spectrum)
             derived = MeasurementIdentity(
-                source_id=base.source_id, session_id=None, receiver_id=None,
-                acquisition_epoch=self.spectrum.epoch,
+                source_id=base.source_id, session_id=self.session_id, receiver_id=self.receiver_id,
+                acquisition_epoch=expected_epoch,
                 # Segment generation/revision provenance stays on each
                 # publication; it is not a single configuration identity.
                 config_generation=(self.spectrum.instrument.configuration_generation
                                    if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument else None),
                 clock_domain=(self.spectrum.instrument.clock_domain
                               if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument else None),
-                accumulation_id=(f"epoch:{self.spectrum.epoch}" +
+                accumulation_id=((f"paired-attempt:{expected_epoch}:" if pair is not None else "") +
+                    f"epoch:{self.spectrum.epoch}" +
                     (":" + self.spectrum.instrument.value_context_key
                      if isinstance(self.spectrum, SweepLineFrame) and self.spectrum.instrument
                      and self.spectrum.instrument.value_context_key is not None else "")),
@@ -234,6 +263,26 @@ def bundle_from_sweep(line: SweepLineFrame | SweepProgressFrame) -> AnalyzerFram
         spectrum=line, session_id=None, receiver_id=None,
         acquisition_epoch=line.epoch, rtbw=None,
     )
+
+
+def bundles_from_paired_sweep(
+    publication: PairedSweepPublication,
+) -> tuple[tuple[str, AnalyzerFrameBundle], ...]:
+    """BOTH exact reduced frames on the shared Analyzer envelope, without copies.
+
+    Provenance comes from observed paired receipts, not from receiver ID suffixes.
+    This pure conversion grants no current owner/activation rights: consumers
+    must still match the admitted run and reject retired/foreign publications.
+    Both bundles retain one shared immutable pair; constructing either does not
+    perform DSP, synthesize clocks or rewrite the native frame's Sweep epoch.
+    """
+    if not isinstance(publication, PairedSweepPublication):
+        raise TypeError("paired Analyzer conversion requires an observed typed publication")
+    run = publication.run
+    return tuple((frame.source_id, AnalyzerFrameBundle(
+        spectrum=frame, session_id=run.request.pair.session_id, receiver_id=receiver,
+        acquisition_epoch=run.acquisition_epoch, rtbw=None, paired_sweep=publication,
+    )) for receiver, frame in (("RX1", publication.primary), ("RX2", publication.secondary)))
 
 
 def bundle_from_live(snapshot: LiveSnapshot) -> AnalyzerFrameBundle | None:

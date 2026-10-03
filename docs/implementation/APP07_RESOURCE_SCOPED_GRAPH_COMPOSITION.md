@@ -3449,3 +3449,26 @@ queues/partial flush are unchanged; after Stop
 active observed polling refuses rather than re-admitting retired history. No
 EXE, physical RX, visible UI, HIL, performance or release proof is implied by
 source/compiled-mock tests. A matching native build/test is required separately.
+
+## M3 paired Sweep on the common Analyzer envelope
+
+`bundles_from_paired_sweep` converts one typed observed pair into BOTH common
+Analyzer bundles. It preserves exact primary/secondary reduced frame objects,
+statistics, quality, segment receipts and grids without copying or relabelling
+the native Sweep epoch. The two bundles share the same immutable paired evidence.
+Typed RX1/RX2 and selected session come from that validated pair, not producer
+ID suffixes. Each bundle's acquisition identity uses the application-assigned
+attempt epoch; its spectrum still carries the independent native Sweep epoch,
+and every step keeps its native synchronization/configuration epochs.
+Accumulation identity includes BOTH attempt and native Sweep epochs to prevent
+cross-run history compatibility. This does not invent an RF timestamp or one
+configuration generation for a retuned whole Sweep; those remain unknown on the
+whole-line identity. Per-step details remain available on `paired_sweep.steps`.
+
+Mismatched session/RX/epoch, foreign or cloned frame objects and RTBW paired
+metadata refuse. Ordinary single-producer Sweep and RTBW envelopes are unchanged.
+Constructing a bundle is NOT authorization to receive it into an active pane:
+the common CaptureJob/activation must still match the exact admitted run and
+atomically validate BOTH chains. That adapter/atomic delivery and remaining
+readback/terminal semantics remain OPEN; existing paired Sweep pane refusals are
+NOT lifted by the pure Analyzer conversion. No UI edit or physical claim.
