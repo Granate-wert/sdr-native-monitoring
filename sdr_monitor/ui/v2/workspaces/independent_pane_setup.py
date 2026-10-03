@@ -94,7 +94,7 @@ class _SlotRow:
         self.manual_gain.setObjectName(f"independentPaneRtlGain{number}V2")
         self.manual_gain.setProperty("ui2Role", "utility-select")
         self.manual_gain.setMinimumContentsLength(12)
-        self.manual_gain.addItem("Auto", None)
+        self.manual_gain.addItem(text("analyzer.pane.setup.rtl_gain_auto"), None)
         self._gain_context: tuple[object, ...] | None = None
         self.gain_label = QLabel(parent)
         self.gain_label.setProperty("ui2Role", "secondary")

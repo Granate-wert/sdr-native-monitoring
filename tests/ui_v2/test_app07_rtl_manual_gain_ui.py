@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import (
@@ -18,7 +18,7 @@ from sdr_monitor.domain.device_capabilities import (
 )
 from sdr_monitor.domain.pane_scheduler import RtlRtbwPaneProfile
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale
-from sdr_monitor.ui.v2.workspaces.independent_pane_setup import IndependentPaneSetupV2
+from sdr_monitor.ui.v2.workspaces.independent_pane_setup import IndependentPaneSetupV2, _SlotRow
 from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, PaneUserPlanError, compile_user_pane_plan
 
 
@@ -47,6 +47,19 @@ class RtlManualGainUiTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         set_active_locale(self.locale)
+
+    def test_initial_auto_entry_uses_active_locale(self) -> None:
+        parent = QWidget()
+        try:
+            for locale, expected in ((UiLocale.EN, "Auto"), (UiLocale.RU, "Авто")):
+                with self.subTest(locale=locale):
+                    set_active_locale(locale)
+                    row = _SlotRow(1, parent)
+                    self.assertEqual(row.manual_gain.itemText(0), expected)
+                    self.assertIsNone(row.manual_gain.itemData(0))
+                    row.manual_gain.deleteLater()
+        finally:
+            parent.deleteLater()
 
     def _editor(self, choice: AnalyzerSourceChoice) -> IndependentPaneSetupV2:
         editor = IndependentPaneSetupV2(
