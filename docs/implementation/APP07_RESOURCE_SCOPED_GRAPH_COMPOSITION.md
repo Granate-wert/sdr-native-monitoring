@@ -3256,3 +3256,36 @@ physical qualification remain M3 gates. No UI guard removed, no new EXE/fullV2/
 frozen-package/physicalRX/dualRF/GUI/throughput/DPI/soak/Linux/release proof.
 Prior FF02 EXE and static firewall path remain unchanged. M2 positive paired/
 matching ENRU/readback, R14 cleanup, M4 RTL and M5..M12 remain OPEN.
+
+## M3 paired reduced Sweep Python boundary — 2026-10-03
+
+The existing native coordinator now exposes validated immutable paired config,
+read-only paired terminal/progressive envelopes and actual native step receipts.
+The reduced protocol has its own explicit version1 marker, NOT a claim of
+product mode/lease/receipt admission. Existing single APIs retain their meaning:
+single line/progress reads refuse paired mode; scalar discard supports bounded
+paired drain. Python sees per-RX SourceDescriptor metadata and reduced arrays,
+never raw I/Q, analytical callbacks, StartAdmissionGate or native test controls.
+Array capsules retain native shared storage after parent/coordinator release;
+writeability cannot be re-enabled. Common IQ counters remain once, RX1 analytical
+FFT counter and secondary RX2 analytical counter are separately available.
+
+Matching alltarget WindowsCPU build passed. Serial33/33 tests15.850s0skip include
+five new compiled-boundary cases and28 existing binding/application/commonSweep
+contracts. Native full46/46CTest53.36s, pairedtarget1.30s. New cases cover invalid
+common plans/epoch/cadence/queue/timeout/statistics, immutable config/receipts,
+explicit Start, one mock context/buffer/commonLO, distinct RX data/readback,
+progress before terminal, Stop prefix gap, first error cause, fresh rearm epochs,
+legacy reader refusal and reduced-array lifetime. Tests are mock ONLY, not RF
+accuracy/transport throughput/FFT-LPS/GUI/soak evidence. Initial fixture/wire-case
+errors were corrected; their failed logs remain retained, not product bug claims.
+
+The native module hash is
+8771c8fe748c34322c56cc2ebadcc11b0535f5bff678f4ea39c56be04e76187b.
+Full product integration remains mandatory: both native statistics consumers,
+SAME NativeLive control/recording owner and exclusive RTBW/Sweep lease, full
+owner-bound session/selection/plan/readback/epoch receipts, paired pane delivery,
+actual application regression and physical/visible qualification. Current product
+pairedSweep refusal is NOT lifted. A native step receipt is not a fabricated
+acquisition/RF-clock receipt. No new EXE/fullV2/frozenpackage/physicalRX/GUI/DPI/
+performance/soak/Linux/release proof; FF02 EXE and staticfirewall path unchanged.

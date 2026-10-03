@@ -72,6 +72,9 @@ void bind_pluto(py::module_& module) {
     // older runtimes rather than perform a separate, non-owning preflight.
     module.attr("PLUTO_IDENTITY_ADMISSION_PROTOCOL_VERSION") = 1;
     module.attr("PLUTO_OBSERVATION_PROTOCOL_VERSION") = 1;
+    // This identifies the reduced native boundary, not product lease/receipt
+    // admission or physical paired-Sweep qualification.
+    module.attr("PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION") = 1;
     py::class_<sdr_core::DualRxChannelDspConfig>(module, "DualRxChannelDspConfig")
         .def(py::init([](
             const sdr_core::SourceDescriptor& source,
@@ -451,6 +454,7 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepProgressFrame>(module, "SweepProgressFrame")
+        .def_readonly("source", &sdr_core::SweepProgressFrame::source)
         .def_property_readonly("last_admitted_segment", [](const SweepProgressFrame& value) -> py::object {
             if (!value.last_admitted_segment) return py::none();
             const auto& last = *value.last_admitted_segment;
@@ -491,6 +495,7 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepLineFrame>(module, "SweepLineFrame")
+        .def_readonly("source", &sdr_core::SweepLineFrame::source)
         .def_property_readonly("last_admitted_segment", [](const SweepLineFrame& value) -> py::object {
             if (!value.last_admitted_segment) return py::none();
             const auto& last = *value.last_admitted_segment;
@@ -973,6 +978,47 @@ void bind_pluto(py::module_& module) {
         .def_readonly("segment_frame_timeout_ms", &sdr_pluto::ContinuousSweepCoordinatorConfig::segment_frame_timeout_ms)
         .def_readonly("segments", &sdr_pluto::ContinuousSweepCoordinatorConfig::segments);
 
+    py::class_<sdr_pluto::PairedContinuousSweepCoordinatorConfig>(module, "PairedContinuousSweepCoordinatorConfig")
+        .def(py::init([](std::string resource_id,
+                        sdr_pluto::ContinuousSweepCoordinatorConfig primary,
+                        sdr_pluto::ContinuousSweepCoordinatorConfig secondary) {
+            sdr_pluto::PairedContinuousSweepCoordinatorConfig value{
+                std::move(resource_id), std::move(primary), std::move(secondary)};
+            sdr_pluto::validate(value);
+            return value;
+        }), py::arg("resource_id"), py::arg("primary"), py::arg("secondary"))
+        .def_readonly("resource_id", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::resource_id)
+        .def_readonly("primary", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::primary)
+        .def_readonly("secondary", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::secondary);
+
+    // Native observed receipts have no Python constructor/mutable fields.
+    // They retain producer time; they do not invent an RF clock or the full
+    // domain owner-bound session/intent/selection/acquisition receipt.
+    py::class_<sdr_pluto::PairedSweepStepReceipt>(module, "PairedSweepStepReceipt")
+        .def_readonly("step_index", &sdr_pluto::PairedSweepStepReceipt::step_index)
+        .def_readonly("config_generation", &sdr_pluto::PairedSweepStepReceipt::config_generation)
+        .def_readonly("synchronization_epoch", &sdr_pluto::PairedSweepStepReceipt::synchronization_epoch)
+        .def_readonly("shared_input_gaps_before", &sdr_pluto::PairedSweepStepReceipt::shared_input_gaps_before)
+        .def_readonly("frame_sequence", &sdr_pluto::PairedSweepStepReceipt::frame_sequence)
+        .def_readonly("first_sample_index", &sdr_pluto::PairedSweepStepReceipt::first_sample_index)
+        .def_readonly("timestamp_ns", &sdr_pluto::PairedSweepStepReceipt::timestamp_ns)
+        .def_readonly("center_frequency_hz", &sdr_pluto::PairedSweepStepReceipt::center_frequency_hz)
+        .def_readonly("sample_rate_hz", &sdr_pluto::PairedSweepStepReceipt::sample_rate_hz)
+        .def_readonly("analog_bandwidth_hz", &sdr_pluto::PairedSweepStepReceipt::analog_bandwidth_hz)
+        .def_readonly("fft_size", &sdr_pluto::PairedSweepStepReceipt::fft_size);
+
+    py::class_<sdr_pluto::PairedSweepLineFrame>(module, "PairedSweepLineFrame")
+        .def_readonly("resource_id", &sdr_pluto::PairedSweepLineFrame::resource_id)
+        .def_readonly("primary", &sdr_pluto::PairedSweepLineFrame::primary)
+        .def_readonly("secondary", &sdr_pluto::PairedSweepLineFrame::secondary)
+        .def_readonly("steps", &sdr_pluto::PairedSweepLineFrame::steps);
+
+    py::class_<sdr_pluto::PairedSweepProgressFrame>(module, "PairedSweepProgressFrame")
+        .def_readonly("resource_id", &sdr_pluto::PairedSweepProgressFrame::resource_id)
+        .def_readonly("primary", &sdr_pluto::PairedSweepProgressFrame::primary)
+        .def_readonly("secondary", &sdr_pluto::PairedSweepProgressFrame::secondary)
+        .def_readonly("steps", &sdr_pluto::PairedSweepProgressFrame::steps);
+
     py::class_<sdr_pluto::ContinuousSweepStageTiming>(module, "ContinuousSweepStageTiming")
         .def_readonly("count", &sdr_pluto::ContinuousSweepStageTiming::count)
         .def_readonly("total_ns", &sdr_pluto::ContinuousSweepStageTiming::total_ns)
@@ -999,6 +1045,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("device_iq_samples", &sdr_pluto::ContinuousSweepCoordinatorMetrics::device_iq_samples)
         .def_readonly("device_iq_blocks", &sdr_pluto::ContinuousSweepCoordinatorMetrics::device_iq_blocks)
         .def_readonly("analytical_fft_frames", &sdr_pluto::ContinuousSweepCoordinatorMetrics::analytical_fft_frames)
+        .def_readonly("secondary_analytical_fft_frames", &sdr_pluto::ContinuousSweepCoordinatorMetrics::secondary_analytical_fft_frames)
         .def_readonly("completed_current_generation_fft_frames", &sdr_pluto::ContinuousSweepCoordinatorMetrics::completed_current_generation_fft_frames)
         .def_readonly("completed_line_analysis_geometry_available", &sdr_pluto::ContinuousSweepCoordinatorMetrics::completed_line_analysis_geometry_available)
         .def_readonly("completed_line_analysis_window_hz", &sdr_pluto::ContinuousSweepCoordinatorMetrics::completed_line_analysis_window_hz)
@@ -1024,6 +1071,7 @@ void bind_pluto(py::module_& module) {
     py::class_<sdr_pluto::ContinuousSweepCoordinator>(module, "NativeContinuousSweepCoordinator")
         .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def("configure", &sdr_pluto::ContinuousSweepCoordinator::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
+        .def("configure_paired", &sdr_pluto::ContinuousSweepCoordinator::configure_paired, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("start", &sdr_pluto::ContinuousSweepCoordinator::start, py::call_guard<py::gil_scoped_release>())
         .def("request_stop", &sdr_pluto::ContinuousSweepCoordinator::request_stop, py::call_guard<py::gil_scoped_release>())
         .def("join", &sdr_pluto::ContinuousSweepCoordinator::join, py::call_guard<py::gil_scoped_release>())
@@ -1034,6 +1082,9 @@ void bind_pluto(py::module_& module) {
         .def("applied_segments", &sdr_pluto::ContinuousSweepCoordinator::applied_segments, py::call_guard<py::gil_scoped_release>())
         .def("poll_lines", &sdr_pluto::ContinuousSweepCoordinator::poll_lines, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_progress", &sdr_pluto::ContinuousSweepCoordinator::poll_progress, py::call_guard<py::gil_scoped_release>())
+        .def("poll_paired_lines", &sdr_pluto::ContinuousSweepCoordinator::poll_paired_lines, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
+        .def("poll_paired_progress", &sdr_pluto::ContinuousSweepCoordinator::poll_paired_progress, py::call_guard<py::gil_scoped_release>())
+        .def("last_error", &sdr_pluto::ContinuousSweepCoordinator::last_error, py::call_guard<py::gil_scoped_release>())
         .def("discard_lines", &sdr_pluto::ContinuousSweepCoordinator::discard_lines, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>());
 
     // pybind11 3.x rejects call_guard as a def_property_readonly attribute.
