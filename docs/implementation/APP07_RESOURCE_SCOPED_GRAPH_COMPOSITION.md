@@ -3885,3 +3885,78 @@ performance, soak, visible DPI and full release qualification are still
 OPEN. Notice hashes do not establish redistribution rights. Positive
 paired RF/Sweep acceptance remains separate. No build, EXE, SDK load,
 RX, ComputerUse or system/security mutation occurred in this increment.
+
+## 2026-10-03 — UI V2 usability and local RTL diagnostic package
+
+UI implementation commit `b60507a48b8702df53c234c2149899a1c00191e4`
+makes the stopped multi-pane editor use one outer scroll surface, without a
+nested tinySA drawer. Closed combo wheel events scroll the surface without
+silently changing the draft; keyboard and explicit popup selection remain.
+The accepted-Stage summary uses typed layout slots and the same prepared
+plan/preview, groups identical typed tinySA requests, preserves distinct
+requests and full detail, and disables/refuses Apply if the complete summary
+cannot be shown. Standalone Analyzer tinySA settings retain their scroll
+contract. No domain/native/Fs/FFT/gain/epoch/owner/recording guard was changed.
+
+Root source/offscreen checks: 52 tests, 170 subtests, 34.33 seconds; Ruff,
+compileall, scoped two-file mypy and staged diff passed. A distinct configured
+gpt-6-sol/high review found no scoped blocker. Initial clipping failure and
+fixture/allocation corrections are retained; this is not visible Windows/DPI
+acceptance.
+
+Fresh local-only diagnostic tag `APP07-RTL-20261003-B60507A` contains 665
+verified files and 561 source inputs. EXE SHA-256
+`398f0de3c3a497338cc583aad3fb4c095e20ee8f46b8b1aa9bbd92c7f53d2b90`;
+native SHA-256
+`8dabdb1d27a4e4568a5e0665ef431f34cc32190d10617bf226383705aa44f14f`.
+Native sources were unchanged, so Ninja incrementally verified the existing
+module without recompiling C++. All 46 CTest passed in 60.22 seconds; matching
+packaged-native mock bindings passed 39 tests in 30.088 seconds. Exact shared
+nine-DLL/one-libUSB and static actual RTL runtime/notices checks passed.
+Static RTL admission does not load the SDK or prove ABI/RX/redistribution.
+
+The RTL DLL is hash-admitted from a local RTL-SDR Blog V1.4.0 archive, with
+exact tag COPYING and truthful provenance notices. Static-component versions,
+corresponding binary source and redistribution obligations remain unresolved;
+no proprietary-license rewrite, distribution approval or current/static
+promotion is inferred. Optional pyqtgraph.opengl/OpenGL collection warning
+is retained without suppression.
+
+Initial exact-b605 full V2 regression retained one error in an old RTL preview
+fixture lacking required typed layout slots: 1338 total, 1271 passed,
+66 skipped, one error, 524.530 seconds. Test-only commit
+`a5b2e63ae93b68332b2c1702073299faee216225` repairs that fixture, preserves
+requested-versus-actual unknown/filter assertions, and adds pane/Empty/no-
+install checks. Root focused61 tests/172 subtests passed in36.47 seconds,
+with separate independent review. Product and native source are identical to
+b605; this later test commit does not relabel the b605 EXE/source manifests.
+
+Corrected serial full V2 source gate at a5b2e63 with immutable b605 native:
+1338 total, 1272 passed, 66 skipped, zero errors/failures, 536.816 seconds;
+tracked clean before/after, exact provenance true, deferred[]/outside[].
+The reviewed one-file fixture difference and all665 frozen package hashes
+were checked before/after. This is source/mock/offscreen, not a new build
+or visible Windows/HIL/release witness. Four historic NaN warnings retained.
+
+A private cooperating-process Windows hardware-lease prototype passed five
+temporary-child-process tests in2.629 seconds after cleanup/quarantine and
+zero/one-byte crash-record corrections. It is not yet integrated with a real
+HIL runner and is not physical cleanup or isolation evidence.
+
+Direct user extension: include the separately added AD9363 device and future
+multi-pane rotation. Keep canonical2x2 Pluto/HackRF/tinySA/RTL, repeat with
+AD9363 replacing AD9364, then use distinct AD9363+AD9364 together with other
+sources and rotate through every pane position. Require fresh identity/
+route/topology/readback, no duplicate USB/IP aliases, explicit Stage/Apply/
+Start, stale-data rejection, old-owner release and exact independent-peer
+epoch/history preservation for source-scoped operations. Current Analyzer
+bars a new Stage while a layout is installed: deliberate full-layout rotation
+uses StopAll/CloseLayout/reStage/Apply/separateStart with all resets declared.
+Live pane-only rebinding remains unqualified, not silently promised. Chip labels do not prove RX2 or61.44MS/s.
+These are planned mandatory HIL scenarios, not new physical observations.
+
+APP-07 remains IN_PROGRESS, M4/RTL production PARTIAL. Positive physical
+pairedRX/Sweep, actual RTL workflow, four-source HIL, rotation, faults,
+performance, soak, visible Windows/DPI and full release remain OPEN.
+Configured agents: gpt-6-sol/high UI writer and distinct reviewer,
+gpt-6-luna/high private lease helper; runtime model attestation unavailable.
