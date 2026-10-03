@@ -85,7 +85,7 @@ __declspec(dllexport) int __cdecl rtlsdr_get_usb_strings(void* device,
     return 0;
 }
 __declspec(dllexport) int __cdecl rtlsdr_get_tuner_type(void* device) {
-    return device == &selected ? 5 : 0;
+    return device == &selected ? (scenario.load() == 14 ? 4 : 5) : 0;
 }
 __declspec(dllexport) int __cdecl rtlsdr_get_direct_sampling(void* device) {
     return device == &selected ? 0 : -1;
@@ -112,6 +112,7 @@ __declspec(dllexport) std::uint32_t __cdecl rtlsdr_get_center_freq(void* device)
 __declspec(dllexport) int __cdecl rtlsdr_set_tuner_gain_mode(void* device, int automatic) {
     if (automatic == 1) manual_calls.fetch_add(1);
     if (device != &selected || (automatic != 0 && automatic != 1)) return -8;
+    if (scenario.load() == 14) return 0;  // pinned FC2580 no-op mode setter
     selected.manual = automatic == 1;
     return scenario.load() == 9 ? -18 : 0;
 }
@@ -119,6 +120,10 @@ __declspec(dllexport) int __cdecl rtlsdr_set_tuner_gain_mode(void* device, int a
 __declspec(dllexport) int __cdecl rtlsdr_get_tuner_gains(void* device, int* gains) {
     if (device != &selected) return -1;
     if (scenario.load() == 6) return 257;
+    if (scenario.load() == 14) {
+        if (gains) *gains = 0;
+        return 1;  // FC2580 sentinel, not a manual gain value
+    }
     int table[] = {-99, 0, 144, 496};
     if (scenario.load() == 11) table[2] = 0;  // duplicate
     if (scenario.load() == 12) table[3] = 1001;  // unbounded value
@@ -128,7 +133,9 @@ __declspec(dllexport) int __cdecl rtlsdr_get_tuner_gains(void* device, int* gain
 }
 __declspec(dllexport) int __cdecl rtlsdr_set_tuner_gain(void* device, int gain) {
     gain_calls.fetch_add(1);
-    if (device != &selected || !selected.manual) return -1;
+    if (device != &selected) return -1;
+    if (scenario.load() == 14) return 0;  // pinned FC2580 no-op gain setter
+    if (!selected.manual) return -1;
     if (scenario.load() == 10) return -19;
     selected.gain = gain;
     return 0;

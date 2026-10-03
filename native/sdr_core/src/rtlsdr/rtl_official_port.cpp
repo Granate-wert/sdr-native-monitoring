@@ -427,6 +427,9 @@ template <typename Function>
 
 [[nodiscard]] std::vector<int> tuner_gains(Api& api, Device* device) {
     if (!api.get_gains || !api.set_gain || !api.get_gain) return {};
+    // FC2580 reports the sentinel {0}, but its pinned SDK gain/mode setters
+    // are no-ops. That is not manual-gain capability or a zero-dB setting.
+    if (api.tuner_type(device) == 4) return {};
     // The provisioned SDK ABI has no buffer-length argument. Its trusted table
     // is static per tuner (V1.4.0 maximum29); allow bounded extensions up to256.
     // This is not containment of a malicious/native ABI-violating DLL.
@@ -656,7 +659,14 @@ RtlObservedCandidate observe_single_rtl_candidate(const RtlExternalRuntime& runt
             candidate.tuner_type = static_cast<std::uint32_t>(tuner);
             candidate.direct_sampling = false;
             candidate.offset_tuning = false;
-            candidate.tuner_gains_tenth_db = tuner_gains(*api, device);
+            try {
+                candidate.tuner_gains_tenth_db = tuner_gains(*api, device);
+            } catch (const sdr_core::DeviceError&) {
+                // Optional manual-gain capability must not invalidate the
+                // established automatic lane. Start still rechecks the exact
+                // owned table and refuses any manual request on invalid data.
+                candidate.tuner_gains_tenth_db.clear();
+            }
         }
     } catch (...) { valid = false; }
     const auto close_status = api->close(device);

@@ -54,11 +54,12 @@ using Scenario = void (__cdecl *)(int);
 using ResetCounters = void (__cdecl *)();
 using Counter = int (__cdecl *)(int);
 
-void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external, bool has_gain_api = true) {
+void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external,
+                          bool has_gain_table = true, std::uint32_t tuner_type = 5U) {
     const auto observed = sdr_rtlsdr::observe_single_rtl_candidate(external);
     assert(observed.enumeration_index == 0U && observed.serial == "00000001");
-    assert(observed.tuner_type == 5U && !observed.direct_sampling && !observed.offset_tuning);
-    assert(observed.tuner_gains_tenth_db == (has_gain_api ? std::vector<int>({-99, 0, 144, 496}) : std::vector<int>{}));
+    assert(observed.tuner_type == tuner_type && !observed.direct_sampling && !observed.offset_tuning);
+    assert(observed.tuner_gains_tenth_db == (has_gain_table ? std::vector<int>({-99, 0, 144, 496}) : std::vector<int>{}));
     sdr_rtlsdr::RtlProfile profile;
     profile.center_hz = 150'000'000U;
     profile.sample_rate_hz = 2'400'000U;
@@ -103,12 +104,13 @@ void count_changed_after_open(const sdr_rtlsdr::RtlExternalRuntime& external) {
 }
 
 void manual_gain(const sdr_rtlsdr::RtlExternalRuntime& external, const int gain, const bool success,
-                 ResetCounters reset_counters, Counter counter, bool before_gain_setters = false) {
+                 ResetCounters reset_counters, Counter counter, bool before_gain_setters = false,
+                 std::uint32_t tuner_type = 5U) {
     reset_counters();
     sdr_rtlsdr::RtlProfile profile;
     profile.center_hz = 150'000'000U;
     profile.sample_rate_hz = 2'400'000U;
-    profile.session_route = sdr_rtlsdr::RtlSessionRoute{"Mock", "RTL tuner", "00000001", 5U, 1U};
+    profile.session_route = sdr_rtlsdr::RtlSessionRoute{"Mock", "RTL tuner", "00000001", tuner_type, 1U};
     profile.manual_tuner_gain_tenth_db = gain;
     bool refused{};
     try {
@@ -166,6 +168,13 @@ int main(int argc, char** argv) {
         manual_gain(external, 144, false, reset_counters, counter,
                     failure == 6 || failure == 7 || failure >= 11);
     }
+    for (const int malformed_optional_table : {6, 7, 11, 12, 13}) {
+        scenario(malformed_optional_table);
+        selected_route_and_cu8(external, false);  // auto path still works
+    }
+    scenario(14);
+    selected_route_and_cu8(external, false, 4U);  // FC2580 automatic remains valid
+    manual_gain(external, 0, false, reset_counters, counter, true, 4U);
     scenario(0);
     FreeLibrary(module);
     // A legacy DLL with no optional gain exports retains automatic RX, while
