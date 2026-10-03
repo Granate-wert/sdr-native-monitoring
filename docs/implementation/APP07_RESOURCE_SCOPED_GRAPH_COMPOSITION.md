@@ -3005,3 +3005,50 @@ APP07-A…L acceptance guards remain. APP07 PARTIAL/full APP00–14 goal freshly
 confirmed ACTIVE; expired APP05 timer not restarted. Main dirty work and static EXE
 unchanged. Only the public contract is mirrored/published; private state/evidence
 remain local. Configured model IDs are recorded, runtime attestation unavailable.
+
+## 2026-10-03: M1 exact common paired Sweep contract freeze — source7fff9b9
+
+Product source `7fff9b96e386d9502fbf45da72d773664bc31655` centralizes bounded
+common step geometry in `domain/continuous_sweep_geometry.py` and reuses it in the
+existing native single Sweep factory. Segment count/usable windows/overlap, RF Fs,
+FFT, speed, cadence and preflight budget policy are preserved. Finite huge draft
+midpoint computation avoids overflow; native RF bounds still gate real hardware.
+
+`domain/paired_sweep.py` freezes typed low-rate selection/stopped prepared-Apply
+and active-step admission. Receipt includes exact resource/session, actual Sweep/
+acquisition/synchronization epochs, line/step/generation, requested usable bounds,
+actual center/Fs/RF bandwidth/FFT, and immutable common plan/profile/revision.
+Both typed RX observations must align in sample/time/clock/gap provenance and exact
+producer assignment; per-chain quality masks stay distinct. Actual coverage must
+contain the declared step. Unknown RF timestamp/domain stays unknown, not host time.
+Stop/plan-change owner invalidation and fresh observed epoch remain implementation
+obligations, not RF authority granted by constructing a Python value.
+
+Independent review found an R0 stale-plan defect: changed later stop/overlap could
+retain step0 and reuse old output. R1 exact whole intent binding and regressions
+close it. Final focused source/offscreen:67total/58PASS/9skip/0fail-error1.348s;
+explicit unchanged-native MOCK14/14PASS14.270s; Ruff5/compile5/scopedmypy3silent/
+stageddiffPASS. No full regression/new native/new EXE or physical RX was performed.
+Two old presenter tests still FAIL (duplicate failed-Stop signal; poll-fault stop
+barrier). Both reproduce with baseline12eab0d factory and unchanged dependencies;
+cause remains OPEN separate UI/QA debt, not hidden or dismissed as fixed.
+
+Read-only Luna native design audit and independent Sol R0/R1 review completed.
+Reviewed R1 patch SHA256 `0c5598da81abc7d8214a54f7d738bc243131eeac06e136cba6b92ef73cbb9a59`.
+No blocking R1 scalar-contract finding; shared-path impact high, protection partial,
+source-progress acceptance only, NOT auto-merge/whole release approval. Configured
+IDs gpt-6-luna/high and gpt-6-sol/high; runtime attestation unavailable.
+
+M1 contract/source freeze COMPLETE. This does NOT implement paired retuning Sweep,
+enable a paired selector or close APP07-D01..D07. Next M2 dedicated UI V2 workflow,
+then M3 same-owner native paired coordinator: analytical pair input BEFORE render
+LatestWins reduction, separate native assemblers, one tuner/context/buffer/lease,
+aligned Gap on one-sided loss, aggregate non-doubled budgets and bounded Stop/flush.
+UI agent does not open SDR; source writers use isolated worktrees, independent
+review, root integration and serial exact build/HIL. M4 RTL production and M5–M12
+physical4-source/isolation/performance/soak/visual/release/closure remain open.
+
+APP07 PARTIAL/full APP00–14 ACTIVE; expired APP05 timer not restarted. Historical
+da3df7b native/EXE/physical proofs remain that source, never this later source/doc.
+Current/static EXE unchanged, main dirty LegacyDFL preserved/no product sync.
+Only public contract mirrored/published; private state/evidence remain local.
