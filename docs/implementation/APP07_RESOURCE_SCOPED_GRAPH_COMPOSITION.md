@@ -4092,3 +4092,85 @@ discrete Manual choices, requested versus SDK-cache captions and stale/retained
 guards. No new EXE, full V2 gate, physical manual-gain acceptance, four-source
 HIL, performance, soak or production-release approval is claimed by this packet.
 APP-07/M4 remains partial. The static executable and system settings are unchanged.
+
+## RTL gain UI and bounded physical acceptance — 2026-10-04
+
+UI V2 source `053c28f` adds Auto/default and exact discrete Manual gain choices
+from the fresh selected RTL session. Manual zero is distinct from Auto. Stale
+selection/capability changes reset to Auto; unsupported choices refuse rather
+than round. Requests retain the full pane profile, and frame captions separate
+requested settings from the SDK cache using source/configuration/epoch guards.
+UI does not own hardware, and no DSP/Fs/FFT/queue/epoch policy was changed.
+
+The first exact full V2 gate exposed a hardcoded initial `Auto` label. Corrective
+source `7cf584e` uses the localization catalog and adds initial EN/RU coverage.
+The failed `053c28f` gate remains historical evidence, not a successful candidate.
+Dedicated Luna implementation and independent Sol source review preceded root
+integration. Root qualification used the corrected immutable `7cf584e` source:
+
+- 55 focused UI tests passed; 3 private cleanup guard tests passed without SDK access.
+- 46/46 native CTest passed in 56.75 seconds; diagnostic package verification
+  admitted 665 frozen files and 561 source-input entries.
+- Serial full V2: 1349 total, 1283 passed, 66 skipped, no failures/errors,
+  552.623 seconds; tracked source clean before/after, exact provenance retained.
+  Four historical NaN warnings remain recorded.
+
+The new diagnostic EXE SHA-256 is
+`8f12ee0bf5e64c82af950910a442b2cfb449b6ea7211d351bdad388486a9042b`.
+Native bytes remain
+`312236334b50f730723b1f30a472b0e2bd209ef27a40fcd0b279612138f303a8`;
+this is a matching new source/build manifest, not a newly changed C++ binary.
+
+One bounded physical RTL run through the actual V2 application services and
+matching packaged native module passed five explicit Stage/Start/Stop cycles:
+
+| Cycle | Center | Fs | Requested gain | Fresh observed snapshots |
+|---|---:|---:|---|---:|
+| Auto | 100 MHz | 2.4 MS/s | Auto | 47 |
+| Manual | 100 MHz | 2.4 MS/s | 0 dB | 48 |
+| Manual and retune | 145 MHz | 2.4 MS/s | 0.9 dB | 47 |
+| Restore Auto | 145 MHz | 2.4 MS/s | Auto | 48 |
+| Close/reopen and change Fs | 433.92 MHz | 2.048 MS/s | 0.9 dB | 48 |
+
+FFT was 4096 throughout. The runner validated configuration, admitted epoch and
+requested-versus-cached gain on every observed frame. Total 238 snapshots are
+polling observations, not FFT/s or displayed FPS. All Stops were confirmed;
+final graph shutdown left no SDR threads, claim/control/poller, or native RTL
+quarantine. The cooperating-process hardware lease was released with an explicit
+cleanup receipt. There were no operation/cleanup exceptions. SDK PLL/direct
+sampling warnings and quality flags 8193/8209 remain evidence; no RF calibration,
+warning-free operation, sustained performance or losslessness is inferred.
+
+APP07-E01 (physical RTL service RX) and E03 (bounded gain/center/Fs/StopStart/
+closeReopen workflow) have current-source physical evidence. E02 and M4 remain
+partial: production dependency coexistence, redistribution/corresponding-source
+approval and four-source release qualification are still open. This was not a
+visible frozen-EXE test. The static/current executable and firewall are unchanged.
+
+## AD9363 Ethernet 100 Mbps prerequisite — 2026-10-04
+
+On explicit user request, the AD9363 device-only Ethernet subnet configuration
+was aligned with the existing PC Ethernet subnet. USB/RNDIS access was retained;
+the same physical serial was verified across the transport aliases. Both ends
+reported an actual 100 Mbps link, not 1 Gbps. Environment/config readback was
+verified; persistence across a reboot was not tested. No PC routing, firewall,
+driver, firmware image or other SDR network configuration was changed.
+
+A separate native RX1/FFT smoke used the matching `31223633` native binary from
+the earlier diagnostic package. Current device `2r2t` mode admitted at most
+30.72 MS/s; the 61.44 MS/s request explicitly refused before Start. No firmware
+mode was forced. The corrected bounded harness ran 20.0069 seconds at center
+2450 MHz, Fs 30.72 MS/s, RF bandwidth 30 MHz and FFT 4096:
+
+- 217 blocks / 56,885,248 delivered complex samples;
+- 2.8433 MS/s delivered, corresponding to 90.985 Mbps canonical I/Q payload
+  (not Ethernet wire rate including protocol overhead);
+- 27,388 computed FFTs, 214 polled fresh spectra;
+- zero host refill/FFT/acquisition drops; hardware overflow counter unavailable;
+- normal Stop/disconnect and released hardware lease.
+
+SDK READ LINE/READ INTEGER `-9` messages remain unexplained. This proves bounded
+Ethernet receive/FFT operation on the 100 Mbps line, not continuous 30.72 MS/s
+transport, GUI LPS, dual RX, calibrated RF, or multi-device stability. Device
+aliases must not be counted as independent sources. AD9363 product/multipane,
+distinct dual-AD, canonical 2x2 and all-pane rotation acceptance remain open.
