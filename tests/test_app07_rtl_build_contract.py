@@ -63,12 +63,22 @@ class RtlBuildContractTests(unittest.TestCase):
             base = {"cuda_compiled": False, "python_abi": "cp313-win_amd64",
                     "artifact_sha256": _file_sha256(module)}
             for patch in ({}, {"rtl_official_compiled": False},
-                          {"rtl_official_compiled": True, "rtl_control_contract_version": 1}):
+                          {"rtl_official_compiled": True, "rtl_control_contract_version": 1},
+                          {"rtl_official_compiled": True, "rtl_control_contract_version": 1,
+                           "rtl_tuner_gain_contract_version": 1}):
                 validate_manifest(module, {**base, **patch}, expected_cuda=False)
             for patch in ({"rtl_official_compiled": 1}, {"rtl_official_compiled": "false"},
                           {"rtl_official_compiled": True},
                           {"rtl_official_compiled": True, "rtl_control_contract_version": True},
-                          {"rtl_official_compiled": False, "rtl_control_contract_version": 1}):
+                          {"rtl_official_compiled": False, "rtl_control_contract_version": 1},
+                          {"rtl_tuner_gain_contract_version": 1},
+                          {"rtl_official_compiled": False, "rtl_tuner_gain_contract_version": 1},
+                          {"rtl_official_compiled": True, "rtl_control_contract_version": 1,
+                           "rtl_tuner_gain_contract_version": True},
+                          {"rtl_official_compiled": True, "rtl_control_contract_version": 1,
+                           "rtl_tuner_gain_contract_version": "1"},
+                          {"rtl_official_compiled": True, "rtl_control_contract_version": 1,
+                           "rtl_tuner_gain_contract_version": 2}):
                 with self.subTest(patch=patch), self.assertRaises(ContractSurfaceError):
                     validate_manifest(module, {**base, **patch}, expected_cuda=False)
 

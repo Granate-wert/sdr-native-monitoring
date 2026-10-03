@@ -664,8 +664,18 @@ class LiveSnapshot:
     # Loaded native optional protocol observation, not a hardware capability.
     hackrf_detector_groups_available: bool = False
     hackrf_persistence_available: bool = False
+    # SDK cached manual setting for the admitted RTL epoch, NOT RF/mode readback.
+    rtl_cached_tuner_gain_tenth_db: int | None = None
 
     def __post_init__(self) -> None:
+        if self.rtl_cached_tuner_gain_tenth_db is not None:
+            if (type(self.rtl_cached_tuner_gain_tenth_db) is not int or self.rtl_request is None
+                    or self.rtl_cached_tuner_gain_tenth_db != self.rtl_request.manual_tuner_gain_tenth_db
+                    or type(self.acquisition_epoch) is not int or self.acquisition_epoch <= 0):
+                raise ValueError("RTL cached gain requires the exact admitted manual profile/epoch")
+        elif (self.rtl_request is not None and self.rtl_request.manual_tuner_gain_tenth_db is not None
+                and self.state is LiveSessionState.RUNNING):
+            raise ValueError("Running manual RTL requires an admitted SDK cached setting")
         if type(self.hackrf_detector_groups_available) is not bool:
             raise TypeError("HackRF detector-group availability must be explicit boolean")
         if type(self.hackrf_persistence_available) is not bool:

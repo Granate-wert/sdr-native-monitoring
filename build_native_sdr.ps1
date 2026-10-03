@@ -270,7 +270,10 @@ $manifest = [ordered]@{
     sweep_max_segments = 2048
     sweep_max_reduced_bytes = 134217728
 }
-if ($EnableRtlOfficial) { $manifest['rtl_control_contract_version'] = 1 }
+if ($EnableRtlOfficial) {
+    $manifest['rtl_control_contract_version'] = 1
+    $manifest['rtl_tuner_gain_contract_version'] = 1
+}
 if ($hackrfRequested) {
     $manifest['profiling_enabled'] = [bool]$Profile
     $runtimeHashes = [ordered]@{}

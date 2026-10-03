@@ -59,6 +59,8 @@ class RtlReadback(Protocol):
     session_epoch: int
     actual_center_hz: int
     actual_sample_rate_hz: int
+    tuner_gain_readback_known: bool
+    cached_tuner_gain_tenth_db: int | None
 
 
 class RtlStop(Protocol):
@@ -79,6 +81,14 @@ class RtlRuntimeProvision:
     runtime: object
     module_sha256: str
     runtime_set_sha256: str
+    manual_gain_contract_version: int | None = None
+
+    def __post_init__(self) -> None:
+        version = self.manual_gain_contract_version
+        observed = getattr(self.native, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION", None)
+        if version is not None and (type(version) is not int or version != 1
+                or type(observed) is not int or observed != version):
+            raise ValueError("RTL manual gain provision requires the exact native bridge version")
 
 
 def _sha256(path: Path) -> str:
@@ -117,6 +127,12 @@ def qualified_rtl_runtime(native: object) -> RtlRuntimeProvision | None:
                 or not isinstance(external["dependencies"], dict)
                 or len(external["dependencies"]) > 8):
             return None
+        declared_gain = build.get("rtl_tuner_gain_contract_version")
+        observed_gain = getattr(native, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION", None)
+        if "rtl_tuner_gain_contract_version" in build or hasattr(native, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION"):
+            if (type(declared_gain) is not int or declared_gain != 1
+                    or type(observed_gain) is not int or observed_gain != declared_gain):
+                return None
         hashes = {"rtlsdr.dll": external["library"], **external["dependencies"]}
         if (len(hashes) != 1 + len(external["dependencies"])
                 or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+\.dll", name)
@@ -133,7 +149,7 @@ def qualified_rtl_runtime(native: object) -> RtlRuntimeProvision | None:
         runtime = typed_native.RtlExternalRuntime(files[0], files[1:])
         runtime_set_hash = hashlib.sha256((module_hash + "\n" +
             "\n".join(f"{name}:{digest}" for name, digest in sorted(hashes.items()))).encode("ascii")).hexdigest()
-        return RtlRuntimeProvision(typed_native, runtime, module_hash, runtime_set_hash)
+        return RtlRuntimeProvision(typed_native, runtime, module_hash, runtime_set_hash, declared_gain)
     except (OSError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
         return None
 
@@ -191,6 +207,19 @@ class RtlCapabilityProvider:
         self._revision += 1
         self._route = RtlSessionRouteAssurance(observed.manufacturer, observed.product,
             observed.serial, observed.tuner_type, self._revision, True, provision.runtime_set_sha256)
+        gain_version = getattr(provision.native, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION", None)
+        if provision.manual_gain_contract_version == 1 and type(gain_version) is int and gain_version == 1:
+            # Optional bad/absent manual capability must preserve the Auto lane.
+            values = getattr(observed, "tuner_gains_tenth_db", ())
+            gains = tuple(values) if type(values) in (list, tuple) and len(values) <= 256 else ()
+            if observed.tuner_type == 4:
+                gains = ()  # FC2580 sentinel is not manual-gain capability.
+            try:
+                self._route = RtlSessionRouteAssurance(observed.manufacturer, observed.product,
+                    observed.serial, observed.tuner_type, self._revision, True,
+                    provision.runtime_set_sha256, 1, gains)
+            except ValueError:
+                pass  # base selected route is valid; no manual table admitted
         return self._inventory()
 
     def provision_for(self, binding: DeviceCapabilityBinding) -> RtlRuntimeProvision:

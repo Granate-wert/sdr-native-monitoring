@@ -161,6 +161,11 @@ def admit_source_request(
             request.__post_init__()
         except (TypeError, ValueError):
             return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
+        if request.manual_tuner_gain_tenth_db is not None:
+            if not route.manual_gain_available:
+                return SourceRequestAdmission(SourceRequestAdmissionReason.CAPABILITY_UNVERIFIED)
+            if request.manual_tuner_gain_tenth_db not in route.tuner_gains_tenth_db:
+                return SourceRequestAdmission(SourceRequestAdmissionReason.REQUEST_RANGE)
         # No stable serial/calibration or tuner-specific RF range is inferred.
         # The native owner must recheck one current route, tuner mode and the
         # exact center/Fs setters' readbacks before admitting any IQ callback.

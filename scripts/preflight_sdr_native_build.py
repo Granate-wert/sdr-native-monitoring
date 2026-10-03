@@ -211,6 +211,11 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
                 raise ContractSurfaceError("RTL staging requires control contract version1")
         elif "rtl_control_contract_version" in manifest:
             raise ContractSurfaceError("RTL disabled staging must not declare a control contract")
+    if "rtl_tuner_gain_contract_version" in manifest:
+        gain_version = manifest["rtl_tuner_gain_contract_version"]
+        if (manifest.get("rtl_official_compiled") is not True
+                or type(gain_version) is not int or gain_version != 1):
+            raise ContractSurfaceError("RTL gain staging requires compiled=true and exact version1")
     if "hackrf_official_compiled" in manifest:
         if manifest["hackrf_official_compiled"] is not True:
             raise ContractSurfaceError("explicit HackRF staging manifest must declare compiled=true")
@@ -318,7 +323,14 @@ def validate_rtl_factory(module: object, manifest: Mapping[str, object]) -> None
             raise ContractSurfaceError("native RTL control contract does not match its staging manifest")
         if not all(callable(getattr(module, name, None)) for name in methods):
             raise ContractSurfaceError("native RTL control surface is incomplete")
+        gain_version = getattr(module, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION", missing)
+        declared_gain = manifest.get("rtl_tuner_gain_contract_version", missing)
+        if (gain_version is not missing or declared_gain is not missing) and (
+                type(gain_version) is not int or gain_version != 1
+                or type(declared_gain) is not int or declared_gain != gain_version):
+            raise ContractSurfaceError("native RTL gain contract does not match its staging manifest")
     elif (observed_version is not missing or declared_version is not missing
+          or hasattr(module, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION") or "rtl_tuner_gain_contract_version" in manifest
           or any(hasattr(module, name) for name in methods)):
         raise ContractSurfaceError("native RTL control surface is present in disabled staging")
 

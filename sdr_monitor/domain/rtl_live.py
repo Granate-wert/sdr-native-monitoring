@@ -20,7 +20,7 @@ RTL_FFT_CHOICES = frozenset((1024, 2048, 4096))
 
 @dataclass(frozen=True, slots=True)
 class RtlLiveRequest:
-    """One RX1 CPU-DSP profile, with automatic tuner gain and no bias control.
+    """One RX1 CPU-DSP profile, automatic gain by default and no bias control.
 
     Automatic gain avoids pretending that the tuner-specific gain table or
     gain readback is known before a selected runtime probe. Bias-tee state is
@@ -40,8 +40,13 @@ class RtlLiveRequest:
     presentation_capacity: int = 4
     configuration_generation: int = 1
     source_id: SourceId = SourceId("native.rtl_sdr.live")
+    # Exact selected-tuner table entry, not a continuous gain range/RF readback.
+    manual_tuner_gain_tenth_db: int | None = None
 
     def __post_init__(self) -> None:
+        gain = self.manual_tuner_gain_tenth_db
+        if gain is not None and (type(gain) is not int or not -1000 <= gain <= 1000):
+            raise ValueError("RTL manual gain must be a bounded integer in tenths of dB")
         if type(self.center_frequency_hz) is not int or not 1 <= self.center_frequency_hz <= 4_294_967_295:
             raise ValueError("RTL center must fit the vendor uint32 Hz control")
         if type(self.sample_rate_hz) is not int or self.sample_rate_hz not in RTL_RATE_CHOICES_HZ:
@@ -87,6 +92,10 @@ class RtlLiveRequest:
         if self.dsp_output_capacity is not None:
             return self.dsp_output_capacity
         return (16_384 + self.hop_size - 1) // self.hop_size + 2
+
+    @property
+    def tuner_gain_mode(self) -> str:
+        return "automatic" if self.manual_tuner_gain_tenth_db is None else "manual"
 
 
 @dataclass(frozen=True, slots=True)

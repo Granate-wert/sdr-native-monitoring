@@ -89,8 +89,9 @@ class RtlAnalyzerService:
 
     def native_control_available(self) -> bool:
         quarantined = getattr(self._native, "rtl_process_is_quarantined", None)
+        version = getattr(self._native, "RTLSDR_RX_CONTROL_CONTRACT_VERSION", None)
         return bool(getattr(self._native, "RTLSDR_OFFICIAL_COMPILED", None) is True
-                    and getattr(self._native, "RTLSDR_RX_CONTROL_CONTRACT_VERSION", None) == 1
+                    and type(version) is int and version == 1
                     and callable(quarantined) and quarantined() is False)
 
     def is_running(self) -> bool:
@@ -102,8 +103,9 @@ class RtlAnalyzerService:
         return [snapshot] if snapshot.spectrum is not None or snapshot.error is not None else []
 
     def _admit(self, request: RtlLiveRequest) -> RtlRuntimeProvision:
+        control_version = getattr(self._native, "RTLSDR_RX_CONTROL_CONTRACT_VERSION", None)
         if (getattr(self._native, "RTLSDR_OFFICIAL_COMPILED", None) is not True
-                or getattr(self._native, "RTLSDR_RX_CONTROL_CONTRACT_VERSION", None) != 1):
+                or type(control_version) is not int or control_version != 1):
             raise LiveAdmissionRejected("RTL native control protocol is unavailable")
         selection = self._selection
         if selection is None or selection.selected is None or selection.release_pending:
@@ -118,7 +120,12 @@ class RtlAnalyzerService:
         if not admitted.accepted:
             raise LiveAdmissionRejected(f"RTL RTBW refused: {admitted.reason.value if admitted.reason else 'unknown'}")
         assert choice.runtime is not None
-        return self._provision_for(choice.binding, choice.runtime)
+        provision = self._provision_for(choice.binding, choice.runtime)
+        if request.manual_tuner_gain_tenth_db is not None:
+            version = getattr(provision.native, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION", None)
+            if (provision.manual_gain_contract_version != 1 or type(version) is not int or version != 1):
+                raise LiveAdmissionRejected("RTL manual gain native bridge is unavailable")
+        return provision
 
     def preflight(self, request: RtlLiveRequest) -> None:
         if not isinstance(request, RtlLiveRequest):
@@ -145,7 +152,8 @@ class RtlAnalyzerService:
                     rtl_request=request, state=LiveSessionState.CONNECTED, unit="dBFS/bin",
                     error=None, error_kind=None, spectrum=None, persistence=None,
                     performance=LivePerformance(), active_source_id=None,
-                    active_config_generation=None, acquisition_epoch=None, clock_domain=None)
+                    active_config_generation=None, acquisition_epoch=None, clock_domain=None,
+                    rtl_cached_tuner_gain_tenth_db=None)
                 return self._snapshot
 
     def _error(self, message: str) -> LiveSnapshot:
@@ -177,25 +185,35 @@ class RtlAnalyzerService:
                 self._snapshot = replace(current, generation=ConfigurationGeneration(self._generation),
                     rtl_request=request, state=LiveSessionState.STARTING, stop_required=True,
                     spectrum=None, persistence=None, performance=LivePerformance(),
+                    rtl_cached_tuner_gain_tenth_db=None,
                     error=None, error_kind=None, active_source_id=request.source_id,
                     active_config_generation=request.configuration_generation)
             try:
                 native = provision.native
                 selected = native.RtlSessionRoute(route.manufacturer, route.product, route.serial,
                     route.tuner_type, route.observation_revision)
+                gain_arguments: dict[str, object] = {}
+                if request.manual_tuner_gain_tenth_db is not None:
+                    gain_arguments["manual_tuner_gain_tenth_db"] = request.manual_tuner_gain_tenth_db
                 control = native.create_rtl_runtime_control(provision.runtime,
                     request.center_frequency_hz, request.sample_rate_hz,
                     request.fft_size, request.hop_size, request.slot_count,
                     request.ready_capacity, request.resolved_dsp_output_capacity,
                     request.presentation_capacity, request.configuration_generation,
                     str(request.source_id), native.DetectorType.PEAK if request.detector == "peak"
-                    else native.DetectorType.SAMPLE, "", selected)
+                    else native.DetectorType.SAMPLE, "", selected, **gain_arguments)
                 self._control = control  # retain before any readback/poller effect
                 readback = control.readback()
                 if (type(readback.session_epoch) is not int or readback.session_epoch <= 0
                         or readback.actual_center_hz != request.center_frequency_hz
                         or readback.actual_sample_rate_hz != request.sample_rate_hz):
                     return self._error("RTL actual center/Fs readback differs; explicit Stop required")
+                cached_gain = None
+                if request.manual_tuner_gain_tenth_db is not None:
+                    cached_gain = getattr(readback, "cached_tuner_gain_tenth_db", None)
+                    if (getattr(readback, "tuner_gain_readback_known", None) is not True
+                            or type(cached_gain) is not int or cached_gain != request.manual_tuner_gain_tenth_db):
+                        return self._error("RTL SDK cached gain differs; explicit Stop required")
                 self._last_sequence = -1
                 self._bridge_polled = self._bridge_coalesced = self._bridge_published = 0
                 self._first_fault = None
@@ -203,6 +221,7 @@ class RtlAnalyzerService:
                 with self._lock:
                     self._snapshot = replace(self._snapshot, state=LiveSessionState.RUNNING,
                         acquisition_epoch=readback.session_epoch, clock_domain="host_steady_ns",
+                        rtl_cached_tuner_gain_tenth_db=cached_gain,
                         session_id=SessionId(f"rtl-session-{readback.session_epoch}"))
                 self._poller = threading.Thread(target=self._poll, name="sdr-rtl-analyzer", daemon=False)
                 self._poller.start()

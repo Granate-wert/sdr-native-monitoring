@@ -375,6 +375,8 @@ class RtlSessionRouteAssurance:
     observation_revision: int
     normal_tuner_path: bool
     runtime_set_sha256: str
+    manual_gain_contract_version: int | None = None
+    tuner_gains_tenth_db: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("manufacturer", "product", "serial"):
@@ -389,6 +391,18 @@ class RtlSessionRouteAssurance:
             raise ValueError("RTL direct/offset sampling path is not qualified")
         if not re.fullmatch(r"[0-9a-f]{64}", self.runtime_set_sha256):
             raise ValueError("RTL selected route needs the exact provisioned runtime digest")
+        version, gains = self.manual_gain_contract_version, self.tuner_gains_tenth_db
+        if version is not None and (type(version) is not int or version != 1):
+            raise ValueError("RTL manual gain requires observed contract version1")
+        if (type(gains) is not tuple or len(gains) > 256
+                or any(type(value) is not int or not -1000 <= value <= 1000 for value in gains)
+                or any(a >= b for a, b in zip(gains, gains[1:]))
+                or gains and (version != 1 or self.tuner_type == 4)):
+            raise ValueError("RTL manual gain table requires discrete supported selected-tuner values")
+
+    @property
+    def manual_gain_available(self) -> bool:
+        return self.manual_gain_contract_version == 1 and bool(self.tuner_gains_tenth_db)
 
 
 @dataclass(frozen=True, slots=True)

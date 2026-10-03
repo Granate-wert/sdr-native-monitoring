@@ -145,7 +145,7 @@ class RtlCompiledBindingTests(unittest.TestCase):
         phase("service_discover")
         module_hash = hashlib.sha256(module_path.read_bytes()).hexdigest()
         runtime_hash = hashlib.sha256((module_hash + digest).encode("ascii")).hexdigest()
-        provider = RtlCapabilityProvider(RtlRuntimeProvision(native, runtime, module_hash, runtime_hash))
+        provider = RtlCapabilityProvider(RtlRuntimeProvision(native, runtime, module_hash, runtime_hash, 1))
         provider.discover(startup_only=False)
         inventory = provider.observe_source(RTL_SOURCE_ID)
         binding = inventory.binding_for_source(RTL_SOURCE_ID)
@@ -191,6 +191,51 @@ class RtlCompiledBindingTests(unittest.TestCase):
             self.assertFalse(exclusion.claimed)
             self.assertFalse(native.rtl_process_is_quarantined())
             phase("service_complete")
+
+        # Full typed product path over the compiled C ABI: manual zero is not
+        # Auto; restaging Auto clears the previous cached manual setting.
+        assert binding.rtl_session_route is not None
+        self.assertEqual(binding.rtl_session_route.tuner_gains_tenth_db, (-99, 0, 144, 496))
+        for gain in (0, 144, None):
+            phase(f"product_gain_{gain}")
+            gain_request = RtlLiveRequest(150_000_000, 2_400_000,
+                detector="peak", source_id=RTL_SOURCE_ID, manual_tuner_gain_tenth_db=gain)
+            stopped_snapshot = service.current_snapshot()
+            staged = service.stage(RtlConfigurationPatch(gain_request, selection.revision,
+                stopped_snapshot.generation))
+            self.assertFalse(exclusion.claimed)
+            self.assertIsNone(staged.rtl_cached_tuner_gain_tenth_db)
+            self.assertIsNone(staged.spectrum)
+            try:
+                started = service.start()
+                self.assertIs(started.state, LiveSessionState.RUNNING,
+                    f"compiled mock gain first fault: {service.first_fault_diagnostic()!r}")
+                self.assertEqual(started.rtl_cached_tuner_gain_tenth_db, gain)
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    current = service.current_snapshot()
+                    if current.spectrum is not None or current.error is not None:
+                        break
+                    time.sleep(0.002)
+                current = service.current_snapshot()
+                self.assertIsNone(current.error)
+                self.assertIsNotNone(current.spectrum)
+                assert current.spectrum is not None
+                self.assertEqual(current.spectrum.acquisition_epoch, started.acquisition_epoch)
+                self.assertEqual(current.rtl_request, started.rtl_request)
+                assert current.rtl_request is not None
+                self.assertEqual(current.rtl_request.manual_tuner_gain_tenth_db, gain)
+                self.assertEqual(current.spectrum.config_generation,
+                    current.rtl_request.configuration_generation)
+                self.assertEqual(current.rtl_cached_tuner_gain_tenth_db, gain)
+                self.assertTrue(exclusion.claimed)
+            finally:
+                released = service.stop()
+                self.assertIs(released.state, LiveSessionState.CONNECTED)
+                self.assertFalse(released.stop_required)
+                self.assertFalse(exclusion.claimed)
+                self.assertFalse(native.rtl_process_is_quarantined())
+        phase("product_gain_complete")
 
 
 if __name__ == "__main__":
