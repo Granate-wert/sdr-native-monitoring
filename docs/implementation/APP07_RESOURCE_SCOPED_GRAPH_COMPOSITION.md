@@ -3052,3 +3052,53 @@ APP07 PARTIAL/full APP00–14 ACTIVE; expired APP05 timer not restarted. Histori
 da3df7b native/EXE/physical proofs remain that source, never this later source/doc.
 Current/static EXE unchanged, main dirty LegacyDFL preserved/no product sync.
 Only public contract mirrored/published; private state/evidence remain local.
+
+## 2026-10-03: M2 paired fixed-RTBW UI V2 workflow — source95875f2
+
+Source `95875f2374b5bc061ca40e8d8a25c6cc46b3a6fa` enables typed RX1/RX2
+assignment beside Source in the existing seven-column V2 pane editor. Observed
+digital scan-pair count is only advisory: unknown/single topology disables RX2;
+unsupported retained intent remains explicit/correctable, not silently changed.
+Fresh Stage and all-receipt before-RF Apply remain authoritative. Chip names do
+not prove a second RF path. Explicit Empty clears its draft; locale/passive
+refresh preserve typed intent. There is no per-pane BOTH or paired Sweep fallback.
+
+Preview shows typed pane-to-chain assignments, one shared capture/common requested
+LO/Fs/filter/gain/FFT/hop/window/averaging, shared history impact and unchanged
+independent peers. Requested values are not readback; actual values remain unknown.
+All21 typed refusal codes have bounded EN/RU text; cleanup has actionable priority
+and retains the original refusal. No raw SDK string parsing or rich-text rendering.
+
+Initial paired Start is explicit and defaults to Cancel. Start All obtains paired
+impact confirmation BEFORE any resource enqueue; Cancel leaves pair and peers
+unchanged. Postmodal terminal/RF/startable-set guards bar stale authorization.
+Single shared RX is not mislabeled dual pair. Stopped Apply still arms only; native
+ownership/RF/DSP/Fs/FFT/cadence/quality/epoch/gap/budgets/recording policy unchanged.
+
+Dedicated gpt-6-sol/high UI writer and distinct independent Sol R0/R1 reviewer
+completed; root verified exact six-file R1 patch SHA256
+`73dfee7236e4a2f689759c832b765cad9a6060ccd42ea29e2c814c5f1ada126d`.
+R0 minor RU unit debt was corrected and both locales/unknown tested. Final root
+integrated119 tests PASS33.121s; Ruff6/compile6/scopedmypy3silent/diff PASS.
+Initial mypy shadow errors and incomplete RTL mock plan were corrected; product
+required groups contract remains strict. Not whole-tree mypy/full-regression PASS.
+
+Old da3 native standalone Stage attempt failed5 during DLL load BEFORE Stage/RX.
+An explicit hash-admitted prior3DLL preload diagnostic then passed unchanged5case
+bodies7.554s with Mock IIO ONLY. Original failure and isolated5skip are retained:
+this is not a vanilla suite, product-loader, new native or package fix.
+
+Separate QA-only source`adfea0c2ee005ea9a42a06d6349456cd51b72c8b` corrects baseline
+presenter tests: shutdown retry is a second Stop attempt, not a duplicate error;
+Qt completion must be pumped instead of blocking the GUI test thread. Root34PASS.
+Separate existing close-failure/shut-down-executor cleanup defect was reproduced
+on MOCK and remains OPEN; no production lifecycle fix is claimed.
+
+M0/M1 complete; M2 source workflow complete but matching EXE/visible witness OPEN.
+Next qualify exact harness/build/source gate and matching V2 workflow, then M3 native
+paired retuning; M4 RTL production and M5..M12 HIL/fault/performance/soak/visual/
+release/closure remain OPEN. No new EXE/build/fullgate/physicalRX/dualRF/four-source/
+visible Windows/DPI/performance/soak/Linux/release acceptance or static promotion.
+APP07 PARTIAL/full APP00..14 goal ACTIVE; APP05 timer not restarted. Main dirty work
+preserved/no product sync. Private state/raw evidence local; public summary only.
+Configured model IDs recorded; runtime model attestation unavailable.
