@@ -20,6 +20,10 @@ from sdr_monitor.domain.receiver_topology import (
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
 from sdr_monitor.services.native_live import NativeLiveSessionService
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
+from sdr_monitor.services.rtl_analyzer import RtlAnalyzerService
+from sdr_monitor.services.rtl_capability_provider import (
+    RTL_SOURCE_ID, RtlCapabilityProvider, RtlRuntimeProvision,
+)
 from sdr_monitor.services.source_capability_catalog import SourceCapabilityCatalog
 from sdr_monitor.services.source_capability_providers import NativeLiveCapabilityProvider
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
@@ -27,6 +31,7 @@ from sdr_monitor.ui.v2_pane_graph_pool import PaneGraphPoolError, PaneProductGra
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 
 from tests.test_app07_ad936x_rtbw_pane_owner import _UnusedSweep
+from tests.test_app07_rtl_product_route import _Native as _MockRtlNative
 from tests.test_app07_shared_capture_schedule import pane
 from tests.ui_v2.test_app06_hackrf_common_analyzer import graph as hackrf_fixture
 from tests.ui_v2.test_app06_tinysa_common_analyzer import graph as tinysa_fixture
@@ -202,7 +207,64 @@ class PaneProductGraphPoolTests(unittest.TestCase):
         try:
             with patch.object(graph.live, "discover", wraps=graph.live.discover) as scan:
                 pool.stage("network", source_id, include_network=True)
-                scan.assert_called_once_with(startup=False)
+                scan.assert_called_once_with()
+        finally:
+            pool.close()
+
+    def test_local_stage_passes_explicit_local_scope_not_startup_filter(self) -> None:
+        _, graph = _ad_graph(uri="usb:pluto-app07-local")
+        original_discover = graph.live.discover
+        source_id = original_discover(startup=True)[0].device_id
+        pool = PaneProductGraphPool(lambda _resource: graph)
+        try:
+            # Keep the isolated UI writer independent of the root-owned backend
+            # extension while asserting the exact graph-pool call boundary.
+            with patch.object(graph.live, "discover",
+                              side_effect=lambda **kwargs: original_discover(startup=True)) as scan:
+                pool.stage("local", source_id)
+                scan.assert_called_once_with(local_only=True)
+        finally:
+            pool.close()
+
+    def test_local_stage_enumerates_mock_rtl_and_selects_current_route_without_rx(self) -> None:
+        class RtlGraphNative(_ObservedReadbackNative, _MockRtlNative):
+            DetectorType = _MockRtlNative.DetectorType
+
+            def __init__(self) -> None:
+                _ObservedReadbackNative.__init__(self, serial="mock-ad-unused",
+                                                 uri="usb:mock-ad-unused")
+                _MockRtlNative.__init__(self)
+                self.DetectorType = _MockRtlNative.DetectorType
+
+        native = RtlGraphNative()
+        live = NativeLiveSessionService(native)
+        runtime = object()
+        provider = RtlCapabilityProvider(RtlRuntimeProvision(
+            native, runtime, "b" * 64, "c" * 64))
+        catalog = SourceCapabilityCatalog((NativeLiveCapabilityProvider(live), provider),
+                                          control_transaction=live.capability_control_transaction)
+        rtl_owner = RtlAnalyzerService(native, live, catalog.snapshot, catalog.rtl_provision_for)
+        graph = build_v2_analyzer_application_graph(SimpleNamespace(
+            live_sdr=live, device_catalog=catalog, analyzer_rtl=rtl_owner))
+        pool = PaneProductGraphPool(lambda _resource: graph)
+        try:
+            with patch.object(live, "discover_startup_devices",
+                              wraps=live.discover_startup_devices) as usb, \
+                 patch.object(live, "discover_devices",
+                              side_effect=AssertionError("network discovery is not local")) as network, \
+                 patch.object(native, "rtl_enumerate_candidates",
+                              wraps=native.rtl_enumerate_candidates) as enumerate_rtl:
+                selected = pool.stage("rtl:physical", RTL_SOURCE_ID)
+            usb.assert_called_once_with()
+            network.assert_not_called()
+            enumerate_rtl.assert_called_once_with(runtime)
+            self.assertEqual(selected.device_id, RTL_SOURCE_ID)
+            self.assertIsNotNone(selected.binding.rtl_session_route)
+            selection = graph.live.current_source_selection()
+            self.assertIsNotNone(selection)
+            self.assertIs(selection.selected, selected)
+            self.assertEqual(native.create_calls, 0)
+            self.assertEqual(native.engines, [])
         finally:
             pool.close()
 

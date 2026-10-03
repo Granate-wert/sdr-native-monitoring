@@ -30,7 +30,7 @@ class LivePresenterPort(Protocol):
     busy_changed: _SignalPort
     render_ready: _SignalPort
 
-    def discover_devices(self, *, startup: bool = False) -> None: ...
+    def discover_devices(self, *, startup: bool = False, local_only: bool = False) -> None: ...
 
     def select_device(self, device_id: str) -> None: ...
 
@@ -172,7 +172,7 @@ class LiveViewModel:
         self._discovery_pending = True
         try:
             if local_only:
-                self._presenter.discover_devices(startup=True)
+                self._presenter.discover_devices(local_only=True)
             else:
                 self._presenter.discover_devices()
         except Exception as error:

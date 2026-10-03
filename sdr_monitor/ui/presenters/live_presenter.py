@@ -121,8 +121,13 @@ class LivePresenter(QObject):
         self._poll_timer.timeout.connect(self._poll_frames)
         self._start_polling()
 
-    def discover_devices(self, *, startup: bool = False) -> None:
-        self._submit(lambda: self._use_cases.discover(startup=startup), self.devices_discovered.emit)
+    def discover_devices(self, *, startup: bool = False, local_only: bool = False) -> None:
+        if startup and local_only:
+            raise ValueError("startup and local-only discovery cannot be combined")
+        if local_only:
+            self._submit(lambda: self._use_cases.discover(local_only=True), self.devices_discovered.emit)
+        else:
+            self._submit(lambda: self._use_cases.discover(startup=startup), self.devices_discovered.emit)
 
     def select_device(self, device_id: str) -> None:
         self._submit(lambda: self._use_cases.select_device(device_id), self._emit_snapshot)

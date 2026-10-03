@@ -95,7 +95,8 @@ class PaneProductGraphPool:
                 # retained owner and shutdown would steal that resource.
                 raise PaneGraphPoolError("parallel pane resources reused one application owner")
         try:
-            choices = graph.live.discover(startup=not include_network)
+            choices = (graph.live.discover() if include_network else
+                       graph.live.discover(local_only=True))
             if not any(isinstance(choice, AnalyzerSourceChoice) and choice.device_id == source_id
                        for choice in choices):
                 raise PaneGraphPoolError("pane source is absent from current local discovery")

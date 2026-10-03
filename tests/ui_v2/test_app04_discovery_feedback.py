@@ -18,6 +18,7 @@ from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, 
 from sdr_monitor.ui.v2.state.analyzer_readouts import analyzer_status
 from sdr_monitor.ui.v2.state.analyzer_status_cadence import AnalyzerStatusCadence
 from sdr_monitor.ui.v2.view_models.live_view_model import LiveViewModel
+from sdr_monitor.ui.presenters.live_presenter import LivePresenter
 from tests.ui_v2.test_app02_live_command_errors import Presenter
 
 
@@ -77,11 +78,38 @@ class DiscoveryFeedbackTests(unittest.TestCase):
         self.assertFalse(self.model.state.discovery_pending)
         self.assertFalse(self.model.state.busy)
 
-    def test_local_discovery_requests_startup_scope_only(self):
+    def test_local_discovery_requests_explicit_local_scope_and_busy_blocks_repeat(self):
         local = Mock()
         with patch.object(self.presenter, "discover_devices", local):
             self.assertTrue(self.model.discover_devices(local_only=True))
-        local.assert_called_once_with(startup=True)
+            self.presenter.busy_changed.emit(True)
+            self.assertFalse(self.model.discover_devices(local_only=True))
+        local.assert_called_once_with(local_only=True)
+
+    def test_presenter_routes_local_only_without_changing_startup_or_full_call(self):
+        service = Mock()
+        service.is_running.return_value = False
+        service.current_source_selection.return_value = None
+        service.discover.return_value = ()
+        presenter = LivePresenter(service)
+        try:
+            presenter.discover_devices(local_only=True)
+            presenter._executor.submit(lambda: None).result(timeout=3)
+            presenter.discover_devices(startup=True)
+            presenter._executor.submit(lambda: None).result(timeout=3)
+            presenter.discover_devices()
+            presenter._executor.submit(lambda: None).result(timeout=3)
+            self.assertEqual(service.discover.call_args_list,
+                             [unittest.mock.call(local_only=True),
+                              unittest.mock.call(startup=True),
+                              unittest.mock.call(startup=False)])
+            with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                presenter.discover_devices(startup=True, local_only=True)
+            self.assertEqual(service.discover.call_count, 3)
+        finally:
+            presenter.prepare_shutdown()
+            presenter.finish_shutdown()
+            presenter.deleteLater()
 
     def test_labels_and_urgent_cadence_preserve_retained_frame_and_error(self):
         base = replace(readouts_fixture.AnalyzerReadoutTests().state(), running=False)
@@ -133,7 +161,9 @@ class ProductDiscoveryFeedbackTests(unittest.TestCase):
         timer.setInterval(1)
         timer.timeout.connect(lambda: beats.append(1))
         try:
-            with patch.object(fixture.live, "discover_startup_devices", side_effect=discover), \
+            with patch.object(fixture.presenter, "discover_devices",
+                              wraps=fixture.presenter.discover_devices) as route, \
+                 patch.object(fixture.live, "discover_startup_devices", side_effect=discover), \
                  patch.object(fixture.live, "discover_devices", side_effect=AssertionError("unexpected IP scan")):
                 page = fixture.page
                 initial_height = page.status.height()
@@ -142,6 +172,7 @@ class ProductDiscoveryFeedbackTests(unittest.TestCase):
                 page.discover.click()
                 fixture.wait(lambda: entered.is_set() and len(beats) >= 3)
                 self.assertEqual(calls, ["discover"])
+                route.assert_called_once_with(local_only=True)
                 self.assertNotIn(text("analyzer.idle"), page.status.text())
                 self.assertIn(text("analyzer.discovering"), page.status.text())
                 self.assertFalse(page.discover.isEnabled())
@@ -171,12 +202,15 @@ class ProductDiscoveryFeedbackTests(unittest.TestCase):
         fixture.app = self.app
         fixture.setUp()
         try:
-            with patch.object(fixture.live, "discover_devices", return_value=()) as network, \
+            with patch.object(fixture.presenter, "discover_devices",
+                              wraps=fixture.presenter.discover_devices) as route, \
+                 patch.object(fixture.live, "discover_devices", return_value=()) as network, \
                  patch.object(fixture.live, "discover_startup_devices",
                               side_effect=AssertionError("unexpected USB-only scan")):
                 fixture.page.discover_network.click()
                 fixture.wait(lambda: network.call_count == 1 and not fixture.page.model.state.live.busy)
                 network.assert_called_once_with()
+                route.assert_called_once_with()
                 self.assertEqual(fixture.page.source.count(), 1)
                 self.assertIn(text("analyzer.discover.usb_ip.warning"), fixture.page.discover_network.toolTip())
         finally:
