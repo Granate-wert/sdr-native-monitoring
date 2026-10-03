@@ -198,12 +198,36 @@ class IndependentPaneFailureTests(unittest.TestCase):
                     old_activation = runtimes[resource].current_activation
                     peer_activations = {key: runtime.current_activation for key, runtime in runtimes.items()
                                         if key != resource}
-                    retained = product.ui.board.pane(number).last_bundle
+                    pane = product.ui.board.pane(number)
+                    before_stop = pane.last_bundle
+                    self.assertIsNotNone(before_stop)
+                    if number in (2, 3):
+                        # Both HackRF and tinySA continue publishing while
+                        # running. Exercise a real accepted same-run successor
+                        # before Stop owns this resource; neither producer is
+                        # required to freeze at the pre-click Qt snapshot.
+                        self.wait(lambda: pane.last_bundle is not before_stop
+                                  and pane.last_bundle is not None
+                                  and pane.last_bundle.spectrum.sequence > before_stop.spectrum.sequence)
+                        advanced = pane.last_bundle
+                        self.assertEqual(advanced.spectrum.source_id, before_stop.spectrum.source_id)
+                        self.assertEqual(advanced.acquisition_epoch, before_stop.acquisition_epoch)
+                        self.assertEqual(advanced.session_id, before_stop.session_id)
                     product.ui.board.select_slot(number)
                     product.ui.stop_selected.click()
                     self.wait(lambda: self.phases(product)[number - 1] is PanePumpPhase.STOPPED
                               and product.ui.start_selected.isEnabled())
-                    self.assertIs(product.ui.board.pane(number).last_bundle, retained)
+                    retained = pane.last_bundle  # Exact confirmed-Stop visual anchor.
+                    self.assertIsNotNone(retained)
+                    self.assertEqual(retained.spectrum.source_id, before_stop.spectrum.source_id)
+                    self.assertEqual(retained.acquisition_epoch, before_stop.acquisition_epoch)
+                    self.assertEqual(retained.session_id, before_stop.session_id)
+                    self.assertGreaterEqual(retained.spectrum.sequence, before_stop.spectrum.sequence)
+                    if number == 1:
+                        self.assertIs(retained, before_stop)
+                    product.ui.delivery.tick_once()
+                    self.app.processEvents()
+                    self.assertIs(pane.last_bundle, retained)  # No late repaint after Stop.
                     self.assertEqual(product.handle.session.retained_resource_count, 2)
                     self.assertIsNone(product.graphs[number - 1].live._pane_control_claim)
                     with self.assertRaisesRegex(RuntimeError, "not-started state"):
@@ -214,7 +238,14 @@ class IndependentPaneFailureTests(unittest.TestCase):
                     self.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.phases(product)))
                     if number == 1:
                         self.publish_ad(product, 1)  # Sequence resets: the new run must still display it.
-                    self.wait(lambda: product.ui.board.pane(number).last_bundle is not retained)
+                    self.wait(lambda: pane.last_bundle is not None and pane.last_bundle is not retained)
+                    restarted = pane.last_bundle
+                    self.assertIsNotNone(restarted)
+                    self.assertEqual(restarted.spectrum.source_id, retained.spectrum.source_id)
+                    if number == 2:
+                        self.assertIsNotNone(restarted.session_id)
+                        self.assertNotEqual(restarted.session_id, retained.session_id)
+                    self.assertGreater(restarted.acquisition_epoch, retained.acquisition_epoch)
                     self.assertIsNot(runtimes[resource].owner, old_owner)
                     self.assertGreater(runtimes[resource].current_activation.host_activation_serial,
                                        old_activation.host_activation_serial)

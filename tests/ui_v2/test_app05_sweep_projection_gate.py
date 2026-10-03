@@ -99,18 +99,39 @@ class SweepProjectionGateTests(unittest.TestCase):
         f.select_and_apply()
         f.page.mode.setCurrentIndex(f.page.mode.findData(AnalyzerMode.SWEEP))
         f.page.primary.click()
-        f.wait(lambda: not p.is_starting and p._poll_future is None)
-        self.port.work_active_changed.emit(True)
-        p._poll()
-        self.assertTrue(p._projection_poll_pending)
-        delivered = []
-        p.snapshot_ready.connect(delivered.append)
-        f.page.primary.click()
-        self.assertFalse(p._projection_poll_pending)
-        f.wait(p.can_close)
-        self.assertEqual(f.events, ["sweep-start", "sweep-stop"])
-        self.assertTrue(delivered)
-        self.assertEqual(delivered[-1].metrics.terminal_control_gaps, 1)
+        f.wait(lambda: not p.is_starting)
+        interval = p._timer.interval()
+        projected = Future()
+        value = request()
+        try:
+            # Start owns the ordinary cadence. Isolate the test timer only
+            # after Start, then let an already submitted poll/projection settle.
+            p._timer.start(100000)
+            f.wait(lambda: p._timer.isActive() and not p.is_starting and not p.is_stopping
+                   and p._poll_future is None and self.port._future is None
+                   and not p._projection_in_flight
+                   and not any(f.composition._projection_activity.values()))
+            self.assertTrue(projected.set_running_or_notify_cancel())
+            with patch.object(self.port, "_submit", return_value=projected):
+                self.port.offer(value)
+                self.port.request_commit()
+            self.assertIs(self.port._future, projected)
+            self.assertTrue(p._projection_in_flight)
+            p._poll()
+            self.assertTrue(p._projection_poll_pending)
+            delivered = []
+            p.snapshot_ready.connect(delivered.append)
+            f.page.primary.click()
+            self.assertFalse(p._projection_poll_pending)
+            f.wait(p.can_close)
+            self.assertEqual(f.events, ["sweep-start", "sweep-stop"])
+            self.assertTrue(delivered)
+            self.assertEqual(delivered[-1].metrics.terminal_control_gaps, 1)
+        finally:
+            if not projected.done():
+                projected.set_result(project_spectrum(value))
+            f.app.processEvents()
+            p._timer.setInterval(interval)
 
 
 if __name__ == "__main__":
