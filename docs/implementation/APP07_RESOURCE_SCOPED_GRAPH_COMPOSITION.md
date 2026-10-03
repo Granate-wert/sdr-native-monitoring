@@ -3551,3 +3551,53 @@ ending the scan with its valid acquired prefix and original cause. This is
 source/native qualification, not physical gain calibration or RF accuracy.
 The UI V2 paired Sweep plan compiler, matched EXE, visible Windows workflow,
 four-source HIL, performance/soak and release qualification remain separate.
+
+## APP-07 orchestration plan and V2 paired Sweep user workflow
+
+The full long-running APP-07 specification supplied on 2026-10-03 is adopted:
+resource architecture, paired user assignment/lifecycle/Sweep, RTL production,
+four physical sources, isolation, performance, soak, visible UI and release
+qualification. Repository state and indexed evidence, not conversation memory
+or illustrative PASS values, determine acceptance. The canonical acceptance
+layout is Pluto top-left, HackRF top-right, tinySA bottom-left and RTL-SDR
+bottom-right. This does not restrict production source assignment. Mock/replay,
+empty panes and duplicated streams do not satisfy the four-device gate.
+
+Runtime source dad2f2ec1ee14f9617d2208f4e6d3c3c6317cafd connects the UI V2
+paired Sweep editor to the SAME typed acquisition job/native owner. Explicit
+RX1/RX2 crops may differ or be disjoint: one common envelope and LO sequence
+covers both. Incompatible modes/Fs/FFT or observed tuning-range gaps refuse;
+the pair is never silently converted to two independent tuners/time slices.
+Stage validates current selected identity/topology without applying RF.
+Stopped Apply prepares the exact common profile; Start is separate.
+
+Both reduced producers reach pane preparation progressively, before a whole
+scan finishes. Typed paired Sweep metadata remains distinct from paired RTBW.
+Ordinary tuning and a new zero-gap line preserve histories; a new admitted
+attempt or observed shared input gap clears BOTH histories before fresh data.
+Older line/pre-gap sibling output refuses and independent peer history is
+outside that clear. These are source/mock guarantees, not paint-rate claims.
+
+Explicit stopped RF Apply also stages the shifted common profile under the
+SAME application/recording control transaction, without RX/context/restart.
+A non-confirming Apply latches the existing consistency fault and bars Start;
+routing is not claimed to roll back atomically. Explicit Stop/Close remain
+available. Preview reports requested common configuration and both crops;
+its reduced-memory estimate is ONE-chain, not the aggregate pair budget.
+Actual combined native/product reservations are checked before context open.
+
+Qualification for this source: 370 serial tests in 35 modules, zero skips,
+136.963 seconds; five actual compiled-mock user-flow tests passed separately.
+Ruff/compilation and scoped mypy passed; dependency-wide mypy still reported
+16 errors in four unchanged out-of-patch files, not a global type-check PASS.
+Distinct immutable source review found no scoped blocker. Frozen/committed
+patch SHA256 800792732c71134f7e532471c1258ed3a8edb559394474cc99c9b2b29cebdea6.
+
+The native module remains the earlier 4735406 build (SHA256
+8dabdb1d27a4e4568a5e0665ef431f34cc32190d10617bf226383705aa44f14f).
+No new EXE/physical dual-RX/Windows visual/HIL/performance/soak qualification
+is implied. APP-07/M3 remain IN_PROGRESS. Next is a matching diagnostic
+EXE/manifest and exact full-V2 gate, followed by admitted paired visible and
+independent-peer isolation checks, then RTL production and remaining HIL,
+fault, performance, stability and release gates. UI V2 only; dirty legacy
+checkout and current static EXE/firewall remain unchanged.
