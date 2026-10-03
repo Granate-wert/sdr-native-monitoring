@@ -16,12 +16,16 @@ from threading import Lock, RLock
 from time import monotonic
 from typing import Callable, ContextManager, Iterator, Mapping, Protocol
 
+import numpy as np
+
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
+from sdr_monitor.domain.sweep_progress import SweepProgressFrame
+from sdr_monitor.domain.paired_sweep import PairedSweepRunIdentity
 from sdr_monitor.domain.pane_scheduler import (
     CaptureJob, CaptureMeasurementMode, PaneControlGap, PaneControlGapReason, PaneCrop, PaneRevisitEstimate, PaneSchedule,
-    ResourcePaneSchedule, SpectrumTracePaneProfile,
+    ResourcePaneSchedule, SpectrumTracePaneProfile, Ad936xPairedSweepPaneProfile,
 )
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
@@ -62,6 +66,7 @@ class PaneCaptureAdmission:
     # The operational device route above is not necessarily a frame producer.
     # Paired native RX keeps its two caller-provided SourceDescriptors intact.
     endpoint_source_ids: tuple[tuple[str, str], ...] = ()
+    paired_sweep_run: PairedSweepRunIdentity | None = None
 
     def __post_init__(self) -> None:
         if not all(isinstance(value, str) and value for value in (self.capture_id, self.source_id, self.unit)):
@@ -80,7 +85,7 @@ class PaneCaptureAdmission:
                               for value in item) for item in bindings)
                 or tuple(item[0] for item in bindings) != endpoints
                 or len({item[1] for item in bindings}) != len(bindings)
-                or self.mode is not CaptureMeasurementMode.RTBW):
+                or (self.mode is not CaptureMeasurementMode.RTBW and self.paired_sweep_run is None)):
             raise ValueError("endpoint producer bindings require exact ordered RTBW endpoint/source identities")
         object.__setattr__(self, "endpoint_source_ids", bindings)
         if type(self.acquisition_epoch) is not int or self.acquisition_epoch < 0:
@@ -110,8 +115,21 @@ class PaneCaptureAdmission:
             raise ValueError("I/Q capture admission requires applied Fs/FFT/hop without trace identity")
         if self.mode is CaptureMeasurementMode.RTBW and (self.session_id is None or not self.session_id):
             raise ValueError("RTBW admission requires a producer session")
-        if self.mode is not CaptureMeasurementMode.RTBW and self.session_id is not None:
+        if self.mode is not CaptureMeasurementMode.RTBW and self.session_id is not None and self.paired_sweep_run is None:
             raise ValueError("Sweep admission cannot claim an RTBW session")
+        if self.paired_sweep_run is not None:
+            run = self.paired_sweep_run
+            if (not isinstance(run, PairedSweepRunIdentity)
+                    or self.mode is not CaptureMeasurementMode.SWEEP
+                    or self.session_id != run.request.pair.session_id
+                    or self.acquisition_epoch != run.acquisition_epoch
+                    or self.config_generation is not None or self.hop_size is not None
+                    or self.source_id != run.request.pair.device_id or self.unit != "dBFS/bin"
+                    or self.sample_rate_hz != run.request.pair.configuration.sample_rate_hz
+                    or self.fft_size != run.request.pair.configuration.fft_size
+                    or set(endpoints) != {run.request.pair.primary_source_id, run.request.pair.secondary_source_id}
+                    or bindings != tuple((item, item) for item in endpoints)):
+                raise ValueError("paired Sweep admission must retain BOTH exact producers and admitted run")
 
     def producer_source_id(self, endpoint_id: str) -> str:
         if endpoint_id not in self.receiver_endpoint_ids:
@@ -257,6 +275,9 @@ class _Runtime:
     last_admission_session_id: str | None = None
     new_epoch_required: bool = False
     rejected_publications: int = 0
+    last_paired_sweep_key: tuple[int, int, int, int] | None = None
+    last_paired_sweep_run: PairedSweepRunIdentity | None = None
+    last_pane_observation: dict[str, tuple[PairedSweepRunIdentity, tuple[int, ...]]] = field(default_factory=dict)
     last_stop_started_s: float | None = None
     pending_control_gap: PaneControlGap | None = None
     pending_control_started_s: float | None = None
@@ -324,6 +345,7 @@ class PaneResourceSession:
             if any(isinstance(job.profile, SpectrumTracePaneProfile) != trace_endpoint for job in planned.jobs):
                 raise PaneResourceError("instrument trace and I/Q receiver jobs cannot share an endpoint type")
             if (len(by_endpoint) > 1 and any(job.profile.measurement_mode is CaptureMeasurementMode.SWEEP
+                                             and not isinstance(job.profile, Ad936xPairedSweepPaneProfile)
                                              for job in planned.jobs)):
                 raise PaneResourceError("Sweep producer cannot identify two RX channels in one resource")
             if endpoints.intersection(by_endpoint):
@@ -335,7 +357,8 @@ class PaneResourceSession:
                 mapped = {endpoint_id: owner.receiver_identity(endpoint_id) for endpoint_id in by_endpoint}
             except Exception:
                 raise PaneResourceError("producer receiver identity could not be confirmed") from None
-            if (any(job.profile.measurement_mode is not CaptureMeasurementMode.RTBW for job in planned.jobs)
+            if (any(job.profile.measurement_mode is not CaptureMeasurementMode.RTBW
+                    and not isinstance(job.profile, Ad936xPairedSweepPaneProfile) for job in planned.jobs)
                     and any(value is not None for value in mapped.values())):
                 raise PaneResourceError("Sweep publication has no producer RX identity")
             known = [value for value in mapped.values() if value is not None]
@@ -631,6 +654,7 @@ class PaneResourceSession:
                 runtime.new_epoch_required = runtime.last_admission_epoch is not None
                 for pane_id, pane_resource in self._pane_resources.items():
                     if pane_resource == resource_id:
+                        runtime.last_pane_observation.pop(pane_id, None)
                         self._pane_last_received.pop(pane_id, None)
                         self._pane_last_visit_activation.pop(pane_id, None)
                         self._pane_last_visit_received.pop(pane_id, None)
@@ -755,6 +779,11 @@ class PaneResourceSession:
     def accept_frame(self, activation: PaneActivation, endpoint_id: str,
                      bundle: AnalyzerFrameBundle) -> tuple[PaneDelivery, ...]:
         """Only the exact current activation may route a producer publication."""
+        return self._accept_frame(activation, endpoint_id, bundle)
+
+    def _accept_frame(self, activation: PaneActivation, endpoint_id: str,
+                      bundle: AnalyzerFrameBundle, *, prepare_pair: bool = False,
+                      received_s: float | None = None) -> tuple[PaneDelivery, ...]:
         if not isinstance(activation, PaneActivation):
             raise PaneResourceError("receiver publication requires its confirmed activation")
         resource_id = activation.physical_stream_resource_id
@@ -766,6 +795,9 @@ class PaneResourceSession:
             endpoint = self._endpoints.get(endpoint_id)
             identity = getattr(bundle, "identity", None)
             if (not runtime.active or runtime.stop_required or job is None or admission is None
+                    or (admission.paired_sweep_run is not None and not prepare_pair)
+                    or (isinstance(bundle, AnalyzerFrameBundle) and bundle.paired_sweep is not None
+                        and admission.paired_sweep_run is None)
                     or runtime.current_activation is not activation
                     or job.capture_id != capture_id or admission.capture_id != capture_id
                     or endpoint is None or endpoint_id not in job.receiver_endpoint_ids
@@ -820,35 +852,118 @@ class PaneResourceSession:
                                      for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)):
                 runtime.rejected_publications += 1
                 return ()
+            now = self._clock_sample_s() if received_s is None else received_s
+            if now is None:
+                runtime.rejected_publications += 1
+                return ()
+            deliveries = tuple(PaneDelivery(resource_id, capture_id, endpoint_id,
+                                           runtime.activation_serial, crop, bundle, now, runtime.run_serial)
+                               for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)
+            if not prepare_pair:
+                self._commit_deliveries(runtime, activation, admission, deliveries, now)
+            return deliveries
+
+    def _commit_deliveries(self, runtime: _Runtime, activation: PaneActivation,
+                          admission: PaneCaptureAdmission, deliveries: tuple[PaneDelivery, ...],
+                          now: float) -> None:
+        runtime.last_epoch = admission.acquisition_epoch
+        runtime.last_session_id = admission.session_id
+        runtime.new_epoch_required = False
+        for delivery in deliveries:
+            if admission.paired_sweep_run is not None:
+                frame = delivery.bundle.spectrum
+                assert isinstance(frame, (SweepLineFrame, SweepProgressFrame))
+                begin = int(np.searchsorted(frame.frequencies_hz, delivery.crop.start_hz))
+                end = int(np.searchsorted(frame.frequencies_hz, delivery.crop.stop_hz, side="right"))
+                pair = delivery.bundle.paired_sweep
+                assert pair is not None
+                # Bin ownership names the FIRST contributor in an overlap, not
+                # the latest observed acquisition. Freshness is a host-observed
+                # visit to a measured crop, not a per-bin RF timestamp or proof
+                # that every value changed. Find the newest observed usable
+                # window containing a measured target bin in this crop.
+                latest_segment = -1
+                for segment in range(len(pair.steps) - 1, -1, -1):
+                    identity = pair.steps[segment].primary.identity
+                    step_begin = max(begin, int(np.searchsorted(frame.frequencies_hz, identity.usable_start_hz)))
+                    step_end = min(end, int(np.searchsorted(frame.frequencies_hz, identity.usable_stop_hz, side="right")))
+                    if any(bool(np.any(frame.source_segment_indices[offset:min(offset + 65536, step_end)] >= 0))
+                           for offset in range(step_begin, step_end, 65536)):
+                        latest_segment = segment
+                        break
+                if latest_segment < 0:
+                    # Still deliver explicit pending/gap masks to the display,
+                    # but never count unmeasured bins as a fresh acquired visit.
+                    continue
+                step = pair.steps[latest_segment]
+                observation = step.primary if delivery.bundle.receiver_id == "RX1" else step.secondary
+                identity = observation.identity
+                receipt = (identity.sweep_epoch, identity.line_sequence, latest_segment,
+                           identity.config_generation, identity.synchronization_epoch,
+                           observation.frame_sequence, observation.first_sample_index)
+                previous_receipt = runtime.last_pane_observation.get(delivery.pane_id)
+                if (previous_receipt is not None and previous_receipt[0] is pair.run
+                        and previous_receipt[1] == receipt):
+                    continue  # cumulative redraw, not newly acquired data for this crop
+                runtime.last_pane_observation[delivery.pane_id] = (pair.run, receipt)
+            pane_id = delivery.pane_id
+            previous_frame = self._pane_last_received.get(pane_id)
+            if previous_frame is not None and now < previous_frame:
+                self._pane_last_visit_activation.pop(pane_id, None)
+                self._pane_last_visit_received.pop(pane_id, None)
+                self._pane_last_revisit_s.pop(pane_id, None)
+            if self._pane_last_visit_activation.get(pane_id) is not activation:
+                previous_visit = self._pane_last_visit_received.get(pane_id)
+                if previous_visit is not None and now > previous_visit:
+                    self._pane_last_revisit_s[pane_id] = now - previous_visit
+                else:
+                    self._pane_last_revisit_s.pop(pane_id, None)
+                self._pane_last_visit_activation[pane_id] = activation
+                self._pane_last_visit_received[pane_id] = now
+            self._pane_last_received[pane_id] = now
+
+    def accept_paired_sweep(self, activation: PaneActivation,
+                            publications: tuple[tuple[str, AnalyzerFrameBundle], ...]) -> tuple[PaneDelivery, ...]:
+        """Validate BOTH against the same live receipt before committing any delivery."""
+        if not isinstance(activation, PaneActivation):
+            raise PaneResourceError("paired Sweep requires an exact current activation")
+        with self._state_lock:
+            runtime = self._required_runtime(activation.physical_stream_resource_id)
+            admission = runtime.admission
+            if (admission is None or admission.paired_sweep_run is None
+                    or type(publications) is not tuple or len(publications) != 2
+                    or any(not isinstance(item, tuple) or len(item) != 2
+                           or not isinstance(item[1], AnalyzerFrameBundle) for item in publications)):
+                runtime.rejected_publications += 1
+                return ()
+            run = admission.paired_sweep_run
+            pair = publications[0][1].paired_sweep
+            if (pair is None or pair.run is not run
+                    or publications[1][1].paired_sweep is not pair
+                    or tuple(item[0] for item in publications) != (
+                        run.request.pair.primary_source_id, run.request.pair.secondary_source_id)):
+                runtime.rejected_publications += 1
+                return ()
+            key = (run.acquisition_epoch, pair.primary.epoch, pair.primary.sequence,
+                   pair.primary.revision if isinstance(pair.primary, SweepProgressFrame) else len(pair.steps) + 1)
+            prior = runtime.last_paired_sweep_key
+            if (runtime.last_paired_sweep_run is run and prior is not None
+                    and (key <= prior or key[1] != prior[1])):
+                runtime.rejected_publications += 1
+                return ()
             now = self._clock_sample_s()
             if now is None:
                 runtime.rejected_publications += 1
                 return ()
-            runtime.last_epoch = admission.acquisition_epoch
-            runtime.last_session_id = identity.session_id
-            runtime.new_epoch_required = False
-            deliveries = tuple(PaneDelivery(resource_id, capture_id, endpoint_id,
-                                           runtime.activation_serial, crop, bundle, now, runtime.run_serial)
-                               for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)
-            for delivery in deliveries:
-                pane_id = delivery.pane_id
-                previous_frame = self._pane_last_received.get(pane_id)
-                if previous_frame is not None and now < previous_frame:
-                    # A non-monotonic injected/host clock invalidates the old
-                    # interval; never publish a negative or cross-clock rate.
-                    self._pane_last_visit_activation.pop(pane_id, None)
-                    self._pane_last_visit_received.pop(pane_id, None)
-                    self._pane_last_revisit_s.pop(pane_id, None)
-                if self._pane_last_visit_activation.get(pane_id) is not activation:
-                    previous_visit = self._pane_last_visit_received.get(pane_id)
-                    if previous_visit is not None and now > previous_visit:
-                        self._pane_last_revisit_s[pane_id] = now - previous_visit
-                    else:
-                        self._pane_last_revisit_s.pop(pane_id, None)
-                    self._pane_last_visit_activation[pane_id] = activation
-                    self._pane_last_visit_received[pane_id] = now
-                self._pane_last_received[pane_id] = now
-            return deliveries
+            prepared = tuple(self._accept_frame(activation, endpoint, bundle,
+                prepare_pair=True, received_s=now) for endpoint, bundle in publications)
+            if any(not items for items in prepared):
+                return ()
+            delivered = tuple(item for items in prepared for item in items)
+            self._commit_deliveries(runtime, activation, admission, delivered, now)
+            runtime.last_paired_sweep_key = key
+            runtime.last_paired_sweep_run = run
+            return delivered
 
     def poll_resource(self, resource_id: str) -> tuple[PaneDelivery, ...]:
         """Drain one already-owned producer on a worker, bound to its token.
@@ -885,6 +1000,13 @@ class PaneResourceSession:
                                 if failure_stage is PaneFailureStage.PUBLICATION_VALIDATION
                                 else PaneFailureReason.OPERATION_FAILED))) from None
             delivered: list[PaneDelivery] = []
+            if runtime.admission is not None and runtime.admission.paired_sweep_run is not None:
+                if len(publications) % 2:
+                    runtime.rejected_publications += 1
+                    return ()
+                for index in range(0, len(publications), 2):
+                    delivered.extend(self.accept_paired_sweep(activation, publications[index:index + 2]))
+                return tuple(delivered)
             for endpoint_id, bundle in publications:
                 delivered.extend(self.accept_frame(activation, endpoint_id, bundle))
             return tuple(delivered)
@@ -1048,6 +1170,11 @@ class PaneResourceSession:
                 or admission.receiver_endpoint_ids != job.receiver_endpoint_ids
                 or admission.mode is not job.profile.measurement_mode
                 or admission.unit != job.profile.unit
+                or (isinstance(job.profile, Ad936xPairedSweepPaneProfile)
+                    and (admission.paired_sweep_run is None
+                         or admission.paired_sweep_run.request is not job.profile.paired_request))
+                or (not isinstance(job.profile, Ad936xPairedSweepPaneProfile)
+                    and admission.paired_sweep_run is not None)
                 or (runtime.new_epoch_required and admission.session_id == runtime.last_admission_session_id
                     and runtime.last_admission_epoch is not None
                     and admission.acquisition_epoch <= runtime.last_admission_epoch)

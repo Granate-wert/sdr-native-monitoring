@@ -54,9 +54,11 @@ class NativeContinuousSweepPlanFactory:
         )
 
     @classmethod
-    def from_paired_application(cls, application: Any, request: PairedSweepRequest):
+    def from_paired_application(cls, application: Any, request: PairedSweepRequest, *,
+                                control_claim: object | None = None):
         """Actual selected application/native authority, not a standalone lease."""
-        lease = application.acquire_paired_sweep_lease(request)
+        lease = (application.acquire_paired_sweep_lease(request) if control_claim is None else
+                 application.acquire_paired_sweep_lease(request, control_claim=control_claim))
         if (lease.paired_request is not request or lease.paired_configuration is None
                 or lease.control_transaction is None or lease.construct_owner is None
                 or lease.cleanup_transaction is None or lease.allocate_paired_run is None):

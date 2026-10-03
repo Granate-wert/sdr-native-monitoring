@@ -3472,3 +3472,27 @@ the common CaptureJob/activation must still match the exact admitted run and
 atomically validate BOTH chains. That adapter/atomic delivery and remaining
 readback/terminal semantics remain OPEN; existing paired Sweep pane refusals are
 NOT lifted by the pure Analyzer conversion. No UI edit or physical claim.
+
+## M3 typed paired Sweep CaptureJob backend
+
+`Ad936xPairedSweepPaneProfile` retains one exact paired request and full common
+tuner plan. Differently cropped pane ranges never become two independent LO
+plans. A paired job requires BOTH typed producers and a crop for each.
+`Ad936xPairedSweepPaneOwner` is an inert adapter over the SAME selected Live
+application, lease and registered coordinator. Its factory borrows the exact
+pane control claim only from inside that owner's existing transaction; a token
+outside the transaction is insufficient. Native close must succeed before
+release; failed cleanup retains the factory/claim for explicit Stop retry.
+
+An owner-issued run binds `PaneCaptureAdmission`; `accept_paired_sweep` checks
+the same run object and current activation and prepares BOTH views before
+committing any delivery or freshness state. Lone, mixed, repeated or stale
+pairs cannot partially refresh one pane. Progress/terminal ordering remains
+separate from the application attempt epoch. Pending or wholly unmeasured crops
+still receive their explicit masks but do not count as a fresh measured visit.
+No frame or scientific metadata is copied, relabelled or turned into a zero.
+
+This backend path is exercised with the actual NativeLive/factory/coordinator
+using compiled mock IIO. It does not yet enable the UI V2 plan compiler's
+paired Sweep selector or qualify full gain/readback, terminal archival,
+matching EXE/visible UI, dual physical RF, four-device HIL or release.

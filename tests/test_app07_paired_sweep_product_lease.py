@@ -90,6 +90,12 @@ def run_case(path: str, case: str) -> None:
                 selected.applied.applied, "product-left", "product-right")
             return PairedSweepRequest("product-resource", pair, sweep, selection.revision, selected)
 
+        if case.startswith("pane-"):
+            from tests.test_app07_paired_sweep_capture_job import run_pane_case
+
+            run_pane_case(graph, request(), case, hooks)
+            return
+
         if case == "placeholder-serial":
             # Unknown observations must not downgrade paired admission to the
             # legacy unbound single-route constructor, even when nonblank.
@@ -364,8 +370,8 @@ def run_case(path: str, case: str) -> None:
                         secondary = replace(primary, source_id="product-right")
                         # Real typed instrument frames, not a bypass of their
                         # validation. They are not AD paired RF provenance.
-                        forged = PairedSweepPublication(run, (), primary, secondary)
-                        refuses(lambda: bundles_from_paired_sweep(forged))
+                        refuses(lambda: bundles_from_paired_sweep(
+                            PairedSweepPublication(run, (), primary, secondary)))
                     if case == "run-bundles":
                         from sdr_monitor.domain.analyzer import bundles_from_paired_sweep
 
@@ -547,3 +553,11 @@ class PairedSweepProductLeaseTests(unittest.TestCase):
     def test_actual_observed_pair_uses_common_analyzer_envelope_without_epoch_rewrite(self): self.run_native("run-bundles")
     def test_paired_analyzer_epoch_refuses_boolean(self): self.run_native("run-bundle-bool")
     def test_paired_analyzer_refuses_borrowed_instrument_provenance(self): self.run_native("run-bundle-instrument")
+    def test_actual_common_capture_job_pair_poll_stop_restart(self): self.run_native("pane-workflow")
+    def test_atomic_pair_rejects_half_foreign_run_and_invalid_second_without_freshness(self): self.run_native("pane-atomic")
+    def test_progress_pending_crop_is_not_a_measured_fresh_visit(self): self.run_native("pane-pending")
+    def test_pane_and_factory_share_one_control_claim_without_external_borrow(self): self.run_native("pane-claim")
+    def test_failed_paired_capture_cleanup_retains_claim_for_explicit_retry(self): self.run_native("pane-cleanup")
+    def test_paired_capture_job_requires_both_endpoints_and_exact_common_plan(self): self.run_native("pane-profile")
+    def test_foreign_terminal_segment_index_refuses_before_either_pane_commit(self): self.run_native("pane-index")
+    def test_overlap_new_contribution_refreshes_despite_retained_first_bin_owner(self): self.run_native("pane-overlap")

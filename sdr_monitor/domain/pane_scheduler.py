@@ -21,6 +21,7 @@ from .analyzer_sources import AnalyzerSourceChoice
 from .continuous_sweep_request import ContinuousSweepPlanRequest
 from .device_capabilities import DeviceFamily
 from .live import BackendKind, LiveConfiguration
+from .paired_sweep import PairedSweepRequest
 from .tinysa_analyzer import TinySaSweepRequest
 from .receiver_topology import (
     AcquisitionGroup,
@@ -469,7 +470,28 @@ class Ad936xSweepPaneProfile:
                 self.configuration, replace(self.request_template, epoch=0), self.epoch_cost)
 
 
-PaneProfile = (PaneCaptureProfile | Ad936xSweepPaneProfile | HackrfRtbwPaneProfile | RtlRtbwPaneProfile | HackrfSweepPaneProfile
+@dataclass(frozen=True, slots=True)
+class Ad936xPairedSweepPaneProfile(Ad936xSweepPaneProfile):
+    """Exact common paired intent; pane crops never change the tuner plan."""
+
+    paired_request: PairedSweepRequest = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        Ad936xSweepPaneProfile.__post_init__(self)
+        request = self.paired_request
+        if (not isinstance(request, PairedSweepRequest)
+                or request.pair.device_id != self.source.device_id
+                or request.selection_revision != self.selection_revision
+                or request.pair.configuration != self.configuration
+                or request.sweep != self.request_template):
+            raise PaneScheduleError("paired Sweep profile must retain the exact common selected intent")
+
+    @property
+    def compatibility_key(self) -> tuple[object, ...]:
+        return ("ad936x-paired-sweep", self.paired_request, self.epoch_cost)
+
+
+PaneProfile = (PaneCaptureProfile | Ad936xSweepPaneProfile | Ad936xPairedSweepPaneProfile | HackrfRtbwPaneProfile | RtlRtbwPaneProfile | HackrfSweepPaneProfile
                | SpectrumTracePaneProfile | TinySaTracePaneProfile)
 
 
@@ -561,6 +583,15 @@ class CaptureJob:
         if self.mode is not ReceiverBindingMode.SHARED_CAPTURE and len(crops) != 1:
             raise PaneScheduleError("non-shared capture must own exactly one pane crop")
         object.__setattr__(self, "crops", crops)
+        if isinstance(self.profile, Ad936xPairedSweepPaneProfile):
+            request = self.profile.paired_request
+            expected = {request.pair.primary_source_id, request.pair.secondary_source_id}
+            if (self.physical_stream_resource_id != request.resource_id
+                    or set(endpoint_ids) != expected
+                    or {crop.receiver_endpoint_id for crop in crops} != expected
+                    or self.mode is not ReceiverBindingMode.SHARED_CAPTURE
+                    or (self.start_hz, self.stop_hz) != (request.sweep.start_hz, request.sweep.stop_hz)):
+                raise PaneScheduleError("paired Sweep job requires BOTH producers and the exact common tuner plan")
 
     @property
     def configuration_key(self) -> tuple[object, ...]:
@@ -875,6 +906,8 @@ def _make_shared_job(
         raise PaneScheduleError("shared-capture panes require one identical scheduler policy")
     start_hz = min(item.request.start_hz for item in component)
     stop_hz = max(item.request.stop_hz for item in component)
+    if isinstance(profile, Ad936xPairedSweepPaneProfile):
+        start_hz, stop_hz = profile.request_template.start_hz, profile.request_template.stop_hz
     if stop_hz - start_hz > profile.usable_capture_span_hz:
         raise PaneScheduleError("compatible shared-capture panes exceed one usable capture window")
     crops = tuple(
@@ -1100,6 +1133,7 @@ __all__ = [
     "CaptureJob",
     "PaneCaptureProfile",
     "Ad936xSweepPaneProfile",
+    "Ad936xPairedSweepPaneProfile",
     "HackrfRtbwPaneProfile",
     "RtlRtbwPaneProfile",
     "HackrfSweepPaneProfile",

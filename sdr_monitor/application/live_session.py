@@ -430,7 +430,7 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             raise RuntimeError("Pane capture could not verify native recording state")
         return state not in (RecordingState.IDLE, RecordingState.COMPLETED)
 
-    def acquire_paired_sweep_lease(self, request: PairedSweepRequest):
+    def acquire_paired_sweep_lease(self, request: PairedSweepRequest, *, control_claim: object | None = None):
         """Reserve actual selection AND the SAME native owner, without RF/Start.
 
         This backend seam does not lift the product pane Sweep refusal. Keep
@@ -441,8 +441,13 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
 
         if not isinstance(request, PairedSweepRequest):
             raise TypeError("paired Sweep requires a typed request")
-        claim = object()
-        with self.pane_control_transaction(claim):
+        borrowed = control_claim is not None
+        claim = object() if control_claim is None else control_claim
+        if borrowed and getattr(self._pane_control_thread, "claim", None) is not claim:
+            raise RuntimeError("paired Sweep requires the owning pane control transaction")
+        with self.pane_control_transaction(claim, require_existing_claim=borrowed):
+            # Borrow only INSIDE this exact pane owner's existing transaction.
+            # A token alone outside the owning thread is not acquisition authority.
             try:
                 self._configuration_admission(idle_only=True)
                 self._require_native_family()
@@ -458,7 +463,8 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
                     raise RuntimeError("paired Sweep requires the SAME native lease owner")
                 lease = acquire(paired_request=request)
             except BaseException:
-                self.release_pane_control(claim)
+                if not borrowed:
+                    self.release_pane_control(claim)
                 raise
 
         released = False
@@ -493,7 +499,8 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             # Start's admission fence here. Native failure retains BOTH claims.
             with self.pane_control_transaction(claim, require_existing_claim=True):
                 lease.release()
-                self.release_pane_control(claim)
+                if not borrowed:
+                    self.release_pane_control(claim)
                 released = True
 
         def construct_owner(construct, cleanup):

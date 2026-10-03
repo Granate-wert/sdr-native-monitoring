@@ -40,6 +40,16 @@ class PairedSweepPublication:
         acquired = (a.segment_acquisition or (), b.segment_acquisition or ())
         if any(len(chain) != len(self.steps) for chain in acquired):
             raise ValueError("paired Sweep views lack matching acquisition receipts")
+        # Terminal SweepLineFrame is also used by other producers; its generic
+        # constructor cannot prove paired source indices. Bound every index
+        # BEFORE a pane can dereference the observed prefix or commit freshness.
+        for frame in (a, b):
+            for begin in range(0, frame.source_segment_indices.size, 65536):
+                owners = frame.source_segment_indices[begin:begin + 65536]
+                missing = np.isnan(frame.values_db[begin:begin + 65536])
+                if (bool(np.any(owners < -1)) or bool(np.any(owners >= len(self.steps)))
+                        or not np.array_equal(owners == -1, missing)):
+                    raise ValueError("paired Sweep bin refers outside its observed acquisition prefix")
         for index, pair in enumerate(self.steps):
             if not isinstance(pair, PairedSweepStepPair):
                 raise TypeError("paired Sweep publication requires typed step pairs")
@@ -58,3 +68,15 @@ class PairedSweepPublication:
                             observation.first_sample_index, observation.timestamp_ns,
                             observation.sample_rate_hz, observation.fft_size, observation.quality_flags)):
                     raise ValueError("paired Sweep reduced acquisition differs from observed step")
+        starts = np.asarray([step.primary.identity.usable_start_hz for step in self.steps])
+        stops = np.asarray([step.primary.identity.usable_stop_hz for step in self.steps])
+        for frame in (a, b):
+            for begin in range(0, frame.source_segment_indices.size, 65536):
+                owners = frame.source_segment_indices[begin:begin + 65536]
+                measured = owners >= 0
+                indices = owners[measured]
+                frequency = frame.frequencies_hz[begin:begin + 65536][measured]
+                tolerance = np.maximum(1e-6, np.abs(frequency) * 1e-12)
+                if (bool(np.any(frequency < starts[indices] - tolerance))
+                        or bool(np.any(frequency > stops[indices] + tolerance))):
+                    raise ValueError("paired Sweep bin ownership lies outside its observed usable step")
