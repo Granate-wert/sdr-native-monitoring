@@ -4021,3 +4021,38 @@ static-component/corresponding-source HOLD and no current/static promotion remai
 No new agents were dispatched for the build/RX continuation; prior scoped UI
 writer and distinct reviewer were configured gpt-6-sol/high, without runtime
 model attestation.
+
+## RTL native manual gain prerequisite — 2026-10-03
+
+Source `41df342` plus corrective `e4c3186` adds optional exact integer tenths-of-dB
+manual tuner gain to the native RTL owner and binding. Absence stays automatic.
+The selected owned handle supplies a discrete table; Start rechecks that table,
+rejects values rather than rounding, applies manual mode/value and verifies the
+SDK cached setting after Fs/center/reset before starting RX workers. Failed
+configuration closes the owner before RX; existing lease/quarantine guards remain.
+The cache is not independently measured RF gain or gain-mode readback.
+
+Independent read-only Sol review found and drove two corrections: malformed
+optional tables no longer disable automatic observation, and FC2580's `{0}`
+sentinel/no-op gain setters do not imply supported manual 0 dB. Missing optional
+exports retain the automatic lane. Manual unavailable/invalid cases explicitly
+refuse. The bounded table allocation assumes the pinned hash-admitted SDK ABI;
+the upstream API has no capacity argument, so it is not hostile-DLL containment.
+
+Exact corrected Windows CPU stage: 46/46 CTest passed in 55.99 seconds, followed
+by 35 RTL source/compiled-binding tests in 6.414 seconds, Ruff and compilation
+checks. Native SHA-256 is
+`312236334b50f730723b1f30a472b0e2bd209ef27a40fcd0b279612138f303a8`.
+Mock ABI tests cover signed/zero/exact gains, invalid tables, cache/mode/setter
+failures, auto-only legacy DLL, malformed-table auto RX and FC2580 auto/manual
+refusal, including no-reader/one-close assertions. R1 review has scoped source
+approval; initial R0 blockers and their fixes remain documented.
+
+This does **not** expose manual gain in UI V2 yet. Typed product intent, discrete
+selected-session capability, manifest/version admission, cached-setting display,
+inert Stage validation, dedicated UI implementation and bounded physical manual
+gain acceptance are next. Current-head RTL physical service status returns to
+VERIFY because relevant native code changed; earlier `6b3e86b` automatic RX proof
+is retained as historical evidence, not relabeled for this module. No new EXE,
+full V2 gate, physical manual RX, four-source HIL, soak or release qualification
+is claimed. APP-07/M4 remains partial; static EXE and system configuration unchanged.
