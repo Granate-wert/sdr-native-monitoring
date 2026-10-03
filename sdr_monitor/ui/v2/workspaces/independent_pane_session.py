@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, RtlTunerGainReceipt
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.domain.pane_scheduler import PaneControlGapReason, RtlRtbwPaneProfile
@@ -509,9 +509,29 @@ class IndependentPaneSessionV2(QWidget):
                    and state.phase is PanePumpPhase.STOPPED else
                    "analyzer.independent.rtl_actual_unknown")
             return text(key)
+        gain = bundle.rtl_tuner_gain
+        if (not isinstance(gain, RtlTunerGainReceipt)
+                or gain.source_id != binding.source_id
+                or gain.config_generation != frame.config_generation
+                or gain.acquisition_epoch != frame.acquisition_epoch):
+            gain_text = text("analyzer.pane.setup.rtl_gain_frame",
+                             requested=text("analyzer.pane.setup.rtl_gain_cache_unknown"),
+                             cached=text("analyzer.pane.setup.rtl_gain_cache_unknown"))
+        else:
+            requested = (text("analyzer.pane.setup.rtl_gain_auto")
+                         if gain.requested_manual_tenth_db is None else
+                         text("analyzer.pane.setup.rtl_gain_value",
+                              value=gain.requested_manual_tenth_db / 10))
+            cached = (text("analyzer.pane.setup.rtl_gain_cache_auto")
+                      if gain.requested_manual_tenth_db is None else
+                      text("analyzer.pane.setup.rtl_gain_cache_unknown")
+                      if gain.cached_tenth_db is None else
+                      text("analyzer.pane.setup.rtl_gain_value", value=gain.cached_tenth_db / 10))
+            gain_text = text("analyzer.pane.setup.rtl_gain_frame",
+                             requested=requested, cached=cached)
         return text("analyzer.independent.rtl_actual",
                     center=f"{frame.center_frequency_hz / 1e6:g}",
-                    rate=f"{frame.sample_rate_hz / 1e6:g}")
+                    rate=f"{frame.sample_rate_hz / 1e6:g}", gain=gain_text)
 
     def _refresh(self, _selected_slot: int | None = None) -> None:
         if self._terminal_released:

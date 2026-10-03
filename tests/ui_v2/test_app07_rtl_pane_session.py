@@ -12,7 +12,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, RtbwFrameMetadata
+from sdr_monitor.domain.analyzer import AnalyzerFrameBundle, RtbwFrameMetadata, RtlTunerGainReceipt
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneCrop
 from sdr_monitor.services.pane_resource_session import PaneActivation
@@ -66,6 +66,27 @@ class RtlPaneSessionReadoutTests(unittest.TestCase):
         self.assertIn("actual Fs 2.4 MS/s", result)
         self.assertIn("center 101 MHz", result)
         self.assertIn("this Start", result)
+
+    def test_manual_gain_shows_request_and_sdk_cache_only_for_accepted_bundle(self) -> None:
+        bundle = replace(_frame_bundle(), rtl_tuner_gain=RtlTunerGainReceipt(
+            "rtl-source", 3, 2, -42, -42))
+        result = IndependentPaneSessionV2._rtl_actual_readout(
+            bundle, _state(PanePumpPhase.RUNNING, 7), _binding(), 7)
+        self.assertIn("Requested: -4.2 dB", result)
+        self.assertIn("SDK cache: -4.2 dB", result)
+        self.assertIn("not RF gain readback", result)
+        stopped = IndependentPaneSessionV2._rtl_actual_readout(
+            bundle, _state(PanePumpPhase.STOPPED, 7), _binding(), 7)
+        self.assertIn("retained after Stop", stopped)
+        self.assertNotIn("SDK cache: -4.2 dB", stopped)
+
+    def test_auto_has_no_claim_of_independent_mode_readback(self) -> None:
+        bundle = replace(_frame_bundle(), rtl_tuner_gain=RtlTunerGainReceipt(
+            "rtl-source", 3, 2, None, None))
+        result = IndependentPaneSessionV2._rtl_actual_readout(
+            bundle, _state(PanePumpPhase.RUNNING, 7), _binding(), 7)
+        self.assertIn("Requested: Auto", result)
+        self.assertIn("SDK cache: unavailable for Auto", result)
 
     def test_new_activation_cannot_reuse_retained_readback(self) -> None:
         bundle, binding = _frame_bundle(), _binding()

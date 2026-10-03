@@ -218,7 +218,8 @@ class RtlPaneSetupTests(unittest.TestCase):
         choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE)
         editor = self._editor(choice, owner_ready=True)
         try:
-            request = RtlLiveRequest(100_500_000, 2_400_000)
+            request = RtlLiveRequest(100_500_000, 2_400_000,
+                                     manual_tuner_gain_tenth_db=-42)
             profile = RtlRtbwPaneProfile(request, 1_500_000.0,
                                          CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005))
             crop = SimpleNamespace(pane_id="pane-4", start_hz=100_000_000, stop_hz=101_000_000)
@@ -250,7 +251,8 @@ class RtlPaneSetupTests(unittest.TestCase):
             self.assertIn("not a guaranteed RF passband", preview)
             self.assertIn("uncalibrated dBFS/bin", preview)
             self.assertIn("Actual Fs/center are unknown", preview)
-            self.assertIn("gain mode is auto, actual gain unknown", preview)
+            self.assertIn("requested manual tuner gain -4.2 dB", preview)
+            self.assertIn("actual RF gain unknown", preview)
             self.assertNotIn("RF filter", preview)
             self.assertNotIn("HackRF acknowledges", preview)
             self.assertIsNone(editor._future)

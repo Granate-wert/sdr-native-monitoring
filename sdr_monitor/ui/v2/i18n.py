@@ -235,6 +235,36 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.rtl_session_scope": MappingProxyType({
             UiLocale.RU: "RTL-SDR подтверждён только для текущего USB-сеанса, не как постоянный идентификатор или калибровка. Неотличимая совместимая замена возможна; после переподключения нужно заново обнаружить и выбрать устройство.",
             UiLocale.EN: "RTL-SDR is assured only for this USB session, not as stable identity or calibration. An indistinguishable compatible replacement remains possible; reconnect requires fresh Discover and Select."}),
+        "analyzer.pane.setup.rtl_gain_heading": MappingProxyType({
+            UiLocale.RU: "Усиление тюнера RTL-SDR · запрос", UiLocale.EN: "RTL-SDR tuner gain · request"}),
+        "analyzer.pane.setup.rtl_gain_label": MappingProxyType({
+            UiLocale.RU: "Окно {pane} · усиление RTL", UiLocale.EN: "Pane {pane} · RTL gain"}),
+        "analyzer.pane.setup.rtl_gain_name": MappingProxyType({
+            UiLocale.RU: "Запрос усиления тюнера RTL для окна {pane}",
+            UiLocale.EN: "RTL tuner gain request for pane {pane}"}),
+        "analyzer.pane.setup.rtl_gain_auto": MappingProxyType({
+            UiLocale.RU: "Авто", UiLocale.EN: "Auto"}),
+        "analyzer.pane.setup.rtl_gain_value": MappingProxyType({
+            UiLocale.RU: "{value:+.1f} дБ", UiLocale.EN: "{value:+.1f} dB"}),
+        "analyzer.pane.setup.rtl_gain_unavailable": MappingProxyType({
+            UiLocale.RU: "Таблица дискретного усиления появится только после выбора актуального тюнера. Авто доступно; ручное значение не предполагается.",
+            UiLocale.EN: "The discrete gain table is available only after a fresh tuner selection. Auto is available; no manual range is inferred."}),
+        "analyzer.pane.setup.rtl_gain_scope": MappingProxyType({
+            UiLocale.RU: "Только точные значения таблицы выбранного тюнера. Это запрос, не RF-считывание; изменение не запускает RX.",
+            UiLocale.EN: "Exact entries from the selected tuner's table only. This is a request, not RF readback; editing does not start RX."}),
+        "analyzer.pane.setup.rtl_gain_auto_preview": MappingProxyType({
+            UiLocale.RU: "режим усиления авто, фактическое усиление неизвестно",
+            UiLocale.EN: "gain mode is auto, actual gain unknown"}),
+        "analyzer.pane.setup.rtl_gain_manual_preview": MappingProxyType({
+            UiLocale.RU: "запрошено ручное усиление тюнера {value:+.1f} дБ; RF-фактическое усиление неизвестно",
+            UiLocale.EN: "requested manual tuner gain {value:+.1f} dB; actual RF gain unknown"}),
+        "analyzer.pane.setup.rtl_gain_frame": MappingProxyType({
+            UiLocale.RU: "Запрос: {requested}; кэш SDK: {cached} (не считывание RF-усиления)",
+            UiLocale.EN: "Requested: {requested}; SDK cache: {cached} (not RF gain readback)"}),
+        "analyzer.pane.setup.rtl_gain_cache_unknown": MappingProxyType({
+            UiLocale.RU: "неизвестен", UiLocale.EN: "unknown"}),
+        "analyzer.pane.setup.rtl_gain_cache_auto": MappingProxyType({
+            UiLocale.RU: "недоступен при авто", UiLocale.EN: "unavailable for Auto"}),
         "analyzer.independent.rtl_actual_unknown": MappingProxyType({
             UiLocale.RU: "RTL-SDR: фактические Fs/центр неизвестны до кадра текущего запуска",
             UiLocale.EN: "RTL-SDR: actual Fs/center unknown until a frame from this Start"}),
@@ -242,11 +272,11 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "RTL-SDR: сохранённый кадр после Стоп; текущие Fs/центр неизвестны",
             UiLocale.EN: "RTL-SDR: frame retained after Stop; current Fs/center unknown"}),
         "analyzer.independent.rtl_actual": MappingProxyType({
-            UiLocale.RU: "RTL-SDR: фактически Fs {rate} MS/s · центр {center} МГц (текущий запуск)",
-            UiLocale.EN: "RTL-SDR: actual Fs {rate} MS/s · center {center} MHz (this Start)"}),
+            UiLocale.RU: "RTL-SDR: фактически Fs {rate} MS/s · центр {center} МГц (текущий запуск) · {gain}",
+            UiLocale.EN: "RTL-SDR: actual Fs {rate} MS/s · center {center} MHz (this Start) · {gain}"}),
         "analyzer.independent.rtl_scope": MappingProxyType({
-            UiLocale.RU: "Усиление: авто, фактическое значение неизвестно. Пределы тюнера неизвестны; некалиброванные dBFS/bin. Фильтр, потери и RF-время не подтверждены.",
-            UiLocale.EN: "Gain: auto, actual value unknown. Tuner limits unknown; uncalibrated dBFS/bin. Filter, loss and RF timing are unverified."}),
+            UiLocale.RU: "Запрос и кэш SDK усиления показаны отдельно выше; это не RF-считывание. Пределы тюнера неизвестны; некалиброванные dBFS/bin. Фильтр, потери и RF-время не подтверждены.",
+            UiLocale.EN: "Gain request and SDK cache are shown separately above; this is not RF readback. Tuner limits unknown; uncalibrated dBFS/bin. Filter, loss and RF timing are unverified."}),
         "analyzer.pane.setup.preview_hackrf_capture": MappingProxyType({
             UiLocale.RU: "Окно {pane}: аппаратный план захвата HackRF {start}–{stop} МГц; спектр обрезается до точного запрошенного диапазона. Не аппаратное считывание.",
             UiLocale.EN: "Pane {pane}: planned HackRF hardware capture {start}–{stop} MHz; spectrum is cropped to the exact requested analysis range. Not hardware readback."}),
@@ -327,8 +357,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Окно {pane}, план RTBW: запрос Fs {rate} MS/s · RF-фильтр {filter} МГц · допустимая полоса анализа {usable} МГц · окно {start}…{stop} МГц · физическая FFT {fft} / шаг {hop} отсчётов.",
             UiLocale.EN: "Pane {pane}, RTBW plan: requested Fs {rate} MS/s · RF filter {filter} MHz · allowed analysis span {usable} MHz · pane {start}…{stop} MHz · physical FFT {fft} / hop {hop} samples."}),
         "analyzer.pane.setup.preview_rtl_rtbw": MappingProxyType({
-            UiLocale.RU: "Окно {pane}, план RTL-SDR RTBW: запрос Fs {rate} MS/s · плановая цифровая область анализа {usable} МГц (не гарантия RF-полосы) · окно {start}…{stop} МГц · физическая FFT {fft} / шаг {hop} отсчётов · некалиброванные dBFS/bin. Фактические Fs/центр неизвестны до подтверждения запуска; режим усиления авто, фактическое усиление неизвестно.",
-            UiLocale.EN: "Pane {pane}, RTL-SDR RTBW plan: requested Fs {rate} MS/s · planned digital analysis crop {usable} MHz (not a guaranteed RF passband) · pane {start}…{stop} MHz · physical FFT {fft} / hop {hop} samples · uncalibrated dBFS/bin. Actual Fs/center are unknown until Start confirms them; gain mode is auto, actual gain unknown."}),
+            UiLocale.RU: "Окно {pane}, план RTL-SDR RTBW: запрос Fs {rate} MS/s · плановая цифровая область анализа {usable} МГц (не гарантия RF-полосы) · окно {start}…{stop} МГц · физическая FFT {fft} / шаг {hop} отсчётов · некалиброванные dBFS/bin. Фактические Fs/центр неизвестны до подтверждения запуска; {gain}.",
+            UiLocale.EN: "Pane {pane}, RTL-SDR RTBW plan: requested Fs {rate} MS/s · planned digital analysis crop {usable} MHz (not a guaranteed RF passband) · pane {start}…{stop} MHz · physical FFT {fft} / hop {hop} samples · uncalibrated dBFS/bin. Actual Fs/center are unknown until Start confirms them; {gain}."}),
         "analyzer.pane.setup.rtl_rtbw_scope": MappingProxyType({
             UiLocale.RU: "Для RTL-SDR сканирование не подключено. Фильтр, ровность полосы, потери, RF-время и калибровка не подтверждаются этим планом; Применить не запускает RX.",
             UiLocale.EN: "RTL-SDR Sweep is not connected. This plan does not verify filter, passband flatness, loss, RF timing or calibration; Apply does not start RX."}),

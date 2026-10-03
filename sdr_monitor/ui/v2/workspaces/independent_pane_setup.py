@@ -90,6 +90,14 @@ class _SlotRow:
         self.mode_points.addWidget(self.points)
         self._last_mode: CaptureMeasurementMode | None = None
         self._rtbw_rate: float | None = None
+        self.manual_gain = DraftScrollComboBox(parent)
+        self.manual_gain.setObjectName(f"independentPaneRtlGain{number}V2")
+        self.manual_gain.setProperty("ui2Role", "utility-select")
+        self.manual_gain.setMinimumContentsLength(12)
+        self.manual_gain.addItem("Auto", None)
+        self._gain_context: tuple[object, ...] | None = None
+        self.gain_label = QLabel(parent)
+        self.gain_label.setProperty("ui2Role", "secondary")
         self.band_number_label = QLabel(str(number), parent)
         self.band_number_label.setProperty("ui2Role", "secondary")
         self.band = DraftScrollComboBox(parent)
@@ -184,7 +192,20 @@ class IndependentPaneSetupV2(QWidget):
             row.chain.currentIndexChanged.connect(lambda _index: self._refresh_actions())
             row.mode.currentIndexChanged.connect(
                 lambda _index, target=row: self._mode_changed(target))
+            row.manual_gain.currentIndexChanged.connect(lambda _index: self._refresh_actions())
         layout.addLayout(grid)
+        gain_grid = QGridLayout()
+        gain_grid.setContentsMargins(0, 0, 0, 0)
+        gain_grid.setHorizontalSpacing(6)
+        self.gain_heading = QLabel(text("analyzer.pane.setup.rtl_gain_heading"), self)
+        self.gain_heading.setProperty("ui2Role", "secondary")
+        gain_grid.addWidget(self.gain_heading, 0, 0)
+        for row_index, row in enumerate(self._rows, 1):
+            row.gain_label.setText(text("analyzer.pane.setup.rtl_gain_label", pane=row.number))
+            gain_grid.addWidget(row.gain_label, row_index, 0)
+            gain_grid.addWidget(row.manual_gain, row_index, 1)
+        gain_grid.setColumnStretch(2, 1)
+        layout.addLayout(gain_grid)
         self.mode_help = QLabel(self)
         self.mode_help.setProperty("ui2Role", "secondary")
         self.mode_help.setWordWrap(True)
@@ -604,6 +625,48 @@ class IndependentPaneSetupV2(QWidget):
                 if choice.binding.rtl_session_route is not None else
                 "analyzer.pane.setup.rtl_inventory_only")
 
+    def _refresh_rtl_gain(self, row: _SlotRow, choice: AnalyzerSourceChoice | None) -> None:
+        """Expose only the exact table of the currently selected RTL session."""
+        route = (None if choice is None or choice.family is not DeviceFamily.RTL_SDR
+                 else choice.binding.rtl_session_route)
+        selection = self._selection
+        context: tuple[object, ...] = (
+            None if choice is None else choice.device_id,
+            None if selection is None else selection.revision,
+            None if route is None else route.observation_revision,
+            None if route is None else route.runtime_set_sha256,
+            None if route is None else route.tuner_type,
+            None if route is None else route.manual_gain_contract_version,
+            () if route is None else route.tuner_gains_tenth_db,
+        )
+        gains = (() if route is None or not route.manual_gain_available
+                 else route.tuner_gains_tenth_db)
+        if context != row._gain_context:
+            # A new source, selection revision, or selected-tuner observation
+            # invalidates any prior manual choice. Fresh Stage starts at Auto.
+            with QSignalBlocker(row.manual_gain):
+                row.manual_gain.clear()
+                row.manual_gain.addItem(text("analyzer.pane.setup.rtl_gain_auto"), None)
+                for value in gains:
+                    row.manual_gain.addItem(text("analyzer.pane.setup.rtl_gain_value",
+                                                 value=value / 10), value)
+            row._gain_context = context
+        rtl = choice is not None and choice.family is DeviceFamily.RTL_SDR
+        ready = (choice is not None and rtl
+                 and self._rtl_unavailable_key(choice) is None)
+        row.manual_gain.setEnabled(bool(ready and not self.blocks_single_source))
+        if rtl and not gains:
+            reason = text("analyzer.pane.setup.rtl_gain_unavailable")
+        elif rtl:
+            reason = text("analyzer.pane.setup.rtl_gain_scope")
+        else:
+            reason = ""
+        row.manual_gain.setToolTip(reason)
+        row.manual_gain.setAccessibleName(text("analyzer.pane.setup.rtl_gain_name", pane=row.number))
+        row.manual_gain.setAccessibleDescription(reason)
+        row.gain_label.setVisible(rtl)
+        row.manual_gain.setVisible(rtl)
+
     def _rtl_choice_tip(self, choice: AnalyzerSourceChoice, reason: str | None) -> str:
         if reason is not None:
             return text(reason)
@@ -720,6 +783,7 @@ class IndependentPaneSetupV2(QWidget):
         row.source.setToolTip(tip)
         row.source.setAccessibleDescription(tip)
         self._refresh_chain(row, choice)
+        self._refresh_rtl_gain(row, choice)
         previous_rate = row.rate.currentData()
         with QSignalBlocker(row.rate):
             row.rate.clear()
@@ -800,7 +864,9 @@ class IndependentPaneSetupV2(QWidget):
                 rtbw_band=(RtbwBandPolicy(row.band.currentData())
                            if self._selected_mode(row) is CaptureMeasurementMode.RTBW
                            else RtbwBandPolicy.EDGE_TRIMMED),
-                receiver_selection=self._selected_chain(row)))
+                receiver_selection=self._selected_chain(row),
+                manual_tuner_gain_tenth_db=row.manual_gain.currentData()
+                if choice is not None and choice.family is DeviceFamily.RTL_SDR else None))
         return tuple(drafts)
 
     @staticmethod
@@ -1153,6 +1219,11 @@ class IndependentPaneSetupV2(QWidget):
             for job in resource_schedule.jobs:
                 profile = job.profile
                 if isinstance(profile, RtlRtbwPaneProfile):
+                    requested_gain = profile.request_template.manual_tuner_gain_tenth_db
+                    gain_summary = (text("analyzer.pane.setup.rtl_gain_auto_preview")
+                                    if requested_gain is None else
+                                    text("analyzer.pane.setup.rtl_gain_manual_preview",
+                                         value=requested_gain / 10))
                     for crop in job.crops:
                         lines.append(text("analyzer.pane.setup.preview_rtl_rtbw",
                                           pane=crop.pane_id.rsplit("-", 1)[-1],
@@ -1160,7 +1231,8 @@ class IndependentPaneSetupV2(QWidget):
                                           usable=f"{profile.usable_capture_span_hz / 1e6:g}",
                                           start=f"{crop.start_hz / 1e6:g}",
                                           stop=f"{crop.stop_hz / 1e6:g}",
-                                          fft=profile.fft_size, hop=profile.hop_size))
+                                          fft=profile.fft_size, hop=profile.hop_size,
+                                          gain=gain_summary))
                     continue
                 if (not isinstance(profile, (PaneCaptureProfile, HackrfRtbwPaneProfile))
                         or profile.measurement_mode is not CaptureMeasurementMode.RTBW):
@@ -1278,8 +1350,11 @@ class IndependentPaneSetupV2(QWidget):
         self._sync_contents_height()
 
     def set_locale(self) -> None:
+        self.gain_heading.setText(text("analyzer.pane.setup.rtl_gain_heading"))
         for row in self._rows:
             row.chain.setAccessibleName(text("analyzer.pane.setup.chain_name", pane=row.number))
+            row.gain_label.setText(text("analyzer.pane.setup.rtl_gain_label", pane=row.number))
+            row.manual_gain.setAccessibleName(text("analyzer.pane.setup.rtl_gain_name", pane=row.number))
             with QSignalBlocker(row.chain):
                 for index in range(row.chain.count()):
                     chain = ReceiverChainSelection(row.chain.itemData(index))
@@ -1298,6 +1373,12 @@ class IndependentPaneSetupV2(QWidget):
                 for index in range(row.band.count()):
                     policy = RtbwBandPolicy(row.band.itemData(index))
                     row.band.setItemText(index, text("analyzer.pane.setup.rtbw_band_" + policy.value))
+            with QSignalBlocker(row.manual_gain):
+                for index in range(row.manual_gain.count()):
+                    value = row.manual_gain.itemData(index)
+                    row.manual_gain.setItemText(index, text(
+                        "analyzer.pane.setup.rtl_gain_auto" if value is None
+                        else "analyzer.pane.setup.rtl_gain_value", **({} if value is None else {"value": value / 10})))
             if row.source.count():
                 row.source.setItemText(0, text("analyzer.pane.setup.empty"))
             for index in range(1, row.source.count()):
@@ -1318,6 +1399,7 @@ class IndependentPaneSetupV2(QWidget):
                    if choice is not None and choice.family is DeviceFamily.RTL_SDR else "")
             row.source.setToolTip(tip)
             row.source.setAccessibleDescription(tip)
+            self._refresh_rtl_gain(row, choice)
             self._refresh_chain(row, choice)
             # A staged draft cannot rebuild source/geometry selectors. Translate
             # the existing mode items in place, without changing their data or

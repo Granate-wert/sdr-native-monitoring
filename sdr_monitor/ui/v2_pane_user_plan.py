@@ -115,6 +115,7 @@ class PaneSlotDraft:
     tinysa: TinySaPaneIntent | None = field(default=None, kw_only=True)
     rtbw_band: RtbwBandPolicy = field(default=RtbwBandPolicy.EDGE_TRIMMED, kw_only=True)
     receiver_selection: ReceiverChainSelection = field(default=ReceiverChainSelection.RX1, kw_only=True)
+    manual_tuner_gain_tenth_db: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
@@ -129,6 +130,9 @@ class PaneSlotDraft:
                 self.receiver_selection, ReceiverChainSelection):
             raise PaneUserPlanError("pane receiver requires an explicit typed RX1 or RX2 chain",
                                     reason=PaneUserRefusal.INVALID_RECEIVER_SELECTION)
+        gain = self.manual_tuner_gain_tenth_db
+        if gain is not None and (type(gain) is not int or not -1000 <= gain <= 1000):
+            raise PaneUserPlanError("RTL manual tuner gain must be an exact bounded integer in tenths of dB")
         if type(self.priority) is not int or not 1 <= self.priority <= 100:
             raise PaneUserPlanError("pane scheduling priority must be an integer in [1, 100]")
         if self.maximum_revisit_s is not None and (
@@ -146,9 +150,14 @@ class PaneSlotDraft:
                     or self.measurement_mode is not None or self.priority != 1
                     or self.maximum_revisit_s is not None or self.tinysa is not None
                     or self.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED
-                    or self.receiver_selection is not ReceiverChainSelection.RX1):
+                    or self.receiver_selection is not ReceiverChainSelection.RX1
+                    or gain is not None):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
+        # RTL gain intent is deliberately rejected on other families instead
+        # of being silently reinterpreted as their unrelated gain control.
+        if gain is not None and not isinstance(self.source_id, str):
+            raise PaneUserPlanError("manual tuner gain requires an RTL source")
         if (not isinstance(self.source_id, str) or not self.source_id.strip()
                 or isinstance(self.start_hz, bool) or isinstance(self.stop_hz, bool)
                 or not isinstance(self.start_hz, (int, float))
@@ -305,6 +314,10 @@ def compile_user_pane_plan(
         if not isinstance(choice, AnalyzerSourceChoice) or choice.device_id != source_id:
             raise PaneUserPlanError("staged source identity changed before plan compilation",
                                     reason=PaneUserRefusal.SELECTION_CHANGED)
+        if (choice.family is not DeviceFamily.RTL_SDR
+                and any(draft.source_id == source_id and draft.manual_tuner_gain_tenth_db is not None
+                        for draft in drafts)):
+            raise PaneUserPlanError("RTL tuner gain intent cannot be applied to another device family")
         resource = resource_for[source_id]
         if choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.RTL_SDR, DeviceFamily.TINYSA}:
             raise PaneUserPlanError("selected source has no qualified pane owner")
@@ -530,6 +543,11 @@ def compile_user_pane_plan(
                     or choice.runtime.availability is not AdapterRuntimeAvailability.AVAILABLE
                     or not (canonical or selected_session)):
                 raise PaneUserPlanError("RTL pane needs exact selected session or tuner capability")
+            if draft.manual_tuner_gain_tenth_db is not None and (
+                    route is None or route.manual_gain_contract_version != 1
+                    or draft.manual_tuner_gain_tenth_db not in route.tuner_gains_tenth_db):
+                raise PaneUserPlanError("manual RTL gain is not in the exact selected-tuner table",
+                                        reason=PaneUserRefusal.INVALID_PLAN)
             if not float(center).is_integer():
                 raise PaneUserPlanError("RTL center must be an exact whole hertz")
             # A conservative *digital* analysis crop, not tuner analog BW or
@@ -537,7 +555,8 @@ def compile_user_pane_plan(
             usable = draft.sample_rate_hz / 2.0
             rtl_request = RtlLiveRequest(int(center), int(draft.sample_rate_hz),
                                          fft_size=draft.fft_size, hop_size=draft.fft_size // 2,
-                                         detector="peak", source_id=SourceId(source_id))
+                                         detector="peak", source_id=SourceId(source_id),
+                                         manual_tuner_gain_tenth_db=draft.manual_tuner_gain_tenth_db)
             profile = RtlRtbwPaneProfile(rtl_request, usable, cost)
         else:
             if draft.measurement_mode not in (None, CaptureMeasurementMode.INSTRUMENT_TRACE):
