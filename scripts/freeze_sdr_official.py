@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.preflight_sdr_native_build import _read_manifest
+from scripts.preflight_sdr_freezer import verify_freezer_version
 from scripts.preflight_sdr_shared_runtime import validate_shared_runtime
 from sdr_monitor.frozen_shared_runtime import SHARED_COMPONENTS
 from sdr_monitor.libiio_runtime import LIBIIO_RUNTIME_COMPONENTS
@@ -49,6 +50,7 @@ def checked_spec_source(source: str, root: Path, selected: dict[str, Path]) -> s
 
 
 def freeze(root: Path, native_directory: Path, libiio_directory: Path, release_root: Path, build_root: Path) -> None:
+    verify_freezer_version()
     from PyInstaller.building import makespec
     from PyInstaller.utils.cliutils.makespec import generate_parser
 

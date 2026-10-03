@@ -29,9 +29,12 @@ $python = if ($env:SDR_PYTHON_EXECUTABLE) { $env:SDR_PYTHON_EXECUTABLE } else { 
 if (-not $python -or -not (Test-Path -LiteralPath $python)) { throw "Python 3.13 was not resolved" }
 $pythonVersion = (& $python -c 'import sys; print(str(sys.version_info.major) + "." + str(sys.version_info.minor))').Trim()
 if ($pythonVersion -ne "3.13") { throw "S12 requires frozen Python 3.13 ABI, got $pythonVersion" }
+$freezerReport = $null
 if (-not $SkipFreeze) {
-    & $python (Join-Path $repoRoot "scripts\preflight_sdr_freezer.py") --entry (Join-Path $repoRoot "main_sdr.py")
+    $freezerOutput = & $python (Join-Path $repoRoot "scripts\preflight_sdr_freezer.py") --entry (Join-Path $repoRoot "main_sdr.py")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller console policy preflight failed" }
+    $freezerReport = $freezerOutput | ConvertFrom-Json
+    Write-Output $freezerOutput
 }
 
 $releaseRoot = Join-Path $repoRoot ("dist\SDRNativeMonitoring-" + $Lane)
@@ -135,8 +138,9 @@ if ($bindSource) {
         hackrf_official_requested = $hackrfRequested
         native_build_and_tests_executed = $true
         source_verified_after_native_and_freeze = $true
+        freezer_preflight = $freezerReport
     }
-    $provenance | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageDir 'build_provenance.json') -Encoding UTF8
+    $provenance | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $packageDir 'build_provenance.json') -Encoding UTF8
 } else {
     Write-Warning 'Diagnostic skip mode: current-source provenance is not asserted.'
 }
