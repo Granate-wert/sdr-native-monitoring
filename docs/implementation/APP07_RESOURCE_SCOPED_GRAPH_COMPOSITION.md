@@ -3102,3 +3102,38 @@ visible Windows/DPI/performance/soak/Linux/release acceptance or static promotio
 APP07 PARTIAL/full APP00..14 goal ACTIVE; APP05 timer not restarted. Main dirty work
 preserved/no product sync. Private state/raw evidence local; public summary only.
 Configured model IDs recorded; runtime model attestation unavailable.
+
+## M2 matching source/package qualification — 2026-10-03, source ff02c7d
+
+Test-only source d31f5dd07ce2c9a45ad47285331d7fbfd06bc7f8 registers only the
+explicit native test module parent directory for the full mock case/cleanup.
+No PATH mutation, SDK preloads, production-loader or system changes. Three paired
+native/mock test entrypoints retain exact module identity and explicit Mock IIO.
+
+First d31 matching build passed, but exact full V2 gate failed one legacy deadline
+localization assertion: 1319total/1252PASS/66skip/1FAIL. This failure and package
+remain historical, not silently relabeled. Dedicated UI agent corrected the
+canonical typed EN/RU refusal in ff02c7df501e66ed019a027056b8a498b93fd33e:
+modeled-not-RF, actionable target/weights/ranges, explicit noApply/RX assurance.
+Unused legacy key removed; actual beforeRF/allpane tests strengthened. Independent
+review found no blocker; root34PASS and reviewed-patch equality verified.
+
+Full matching no-skip tagged CPU HF+RTL build at ff02:45/45CTest51.59s,554source,
+658frozen files/defaultoffscreen/IIO/tinySA/shared9DLL verification PASS.
+One serial exact full V2 gate AFTER freeze:1320total/1254PASS/66skip/0failure-error,
+521.492s; cleanbeforeafter/exacttrue/deferred[]/outside[]. Historical four NaN
+warnings retained. Matching packaged native/mock/helper/admission22PASS19.099s.
+Postgate source snapshot and frozen manifest verified unchanged.
+
+Tag APP07-PAIRUI-20261003-FF02C7D is a diagnostic candidate, NOT static/current or
+promoted release. EXE SHA256cc741be7602dc97b349a54773756cb9c546781ab1aba90dcc81b2bae9c76cdb2;
+native5fa47cd1685db15fbfd40c9b03fe531e2775c2a9c871a9d1637bb790109e78e8;
+sourceCONTENT83f0305613257b1870098a79ccf40a293b527d54e077c86f30aa43dbe13049b4.
+Native C++ bytes unchanged; matching incremental pipeline/manifest binds ff02,
+not a new DSP change or relabel of historical da3/d31 physical evidence.
+
+M2 source/build/fullgate complete; visible Windows typed-workflow witness remains
+OPEN. APP07 PARTIAL; paired Sweep still refuses until M3. R14 cleanup retry defect
+remains separate OPEN. No new physical RX/dualRF/HIL/DPI/DWM/performance/soak/Linux/
+release acceptance; current static EXE/firewall and main dirty LegacyDFL preserved.
+Root owns backend/build; configured gpt-6-sol/high UI author and distinct reviewer.
