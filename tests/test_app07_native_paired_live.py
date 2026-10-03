@@ -11,11 +11,14 @@ import time
 from types import SimpleNamespace
 import unittest
 
+from tests.native_test_dependencies import explicit_native_dependencies
+
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = os.environ.get("SDR_APP07_TEST_NATIVE_MODULE", "")
 MOCK = ROOT / "native/sdr_core/out/build/windows-msvc-cpu-hackrf/libiio.dll"
 
 
+@explicit_native_dependencies
 def run_case(path: str, case: str) -> None:
     import ctypes
 

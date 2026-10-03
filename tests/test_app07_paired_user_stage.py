@@ -11,8 +11,10 @@ from types import SimpleNamespace
 import unittest
 
 from tests.test_app07_native_paired_live import MOCK, MODULE, ROOT
+from tests.native_test_dependencies import explicit_native_dependencies
 
 
+@explicit_native_dependencies
 def run_case(path: str, case: str) -> None:
     import ctypes
     from unittest.mock import patch

@@ -20,6 +20,7 @@ from sdr_monitor.services.pane_resource_session import PaneCaptureAdmission
 from tests.test_app07_pane_resource_session import live_frame, readonly
 
 from tests.test_app07_native_paired_live import MOCK, MODULE, ROOT
+from tests.native_test_dependencies import explicit_native_dependencies
 
 
 class PairedAdmissionTests(unittest.TestCase):
@@ -80,6 +81,7 @@ class PairedAdmissionTests(unittest.TestCase):
             replace(frame, spectrum=replace(source, values=readonly(values, np.float32)), identity=None)
 
 
+@explicit_native_dependencies
 def run_native_case(path: str, case: str) -> None:
     import ctypes
 
