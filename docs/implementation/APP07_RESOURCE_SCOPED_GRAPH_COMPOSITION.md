@@ -4174,3 +4174,43 @@ Ethernet receive/FFT operation on the 100 Mbps line, not continuous 30.72 MS/s
 transport, GUI LPS, dual RX, calibrated RF, or multi-device stability. Device
 aliases must not be counted as independent sources. AD9363 product/multipane,
 distinct dual-AD, canonical 2x2 and all-pane rotation acceptance remain open.
+
+## Experimental RX1 Ethernet + RX2 USB on one AD9363 — 2026-10-04
+
+The user explicitly requested an isolated same-device split-transport experiment.
+Two diagnostic native contexts were enclosed by one root hardware lease; no
+production owner/alias/admission rule was changed. USB and Ethernet were verified
+against the same physical serial and both exposed two digital I/Q channel pairs.
+That topology does not establish two physical RF inputs on an AD9363.
+
+Common settings were identical: center 2450 MHz, Fs 30.72 MS/s, RF bandwidth
+30 MHz, FFT 4096, buffer 262144. Selected channels were Ethernet RX1 and USB RX2.
+The current Ethernet link was 100 Mbps. Short individual baselines delivered
+approximately 2.74 MS/s on Ethernet RX1 and 7.05 MS/s on USB RX2 with fresh FFT
+snapshots. These are bounded host-delivery observations, not sustained limits.
+
+Simultaneous fresh streaming **failed in both start orders**:
+
+- Ethernet RX1 first, then USB RX2: both Start calls returned, but over the next
+  6.0049 seconds both streams delivered zero new samples and zero new spectra.
+  Both still reported RUNNING without a host refill error. RUNNING alone was
+  therefore not treated as a healthy receive result.
+- USB RX2 first, then Ethernet RX1: the first stream initially delivered data;
+  after the second Start a native USB RX2 worker error triggered immediate
+  cleanup. SDK `READ LINE/READ INTEGER -9/-138` diagnostics remain unexplained.
+
+The initial early-exit result is preserved. A second bounded diagnostic recorded
+both counters and exercised the planned reverse order; it did not weaken the
+fresh-data criterion. Both owners were explicitly stopped/disconnected, original
+common RF settings and gain modes were restored/read back, and the hardware
+lease was released. AGC instantaneous gain was not treated as a restorable fixed
+setting. No firmware, server, driver, network or product code was modified.
+
+ADI's [libiio internals documentation](https://wiki.analog.com/resources/tools-software/linux-software/libiio_internals)
+describes shared server-held capture buffers, recreation on client channel-mask
+changes and server/client demultiplexing for multi-client reads. Shared capture
+or mixed-transport handling is a plausible investigation path, not a proven
+cause of this failure. The result does not establish universal impossibility
+or promise additive USB/Ethernet throughput. Production paired RX retains one
+owner/context/buffer on one chosen transport with native fanout. APP-07 physical
+paired, four-source, rotation, performance and release acceptance remain open.
