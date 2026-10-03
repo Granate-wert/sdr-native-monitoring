@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <thread>
 
@@ -298,9 +299,144 @@ void start_race_and_one_sided_failure(Hooks& hooks) {
     nan.disconnect(); require(hooks.contexts() == 0 && hooks.buffers() == 0, "race/NaN cleanup leaked hardware");
     std::cout << "paired check-to-Start Stop race + one-sided final-step NaN PASS\n";
 }
+
+sdr_core::SweepStatisticsConfig statistics(std::uint32_t power_bins = 8) {
+    return {8, power_bins, -140., 20., 128U * 1024U * 1024U, 64};
+}
+void statistics_validation(Hooks& hooks) {
+    sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+    const auto mutations = hooks.mutations(), contexts = hooks.created_contexts();
+    for (int k = 0; k < 5; ++k) {
+        auto p = config(); p.primary.statistics = p.secondary.statistics = statistics();
+        if (k == 0) p.secondary.statistics->window_passes = 0;
+        if (k == 1) p.secondary.statistics->power_max_db = -200.;
+        if (k == 2) p.secondary.statistics->max_payload_bytes = 1;
+        if (k == 3) p.secondary.statistics_snapshot_rate_hz = 0.;
+        if (k == 4) {
+            // Each publisher fits separately; the combined reservation must not.
+            p.primary.statistics = p.secondary.statistics = statistics(192);
+            p.primary.statistics->density_columns = p.secondary.statistics->density_columns = 0;
+            constexpr std::size_t bins = 3756, slots = 21;
+            const auto a = sdr_core::SweepStatisticsAccumulator::required_payload_bytes(*p.primary.statistics, bins, slots);
+            const auto b = sdr_core::SweepStatisticsAccumulator::required_payload_bytes(*p.secondary.statistics, bins, slots);
+            require(a < sdr_core::sweep_max_reduced_bytes && b < sdr_core::sweep_max_reduced_bytes &&
+                a + b > sdr_core::sweep_max_reduced_bytes, "aggregate refusal fixture not individually fitting");
+            sdr_pluto::validate(p.primary); sdr_pluto::validate(p.secondary);
+        }
+        refused([&] { owner.configure_paired(p); });
+    }
+    require(owner.state() == sdr_core::EngineState::Created && hooks.mutations() == mutations &&
+        hooks.created_contexts() == contexts && hooks.buffers() == 0, "statistics refusal mutated owner/RF");
+    owner.disconnect();
+    std::cout << "paired statistics invalid/individual-fit combined-budget preRF PASS\n";
+}
+void statistics_pressure(Hooks& hooks, bool single, bool slow_cadence) {
+    sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+    auto p = config(single);
+    p.primary.output_queue_capacity = p.secondary.output_queue_capacity = 1;
+    p.primary.statistics = statistics(); p.secondary.statistics = statistics(16);
+    p.primary.statistics_snapshot_rate_hz = p.secondary.statistics_snapshot_rate_hz = 1.;
+    if (slow_cadence) p.primary.line_snapshot_rate_hz = p.secondary.line_snapshot_rate_hz = 1.;
+    owner.configure_paired(p); owner.start(); wait_lines(owner, 20); owner.stop();
+    const auto m = owner.metrics();
+    const auto lines = owner.poll_paired_lines(0);
+    require(lines.size() == 1 && lines[0].primary.state == sdr_core::SweepLineState::Gap,
+        "statistics latestwins terminal fixture");
+    require(lines[0].primary.statistics && lines[0].secondary.statistics, "both statistics snapshots missing");
+    const auto& a = *lines[0].primary.statistics; const auto& b = *lines[0].secondary.statistics;
+    require(a.source_id == "opaque-left" && b.source_id == "opaque-right" && a.epoch == b.epoch &&
+        a.newest_pass_sequence == b.newest_pass_sequence && a.unique_passes_seen == b.unique_passes_seen &&
+        a.unique_passes_seen == m.completed_lines + 1 && a.unique_passes_seen > lines.size() &&
+        a.retained_passes == 8 && b.retained_passes == 8 && a.power_bins == 8 && b.power_bins == 16,
+        "statistics counted UI frames or merged receivers");
+    const auto count = std::accumulate(a.observations->begin(), a.observations->end(), std::uint64_t{});
+    require(count > 0 && count == std::accumulate(a.histogram_counts->begin(), a.histogram_counts->end(), std::uint64_t{}) &&
+        count == std::accumulate(a.density_observations->begin(), a.density_observations->end(), std::uint64_t{}),
+        "statistics histogram/density conservation lost");
+    bool differs = false;
+    for (std::size_t k = 0; k < a.average_db->size(); ++k) {
+        if ((*a.observations)[k] == 0) require(std::isnan((*a.average_db)[k]), "missing power became zero");
+        if ((*a.observations)[k] && (*b.observations)[k] && std::abs((*a.average_db)[k] - (*b.average_db)[k]) > 1e-3f)
+            differs = true;
+    }
+    require(differs, "statistics duplicated RX1 in RX2");
+    if (slow_cadence) require(m.line_cadence_snapshots_suppressed > 0 &&
+        m.completed_lines > m.output_queue.pushed && m.segment_reconfigurations == 1,
+        "host cadence throttled analytical statistics or retuned each FFT");
+    else require(m.output_snapshots_superseded > 0, "highpressure fixture did not coalesce");
+    const auto old_snapshot = lines[0].primary.statistics;
+    owner.configure_paired(p); owner.start(); wait_lines(owner, 1); owner.stop();
+    const auto rearmed = owner.poll_paired_lines(0);
+    require(rearmed.size() == 1 && rearmed[0].primary.statistics->epoch > a.epoch &&
+        rearmed[0].primary.statistics->unique_passes_seen == owner.metrics().completed_lines + 1 &&
+        old_snapshot->unique_passes_seen == a.unique_passes_seen, "rearm retained or mutated old statistics");
+    owner.disconnect(); require(hooks.contexts() == 0 && hooks.buffers() == 0, "statistics cleanup leaked");
+    std::cout << "paired statistics " << (single ? "single" : "retuning") <<
+        (slow_cadence ? " slow host cadence" : " latestwins") << " PASS\n";
+}
+void statistics_prefix(Hooks& hooks) {
+    sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+    auto p = config(); p.primary.statistics = statistics(); p.secondary.statistics = statistics();
+    owner.configure_paired(p); owner.set_secondary_nan_step_for_test(1); owner.start();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    while (owner.state() == sdr_core::EngineState::Running && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    owner.request_stop(); owner.join();
+    const auto lines = owner.poll_paired_lines(0);
+    require(owner.state() == sdr_core::EngineState::Error && lines.size() == 1 &&
+        lines[0].primary.statistics && lines[0].secondary.statistics, "prefix statistics missing");
+    for (const auto* frame : {&lines[0].primary, &lines[0].secondary}) {
+        const auto& s = *frame->statistics;
+        require(s.unique_passes_seen == 1 && s.retained_passes == 1, "partial revisions double-counted pass");
+        bool observed = false, missing = false;
+        for (std::size_t k = 0; k < frame->values->size(); ++k) {
+            if (std::isfinite((*frame->values)[k])) { observed = true; require((*s.observations)[k] == 1, "measured prefix omitted"); }
+            else { missing = true; require((*s.observations)[k] == 0 && std::isnan((*s.average_db)[k]), "missing tail contributed power"); }
+        }
+        require(observed && missing, "prefix gap fixture not partial");
+    }
+    owner.disconnect(); require(hooks.contexts() == 0 && hooks.buffers() == 0, "prefix stats cleanup leaked");
+    // Independent optional settings: no unwanted primary publisher.
+    p.primary.statistics.reset();
+    sdr_pluto::ContinuousSweepCoordinator rx2("usb:mock");
+    rx2.configure_paired(p); rx2.start(); wait_lines(rx2, 2); rx2.stop();
+    const auto optional = rx2.poll_paired_lines(0);
+    require(!optional.empty() && !optional.back().primary.statistics && optional.back().secondary.statistics,
+        "optional RX2-only stats produced third primary publisher");
+    rx2.disconnect();
+    std::cout << "paired statistics partial NaN/optional RX2-only PASS\n";
+}
+void statistics_shared_gap(Hooks& hooks) {
+    sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+    auto p = config(true); p.primary.statistics = p.secondary.statistics = statistics();
+    p.primary.segments[0].fixed_band.acquisition_queue_capacity =
+        p.secondary.segments[0].fixed_band.acquisition_queue_capacity = 1;
+    owner.configure_paired(p); owner.set_dsp_delay_for_test(80); owner.start();
+    bool saw_gap = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!saw_gap && std::chrono::steady_clock::now() < deadline && !owner.metrics().has_error) {
+        for (const auto& line : owner.poll_paired_lines(0))
+            if (!line.steps.empty() && line.steps[0].shared_input_gaps_before >= 2) saw_gap = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    owner.set_dsp_delay_for_test(0);
+    const auto before = owner.metrics().completed_lines; wait_lines(owner, before + 8); owner.stop();
+    const auto lines = owner.poll_paired_lines(0);
+    require(saw_gap && !owner.metrics().has_error && !lines.empty(), "shared gap injection unavailable");
+    require(lines.back().primary.statistics && lines.back().secondary.statistics, "shared gap statistics snapshots missing");
+    const auto& a = *lines.back().primary.statistics; const auto& b = *lines.back().secondary.statistics;
+    // Sequence starts at 1: without reset unique == newest, not newest + 1.
+    // Require a strictly smaller count so an omitted reset cannot pass.
+    require(a.unique_passes_seen == b.unique_passes_seen && a.unique_passes_seen < a.newest_pass_sequence &&
+        a.newest_pass_sequence == b.newest_pass_sequence, "shared gap failed to reset both rolling kernels");
+    owner.disconnect(); require(hooks.contexts() == 0 && hooks.buffers() == 0, "shared stats gap cleanup leaked");
+    std::cout << "paired statistics shared synchronization gap reset PASS\n";
+}
 }
 int main() {
-    try { Hooks hooks; validation(hooks); completed(hooks, false); completed(hooks, true); cancellation(hooks); progress_and_failure(hooks); start_race_and_one_sided_failure(hooks); }
+    try { Hooks hooks; validation(hooks); completed(hooks, false); completed(hooks, true); cancellation(hooks); progress_and_failure(hooks); start_race_and_one_sided_failure(hooks);
+        statistics_validation(hooks); statistics_pressure(hooks, false, false); statistics_pressure(hooks, true, false);
+        statistics_pressure(hooks, true, true); statistics_prefix(hooks); statistics_shared_gap(hooks); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     return 0;
 }

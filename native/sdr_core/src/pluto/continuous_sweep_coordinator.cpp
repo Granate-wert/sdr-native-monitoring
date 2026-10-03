@@ -320,12 +320,31 @@ std::uint64_t paired_sweep_payload_bytes(const PairedContinuousSweepCoordinatorC
     // BOTH assemblers/pending FFT prefixes, queued + drained pairs, latest
     // previews and constructing snapshots. Shared pointers may save memory,
     // but admission does not assume sharing. Scalar step vectors included.
-    const auto bytes = 2ULL * (bins * (20ULL * slots + 28ULL) +
+    auto bytes = 2ULL * (bins * (20ULL * slots + 28ULL) +
         config.primary.segments.size() * config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
         config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
         config.primary.segments.size() * (slots * sizeof(PairedSweepStepReceipt) + 512ULL));
     if (bytes > sdr_core::sweep_max_reduced_bytes)
         invalid("paired Sweep exceeds aggregate 128MiB reduced budget");
+    // Each chain may choose independent statistical presentation settings.
+    // BOTH kernels + queued/drained/preview/current snapshots share ONE
+    // component budget. Preflight scalar geometry before constructing grids.
+    // Unlike the legacy single-window relay, this sink attaches statistics
+    // only to these reduced outputs: the paired DSP burst retains no statistics
+    // snapshots. The queue/drain/preview/current bound therefore applies here.
+    for (const auto* chain : {&config.primary, &config.secondary}) {
+        if (!chain->statistics) continue;
+        std::size_t required{};
+        try {
+            required = sdr_core::SweepStatisticsAccumulator::required_payload_bytes(
+                *chain->statistics, static_cast<std::size_t>(bins), static_cast<std::size_t>(slots));
+        } catch (const std::exception& error) {
+            throw sdr_core::ConfigurationError(error.what());
+        }
+        if (required > sdr_core::sweep_max_reduced_bytes - bytes)
+            invalid("paired Sweep statistics exceed aggregate 128MiB reduced budget");
+        bytes += required;
+    }
     return bytes;
 }
 
@@ -349,6 +368,7 @@ public:
         : config_(std::move(config)), bytes_(paired_sweep_payload_bytes(config_)),
           output_(config_.primary.output_queue_capacity, sdr_core::OverflowPolicy::LatestWins) {
         steps_.reserve(config_.primary.segments.size());
+        initialize_statistics();
     }
 
     std::uint64_t payload_bytes() const noexcept override { return bytes_; }
@@ -371,6 +391,7 @@ public:
     std::uint64_t completed() const noexcept { return completed_.load(std::memory_order_relaxed); }
     std::uint64_t gaps() const noexcept { return gaps_.load(std::memory_order_relaxed); }
     std::uint64_t superseded() const noexcept { return superseded_.load(std::memory_order_relaxed); }
+    std::uint64_t cadence_suppressed() const noexcept { return cadence_suppressed_.load(std::memory_order_relaxed); }
     sdr_core::QueueStats queue_stats() const { return output_.stats(); }
     void set_secondary_nan_step_for_test(std::int32_t index) { nan_step_ = index; }
 
@@ -413,14 +434,18 @@ public:
         // BOTH complete contracts before either assembler or receipt mutates.
         // The publisher checks temporal alignment, not finite spectrum values.
         sdr_core::validate(p); sdr_core::validate(q);
+        bool publish_single = true;
         if (config_.primary.segments.size() == 1) {
             const auto now = std::chrono::steady_clock::now();
-            if (now < next_single_line_) return;
-            const auto rate = config_.primary.line_snapshot_rate_hz > 0
-                ? config_.primary.line_snapshot_rate_hz
-                : config_.primary.segments.front().fixed_band.snapshot_rate_hz;
-            next_single_line_ = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::duration<double>(1.0 / rate));
+            publish_single = now >= next_single_line_;
+            if (!publish_single && !primary_statistics_ && !secondary_statistics_) return;
+            if (publish_single) {
+                const auto rate = config_.primary.line_snapshot_rate_hz > 0
+                    ? config_.primary.line_snapshot_rate_hz
+                    : config_.primary.segments.front().fixed_band.snapshot_rate_hz;
+                next_single_line_ = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(1.0 / rate));
+            }
         }
         if (!primary_) {
             if (index_ != 0) throw std::runtime_error("paired Sweep missing acquired prefix");
@@ -444,20 +469,28 @@ public:
             if (left.front().state != sdr_core::SweepLineState::Complete ||
                 right.front().state != sdr_core::SweepLineState::Complete)
                 throw std::runtime_error("paired Sweep did not complete both chains");
-            publish(std::move(left.front()), std::move(right.front()));
+            consume_statistics(left.front(), right.front());
+            if (publish_single) publish(std::move(left.front()), std::move(right.front()));
+            else cadence_suppressed_.fetch_add(1, std::memory_order_relaxed);
             completed_.fetch_add(1, std::memory_order_relaxed);
             ++sequence_;
             steps_.clear();
         } else {
             const auto now = std::chrono::steady_clock::now();
-            if (last_preview_ == std::chrono::steady_clock::time_point{} ||
-                now - last_preview_ >= std::chrono::milliseconds(33)) {
+            const bool publish_preview = last_preview_ == std::chrono::steady_clock::time_point{} ||
+                now - last_preview_ >= std::chrono::milliseconds(33);
+            if (primary_statistics_ || secondary_statistics_ || publish_preview) {
                 auto a = primary_->preview(sequence_);
                 auto b = secondary_->preview(sequence_);
                 if (!a || !b) throw std::runtime_error("paired Sweep progress missing peer");
-                std::lock_guard lock(progress_mutex_);
-                progress_ = PairedSweepProgressFrame{config_.resource_id, std::move(*a), std::move(*b), steps_};
-                last_preview_ = now;
+                const auto steady_ns = monotonic_now_ns();
+                if (primary_statistics_) primary_statistics_->consume(*a, steady_ns);
+                if (secondary_statistics_) secondary_statistics_->consume(*b, steady_ns);
+                if (publish_preview) {
+                    std::lock_guard lock(progress_mutex_);
+                    progress_ = PairedSweepProgressFrame{config_.resource_id, std::move(*a), std::move(*b), steps_};
+                    last_preview_ = now;
+                }
             }
         }
         accepted_.store(true, std::memory_order_release);
@@ -472,6 +505,9 @@ public:
         while (output_.depth() != 0) { PairedSweepLineFrame line; if (!output_.try_pop(line)) break; }
         terminal(sdr_core::SweepLineGapReason::Reconfigure);
         primary_.reset(); secondary_.reset(); steps_.clear();
+        // A new synchronization epoch must not inherit a rolling history.
+        // Retained old gap snapshots remain immutable, but never feed new data.
+        initialize_statistics();
         accepted_.store(false, std::memory_order_release);
         if (config_.primary.segments.size() > 1) {
             failure_gap_ready_.store(true, std::memory_order_release);
@@ -499,6 +535,7 @@ public:
         }
         auto a = left.empty() ? primary_->emit_gap(sequence_, monotonic_now_ns(), reason) : std::move(left.front());
         auto b = right.empty() ? secondary_->emit_gap(sequence_, a.completed_ns, reason) : std::move(right.front());
+        consume_statistics(a, b);
         publish(std::move(a), std::move(b));
         gaps_.fetch_add(1, std::memory_order_relaxed);
         ++sequence_;
@@ -517,6 +554,25 @@ public:
         auto result = std::move(progress_); progress_.reset(); return result;
     }
 private:
+    void initialize_statistics() {
+        primary_statistics_.reset(); secondary_statistics_.reset();
+        auto make = [](const ContinuousSweepCoordinatorConfig& config)
+            -> std::unique_ptr<sdr_core::SweepStatisticsPublisher> {
+            if (!config.statistics) return {};
+            const sdr_core::ContinuousSweepLineAssembler grid(planned_definition(config));
+            return std::make_unique<sdr_core::SweepStatisticsPublisher>(*config.statistics,
+                grid.definition().source, config.epoch, grid.definition().unit, grid.frequencies(),
+                config.statistics_snapshot_rate_hz, 2ULL * config.output_queue_capacity + 5ULL);
+        };
+        primary_statistics_ = make(config_.primary);
+        secondary_statistics_ = make(config_.secondary);
+    }
+    void consume_statistics(sdr_core::SweepLineFrame& a, sdr_core::SweepLineFrame& b) {
+        const auto now = monotonic_now_ns();
+        const bool force = a.state == sdr_core::SweepLineState::Gap;
+        if (primary_statistics_) primary_statistics_->consume(a, now, force);
+        if (secondary_statistics_) secondary_statistics_->consume(b, now, force);
+    }
     void publish(sdr_core::SweepLineFrame a, sdr_core::SweepLineFrame b) {
         { std::lock_guard lock(progress_mutex_); progress_.reset(); }
         if (output_.try_push({config_.resource_id, std::move(a), std::move(b), steps_}) == sdr_core::PushResult::Evicted)
@@ -528,6 +584,7 @@ private:
     std::mutex progress_mutex_;
     std::optional<PairedSweepProgressFrame> progress_;
     std::unique_ptr<sdr_core::ContinuousSweepLineAssembler> primary_, secondary_;
+    std::unique_ptr<sdr_core::SweepStatisticsPublisher> primary_statistics_, secondary_statistics_;
     std::vector<PairedSweepStepReceipt> steps_;
     AppliedConfig applied_;
     std::size_t index_{};
@@ -538,7 +595,7 @@ private:
     std::atomic<bool> accepted_{}, failed_{}, invalidated_{};
     std::atomic<bool> failure_gap_ready_{};
     std::atomic<std::uint64_t> accepted_count_{};
-    std::atomic<std::uint64_t> completed_{}, gaps_{}, superseded_{};
+    std::atomic<std::uint64_t> completed_{}, gaps_{}, superseded_{}, cadence_suppressed_{};
 };
 } // namespace
 
@@ -548,8 +605,6 @@ void validate(const PairedContinuousSweepCoordinatorConfig& value) {
     const auto& q = value.secondary;
     if (value.resource_id.empty() || value.resource_id.find('\0') != std::string::npos)
         invalid("paired Sweep requires explicit resource identity");
-    if (p.statistics || q.statistics)
-        invalid("paired coordinator statistics integration not yet qualified");
     if (p.epoch != q.epoch || p.display_start_hz != q.display_start_hz ||
         p.display_stop_hz != q.display_stop_hz || p.usable_window_hz != q.usable_window_hz ||
         p.analysis_bins_per_usable_window != q.analysis_bins_per_usable_window ||
@@ -581,7 +636,7 @@ public:
         configure_unlocked(std::move(config));
     }
 
-    void configure_unlocked(ContinuousSweepCoordinatorConfig config) {
+    void configure_unlocked(ContinuousSweepCoordinatorConfig config, bool paired_mode = false) {
         const auto current = state_.load(std::memory_order_acquire);
         if (current != sdr_core::EngineState::Created &&
             current != sdr_core::EngineState::Configured &&
@@ -599,7 +654,7 @@ public:
             invalid("continuous sweep coordinator URI differs from its fixed-band segments");
         }
         std::shared_ptr<sdr_core::SweepStatisticsPublisher> statistics;
-        if (config.statistics) {
+        if (config.statistics && !paired_mode) {
             // Queue copies may share snapshots, but reserve the worst case
             // before any Apply/RX. Include drained native relay/output batches,
             // queued items, latest/current preview and a constructing snapshot.
@@ -691,6 +746,10 @@ public:
 
     void configure_paired(PairedContinuousSweepCoordinatorConfig config) {
         std::lock_guard lock(lifecycle_mutex_);
+        const auto current = state_.load(std::memory_order_acquire);
+        if (current != sdr_core::EngineState::Created && current != sdr_core::EngineState::Configured &&
+            current != sdr_core::EngineState::Stopped)
+            invalid("paired coordinator configure requires CREATED, CONFIGURED or STOPPED state");
         validate(config);
         if (last_paired_epoch_ == std::numeric_limits<std::uint64_t>::max())
             invalid("paired Sweep epoch exhausted");
@@ -699,7 +758,7 @@ public:
         auto sink = std::make_shared<PairedSweepConsumer>(config);
         // Install ordinary state and paired controls under the SAME lifecycle
         // lock; another Start cannot observe an intermediate single profile.
-        configure_unlocked(config.primary);
+        configure_unlocked(config.primary, true);
         last_paired_epoch_ = config.primary.epoch;
         paired_config_ = std::move(config);
         paired_ = std::move(sink);
@@ -813,6 +872,7 @@ public:
             result.completed_lines = paired_->completed();
             result.gapped_lines = paired_->gaps();
             result.output_snapshots_superseded = paired_->superseded();
+            result.line_cadence_snapshots_suppressed = paired_->cadence_suppressed();
         }
         return result;
     }
@@ -885,6 +945,7 @@ public:
         start_delay_for_test_ = milliseconds;
     }
     bool start_pending_for_test() const noexcept { return start_pending_for_test_.load(std::memory_order_acquire); }
+    void set_dsp_delay_for_test(std::uint32_t milliseconds) noexcept { engine_.set_dsp_delay_for_test(milliseconds); }
     void set_secondary_nan_step_for_test(std::int32_t index) {
         std::lock_guard lock(lifecycle_mutex_);
         if (state() != sdr_core::EngineState::Configured || !paired_ || index < -1 ||
@@ -1650,5 +1711,6 @@ std::string ContinuousSweepCoordinator::last_error() const { return impl_->last_
 void ContinuousSweepCoordinator::set_start_delay_for_test(std::uint32_t milliseconds) { impl_->set_start_delay_for_test(milliseconds); }
 bool ContinuousSweepCoordinator::start_pending_for_test() const noexcept { return impl_->start_pending_for_test(); }
 void ContinuousSweepCoordinator::set_secondary_nan_step_for_test(std::int32_t index) { impl_->set_secondary_nan_step_for_test(index); }
+void ContinuousSweepCoordinator::set_dsp_delay_for_test(std::uint32_t milliseconds) noexcept { impl_->set_dsp_delay_for_test(milliseconds); }
 
 }  // namespace sdr_pluto

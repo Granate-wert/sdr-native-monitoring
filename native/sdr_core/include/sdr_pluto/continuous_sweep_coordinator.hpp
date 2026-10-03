@@ -103,6 +103,9 @@ struct ContinuousSweepCoordinatorMetrics {
     sdr_core::EngineState state{sdr_core::EngineState::Created};
     bool has_error{};
     sdr_core::QueueStats output_queue;
+    // Constructed complete analytical passes, not paint FPS or queue pushes.
+    // Paired statistics observe every admitted one-window pair even when the
+    // configured host line cadence suppresses its reduced publication.
     std::uint64_t completed_lines{};
     std::uint64_t gapped_lines{};
     // Bounded post-DSP relay between FixedBandEngine and this coordinator.
@@ -111,6 +114,9 @@ struct ContinuousSweepCoordinatorMetrics {
     std::uint32_t line_relay_queue_capacity{};
     std::uint32_t line_relay_queue_high_water{};
     std::uint64_t output_snapshots_superseded{};
+    // Paired single-window statistical passes assembled/consumed before host
+    // line cadence, but not published. Not input/FFT loss or queue eviction.
+    std::uint64_t line_cadence_snapshots_suppressed{};
     std::uint64_t segment_reconfigurations{};
     // Stop/configure/start are successful lifecycle calls for multi-segment
     // Sweep. Frame wait includes polling for the current-generation FFT.
@@ -201,6 +207,7 @@ public:
     void set_start_delay_for_test(std::uint32_t milliseconds);
     [[nodiscard]] bool start_pending_for_test() const noexcept;
     void set_secondary_nan_step_for_test(std::int32_t step_index);
+    void set_dsp_delay_for_test(std::uint32_t milliseconds) noexcept;
     // Native-only queue drain for benchmark/evidence consumers. It releases
     // completed line buffers without materialising their spectrum arrays at
     // the Python boundary.

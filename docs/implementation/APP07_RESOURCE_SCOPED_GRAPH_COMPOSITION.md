@@ -3289,3 +3289,53 @@ actual application regression and physical/visible qualification. Current produc
 pairedSweep refusal is NOT lifted. A native step receipt is not a fabricated
 acquisition/RF-clock receipt. No new EXE/fullV2/frozenpackage/physicalRX/GUI/DPI/
 performance/soak/Linux/release proof; FF02 EXE and staticfirewall path unchanged.
+
+## M3 paired native Sweep statistics — 2026-10-03
+
+The native paired coordinator now owns two independently optional per-RX
+SweepStatisticsPublishers. Both consume each admitted common-step progress or
+terminal pass before preview throttling and latest-wins publication. Multi-step
+Sweep still admits one analytical pair per common LO step, not every repeated
+FFT at that step. Single-window statistics consume every admitted pair before
+the configured host line cadence; snapshot cadence controls refresh cost only.
+Partial revisions replace the same pass. Missing NaN bins contribute no power
+or histogram/density observations. Terminal gaps force a fresh snapshot.
+
+Both kernels and retained reduced snapshots are counted once in the existing
+shared128MiB component/512MiB whole-owner admission before allocation/RF. Each
+chain's own payload limit also applies; independently fitting chains can refuse
+when their sum exceeds the shared cap. Paired configure does not allocate the
+ordinary third RX1 publisher. This is payload admission, not an allocator/RSS/
+transient-peak or unlimited caller-retention guarantee.
+
+Shared synchronization gaps preserve the measured terminal prefix and reset both
+rolling histories before fresh paired data. Rearm creates fresh Sweep epoch and
+kernels; retained snapshots remain immutable. completed_lines counts constructed
+analytical passes, not queue pushes or paint FPS. The separate
+line_cadence_snapshots_suppressed counter reports unpublished statistical passes,
+not native input/FFT loss or queue eviction. Compiled statistics protocol version1
+is a native boundary marker, not product lease/receipt admission. The native-only
+DSP-delay fault-injection seam is not exposed to Python.
+
+Matching WindowsCPU HFRTL build and final46/46CTest56.69s plus serial37/37 binding/
+application tests28.913s0skip passed. Four new compiled cases cover per-RX data,
+cadence/coalescing, optional RX2-only settings, progressive/terminal replacement,
+read-only nested arrays and lifetime after owner release. Native tests additionally
+cover combined-budget refusal, one-sided invalid FFT prefix and shared-gap reset.
+Independent source review found a weak reset assertion; it was strengthened.
+A deliberate mock reset-omission mutation failed the intended assertion, then
+reset was restored and the exact final gates passed. This is mock regression
+protection, NOT an observed hardware fault or physical dual-RX proof.
+
+Native module SHA256:
+5f2f7e97a90623c468f5c3d497ca5d47f769da5b7f04149f906980d5a053df74.
+Immutable reviewed five-file patch SHA256:
+460b797aea96958feb00947f6fe7f438763d72074c33e33669d76840ba35f01b.
+Review/QA agents were configured gpt-6-sol/high and gpt-6-luna/high; runtime model
+attestation unavailable. Root implemented, built and verified the exact candidate.
+
+Product pairedSweep refusal remains in place pending SAME NativeLive control/
+recording owner, exclusive modelease and full owner-bound observed receipts.
+Sequential exceptional allocations are not an atomic persistent group ledger.
+No new EXE/fullV2/frozen-package/physicalRX/GUI/performance/soak/Linux/release
+qualification; FF02 EXE/staticfirewall path unchanged. APP07/fullAPP00..14 OPEN.

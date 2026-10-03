@@ -30,6 +30,7 @@ def run_case(path: str, case: str) -> None:
     spec.loader.exec_module(native)
     assert Path(native.__file__).resolve() == module_path
     assert native.PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION == 1
+    assert native.PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION == 1
     hooks = ctypes.CDLL(os.environ["LIBIIO_DLL_PATH"])
     hooks.mock_iio_set_phase_gate.argtypes = [ctypes.c_int, ctypes.c_longlong, ctypes.c_int]
     rx = native.PlutoReceiverSelection
@@ -69,16 +70,23 @@ def run_case(path: str, case: str) -> None:
             assert time.monotonic() < deadline, "bounded mock operation timed out"
             time.sleep(.001)
 
-    single = case == "single"
+    single = case in ("single", "stats-single")
+    with_stats = case.startswith("stats-")
+    stats = native.SweepStatisticsConfig(8, 8, -140., 20., 128 * 1024 * 1024, 64) if with_stats else None
+    secondary_stats = native.SweepStatisticsConfig(8, 16, -140., 20., 128 * 1024 * 1024, 64) if with_stats else None
+    queue = 1 if case in ("stats-retuning", "stats-single", "stats-optional") else 8
+    rate = 1. if case == "stats-single" else 2000.
     config = native.PairedContinuousSweepCoordinatorConfig("admitted-resource",
-        plan(rx.RX1, "opaque-left", single=single), plan(rx.RX2, "opaque-right", single=single))
+        plan(rx.RX1, "opaque-left", single=single, queue=queue, rate=rate,
+             statistics=None if case == "stats-optional" else stats),
+        plan(rx.RX2, "opaque-right", single=single, queue=queue, rate=rate, statistics=secondary_stats))
     immutable(config, "resource_id", "changed")
     immutable(config.primary, "epoch", 0)
     # No callback/raw-IQ/test-control escape from this reduced polling surface.
     for name in ("StartAdmissionGate", "PairedSpectrumAnalyticalSink"):
         assert not hasattr(native, name)
     for name in ("push_iq", "refill", "set_start_delay_for_test", "start_pending_for_test",
-                 "set_secondary_nan_step_for_test", "start_guarded"):
+                 "set_secondary_nan_step_for_test", "set_dsp_delay_for_test", "start_guarded"):
         assert not hasattr(native.NativeContinuousSweepCoordinator, name)
     for cls in (native.PairedSweepStepReceipt, native.PairedSweepLineFrame, native.PairedSweepProgressFrame):
         refuses(cls, TypeError)
@@ -95,10 +103,15 @@ def run_case(path: str, case: str) -> None:
                                     ("group", plan(rx.RX2, "opaque-right", queue=4)),
                                     ("group", plan(rx.RX2, "opaque-right", timeout=1000)),
                                     ("group", plan(rx.RX2, "opaque-right", statistics=
-                                        native.SweepStatisticsConfig(16, 32, -120., 0., 128 * 1024 * 1024)))):
+                                        native.SweepStatisticsConfig(16, 32, -120., 0., 1)))):
             refuses(lambda: native.PairedContinuousSweepCoordinatorConfig(resource, config.primary, secondary))
         assert hooks.mock_iio_rf_mutation_calls() == before
         assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
+        large = native.SweepStatisticsConfig(8, 192, -140., 20., 128 * 1024 * 1024)
+        # Individual configs are legal; combined pair must refuse before open.
+        left, right = plan(rx.RX1, "opaque-left", statistics=large), plan(rx.RX2, "opaque-right", statistics=large)
+        refuses(lambda: native.PairedContinuousSweepCoordinatorConfig("group", left, right))
+        assert hooks.mock_iio_rf_mutation_calls() == before and hooks.mock_iio_live_contexts() == 0
         return
 
     before_contexts = hooks.mock_iio_created_contexts()
@@ -106,6 +119,22 @@ def run_case(path: str, case: str) -> None:
     owner = native.NativeContinuousSweepCoordinator("usb:mock")
     saved_arrays = []
     saved_values = []
+
+    def retain_statistics(frame):
+        snapshot = frame.statistics
+        assert snapshot is not None
+        assert snapshot.source_id == frame.source.source_id and snapshot.epoch == frame.epoch
+        immutable(snapshot, "unique_passes_seen", 0)
+        for name in ("frequencies_hz", "average_db", "observations", "histogram_counts",
+                     "density_frequency_edges_hz", "density_observations", "probability"):
+            array = getattr(snapshot, name)
+            assert not array.flags.writeable
+            refuses(lambda: array.setflags(write=True), ValueError)
+            saved_arrays.append(array)
+            saved_values.append(array.copy())
+        assert int(snapshot.observations.sum()) == int(snapshot.histogram_counts.sum()) == int(snapshot.density_observations.sum())
+        assert np.all(np.isnan(snapshot.average_db[snapshot.observations == 0]))
+        return snapshot
     try:
         writes = hooks.mock_iio_rf_mutation_calls()
         owner.configure_paired(config)
@@ -116,10 +145,10 @@ def run_case(path: str, case: str) -> None:
             refuses(call)
         assert owner.discard_lines() == 0  # Scalar drain supports pairs, but Start has not produced any.
         refuses(lambda current=owner: current.poll_paired_lines(-1), TypeError)
-        if case == "progress":
+        if case in ("progress", "stats-progress"):
             hooks.mock_iio_set_phase_gate(1, 2_470_000_000, 1)
         owner.start()
-        if case == "progress":
+        if case in ("progress", "stats-progress"):
             wait(lambda: hooks.mock_iio_phase_gate_entered() != 0)
             assert hooks.mock_iio_phase_gate_expired() == 0
             progress = owner.poll_paired_progress()
@@ -132,6 +161,11 @@ def run_case(path: str, case: str) -> None:
             assert not progress.primary.values.flags.writeable
             saved_arrays.append(progress.primary.values)
             saved_values.append(progress.primary.values.copy())
+            if with_stats:
+                for frame in (progress.primary, progress.secondary):
+                    snapshot = retain_statistics(frame)
+                    assert snapshot.unique_passes_seen == 1
+                    assert np.any(snapshot.observations == 1) and np.any(snapshot.observations == 0)
             owner.request_stop()
             hooks.mock_iio_release_phase_gate()
             owner.join()
@@ -139,6 +173,9 @@ def run_case(path: str, case: str) -> None:
             gaps = owner.poll_paired_lines()
             assert len(gaps) == 1 and gaps[0].primary.state == gaps[0].secondary.state == "gap"
             assert "cancellation" in gaps[0].primary.gap_reasons
+            if with_stats:
+                for frame in (gaps[0].primary, gaps[0].secondary):
+                    assert retain_statistics(frame).unique_passes_seen == 1  # terminal replaces partial pass
         elif case == "error":
             wait(lambda current=owner: current.metrics().has_error)
             owner.join()
@@ -147,6 +184,40 @@ def run_case(path: str, case: str) -> None:
             assert len(gaps) == 1 and gaps[0].primary.state == gaps[0].secondary.state == "gap"
             assert len(gaps[0].steps) == 1
             assert gaps[0].steps[0].center_frequency_hz == 2_440_000_000.
+        elif with_stats:
+            wait(lambda current=owner: current.metrics().has_error or current.metrics().completed_lines >= 20)
+            assert not owner.metrics().has_error, owner.last_error()
+            owner.stop()
+            metrics = owner.metrics()
+            lines = owner.poll_paired_lines()
+            assert len(lines) == 1 and lines[0].primary.state == lines[0].secondary.state == "gap"
+            pair = lines[0]
+            right = retain_statistics(pair.secondary)
+            assert right.unique_passes_seen == metrics.completed_lines + 1 > len(lines)
+            assert right.retained_passes == 8
+            if case == "stats-optional":
+                assert pair.primary.statistics is None
+            else:
+                left = retain_statistics(pair.primary)
+                assert left.unique_passes_seen == right.unique_passes_seen
+                assert left.newest_pass_sequence == right.newest_pass_sequence and left.power_bins != right.power_bins
+                finite = np.isfinite(left.average_db) & np.isfinite(right.average_db)
+                assert np.any(np.abs(left.average_db[finite] - right.average_db[finite]) > .001)
+            if single:
+                assert metrics.line_cadence_snapshots_suppressed > 0
+                assert metrics.completed_lines > metrics.output_queue.pushed and metrics.segment_reconfigurations == 1
+            else:
+                assert metrics.output_snapshots_superseded > 0
+            epoch = pair.primary.epoch
+            owner.configure_paired(config)
+            assert not owner.poll_paired_lines() and owner.poll_paired_progress() is None
+            owner.start()
+            wait(lambda current=owner: current.metrics().has_error or current.metrics().completed_lines > 0)
+            assert not owner.metrics().has_error, owner.last_error()
+            owner.stop()
+            fresh = owner.poll_paired_lines()[-1]
+            assert fresh.secondary.statistics.epoch > epoch
+            assert fresh.secondary.statistics.unique_passes_seen == owner.metrics().completed_lines + 1
         else:
             wait(lambda current=owner: current.metrics().has_error or current.metrics().completed_lines >= (8 if single else 3))
             assert not owner.metrics().has_error, owner.last_error()
@@ -245,6 +316,18 @@ class PairedSweepBindingTests(unittest.TestCase):
 
     def test_firstcause_and_aligned_failed_prefix(self) -> None:
         self.run_native("error")
+
+    def test_statistics_retuning_before_latestwins_and_lifetime(self) -> None:
+        self.run_native("stats-retuning")
+
+    def test_statistics_single_before_host_cadence(self) -> None:
+        self.run_native("stats-single")
+
+    def test_statistics_partial_progress_and_terminal_replacement(self) -> None:
+        self.run_native("stats-progress")
+
+    def test_statistics_optional_secondary_only(self) -> None:
+        self.run_native("stats-optional")
 
 
 if __name__ == "__main__":

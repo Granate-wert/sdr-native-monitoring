@@ -75,6 +75,7 @@ void bind_pluto(py::module_& module) {
     // This identifies the reduced native boundary, not product lease/receipt
     // admission or physical paired-Sweep qualification.
     module.attr("PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION") = 1;
+    module.attr("PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION") = 1;
     py::class_<sdr_core::DualRxChannelDspConfig>(module, "DualRxChannelDspConfig")
         .def(py::init([](
             const sdr_core::SourceDescriptor& source,
@@ -1034,6 +1035,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("line_relay_queue_capacity", &sdr_pluto::ContinuousSweepCoordinatorMetrics::line_relay_queue_capacity)
         .def_readonly("line_relay_queue_high_water", &sdr_pluto::ContinuousSweepCoordinatorMetrics::line_relay_queue_high_water)
         .def_readonly("output_snapshots_superseded", &sdr_pluto::ContinuousSweepCoordinatorMetrics::output_snapshots_superseded)
+        .def_readonly("line_cadence_snapshots_suppressed", &sdr_pluto::ContinuousSweepCoordinatorMetrics::line_cadence_snapshots_suppressed)
         .def_readonly("segment_reconfigurations", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_reconfigurations)
         .def_readonly("segment_stop_timing", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_stop_timing)
         .def_readonly("segment_configure_timing", &sdr_pluto::ContinuousSweepCoordinatorMetrics::segment_configure_timing)
