@@ -85,7 +85,7 @@ class LiveSessionPort(Protocol):
 class LiveSessionUseCases(Protocol):
     """Application operations consumed by the Qt presenter."""
 
-    def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]: ...
+    def discover(self, *, startup: bool = False, local_only: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]: ...
     def select_device(self, device_id: str) -> LiveSnapshot: ...
     def select_manual_uri(self, uri: str) -> LiveSnapshot: ...
     def current_snapshot(self) -> LiveSnapshot: ...
@@ -538,14 +538,17 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             self._sources.require_ad936x_controls()
 
     @_pane_exclusive_command
-    def discover(self, *, startup: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]:
+    def discover(self, *, startup: bool = False, local_only: bool = False) -> tuple[DeviceDescriptor | AnalyzerSourceChoice, ...]:
+        if type(local_only) is not bool or (startup and local_only):
+            raise ValueError("explicit local discovery is distinct from startup discovery")
         if self._sources is not None:
             try:
-                return self._sources.discover(startup=startup)
+                return (self._sources.discover(local_only=True) if local_only else
+                        self._sources.discover(startup=startup))
             finally:
                 if self._rtbw is not None:
                     self._rtbw.refresh_selection()
-        return self._port.discover_startup_devices() if startup else self._port.discover_devices()
+        return self._port.discover_startup_devices() if startup or local_only else self._port.discover_devices()
 
     @_pane_exclusive_command
     def select_device(self, device_id: str) -> LiveSnapshot:

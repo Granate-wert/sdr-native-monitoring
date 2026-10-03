@@ -325,7 +325,8 @@ class RetainedCapabilityCatalogTests(unittest.TestCase):
             services = build_default_sdr_services()
         self.assertIs(services.live_sdr, live)
         self.assertIsNotNone(services.device_catalog)
-        self.assertEqual(len(services.device_catalog.snapshot().runtimes), 3)
+        self.assertEqual(tuple(runtime.family for runtime in services.device_catalog.snapshot().runtimes),
+                         (DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.TINYSA, DeviceFamily.RTL_SDR))
         self.assertEqual(live._native.created, [])
         self.assertEqual(live._native.scans, [])
 

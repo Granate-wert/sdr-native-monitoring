@@ -48,6 +48,11 @@ class NativeLiveCapabilityProvider:
         (self._live.discover_startup_devices if startup_only else self._live.discover_devices)()
         return self._live.capability_inventory()
 
+    def discover_local(self) -> DeviceCapabilityInventory:
+        """Explicit local scan: reuse the existing USB-only native path."""
+        self._live.discover_startup_devices()
+        return self._live.capability_inventory()
+
     def observe_source(self, source_id: str) -> DeviceCapabilityInventory:
         result = self._live.select_device(source_id)
         if result.error is not None:

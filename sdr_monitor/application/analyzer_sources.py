@@ -14,7 +14,7 @@ from ..domain.live import DeviceDescriptor, LiveAdmissionRejected, LiveSnapshot
 class SourceCatalogPort(Protocol):
     @property
     def cleanup_pending(self) -> bool: ...
-    def refresh(self, *, startup_only: bool = False) -> DeviceCapabilityInventory: ...
+    def refresh(self, *, startup_only: bool = False, local_only: bool = False) -> DeviceCapabilityInventory: ...
     def snapshot(self) -> DeviceCapabilityInventory: ...
     def observe_source(self, source_id: str) -> DeviceCapabilityInventory: ...
     def close(self) -> None: ...
@@ -78,11 +78,15 @@ class AnalyzerSourceSelectionApplicationService:
             values.append(AnalyzerSourceChoice(binding, inventory.runtime_for_adapter(binding.adapter_id), label, transport))
         return tuple(values)
 
-    def discover(self, *, startup: bool = False) -> tuple[AnalyzerSourceChoice, ...]:
+    def discover(self, *, startup: bool = False, local_only: bool = False) -> tuple[AnalyzerSourceChoice, ...]:
+        if type(local_only) is not bool or (startup and local_only):
+            raise ValueError("explicit local discovery is distinct from startup discovery")
         with self._control_transaction():
             revision = self._invalidate()
             try:
-                choices = self._choices(self._catalog.refresh(startup_only=startup))
+                inventory = (self._catalog.refresh(local_only=True) if local_only else
+                             self._catalog.refresh(startup_only=startup))
+                choices = self._choices(inventory)
             except Exception:  # noqa: BLE001 - preserve quarantine and redact SDK details at the public boundary.
                 self._failed(revision)
                 raise RuntimeError("Source discovery failed closed") from None

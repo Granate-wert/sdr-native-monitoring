@@ -135,7 +135,9 @@ class SourceCapabilityCatalog:
             raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_CONTRACT) from None
         return self._inventory
 
-    def refresh(self, *, startup_only: bool = False) -> DeviceCapabilityInventory:
+    def refresh(self, *, startup_only: bool = False, local_only: bool = False) -> DeviceCapabilityInventory:
+        if type(local_only) is not bool or (startup_only and local_only):
+            raise ValueError("explicit local discovery is distinct from startup discovery")
         with self._operation(), self._control_transaction():
             self._require_released()
             # Invalidate old physical facts before new side effects. A failed
@@ -145,7 +147,16 @@ class SourceCapabilityCatalog:
             failures = []
             for provider in self._providers:
                 try:
-                    part = self._validated(provider, provider.discover(startup_only=startup_only))
+                    if local_only and provider.family is DeviceFamily.AD936X:
+                        # A user USB scan is not startup: local RTL enumeration
+                        # must run, while AD936x must never fall back to IP.
+                        local_discover = getattr(provider, "discover_local", None)
+                        if not callable(local_discover):
+                            raise CapabilityCatalogError(CapabilityCatalogReason.PROVIDER_CONTRACT)
+                        observed = local_discover()
+                    else:
+                        observed = provider.discover(startup_only=startup_only)
+                    part = self._validated(provider, observed)
                     self._require_released()
                     self._parts[provider.adapter_id] = part
                 except Exception as error:  # noqa: BLE001 - a provider boundary must redact SDK/route details.
