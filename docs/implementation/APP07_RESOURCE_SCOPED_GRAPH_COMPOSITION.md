@@ -3403,3 +3403,49 @@ enabled paired Sweep in product panes. Product-assigned acquisition/run epochs,
 full observed per-step receipts, paired display conversion and both-producer
 CaptureJob delivery remain OPEN. No physical RX, UI change, new EXE, full V2
 gate, four-source HIL, throughput, soak or release qualification is claimed.
+
+## M3 paired run identity and observed reduced publications
+
+The paired application lease now allocates an application acquisition-attempt
+epoch inside the exact admitted Start transaction. It is NOT copied from the
+native configuration/Sweep/synchronization epochs. A failed Start consumes its
+attempt number but installs no active run. Configure remains inert; Stop and
+request_stop invalidate the run before native cleanup, including failed cleanup.
+
+The bound coordinator offers bounded observed line/progress polling. Both native
+scalar step prefixes are checked against the exact owner-held request, selected
+device serial, typed RX1/RX2 metadata, actual generation/sync/Fs/filter/center/FFT,
+sample indices/time and chain acquisition flags BEFORE either reduced grid is
+converted. One immutable run retains session/device/topology/selection revision
+and common plan/profile. BOTH converted views are checked together; their grids,
+partitions and acquisitions cannot disagree. Native first observed Sweep epoch
+is retained separately and cannot change within a run or regress across rearm.
+
+Only actual immutable native packets read from that coordinator enter this
+admission path. Caller-constructed domain receipts do not authorize hardware.
+Unknown timestamp provenance/clock domain remain UNKNOWN/None; retained producer
+timestamps do not become hardware timing. The native step wire does not expose
+gain readback, so requested gain/profile is intent, NOT per-step observed gain.
+Paired admission requires a known normalized serial, not just a nonblank
+placeholder. Receipt comparison rejects an absent normalized selected serial.
+
+Product reservation protocol v1 adds a conservative immutable downstream payload
+reservation to the SAME native Sweep sink. Typed receipt/scalar-object overhead,
+BOTH full owned terminal arrays (36 bytes/bin/pair/retained slot), plus a
+conservative 64 bytes/bin sequential conversion/validation scratch allowance,
+and 64 bytes/density-cell per RX for statistics validation temporaries count
+inside the aggregate
+128MiB component and whole-owner512MiB preflight BEFORE context/RF. Observed
+drain batches cannot exceed their admitted output capacity; no second allowance
+or silent quality/FFT/Fs reduction. Legacy native-only configs retain zero extra
+reservation, but older modules cannot admit this product conversion path.
+
+This advances the internal BOTH-receiver reduced conversion path, not user pane
+enablement. Common CaptureJob delivery, terminal archival versus active-history
+rules, full remaining readback qualification and paired pane admission remain
+OPEN. A zero-prefix native planned-source gap has no observed serial and is
+explicitly NOT admitted as an observed physical receipt. Existing native terminal
+queues/partial flush are unchanged; after Stop
+active observed polling refuses rather than re-admitting retired history. No
+EXE, physical RX, visible UI, HIL, performance or release proof is implied by
+source/compiled-mock tests. A matching native build/test is required separately.

@@ -326,6 +326,9 @@ std::uint64_t paired_sweep_payload_bytes(const PairedContinuousSweepCoordinatorC
         config.primary.segments.size() * (slots * sizeof(PairedSweepStepReceipt) + 512ULL));
     if (bytes > sdr_core::sweep_max_reduced_bytes)
         invalid("paired Sweep exceeds aggregate 128MiB reduced budget");
+    if (config.product_publication_reserved_bytes > sdr_core::sweep_max_reduced_bytes - bytes)
+        invalid("paired Sweep product publication exceeds aggregate 128MiB reduced budget");
+    bytes += config.product_publication_reserved_bytes;
     // Each chain may choose independent statistical presentation settings.
     // BOTH kernels + queued/drained/preview/current snapshots share ONE
     // component budget. Preflight scalar geometry before constructing grids.

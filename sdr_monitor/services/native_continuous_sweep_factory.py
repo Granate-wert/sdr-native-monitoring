@@ -10,7 +10,9 @@ from typing import Any, Callable
 
 from ..domain import BackendKind, LiveConfiguration
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
-from ..domain.paired_sweep import PairedSweepRequest
+from ..domain.paired_sweep import PairedSweepRequest, PairedSweepRunIdentity
+from ..domain.paired_sweep_publication import PairedSweepPublication
+from .native_paired_sweep_receipts import observed_paired_publication
 from ..domain.continuous_sweep_geometry import sweep_segment_count, sweep_step_geometry
 from ..domain.sweep_speed import SweepSpeedProfile
 from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET
@@ -57,7 +59,7 @@ class NativeContinuousSweepPlanFactory:
         lease = application.acquire_paired_sweep_lease(request)
         if (lease.paired_request is not request or lease.paired_configuration is None
                 or lease.control_transaction is None or lease.construct_owner is None
-                or lease.cleanup_transaction is None):
+                or lease.cleanup_transaction is None or lease.allocate_paired_run is None):
             lease.release()
             raise RuntimeError("paired Sweep requires admitted application/native authority")
         return cls(lease)
@@ -252,10 +254,11 @@ class NativeContinuousSweepPlanFactory:
                                    request: PairedSweepRequest) -> Any:
         """Pure combined native budget/geometry admission BEFORE context open."""
         for name in ("PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION",
-                     "PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION"):
+                     "PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION",
+                     "PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION"):
             value = getattr(native, name, None)
             if type(value) is not int or value != 1:
-                raise RuntimeError("paired Sweep native reduced/statistics protocol v1 required")
+                raise RuntimeError("paired Sweep native reduced/statistics/product reservation protocol v1 required")
         if request.pair.configuration != source.live_configuration:
             raise ValueError("paired Sweep profile differs from admitted Live profile")
         preflight = NativeContinuousSweepPlanFactory.preflight_native_profile(
@@ -267,7 +270,32 @@ class NativeContinuousSweepPlanFactory:
                                              (request.pair.secondary_source_id, rx.RX2))]
         # Native validates both reduced/statistics/whole-owner budgets together.
         # No second full memory allowance; no RF in config constructors.
-        return native.PairedContinuousSweepCoordinatorConfig(request.resource_id, *plans)
+        # Native queued+drained+preview/current pair slots. 4KiB/step bounds
+        # Python identities, BOTH observations/acquisitions/generation tuples,
+        # wrappers and scalar object overhead; shared request/profile not copied.
+        # Each terminal domain chain OWNS f64 frequency + f32 value + i32
+        # source + u16 quality (18B/bin): BOTH copies need 36B/bin per slot.
+        # Progress arrays are immutable native views already counted upstream;
+        # reserve the larger terminal ownership even for progress slots. Another
+        # 64B/bin bounds sequential conversion/validation scratch (quality cast,
+        # chunk-local masks/np.isin and full-grid pair comparisons), not a second
+        # retained batch. This deliberate upper bound is not measured RSS.
+        # Conservative payload reservation, not RSS measurement: SAME native
+        # Sweep sink component128MiB/whole512MiB preflight counts it once.
+        slots = 2 * request.sweep.output_queue_capacity + 5
+        reserved = preflight.segment_count * (slots + 1) * 4096
+        reserved += preflight.reduced.output_bins * (36 * slots + 64) + (slots + 1) * 4096
+        if request.sweep.statistics is not None:
+            # Density validation takes boolean/fancy-index copies and float
+            # products/allclose scratch over CELLS, not measurement bins.
+            # Native immutable statistics views stay budgeted upstream. Reserve
+            # 64B/cell for EACH chain conservatively even though validation is
+            # sequential; neither a cache nor native retained slots pays for it.
+            cells = min(preflight.reduced.output_bins,
+                        request.sweep.statistics.density_columns) * request.sweep.statistics.power_bins
+            reserved += 2 * 64 * cells
+        return native.PairedContinuousSweepCoordinatorConfig(
+            request.resource_id, *plans, product_publication_reserved_bytes=reserved)
 
     def build_paired(self) -> Any:
         with self.control_transaction():
@@ -380,24 +408,40 @@ class _AdmittedPairedSweepCoordinator:
 
     Raw native coordinator remains registered with NativeLive for cleanup.
     Reduced polling is bounded; no IQ/callback/native configure escape hatch.
-    Full product run/step receipts are a separate bridge, not supplied here.
+    Application run identity and checked per-step reduced publications are
+    owner-issued here; actual pane/CaptureJob delivery remains separate.
     """
 
     def __init__(self, factory: NativeContinuousSweepPlanFactory, owner: Any, configuration: Any):
         self._factory, self._owner, self._configuration = factory, owner, configuration
+        self._operation_lock = threading.RLock()
+        self._run: PairedSweepRunIdentity | None = None
+        self._observed_sweep_epoch: int | None = None
+        self._last_sweep_epoch: int | None = None
 
     def configure(self, configuration: Any) -> None:
         raise RuntimeError("paired Sweep owner cannot configure a single-producer plan")
 
     def configure_paired(self, configuration: Any) -> None:
-        with self._factory.control_transaction():
+        with self._operation_lock, self._factory.control_transaction():
             if configuration is not self._configuration:
                 raise RuntimeError("paired Sweep owner requires its exact admitted configuration")
             self._owner.configure_paired(configuration)
+            self._run = None
 
-    def start(self) -> None:
-        with self._factory.control_transaction():
+    def start(self) -> PairedSweepRunIdentity:
+        with self._operation_lock, self._factory.control_transaction():
+            if self._owner.state() != self._factory._lease.native_module.EngineState.CONFIGURED:
+                raise RuntimeError("paired Sweep Start requires an explicitly configured stopped plan")
+            allocate = self._factory._lease.allocate_paired_run
+            if allocate is None:
+                raise RuntimeError("paired Sweep Start lacks application run authority")
+            self._run = None
+            run = allocate()  # Attempt consumed even if native Start partially fails.
             self._owner.start()
+            self._observed_sweep_epoch = None
+            self._run = run
+            return run
 
     @contextmanager
     def _cleanup(self):
@@ -405,11 +449,12 @@ class _AdmittedPairedSweepCoordinator:
         transaction = self._factory._lease.cleanup_transaction
         if transaction is None:
             raise RuntimeError("paired Sweep owner lacks cleanup authority")
-        with transaction():
+        with self._operation_lock, transaction():
             yield
 
     def request_stop(self) -> None:
         with self._cleanup():
+            self._run = None  # Invalidate BEFORE native Stop, including failed cleanup.
             state = self._owner.state()
             native_state = self._factory._lease.native_module.EngineState
             if state not in (native_state.CREATED, native_state.CONFIGURED):
@@ -421,13 +466,58 @@ class _AdmittedPairedSweepCoordinator:
 
     def stop(self) -> None:
         with self._cleanup():
+            self._run = None
             state = self._owner.state()
             native_state = self._factory._lease.native_module.EngineState
             if state not in (native_state.CREATED, native_state.CONFIGURED):
                 self._owner.stop()
 
     def disconnect(self) -> None:
-        self._factory.close()  # NativeLive closes raw owner before releasing both claims.
+        with self._operation_lock:
+            self._run = None
+            self._factory.close()  # NativeLive closes raw owner before releasing both claims.
+
+    @property
+    def active_run(self) -> PairedSweepRunIdentity | None:
+        with self._operation_lock:
+            if self._factory._closed:
+                return None
+            self._factory._lease.assert_active()
+            return self._run
+
+    def _observe(self, value: Any, *, progress: bool = False) -> PairedSweepPublication:
+        run = self._run
+        if run is None:
+            raise RuntimeError("paired Sweep publication has no active admitted run")
+        native = self._factory._lease.native_module
+        frame_type = native.PairedSweepProgressFrame if progress else native.PairedSweepLineFrame
+        if type(value) is not frame_type:
+            raise TypeError("paired Sweep requires the immutable native publication type")
+        epoch = value.primary.epoch
+        if (self._observed_sweep_epoch is not None and epoch != self._observed_sweep_epoch
+                or self._observed_sweep_epoch is None and self._last_sweep_epoch is not None
+                and epoch <= self._last_sweep_epoch):
+            raise ValueError("paired Sweep native epoch is stale or changed within the active run")
+        publication = observed_paired_publication(value, run, progress=progress)
+        self._observed_sweep_epoch = self._last_sweep_epoch = epoch
+        return publication
+
+    def poll_observed_lines(self, max_items: int | None = None) -> tuple[PairedSweepPublication, ...]:
+        with self._operation_lock, self._factory.control_transaction():
+            if self._run is None:
+                raise RuntimeError("paired Sweep has no active admitted run")
+            capacity = self._run.request.sweep.output_queue_capacity
+            max_items = capacity if max_items is None else max_items
+            if type(max_items) is not int or not 1 <= max_items <= capacity:
+                raise ValueError("observed paired Sweep batch exceeds its reserved output capacity")
+            return tuple(self._observe(value) for value in self.poll_paired_lines(max_items))
+
+    def poll_observed_progress(self) -> PairedSweepPublication | None:
+        with self._operation_lock, self._factory.control_transaction():
+            if self._run is None:
+                raise RuntimeError("paired Sweep has no active admitted run")
+            value = self.poll_paired_progress()
+            return self._observe(value, progress=True) if value is not None else None
 
     def poll_paired_lines(self, max_items: int = 8) -> list[Any]:
         if type(max_items) is not int or not 1 <= max_items <= 64:

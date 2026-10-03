@@ -124,6 +124,7 @@ class LiveSessionApplicationService:
         self._pane_application_lock = RLock()
         self._pane_control_thread = local()
         self._pane_control_claim: object | None = None
+        self._paired_sweep_acquisition_epoch = 0
         self._rf_receipt: AnalyzerRfApplyReceipt | None = None
         self._rf_receipt_acknowledged = False
         self._rf_receipt_failed = False
@@ -511,9 +512,19 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
                 with lease.cleanup_transaction():
                     yield
 
+        def allocate_paired_run():
+            from ..domain.paired_sweep import PairedSweepRunIdentity
+
+            with control_transaction():
+                if self._paired_sweep_acquisition_epoch >= (1 << 64) - 1:
+                    raise RuntimeError("paired Sweep application acquisition epoch exhausted")
+                self._paired_sweep_acquisition_epoch += 1
+                return PairedSweepRunIdentity(request, self._paired_sweep_acquisition_epoch,
+                                              self.current_snapshot())
+
         return NativeSweepLease(lease.native_module, lease.source, assert_active, release,
             lease.validate_continuous_request, control_transaction, construct_owner,
-            lease.paired_request, lease.paired_configuration, cleanup_transaction)
+            lease.paired_request, lease.paired_configuration, cleanup_transaction, allocate_paired_run)
 
     def _require_native_family(self) -> None:
         if self._sources is not None:

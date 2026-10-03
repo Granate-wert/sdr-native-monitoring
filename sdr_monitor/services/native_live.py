@@ -1218,6 +1218,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     # Application checks the actual selection revision while holding
                     # SAME recording/control authority; native checks its own facts.
                     paired_request.validate_applied(snapshot, paired_request.selection_revision)
+                    if normalized_pluto_serial(snapshot.device.serial) is None:
+                        raise ValueError("paired Sweep requires a known normalized device serial")
                 if snapshot.applied.applied.backend is not BackendKind.CPU:
                     raise RuntimeError("native Sweep currently requires an explicitly applied CPU Live configuration")
                 reason = self._start_capability_refusal(snapshot)

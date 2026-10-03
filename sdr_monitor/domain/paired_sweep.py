@@ -16,6 +16,26 @@ from .receiver_topology import ReceiverChainSelection
 from .sweep_capacity import SWEEP_MAX_SEGMENTS
 
 
+@dataclass(frozen=True, slots=True)
+class PairedSweepRunIdentity:
+    """Application-assigned attempt identity, not a native/RF clock epoch.
+
+    Only an admitted owner's Start installs this as active. Failed attempts
+    consume their number; constructing this value never authorizes hardware.
+    The request retains exact device/serial/topology/session/plan/profile facts.
+    """
+
+    request: "PairedSweepRequest"
+    acquisition_epoch: int
+    start_snapshot: LiveSnapshot
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, PairedSweepRequest):
+            raise TypeError("paired Sweep run requires an exact typed request")
+        _counter(self.acquisition_epoch, minimum=1)
+        self.request.validate_applied(self.start_snapshot, self.request.selection_revision)
+
+
 def _text(value: str) -> None:
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError("paired Sweep requires exact nonblank identities")

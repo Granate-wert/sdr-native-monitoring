@@ -58,6 +58,9 @@ struct PairedContinuousSweepCoordinatorConfig {
     std::string resource_id;
     ContinuousSweepCoordinatorConfig primary;
     ContinuousSweepCoordinatorConfig secondary;
+    // Conservative downstream reduced-domain conversion/receipt reservation.
+    // Part of SAME component + whole-owner budget, never another allowance.
+    std::uint64_t product_publication_reserved_bytes{};
 };
 
 struct PairedSweepStepReceipt {

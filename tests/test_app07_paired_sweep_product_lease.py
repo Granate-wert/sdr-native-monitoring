@@ -58,7 +58,7 @@ def run_case(path: str, case: str) -> None:
         try:
             factory = NativeContinuousSweepPlanFactory.from_paired_application(graph.live, intent)
         except (ValueError, RuntimeError, TypeError, native.ConfigurationError) as error:
-            if case == "budget":
+            if case in ("budget", "domain-budget", "statistics-budget"):
                 assert "aggregate 128MiB" in str(error), error
             return
         raise AssertionError("paired admission must refuse before owning/opening")
@@ -67,7 +67,8 @@ def run_case(path: str, case: str) -> None:
         source = graph.live.discover(startup=True)[0].device_id
         graph.live.select_device(source)
         profile = LiveConfiguration(center_hz=2450e6, sample_rate_hz=61_440_000.,
-            analog_bandwidth_hz=56e6, fft_size=4096, gain_db=20., averaging_frames=1,
+            analog_bandwidth_hz=56e6, fft_size=8192 if case == "domain-budget" else 4096,
+            gain_db=20., averaging_frames=1,
             backend=BackendKind.CPU)
         selected = graph.live.apply_configuration(profile)
         assert selected.error is None and selected.applied is not None
@@ -89,7 +90,14 @@ def run_case(path: str, case: str) -> None:
                 selected.applied.applied, "product-left", "product-right")
             return PairedSweepRequest("product-resource", pair, sweep, selection.revision, selected)
 
-        if case in ("single", "empty-serial"):
+        if case == "placeholder-serial":
+            # Unknown observations must not downgrade paired admission to the
+            # legacy unbound single-route constructor, even when nonblank.
+            selected = replace(selected, device=replace(device, serial="unknown"))
+            device = selected.device
+            service._snapshot = selected
+            refuses_admission(request())
+        elif case in ("single", "empty-serial"):
             refuses(lambda: NativeContinuousSweepPlanFactory.from_paired_application(graph.live, request()))
         else:
             intent = request()
@@ -110,6 +118,31 @@ def run_case(path: str, case: str) -> None:
             elif case == "protocol":
                 with patch.object(native, "PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION", 0):
                     refuses(lambda: NativeContinuousSweepPlanFactory.from_paired_application(graph.live, intent))
+            elif case == "reservation-protocol":
+                with patch.object(native, "PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION", 0):
+                    refuses(lambda: NativeContinuousSweepPlanFactory.from_paired_application(graph.live, intent))
+            elif case in ("domain-budget", "statistics-budget"):
+                from sdr_monitor.services.native_sweep import NativeSweepSource
+
+                wide = (replace(intent, sweep=replace(sweep, start_hz=70e6, stop_hz=2230e6,
+                                                      statistics=None, output_queue_capacity=1))
+                        if case == "domain-budget" else replace(intent, sweep=replace(sweep,
+                            statistics=replace(stats, power_bins=256, density_columns=2048))))
+                preflight = NativeContinuousSweepPlanFactory.preflight_profile(profile, wide.sweep)
+                source_value = NativeSweepSource(service._native_uri, "budget-evidence", profile,
+                                                  expected_serial=device.serial)
+                plans = [NativeContinuousSweepPlanFactory._build_native_plan(native, source_value,
+                    wide.sweep, preflight, source_id=producer, receiver_selection=rx)
+                    for producer, rx in ((intent.pair.primary_source_id, native.PlutoReceiverSelection.RX1),
+                                         (intent.pair.secondary_source_id, native.PlutoReceiverSelection.RX2))]
+                slots = 2 * wide.sweep.output_queue_capacity + 5
+                old_reserved = preflight.segment_count * (slots + 1) * 4096
+                old_reserved += preflight.reduced.output_bins * (
+                    4 * slots + 2 if case == "domain-budget" else 36 * slots + 64) + (slots + 1) * 4096
+                # Earlier undercount fits: native itself is not the cause of refusal.
+                native.PairedContinuousSweepCoordinatorConfig(intent.resource_id, *plans,
+                    product_publication_reserved_bytes=old_reserved)
+                refuses_admission(wide)
             elif case == "budget":
                 large = replace(stats, power_bins=256, density_columns=2048)
                 excessive = replace(intent, sweep=replace(sweep, statistics=large, output_queue_capacity=6))
@@ -124,8 +157,20 @@ def run_case(path: str, case: str) -> None:
                 assert config.secondary.segments[0].fixed_band.device.source_id == "product-right"
                 assert len(config.primary.segments) == len(config.secondary.segments) == 3
                 assert config.primary.statistics is not None and config.secondary.statistics is not None
+                assert config.product_publication_reserved_bytes > 0
                 assert hooks.mock_iio_rf_mutation_calls() == writes
                 assert hooks.mock_iio_created_contexts() == contexts
+                if case == "reservation":
+                    # Both ordinary native plans fit, but downstream metadata
+                    # consumes the SAME reduced/native whole-owner allowance.
+                    native.PairedContinuousSweepCoordinatorConfig(intent.resource_id, config.primary, config.secondary)
+                    for reservation in (128 * 1024 * 1024, (1 << 64) - 1):
+                        refuses(lambda: native.PairedContinuousSweepCoordinatorConfig(
+                            intent.resource_id, config.primary, config.secondary,
+                            product_publication_reserved_bytes=reservation))
+                    assert hooks.mock_iio_rf_mutation_calls() == writes
+                    assert hooks.mock_iio_created_contexts() == contexts
+                    return
                 if case == "changed-after-lease":
                     original = graph.sources._state
                     graph.sources._state = replace(original, revision=original.revision + 1)
@@ -243,6 +288,122 @@ def run_case(path: str, case: str) -> None:
                     if case != "running-stale":
                         assert hooks.mock_iio_rf_mutation_calls() == writes
                     return
+                elif case.startswith("run-"):
+                    from sdr_monitor.domain.identity import TimestampQuality
+                    from sdr_monitor.services.native_paired_sweep_receipts import observed_paired_publication
+
+                    coordinator = factory.create_coordinator()
+                    coordinator.configure_paired(config)
+                    assert coordinator.active_run is None
+                    assert graph.live._paired_sweep_acquisition_epoch == 0
+                    if case == "run-overflow":
+                        graph.live._paired_sweep_acquisition_epoch = (1 << 64) - 1
+                        refuses(coordinator.start)
+                        assert coordinator.active_run is None
+                        assert hooks.mock_iio_rf_mutation_calls() == writes
+                        return
+                    if case == "run-start-failure":
+                        raw = coordinator._owner
+
+                        class FailedStart:
+                            def state(self): return raw.state()
+                            def start(self): raise RuntimeError("injected Start failure")
+
+                        coordinator._owner = FailedStart()
+                        try:
+                            refuses(coordinator.start)
+                            assert coordinator.active_run is None
+                            assert graph.live._paired_sweep_acquisition_epoch == 1
+                            assert hooks.mock_iio_rf_mutation_calls() == writes
+                        finally:
+                            coordinator._owner = raw
+                    run = coordinator.start()
+                    assert run.request is intent and run.start_snapshot.applied.applied == profile
+                    assert run.acquisition_epoch == (2 if case == "run-start-failure" else 1)
+                    assert coordinator.active_run is run
+                    refuses(lambda: coordinator.poll_observed_lines(sweep.output_queue_capacity + 1))
+                    refused_epoch = graph.live._paired_sweep_acquisition_epoch
+                    refuses(coordinator.start)
+                    assert coordinator.active_run is run
+                    assert graph.live._paired_sweep_acquisition_epoch == refused_epoch
+                    deadline = time.monotonic() + 5
+                    observed = []
+                    progress = None
+                    while not observed and time.monotonic() < deadline:
+                        value = coordinator.poll_observed_progress()
+                        if value is not None:
+                            progress = value
+                        observed = coordinator.poll_observed_lines(2)
+                        time.sleep(.001)
+                    assert observed
+                    publication = observed[0]
+                    assert publication.run is run and len(publication.steps) == 3
+                    for item in (*observed, *((progress,) if progress is not None else ())):
+                        for step in item.steps:
+                            assert step.primary.identity.acquisition_epoch == run.acquisition_epoch
+                            assert step.primary.identity.profile == profile
+                            assert step.primary.identity.selection_revision == selection.revision
+                            assert step.primary.timestamp_quality is TimestampQuality.UNKNOWN
+                            assert step.primary.clock_domain is None
+                            assert step.primary.quality_flags & 8192
+                            step.validate_active(intent, step.primary.identity)
+                    if case == "run-progress":
+                        assert progress is not None, "no progressive observed publication before terminal"
+                        assert 1 <= len(progress.steps) < 3
+                    # Capture a genuine immutable native packet for adversarial
+                    # conversion tests and stale replay across a new run.
+                    deadline = time.monotonic() + 5
+                    packets = []
+                    while not packets and time.monotonic() < deadline:
+                        packets = coordinator.poll_paired_lines(1)
+                        time.sleep(.001)
+                    assert packets
+                    packet = packets[0]
+                    if case == "run-forged":
+                        def copied(value, **changes):
+                            fields = {name: getattr(value, name) for name in dir(value)
+                                      if not name.startswith('_') and not callable(getattr(value, name))}
+                            fields.update(changes)
+                            return SimpleNamespace(**fields)
+
+                        primary = packet.primary
+                        bad_source = copied(primary.source, device_serial="different")
+                        bad_chain = copied(primary.source, metadata_json={"receiver_selection": '"RX2"'})
+                        mutations = [copied(packet, resource_id="foreign"),
+                            copied(packet, primary=copied(primary, epoch=primary.epoch + 1)),
+                            copied(packet, primary=copied(primary, source=bad_source)),
+                            copied(packet, primary=copied(primary, source=bad_chain)),
+                            copied(packet, steps=()),
+                            copied(packet, steps=(copied(packet.steps[0], config_generation=99999), *packet.steps[1:])),
+                            copied(packet, steps=(copied(packet.steps[0], center_frequency_hz=1e6), *packet.steps[1:]))]
+                        for mutation in mutations:
+                            refuses(lambda: observed_paired_publication(mutation, run))
+                        assert coordinator.active_run is run
+                    coordinator.request_stop()
+                    assert coordinator.active_run is None
+                    refuses(coordinator.poll_observed_lines)
+                    refuses(coordinator.poll_observed_progress)
+                    coordinator.stop()
+                    coordinator.configure_paired(config)
+                    assert coordinator.active_run is None
+                    new_run = coordinator.start()
+                    assert new_run.acquisition_epoch == run.acquisition_epoch + 1
+                    assert new_run is not run
+                    refuses(lambda: coordinator._observe(packet))
+                    deadline = time.monotonic() + 5
+                    fresh = []
+                    while not fresh and time.monotonic() < deadline:
+                        fresh = coordinator.poll_observed_lines(1)
+                        time.sleep(.001)
+                    assert fresh and fresh[0].run is new_run
+                    assert fresh[0].primary.epoch > publication.primary.epoch
+                    coordinator.stop()
+                    coordinator.disconnect()
+                    assert coordinator.active_run is None
+                    factory = None
+                    assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
+                    assert graph.live._pane_control_claim is None and not service._sweep_lease_active
+                    return
                 else:
                     assert case == "workflow"
                     for operation in (lambda: graph.live.select_device(source), graph.live.start,
@@ -327,3 +488,13 @@ class PairedSweepProductLeaseTests(unittest.TestCase):
     def test_running_stale_selection_cleanup_and_old_adapter_aba(self): self.run_native("running-stale")
     def test_released_claim_cannot_be_recreated_by_paused_start(self): self.run_native("race-control")
     def test_released_claim_cannot_be_recreated_by_paused_cleanup(self): self.run_native("race-cleanup")
+    def test_owner_issued_run_and_observed_steps_rearm_stale_replay(self): self.run_native("run-workflow")
+    def test_progressive_observed_pair_precedes_terminal(self): self.run_native("run-progress")
+    def test_foreign_receipts_serial_chain_generation_geometry_refuse(self): self.run_native("run-forged")
+    def test_failed_start_consumes_epoch_without_admitting_publication(self): self.run_native("run-start-failure")
+    def test_run_epoch_exhaustion_refuses_before_rf(self): self.run_native("run-overflow")
+    def test_nonblank_placeholder_serial_refuses_before_paired_lease(self): self.run_native("placeholder-serial")
+    def test_old_product_reservation_protocol_refuses_before_open(self): self.run_native("reservation-protocol")
+    def test_product_reservation_counts_in_native_budget_before_open(self): self.run_native("reservation")
+    def test_full_converted_array_budget_refuses_near_boundary_before_open(self): self.run_native("domain-budget")
+    def test_density_cell_validation_budget_refuses_before_open(self): self.run_native("statistics-budget")

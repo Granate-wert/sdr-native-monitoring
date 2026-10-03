@@ -91,7 +91,7 @@ void wait_lines(sdr_pluto::ContinuousSweepCoordinator& owner, std::uint64_t coun
 void validation(Hooks& hooks) {
     sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
     const int contexts = hooks.created_contexts(), mutations = hooks.mutations();
-    for (int variant = 0; variant < 7; ++variant) {
+    for (int variant = 0; variant < 9; ++variant) {
         auto value = config();
         if (variant == 0) value.secondary.segments.back().fixed_band.device.center_frequency_hz += 1.;
         if (variant == 1) value.secondary.segments.back().usable_stop_hz -= 1.;
@@ -99,6 +99,8 @@ void validation(Hooks& hooks) {
         if (variant == 3) value.secondary.segments.back().fixed_band.device.source_id = "changed-later";
         if (variant == 4) value.secondary.segments.back().fixed_band.device.manual_gain_db = 19.;
         if (variant == 5) value.resource_id.clear();
+        if (variant == 7) value.product_publication_reserved_bytes = 128ULL * 1024ULL * 1024ULL;
+        if (variant == 8) value.product_publication_reserved_bytes = UINT64_MAX;
         if (variant == 6) {
             value.primary.output_queue_capacity = value.secondary.output_queue_capacity = 64;
             value.primary.analysis_bins_per_usable_window = value.secondary.analysis_bins_per_usable_window = 1024;

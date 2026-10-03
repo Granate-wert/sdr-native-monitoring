@@ -76,6 +76,7 @@ void bind_pluto(py::module_& module) {
     // admission or physical paired-Sweep qualification.
     module.attr("PLUTO_PAIRED_SWEEP_REDUCED_PROTOCOL_VERSION") = 1;
     module.attr("PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION") = 1;
+    module.attr("PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION") = 1;
     py::class_<sdr_core::DualRxChannelDspConfig>(module, "DualRxChannelDspConfig")
         .def(py::init([](
             const sdr_core::SourceDescriptor& source,
@@ -982,15 +983,18 @@ void bind_pluto(py::module_& module) {
     py::class_<sdr_pluto::PairedContinuousSweepCoordinatorConfig>(module, "PairedContinuousSweepCoordinatorConfig")
         .def(py::init([](std::string resource_id,
                         sdr_pluto::ContinuousSweepCoordinatorConfig primary,
-                        sdr_pluto::ContinuousSweepCoordinatorConfig secondary) {
+                        sdr_pluto::ContinuousSweepCoordinatorConfig secondary,
+                        std::uint64_t product_publication_reserved_bytes) {
             sdr_pluto::PairedContinuousSweepCoordinatorConfig value{
-                std::move(resource_id), std::move(primary), std::move(secondary)};
+                std::move(resource_id), std::move(primary), std::move(secondary), product_publication_reserved_bytes};
             sdr_pluto::validate(value);
             return value;
-        }), py::arg("resource_id"), py::arg("primary"), py::arg("secondary"))
+        }), py::arg("resource_id"), py::arg("primary"), py::arg("secondary"),
+            py::arg("product_publication_reserved_bytes") = 0U)
         .def_readonly("resource_id", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::resource_id)
         .def_readonly("primary", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::primary)
-        .def_readonly("secondary", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::secondary);
+        .def_readonly("secondary", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::secondary)
+        .def_readonly("product_publication_reserved_bytes", &sdr_pluto::PairedContinuousSweepCoordinatorConfig::product_publication_reserved_bytes);
 
     // Native observed receipts have no Python constructor/mutable fields.
     // They retain producer time; they do not invent an RF clock or the full

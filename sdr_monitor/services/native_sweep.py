@@ -38,7 +38,7 @@ from ..domain import (
     SweepState,
 )
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
-from ..domain.paired_sweep import PairedSweepRequest
+from ..domain.paired_sweep import PairedSweepRequest, PairedSweepRunIdentity
 from .native_live import build_native_fixed_band_config
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .sweep_stitching import SweepStitchOptions, stitch_sweep_segments
@@ -88,6 +88,8 @@ class NativeSweepLease:
     paired_configuration: Any = None
     # Exact owner/control lock for cleanup; unlike Start it permits stale selection.
     cleanup_transaction: Callable[[], AbstractContextManager[None]] | None = None
+    # Actual application allocator; called only inside admitted Start control.
+    allocate_paired_run: Callable[[], PairedSweepRunIdentity] | None = None
 
 
 @dataclass(frozen=True, slots=True)
