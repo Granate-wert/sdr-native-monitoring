@@ -3649,3 +3649,40 @@ cleanup-retry/lifecycle cause work, admitted paired Windows workflow, genuine
 four-source HIL/peer isolation, RTL production, performance/soak and release
 qualification are still open. No new physical RX, Computer Use, device/system/
 firewall/driver/firmware changes or dirty-legacy product synchronization occurred.
+
+## Explicit Close retry retains the same control lane
+
+Runtime commit 782985298c352fede95c6f63ae73c99dab6768a1 fixes a reproduced
+shared Sweep presenter shutdown defect. After a failed Stop and failed service
+Close, the owner was retained but its control executor had already been shut
+down, preventing an explicit cleanup retry. Both direct shutdown and the UI V2
+split Close path now retire that SAME executor only after service Close succeeds.
+Failed Close retains the same owner/executor and presentation caches; the closing
+state bars Start and polling. There is no replacement owner, rediscovery, hidden
+restart, automatic retry or RF/DSP/cadence/epoch/budget change.
+
+New regressions failed before the fix at premature executor retirement. They
+exercise repeated Close failure, explicit retry, first Stop diagnostic reported
+once, successful independent owner cleanup not repeated, worker-thread Close,
+and terminal cache release only after all cleanup callbacks acknowledge.
+Distinct immutable review found no scoped blocker. Root scoped regression:
+70/70 passed in 31.579 seconds. Frozen and committed patch SHA256:
+85b9fbbcf02138fbee84b43eb87f30ac1c703f985ecc05b16bede1d2eb50320f.
+Ruff/compilation/scoped mypy passed; dependency-following mypy reported seven
+unchanged errors in live_configuration_patch.py, confirmed against an exact
+baseline shadow. This is not a repository-wide type-check PASS.
+
+One serial full V2 source gate at exact commit 7829852 passed: 1,332 testcases,
+1,266 passed, 66 skipped, zero failures/errors, 535.398 seconds. Tracked source
+stayed clean before/after, with no deferred compiled tests or product modules
+outside the checkout. The unchanged compiled native module has SHA256
+8dabdb1d27a4e4568a5e0665ef431f34cc32190d10617bf226383705aa44f14f.
+Four existing NaN warnings remain visible. This gate uses current Python source
+and that native module; it is NOT a newly frozen GUI/EXE or physical SDK test.
+The diagnostic 8fb9 EXE remains its earlier source identity and is not promoted.
+
+The historical Qt deleted-label shutdown trace is a separate open investigation.
+A direct test-scene retirement gap is a candidate, not an established cause;
+a later successful suite without the trace is not a causal fix. APP-07/M3 stay
+IN_PROGRESS. Matching build/visible paired workflow, physical peer isolation,
+RTL production, four-source HIL, performance, soak and release remain required.
