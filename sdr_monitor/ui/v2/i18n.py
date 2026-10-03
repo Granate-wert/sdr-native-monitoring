@@ -234,6 +234,25 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.EN: "Planned HackRF hardware capture {start}–{stop} MHz; spectrum is cropped to the exact requested analysis range. Not hardware readback."}),
         "analyzer.pane.setup.slot": MappingProxyType({UiLocale.RU: "Окно", UiLocale.EN: "Pane"}),
         "analyzer.pane.setup.source": MappingProxyType({UiLocale.RU: "Источник", UiLocale.EN: "Source"}),
+        "analyzer.pane.setup.chain_name": MappingProxyType({
+            UiLocale.RU: "Цепь приёма окна {pane}", UiLocale.EN: "Pane {pane} receive chain"}),
+        "analyzer.pane.setup.chain_rx1": MappingProxyType({UiLocale.RU: "RX1", UiLocale.EN: "RX1"}),
+        "analyzer.pane.setup.chain_rx2": MappingProxyType({UiLocale.RU: "RX2", UiLocale.EN: "RX2"}),
+        "analyzer.pane.setup.rx2_candidate": MappingProxyType({
+            UiLocale.RU: "Наблюдаются две цифровые I/Q-пары. RX2 — только кандидат: подготовка заново проверит сеанс и топологию; отдельный RF-вход не подтверждён.",
+            UiLocale.EN: "Two digital I/Q pairs were observed. RX2 is only a candidate: Stage rechecks session and topology; a separate RF input is unverified."}),
+        "analyzer.pane.setup.rx2_unknown": MappingProxyType({
+            UiLocale.RU: "Топология RX2 неизвестна. Выбор RX2 недоступен; имя AD936x не доказывает второй вход.",
+            UiLocale.EN: "RX2 topology is unknown. RX2 is unavailable; an AD936x name does not prove a second input."}),
+        "analyzer.pane.setup.rx2_single": MappingProxyType({
+            UiLocale.RU: "Наблюдается только одна цифровая I/Q-пара. RX2 недоступен; подготовка не начата.",
+            UiLocale.EN: "Only one digital I/Q pair was observed. RX2 is unavailable; Stage did not begin."}),
+        "analyzer.pane.setup.rx2_non_ad": MappingProxyType({
+            UiLocale.RU: "RX2 в этой раскладке поддерживается только для AD936x; измените цепь на RX1.",
+            UiLocale.EN: "RX2 in this layout is supported only for AD936x; choose RX1 explicitly."}),
+        "analyzer.pane.setup.rx2_selection_unavailable": MappingProxyType({
+            UiLocale.RU: "Текущий выбор источника устарел или освобождается. RX2 недоступен; повторите обнаружение и выбор.",
+            UiLocale.EN: "The current source selection is stale or being released. RX2 is unavailable; discover and select again."}),
         "analyzer.pane.setup.start": MappingProxyType({UiLocale.RU: "От", UiLocale.EN: "Start"}),
         "analyzer.pane.setup.stop": MappingProxyType({UiLocale.RU: "До", UiLocale.EN: "Stop"}),
         "analyzer.pane.setup.rate": MappingProxyType({UiLocale.RU: "Fs запрос", UiLocale.EN: "Requested Fs"}),
@@ -321,6 +340,19 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.preview_resource": MappingProxyType({
             UiLocale.RU: "{source} → окна {panes}: {mode}; заданий захвата {jobs}",
             UiLocale.EN: "{source} → panes {panes}: {mode}; capture jobs {jobs}"}),
+        "analyzer.pane.setup.preview_paired_assignment": MappingProxyType({
+            UiLocale.RU: "окно {pane} → {chain}", UiLocale.EN: "pane {pane} → {chain}"}),
+        "analyzer.pane.setup.preview_paired_group": MappingProxyType({
+            UiLocale.RU: "{source}: {assignments}. Один общий AD936x захват; не два независимых тюнера.",
+            UiLocale.EN: "{source}: {assignments}. One common AD936x capture, not two independent tuners."}),
+        "analyzer.pane.setup.preview_paired_request": MappingProxyType({
+            UiLocale.RU: "Общий запрос: центр/LO {center} МГц · Fs {rate} MS/s · RF-фильтр {filter} · усиление {gain} dB · FFT {fft} / шаг {hop} отсчётов · детектор {detector} · окно {window} · усреднение {averaging}.",
+            UiLocale.EN: "Common request: center/LO {center} MHz · Fs {rate} MS/s · RF filter {filter} · gain {gain} dB · FFT {fft} / hop {hop} samples · detector {detector} · window {window} · averaging {averaging}."}),
+        "analyzer.pane.setup.value_unknown": MappingProxyType({
+            UiLocale.RU: "неизвестен", UiLocale.EN: "unknown"}),
+        "analyzer.pane.setup.preview_paired_scope": MappingProxyType({
+            UiLocale.RU: "Оба RX и их истории затрагиваются вместе; независимые источники сохраняются. Это запрос, не аппаратное считывание: фактические центр/Fs/фильтр/усиление ещё неизвестны. Подготовка не настраивает RF; Применить не запускает RX. Парное сканирование пока недоступно.",
+            UiLocale.EN: "Both RX histories are affected together; independent sources remain unchanged. This is a request, not hardware readback: actual center/Fs/filter/gain are still unknown. Stage does not configure RF; Apply does not Start RX. Paired Sweep is not yet available."}),
         "analyzer.pane.setup.recording_conflict": MappingProxyType({
             UiLocale.RU: "конфликт с записью", UiLocale.EN: "recording conflict"}),
         "analyzer.pane.setup.preview_ad_sweep": MappingProxyType({
@@ -357,6 +389,71 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.stage_failed": MappingProxyType({
             UiLocale.RU: "Свежая проверка источника или плана не прошла. При необходимости повторите обнаружение; RX не запущен. Если закрытие владельца не подтвердилось, нажмите «Отменить подготовку».",
             UiLocale.EN: "Fresh source or plan check failed. Rediscover if needed; RX was not started. If owner close did not confirm, use Discard Stage."}),
+        "analyzer.pane.setup.refusal.invalid_plan": MappingProxyType({
+            UiLocale.RU: "План окна не поддерживается; проверьте источник, диапазон и настройки. RX не запущен.",
+            UiLocale.EN: "The pane plan is unsupported; check source, range and settings. RX was not started."}),
+        "analyzer.pane.setup.refusal.invalid_receiver_selection": MappingProxyType({
+            UiLocale.RU: "Выберите явную цепь RX1 или RX2 для окна; BOTH не назначается одному окну.",
+            UiLocale.EN: "Choose an explicit RX1 or RX2 chain for the pane; BOTH is not a pane assignment."}),
+        "analyzer.pane.setup.refusal.selection_changed": MappingProxyType({
+            UiLocale.RU: "Выбранный источник, сеанс или топология изменились. Отмените подготовку и выберите источник заново.",
+            UiLocale.EN: "The selected source, session or topology changed. Discard Stage and select the source again."}),
+        "analyzer.pane.setup.refusal.paired_selection_required": MappingProxyType({
+            UiLocale.RU: "Для парного RX нужен свежий выбранный сеанс и подтверждение топологии; подготовка не завершена.",
+            UiLocale.EN: "Paired RX needs a fresh selected session and topology receipt; Stage did not complete."}),
+        "analyzer.pane.setup.refusal.paired_receipts_mismatch": MappingProxyType({
+            UiLocale.RU: "Подтверждения парных источников не совпадают с точным назначением окон; подготовьте план заново.",
+            UiLocale.EN: "Paired source receipts differ from the exact pane assignments; Stage the plan again."}),
+        "analyzer.pane.setup.refusal.paired_assignment_unsupported": MappingProxyType({
+            UiLocale.RU: "RX2 требует RX1 и RX2 одного AD936x в общей группе RTBW; отдельный RX2 не допускается.",
+            UiLocale.EN: "RX2 requires RX1 and RX2 of one AD936x in a common RTBW group; lone RX2 is unsupported."}),
+        "analyzer.pane.setup.refusal.paired_topology_unavailable": MappingProxyType({
+            UiLocale.RU: "Свежая топология не подтверждает совместимую пару RX1/RX2. RF и RX не запускались.",
+            UiLocale.EN: "Fresh topology does not confirm a compatible RX1/RX2 pair. RF and RX were not started."}),
+        "analyzer.pane.setup.refusal.paired_stable_identity_required": MappingProxyType({
+            UiLocale.RU: "Для парного RX нет обязательного постоянного идентификатора текущего устройства; подготовка отклонена.",
+            UiLocale.EN: "The current device lacks the stable identity required for paired RX; Stage was refused."}),
+        "analyzer.pane.setup.refusal.paired_mode_unsupported": MappingProxyType({
+            UiLocale.RU: "Парное сканирование ещё не подключено. Для RX1/RX2 выберите общий RTBW.",
+            UiLocale.EN: "Paired Sweep is not connected yet. Choose common RTBW for RX1/RX2."}),
+        "analyzer.pane.setup.refusal.paired_profile_conflict": MappingProxyType({
+            UiLocale.RU: "Профили двух RX несовместимы для одного захвата; Fs/FFT/качество не меняются автоматически.",
+            UiLocale.EN: "The two RX profiles conflict for one capture; Fs/FFT/quality are not changed automatically."}),
+        "analyzer.pane.setup.refusal.paired_window_conflict": MappingProxyType({
+            UiLocale.RU: "Окна двух RX не помещаются в одну общую полосу захвата; скрытого чередования нет.",
+            UiLocale.EN: "The two RX pane ranges do not fit one common capture window; there is no hidden time slicing."}),
+        "analyzer.pane.setup.refusal.capture_span_exceeded": MappingProxyType({
+            UiLocale.RU: "Диапазон окна шире доступной области анализа выбранного захвата.",
+            UiLocale.EN: "The pane range exceeds the selected capture's usable analysis span."}),
+        "analyzer.pane.setup.refusal.observed_range_exceeded": MappingProxyType({
+            UiLocale.RU: "Диапазон окна выходит за наблюдаемые пределы настройки выбранного устройства.",
+            UiLocale.EN: "The pane range exceeds the selected device's observed tuning limits."}),
+        "analyzer.pane.setup.refusal.revisit_infeasible": MappingProxyType({
+            UiLocale.RU: "Расписание не подготовлено: расчётный период возврата превышает запрос. Измените цель или диапазоны; это не RF-измерение.",
+            UiLocale.EN: "Schedule not staged: modeled revisit exceeds the request. Change the target or ranges; this is not an RF measurement."}),
+        "analyzer.pane.setup.refusal.network_intent_conflict": MappingProxyType({
+            UiLocale.RU: "Для одного источника заданы противоречивые варианты сетевого поиска; подготовка отклонена.",
+            UiLocale.EN: "One source has conflicting network-discovery intents; Stage was refused."}),
+        "analyzer.pane.setup.refusal.stage_not_confirmed": MappingProxyType({
+            UiLocale.RU: "Свежая проверка источника или плана не подтвердилась. Повторите выбор; RX не запущен.",
+            UiLocale.EN: "Fresh source or plan check did not confirm. Select again; RX was not started."}),
+        "analyzer.pane.setup.refusal.cleanup_required": MappingProxyType({
+            UiLocale.RU: "Освобождение подготовительного владельца не подтвердилось. Сначала выполните явную «Отменить подготовку»; Старт запрещён.",
+            UiLocale.EN: "Staged-owner cleanup did not confirm. Use explicit Discard Stage first; Start is barred."}),
+        "analyzer.pane.setup.refusal.plan_already_applied_or_closed": MappingProxyType({
+            UiLocale.RU: "Этот план уже применён или закрыт; повторное Применить недопустимо.",
+            UiLocale.EN: "This plan is already applied or closed; Apply cannot be repeated."}),
+        "analyzer.pane.setup.refusal.recording_conflict": MappingProxyType({
+            UiLocale.RU: "Предлагаемый план конфликтует с записью; завершите конфликт до Применить.",
+            UiLocale.EN: "The proposed plan conflicts with recording; resolve it before Apply."}),
+        "analyzer.pane.setup.refusal.owner_not_stopped": MappingProxyType({
+            UiLocale.RU: "Общий владелец RX не остановлен. Применение не остановит и не перезапустит его скрыто.",
+            UiLocale.EN: "The common RX owner is not stopped. Apply will not stop or restart it implicitly."}),
+        "analyzer.pane.setup.refusal.configuration_not_confirmed": MappingProxyType({
+            UiLocale.RU: "Аппаратная конфигурация AD936x не подтвердилась при Применить; Старт запрещён.",
+            UiLocale.EN: "AD936x configuration did not confirm during Apply; Start is barred."}),
+        "analyzer.pane.setup.refusal.previous": MappingProxyType({
+            UiLocale.RU: "Предшествующий отказ: {detail}", UiLocale.EN: "Earlier refusal: {detail}"}),
         "analyzer.pane.setup.operation_failed": MappingProxyType({
             UiLocale.RU: "Операция не подтвердилась. Владелец сохранён; проверьте состояние и выполните явное закрытие.",
             UiLocale.EN: "Operation did not confirm. Owner is retained; inspect state and close explicitly."}),
@@ -376,6 +473,11 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Старт {number}", UiLocale.EN: "Start {number}"}),
         "analyzer.independent.start_all": MappingProxyType({
             UiLocale.RU: "Старт всех", UiLocale.EN: "Start all"}),
+        "analyzer.independent.paired_start.title": MappingProxyType({
+            UiLocale.RU: "Запустить общую пару RX?", UiLocale.EN: "Start the common RX pair?"}),
+        "analyzer.independent.paired_start.detail": MappingProxyType({
+            UiLocale.RU: "Окна {panes} используют один общий ресурс AD936x и один запуск RX1/RX2. Запуск затронет обе цепи и их истории; это не подтверждение независимых физических RF-входов. Продолжить? По умолчанию — Отмена.",
+            UiLocale.EN: "Panes {panes} use one common AD936x resource and one RX1/RX2 Start. Starting affects both chains and their histories; this does not verify independent physical RF inputs. Continue? Cancel is the default."}),
         "analyzer.independent.stop_selected": MappingProxyType({
             UiLocale.RU: "Стоп выбранного", UiLocale.EN: "Stop selected"}),
         "analyzer.independent.stop_slot": MappingProxyType({

@@ -14,12 +14,16 @@ from PySide6.QtWidgets import (
 )
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
-from sdr_monitor.domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
+from sdr_monitor.domain.device_capabilities import (
+    AdapterRuntimeAvailability, CapabilityEvidenceOrigin, CapabilityField, DeviceFamily,
+)
+from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.pane_scheduler import (
     CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile, RtlRtbwPaneProfile,
     PaneRevisitEstimate, TinySaTracePaneProfile,
 )
 from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ
+from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint
 from sdr_monitor.domain.tinysa_settings import TinySaInputMode
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
@@ -43,6 +47,18 @@ class _SlotRow:
         self.source = QComboBox(parent)
         self.source.setProperty("ui2Role", "utility-select")
         self.source.setMinimumWidth(175)
+        self.chain = QComboBox(parent)
+        self.chain.setObjectName(f"independentPaneChain{number}V2")
+        self.chain.setProperty("ui2Role", "utility-select")
+        self.chain.setMinimumWidth(76)
+        for chain in (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2):
+            self.chain.addItem(chain.name, chain.value)
+        self.source_chain = QWidget(parent)
+        source_chain_layout = QHBoxLayout(self.source_chain)
+        source_chain_layout.setContentsMargins(0, 0, 0, 0)
+        source_chain_layout.setSpacing(4)
+        source_chain_layout.addWidget(self.source, 1)
+        source_chain_layout.addWidget(self.chain)
         self.start = QDoubleSpinBox(parent)
         self.stop = QDoubleSpinBox(parent)
         for field in (self.start, self.stop):
@@ -156,11 +172,12 @@ class IndependentPaneSetupV2(QWidget):
             header.setProperty("ui2Role", "secondary")
             grid.addWidget(header, 0, column)
         for row_index, row in enumerate(self._rows, 1):
-            for column, widget in enumerate((row.number_label, row.source, row.start,
+            for column, widget in enumerate((row.number_label, row.source_chain, row.start,
                                              row.stop, row.rate, row.fft, row.mode_points)):
                 grid.addWidget(widget, row_index, column)
             row.source.currentIndexChanged.connect(
                 lambda _index, target=row: self._source_user_changed(target))
+            row.chain.currentIndexChanged.connect(lambda _index: self._refresh_actions())
             row.mode.currentIndexChanged.connect(
                 lambda _index, target=row: self._mode_changed(target))
         layout.addLayout(grid)
@@ -276,6 +293,7 @@ class IndependentPaneSetupV2(QWidget):
         self._error_key: str | None = None
         self._revisit_violations: tuple[PaneRevisitEstimate, ...] = ()
         self._cleanup_required = False
+        self._failed_reason: PaneUserRefusal | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._poll)
@@ -428,8 +446,57 @@ class IndependentPaneSetupV2(QWidget):
         return text(self._rtl_assurance_key(choice)) if choice.family is DeviceFamily.RTL_SDR else choice.device_id
 
     def _source_user_changed(self, row: _SlotRow) -> None:
+        if row.source.currentData() is None:
+            # Explicitly choosing Empty clears this draft's chain. A passive
+            # source-list refresh uses _source_changed directly and retains it.
+            with QSignalBlocker(row.chain):
+                row.chain.setCurrentIndex(row.chain.findData(ReceiverChainSelection.RX1.value))
         self._source_changed(row)
         self._refresh_actions()
+
+    @staticmethod
+    def _selected_chain(row: _SlotRow) -> ReceiverChainSelection:
+        # Qt may return a plain string for StrEnum item data. The pane draft
+        # still receives the typed selection, never a suffix from a source ID.
+        return ReceiverChainSelection(row.chain.currentData())
+
+    def _rx2_unavailable_key(self, choice: AnalyzerSourceChoice | None) -> str:
+        if choice is None or choice.family is not DeviceFamily.AD936X:
+            return "analyzer.pane.setup.rx2_non_ad"
+        selection = self._selection
+        if (selection is None or selection.release_pending or selection.refusal is not None
+                or choice not in selection.choices):
+            return "analyzer.pane.setup.rx2_selection_unavailable"
+        snapshot = choice.binding.snapshot
+        if snapshot is None or snapshot.rx_channel_count is None or not any(
+                item.field is CapabilityField.RX_CHANNEL_COUNT
+                and item.origin is CapabilityEvidenceOrigin.RUNTIME_TOPOLOGY
+                for item in snapshot.evidence):
+            return "analyzer.pane.setup.rx2_unknown"
+        if snapshot.rx_channel_count < 2:
+            return "analyzer.pane.setup.rx2_single"
+        return ""
+
+    def _chain_refusal_key(self, row: _SlotRow) -> str | None:
+        if self._selected_chain(row) is ReceiverChainSelection.RX1:
+            return None
+        choice = next((item for item in self._choices
+                       if item.device_id == row.source.currentData()), None)
+        return self._rx2_unavailable_key(choice) or None
+
+    def _refresh_chain(self, row: _SlotRow, choice: AnalyzerSourceChoice | None) -> None:
+        reason = self._rx2_unavailable_key(choice)
+        model = row.chain.model()
+        if isinstance(model, QStandardItemModel):
+            item = model.item(row.chain.findData(ReceiverChainSelection.RX2.value))
+            if item is not None:
+                item.setEnabled(not reason)
+        explanation = text(reason or "analyzer.pane.setup.rx2_candidate")
+        row.chain.setToolTip(explanation)
+        row.chain.setAccessibleDescription(explanation)
+        row.chain.setEnabled((choice is not None and choice.family is DeviceFamily.AD936X
+                              or self._selected_chain(row) is ReceiverChainSelection.RX2)
+                             and not self.blocks_single_source)
 
     def update_sources(self, selection: AnalyzerSourceSelection | None) -> None:
         if self._released or self.blocks_single_source:
@@ -483,6 +550,7 @@ class IndependentPaneSetupV2(QWidget):
                if choice is not None and choice.family is DeviceFamily.RTL_SDR else "")
         row.source.setToolTip(tip)
         row.source.setAccessibleDescription(tip)
+        self._refresh_chain(row, choice)
         previous_rate = row.rate.currentData()
         with QSignalBlocker(row.rate):
             row.rate.clear()
@@ -562,7 +630,8 @@ class IndependentPaneSetupV2(QWidget):
                 maximum_revisit_s=row.maximum_revisit.value() or None, tinysa=tiny,
                 rtbw_band=(RtbwBandPolicy(row.band.currentData())
                            if self._selected_mode(row) is CaptureMeasurementMode.RTBW
-                           else RtbwBandPolicy.EDGE_TRIMMED)))
+                           else RtbwBandPolicy.EDGE_TRIMMED),
+                receiver_selection=self._selected_chain(row)))
         return tuple(drafts)
 
     @staticmethod
@@ -619,6 +688,10 @@ class IndependentPaneSetupV2(QWidget):
         if self.blocks_single_source or self._released:
             return
         for row in self._rows:
+            chain_reason = self._chain_refusal_key(row)
+            if chain_reason is not None:
+                self._set_error(chain_reason)
+                return
             choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
             reason = None if choice is None else self._rtl_unavailable_key(choice)
             if reason is not None:
@@ -654,6 +727,10 @@ class IndependentPaneSetupV2(QWidget):
                 or any(item.recording_conflict for item in self._prepared.preview)):
             return
         for row in self._rows:
+            chain_reason = self._chain_refusal_key(row)
+            if chain_reason is not None:
+                self._set_error(chain_reason)
+                return
             choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
             reason = None if choice is None else self._rtl_unavailable_key(choice)
             if reason is not None:
@@ -707,13 +784,10 @@ class IndependentPaneSetupV2(QWidget):
                 self._set_preview_text("")
             elif operation == "apply":
                 self._refresh_preview()
-            if operation == "prepare" and error.revisit_violations:
-                self._set_error("analyzer.pane.setup.deadline_refused",
-                                revisit_violations=error.revisit_violations,
-                                cleanup_required=error.pool is not None)
-            else:
-                self._set_error("analyzer.pane.setup.stage_failed" if operation == "prepare"
-                                else "analyzer.pane.setup.operation_failed")
+            self._set_error(self._refusal_key(error.reason),
+                            failed_reason=error.failed_reason,
+                            revisit_violations=error.revisit_violations,
+                            cleanup_required=error.pool is not None)
         except Exception:
             if operation == "prepare":
                 self._set_preview_text("")
@@ -775,6 +849,46 @@ class IndependentPaneSetupV2(QWidget):
             label = prepared.handle.source_labels.get(source_id, source_id)
             lines.append(text("analyzer.pane.setup.preview_resource", panes=numbers, source=label,
                               mode=mode, jobs=item.capture_job_count) + conflict)
+        schedule = prepared.plan.layout.schedule
+        assert schedule is not None
+        # A logical pair is identified by typed endpoints in the staged plan,
+        # never a source label, endpoint suffix or silicon marketing name.
+        for group in prepared.plan.groups:
+            endpoints = {endpoint.endpoint_id: endpoint.selection for endpoint in group.endpoints
+                         if isinstance(endpoint, ReceiverEndpoint)}
+            if set(endpoints.values()) != {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}:
+                continue
+            source_id = sources[group.physical_stream_resource_id]
+            assignments = []
+            pane_resources = {item.pane_id: item.physical_stream_resource_id
+                              for item in schedule.pane_revisits}
+            for slot in prepared.plan.layout.slots:
+                pane_request = slot.request
+                if (pane_request is not None and pane_request.receiver_endpoint_id in endpoints
+                        and pane_resources.get(pane_request.pane_id) == group.physical_stream_resource_id):
+                    assignments.append(text("analyzer.pane.setup.preview_paired_assignment",
+                                            pane=slot.number,
+                                            chain=endpoints[pane_request.receiver_endpoint_id].name))
+            lines.append(text("analyzer.pane.setup.preview_paired_group",
+                              source=prepared.handle.source_labels.get(source_id, source_id),
+                              assignments=", ".join(assignments)))
+            configuration = next((configuration for resource_id, configuration
+                                  in prepared.plan.initial_ad_configurations
+                                  if resource_id == group.physical_stream_resource_id), None)
+            if configuration is not None:
+                hop = round(configuration.fft_size * (1.0 - configuration.overlap_ratio))
+                lines.append(text("analyzer.pane.setup.preview_paired_request",
+                                  center=f"{configuration.center_hz / 1e6:g}",
+                                  rate=f"{configuration.sample_rate_hz / 1e6:g}",
+                                  filter=(text("analyzer.pane.setup.value_unknown")
+                                          if configuration.analog_bandwidth_hz is None else
+                                          f"{configuration.analog_bandwidth_hz / 1e6:g}"
+                                          f"{text('analyzer.rf.unit.mhz')}"),
+                                  gain=f"{configuration.gain_db:g}", fft=configuration.fft_size,
+                                  hop=hop, detector=configuration.detector,
+                                  window=configuration.window,
+                                  averaging=configuration.averaging_frames))
+            lines.append(text("analyzer.pane.setup.preview_paired_scope"))
         intents = {item.pane_id: item for item in prepared.plan.scheduler_intents}
         for resource in prepared.preview:
             for estimate in resource.revisit_estimates:
@@ -883,13 +997,24 @@ class IndependentPaneSetupV2(QWidget):
         return (text("analyzer.pane.setup.target_unset") if value is None else
                 text("analyzer.pane.setup.target_value", value=f"{value:g}"))
 
+    @staticmethod
+    def _refusal_key(reason: PaneUserRefusal) -> str:
+        if not isinstance(reason, PaneUserRefusal):
+            raise TypeError("pane UI needs a typed refusal")
+        return f"analyzer.pane.setup.refusal.{reason.value}"
+
     def _set_error(self, key: str | None, *,
                    revisit_violations: tuple[PaneRevisitEstimate, ...] = (),
-                   cleanup_required: bool = False) -> None:
+                   cleanup_required: bool = False,
+                   failed_reason: PaneUserRefusal | None = None) -> None:
         self._error_key = key
         self._revisit_violations = revisit_violations
         self._cleanup_required = cleanup_required
+        self._failed_reason = failed_reason
         lines = [] if key is None else [text(key)]
+        if failed_reason is not None:
+            lines.append(text("analyzer.pane.setup.refusal.previous",
+                              detail=text(self._refusal_key(failed_reason))))
         for item in revisit_violations:
             target = item.requested_maximum_revisit_s
             lines.append(text("analyzer.pane.setup.deadline_detail",
@@ -911,14 +1036,17 @@ class IndependentPaneSetupV2(QWidget):
         rtl_reason = next((reason for row in self._rows
                            for choice in self._choices if choice.device_id == row.source.currentData()
                            for reason in (self._rtl_unavailable_key(choice),) if reason is not None), None)
-        self.prepare.setEnabled(not blocked and rtl_reason is None
+        chain_reason = next((reason for row in self._rows
+                             for reason in (self._chain_refusal_key(row),) if reason is not None), None)
+        refusal = chain_reason or rtl_reason
+        self.prepare.setEnabled(not blocked and refusal is None
                                 and self._prepared is None and self._retained_pool is None)
         self.apply.setEnabled(not blocked and self._prepared is not None
-                              and rtl_reason is None
+                              and refusal is None
                               and not self._prepared.handle.applied
                               and not any(item.recording_conflict for item in self._prepared.preview))
-        self.prepare.setToolTip("" if rtl_reason is None else text(rtl_reason))
-        self.prepare.setAccessibleDescription("" if rtl_reason is None else text(rtl_reason))
+        self.prepare.setToolTip("" if refusal is None else text(refusal))
+        self.prepare.setAccessibleDescription("" if refusal is None else text(refusal))
         self.discard.setEnabled(not blocked and (self._prepared is not None or self._retained_pool is not None))
         self.details.setEnabled(bool(self.preview.text() or self.error.text()))
         for row in self._rows:
@@ -928,7 +1056,7 @@ class IndependentPaneSetupV2(QWidget):
     def set_theme(self, theme: ThemeId) -> None:
         self.setStyleSheet(stylesheet_for_theme(theme))
         for row in self._rows:
-            for field in (row.source, row.start, row.stop, row.rate, row.fft,
+            for field in (row.source, row.chain, row.start, row.stop, row.rate, row.fft,
                           row.points, row.mode, row.mode_points, row.priority, row.maximum_revisit,
                           row.band):
                 field.ensurePolished()
@@ -937,6 +1065,11 @@ class IndependentPaneSetupV2(QWidget):
 
     def set_locale(self) -> None:
         for row in self._rows:
+            row.chain.setAccessibleName(text("analyzer.pane.setup.chain_name", pane=row.number))
+            with QSignalBlocker(row.chain):
+                for index in range(row.chain.count()):
+                    chain = ReceiverChainSelection(row.chain.itemData(index))
+                    row.chain.setItemText(index, text("analyzer.pane.setup.chain_" + chain.value))
             row.start.setSuffix(text("hackrf.unit.mhz"))
             row.stop.setSuffix(text("hackrf.unit.mhz"))
             row.priority.setAccessibleName(text("analyzer.pane.setup.priority_name", pane=row.number))
@@ -971,6 +1104,7 @@ class IndependentPaneSetupV2(QWidget):
                    if choice is not None and choice.family is DeviceFamily.RTL_SDR else "")
             row.source.setToolTip(tip)
             row.source.setAccessibleDescription(tip)
+            self._refresh_chain(row, choice)
             # A staged draft cannot rebuild source/geometry selectors. Translate
             # the existing mode items in place, without changing their data or
             # issuing a source/mode command through currentIndexChanged.
@@ -1022,10 +1156,13 @@ class IndependentPaneSetupV2(QWidget):
         if self._prepared is not None:
             self._refresh_preview()
         self._set_error(self._error_key, revisit_violations=self._revisit_violations,
-                        cleanup_required=self._cleanup_required)
-        reason = next((reason for row in self._rows for choice in self._choices
+                        cleanup_required=self._cleanup_required, failed_reason=self._failed_reason)
+        rtl_reason = next((reason for row in self._rows for choice in self._choices
                        if choice.device_id == row.source.currentData()
                        for reason in (self._rtl_unavailable_key(choice),) if reason is not None), None)
+        chain_reason = next((reason for row in self._rows
+                             for reason in (self._chain_refusal_key(row),) if reason is not None), None)
+        reason = chain_reason or rtl_reason
         self.prepare.setToolTip("" if reason is None else text(reason))
         self.prepare.setAccessibleDescription("" if reason is None else text(reason))
 

@@ -46,6 +46,7 @@ class IndependentPaneSessionV2(QWidget):
 
     def __init__(self, handle: PaneProductSessionHandle, *,
                  confirm_shared_stop: Callable[[tuple[str, ...]], bool] | None = None,
+                 confirm_paired_start: Callable[[tuple[int, ...]], bool] | None = None,
                  close_layout: Callable[[PaneProductSessionHandle], None] | None = None,
                  parent: QWidget | None = None) -> None:
         if not isinstance(handle, PaneProductSessionHandle) or not handle.applied:
@@ -55,6 +56,7 @@ class IndependentPaneSessionV2(QWidget):
         self.setProperty("ui2Root", True)
         self.handle = handle
         self._confirm_shared_stop = confirm_shared_stop or self._ask_shared_stop
+        self._confirm_paired_start = confirm_paired_start or self._ask_paired_start
         self._close_layout = close_layout
         self._futures: list[Future[Any]] = []
         self._error_key: str | None = None
@@ -164,23 +166,46 @@ class IndependentPaneSessionV2(QWidget):
     def _start_selected(self) -> None:
         selected = self._selected_resource()
         if (selected is None or self._rf_phase is not None
-                or selected[1] == self._rf_fault_resource):
+                or self._terminal_released or selected[1] == self._rf_fault_resource):
             return
+        resource_id = selected[1]
+        if resource_id not in self.handle.pump.startable_resource_ids():
+            return
+        if resource_id in self.handle.preparer.paired_resource_ids:
+            impact = self._paired_start_impact((resource_id,))
+            if not self._confirm_paired_start(impact):
+                return
+            if (self._terminal_released or self._rf_phase is not None
+                    or resource_id == self._rf_fault_resource
+                    or resource_id not in self.handle.pump.startable_resource_ids()):
+                return
         self._error_key = None
         try:
-            self._futures.append(self.handle.pump.start_resource(selected[1]))
+            self._futures.append(self.handle.pump.start_resource(resource_id))
         except (RuntimeError, ValueError):
             self._error_key = "analyzer.independent.operation_failed"
         self._refresh()
 
     def _start_all(self) -> None:
-        if self._rf_phase is not None:
+        if self._rf_phase is not None or self._terminal_released:
             return
+        startable = tuple(item for item in self.handle.pump.startable_resource_ids()
+                          if item != self._rf_fault_resource)
+        if not startable:
+            return
+        impact = self._paired_start_impact(startable)
+        if impact:
+            if not self._confirm_paired_start(impact):
+                return
+            # A modal confirmation must not authorize a different later set
+            # of resources, especially a pair that was not in its summary.
+            if (self._terminal_released or self._rf_phase is not None
+                    or startable != tuple(item for item in self.handle.pump.startable_resource_ids()
+                                          if item != self._rf_fault_resource)):
+                return
         self._error_key = None
         try:
-            for resource_id in self.handle.pump.startable_resource_ids():
-                if resource_id == self._rf_fault_resource:
-                    continue
+            for resource_id in startable:
                 self._futures.append(self.handle.pump.start_resource(resource_id))
         except (RuntimeError, ValueError):
             self._error_key = "analyzer.independent.operation_failed"
@@ -376,6 +401,20 @@ class IndependentPaneSessionV2(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         # Compare the returned Qt button value, not Python wrapper identity.
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _paired_start_impact(self, resource_ids: tuple[str, ...]) -> tuple[int, ...]:
+        paired = self.handle.preparer.paired_resource_ids.intersection(resource_ids)
+        return tuple(sorted(binding.slot_number for binding in self.handle.preparer.bindings.values()
+                            if binding.physical_stream_resource_id in paired))
+
+    def _ask_paired_start(self, impact: tuple[int, ...]) -> bool:
+        answer = QMessageBox.question(
+            self, text("analyzer.independent.paired_start.title"),
+            text("analyzer.independent.paired_start.detail",
+                 panes=", ".join(str(number) for number in impact)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
         return answer == QMessageBox.StandardButton.Yes
 
     def _render_failed(self, pane_id: str, _detail: str) -> None:
