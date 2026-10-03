@@ -2,10 +2,11 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QStandardItemModel
+from PySide6.QtCore import QPointF, QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QStandardItemModel, QWheelEvent
 from PySide6.QtWidgets import (
     QCheckBox,
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -39,11 +40,70 @@ from ..view_models.analyzer_view_model import AnalyzerViewState
 from ..view_models.calibration_view_model import CalibrationProfileViewModel, CalibrationProfileViewState
 
 
+class DraftScrollComboBox(QComboBox):
+    """Let the editor scroll while a closed draft selector is under the wheel."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if self.view().isVisible():
+            super().wheelEvent(event)
+        else:
+            ancestor = self.parentWidget()
+            while ancestor is not None and not isinstance(ancestor, QScrollArea):
+                ancestor = ancestor.parentWidget()
+            if isinstance(ancestor, QScrollArea):
+                viewport = ancestor.viewport()
+                forwarded = QWheelEvent(
+                    QPointF(viewport.mapFromGlobal(event.globalPosition().toPoint())),
+                    event.globalPosition(), event.pixelDelta(), event.angleDelta(),
+                    event.buttons(), event.modifiers(), event.phase(), event.inverted(),
+                )
+                QApplication.sendEvent(viewport, forwarded)
+                event.accept()
+            else:
+                event.ignore()
+
+
+def requested_tinysa_parts(input_mode: TinySaInputMode, plan: TinySaSweepSettingsPlan, *,
+                           readback: bool = False, correction: CalibrationProfile | None = None) -> tuple[str, ...]:
+    """Localized operator request from typed intent, never serial commands or readback."""
+    parts = []
+    if input_mode is not TinySaInputMode.PRESERVE:
+        parts.append(text("tinysa.settings.requested_input", value=text(f"tinysa.settings.{input_mode.value}")))
+    if plan.accuracy is not TinySaSweepAccuracy.UNCHANGED:
+        accuracy = "noise" if plan.accuracy is TinySaSweepAccuracy.NOISE_SOURCE else plan.accuracy.value
+        parts.append(text("tinysa.settings.requested_accuracy", value=text(f"tinysa.settings.{accuracy}")))
+    if plan.rbw_mode is not TinySaRbwMode.UNCHANGED:
+        if plan.rbw_mode is TinySaRbwMode.AUTO:
+            value = text("tinysa.settings.auto")
+        else:
+            assert plan.rbw_hz is not None
+            value = f"{plan.rbw_hz / 1000:g}{text('tinysa.settings.unit.khz')}"
+        parts.append(text("tinysa.settings.requested_rbw", value=value))
+    if plan.attenuation_mode is not TinySaAttenuationMode.UNCHANGED:
+        value = (text("tinysa.settings.auto") if plan.attenuation_mode is TinySaAttenuationMode.AUTO else
+                 f"{plan.attenuation_db}{text('tinysa_analyzer.unit.db')}")
+        parts.append(text("tinysa.settings.requested_atten", value=value))
+    for value, unchanged, key in (
+            (plan.lna, TinySaSwitchPolicy.UNCHANGED, "tinysa.settings.requested_lna"),
+            (plan.spur_removal, TinySaSpurPolicy.UNCHANGED, "tinysa.settings.requested_spur")):
+        if value is not unchanged:
+            parts.append(text(key, value=text(f"tinysa.settings.{value.value}")))
+    if plan.repeat_count is not None:
+        parts.append(text("tinysa.settings.requested_repeat", value=plan.repeat_count))
+    if plan.sweep_time_ms is not None:
+        parts.append(text("tinysa.settings.requested_sweep_time", value=f"{plan.sweep_time_ms / 1000:g}"))
+    if readback:
+        parts.append(text("tinysa.settings.requested_readback"))
+    if correction is not None:
+        parts.append(text("tinysa.settings.requested_correction", value=correction.profile_id))
+    return tuple(parts)
+
+
 class TinySaSettingsDrawer(QFrame):
     draft_changed = Signal()
     close_requested = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, embedded_in_editor: bool = False) -> None:
         super().__init__(parent)
         self.setObjectName("v2-tinysa-settings-drawer")
         self.setProperty("ui2Role", "card")
@@ -53,20 +113,27 @@ class TinySaSettingsDrawer(QFrame):
         self._unsubscribe_profiles: Callable[[], None] | None = None
         self._profiles_locked = False
         self._pending_profiles: CalibrationProfileViewState | None = None
+        self._embedded_in_editor = embedded_in_editor
         self._labels: list[tuple[QLabel | QPushButton, str]] = []
-        self._field_labels: list[tuple[QWidget, str]] = []
+        self._field_labels: list[tuple[QWidget, QLabel, str]] = []
         self._options: list[tuple[QComboBox, tuple[str, ...]]] = []
-        outer = QVBoxLayout(self)
-        self.scroll_area = QScrollArea(self)
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setProperty("ui2Role", "panel-scroll")
-        contents = QWidget(self.scroll_area)
-        contents.setProperty("ui2Role", "panel-scroll-content")
-        layout = QVBoxLayout(contents)
-        self.scroll_area.setWidget(contents)
-        outer.addWidget(self.scroll_area)
+        if embedded_in_editor:
+            # The independent editor supplies the only scroll viewport.
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(8, 8, 8, 8)
+        else:
+            # Preserve the standalone Analyzer drawer's existing bounded viewport.
+            outer = QVBoxLayout(self)
+            self.scroll_area = QScrollArea(self)
+            self.scroll_area.setWidgetResizable(True)
+            self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.scroll_area.setProperty("ui2Role", "panel-scroll")
+            contents = QWidget(self.scroll_area)
+            contents.setProperty("ui2Role", "panel-scroll-content")
+            layout = QVBoxLayout(contents)
+            self.scroll_area.setWidget(contents)
+            outer.addWidget(self.scroll_area)
         heading = QHBoxLayout()
         title = QLabel(self)
         title.setProperty("ui2Role", "section-heading")
@@ -82,6 +149,11 @@ class TinySaSettingsDrawer(QFrame):
         self.contract.setProperty("ui2Role", "secondary")
         self.contract.setWordWrap(True)
         layout.addWidget(self.contract)
+        self.requested = QLabel(self)
+        self.requested.setWordWrap(True)
+        self.requested.setTextFormat(Qt.TextFormat.PlainText)
+        self.requested.setProperty("ui2Role", "secondary")
+        layout.addWidget(self.requested)
         self._form = QFormLayout()
         self._form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         layout.addLayout(self._form)
@@ -115,7 +187,7 @@ class TinySaSettingsDrawer(QFrame):
         self.screen_time.setRange(0, 60)
         self.screen_time.setDecimals(3)
         self._numeric(self.screen_time, "tinysa.settings.screen_time")
-        self.correction = QComboBox(self)
+        self.correction = DraftScrollComboBox(self)
         self.correction.setProperty("ui2Role", "utility-select")
         self.correction.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.correction.setMinimumContentsLength(10)
@@ -154,7 +226,7 @@ class TinySaSettingsDrawer(QFrame):
         self.hide()
 
     def _combo(self, key: str, values: tuple, keys: tuple[str, ...]) -> QComboBox:
-        control = QComboBox(self)
+        control = DraftScrollComboBox(self)
         control.setProperty("ui2Role", "utility-select")
         control.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         control.setMinimumContentsLength(10)
@@ -171,7 +243,7 @@ class TinySaSettingsDrawer(QFrame):
         label.setWordWrap(True)
         self._labels.append((label, key))
         self._form.addRow(label, control)
-        self._field_labels.append((control, key))
+        self._field_labels.append((control, label, key))
         control.setAccessibleName(text(key))
 
     def _numeric(self, control: QDoubleSpinBox | QSpinBox, key: str) -> None:
@@ -181,7 +253,53 @@ class TinySaSettingsDrawer(QFrame):
         control.valueChanged.connect(self._changed)
 
     def _changed(self, _value: object = None) -> None:
+        self._refresh_requested()
         self.draft_changed.emit()
+
+    def requested_count(self) -> int:
+        return len(self._requested_parts())
+
+    def _requested_parts(self) -> tuple[str, ...]:
+        return requested_tinysa_parts(TinySaInputMode(self.input.currentData()), self.plan(),
+                                      readback=self.readback.isChecked(), correction=self.correction_profile())
+
+    def _refresh_requested(self) -> None:
+        parts = self._requested_parts()
+        value = (text("tinysa.settings.requested", changes=" · ".join(parts)) if parts else
+                 text("tinysa.settings.requested_none"))
+        self.requested.setText(value + " " + text("tinysa.settings.requested_scope"))
+        self.requested.setAccessibleName(self.requested.text())
+        if not self._embedded_in_editor:
+            return
+        plan = self.plan()
+        requested_controls: set[QWidget] = set()
+        if self.input.currentData() != TinySaInputMode.PRESERVE.value:
+            requested_controls.add(self.input)
+        if plan.accuracy is not TinySaSweepAccuracy.UNCHANGED:
+            requested_controls.add(self.accuracy)
+        if plan.rbw_mode is not TinySaRbwMode.UNCHANGED:
+            requested_controls.add(self.rbw_mode)
+        if plan.rbw_mode is TinySaRbwMode.MANUAL:
+            requested_controls.add(self.rbw)
+        if plan.attenuation_mode is not TinySaAttenuationMode.UNCHANGED:
+            requested_controls.add(self.attenuation_mode)
+        if plan.attenuation_mode is TinySaAttenuationMode.MANUAL:
+            requested_controls.add(self.attenuation)
+        for option, choice in ((self.lna, plan.lna), (self.spur, plan.spur_removal)):
+            if choice.value != "unchanged":
+                requested_controls.add(option)
+        if plan.repeat_count is not None:
+            requested_controls.add(self.average)
+        if plan.sweep_time_ms is not None:
+            requested_controls.add(self.screen_time)
+        if self.correction_profile() is not None:
+            requested_controls.add(self.correction)
+        for control, label, key in self._field_labels:
+            caption = text(key)
+            if control in requested_controls:
+                caption += " · " + text("tinysa.settings.requested_marker")
+            label.setText(caption)
+            control.setAccessibleName(caption)
 
     def set_locale(self) -> None:
         self.setAccessibleName(text("tinysa.settings.title"))
@@ -191,7 +309,7 @@ class TinySaSettingsDrawer(QFrame):
             with QSignalBlocker(combo):
                 for index, key in enumerate(keys):
                     combo.setItemText(index, text(key))
-        for field, key in self._field_labels:
+        for field, _label, key in self._field_labels:
             field.setAccessibleName(text(key))
         self.rbw.setSuffix(text("tinysa.settings.unit.khz"))
         self.attenuation.setSuffix(text("tinysa_analyzer.unit.db"))
@@ -208,6 +326,7 @@ class TinySaSettingsDrawer(QFrame):
         self.extrapolate.setToolTip(text("tinysa.correction.extrapolate.help"))
         self.refresh_profiles.setText(text("tinysa.correction.refresh"))
         self._set_profile_scope()
+        self._refresh_requested()
 
     def _set_profile_scope(self) -> None:
         message = text("tinysa.correction.scope" if self._profiles_model is not None
@@ -285,9 +404,12 @@ class TinySaSettingsDrawer(QFrame):
         Single-source callers retain their original observed-only policy.
         """
         snapshot = source.binding.snapshot if source is not None else None
-        source_key = (source.device_id, revision) if available and source is not None else None
-        if source_key != self._source_key:
-            self._source_key = source_key
+        source_key = (source.device_id, revision) if source is not None else None
+        # Observational revision/availability refresh is not a user edit.
+        # Keep the request for the SAME source; fresh Stage still validates it.
+        previous_source_id = None if self._source_key is None else self._source_key[0]
+        source_id = None if source_key is None else source_key[0]
+        if source_id != previous_source_id:
             for control, _keys in self._options:
                 with QSignalBlocker(control):
                     control.setCurrentIndex(0)
@@ -308,6 +430,7 @@ class TinySaSettingsDrawer(QFrame):
                 self.frontend_chain.clear()
             with QSignalBlocker(self.extrapolate):
                 self.extrapolate.setChecked(False)
+        self._source_key = source_key
         known = snapshot is not None and snapshot.runtime_control_contract == TINYSA_RUNTIME_CONTROL_CONTRACT
         unobserved = (allow_unobserved_draft and source is not None
                       and source.family is DeviceFamily.TINYSA and snapshot is None)
@@ -336,6 +459,7 @@ class TinySaSettingsDrawer(QFrame):
             and self._profiles_model is not None and not self._profiles_model.state.busy)
         self.lna.setToolTip(text("tinysa.settings.lna.help"))
         self.attenuation_mode.setToolTip(text("tinysa.settings.atten.help"))
+        self._refresh_requested()
         if not available:
             self.hide()
 

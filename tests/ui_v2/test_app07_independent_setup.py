@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QPoint, QPointF, QTimer, Qt
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
@@ -167,6 +168,7 @@ class IndependentPaneSetupTests(unittest.TestCase):
             return prepare_user_pane_session(drafts, pool_factory=lambda: pool)
 
         try:
+            editor.resize(1100, 480)
             editor.update_sources(AnalyzerSourceSelection(revision=1, choices=choices))
             editor.show()
             self.app.processEvents()
@@ -426,13 +428,22 @@ class IndependentPaneSetupTests(unittest.TestCase):
         editor = IndependentPaneSetupV2(install=installed.append,
                                         uninstall=lambda: uninstalled.append(True))
         editor.update_sources(AnalyzerSourceSelection(revision=1, choices=choices))
-        editor.resize(1380, 350)
+        editor.resize(1380, 480)
         editor.show()
         self.app.processEvents()
         try:
             for row, choice in zip(editor._rows, choices, strict=False):
                 row.source.setCurrentIndex(row.source.findData(choice.device_id))
             self.assertIsNone(editor._rows[3].source.currentData())
+            mode = editor._rows[0].mode
+            self.assertTrue(mode.isEnabled())
+            original_mode = mode.currentData()
+            center = mode.rect().center()
+            wheel = QWheelEvent(QPointF(center), QPointF(mode.mapToGlobal(center)), QPoint(),
+                                QPoint(0, -120), Qt.MouseButton.NoButton,
+                                Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False)
+            self.app.sendEvent(mode, wheel)
+            self.assertEqual(mode.currentData(), original_mode)
             self.assertFalse(editor.blocks_single_source)
             with patch("sdr_monitor.ui.v2.workspaces.independent_pane_setup.prepare_user_pane_session",
                        side_effect=stage):
@@ -443,6 +454,11 @@ class IndependentPaneSetupTests(unittest.TestCase):
             self.assertIn("2", editor.preview.text())
             self.assertIn("3", editor.preview.text())
             self.assertIn("HackRF", editor.preview.text())
+            self.assertIn("3", editor.impact_summary.text())
+            self.assertIn("4", editor.impact_summary.text())
+            self.assertEqual(editor.impact_summary.accessibleName(), editor.impact_summary.text())
+            self.assertTrue(editor.impact_summary.isVisible())
+            self.assertTrue(editor.apply.isEnabled())
             self.assertFalse(installed)
             self.assertEqual(native.engines, [])
             self.assertEqual(hf.factory.controls, [])

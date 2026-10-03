@@ -150,6 +150,13 @@ class StagedPaneEditorGeometryTests(unittest.TestCase):
             self.assertTrue(shell.rect().contains(button.mapTo(shell, QPoint(0, 0))))
             self.assertTrue(shell.rect().contains(button.mapTo(shell, button.rect().bottomRight())))
             self.assertGreaterEqual(button.height(), button.minimumSizeHint().height())
+        summary = self.editor.impact_summary
+        self.assertIs(summary.parentWidget(), self.editor)
+        self.assertTrue(summary.isVisible())
+        self.assertEqual(summary.accessibleName(), summary.text())
+        self.assertGreaterEqual(summary.height(), summary.heightForWidth(summary.width()))
+        self.assertTrue(shell.rect().contains(summary.mapTo(shell, QPoint(0, 0))))
+        self.assertTrue(shell.rect().contains(summary.mapTo(shell, summary.rect().bottomRight())))
         self.assertGreaterEqual(self.editor.preview.height(),
                                 self.editor.preview.heightForWidth(self.editor.preview.width()))
         scroll = self.editor.scroll_area
@@ -211,6 +218,7 @@ class StagedPaneEditorGeometryTests(unittest.TestCase):
         self._wait(lambda: self.editor.can_close)
         self.assertEqual(self.editor.preview.text(), "")
         self.assertEqual(self.editor.preview.accessibleName(), "")
+        self.assertEqual(self.editor.impact_summary.text(), "")
         self.assertFalse(self.editor.details.isEnabled())
         self.assertFalse(self.editor.apply.isEnabled())
         self.assertTrue(self.editor.prepare.isEnabled())
@@ -244,6 +252,7 @@ class StagedPaneEditorGeometryTests(unittest.TestCase):
             self.app.processEvents()
         self.assertEqual(self.editor.preview.text(), "")
         self.assertEqual(self.editor.preview.accessibleName(), "")
+        self.assertEqual(self.editor.impact_summary.text(), self.editor.error.text().splitlines()[0])
         self.assertTrue(self.editor.details.isEnabled())
         self.editor.details.click()
         scroll = self.editor.scroll_area

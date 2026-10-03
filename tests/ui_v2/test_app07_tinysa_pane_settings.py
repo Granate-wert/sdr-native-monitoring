@@ -10,13 +10,16 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.domain.tinysa_settings import TinySaInputMode, TinySaRbwMode, TinySaSweepSettingsPlan
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
+from sdr_monitor.ui.v2.design import ThemeId
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, PaneUserPlanError, TinySaPaneIntent, compile_user_pane_plan
@@ -267,7 +270,7 @@ class TinySaPaneSettingsActualRootTests(unittest.TestCase):
         self.assertEqual(first.plan().rbw_hz, 300_000)
         self.assertEqual(self.g.serials, [])
 
-    def test_bounded_drawer_scroll_and_pinned_commands_in_actual_root(self):
+    def test_single_editor_scroll_and_pinned_commands_in_actual_root(self):
         self.change_rbw()
         self.editor.tinysa_toggle.click()
         for locale in (UiLocale.RU, UiLocale.EN):
@@ -283,20 +286,191 @@ class TinySaPaneSettingsActualRootTests(unittest.TestCase):
                 self.editor.scroll_area.ensureWidgetVisible(self.editor.tinysa_stack)
                 self.app.processEvents()
                 drawer = self.row.tinysa_settings
-                drawer.scroll_area.verticalScrollBar().setValue(0)
+                self.assertFalse(hasattr(drawer, "scroll_area"))
+                scroll = self.editor.scroll_area
+                scroll.ensureWidgetVisible(drawer.input)
+                self.app.processEvents()
+                first = drawer.input.mapTo(scroll.viewport(), drawer.input.rect().center())
+                self.assertTrue(scroll.viewport().rect().contains(first))
                 self.assertGreaterEqual(drawer.rbw.height(), drawer.rbw.minimumSizeHint().height())
                 self.assertTrue(drawer.input.isEnabled())
-                drawer.scroll_area.verticalScrollBar().setValue(drawer.scroll_area.verticalScrollBar().maximum())
-                point = drawer.scope.mapTo(drawer.scroll_area.viewport(), QPoint(1, drawer.scope.height() - 1))
+                scroll.ensureWidgetVisible(drawer.scope)
+                self.app.processEvents()
+                point = drawer.scope.mapTo(scroll.viewport(), QPoint(1, drawer.scope.height() - 1))
                 self.assertGreaterEqual(point.y(), 0)
-                self.assertLess(point.y(), drawer.scroll_area.viewport().height())
+                self.assertLess(point.y(), scroll.viewport().height())
         self.assertEqual(self.g.serials, [])
 
+    def test_closed_combo_wheel_scrolls_without_draft_mutation_and_keyboard_can_select(self):
+        drawer = self.row.tinysa_settings
+        self.editor.tinysa_toggle.click()
+        self.editor.scroll_area.ensureWidgetVisible(drawer.accuracy)
+        self.app.processEvents()
+        scroll = self.editor.scroll_area.verticalScrollBar()
+        self.assertGreater(scroll.maximum(), 0)
+
+        def wheel(widget):
+            center = widget.rect().center()
+            event = QWheelEvent(QPointF(center), QPointF(widget.mapToGlobal(center)),
+                                QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+                                Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False)
+            self.app.sendEvent(widget, event)
+            self.app.processEvents()
+
+        for focused in (False, True):
+            drawer.accuracy.setCurrentIndex(0)
+            scroll.setValue(0)
+            if focused:
+                drawer.accuracy.setFocus()
+            else:
+                self.editor.scroll_area.setFocus()
+            wheel(drawer.accuracy)
+            self.assertEqual(drawer.accuracy.currentData(), "unchanged")
+            self.assertIs(self.editor._read_drafts()[2].tinysa.settings.accuracy,
+                          TinySaSweepSettingsPlan().accuracy)
+            self.assertGreater(scroll.value(), 0)
+        scroll.setValue(0)
+        self.editor.scroll_area.ensureWidgetVisible(self.row.source)
+        source = self.row.source.currentData()
+        wheel(self.row.source)
+        self.assertEqual(self.row.source.currentData(), source)
+        drawer.accuracy.setFocus()
+        QTest.keyClick(drawer.accuracy, Qt.Key.Key_Down)
+        self.assertEqual(drawer.accuracy.currentData(), "normal")
+        self.assertIn("Normal", drawer.requested.text())
+        self.assertIn(text("tinysa.settings.requested_marker"), drawer.accuracy.accessibleName())
+        drawer.accuracy.showPopup()
+        self.app.processEvents()
+        view = drawer.accuracy.view()
+        self.assertTrue(view.isVisible())
+        precise = view.visualRect(view.model().index(2, 0)).center()
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=precise)
+        self.assertEqual(drawer.accuracy.currentData(), "precise")
+        self.assertEqual(self.g.serials, [])
+
+    def test_stage_pins_typed_tinysa_request_without_claiming_readback(self):
+        drawer = self.change_rbw()
+        drawer.accuracy.setCurrentIndex(drawer.accuracy.findData("normal"))
+        self.assertIn("Normal", drawer.requested.text())
+        self.assertIn(text("tinysa.settings.requested_count", count=3), self.editor.tinysa_toggle.text())
+        self.stage()
+        prepared = self.editor._prepared
+        for locale, target in ((UiLocale.EN, "RBW 300 kHz"),
+                               (UiLocale.RU, "RBW 300 кГц")):
+            self.fixture.shell.select_appearance_locale(locale)
+            self.fixture.shell.setFixedSize(960, 540)
+            for _ in range(4):
+                self.app.processEvents()
+            self.assertIs(self.editor._prepared, prepared)
+            summary = self.editor.impact_summary.text()
+            self.assertIn("Normal", summary)
+            self.assertIn(target, summary)
+            self.assertIn("3: LOW / Normal", summary)
+            self.assertEqual(self.editor.impact_summary.accessibleName(), summary)
+            self.assertTrue(self.fixture.shell.rect().contains(
+                self.editor.impact_summary.mapTo(self.fixture.shell,
+                                                 self.editor.impact_summary.rect().bottomRight())))
+            self.assertTrue(self.editor.apply.isEnabled())
+            self.assertEqual(drawer.plan().rbw_hz, 300_000)
+            self.assertEqual(drawer.accuracy.currentData(), "normal")
+        self.assertEqual(self.g.serials, [])
+        self.editor.discard.click()
+        self.wait(lambda: self.editor.can_close)
+        self.assertEqual(self.editor.impact_summary.text(), "")
+        self.assertEqual(drawer.accuracy.currentData(), "normal")
+
+    def test_same_source_observation_refresh_retains_explicit_draft_intent(self):
+        drawer = self.change_rbw()
+        drawer.accuracy.setCurrentIndex(drawer.accuracy.findData("normal"))
+        refreshed = AnalyzerSourceSelection(revision=2, choices=(self.candidate,))
+        self.fixture.presenter.source_selection_changed.emit(refreshed)
+        self.app.processEvents()
+        self.assertEqual(drawer.input.currentData(), "low")
+        self.assertEqual(drawer.accuracy.currentData(), "normal")
+        self.assertEqual(drawer.plan().rbw_hz, 300_000)
+        self.assertIn("Normal", drawer.requested.text())
+        self.assertEqual(self.g.serials, [])
+
+    def test_four_tinysa_same_and_distinct_requests_fit_pinned_stage_at_supported_sizes(self):
+        for rbws in ((300, 300, 300, 300), (300, 100, 30, 10)):
+            for row, rbw in zip(self.editor._rows, rbws, strict=True):
+                row.source.setCurrentIndex(row.source.findData(self.candidate.device_id))
+                row.start.setValue(100)
+                row.stop.setValue(300)
+                row.points.setValue(1001)
+                drawer = row.tinysa_settings
+                for control, value in ((drawer.input, "low"), (drawer.accuracy, "normal"),
+                                       (drawer.rbw_mode, "manual"), (drawer.attenuation_mode, "manual"),
+                                       (drawer.lna, "off"), (drawer.spur, "on")):
+                    control.setCurrentIndex(control.findData(value))
+                drawer.rbw.setValue(rbw)
+                drawer.attenuation.setValue(30)
+                drawer.average.setValue(3)
+                drawer.screen_time.setValue(1)
+            self.stage()
+            prepared = self.editor._prepared
+            for locale in (UiLocale.EN, UiLocale.RU):
+                self.fixture.shell.select_appearance_locale(locale)
+                for theme in ThemeId:
+                    self.fixture.shell.set_theme(theme)
+                    for width, height in ((1440, 912), (1280, 720), (960, 540)):
+                        with self.subTest(rbws=rbws, locale=locale, theme=theme, size=(width, height)):
+                            self.fixture.shell.setFixedSize(width, height)
+                            for _ in range(5):
+                                self.app.processEvents()
+                            summary = self.editor.impact_summary
+                            self.assertIs(self.editor._prepared, prepared)
+                            self.assertTrue(self.editor.apply.isEnabled())
+                            self.assertLessEqual(self.editor.height(), 480)
+                            self.assertGreaterEqual(summary.height(), summary.heightForWidth(summary.width()))
+                            self.assertTrue(self.fixture.shell.rect().contains(
+                                summary.mapTo(self.fixture.shell, summary.rect().bottomRight())))
+                            self.assertIn("Normal", summary.text())
+                            self.assertIn("RBW 300", summary.text())
+                            self.assertIn(text("analyzer.pane.setup.impact_tinysa_compact",
+                                               groups="").split(":")[0], summary.text())
+                            self.assertEqual(summary.accessibleName(), summary.text())
+                            if len(set(rbws)) == 1:
+                                self.assertIn("1–4", summary.text())
+                                self.assertEqual(summary.text().count("RBW 300"), 1)
+                            else:
+                                for value in rbws:
+                                    self.assertIn(f"RBW {value}", summary.text())
+            if len(set(rbws)) > 1:
+                self.fixture.shell.setFixedSize(960, 540)
+                self.editor.impact_summary.setText("OVERLONG " * 500)
+                for _ in range(5):
+                    self.app.processEvents()
+                self.assertLess(self.editor.impact_summary.height(),
+                                self.editor.impact_summary.heightForWidth(
+                                    self.editor.impact_summary.width()))
+                self.assertFalse(self.editor.apply.isEnabled())
+                with patch.object(self.editor, "_submit") as submit:
+                    self.editor._begin_apply()
+                    submit.assert_not_called()
+                self.assertEqual(self.editor.error.text(),
+                                 text("analyzer.pane.setup.impact_unreadable"))
+                self.editor._refresh_impact_summary()
+                for _ in range(5):
+                    self.app.processEvents()
+                self.assertTrue(self.editor.apply.isEnabled())
+            self.assertEqual(self.g.serials, [])
+            self.editor.discard.click()
+            self.wait(lambda: self.editor.can_close)
+
     def test_same_common_owner_postpass_readout_distinguishes_300k_target_from_30k_fake_actual(self):
+        self.fixture.shell.setFixedSize(960, 540)
+        self.app.processEvents()
         self.change_rbw()
         self.stage()
         prepared = self.editor._prepared
         self.assertIn(text("tinysa.settings.known"), self.row.tinysa_settings.contract.text())
+        self.assertTrue(self.editor.apply.isEnabled(),
+                        (self.editor._future, self.editor._impact_readable(),
+                         self.editor.size(), self.editor.impact_summary.size(),
+                         self.editor.impact_summary.heightForWidth(
+                             self.editor.impact_summary.width()),
+                         self.editor.impact_summary.mapTo(self.editor, QPoint(0, 0))))
         self.editor.apply.click()
         self.wait(lambda: self.fixture.page._independent_session is not None)
         self.pane_ui = self.fixture.page._independent_session

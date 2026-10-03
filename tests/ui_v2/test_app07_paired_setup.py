@@ -171,7 +171,8 @@ class PairedSetupTests(unittest.TestCase):
         editor = self._editor(choice)
         try:
             editor._prepared = SimpleNamespace(plan=plan, preview=(preview,),
-                                               handle=SimpleNamespace(source_labels={choice.device_id: choice.label}))
+                                               handle=SimpleNamespace(applied=False,
+                                                                      source_labels={choice.device_id: choice.label}))
             for locale, first, second, filter_text in (
                     (UiLocale.EN, "pane 1 → RX1", "pane 2 → RX2", "RF filter 10 MHz"),
                     (UiLocale.RU, "окно 1 → RX1", "окно 2 → RX2", "RF-фильтр 10 МГц")):
@@ -185,6 +186,11 @@ class PairedSetupTests(unittest.TestCase):
                 self.assertIn("RX", result)
                 self.assertIn("100", result)
                 self.assertEqual(editor.preview.accessibleName(), result)
+                summary = editor.impact_summary.text()
+                self.assertIn(text("analyzer.pane.setup.impact_paired", count=1), summary)
+                self.assertIn("1, 2", summary)
+                self.assertNotIn(choice.label, summary)
+                self.assertEqual(editor.impact_summary.accessibleName(), summary)
             self.assertIn("неизвестны", editor.preview.text())
             resource_id, configuration = plan.initial_ad_configurations[0]
             editor._prepared.plan = replace(plan, initial_ad_configurations=(
@@ -232,7 +238,8 @@ class PairedSetupTests(unittest.TestCase):
         editor = self._editor(choice)
         try:
             editor._prepared = SimpleNamespace(plan=plan, preview=(preview,),
-                                               handle=SimpleNamespace(source_labels={choice.device_id: choice.label}))
+                                               handle=SimpleNamespace(applied=False,
+                                                                      source_labels={choice.device_id: choice.label}))
             for locale, common, first, second, unknown, budget in (
                     (UiLocale.EN, "Common Sweep request 100…180 MHz", "Pane 1: requested display crop 100…104",
                      "Pane 2: requested display crop 170…180", "Actual LO/Fs/filter/gain",

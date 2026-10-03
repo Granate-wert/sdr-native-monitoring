@@ -6,7 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QResizeEvent, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
@@ -24,7 +24,8 @@ from sdr_monitor.domain.pane_scheduler import (
 )
 from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint
-from sdr_monitor.domain.tinysa_settings import TinySaInputMode
+from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
+from sdr_monitor.domain.tinysa_settings import TinySaInputMode, TinySaRbwMode, TinySaSweepAccuracy
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, RtbwBandPolicy, TinySaPaneIntent
@@ -36,7 +37,7 @@ from sdr_monitor.ui.v2_pane_user_stage import (
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import text
 from ..view_models.calibration_view_model import CalibrationProfileViewModel
-from .analyzer_tinysa_settings import TinySaSettingsDrawer
+from .analyzer_tinysa_settings import DraftScrollComboBox, TinySaSettingsDrawer, requested_tinysa_parts
 
 
 class _SlotRow:
@@ -44,10 +45,10 @@ class _SlotRow:
         self.number = number
         self.number_label = QLabel(str(number), parent)
         self.number_label.setProperty("ui2Role", "secondary")
-        self.source = QComboBox(parent)
+        self.source = DraftScrollComboBox(parent)
         self.source.setProperty("ui2Role", "utility-select")
         self.source.setMinimumWidth(175)
-        self.chain = QComboBox(parent)
+        self.chain = DraftScrollComboBox(parent)
         self.chain.setObjectName(f"independentPaneChain{number}V2")
         self.chain.setProperty("ui2Role", "utility-select")
         self.chain.setMinimumWidth(76)
@@ -71,9 +72,9 @@ class _SlotRow:
             field.setProperty("ui2Role", "range-control")
         self.start.setValue(100.0)
         self.stop.setValue(108.0)
-        self.rate = QComboBox(parent)
+        self.rate = DraftScrollComboBox(parent)
         self.rate.setProperty("ui2Role", "utility-select")
-        self.fft = QComboBox(parent)
+        self.fft = DraftScrollComboBox(parent)
         self.fft.setProperty("ui2Role", "utility-select")
         for value in (1024, 4096, 16384):
             self.fft.addItem(str(value), value)
@@ -82,7 +83,7 @@ class _SlotRow:
         self.points.setRange(2, 10001)
         self.points.setValue(101)
         self.points.setProperty("ui2Role", "range-control")
-        self.mode = QComboBox(parent)
+        self.mode = DraftScrollComboBox(parent)
         self.mode.setProperty("ui2Role", "utility-select")
         self.mode_points = QStackedWidget(parent)
         self.mode_points.addWidget(self.mode)
@@ -91,7 +92,7 @@ class _SlotRow:
         self._rtbw_rate: float | None = None
         self.band_number_label = QLabel(str(number), parent)
         self.band_number_label.setProperty("ui2Role", "secondary")
-        self.band = QComboBox(parent)
+        self.band = DraftScrollComboBox(parent)
         self.band.setProperty("ui2Role", "utility-select")
         for policy in RtbwBandPolicy:
             self.band.addItem(policy.value, policy)
@@ -106,7 +107,7 @@ class _SlotRow:
         self.maximum_revisit.setDecimals(3)
         self.maximum_revisit.setSingleStep(0.1)
         self.maximum_revisit.setProperty("ui2Role", "range-control")
-        self.tinysa_settings = TinySaSettingsDrawer(parent)
+        self.tinysa_settings = TinySaSettingsDrawer(parent, embedded_in_editor=True)
 
 
 class IndependentPaneSetupV2(QWidget):
@@ -196,15 +197,13 @@ class IndependentPaneSetupV2(QWidget):
         self.tinysa_toggle = QPushButton(self.tinysa_controls)
         self.tinysa_toggle.setProperty("ui2Role", "utility-action")
         self.tinysa_toggle.setCheckable(True)
-        self.tinysa_pane = QComboBox(self.tinysa_controls)
+        self.tinysa_pane = DraftScrollComboBox(self.tinysa_controls)
         self.tinysa_pane.setProperty("ui2Role", "utility-select")
         tiny_controls.addWidget(self.tinysa_toggle)
         tiny_controls.addWidget(self.tinysa_pane)
         tiny_controls.addStretch(1)
         layout.addWidget(self.tinysa_controls)
         self.tinysa_stack = QStackedWidget(self)
-        self.tinysa_stack.setMinimumHeight(300)
-        self.tinysa_stack.setMaximumHeight(380)
         for row in self._rows:
             drawer = row.tinysa_settings
             drawer.bind_profiles(calibration_profiles)
@@ -235,6 +234,14 @@ class IndependentPaneSetupV2(QWidget):
         actions.addStretch(1)
         self._actions_layout = actions
         root.addLayout(actions)
+        self.impact_summary = QLabel(self)
+        self.impact_summary.setObjectName("independentPaneStageImpactV2")
+        self.impact_summary.setWordWrap(True)
+        self.impact_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.impact_summary.setProperty("ui2Role", "secondary")
+        self.impact_summary.hide()
+        self.impact_summary.installEventFilter(self)
+        root.addWidget(self.impact_summary)
         self.band_controls = QWidget(self)
         band_grid = QGridLayout(self.band_controls)
         band_grid.setContentsMargins(0, 0, 0, 0)
@@ -330,6 +337,7 @@ class IndependentPaneSetupV2(QWidget):
             self.tinysa_stack.setCurrentWidget(drawer)
             drawer.show()
         self._show_tinysa_settings(self.tinysa_toggle.isChecked())
+        self._refresh_tinysa_cue()
 
     def _refresh_tinysa_row(self, row: _SlotRow) -> None:
         choice = next((item for item in self._choices
@@ -349,6 +357,7 @@ class IndependentPaneSetupV2(QWidget):
             choice, revision=None if self._selection is None else self._selection.revision,
             available=available, controls_locked=self.blocks_single_source,
             allow_unobserved_draft=True)
+        self._refresh_tinysa_cue()
 
     def _refresh_tinysa_selector(self) -> None:
         previous = self.tinysa_pane.currentData()
@@ -362,6 +371,22 @@ class IndependentPaneSetupV2(QWidget):
             self.tinysa_pane.setCurrentIndex(max(0, self.tinysa_pane.findData(previous)))
         self.tinysa_controls.setVisible(bool(numbers))
         self._select_tinysa_pane()
+        self._refresh_tinysa_cue()
+
+    def _refresh_tinysa_cue(self) -> None:
+        for index in range(self.tinysa_pane.count()):
+            number = self.tinysa_pane.itemData(index)
+            count = self._rows[number - 1].tinysa_settings.requested_count()
+            label = text("analyzer.pane.setup.tinysa_pane", pane=number)
+            if count:
+                label += " · " + text("analyzer.pane.setup.tinysa_request_count", count=count)
+            self.tinysa_pane.setItemText(index, label)
+        number = self.tinysa_pane.currentData()
+        count = 0 if number is None else self._rows[number - 1].tinysa_settings.requested_count()
+        label = (text("tinysa.settings.requested_count", count=count) if count else
+                 text("analyzer.pane.setup.tinysa_settings"))
+        self.tinysa_toggle.setText(label)
+        self.tinysa_toggle.setAccessibleName(label)
 
     def _show_details(self) -> None:
         target = self.error if not self.error.isHidden() else self.preview
@@ -372,6 +397,139 @@ class IndependentPaneSetupV2(QWidget):
         self.preview.setText(value)
         self.preview.setAccessibleName(value)
         self._sync_contents_height()
+
+    def _set_impact_text(self, value: str) -> None:
+        self.impact_summary.setText(value)
+        self.impact_summary.setAccessibleName(value)
+        self.impact_summary.setVisible(bool(value))
+        self._refresh_apply_visibility()
+
+    def _impact_readable(self) -> bool:
+        if self._prepared is None or not self.isVisible():
+            return True
+        summary = self.impact_summary
+        if not summary.isVisible() or summary.width() <= 0:
+            return False
+        required = summary.heightForWidth(summary.width())
+        top = summary.mapTo(self, QPoint(0, 0)).y()
+        return (summary.height() >= required and top >= 0
+                and top + summary.height() <= self.height())
+
+    def _refresh_apply_visibility(self) -> None:
+        if not hasattr(self, "apply"):
+            return
+        summary = self.impact_summary
+        required = summary.heightForWidth(max(1, summary.width())) if summary.isVisible() else 0
+        # QLabel's size hint can remain one line after a width change. Reserve
+        # the compact summary's real wrapped height, but never let arbitrary
+        # long text grow this pinned area without bound.
+        minimum = min(required, 3 * summary.fontMetrics().lineSpacing())
+        if summary.minimumHeight() != minimum:
+            summary.setMinimumHeight(minimum)
+            summary.updateGeometry()
+        refusal = next((reason for row in self._rows
+                        for reason in (self._chain_refusal_key(row),) if reason is not None), None)
+        if refusal is None:
+            refusal = next((reason for row in self._rows
+                            for choice in self._choices if choice.device_id == row.source.currentData()
+                            for reason in (self._rtl_unavailable_key(choice),) if reason is not None), None)
+        prepared = self._prepared
+        self.apply.setEnabled(self._future is None and prepared is not None
+                              and refusal is None and not prepared.handle.applied
+                              and not any(item.recording_conflict for item in prepared.preview)
+                              and self._impact_readable())
+
+    @staticmethod
+    def _pane_numbers(numbers: list[int]) -> str:
+        values = sorted(set(numbers))
+        if len(values) >= 3 and values == list(range(values[0], values[-1] + 1)):
+            return f"{values[0]}–{values[-1]}"
+        return ", ".join(map(str, values))
+
+    def _refresh_impact_summary(self) -> None:
+        prepared = self._prepared
+        if prepared is None:
+            self._set_impact_text("")
+            return
+        pane_numbers = {slot.request.pane_id: slot.number for slot in prepared.plan.layout.slots
+                        if slot.request is not None}
+        affected = [pane_numbers[pane_id] for item in prepared.preview
+                    for pane_id in item.affected_pane_ids]
+        empty = [str(slot.number) for slot in prepared.plan.layout.slots if slot.request is None]
+        paired_resources = {
+            group.physical_stream_resource_id for group in prepared.plan.groups
+            if {endpoint.selection for endpoint in group.endpoints if isinstance(endpoint, ReceiverEndpoint)}
+            == {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
+        }
+        paired_count = len(paired_resources)
+        sliced_count = sum(item.capture_job_count > 1 for item in prepared.preview)
+        shared_count = sum(len(item.affected_pane_ids) > 1
+                           and item.physical_stream_resource_id not in paired_resources
+                           and item.capture_job_count == 1 for item in prepared.preview)
+        relations = []
+        if paired_count:
+            relations.append(text("analyzer.pane.setup.impact_paired", count=paired_count))
+        if sliced_count:
+            relations.append(text("analyzer.pane.setup.impact_sliced", count=sliced_count))
+        if shared_count:
+            relations.append(text("analyzer.pane.setup.impact_shared", count=shared_count))
+        if not relations:
+            relations.append(text("analyzer.pane.setup.impact_independent"))
+        if any(item.recording_conflict for item in prepared.preview):
+            relations.append(text("analyzer.pane.setup.recording_conflict"))
+        summary = text("analyzer.pane.setup.impact", resources=len(prepared.preview),
+                       panes=self._pane_numbers(affected) or text("analyzer.pane.setup.impact_none"),
+                       empty=", ".join(empty) or text("analyzer.pane.setup.impact_none"),
+                       relations=" · ".join(relations))
+        schedule = prepared.plan.layout.schedule
+        assert schedule is not None
+        tiny_groups: list[tuple[TinySaSweepRequest, list[int]]] = []
+        for resource in schedule.resources:
+            for job in resource.jobs:
+                if not isinstance(job.profile, TinySaTracePaneProfile):
+                    continue
+                request = job.profile.request_template
+                for crop in job.crops:
+                    for grouped_request, group_panes in tiny_groups:
+                        if (grouped_request.input_mode == request.input_mode
+                                and grouped_request.settings == request.settings
+                                and grouped_request.readback_settings == request.readback_settings
+                                and (None if grouped_request.external_correction is None else
+                                     grouped_request.external_correction.fingerprint)
+                                == (None if request.external_correction is None else
+                                    request.external_correction.fingerprint)):
+                            group_panes.append(pane_numbers[crop.pane_id])
+                            break
+                    else:
+                        tiny_groups.append((request, [pane_numbers[crop.pane_id]]))
+        if tiny_groups:
+            groups = []
+            for request, numbers in tiny_groups:
+                salient = []
+                if request.input_mode is not TinySaInputMode.PRESERVE:
+                    salient.append(request.input_mode.name)
+                if request.settings.accuracy is not TinySaSweepAccuracy.UNCHANGED:
+                    accuracy = request.settings.accuracy.value
+                    salient.append(text("tinysa.settings.summary_accuracy." + accuracy))
+                if request.settings.rbw_mode is TinySaRbwMode.AUTO:
+                    salient.append(text("tinysa.settings.summary_rbw_auto"))
+                elif request.settings.rbw_mode is TinySaRbwMode.MANUAL:
+                    assert request.settings.rbw_hz is not None
+                    salient.append(text("tinysa.settings.summary_rbw_manual",
+                                        value=f"{request.settings.rbw_hz / 1000:g}"))
+                parts = requested_tinysa_parts(request.input_mode, request.settings,
+                                               readback=request.readback_settings,
+                                               correction=request.external_correction)
+                extra = len(parts) - len(salient)
+                groups.append(text("analyzer.pane.setup.impact_tinysa_group",
+                                   panes=self._pane_numbers(numbers),
+                                   salient=" / ".join(salient) if salient else
+                                   text("tinysa.settings.preserve"),
+                                   extra=(" " + text("analyzer.pane.setup.impact_more", count=extra)
+                                          if extra else "")))
+            summary += "\n" + text("analyzer.pane.setup.impact_tinysa_compact",
+                                    groups="; ".join(groups))
+        self._set_impact_text(summary)
 
     def _sync_contents_height(self) -> None:
         layout = self.scroll_contents.layout()
@@ -400,10 +558,13 @@ class IndependentPaneSetupV2(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._sync_contents_height()
+        self._refresh_apply_visibility()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
             self._sync_contents_height()
+        if watched is self.impact_summary and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self._refresh_apply_visibility()
         return super().eventFilter(watched, event)
 
     @property
@@ -734,6 +895,10 @@ class IndependentPaneSetupV2(QWidget):
         if (self._released or self._future is not None or self._prepared is None
                 or any(item.recording_conflict for item in self._prepared.preview)):
             return
+        if not self._impact_readable():
+            self._set_error("analyzer.pane.setup.impact_unreadable")
+            self._refresh_apply_visibility()
+            return
         for row in self._rows:
             chain_reason = self._chain_refusal_key(row)
             if chain_reason is not None:
@@ -768,6 +933,7 @@ class IndependentPaneSetupV2(QWidget):
         self._operation = operation
         self._future = self._executor.submit(task, *args)
         if operation == "prepare":
+            self._set_impact_text(text("analyzer.pane.setup.preparing"))
             self._set_preview_text(text("analyzer.pane.setup.preparing"))
         elif operation == "apply":
             self._set_preview_text(text("analyzer.pane.setup.applying"))
@@ -816,9 +982,11 @@ class IndependentPaneSetupV2(QWidget):
                     self._prepared = prepared
                     self._set_error("analyzer.pane.setup.attach_failed")
                 else:
+                    self._set_impact_text("")
                     self.hide()
             elif operation == "discard":
                 self._prepared = None
+                self._set_impact_text("")
                 self._set_preview_text("")
             elif operation == "cleanup":
                 self._retained_pool = None
@@ -830,6 +998,7 @@ class IndependentPaneSetupV2(QWidget):
                     self._set_error("analyzer.pane.setup.operation_failed")
                 else:
                     self._closing_handle = None
+                    self._set_impact_text("")
                     self._set_preview_text("")
                     self.hide()
         if operation == "close_layout" and self._closing_handle is not None:
@@ -842,8 +1011,10 @@ class IndependentPaneSetupV2(QWidget):
     def _refresh_preview(self) -> None:
         prepared = self._prepared
         if prepared is None:
+            self._set_impact_text("")
             self._set_preview_text("")
             return
+        self._refresh_impact_summary()
         lines = [text("analyzer.pane.setup.preview_intro")]
         sources = dict(prepared.plan.resource_sources)
         for item in prepared.preview:
@@ -1073,6 +1244,8 @@ class IndependentPaneSetupV2(QWidget):
         self.error.setAccessibleName(value)
         self.error.setToolTip(value)
         self.error.setVisible(key is not None)
+        if self._prepared is None and self._future is None:
+            self._set_impact_text("" if key is None else text(key))
         self._sync_contents_height()
 
     def _refresh_actions(self) -> None:
@@ -1085,10 +1258,7 @@ class IndependentPaneSetupV2(QWidget):
         refusal = chain_reason or rtl_reason
         self.prepare.setEnabled(not blocked and refusal is None
                                 and self._prepared is None and self._retained_pool is None)
-        self.apply.setEnabled(not blocked and self._prepared is not None
-                              and refusal is None
-                              and not self._prepared.handle.applied
-                              and not any(item.recording_conflict for item in self._prepared.preview))
+        self._refresh_apply_visibility()
         self.prepare.setToolTip("" if refusal is None else text(refusal))
         self.prepare.setAccessibleDescription("" if refusal is None else text(refusal))
         self.discard.setEnabled(not blocked and (self._prepared is not None or self._retained_pool is not None))
