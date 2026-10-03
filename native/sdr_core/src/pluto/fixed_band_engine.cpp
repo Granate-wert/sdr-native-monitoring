@@ -449,13 +449,14 @@ void validate(const PairedFixedBandConfig& value) {
         checked_multiply(p.dsp.fft_size, 32U, "paired snapshots"),
         value.output_queue_capacity + 2U, "paired snapshots");
     const auto scratch = checked_multiply(p.device.buffer_samples, 24U, "paired input scratch");
+    const auto sink_bytes = value.analytical_sink ? value.analytical_sink->payload_bytes() : 0U;
     const auto iq = sum(sum(a.iq, b.iq), scratch);
     const auto spectrum = sum(sum(a.spectrum, b.spectrum), pair_snapshots);
     if (iq > max_iq_pool_bytes || sum(a.dsp, b.dsp) > max_dsp_working_bytes ||
         spectrum > max_spectrum_backlog_bytes ||
         sum(a.persistence, b.persistence) > max_persistence_bytes ||
-        sum(a.sweep, b.sweep) > max_sweep_line_backlog_bytes ||
-        sum(sum(a.total, b.total), sum(pair_snapshots, scratch)) > max_total_bytes) {
+        sum(sum(a.sweep, b.sweep), sink_bytes) > max_sweep_line_backlog_bytes ||
+        sum(sum(a.total, b.total), sum(sum(pair_snapshots, scratch), sink_bytes)) > max_total_bytes) {
         invalid("paired configuration exceeds aggregate live-engine memory budget");
     }
     if (p.recording.enabled && q.recording.enabled) {
@@ -619,6 +620,7 @@ public:
         secondary_ = std::move(secondary);
         paired_dsp_ = std::move(paired_dsp);
         paired_spectrum_queue_ = std::move(paired_output);
+        paired_analytical_sink_ = pair ? pair->analytical_sink : nullptr;
         {
             std::lock_guard cache_lock(paired_metrics_mutex_);
             paired_dsp_metrics_cache_ = paired_dsp_ ? paired_dsp_->metrics() : sdr_core::DualRxDspMetrics{};
@@ -832,6 +834,7 @@ public:
         secondary_.reset();
         paired_dsp_.reset();
         paired_spectrum_queue_.reset();
+        paired_analytical_sink_.reset();
         backend_.reset();
         acquisition_queue_.reset();
         account_recorder_abandoned(*this);
@@ -1818,7 +1821,11 @@ private:
     }
 
     void paired_dsp_run() noexcept {
+        // Keep the native sink alive until the sole worker terminates. No sink
+        // invocation escapes this worker or survives a joined reconfiguration.
+        const auto sink = paired_analytical_sink_;
         try {
+            if (sink) sink->begin(applied_);
             const auto started_at = std::chrono::steady_clock::now();
             const auto period = std::max<std::int64_t>(1LL, static_cast<std::int64_t>(
                 std::llround(1'000'000'000. / config_.snapshot_rate_hz)));
@@ -1830,6 +1837,7 @@ private:
                 terminal_pair.reset();
                 deadline_initialized = false;
                 paired_snapshots_abandoned_.fetch_add(paired_spectrum_queue_->abandon());
+                if (sink) sink->shared_gap();
                 for (auto* channel : {static_cast<FixedBandChannelState*>(this), secondary_.get()}) {
                     channel->persistence_->reset();
                     if (channel->persistence_queue_)
@@ -1847,6 +1855,10 @@ private:
                     consume_analytical(*this, pair.primary, primary_metrics, started_at, primary_line_slots);
                     consume_analytical(*secondary_, pair.secondary, secondary_metrics,
                                        started_at, secondary_line_slots);
+                    // Every validated pair, including the terminal partial batch,
+                    // reaches the Sweep owner AFTER per-chain consumers and
+                    // BEFORE either cadence selection or final render coalescing.
+                    if (sink) sink->consume(pair);
                     if (!deadline_initialized || pair.timestamp_ns >= next_timestamp) {
                         const auto scheduled = deadline_initialized
                             ? next_timestamp + period : pair.timestamp_ns + period;
@@ -1883,15 +1895,18 @@ private:
                 std::chrono::steady_clock::now() - flush_started).count());
             paired_dsp_->set_shared_gap_consumer({});
             paired_dsp_->set_analytical_consumer({}); // Never retain worker-stack captures.
+            if (sink) sink->finish(has_error_.load(std::memory_order_acquire));
         } catch (const std::exception& error) {
             paired_dsp_->set_shared_gap_consumer({});
             paired_dsp_->set_analytical_consumer({});
+            if (sink) sink->finish(true);
             emit_event(sdr_core::EventSeverity::Critical, "dsp_failure", error.what());
             mark_error();
             initiate_shutdown();
         } catch (...) {
             paired_dsp_->set_shared_gap_consumer({});
             paired_dsp_->set_analytical_consumer({});
+            if (sink) sink->finish(true);
             emit_event(sdr_core::EventSeverity::Critical, "dsp_failure", "unknown paired DSP failure");
             mark_error();
             initiate_shutdown();
@@ -2606,6 +2621,7 @@ private:
     std::unique_ptr<sdr_core::BoundedQueue<FixedBandIqEnvelope>> acquisition_queue_;
     std::unique_ptr<FixedBandChannelState> secondary_;
     std::unique_ptr<sdr_core::DualRxDspPublisher> paired_dsp_;
+    std::shared_ptr<PairedSpectrumAnalyticalSink> paired_analytical_sink_;
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::DualRxSpectrumFrame>> paired_spectrum_queue_;
     mutable std::mutex paired_metrics_mutex_;
     sdr_core::DualRxDspMetrics paired_dsp_metrics_cache_;

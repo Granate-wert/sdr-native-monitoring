@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <string>
 #include <utility>
@@ -243,6 +244,7 @@ void DualRxDspPublisher::push(const IqBlock& primary, const IqBlock& secondary) 
     last_sample_format_ = primary.sample_format;
     ++input_epochs_received_;
 
+    const auto processing_epoch = synchronization_epoch_;
     try {
         primary_backend_->push_iq(primary);
         secondary_backend_->push_iq(secondary);
@@ -250,8 +252,15 @@ void DualRxDspPublisher::push(const IqBlock& primary, const IqBlock& secondary) 
     } catch (...) {
         // A typed backend failure must not leave a processed primary waiting
         // to be paired with a later secondary. Preserve the failure for owner.
-        reset_for_shared_gap();
-        throw;
+        const auto first_failure = std::current_exception();
+        if (synchronization_epoch_ == processing_epoch) {
+            try { reset_for_shared_gap(); } catch (...) {
+                // Best-effort cleanup must not replace the first backend/sink
+                // cause. The owner receives that failure and terminates; this
+                // is not permission to continue or retry a failed callback.
+            }
+        }
+        std::rethrow_exception(first_failure);
     }
 }
 
@@ -267,11 +276,17 @@ void DualRxDspPublisher::set_analytical_consumer(AnalyticalConsumer consumer) {
 
 void DualRxDspPublisher::flush() {
     require_configured(configured_);
+    const auto processing_epoch = synchronization_epoch_;
     try {
         publish_ready_frames(true);
     } catch (...) {
-        reset_for_shared_gap();
-        throw;
+        const auto first_failure = std::current_exception();
+        if (synchronization_epoch_ == processing_epoch) {
+            try { reset_for_shared_gap(); } catch (...) {
+                // Same first-cause rule for a terminal partial FFT batch.
+            }
+        }
+        std::rethrow_exception(first_failure);
     }
 }
 

@@ -133,6 +133,51 @@ void test_native_consumer_precedes_coalescing_and_flushes_partial_batch() {
     expect(received == 1 && publisher.poll_spectrum_frames(0).size() == 1,
         "successful reconfigure cannot retain old owner callback");
 }
+void test_first_consumer_failure_survives_throwing_gap_cleanup(bool at_flush) {
+    auto value = config(1U);
+    if (at_flush) value.primary.dsp.batch_size = value.secondary.dsp.batch_size = 4;
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(value);
+    std::uint64_t consumes{}, gaps{};
+    publisher.set_analytical_consumer([&](auto&, const auto&, const auto&) -> bool {
+        ++consumes;
+        throw std::runtime_error("first analytical failure");
+    });
+    publisher.set_shared_gap_consumer([&] {
+        ++gaps;
+        throw std::runtime_error("secondary cleanup failure");
+    });
+    std::string cause;
+    try {
+        publisher.push(block(0, 0, 1'000'000, 12), block(0, 0, 1'000'000, -20));
+        if (at_flush) {
+            expect(consumes == 0, "terminal fault must occur in partial flush, not push");
+            publisher.flush();
+        }
+    } catch (const std::runtime_error& error) { cause = error.what(); }
+    expect(cause == "first analytical failure" && consumes == 1 && gaps == 1 &&
+        publisher.metrics().shared_input_gaps == 1 && publisher.poll_spectrum_frames(0).empty(),
+        "push/flush must preserve first failure and invalidate once despite throwing cleanup");
+}
+
+void test_failed_gap_callback_is_not_reentered_during_unwind() {
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(config(1U));
+    std::uint64_t gaps{};
+    publisher.set_shared_gap_consumer([&] {
+        throw std::runtime_error("gap failure " + std::to_string(++gaps));
+    });
+    publisher.set_analytical_consumer([&](auto&, const auto&, const auto&) {
+        publisher.mark_shared_gap();
+        return false;
+    });
+    std::string cause;
+    try { publisher.push(block(0, 0, 1'000'000, 12), block(0, 0, 1'000'000, -20)); }
+    catch (const std::runtime_error& error) { cause = error.what(); }
+    expect(cause == "gap failure 1" && gaps == 1 && publisher.metrics().shared_input_gaps == 1 &&
+        publisher.poll_spectrum_frames(0).empty(), "already invalidated gap callback must not be retried");
+}
+
 void test_native_consumer_sees_every_large_burst_before_latest_wins() {
     auto value = config(1U);
     value.primary.dsp.fft_size = value.secondary.dsp.fft_size = 1024;
@@ -520,6 +565,9 @@ void test_shared_plan_preserves_single_cpu_numerics() {
 int main() {
     try {
         test_native_consumer_precedes_coalescing_and_flushes_partial_batch();
+        test_first_consumer_failure_survives_throwing_gap_cleanup(false);
+        test_first_consumer_failure_survives_throwing_gap_cleanup(true);
+        test_failed_gap_callback_is_not_reentered_during_unwind();
         test_gap_observer_precedes_new_epoch_delivery();
         test_native_consumer_sees_every_large_burst_before_latest_wins();
         test_paired_cpu_spectra_keep_channel_identity();

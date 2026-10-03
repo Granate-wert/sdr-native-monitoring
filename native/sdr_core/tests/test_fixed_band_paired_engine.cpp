@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -112,6 +113,44 @@ template<class F> void refused(F call, const char* message) {
 }
 
 using Selection = sdr_pluto::ReceiverSelection;
+// Bounded native-only observer; read non-atomic fields ONLY after engine.join.
+// At most one retained pair, no UI queue or raw-IQ callback.
+struct AnalyticalSink final : sdr_pluto::PairedSpectrumAnalyticalSink {
+    std::uint64_t reservation{1024U * 32U};
+    std::uint64_t calls{}, gaps{}, begins{}, finishes{}, generation{}, fail_at{};
+    bool failed{}, fail_begin{}, fail_gap{};
+    std::optional<sdr_core::DualRxSpectrumFrame> last;
+    std::uint64_t payload_bytes() const noexcept override { return reservation; }
+    void begin(const sdr_pluto::AppliedConfig& applied) override {
+        ++begins;
+        require(applied.receiver_selection == Selection::Both && applied.sample_rate_hz == 61'440'000.,
+            "sink receives actual common owner readback");
+        generation = applied.config_generation;
+        calls = gaps = 0;
+        last.reset();
+        if (fail_begin) throw std::runtime_error("injected analytical sink begin failure");
+    }
+    void consume(const sdr_core::DualRxSpectrumFrame& pair) override {
+        ++calls;
+        require(pair.config_generation == generation &&
+            pair.primary.config_generation == generation && pair.secondary.config_generation == generation &&
+            pair.primary.source.source_id == "paired-rx1" && pair.secondary.source.source_id == "paired-rx2" &&
+            pair.primary.first_sample_index == pair.secondary.first_sample_index &&
+            pair.primary.timestamp_ns == pair.secondary.timestamp_ns,
+            "analytical pair provenance differs from actual admitted common step");
+        if (last) require(last->synchronization_epoch == pair.synchronization_epoch,
+            "new synchronization epoch delivered before sink gap invalidation");
+        if (fail_at && calls == fail_at) throw std::runtime_error("injected analytical sink consume failure");
+        last = pair;
+    }
+    void shared_gap() override {
+        ++gaps;
+        last.reset();
+        if (fail_gap) throw std::runtime_error("secondary analytical sink cleanup failure");
+    }
+    void finish(bool error) noexcept override { ++finishes; failed = error; }
+};
+
 sdr_pluto::PairedFixedBandConfig paired_config() {
     auto primary = config(Selection::Rx1);
     auto secondary = config(Selection::Rx2);
@@ -413,6 +452,104 @@ void test_pair_absent_rx2(Hooks& hooks) {
     engine.disconnect();
     _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "1");
 }
+
+void test_analytical_sink_all_frames_flush_and_rearm(Hooks& hooks) {
+    auto p = paired_config();
+    p.primary.snapshot_rate_hz = p.secondary.snapshot_rate_hz = 1.;
+    p.primary.dsp.batch_size = p.secondary.dsp.batch_size = 4;
+    auto sink = std::make_shared<AnalyticalSink>();
+    p.analytical_sink = sink;
+    const auto created = hooks.created();
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto first = engine.configure_paired(p);
+    require(sink->begins == 0 && sink->calls == 0, "configured sink must not Start or consume");
+    engine.start();
+    wait_pair(engine, [](const auto& m) { return m.dsp.paired_frames_formed >= 32; });
+    engine.stop();
+    auto m = engine.paired_metrics();
+    require(sink->calls == m.dsp.paired_frames_formed && sink->calls > m.paired_snapshots_emitted &&
+        sink->finishes == 1 && !sink->failed && sink->last &&
+        sink->generation == first.config_generation && sink->gaps == m.dsp.shared_input_gaps &&
+        m.dsp.primary.output_pending == 0 && m.dsp.secondary.output_pending == 0,
+        "all analytical pairs and terminal partial flush precede 1Hz render selection");
+    require(m.primary.engine.persistence_updates == sink->calls &&
+        m.secondary.engine.persistence_updates == sink->calls, "existing per-chain consumers remain fed");
+    const auto first_generation = sink->generation;
+    p.primary.device.center_frequency_hz += 1'000'000.;
+    p.secondary.device.center_frequency_hz += 1'000'000.;
+    const auto next = engine.configure_paired(p);
+    require(sink->begins == 1 && !engine.streaming(), "reconfigure must not reenter sink or Start");
+    engine.start();
+    wait_pair(engine, [](const auto& metrics) { return metrics.dsp.paired_frames_formed >= 8; });
+    engine.stop();
+    m = engine.paired_metrics();
+    require(sink->begins == 2 && sink->finishes == 2 && !sink->failed && sink->last &&
+        sink->generation == next.config_generation && sink->generation > first_generation &&
+        sink->calls == m.dsp.paired_frames_formed && hooks.created() == created + 1,
+        "fresh analytical step uses SAME context, fresh generation, no stale pair");
+    engine.disconnect();
+}
+
+void test_analytical_sink_shared_gap() {
+    auto p = paired_config();
+    auto sink = std::make_shared<AnalyticalSink>();
+    p.analytical_sink = sink;
+    p.primary.acquisition_queue_capacity = p.secondary.acquisition_queue_capacity = 1;
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    static_cast<void>(engine.configure_paired(p));
+    engine.set_dsp_delay_for_test(80); // Fault injection ONLY, product timing unchanged.
+    engine.start();
+    wait_pair(engine, [](const auto& m) { return m.dsp.shared_input_gaps >= 2; });
+    engine.stop();
+    const auto m = engine.paired_metrics();
+    require(sink->gaps == m.dsp.shared_input_gaps && sink->gaps >= 2 &&
+        sink->calls == m.dsp.paired_frames_formed && sink->last &&
+        sink->last->shared_input_gaps_before == sink->gaps && !sink->failed && sink->finishes == 1,
+        "shared gap must invalidate sink BEFORE next analytical pair, with terminal flush");
+    engine.disconnect();
+}
+
+void test_analytical_sink_budget_before_rf(Hooks& hooks) {
+    auto p = paired_config();
+    auto sink = std::make_shared<AnalyticalSink>();
+    sink->reservation = 128U * 1024U * 1024U + 1U;
+    p.analytical_sink = sink;
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto created = hooks.created();
+    const auto mutations = hooks.mutations();
+    refused([&] { static_cast<void>(engine.configure_paired(p)); }, "sink shared128MiB budget must refuse");
+    sink->reservation = std::numeric_limits<std::uint64_t>::max();
+    refused([&] { static_cast<void>(engine.configure_paired(p)); }, "sink checked sum must refuse overflow");
+    require(hooks.created() == created && hooks.mutations() == mutations && sink->begins == 0,
+        "sink memory refusal BEFORE context/RF/worker");
+    engine.disconnect();
+}
+
+void test_analytical_sink_failure(bool at_begin, bool compound = false) {
+    auto p = paired_config();
+    auto sink = std::make_shared<AnalyticalSink>();
+    sink->fail_begin = at_begin;
+    sink->fail_gap = compound;
+    sink->fail_at = at_begin ? 0 : 3;
+    p.analytical_sink = sink;
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    static_cast<void>(engine.configure_paired(p));
+    engine.start();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!engine.paired_metrics().primary.has_error && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    require(engine.paired_metrics().primary.has_error, "sink exception must fail SAME common owner");
+    engine.stop();
+    require(sink->finishes == 1 && sink->failed && sink->begins == 1 &&
+        sink->calls == (at_begin ? 0 : 3), "sink failure has one terminal acknowledgement and no retry");
+    bool original = false;
+    for (const auto& event : engine.poll_events(0))
+        if (event.message.find(at_begin ? "injected analytical sink begin failure" :
+            "injected analytical sink consume failure") != std::string::npos) original = true;
+    require(original, "sink original failure cause preserved");
+    if (compound) require(sink->gaps == 1, "failed sink cleanup must not be retried");
+    engine.disconnect();
+}
 } // namespace
 
 int main() {
@@ -429,9 +566,15 @@ int main() {
         std::cout << "shared queue gap/flush case\n";
         test_pair_shared_queue_gap_and_terminal_flush();
         test_pair_absent_rx2(hooks);
+        test_analytical_sink_all_frames_flush_and_rearm(hooks);
+        test_analytical_sink_shared_gap();
+        test_analytical_sink_budget_before_rf(hooks);
+        test_analytical_sink_failure(false);
+        test_analytical_sink_failure(true);
+        test_analytical_sink_failure(false, true);
         require(hooks.contexts() == 0 && hooks.buffers() == 0, "paired ownership leaks");
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "");
-        std::cout << "paired same-owner data plane 9 cases PASS (mock ONLY)\n";
+        std::cout << "paired same-owner data plane 15 cases PASS (mock ONLY)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

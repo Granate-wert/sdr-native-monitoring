@@ -3169,3 +3169,44 @@ retuning and M4 RTL production precede four-source HIL/fault/performance/soak/
 visual/release closure. R14 cleanup retry defect remains OPEN. No physical dualRF,
 DPI/DWM/50ms/lossless/soak/Linux or release acceptance, static promotion, main
 product sync, firewall/security/system change is claimed.
+
+
+## M3 native paired analytical input prerequisite — 2026-10-03
+
+The SAME FixedBandEngine paired DSP worker now supports one native-only bounded
+PairedSpectrumAnalyticalSink. Every validated RX1/RX2 pair reaches it AFTER the
+existing per-chain consumers and BEFORE cadence selection/LatestWins rendering.
+No second opener/context/stream, extra analytical queue, raw-IQ or per-FFT Python
+callback. begin carries the actual owner AppliedConfig; shared gaps invalidate
+before a new pair; terminal partial batches use the same sink and one noexcept
+finish. A sink exception terminates the common owner, not an independent peer.
+The immutable conservative retained-payload reservation is counted ONCE in the
+existing shared Sweep128MiB / whole512MiB envelope before device probe/RF.
+This is a trusted internal C++ extension, not arbitrary plugin time enforcement,
+RSS qualification, or permission to block acquisition on UI/I/O.
+
+R0 independent review found a real first-cause defect: a secondary gap-cleanup
+exception could replace the initial consume/backend failure. The new compound
+owner regression FAILED before correction (2.25s, total2.31s), retained.
+R1 captures/rethrows the first push/flush exception through best-effort cleanup
+and avoids a second gap callback when the epoch was already invalidated.
+Three publisher regressions plus the compound owner case protect that path.
+Distinct configuredgpt-6-sol/high reviewer found the P1 source-closed/no new
+blocker in the immutable five-file R1 patch
+e05ccf82ff3dd779d49765d2935dea82a1784636dac5ec089f12538ba18fb9ba.
+
+Matching all-target Windows CPU HF+RTL native build PASS; full45/45CTest56.65s
+(paired owner15cases2.39s); serial explicit-new-module binding/application/
+Sweep-contract28PASS13.317s, zero skips. Native SHA256
+7ab4f78ca1e287cb0f1fdeac61d1caf35079bf5266396132e5bf72425c55a4ba.
+R0 results remain separate; historical getenv/CRLF warnings not suppressed.
+No new EXE/fullV2/frozen-package/physicalRX/dualRF/GUI/DPI/throughput/soak/Linux/
+release acceptance. Prior FF02 EXE unchanged and cannot be relabeled as this source.
+
+M3 is IN_PROGRESS, NOT complete: next implement paired coordinator/dual assemblers,
+one shared LO step, typed actual step/source/epoch receipt, common mode lease,
+whole-plan aggregate budget and cancellation/recording controls BEFORE product
+paired Sweep admission. The existing refusal remains. M2 positive paired/readback
+and annotation matching ENRU visible witness, R14 lifecycle fault, M4 RTL and
+M5..M12 qualification remain OPEN. UI V2 ONLY/main dirty work/static firewall
+preserved; full APP00..14 goal ACTIVE, APP05 expiredtimer not restarted.

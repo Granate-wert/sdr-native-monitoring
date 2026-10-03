@@ -90,6 +90,25 @@ struct FixedBandConfig {
 
 void validate(const FixedBandConfig& value);
 
+// Native coordinator extension, NOT a Python callback or presentation queue.
+// Called synchronously on the SAME DSP worker; implementations must do bounded
+// work, never block on UI/I/O, reenter the engine or retain unbudgeted payloads.
+// payload_bytes is an immutable conservative reservation (including temporary
+// copies) for the sink's whole lifetime. The paired aggregate budget counts it
+// once. begin receives actual owner readback, not a caller-invented RF receipt.
+// A throwing begin/consume/gap fails the common owner; finish is called exactly
+// once per worker (including failed begin), after terminal partial DSP flush on
+// success. Gap invalidation happens BEFORE delivery of a new synchronized pair.
+class PairedSpectrumAnalyticalSink {
+public:
+    virtual ~PairedSpectrumAnalyticalSink() = default;
+    [[nodiscard]] virtual std::uint64_t payload_bytes() const noexcept = 0;
+    virtual void begin(const AppliedConfig& applied) = 0;
+    virtual void consume(const sdr_core::DualRxSpectrumFrame& frame) = 0;
+    virtual void shared_gap() = 0;
+    virtual void finish(bool failed) noexcept = 0;
+};
+
 // Two producer IDs, one device/context/common RF+gain policy and acquisition
 // geometry. Per-channel persistence/recording/line consumers remain separate.
 // Never two competing FixedBandEngine openers, nor one SpectrumFrame labelled BOTH.
@@ -97,6 +116,9 @@ struct PairedFixedBandConfig {
     FixedBandConfig primary;
     FixedBandConfig secondary;
     std::uint32_t output_queue_capacity{4U};
+    // Native-only pre-LatestWins analytical path for the shared Sweep owner.
+    // No extra acquisition/FFT queue, raw IQ or per-frame Python dispatch.
+    std::shared_ptr<PairedSpectrumAnalyticalSink> analytical_sink;
 };
 
 void validate(const PairedFixedBandConfig& value);
