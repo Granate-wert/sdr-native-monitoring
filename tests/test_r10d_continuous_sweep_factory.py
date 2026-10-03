@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from sdr_monitor.domain import BackendKind, LiveConfiguration
+from sdr_monitor.domain.continuous_sweep_geometry import sweep_segment_count, sweep_step_geometry
 from sdr_monitor.services.native_continuous_sweep_factory import (
     ContinuousSweepPlanRequest,
     NativeLiveContinuousSweepDisplayService,
@@ -92,6 +93,12 @@ class R10DContinuousSweepFactoryTests(unittest.TestCase):
         self.assertGreater(len(plan.segments), 1)
         self.assertEqual(build.call_count, len(plan.segments))
         self.assertTrue(all(item.fixed.backend is BackendKind.CPU for item in plan.segments))
+        request = ContinuousSweepPlanRequest(2.40e9, 2.48e9, epoch=4)
+        self.assertEqual(len(plan.segments), sweep_segment_count(request))
+        for index, item in enumerate(plan.segments):
+            geometry = sweep_step_geometry(request, index)
+            self.assertEqual((item.start, item.stop, item.fixed.center_hz),
+                             (geometry.usable_start_hz, geometry.usable_stop_hz, geometry.center_hz))
         self.assertTrue(all(
             item.kwargs["device_buffer_samples"] == 262_144 and
             item.kwargs["snapshot_rate_hz"] is None

@@ -10,6 +10,7 @@ from typing import Any
 
 from ..domain import BackendKind, LiveConfiguration
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.continuous_sweep_geometry import sweep_segment_count, sweep_step_geometry
 from ..domain.sweep_speed import SweepSpeedProfile
 from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET
 from ..domain.analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
@@ -20,7 +21,7 @@ from .native_continuous_sweep import (
 )
 from .native_sweep import NativeSweepLease
 from .ad936x_identity_admission import create_identity_bound_owner
-from ..domain.sweep_capacity import LEGACY_SWEEP_MAX_SEGMENTS, SWEEP_MAX_SEGMENTS
+from ..domain.sweep_capacity import LEGACY_SWEEP_MAX_SEGMENTS
 from .sweep_geometry_contract import require_extended_sweep_geometry
 
 
@@ -129,9 +130,7 @@ class NativeContinuousSweepPlanFactory:
             raise ValueError("requested usable window exceeds the applied sample-rate/RF-bandwidth profile")
         stride = request.usable_window_hz - request.overlap_hz
         span = request.stop_hz - request.start_hz
-        count = max(1, math.ceil(max(0.0, span - request.usable_window_hz) / stride) + 1)
-        if count > SWEEP_MAX_SEGMENTS:
-            raise ValueError("continuous sweep plan exceeds native 2048-segment bound")
+        count = sweep_segment_count(request)
         spacing = (request.usable_window_hz / request.analysis_bins_per_usable_window
                    if request.analysis_bins_per_usable_window else sample_rate / fft_size)
         physical_spacing = sample_rate / fft_size
@@ -179,10 +178,8 @@ class NativeContinuousSweepPlanFactory:
         live = source.live_configuration
         segments = []
         for index in range(preflight.segment_count):
-            usable_start = request.start_hz + index * preflight.segment_stride_hz
-            usable_stop = min(request.stop_hz, usable_start + request.usable_window_hz)
-            center_hz = (usable_start + usable_stop) / 2.0
-            configuration = replace(live, center_hz=center_hz,
+            geometry = sweep_step_geometry(request, index)
+            configuration = replace(live, center_hz=geometry.center_hz,
                                     averaging_frames=preflight.fft_averaging_frames)
             fixed = build_native_fixed_band_config(
                 self._lease.native_module,
@@ -198,7 +195,7 @@ class NativeContinuousSweepPlanFactory:
             )
             segments.append(
                 self._lease.native_module.ContinuousSweepSegmentConfig(
-                    fixed, usable_start, usable_stop
+                    fixed, geometry.usable_start_hz, geometry.usable_stop_hz
                 )
             )
         statistics_arguments: dict[str, Any] = {}
