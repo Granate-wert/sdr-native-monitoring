@@ -121,6 +121,9 @@ public:
     [[nodiscard]] LatestDualRxSpectrumFrameDrain drain_latest_spectrum_frame();
     [[nodiscard]] DualRxDspMetrics metrics() const;
     [[nodiscard]] AnalyticalReadyDrain drain_analytical_ready_events(bool primary, std::size_t max_items);
+    // Native owning engine only; SAME per-chain journals, no second queue or callback.
+    void enable_owner_presentation() noexcept;
+    void record_owner_presentation(const DualRxSpectrumFrame&, OwnerPresentationDisposition) noexcept;
 
 private:
     void reset_for_shared_gap();

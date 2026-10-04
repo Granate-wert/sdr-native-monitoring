@@ -106,6 +106,7 @@ struct HackrfFixedBandDsp::Impl final {
         options.analytical_event_capacity = config.analytical_event_capacity;
         dsp = sdr_core::make_cpu_dsp_backend(std::move(options));
         dsp->configure(config.dsp);
+        dsp->enable_owner_presentation();
     }
 
     HackrfFixedBandDspConfig config;
@@ -246,7 +247,14 @@ void HackrfFixedBandDsp::push(HackrfRxLease lease) {
         if (density) {
             static_cast<void>(impl_->persistence_queue.try_push(std::move(*density)));
         }
-        static_cast<void>(impl_->presentation.try_push(std::move(frame)));
+        const auto receipt = frame.analytical_ready;
+        const auto queued = impl_->presentation.push_with_eviction(std::move(frame),
+            [this](const sdr_core::SpectrumFrame& evicted) noexcept {
+                if (evicted.analytical_ready) impl_->dsp->record_owner_presentation(*evicted.analytical_ready,
+                    sdr_core::OwnerPresentationDisposition::Superseded);
+            }); // LatestWins never waits; its actual evicted item is the BACK, not the front.
+        if (receipt && queued != sdr_core::PushResult::Pushed && queued != sdr_core::PushResult::Evicted)
+            impl_->dsp->record_owner_presentation(*receipt, sdr_core::OwnerPresentationDisposition::Cancelled);
 #if SDR_CORE_PROFILING_ENABLED
         impl_->publication_queue_ns = saturating_add(
             impl_->publication_queue_ns,
@@ -269,6 +277,8 @@ std::vector<sdr_core::SpectrumFrame> HackrfFixedBandDsp::poll_spectrum_frames(
     sdr_core::SpectrumFrame frame;
     while ((max_items == 0U || result.size() < max_items) &&
            impl_->presentation.try_pop(frame)) {
+        if (frame.analytical_ready) impl_->dsp->record_owner_presentation(*frame.analytical_ready,
+            sdr_core::OwnerPresentationDisposition::Forwarded);
         result.push_back(std::move(frame));
     }
     return result;
@@ -283,11 +293,16 @@ HackrfLatestSpectrumFrameDrain HackrfFixedBandDsp::drain_latest_spectrum_frame()
     while (consumed < impl_->config.presentation_capacity &&
            impl_->presentation.try_pop(frame)) {
         if (result.frame.has_value()) {
+            if (result.frame->analytical_ready) impl_->dsp->record_owner_presentation(*result.frame->analytical_ready,
+                sdr_core::OwnerPresentationDisposition::Coalesced);
             ++result.coalesced_frames;
         }
         result.frame = std::move(frame);
         ++consumed;
     }
+    if (result.frame && result.frame->analytical_ready)
+        impl_->dsp->record_owner_presentation(*result.frame->analytical_ready,
+            sdr_core::OwnerPresentationDisposition::Forwarded);
     return result;
 }
 

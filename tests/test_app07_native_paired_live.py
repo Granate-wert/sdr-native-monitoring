@@ -190,6 +190,9 @@ def run_case(path: str, case: str) -> None:
         assert journals[0].counters.producer_instance_id != journals[1].counters.producer_instance_id
         assert app.analytical_journal_snapshots() == journals
         for publication, journal in zip((latest.primary, latest.secondary), journals, strict=True):
+            assert journal.native_presentation is not None and journal.native_presentation.forwarded > 0
+            assert journal.native_presentation.accounting_failures == 0
+            assert journal.native_owner_handoffs_unclassified >= 0
             assert journal.adapter is not None and journal.adapter.published_packets > 0
             assert journal.adapter.binding_failures == journal.adapter.unqualified_packets == 0
             assert journal.adapter_native_handoffs_unclassified >= 0

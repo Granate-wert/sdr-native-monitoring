@@ -571,7 +571,8 @@ void test_pair_owner_journals(Hooks& hooks) {
     resource.analytical_event_capacity = 32U;
     const auto after = sdr_core::dual_rx_dsp_resource_budget(resource);
     require(after.total_bytes - before.total_bytes ==
-        2U * sdr_core::analytical_ready_reserved_bytes(32U), "paired journal reservation not aggregate");
+        2U * (sdr_core::analytical_ready_reserved_bytes(32U) - sdr_core::analytical_ready_reserved_bytes(0U)),
+        "paired journal reservation not aggregate");
     static_cast<void>(engine.configure_paired(requested));
     engine.start();
     wait_pair(engine, [](const auto& m) { return m.dsp.paired_frames_formed >= 8U; });
@@ -585,11 +586,17 @@ void test_pair_owner_journals(Hooks& hooks) {
     refused([&] { static_cast<void>(engine.drain_analytical_ready_events(Selection::Both, 0U)); },
         "BOTH aliases an individual journal");
     engine.stop();
+    static_cast<void>(engine.drain_latest_paired_spectrum_frame());
     for (auto rx : {Selection::Rx1, Selection::Rx2}) {
         const auto final = engine.drain_analytical_ready_events(rx, 0U).summary;
         require(final.outstanding == 0U && final.events_generated ==
             final.events_drained + final.events_pending + final.events_lost,
             "terminal paired journal conservation failed");
+        const auto& presentation = final.presentation;
+        require(presentation.supported && presentation.accounting_failures == 0U && final.handed_off ==
+            presentation.forwarded + presentation.superseded + presentation.coalesced +
+                presentation.cancelled + presentation.cadence_suppressed,
+            "paired AD native owner lost per-chain presentation/cadence decisions");
     }
     engine.disconnect();
 }

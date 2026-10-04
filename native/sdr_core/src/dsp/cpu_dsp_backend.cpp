@@ -369,6 +369,10 @@ public:
     [[nodiscard]] AnalyticalReadySummary analytical_ready_summary() const override {
         return ready_journal_.summary();
     }
+    void enable_owner_presentation() noexcept override { ready_journal_.enable_owner_presentation(); }
+    void record_owner_presentation(const AnalyticalReadyRef& ref, OwnerPresentationDisposition kind) noexcept override {
+        ready_journal_.record_owner_presentation(ref, kind);
+    }
     [[nodiscard]] AnalyticalReadyDrain drain_analytical_ready(std::size_t max_items) override {
         return ready_journal_.drain(max_items);
     }

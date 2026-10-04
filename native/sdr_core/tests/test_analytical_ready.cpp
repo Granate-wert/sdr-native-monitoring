@@ -110,7 +110,7 @@ void test_independent_instances_and_foreign_refusal() {
 }
 void test_concurrent_owner_drain_and_budget() {
     refuses([] { static_cast<void>(analytical_ready_reserved_bytes(4097U)); });
-    expect(analytical_ready_reserved_bytes(128U) == 256U * sizeof(AnalyticalReadyEvent),
+    expect(analytical_ready_reserved_bytes(128U) == 256U * sizeof(AnalyticalReadyEvent) + sizeof(OwnerPresentationSummary),
            "journal plus drain reservation missing");
     AnalyticalReadyJournal journal(128U);
     refuses([&] { static_cast<void>(journal.drain(4097U)); });
@@ -139,6 +139,30 @@ void test_concurrent_owner_drain_and_budget() {
            terminal.outstanding == 0U && count + terminal.events_lost == 20000U,
            "concurrent drain loses unaccounted offers or terminal dispositions");
 }
+void test_actual_owner_scalar_decisions_share_atomic_summary() {
+    AnalyticalReadyJournal journal(2U), foreign;
+    expect(!journal.summary().presentation.supported, "standalone DSP fabricates owner coverage");
+    journal.enable_owner_presentation();
+    const auto a = journal.offer(1), b = journal.offer(1), c = journal.offer(2);
+    journal.retire(a, AnalyticalReadyEventKind::HandedOff);
+    journal.retire(b, AnalyticalReadyEventKind::HandedOff);
+    journal.retire(c, AnalyticalReadyEventKind::HandedOff);
+    // LatestWins evicts its back: actual dispositions need NOT follow FIFO.
+    journal.record_owner_presentation(b, OwnerPresentationDisposition::Superseded);
+    journal.record_owner_presentation(a, OwnerPresentationDisposition::Coalesced);
+    journal.record_owner_presentation(c, OwnerPresentationDisposition::Forwarded);
+    const auto s = journal.drain(0).summary;
+    conservation(s);
+    expect(s.presentation.forwarded == 1 && s.presentation.coalesced == 1 &&
+        s.presentation.superseded == 1 && s.presentation.accounting_failures == 0 &&
+        s.events_generated == 6 && s.events_lost == 4,
+        "owner counters changed producer event ring or lost exact scalar counts");
+    const auto wrong = foreign.offer(1);
+    journal.record_owner_presentation(wrong, OwnerPresentationDisposition::Cancelled);
+    journal.record_owner_presentation(c, OwnerPresentationDisposition::Forwarded);
+    expect(journal.summary().presentation.accounting_failures == 2 &&
+        journal.summary().presentation.forwarded == 1, "invalid/excess owner decisions alter outcomes");
+}
 }  // namespace
 int main() {
     try {
@@ -148,7 +172,8 @@ int main() {
         test_clock_regression_never_clipped_or_recovered_silently();
         test_independent_instances_and_foreign_refusal();
         test_concurrent_owner_drain_and_budget();
-        std::cout << "analytical-ready journal: 6 cases OK\n";
+        test_actual_owner_scalar_decisions_share_atomic_summary();
+        std::cout << "analytical-ready journal: 7 cases OK\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

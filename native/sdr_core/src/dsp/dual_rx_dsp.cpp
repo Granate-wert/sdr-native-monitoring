@@ -423,4 +423,13 @@ AnalyticalReadyDrain DualRxDspPublisher::drain_analytical_ready_events(
     // Only the journal is concurrent-safe; this is not a thread-safe configure.
     return (primary ? primary_backend_ : secondary_backend_)->drain_analytical_ready(max_items);
 }
+void DualRxDspPublisher::enable_owner_presentation() noexcept {
+    primary_backend_->enable_owner_presentation();
+    secondary_backend_->enable_owner_presentation();
+}
+void DualRxDspPublisher::record_owner_presentation(
+    const DualRxSpectrumFrame& pair, OwnerPresentationDisposition kind) noexcept {
+    if (pair.primary.analytical_ready) primary_backend_->record_owner_presentation(*pair.primary.analytical_ready, kind);
+    if (pair.secondary.analytical_ready) secondary_backend_->record_owner_presentation(*pair.secondary.analytical_ready, kind);
+}
 }  // namespace sdr_core

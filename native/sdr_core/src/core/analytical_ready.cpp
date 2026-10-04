@@ -112,6 +112,37 @@ AnalyticalReadySummary AnalyticalReadyJournal::summary() const noexcept {
     return result;
 }
 
+void AnalyticalReadyJournal::enable_owner_presentation() noexcept {
+    std::lock_guard lock(mutex_);
+    summary_.presentation.supported = true;
+}
+
+void AnalyticalReadyJournal::record_owner_presentation(
+    const AnalyticalReadyRef& ref, const OwnerPresentationDisposition kind
+) noexcept {
+    std::lock_guard lock(mutex_);
+    auto& p = summary_.presentation;
+    const auto classified = p.forwarded + p.superseded + p.coalesced + p.cancelled + p.cadence_suppressed;
+    // FIFO producer retirement and non-FIFO presentation decisions are distinct.
+    // No second identity ledger/ring or producer-rate Python callback is created.
+    const auto retired = summary_.handed_off + summary_.producer_superseded + summary_.producer_cancelled;
+    if (!p.supported || ref.producer_instance_id != summary_.producer_instance_id ||
+        ref.offer_sequence == 0U || ref.offer_sequence > retired ||
+        ref.clock != AnalyticalReadyClock::NativeSteady || classified >= summary_.handed_off) {
+        if (p.accounting_failures != std::numeric_limits<std::uint64_t>::max()) ++p.accounting_failures;
+        return; // Telemetry failure must not throw out of an owner queue hook.
+    }
+    switch (kind) {
+    case OwnerPresentationDisposition::Forwarded: ++p.forwarded; break;
+    case OwnerPresentationDisposition::Superseded: ++p.superseded; break;
+    case OwnerPresentationDisposition::Coalesced: ++p.coalesced; break;
+    case OwnerPresentationDisposition::Cancelled: ++p.cancelled; break;
+    case OwnerPresentationDisposition::CadenceSuppressed: ++p.cadence_suppressed; break;
+    default:
+        if (p.accounting_failures != std::numeric_limits<std::uint64_t>::max()) ++p.accounting_failures;
+    }
+}
+
 std::vector<AnalyticalReadyEvent> AnalyticalReadyJournal::poll_events(std::size_t max_items) {
     return drain(max_items).events;
 }
@@ -142,8 +173,9 @@ std::uint64_t analytical_ready_reserved_bytes(const std::uint32_t capacity) {
     if (capacity > AnalyticalReadyJournal::max_event_capacity) {
         throw ConfigurationError("analytical event capacity exceeds 4096 scalar records");
     }
-    // Ring plus one fully bounded native drain vector. Not Python-object/RSS
-    // or downstream obligation-ledger memory; callers must budget those too.
-    return 2U * static_cast<std::uint64_t>(capacity) * sizeof(AnalyticalReadyEvent);
+    // Ring, one fully bounded drain vector and the added fixed owner scalars.
+    // Not Python-object/RSS or per-ID downstream ledger memory; budget those too.
+    return 2U * static_cast<std::uint64_t>(capacity) * sizeof(AnalyticalReadyEvent) +
+           sizeof(OwnerPresentationSummary);
 }
 }  // namespace sdr_core

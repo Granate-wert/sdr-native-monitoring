@@ -210,6 +210,11 @@ void test_presentation_latest_wins_is_exact_and_separate_from_fft_loss() {
     );
     const auto metrics = dsp.metrics();
     expect(metrics.dsp.fft_frames_computed == 3U, "analytical FFT count mismatch");
+    const auto owner = dsp.drain_analytical_ready_events(0U).summary;
+    expect(owner.presentation.supported && owner.handed_off == 3U &&
+        owner.presentation.forwarded == 1U && owner.presentation.superseded == 2U &&
+        owner.presentation.coalesced == 0U && owner.presentation.accounting_failures == 0U,
+        "actual HF LatestWins native boundary does not reconcile ALL handoffs");
     expect(metrics.dsp.fft_frames_dropped == 0U, "presentation loss polluted DSP loss");
     expect(metrics.presentation.capacity == 1U, "presentation capacity mismatch");
     expect(metrics.presentation.high_water == 1U, "presentation bound was exceeded");
@@ -415,6 +420,10 @@ void test_latest_drain_preserves_identity_and_separate_coalescing() {
     expect(latest.frame->dropped_fft_frames_before == 0U,
            "bridge coalescing became an analytical FFT drop");
     const auto after = dsp.metrics();
+    const auto owner = dsp.drain_analytical_ready_events(0U).summary;
+    expect(owner.presentation.forwarded == 1U && owner.presentation.coalesced == 3U &&
+        owner.presentation.superseded == 0U && owner.presentation.accounting_failures == 0U &&
+        owner.handed_off == 4U, "actual HF latest drain conflates coalescing and queue supersession");
 #ifndef SDR_CORE_PROFILING_ENABLED
 #define SDR_CORE_PROFILING_ENABLED 0
 #endif

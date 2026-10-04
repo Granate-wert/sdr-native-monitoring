@@ -605,6 +605,7 @@ public:
         if (pair) {
             paired_dsp = std::make_unique<sdr_core::DualRxDspPublisher>();
             paired_dsp->configure(paired_dsp_config(*pair, probe)); // All DSP admission before RF.
+            paired_dsp->enable_owner_presentation();
             paired_output = std::make_unique<sdr_core::BoundedQueue<sdr_core::DualRxSpectrumFrame>>(
                 pair->output_queue_capacity, sdr_core::OverflowPolicy::LatestWins);
             const auto metrics = paired_dsp->metrics();
@@ -1097,7 +1098,10 @@ public:
     [[nodiscard]] std::vector<sdr_core::DualRxSpectrumFrame> poll_paired_spectrum_frames(std::size_t max_items) {
         std::lock_guard lock(lifecycle_mutex_);
         if (!secondary_) invalid("paired Spectrum read requires a paired engine");
-        return poll_channel_queue(paired_spectrum_queue_, max_items);
+        auto frames = poll_channel_queue(paired_spectrum_queue_, max_items);
+        for (const auto& frame : frames) paired_dsp_->record_owner_presentation(frame,
+            sdr_core::OwnerPresentationDisposition::Forwarded);
+        return frames;
     }
 
     [[nodiscard]] sdr_core::LatestDualRxSpectrumFrameDrain drain_latest_paired_spectrum_frame() {
@@ -1106,9 +1110,14 @@ public:
         sdr_core::LatestDualRxSpectrumFrameDrain result;
         sdr_core::DualRxSpectrumFrame frame;
         while (paired_spectrum_queue_->try_pop(frame)) {
-            if (result.frame) ++result.coalesced_frames;
+            if (result.frame) {
+                paired_dsp_->record_owner_presentation(*result.frame, sdr_core::OwnerPresentationDisposition::Coalesced);
+                ++result.coalesced_frames;
+            }
             result.frame = std::move(frame);
         }
+        if (result.frame) paired_dsp_->record_owner_presentation(*result.frame,
+            sdr_core::OwnerPresentationDisposition::Forwarded);
         return result;
     }
 
@@ -1142,6 +1151,7 @@ public:
             if (!spectrum_queue_->try_pop(frame)) {
                 break;
             }
+            record_owner_frame(frame, sdr_core::OwnerPresentationDisposition::Forwarded);
             result.push_back(std::move(frame));
         }
         return result;
@@ -1176,10 +1186,12 @@ public:
         sdr_core::SpectrumFrame frame;
         while (spectrum_queue_->try_pop(frame)) {
             if (result.frame.has_value()) {
+                record_owner_frame(*result.frame, sdr_core::OwnerPresentationDisposition::Coalesced);
                 ++result.coalesced_frames;
             }
             result.frame = std::move(frame);
         }
+        if (result.frame) record_owner_frame(*result.frame, sdr_core::OwnerPresentationDisposition::Forwarded);
         return result;
     }
 
@@ -1426,6 +1438,7 @@ private:
         if (!paired) {
             backend = sdr_core::make_dsp_backend(selection, std::move(options));
             backend->configure(config.dsp);
+            backend->enable_owner_presentation();
         }
 
 
@@ -1833,6 +1846,11 @@ private:
 
     }
 
+    void record_owner_frame(const sdr_core::SpectrumFrame& frame,
+                            sdr_core::OwnerPresentationDisposition kind) noexcept {
+        if (backend_ && frame.analytical_ready) backend_->record_owner_presentation(*frame.analytical_ready, kind);
+    }
+
     void publish_pair(sdr_core::DualRxSpectrumFrame frame) {
         const double latency_ms = std::max(
             0.0, static_cast<double>(system_time_ns() - frame.timestamp_ns) / 1.0e6);
@@ -1842,7 +1860,18 @@ private:
         // The recording cadence is unchanged; this is not an all-FFT recorder.
         tee_spectrum_frame(*this, frame.primary);
         tee_spectrum_frame(*secondary_, frame.secondary);
-        const auto result = paired_spectrum_queue_->try_push(std::move(frame));
+        const auto primary_receipt = frame.primary.analytical_ready;
+        const auto secondary_receipt = frame.secondary.analytical_ready;
+        const auto result = paired_spectrum_queue_->push_with_eviction(std::move(frame),
+            [this](const sdr_core::DualRxSpectrumFrame& evicted) noexcept {
+                paired_dsp_->record_owner_presentation(evicted, sdr_core::OwnerPresentationDisposition::Superseded);
+            });
+        if (result != sdr_core::PushResult::Pushed && result != sdr_core::PushResult::Evicted) {
+            sdr_core::DualRxSpectrumFrame refused;
+            refused.primary.analytical_ready = primary_receipt;
+            refused.secondary.analytical_ready = secondary_receipt;
+            paired_dsp_->record_owner_presentation(refused, sdr_core::OwnerPresentationDisposition::Cancelled);
+        }
         if (result == sdr_core::PushResult::Pushed || result == sdr_core::PushResult::Evicted) {
             paired_snapshots_emitted_.fetch_add(1U);
             counters_.spectrum_snapshots_emitted.fetch_add(1U);
@@ -1874,9 +1903,14 @@ private:
             std::uint64_t primary_line_slots{}, secondary_line_slots{};
             std::optional<sdr_core::DualRxSpectrumFrame> terminal_pair;
             paired_dsp_->set_shared_gap_consumer([&] {
+                if (terminal_pair) paired_dsp_->record_owner_presentation(*terminal_pair,
+                    sdr_core::OwnerPresentationDisposition::Cancelled);
                 terminal_pair.reset();
                 deadline_initialized = false;
-                paired_snapshots_abandoned_.fetch_add(paired_spectrum_queue_->abandon());
+                paired_snapshots_abandoned_.fetch_add(paired_spectrum_queue_->abandon_with(
+                    [this](const sdr_core::DualRxSpectrumFrame& abandoned) noexcept {
+                        paired_dsp_->record_owner_presentation(abandoned, sdr_core::OwnerPresentationDisposition::Cancelled);
+                    }));
                 if (sink) sink->shared_gap();
                 for (auto* channel : {static_cast<FixedBandChannelState*>(this), secondary_.get()}) {
                     channel->persistence_->reset();
@@ -1904,9 +1938,13 @@ private:
                             ? next_timestamp + period : pair.timestamp_ns + period;
                         next_timestamp = scheduled > pair.timestamp_ns ? scheduled : pair.timestamp_ns + period;
                         deadline_initialized = true;
+                        if (terminal_pair) paired_dsp_->record_owner_presentation(*terminal_pair,
+                            sdr_core::OwnerPresentationDisposition::CadenceSuppressed);
                         terminal_pair.reset();
                         publish_pair(std::move(pair));
                     } else {
+                        if (terminal_pair) paired_dsp_->record_owner_presentation(*terminal_pair,
+                            sdr_core::OwnerPresentationDisposition::CadenceSuppressed);
                         terminal_pair = std::move(pair);
                     }
                     return false;
@@ -2014,10 +2052,14 @@ private:
                         ? scheduled_next
                         : frame.timestamp_ns + snapshot_period_ns;
                     snapshot_deadline_initialized = true;
+                    if (latest_unpublished) record_owner_frame(*latest_unpublished,
+                        sdr_core::OwnerPresentationDisposition::CadenceSuppressed);
                     latest_unpublished.reset();
                     publish(*this, std::move(frame));
                     return;
                 }
+                if (latest_unpublished) record_owner_frame(*latest_unpublished,
+                    sdr_core::OwnerPresentationDisposition::CadenceSuppressed);
                 latest_unpublished = std::move(frame);
             };
             while (true) {
@@ -2445,7 +2487,13 @@ private:
             if (channel.spectrum_recording_writer_ && channel.spectrum_recorder_queue_) {
                 spectrum_recording_frame = frame;
             }
-            const auto result = channel.spectrum_queue_->try_push(std::move(frame));
+            const auto receipt = frame.analytical_ready;
+            const auto result = channel.spectrum_queue_->push_with_eviction(std::move(frame),
+                [this](const sdr_core::SpectrumFrame& evicted) noexcept {
+                    record_owner_frame(evicted, sdr_core::OwnerPresentationDisposition::Superseded);
+                });
+            if (receipt && result != sdr_core::PushResult::Pushed && result != sdr_core::PushResult::Evicted)
+                backend_->record_owner_presentation(*receipt, sdr_core::OwnerPresentationDisposition::Cancelled);
             if (result == sdr_core::PushResult::Pushed ||
                 result == sdr_core::PushResult::Evicted) {
                 channel.counters_.spectrum_snapshots_emitted.fetch_add(

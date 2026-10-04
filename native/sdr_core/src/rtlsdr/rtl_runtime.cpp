@@ -153,6 +153,7 @@ struct RtlRuntimeSession::Impl final {
         config.calibration_status = sdr_core::CalibrationStatus::Uncalibrated;
         sdr_core::validate(config);
         dsp->configure(config);
+        dsp->enable_owner_presentation();
     }
 
     ~Impl() {
@@ -347,6 +348,9 @@ struct RtlRuntimeSession::Impl final {
                         frame.quality_flags = frame.quality_flags | sdr_core::QualityFlag::IqDropped;
                     }
                     if (presentation.size() == profile.presentation_capacity) {
+                        if (presentation.front().analytical_ready)
+                            dsp->record_owner_presentation(*presentation.front().analytical_ready,
+                                sdr_core::OwnerPresentationDisposition::Superseded);
                         presentation.pop_front();
                         ++presentation_superseded;
                     }
@@ -492,6 +496,14 @@ RtlLatestFrame RtlRuntimeSession::drain_latest_spectrum_frame() {
     RtlLatestFrame result;
     if (!impl_->presentation.empty()) {
         result.coalesced_frames = static_cast<std::uint32_t>(impl_->presentation.size() - 1U);
+        for (std::size_t index = 0; index + 1U < impl_->presentation.size(); ++index) {
+            const auto& frame = impl_->presentation[index];
+            if (frame.analytical_ready) impl_->dsp->record_owner_presentation(*frame.analytical_ready,
+                sdr_core::OwnerPresentationDisposition::Coalesced);
+        }
+        if (impl_->presentation.back().analytical_ready)
+            impl_->dsp->record_owner_presentation(*impl_->presentation.back().analytical_ready,
+                sdr_core::OwnerPresentationDisposition::Forwarded);
         result.frame = std::move(impl_->presentation.back());
         impl_->presentation.clear();
     }

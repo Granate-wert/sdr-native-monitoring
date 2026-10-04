@@ -28,6 +28,33 @@ class AdapterPacketDisposition(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class NativePresentationCounters:
+    """Actual native-owner decisions, scalar totals, NOT per-ID/paint coverage.
+
+    Unclassified handoffs include frames still queued/in flight and exceptional
+    paths without a decision. Never fill that residual from sequence gaps.
+    Native coalescing and adapter batch coalescing describe the SAME discarded
+    packets, not two separate losses. Pair members remain separate producers.
+    """
+
+    forwarded: int = 0
+    superseded: int = 0
+    coalesced: int = 0
+    cancelled: int = 0
+    cadence_suppressed: int = 0
+    accounting_failures: int = 0
+
+    def __post_init__(self) -> None:
+        for item in fields(self):
+            _integer(getattr(self, item.name), item.name, 0, (1 << 64) - 1)
+        _integer(self.classified_handoffs, "native owner classified", 0, (1 << 64) - 1)
+
+    @property
+    def classified_handoffs(self) -> int:
+        return self.forwarded + self.superseded + self.coalesced + self.cancelled + self.cadence_suppressed
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterDispositionCounters:
     """Actual latest-drain packets, not pane obligations, paints or RF loss.
 
@@ -162,6 +189,7 @@ class OwnerJournalSnapshot:
     native_stop_confirmed: bool = False
     host_scalar_reserved_bytes: int = 1_048_576
     adapter: AdapterDispositionCounters | None = None
+    native_presentation: NativePresentationCounters | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, JournalState) or type(self.events) is not tuple or len(self.events) > 256:
@@ -178,6 +206,10 @@ class OwnerJournalSnapshot:
             raise ValueError("journal host reservation/terminal flag differs")
         if self.counters is not None and self.scope is None:
             raise ValueError("journal counters require the actual owner scope")
+        if self.native_presentation is not None:
+            if (not isinstance(self.native_presentation, NativePresentationCounters) or self.counters is None
+                    or self.native_presentation.classified_handoffs > self.counters.handed_off):
+                raise ValueError("native owner disposition conservation failed")
         if self.adapter is not None and (not isinstance(self.adapter, AdapterDispositionCounters)
                 or self.scope is None):
             raise ValueError("adapter accounting requires its immutable actual owner scope")
@@ -206,3 +238,21 @@ class OwnerJournalSnapshot:
             return None
         return (self.state is JournalState.FINAL and self.adapter_native_handoffs_unclassified == 0
                 and self.adapter.binding_failures == 0 and self.adapter.unqualified_packets == 0)
+
+    @property
+    def native_owner_handoffs_unclassified(self) -> int | None:
+        if self.counters is None or self.native_presentation is None:
+            return None
+        return self.counters.handed_off - self.native_presentation.classified_handoffs
+
+    @property
+    def owner_adapter_scalar_reconciled(self) -> bool | None:
+        """Scalar boundary conservation only, NOT exact offer/pane/paint coverage."""
+        owner, adapter = self.native_presentation, self.adapter
+        if self.counters is None or owner is None or adapter is None:
+            return None
+        latest = adapter.published_packets + adapter.rejected_packets + adapter.cancelled_packets
+        return (self.state is JournalState.FINAL and self.native_owner_handoffs_unclassified == 0
+                and owner.accounting_failures == 0 and adapter.binding_failures == 0
+                and adapter.unqualified_packets == 0 and owner.forwarded == latest
+                and owner.coalesced == adapter.coalesced_packets)

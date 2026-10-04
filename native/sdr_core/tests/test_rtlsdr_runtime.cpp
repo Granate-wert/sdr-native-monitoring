@@ -219,6 +219,10 @@ void check_callback_dsp_and_stop(const bool delayed, const bool malformed,
         assert(journal.summary.supported && journal.summary.offered > 0U &&
                journal.summary.handed_off == journal.summary.offered &&
                journal.summary.events_lost == 0U && !journal.events.empty());
+        const auto& p = journal.summary.presentation;
+        assert(p.supported && p.forwarded == 1U && p.accounting_failures == 0U);
+        assert(p.coalesced == newest.coalesced_frames);
+        assert(journal.summary.handed_off == p.forwarded + p.superseded + p.coalesced);
     }
     const auto stopped = session->stop(2000ms);
     assert(stopped.complete());

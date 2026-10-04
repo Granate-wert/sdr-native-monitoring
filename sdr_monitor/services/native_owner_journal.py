@@ -15,7 +15,7 @@ from typing import Any
 
 from ..domain.analytical_journal import (
     AdapterDispositionCounters, AdapterPacketDisposition, JournalCounters, JournalEvent,
-    JournalEventKind, JournalState, OwnerJournalScope, OwnerJournalSnapshot,
+    JournalEventKind, JournalState, NativePresentationCounters, OwnerJournalScope, OwnerJournalSnapshot,
 )
 
 EVENT_CAPACITY = 4096
@@ -168,11 +168,32 @@ class NativeOwnerJournal:
             self._last_event = self._missing_events = 0
             self._failed = False
 
-    def _convert(self, batch: Any) -> tuple[JournalCounters, tuple[JournalEvent, ...], int]:
+    def _convert(self, batch: Any) -> tuple[JournalCounters, tuple[JournalEvent, ...], int, NativePresentationCounters | None]:
         raw = batch.summary
         if raw.supported is not True:
             raise ValueError("admitted native owner lost journal support")
         counters = JournalCounters(**{item.name: getattr(raw, item.name) for item in fields(JournalCounters)})
+        presentation = None
+        version = getattr(self._native, "OWNER_PRESENTATION_DISPOSITION_CONTRACT_VERSION", None)
+        if version is not None:
+            if type(version) is not int or version != 1:
+                raise ValueError("native owner presentation protocol differs")
+            actual = raw.presentation
+            if type(actual.supported) is not bool:
+                raise ValueError("native owner presentation support must be typed")
+            if actual.supported:
+                presentation = NativePresentationCounters(**{
+                    item.name: getattr(actual, item.name) for item in fields(NativePresentationCounters)})
+                if presentation.classified_handoffs > counters.handed_off:
+                    raise ValueError("native owner decisions exceed actual DSP handoffs")
+            elif any(type(getattr(actual, item.name)) is not int or getattr(actual, item.name) != 0
+                     for item in fields(NativePresentationCounters)):
+                raise ValueError("unsupported native owner claims disposition counters")
+            old_presentation = self._snapshot.native_presentation
+            if old_presentation is not None:
+                if presentation is None or any(getattr(presentation, item.name) < getattr(old_presentation, item.name)
+                        for item in fields(NativePresentationCounters)):
+                    raise ValueError("native owner presentation lifetime counters regressed")
         if counters.event_capacity != self._capacity:
             raise ValueError("actual owner journal capacity differs from admitted request")
         previous = self._snapshot.counters
@@ -212,15 +233,15 @@ class NativeOwnerJournal:
             events.append(event)
         if missing > counters.events_lost:
             raise ValueError("owner journal gaps exceed declared evidence loss")
-        return counters, tuple(events), missing
+        return counters, tuple(events), missing, presentation
 
     def drain(self, reader: Callable[[int], object]) -> None:
         with self._lock:
             if not self.enabled or self._failed:
                 return
             try:
-                counters, events, missing = self._convert(reader(BATCH_CAPACITY))
-                candidate = replace(self._snapshot, counters=counters,
+                counters, events, missing, presentation = self._convert(reader(BATCH_CAPACITY))
+                candidate = replace(self._snapshot, counters=counters, native_presentation=presentation,
                     events=events if events else self._snapshot.events,
                     host_window_events_evicted=self._snapshot.host_window_events_evicted +
                         (len(self._snapshot.events) if events else 0))

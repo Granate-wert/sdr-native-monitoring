@@ -222,6 +222,15 @@ void bind_dsp(py::module_& module) {
         .def_readonly("event_sequence", &AnalyticalReadyEvent::event_sequence)
         .def_readonly("ref", &AnalyticalReadyEvent::ref)
         .def_readonly("kind", &AnalyticalReadyEvent::kind);
+    module.attr("OWNER_PRESENTATION_DISPOSITION_CONTRACT_VERSION") = 1;
+    py::class_<OwnerPresentationSummary>(module, "OwnerPresentationSummary")
+        .def_readonly("supported", &OwnerPresentationSummary::supported)
+        .def_readonly("forwarded", &OwnerPresentationSummary::forwarded)
+        .def_readonly("superseded", &OwnerPresentationSummary::superseded)
+        .def_readonly("coalesced", &OwnerPresentationSummary::coalesced)
+        .def_readonly("cancelled", &OwnerPresentationSummary::cancelled)
+        .def_readonly("cadence_suppressed", &OwnerPresentationSummary::cadence_suppressed)
+        .def_readonly("accounting_failures", &OwnerPresentationSummary::accounting_failures);
     py::class_<AnalyticalReadySummary>(module, "AnalyticalReadySummary")
         .def_readonly("supported", &AnalyticalReadySummary::supported)
         .def_readonly("producer_instance_id", &AnalyticalReadySummary::producer_instance_id)
@@ -238,7 +247,8 @@ void bind_dsp(py::module_& module) {
         .def_readonly("last_lost_event_sequence", &AnalyticalReadySummary::last_lost_event_sequence)
         .def_readonly("event_capacity", &AnalyticalReadySummary::event_capacity)
         .def_readonly("events_pending", &AnalyticalReadySummary::events_pending)
-        .def_readonly("event_storage_bytes", &AnalyticalReadySummary::event_storage_bytes);
+        .def_readonly("event_storage_bytes", &AnalyticalReadySummary::event_storage_bytes)
+        .def_readonly("presentation", &AnalyticalReadySummary::presentation);
     module.def("analytical_ready_clock_ns", &analytical_ready_clock_ns);
     module.attr("OWNER_ANALYTICAL_READY_CONTRACT_VERSION") = 1;
     py::class_<AnalyticalReadyDrain>(module, "AnalyticalReadyDrain")

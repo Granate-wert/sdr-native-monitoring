@@ -1056,10 +1056,15 @@ int main() {
             catch (const sdr_core::ConfigurationError&) { refused = true; }
             if (!refused) throw std::runtime_error("unadmitted journal RX2 accepted");
             journal_owner.stop();
+            static_cast<void>(journal_owner.drain_latest_spectrum_frame());
             const auto final = journal_owner.drain_analytical_ready_events(
                 sdr_pluto::ReceiverSelection::Rx1, 0U).summary;
             if (final.events_generated != final.events_drained + final.events_pending + final.events_lost ||
                 final.outstanding != 0U) throw std::runtime_error("terminal Pluto journal conservation failed");
+            const auto& p = final.presentation;
+            if (!p.supported || p.accounting_failures != 0U || final.handed_off !=
+                p.forwarded + p.superseded + p.coalesced + p.cancelled + p.cadence_suppressed)
+                throw std::runtime_error("single AD native presentation/cadence dispositions do not reconcile");
             journal_owner.disconnect();
         }
         return 0;

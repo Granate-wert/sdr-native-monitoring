@@ -30,6 +30,18 @@ struct AnalyticalReadyEvent {
     AnalyticalReadyRef ref;
     AnalyticalReadyEventKind kind{AnalyticalReadyEventKind::Offered};
 };
+// Actual owner decisions AFTER DSP handoff, not producer loss or layer paint.
+// Scalar totals have no retained per-offer coverage claim. Internal owners
+// report each decision once, at the queue/cadence boundary; never infer IDs
+// from offer-sequence gaps. Unsupported vendors leave supported=false.
+enum class OwnerPresentationDisposition : std::uint8_t {
+    Forwarded, Superseded, Coalesced, Cancelled, CadenceSuppressed,
+};
+struct OwnerPresentationSummary {
+    bool supported{};
+    std::uint64_t forwarded{}, superseded{}, coalesced{}, cancelled{}, cadence_suppressed{};
+    std::uint64_t accounting_failures{};
+};
 struct AnalyticalReadySummary {
     bool supported{};
     std::uint64_t producer_instance_id{};
@@ -47,6 +59,7 @@ struct AnalyticalReadySummary {
     std::uint64_t event_capacity{};
     std::uint64_t events_pending{};
     std::uint64_t event_storage_bytes{};
+    OwnerPresentationSummary presentation;
 };
 
 // Atomic post-drain summary: conservation may be checked without racing the
@@ -72,6 +85,8 @@ public:
     AnalyticalReadyJournal& operator=(const AnalyticalReadyJournal&) = delete;
     [[nodiscard]] AnalyticalReadyRef offer(std::uint64_t config_generation);
     void retire(const AnalyticalReadyRef& ref, AnalyticalReadyEventKind kind);
+    void enable_owner_presentation() noexcept;
+    void record_owner_presentation(const AnalyticalReadyRef& ref, OwnerPresentationDisposition kind) noexcept;
     [[nodiscard]] AnalyticalReadySummary summary() const noexcept;
     [[nodiscard]] std::vector<AnalyticalReadyEvent> poll_events(std::size_t max_items);
     [[nodiscard]] AnalyticalReadyDrain drain(std::size_t max_items);
