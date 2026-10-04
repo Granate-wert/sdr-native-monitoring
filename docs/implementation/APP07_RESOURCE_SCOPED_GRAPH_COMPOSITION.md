@@ -4956,3 +4956,47 @@ pump handling an injected adapter error, not native-worker death or physical
 USB removal/reconnect proof. These remaining fault classes, presentation
 backlog, performance, visible UI and independent release qualification remain
 open. APP-07 remains PARTIAL; no current/static EXE promotion occurred.
+
+## 2026-10-04: four-source presentation backlog and a UI freshness finding
+
+Two bounded physical four-source workflows reused unchanged runtime5fdb8f0,
+native033724 and the665-file diagnostic051 package. Documentation HEAD during
+RX was a47430a, not the build source. One layout used AD9364USB Sweep/HackRF
+Sweep/tinySA Sweep/RTL RTBW; another rotated tinySA/RTL/AD9363USB Sweep/HackRF.
+
+Only the Qt delivery timer was paused for20 seconds. Qt event processing,
+state/control timer, native acquisition and pane preparation remained active.
+Each run recorded40 interval samples at0.5 seconds plus control/resume receipts.
+The presented identities/sequences/revisions/histories and delivered counter
+remained unchanged; all four owner prepared-publication counters advanced.
+Pending packets never exceeded6 against the existing8-packet four-pane bound.
+Queue offered increments were1679 and1610; latest/terminal supersession was
+counted explicitly as presentation coalescing, not IQ loss or RF continuity.
+
+While delivery was still paused, explicit selected Stop released one lease,
+and separate Start established a new activation2 without rearming peers.
+After delivery resumed, target epoch2/current activation was accepted and old
+target tokens did not return. Other panes resumed with unchanged measurement
+identity/epochs and retained histories. Both processes closed normally with
+zero retained resources/workers, released cooperating-process leases and
+unchanged source/native inputs.92 observations,10 same-scan progressive pairs,
+6 original FHD PNG captures and34 pure predicate tests passed. Original image
+hashes/geometry and complete logs passed offline audit. Package/source snapshot
+were reverified. No physical unplug/native-worker death, actual paint/RSS/soak
+or continuous transport throughput qualification follows from these counters.
+
+Visual inspection and independent read-only UI source review found a P1
+presentation issue: the prominent Data age value follows latest host-router
+input even when the displayed plot has not updated for20 seconds. The tooltip
+disclaims paint scope but does not sufficiently distinguish displayed freshness.
+The planned UI-only repair will label Host input age separately from Plot last
+updated, timestamp only successful per-pane GUI acceptance, and explicitly mark
+retained prior-activation graphs until a fresh admitted packet is shown.
+Rejected/stale packets or hardware restart must not reset plot-update timing.
+This finding is not fixed by the backlog test and is not a native/RF error.
+
+Current APP07-G04 is PARTIAL for timer-pause/control/resume evidence; whole Qt
+thread stalls, RSS/render pressure, remaining native/physical fault classes,
+performance, visible Windows DPI/DWM, soak and release qualification stay open.
+Next work is the dedicated UI freshness repair and source-specific performance
+baseline. APP-07 remains PARTIAL; current/static EXE and system settings unchanged.
