@@ -7,12 +7,21 @@ import unittest
 from unittest.mock import patch
 import weakref
 
+import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pyqtgraph as pg
+from PySide6.QtCore import QRect
+from PySide6.QtGui import QPaintEvent
 from PySide6.QtWidgets import QApplication
 
-from sdr_monitor.ui.v2.spectrum.paint_cadence import UniquePaintCadence, cadence_graphics_widget
+from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
+from sdr_monitor.ui.v2.spectrum.paint_cadence import (
+    UniquePaintCadence,
+    cadence_graphics_widget,
+    spectrum_paint_key,
+)
+from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
 
 
 def frame(sequence, *, epoch=1, revision=None, state=None):
@@ -74,6 +83,20 @@ class PaintCadenceTests(unittest.TestCase):
         self.meter.admit(SimpleNamespace(sequence=3))
         self.assertIsNone(self.meter.period_ms(1_100_000_000))
 
+    def test_supplied_receiver_session_and_activation_identity_are_in_key(self):
+        def identified(session, activation):
+            return SimpleNamespace(
+                source_id="s", sequence=1, epoch=1, config_generation=2,
+                identity=SimpleNamespace(receiver_id="rx1", session_id=session,
+                    host_run_serial=3, host_activation_serial=activation,
+                    physical_resource_id="resource"),
+            )
+        first = spectrum_paint_key(identified("session-a", 4))
+        other_session = spectrum_paint_key(identified("session-b", 4))
+        other_activation = spectrum_paint_key(identified("session-a", 5))
+        self.assertNotEqual(first, other_session)
+        self.assertNotEqual(first, other_activation)
+
     def test_late_same_pass_revision_is_not_a_fresh_frame(self):
         self.paint(frame(1, revision=1), 1_000_000_000)
         self.paint(frame(1, revision=3), 1_100_000_000)
@@ -100,8 +123,12 @@ class PaintCadenceWidgetTests(unittest.TestCase):
                 calls.append(1)
                 super().paintEvent(event)
         meter = UniquePaintCadence()
+        def candidate(event):
+            if event.region().intersects(QRect(0, 0, 1, 1)):
+                return meter.key
+            return None
         with patch.object(pg, "GraphicsLayoutWidget", InjectedGraphics):
-            widget = cadence_graphics_widget(None, meter)
+            widget = cadence_graphics_widget(None, meter, candidate)
         try:
             self.assertIsInstance(widget, InjectedGraphics)
             meter.admit(frame(1))
@@ -117,6 +144,111 @@ class PaintCadenceWidgetTests(unittest.TestCase):
         finally:
             widget.close()
             widget.deleteLater()
+            self.app.processEvents()
+
+    def test_spectrum_candidate_requires_displayed_curve_and_relevant_region(self):
+        scene = SpectrumScene()
+        try:
+            scene.resize(720, 420)
+            scene.set_frame(SimpleNamespace(
+                source_id="source-a", receiver_id="rx1", session_id="session-a",
+                epoch=7, config_generation=3, sequence=1, unit="dBm",
+                frequencies_hz=np.linspace(100e6, 101e6, 128),
+                values=np.linspace(-100.0, -40.0, 128),
+            ))
+            scene.show()
+            self.app.processEvents()
+            curve = scene._curves[TraceKind.CURRENT]
+            clipped = curve.curve.mapRectToScene(curve.curve.boundingRect()).intersected(
+                scene._view_box.sceneBoundingRect())
+            relevant = scene._graphics.mapFromScene(clipped).boundingRect()
+            self.assertFalse(relevant.isEmpty())
+            key = scene.paint_cadence.key
+            self.assertIsNotNone(key)
+            self.assertEqual(scene._spectrum_paint_candidate(QPaintEvent(relevant)), key)
+            self.assertIsNone(scene._spectrum_paint_candidate(QPaintEvent(QRect(-10, -10, 2, 2))))
+
+            # A pending newer key is not eligible while the older curve remains displayed.
+            scene.paint_cadence.admit(SimpleNamespace(
+                source_id="source-a", receiver_id="rx1", session_id="session-a",
+                epoch=7, config_generation=3, sequence=2, unit="dBm"))
+            self.assertIsNone(scene._spectrum_paint_candidate(QPaintEvent(relevant)))
+            scene.paint_cadence.admit(scene.displayed_frame)
+            curve.hide()
+            self.assertIsNone(scene._spectrum_paint_candidate(QPaintEvent(relevant)))
+            curve.show()
+            scene.clear_trace(TraceKind.CURRENT)
+            self.assertIsNone(scene._spectrum_paint_candidate(QPaintEvent(relevant)))
+            scene.hide()
+            self.assertIsNone(scene._spectrum_paint_candidate(QPaintEvent(relevant)))
+        finally:
+            scene.close()
+            scene.deleteLater()
+            self.app.processEvents()
+
+    def test_actual_relevant_spectrum_paint_is_committed_after_base_paint_returns(self):
+        observed_before_commit = []
+
+        class PaintReturnProbe(pg.GraphicsLayoutWidget):
+            def paintEvent(self, event):
+                super().paintEvent(event)
+                observed_before_commit.append(len(self.paint_cadence._times))
+
+        with patch.object(pg, "GraphicsLayoutWidget", PaintReturnProbe):
+            scene = SpectrumScene()
+        try:
+            scene.resize(720, 420)
+            scene.set_frame(SimpleNamespace(
+                source_id="source-a", receiver_id="rx1", session_id="session-a",
+                epoch=7, config_generation=3, sequence=1, unit="dBm",
+                frequencies_hz=np.linspace(100e6, 101e6, 128),
+                values=np.linspace(-100.0, -40.0, 128),
+            ))
+            scene.show()
+            self.app.processEvents()
+            # Allow the first show/layout pass to settle, then request a paint
+            # of the required trace viewport with its final mapped geometry.
+            scene._graphics.viewport().repaint()
+            self.app.processEvents()
+            self.assertEqual(len(scene.paint_cadence._times), 1)
+            self.assertIn(0, observed_before_commit)
+
+            # A disjoint viewport/chrome region and repeated old data cannot advance it.
+            curve = scene._curves[TraceKind.CURRENT]
+            clipped = curve.curve.mapRectToScene(curve.curve.boundingRect()).intersected(
+                scene._view_box.sceneBoundingRect())
+            relevant = scene._graphics.mapFromScene(clipped).boundingRect()
+            viewport = scene._graphics.viewport().rect()
+            outside = next(rect for rect in (
+                QRect(viewport.left(), viewport.top(), 1, 1),
+                QRect(viewport.right(), viewport.top(), 1, 1),
+                QRect(viewport.left(), viewport.bottom(), 1, 1),
+                QRect(viewport.right(), viewport.bottom(), 1, 1),
+            ) if not relevant.intersects(rect))
+            scene._graphics.viewport().repaint(outside)
+            self.app.processEvents()
+            scene._graphics.viewport().repaint()
+            self.app.processEvents()
+            self.assertEqual(len(scene.paint_cadence._times), 1)
+
+            scene.set_frame(SimpleNamespace(
+                source_id="source-a", receiver_id="rx1", session_id="session-a",
+                epoch=7, config_generation=3, sequence=2, unit="dBm",
+                frequencies_hz=np.linspace(100e6, 101e6, 128),
+                values=np.linspace(-99.0, -39.0, 128),
+            ))
+            self.app.processEvents()
+            scene._graphics.viewport().repaint()
+            self.app.processEvents()
+            self.assertEqual(len(scene.paint_cadence._times), 2)
+            self.assertGreaterEqual(len(observed_before_commit), 2)
+            scene.hide()
+            scene._graphics.repaint()
+            self.app.processEvents()
+            self.assertEqual(len(scene.paint_cadence._times), 2)
+        finally:
+            scene.close()
+            scene.deleteLater()
             self.app.processEvents()
 
 

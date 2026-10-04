@@ -9,7 +9,7 @@ from collections.abc import Mapping
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QKeySequence, QRegion, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -49,7 +49,12 @@ from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
 from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
 from .persistence_projector import PersistenceDelivery, PersistenceWork
 from .plot_terminal import retire_plot_item_after_shutdown
-from .paint_cadence import UniquePaintCadence, cadence_graphics_widget
+from .paint_cadence import (
+    PaintKey,
+    UniquePaintCadence,
+    cadence_graphics_widget,
+    spectrum_paint_key,
+)
 from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
 from .screen_dash import ScreenDashPlotDataItem
 from .sweep_coverage_overlay import SweepCoverageOverlay
@@ -890,7 +895,8 @@ class SpectrumScene(QWidget):
         self._chart_host.setProperty("ui2Role", "panel")
         host_layout = QVBoxLayout(self._chart_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
-        self._graphics = cadence_graphics_widget(self._chart_host, self.paint_cadence)
+        self._graphics = cadence_graphics_widget(
+            self._chart_host, self.paint_cadence, self._spectrum_paint_candidate)
         # V2 already separates the panels; use its 4 px spacing grid instead
         # of stacking pyqtgraph's default outer padding inside another frame.
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
@@ -1048,6 +1054,36 @@ class SpectrumScene(QWidget):
             self._plot_item.addItem(curve)
             curves[kind] = curve
         return curves
+
+    def _spectrum_paint_candidate(self, event) -> PaintKey | None:
+        """Snapshot the displayed current curve only for an intersecting paint."""
+        graphics = self._graphics
+        if (not self._presentation_active or not graphics.isVisible()
+                or not graphics.viewport().isVisible()):
+            return None
+        view = self._marker_view()
+        curve = self._curves.get(TraceKind.CURRENT)
+        if view is None or curve is None or not curve.isVisible():
+            return None
+        trace_item = curve.curve
+        if trace_item is None or not trace_item.isVisible():
+            return None
+        key = spectrum_paint_key(view.source_frame)
+        if key is None or key != self.paint_cadence.key:
+            return None
+
+        # Bound the candidate to the visible trace area, not plot chrome or
+        # whitespace in the GraphicsView. mapFromScene uses viewport pixels,
+        # matching QGraphicsView's paint-event region.
+        curve_bounds = trace_item.mapRectToScene(trace_item.boundingRect())
+        relevant_scene = curve_bounds.intersected(self._view_box.sceneBoundingRect())
+        if relevant_scene.isEmpty():
+            return None
+        relevant_viewport = graphics.mapFromScene(relevant_scene).boundingRect()
+        relevant_viewport = relevant_viewport.intersected(graphics.viewport().rect())
+        if relevant_viewport.isEmpty() or event.region().intersected(QRegion(relevant_viewport)).isEmpty():
+            return None
+        return key
 
     def _make_marker_items(self) -> tuple[dict[str, pg.InfiniteLine], dict[str, pg.TextItem]]:
         tokens = tokens_for_theme(self._theme)
