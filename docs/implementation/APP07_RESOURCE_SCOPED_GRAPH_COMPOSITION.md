@@ -4658,3 +4658,42 @@ slot replacement preserving independent peers, positive paired RF, product
 Ethernet, faults, performance, soak, visible Windows/DPI, independent UI/release
 review and licensing remain open. No product change, new build, system mutation
 or static/current package promotion was made in these two test packets.
+
+## USB-session identity API feasibility — 2026-10-04
+
+A subsequent read-only physical probe through the exact packaged libiio DLL
+(reported version 0.26) held one USB context for each Pluto without enabling
+channels, creating acquisition buffers, starting RX or changing RF settings.
+Both contexts reported actual backend `usb`, descriptor `0456:b673` and
+backend context URIs `usb:2.18.5` and `usb:2.19.5`. The first reported its
+known serial; the mini reported explicitly empty USB and hardware serial
+strings, rather than absent attributes.
+
+The [official libiio 0.26 USB backend](https://github.com/analogdevicesinc/libiio/blob/v0.26/usb.c)
+constructs the context URI from its libusb device's bus/address/interface and
+obtains USB identity attributes from that device descriptor. Source inspection
+and observed DLL behavior support API feasibility, not binary reproducibility
+or cryptographic device authentication.
+
+Thirteen private pure tests distinguish missing versus empty observations and
+reject wrong backend/route/descriptors, duplicate sessions, two interfaces of
+one USB device, contradictory serials and the same known serial on different
+routes. Interface numbers must not create independent physical-resource keys.
+USB bus/address is a connection-scoped observation, not stable calibration
+identity; neither location-dependent identifiers nor a generated session UUID
+can supply a permanent serial.
+
+Repeated reads from the same handles matched, but context attributes are cached:
+this is not a fresh liveness or hot-swap test. Product integration must obtain
+these facts from the same native context that will perform acquisition, retain
+its lifetime/cleanup claims, handle unresolved USB/IP aliases and explicitly
+define replacement/revalidation behavior before changing the admission guard.
+The current native probe still exposes caller URI rather than these optional
+observed fields; that prerequisite is the next implementation task.
+
+All read-only contexts were destroyed through the SDK, no acquisition workers
+or buffers existed, the hardware lease was released and source/native snapshots
+were unchanged. The void destroy API supplies no exhaustive device-release
+readback. No product admission change, new build, RF test, UI change or system
+mutation occurred. Simultaneous product RX on the two Pluto units remains open;
+this API feasibility result is not a substitute for that acceptance test.
