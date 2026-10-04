@@ -371,6 +371,14 @@ assess_hackrf_fixed_band_dsp_delivery(const HackrfFixedBandDspMetrics& metrics) 
     return result;
 }
 
+std::uint64_t HackrfFixedBandDsp::discard_presentation_frames() {
+    std::lock_guard lock(impl_->mutex);
+    return impl_->presentation.abandon_with([this](const sdr_core::SpectrumFrame& frame) noexcept {
+        if (frame.analytical_ready) impl_->dsp->record_owner_presentation(*frame.analytical_ready,
+            sdr_core::OwnerPresentationDisposition::Cancelled);
+    });
+}
+
 sdr_core::AnalyticalReadyDrain HackrfFixedBandDsp::drain_analytical_ready_events(std::size_t max_items) {
     return impl_->dsp->drain_analytical_ready(max_items);
 }

@@ -223,6 +223,7 @@ void bind_dsp(py::module_& module) {
         .def_readonly("ref", &AnalyticalReadyEvent::ref)
         .def_readonly("kind", &AnalyticalReadyEvent::kind);
     module.attr("OWNER_PRESENTATION_DISPOSITION_CONTRACT_VERSION") = 1;
+    module.attr("OWNER_PRESENTATION_RELEASE_CONTRACT_VERSION") = 1;
     py::class_<OwnerPresentationSummary>(module, "OwnerPresentationSummary")
         .def_readonly("supported", &OwnerPresentationSummary::supported)
         .def_readonly("forwarded", &OwnerPresentationSummary::forwarded)

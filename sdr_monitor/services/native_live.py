@@ -74,7 +74,7 @@ from ..domain.device_capabilities import (
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
-from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
+from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
 from .source_capability_admission import (
     admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
 )
@@ -1156,7 +1156,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         if engine is not self._journal_engine:
             return
         for index, journal in enumerate(self._owner_journals[:self._journal_chain_count]):
-            journal.finish(self._owner_journal_reader(engine, index))
+            journal.finish(self._owner_journal_reader(engine, index),
+                before_capture=lambda: discard_terminal_owner_presentation(self._native, engine))
         self._journal_engine = None
 
     def _paired_native_config(self, request: PairedLiveRequest, uri: str) -> Any:

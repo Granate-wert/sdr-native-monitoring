@@ -308,12 +308,20 @@ void test_stop_failure_and_close_failure_retry_only_incomplete_phase() {
 
     const auto stop_failed = session->stop(5ms);
     expect(!stop_failed.complete(), "failed stop_rx was hidden");
+    bool refused = false;
+    try { static_cast<void>(session->discard_terminal_spectrum_frames()); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused, "failed native stop admitted terminal discard");
     expect(std::find(state->calls.begin(), state->calls.end(), "close") ==
                state->calls.end(),
            "close ran after stop_rx failure");
 
     const auto close_failed = session->stop(1s);
     expect(!close_failed.complete(), "failed close was hidden");
+    refused = false;
+    try { static_cast<void>(session->discard_terminal_spectrum_frames()); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused, "ambiguous native close admitted terminal discard");
     expect(std::find(state->calls.begin(), state->calls.end(), "exit") ==
                state->calls.end(),
            "exit ran after close failure");
@@ -362,11 +370,33 @@ void test_invalid_processing_config_fails_before_runtime_access() {
     expect(state->calls.empty(), "runtime was touched before DSP validation");
 }
 
+void test_terminal_discard_and_post_stop_drain() {
+    auto state = std::make_shared<FakeState>(); state->start_blocks = 4U;
+    auto requested = config(); requested.processing.dsp.analytical_event_capacity = 64U;
+    auto session = sdr_hackrf::HackrfRuntimeDspSession::start(std::make_unique<FakeRuntime>(state), requested);
+    bool refused = false;
+    try { static_cast<void>(session->discard_terminal_spectrum_frames()); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused, "running HackRF discard accepted");
+    expect(wait_until([&] { return session->metrics().processing.worker_blocks_processed == 4U; }),
+        "HackRF discard setup did not process frames");
+    expect(session->stop(1s).complete(), "HackRF discard Stop incomplete");
+    expect(session->poll_spectrum_frames(1U).size() == 1U, "ordinary Stop lost drainable frame");
+    expect(session->discard_terminal_spectrum_frames() == 3U &&
+        session->discard_terminal_spectrum_frames() == 0U && session->poll_spectrum_frames().empty(),
+        "HackRF final discard not exact/idempotent");
+    const auto s = session->drain_analytical_ready_events(0U).summary;
+    expect(s.presentation.cancelled == 3U && s.presentation.forwarded == 1U &&
+        s.presentation.accounting_failures == 0U && s.handed_off == 4U,
+        "HackRF discarded queue refs not cancelled exactly once");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_composed_frames_and_exact_shutdown_order();
+        test_terminal_discard_and_post_stop_drain();
         test_composed_stop_drains_pending_ready_blocks_before_close();
         test_quiescence_timeout_forbids_finalize_then_explicit_retry_completes();
         test_borrowed_slot_forbids_close_until_lease_release();

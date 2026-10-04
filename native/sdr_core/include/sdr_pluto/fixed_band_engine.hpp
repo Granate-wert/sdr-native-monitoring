@@ -273,6 +273,9 @@ public:
     [[nodiscard]] PairedFixedBandMetrics paired_metrics() const;
     [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(
         ReceiverSelection receiver, std::size_t max_items);
+    // Explicit final release only, after Stop/join. Ordinary Stop keeps frames
+    // drainable. Returns discarded frames (pairs for a paired owner), not FFTs.
+    [[nodiscard]] std::uint64_t discard_terminal_spectrum_frames();
     [[nodiscard]] std::vector<sdr_core::DualRxSpectrumFrame> poll_paired_spectrum_frames(std::size_t max_items);
     [[nodiscard]] sdr_core::LatestDualRxSpectrumFrameDrain drain_latest_paired_spectrum_frame();
     [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_receiver_persistence_snapshots(

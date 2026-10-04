@@ -356,6 +356,10 @@ void check_cancel_timeout_child() {
     const auto first = session->stop(20ms);
     assert(!first.complete());
     assert(!first.reader_joined && !first.close_called);
+    bool refused = false;
+    try { static_cast<void>(session->discard_terminal_spectrum_frames()); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    assert(refused);
     assert(observed->closes.load() == 0);
     try {
         static_cast<void>(sdr_rtlsdr::RtlRuntimeSession::start(
@@ -399,6 +403,10 @@ void check_ambiguous_close_child() {
     assert(!result.complete());
     assert(result.reader_joined && result.dsp_joined && result.close_called);
     assert(result.close_status == -1);
+    bool refused = false;
+    try { static_cast<void>(session->discard_terminal_spectrum_frames()); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    assert(refused);
     assert(observed->closes.load() == 1);
     session.reset();  // bounded process-lifetime quarantine, never a second close
     assert(observed->closes.load() == 1);
@@ -407,6 +415,33 @@ void check_ambiguous_close_child() {
             std::make_unique<MockRtlPort>(observed), profile()));
         assert(false);
     } catch (const sdr_core::DeviceError&) {}
+}
+
+void check_terminal_discard_and_post_stop_drain() {
+    for (const bool discard : {false, true}) {
+        auto observed = std::make_shared<Observed>();
+        auto request = profile(); request.analytical_event_capacity = 64U;
+        auto session = sdr_rtlsdr::RtlRuntimeSession::start(std::make_unique<MockRtlPort>(observed), request);
+        bool refused = false;
+        try { static_cast<void>(session->discard_terminal_spectrum_frames()); }
+        catch (const sdr_core::ConfigurationError&) { refused = true; }
+        assert(refused);
+        for (int trial = 0; trial < 200 && session->metrics().dsp.fft_frames_computed == 0U; ++trial)
+            std::this_thread::sleep_for(2ms);
+        assert(session->stop(2000ms).complete());
+        if (discard) {
+            const auto n = session->discard_terminal_spectrum_frames();
+            assert(n > 0U && session->discard_terminal_spectrum_frames() == 0U);
+            assert(!session->drain_latest_spectrum_frame().frame);
+            const auto s = session->drain_analytical_ready_events(0U).summary;
+            assert(s.presentation.cancelled == n && s.presentation.accounting_failures == 0U &&
+                s.handed_off == s.presentation.cancelled + s.presentation.superseded);
+        } else {
+            assert(session->drain_latest_spectrum_frame().frame);
+            assert(session->discard_terminal_spectrum_frames() == 0U);
+            assert(session->drain_analytical_ready_events(0U).summary.presentation.cancelled == 0U);
+        }
+    }
 }
 
 }  // namespace
@@ -425,6 +460,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     check_inert_validation();
+    check_terminal_discard_and_post_stop_drain();
     check_manual_gain_refusal_before_rx();
     check_pre_rx_failure_releases_owner(Fault::Open);
     check_pre_rx_failure_releases_owner(Fault::RateReadback);

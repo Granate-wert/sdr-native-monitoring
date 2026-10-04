@@ -36,7 +36,7 @@ from .native_live import _native_frame_metadata, _native_quality_mask, _native_s
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
-from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
+from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
 from .source_capability_admission import admit_source_request
 
 
@@ -237,6 +237,8 @@ class HackrfAnalyzerService:
             thread = self._poller
             if thread is not None and thread.ident is not None:
                 thread.join(timeout=1.0)
+            if thread is not None and thread.is_alive():
+                return self._error("HackRF publication worker did not join; owner retained")
             stopped = self._coordinator.snapshot().state is HackrfProductLiveState.IDLE
             if stopped and not self._journal.current().native_stop_confirmed:
                 # A failed activation may never have returned a control. There
@@ -245,7 +247,8 @@ class HackrfAnalyzerService:
             if not stopped:
                 if self._journal.enabled:
                     stopped = self._coordinator.stop(5000, after_native_stop=lambda control:
-                        self._journal.finish(lambda count: cast(Any, control).drain_analytical_ready_events(count))).stopped
+                        self._journal.finish(lambda count: cast(Any, control).drain_analytical_ready_events(count),
+                            before_capture=lambda: discard_terminal_owner_presentation(self._native, control))).stopped
                 else:
                     stopped = self._coordinator.stop(5000).stopped
                     if stopped:

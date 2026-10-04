@@ -615,6 +615,22 @@ RtlStopResult RtlRuntimeSession::stop(const std::chrono::milliseconds timeout) n
     return state.stop_result;
 }
 
+std::uint64_t RtlRuntimeSession::discard_terminal_spectrum_frames() {
+    auto& state = *impl_;
+    std::lock_guard stop_lock(state.stop_mutex);
+    if (!state.stop_result.complete() || state.reader.joinable() || state.processor.joinable() ||
+        state.cleanup_pending.load(std::memory_order_acquire) || state.close_ambiguous)
+        throw sdr_core::ConfigurationError("terminal presentation release requires complete RTL Stop/join/close");
+    std::lock_guard lock(state.presentation_mutex);
+    const auto count = static_cast<std::uint64_t>(state.presentation.size());
+    for (const auto& frame : state.presentation) {
+        if (frame.analytical_ready) state.dsp->record_owner_presentation(*frame.analytical_ready,
+            sdr_core::OwnerPresentationDisposition::Cancelled);
+    }
+    state.presentation.clear();
+    return count;
+}
+
 bool RtlRuntimeSession::running() const noexcept {
     if (!impl_->reader_started.load(std::memory_order_acquire)) return false;
     std::lock_guard lock(impl_->lifecycle_mutex);

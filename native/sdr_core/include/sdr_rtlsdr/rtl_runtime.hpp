@@ -145,6 +145,7 @@ public:
     [[nodiscard]] RtlLatestFrame drain_latest_spectrum_frame();
     [[nodiscard]] RtlMetrics metrics() const;
     [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(std::size_t max_items);
+    [[nodiscard]] std::uint64_t discard_terminal_spectrum_frames();
     [[nodiscard]] RtlStopResult stop(std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool cleanup_required() const noexcept;

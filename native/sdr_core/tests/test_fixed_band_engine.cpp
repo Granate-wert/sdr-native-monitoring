@@ -240,6 +240,32 @@ void single_window_numerical_parity() {
 
 int main() {
     try {
+        {
+            sdr_pluto::FixedBandEngine owner("usb:mock");
+            auto requested = config(); requested.analytical_event_capacity = 64U;
+            static_cast<void>(owner.configure(requested));
+            bool rejected = false;
+            try { static_cast<void>(owner.discard_terminal_spectrum_frames()); }
+            catch (const sdr_core::ConfigurationError&) { rejected = true; }
+            if (!rejected) throw std::runtime_error("configured-only terminal discard accepted");
+            owner.start();
+            rejected = false;
+            try { static_cast<void>(owner.discard_terminal_spectrum_frames()); }
+            catch (const sdr_core::ConfigurationError&) { rejected = true; }
+            if (!rejected || !wait_for_frames(owner, 8U))
+                throw std::runtime_error("running discard accepted or FFT deadline expired");
+            owner.stop();
+            const auto pending = owner.metrics().spectrum_queue.depth;
+            if (pending == 0U || owner.discard_terminal_spectrum_frames() != pending ||
+                owner.discard_terminal_spectrum_frames() != 0U || owner.drain_latest_spectrum_frame().frame)
+                throw std::runtime_error("terminal single discard is not exact/idempotent");
+            const auto s = owner.drain_analytical_ready_events(sdr_pluto::ReceiverSelection::Rx1, 0U).summary;
+            const auto& p = s.presentation;
+            if (p.cancelled != pending || p.accounting_failures != 0U || s.handed_off !=
+                p.forwarded + p.superseded + p.coalesced + p.cancelled + p.cadence_suppressed)
+                throw std::runtime_error("single terminal cancellation does not reconcile");
+            owner.disconnect();
+        }
         single_window_numerical_parity();
         {
             auto oversized = config();

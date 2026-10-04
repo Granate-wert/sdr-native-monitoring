@@ -166,6 +166,13 @@ HackrfAcquisitionDspStopResult HackrfAcquisitionDspSession::stop(
     return impl_->stop_result;
 }
 
+std::uint64_t HackrfAcquisitionDspSession::discard_terminal_spectrum_frames() {
+    std::lock_guard lock(impl_->lifecycle_mutex);
+    if (!impl_->stop_complete || !impl_->stop_result.complete() || impl_->worker.joinable())
+        throw sdr_core::ConfigurationError("terminal presentation release requires complete HackRF DSP Stop/join");
+    return impl_->dsp.discard_presentation_frames();
+}
+
 sdr_core::AnalyticalReadyDrain HackrfAcquisitionDspSession::drain_analytical_ready_events(std::size_t max_items) {
     return impl_->dsp.drain_analytical_ready_events(max_items);
 }

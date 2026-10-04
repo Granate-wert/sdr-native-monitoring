@@ -1138,6 +1138,8 @@ void bind_pluto(py::module_& module) {
         .def("configure", &sdr_pluto::FixedBandEngine::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("configure_paired", &sdr_pluto::FixedBandEngine::configure_paired, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("paired_metrics", &sdr_pluto::FixedBandEngine::paired_metrics, py::call_guard<py::gil_scoped_release>())
+        .def("discard_terminal_spectrum_frames", &sdr_pluto::FixedBandEngine::discard_terminal_spectrum_frames,
+             py::call_guard<py::gil_scoped_release>())
         .def("drain_analytical_ready_events", &sdr_pluto::FixedBandEngine::drain_analytical_ready_events,
              py::arg("receiver"), py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_paired_spectrum_frames", &sdr_pluto::FixedBandEngine::poll_paired_spectrum_frames, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())

@@ -29,7 +29,7 @@ from .native_live import _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
-from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
+from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
 from .rtl_capability_provider import RtlControlPort, RtlRuntimeProvision
 from .source_capability_admission import admit_source_request
 
@@ -269,7 +269,8 @@ class RtlAnalyzerService:
                     result = control.stop(5000)
                     if result.complete() is not True or control.cleanup_required() is True:
                         return self._error("RTL native Stop/close unconfirmed; owner retained")
-                    self._journal.finish(lambda count: getattr(control, "drain_analytical_ready_events")(count))
+                    self._journal.finish(lambda count: getattr(control, "drain_analytical_ready_events")(count),
+                        before_capture=lambda: discard_terminal_owner_presentation(self._native, control))
                 except Exception as error:  # noqa: BLE001 - never release an ambiguous owner.
                     self._retain_fault("native_stop", error)
                     return self._error("RTL native Stop failed; owner retained")

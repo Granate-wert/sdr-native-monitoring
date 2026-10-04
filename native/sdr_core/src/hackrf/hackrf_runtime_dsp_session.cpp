@@ -1,4 +1,5 @@
 #include "sdr_hackrf/hackrf_runtime_dsp_session.hpp"
+#include "sdr_core/errors.hpp"
 
 #include <mutex>
 #include <utility>
@@ -82,6 +83,13 @@ HackrfRuntimeDspStopResult HackrfRuntimeDspSession::stop(
     }
     impl_->stop_result.source_finalize = impl_->source->finalize_after_drain();
     return impl_->stop_result;
+}
+
+std::uint64_t HackrfRuntimeDspSession::discard_terminal_spectrum_frames() {
+    std::lock_guard lock(impl_->lifecycle_mutex);
+    if (!impl_->stop_result.complete())
+        throw sdr_core::ConfigurationError("terminal presentation release requires complete HackRF runtime Stop");
+    return impl_->processing->discard_terminal_spectrum_frames();
 }
 
 sdr_core::AnalyticalReadyDrain HackrfRuntimeDspSession::drain_analytical_ready_events(std::size_t max_items) {

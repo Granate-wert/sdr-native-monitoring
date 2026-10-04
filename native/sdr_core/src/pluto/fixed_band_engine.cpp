@@ -935,6 +935,24 @@ public:
         return backend_->drain_analytical_ready(max_items);
     }
 
+    [[nodiscard]] std::uint64_t discard_terminal_spectrum_frames() {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (!configured_ || state_.load(std::memory_order_acquire) != sdr_core::EngineState::Stopped ||
+            acquisition_thread_.joinable() || dsp_thread_.joinable() || device_.streaming())
+            invalid("terminal presentation release requires a configured stopped/joined owner");
+        if (secondary_) {
+            const auto discarded = paired_spectrum_queue_->abandon_with(
+                [this](const sdr_core::DualRxSpectrumFrame& frame) noexcept {
+                    paired_dsp_->record_owner_presentation(frame, sdr_core::OwnerPresentationDisposition::Cancelled);
+                });
+            paired_snapshots_abandoned_.fetch_add(discarded);
+            return discarded;
+        }
+        return spectrum_queue_->abandon_with([this](const sdr_core::SpectrumFrame& frame) noexcept {
+            record_owner_frame(frame, sdr_core::OwnerPresentationDisposition::Cancelled);
+        });
+    }
+
     [[nodiscard]] PairedFixedBandMetrics paired_metrics() const {
         std::lock_guard lock(lifecycle_mutex_);
         if (!secondary_) invalid("paired metrics require a paired configuration");
@@ -2785,6 +2803,9 @@ bool FixedBandEngine::start_guarded(const std::shared_ptr<StartAdmissionGate>& g
 void FixedBandEngine::request_stop() { impl_->request_stop(); }
 void FixedBandEngine::join() { impl_->join(); }
 void FixedBandEngine::stop() { impl_->stop(); }
+std::uint64_t FixedBandEngine::discard_terminal_spectrum_frames() {
+    return impl_->discard_terminal_spectrum_frames();
+}
 void FixedBandEngine::disconnect() noexcept { impl_->disconnect(); }
 bool FixedBandEngine::connected() const noexcept { return impl_->connected(); }
 bool FixedBandEngine::streaming() const noexcept { return impl_->streaming(); }

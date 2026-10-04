@@ -92,6 +92,8 @@ void bind_rtl(py::module_& module) {
         .def_readonly("presentation_frames_superseded", &sdr_rtlsdr::RtlMetrics::presentation_frames_superseded)
         .def_readonly("dsp", &sdr_rtlsdr::RtlMetrics::dsp);
     py::class_<sdr_rtlsdr::RtlRuntimeSession>(module, "RtlRuntimeControl")
+        .def("discard_terminal_spectrum_frames", &sdr_rtlsdr::RtlRuntimeSession::discard_terminal_spectrum_frames,
+             py::call_guard<py::gil_scoped_release>())
         .def("drain_analytical_ready_events", &sdr_rtlsdr::RtlRuntimeSession::drain_analytical_ready_events,
              py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("readback", &sdr_rtlsdr::RtlRuntimeSession::readback)

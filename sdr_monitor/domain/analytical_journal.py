@@ -190,6 +190,7 @@ class OwnerJournalSnapshot:
     host_scalar_reserved_bytes: int = 1_048_576
     adapter: AdapterDispositionCounters | None = None
     native_presentation: NativePresentationCounters | None = None
+    native_presentation_release_failed: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, JournalState) or type(self.events) is not tuple or len(self.events) > 256:
@@ -202,7 +203,9 @@ class OwnerJournalSnapshot:
             raise ValueError("journal scope must be immutable")
         for name in ("host_window_events_evicted", "terminal_windows_evicted", "drain_failures"):
             _integer(getattr(self, name), name, 0, (1 << 64) - 1)
-        if type(self.native_stop_confirmed) is not bool or self.host_scalar_reserved_bytes != 1_048_576:
+        if (type(self.native_stop_confirmed) is not bool
+                or type(self.native_presentation_release_failed) is not bool
+                or self.host_scalar_reserved_bytes != 1_048_576):
             raise ValueError("journal host reservation/terminal flag differs")
         if self.counters is not None and self.scope is None:
             raise ValueError("journal counters require the actual owner scope")
@@ -218,7 +221,8 @@ class OwnerJournalSnapshot:
                      or self.adapter.last_offer_sequence > self.counters.offered)):
             raise ValueError("adapter attribution exceeds native all-handoff denominator")
         if self.state is JournalState.FINAL and (not self.native_stop_confirmed or self.counters is None
-                or self.counters.outstanding or self.counters.events_pending or self.drain_failures):
+                or self.counters.outstanding or self.counters.events_pending or self.drain_failures
+                or self.native_presentation_release_failed):
             raise ValueError("journal cannot claim a complete native terminal")
         if self.state is JournalState.UNSUPPORTED and (self.counters is not None or self.events
                                                      or self.adapter is not None):

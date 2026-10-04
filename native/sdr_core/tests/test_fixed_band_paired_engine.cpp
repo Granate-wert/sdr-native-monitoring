@@ -600,11 +600,37 @@ void test_pair_owner_journals(Hooks& hooks) {
     }
     engine.disconnect();
 }
+void test_pair_terminal_discard() {
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    auto p = paired_config();
+    p.primary.analytical_event_capacity = p.secondary.analytical_event_capacity = 64U;
+    static_cast<void>(engine.configure_paired(p));
+    refused([&] { static_cast<void>(engine.discard_terminal_spectrum_frames()); },
+        "configured paired terminal release accepted");
+    engine.start();
+    refused([&] { static_cast<void>(engine.discard_terminal_spectrum_frames()); },
+        "running paired terminal release accepted");
+    wait_pair(engine, [](const auto& m) { return m.dsp.paired_frames_formed >= 8U; });
+    engine.stop();
+    const auto pending = engine.paired_metrics().paired_spectrum_queue.depth;
+    require(pending > 0 && engine.discard_terminal_spectrum_frames() == pending &&
+        engine.discard_terminal_spectrum_frames() == 0 && !engine.drain_latest_paired_spectrum_frame().frame,
+        "terminal paired discard exact/idempotent");
+    for (auto rx : {Selection::Rx1, Selection::Rx2}) {
+        const auto s = engine.drain_analytical_ready_events(rx, 0U).summary;
+        const auto& d = s.presentation;
+        require(d.cancelled == pending && d.accounting_failures == 0 && s.handed_off ==
+            d.forwarded + d.superseded + d.coalesced + d.cancelled + d.cadence_suppressed,
+            "each paired chain must account its own cancelled terminal offers");
+    }
+    engine.disconnect();
+}
 int main() {
     try {
         Hooks hooks;
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "1");
         test_pair_owner_journals(hooks);
+        test_pair_terminal_discard();
         test_pair_consumers_and_same_owner_restart(hooks);
         test_pair_guards_before_rf(hooks);
         test_pair_unicode_alias_before_rf(hooks);
@@ -623,7 +649,7 @@ int main() {
         test_analytical_sink_failure(false, true);
         require(hooks.contexts() == 0 && hooks.buffers() == 0, "paired ownership leaks");
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "");
-        std::cout << "paired same-owner data plane 16 cases PASS (mock ONLY)\n";
+        std::cout << "paired same-owner data plane 17 cases PASS (mock ONLY)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

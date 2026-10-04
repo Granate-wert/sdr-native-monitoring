@@ -122,6 +122,8 @@ public:
     [[nodiscard]] HackrfLatestSpectrumFrameDrain drain_latest_spectrum_frame();
     [[nodiscard]] HackrfFixedBandDspMetrics metrics() const;
     [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(std::size_t max_items);
+    // Runtime-free synchronous primitive; the owning session must join first.
+    [[nodiscard]] std::uint64_t discard_presentation_frames();
     [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
         std::size_t max_items = 0U
     );

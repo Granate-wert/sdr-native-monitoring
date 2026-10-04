@@ -24,6 +24,26 @@ TERMINAL_HISTORY_CAPACITY = 4
 HOST_SCALAR_BUDGET = 1_048_576  # per chain; paired reservation is twice this, not twice native ceilings
 
 
+def discard_terminal_owner_presentation(native: object, owner: object) -> int | None:
+    """SAME confirmed stopped owner, never a poll/SDK read. Legacy is unknown.
+
+    Count is queued frames/pairs, not all FFTs. Native guards enforce terminal
+    lifecycle; a malformed receipt cannot be substituted with a synthetic zero.
+    """
+    version = getattr(native, "OWNER_PRESENTATION_RELEASE_CONTRACT_VERSION", None)
+    if version is None:
+        return None
+    if type(version) is not int or version != 1:
+        raise ValueError("unsupported owner presentation release contract")
+    discard = getattr(owner, "discard_terminal_spectrum_frames", None)
+    if not callable(discard):
+        raise ValueError("admitted native owner has no terminal presentation release")
+    result = discard()
+    if type(result) is not int or not 0 <= result < (1 << 64):
+        raise ValueError("invalid terminal presentation release receipt")
+    return result
+
+
 def owner_journal_capacity(native: object, backend: str = "cpu") -> int:
     """Pure protocol gate, no SDK/capability probe/backend substitution.
 
@@ -259,8 +279,14 @@ class NativeOwnerJournal:
                 self._snapshot = replace(self._snapshot, state=JournalState.INCOMPLETE,
                     drain_failures=self._snapshot.drain_failures + 1)
 
-    def finish(self, reader: Callable[[int], object]) -> None:
+    def finish(self, reader: Callable[[int], object], *, before_capture: Callable[[], object] | None = None) -> None:
         """After confirmed native Stop/join, BEFORE control release. No SDK calls."""
+        release_failed = False
+        if before_capture is not None:
+            try:
+                before_capture()
+            except Exception:  # noqa: BLE001 - retain truthful incomplete evidence, do not reopen hardware.
+                release_failed = True
         # A stopped finite ring requires at most16 batches. No unbounded retry.
         for _ in range(EVENT_CAPACITY // BATCH_CAPACITY):
             self.drain(reader)
@@ -270,7 +296,9 @@ class NativeOwnerJournal:
         with self._lock:
             value = self._snapshot
             state = JournalState.UNSUPPORTED if not self.enabled else JournalState.INCOMPLETE
-            if (self.enabled and not self._failed and value.counters is not None
+            release_failed = release_failed or value.native_presentation_release_failed
+            if (self.enabled and not self._failed and not release_failed and value.counters is not None
                     and value.counters.events_pending == 0 and value.counters.outstanding == 0):
                 state = JournalState.FINAL
-            self._snapshot = replace(value, state=state, native_stop_confirmed=True)
+            self._snapshot = replace(value, state=state, native_stop_confirmed=True,
+                                     native_presentation_release_failed=release_failed)
