@@ -192,7 +192,8 @@ class PaintCadenceWidgetTests(unittest.TestCase):
         class PaintReturnProbe(pg.GraphicsLayoutWidget):
             def paintEvent(self, event):
                 super().paintEvent(event)
-                observed_before_commit.append(len(self.paint_cadence._times))
+                observed_before_commit.append((event.region().boundingRect(),
+                                               len(self.paint_cadence._times)))
 
         with patch.object(pg, "GraphicsLayoutWidget", PaintReturnProbe):
             scene = SpectrumScene()
@@ -211,7 +212,7 @@ class PaintCadenceWidgetTests(unittest.TestCase):
             scene._graphics.viewport().repaint()
             self.app.processEvents()
             self.assertEqual(len(scene.paint_cadence._times), 1)
-            self.assertIn(0, observed_before_commit)
+            self.assertTrue(any(before == 0 for _region, before in observed_before_commit))
 
             # A disjoint viewport/chrome region and repeated old data cannot advance it.
             curve = scene._curves[TraceKind.CURRENT]
@@ -231,17 +232,41 @@ class PaintCadenceWidgetTests(unittest.TestCase):
             self.app.processEvents()
             self.assertEqual(len(scene.paint_cadence._times), 1)
 
+            # A fresh displayed key is now unpainted. Force and observe an
+            # actual disjoint viewport paint before allowing any queued full
+            # update to run; deduplication cannot mask a false eligibility.
             scene.set_frame(SimpleNamespace(
                 source_id="source-a", receiver_id="rx1", session_id="session-a",
                 epoch=7, config_generation=3, sequence=2, unit="dBm",
                 frequencies_hz=np.linspace(100e6, 101e6, 128),
                 values=np.linspace(-99.0, -39.0, 128),
             ))
-            self.app.processEvents()
+            curve = scene._curves[TraceKind.CURRENT]
+            clipped = curve.curve.mapRectToScene(curve.curve.boundingRect()).intersected(
+                scene._view_box.sceneBoundingRect())
+            relevant = scene._graphics.mapFromScene(clipped).boundingRect()
+            outside = next(rect for rect in (
+                QRect(viewport.left(), viewport.top(), 1, 1),
+                QRect(viewport.right(), viewport.top(), 1, 1),
+                QRect(viewport.left(), viewport.bottom(), 1, 1),
+                QRect(viewport.right(), viewport.bottom(), 1, 1),
+            ) if not relevant.intersects(rect))
+            before_disjoint = len(observed_before_commit)
+            scene._graphics.viewport().repaint(outside)
+            self.assertEqual(len(scene.paint_cadence._times), 1)
+            disjoint_events = observed_before_commit[before_disjoint:]
+            self.assertTrue(any(region == outside and before == 1
+                                for region, before in disjoint_events))
+
+            # Only a subsequent paint region that intersects the new trace
+            # can close its cadence observation, after the base handler exits.
+            before_relevant = len(observed_before_commit)
             scene._graphics.viewport().repaint()
             self.app.processEvents()
             self.assertEqual(len(scene.paint_cadence._times), 2)
-            self.assertGreaterEqual(len(observed_before_commit), 2)
+            relevant_events = observed_before_commit[before_relevant:]
+            self.assertTrue(any(region.intersects(relevant) and before == 1
+                                for region, before in relevant_events))
             scene.hide()
             scene._graphics.repaint()
             self.app.processEvents()
