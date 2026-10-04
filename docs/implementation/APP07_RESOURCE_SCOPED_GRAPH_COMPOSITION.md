@@ -5404,3 +5404,76 @@ clock bridge, budgeted actual-owner journals, validated process/resource/RX/run/
 epoch typed adapters, downstream dispositions, independent Sweep/density offers
 and coverage, then dedicated UI terminal implementation/review. No50ms/p95/p99/
 WindowsDPI/DWM/soak/RFduty/lossless/dualRF/Ethernet qualification from these tests.
+
+## M8-061 — measured native-host ordering bridge and actual frame adapters
+
+Implementation8238294 plus exact corrections1064416639b398ec0118d6cc44509c916e67e015
+carry immutable DetectorReadyReceipt through the actual Pluto single/paired,
+HackRF and RTL reduced-frame converters. The original native ready timestamp,
+producer instance, offer sequence and generation are preserved, not restamped
+at polling. Native C++ bytes, DSP/Fs/FFT/gain/queues/budgets/quality/epoch/time
+and recording wire remain unchanged; no product UI edits in this packet.
+
+Native steady-clock samples are bracketed by host perf-counter observations.
+Only strict measured ordering produces conservative host bounds; no assumed
+same epoch, guessed offset, rate interpolation or extrapolation. Outside/equal
+samples and observed regression/probe failure remain unknown. Sixty-four
+scalar probes per owner, sampled once per existing poll; no per-FFT Python
+callback, frame/IQ retention or cached-read probe. RTL probes use SAME selected
+native module as its actual owned control, not a catalog/default loader.
+Stage/Preview/construction remain inert; only explicit Start initializes probes.
+These adapter/process scopes are not independently attested resource/capture/
+RX/run/activation identities and do not replace outer PaneDelivery admission.
+
+Initial exacte997 full V2 had9 failures at synthetic numerical fixtures crossing
+real native receipts through fake modules. Failures retained. Corrected fixtures
+use SAME selected module inertly and remove receipt when fabricating another
+source/generation; numerical/marker assertions and product refusals preserved.
+Own receipt text canonicality tightened. Corrected exact106 freshbuild:
+47/47CTest54.58s/665frozen/shared9DLL/ONEUSB/offscreen gates PASS;
+packaged6bindingsPASS0.213s; serial fullV2 1384total/1318PASS/66skip/0fail-error
+494.595s/exacttrue/cleanbeforeafter/deferred[]/outside[].
+Four historical NaN warnings retained. Native unchanged
+5060a085be18f721312a361e89c66ebb8d1a6c7d1cc712620bf2141969b9cd7e;
+EXE0ebfb25a79edb9193ef1fcda8e9e9dfce8b146c9b0a888bd7a4fbe5121b34fbb.
+APP07-BRIDGE-20261004-1064416-R1 diagnostic, NOT static/current/release promoted.
+Do not relabel e997 qualification or later documentation commit as106 build.
+
+Fresh five-source discovery and TWO sequential actual four-source 2x2 tests:
+A canonical AD9364USB/HackRF/tinySA/RTL;
+B rotated tinySA/RTL/AD9363USB/HackRF.
+Both15swarmup+60ssteady/61samples/progressiveSweep/normalStopClose PASS.
+AD4 Sweep300..620MHz Fs61.44/useful36/logicalN4096/physical8192;
+AD3 same range explicit admitted lowerFs30.72/useful30/logical4096/physical8192,
+NOT fallback or fixed18MHz policy. HF Sweep100..300/Fs20/FFT4096;
+tiny LOW100..300/1001points/manualRBW300k/devicecalibrateddBm;
+RTL RTBW99.5..100.5/Fs2.4/FFT4096. USB here, not Ethernet/pairedRF/hotrotation.
+
+Native computedFFT/s A:AD350.412/HF813.999/RTL1171.972;
+B:AD262.437/HF781.679/RTL1172.253. Separate SAME production distinct relevant
+Spectrum paint-return commits/s A:AD5.562/HF35.787/tiny0.733/RTL36.554;
+B:tiny0.733/RTL36.808/AD4.166/HF35.692. Not DWM FPS, allFFT LPS or latency.
+CPU machine9.296%/8.854% on16logical CPUs; sampled queue max3 both.
+Four original1920x1080/DPR1 PNG root-viewed, sourceQt with matching native/Qt,
+NOT visible frozen WindowsEXE/DPI/DWM acceptance. Slow tinySA is expected;
+short run and partially populated histories are not soak/leak acceptance.
+
+Eight logged RTL RTBW ready receipts match source/gen/epoch/session/PID and
+strict measured probe bounds. Host intervals20.2382..21.5965ms are uncertainty,
+NOT ready-to-paint latency. Stitched AD/HF Sweep and tinySA correctly have no
+detector-ready sidecar; full Sweep/density producer coverage remains OPEN.
+Bounded same-read tinySA differing-byte observer adds no serial command/retry
+or identity weakening. A59/B60 checks, no mismatch/observererror. Historical059
+failure cause remains UNKNOWN, not claimed fixed. No new SDK-9 lines in these
+two logs; historical SDK firstcause also remains UNKNOWN.
+Both runs terminal0resources/workers/leaseReleased/PIDsabsent; postRX exact106
+source snapshot and all665 frozen inventory PASS. All build/gate/RX terminal.
+
+Root backend/build/RX/evidence only; no new subagents/model calls061.
+Prior Sol UI-only design is not this backend/release independent approval.
+APP07/M8/H01 PARTIAL, H02 TODO/full APP00..14 retained.
+NEXT budgeted actual-owner journal/drain/fullouter capture-resource-RX-session-
+run-activation attribution/downstream dispositions, independent Sweep/density
+readiness and coverage, then dedicated UI layer terminals. No50ms/p95/p99,
+RFduty/Pd/lossless, sustained/soak, WindowsDPI/DWM, dualRF/Ethernet or whole
+independent release qualification follows from this bounded packet.
