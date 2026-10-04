@@ -393,6 +393,10 @@ int main() {
             applied[1].analog_bandwidth_hz != 1'500'000.0 ||
             applied[0].config_generation == 0U || applied[1].config_generation == 0U) return 7;
         const auto evidence_metrics = coordinator.metrics();
+        if (evidence_metrics.source_refill_calls == 0U ||
+            evidence_metrics.source_refill_wait_ns == 0U ||
+            evidence_metrics.source_canonicalization_ns == 0U ||
+            evidence_metrics.source_inter_refill_gap_count > evidence_metrics.source_refill_calls) return 71;
         if (evidence_metrics.device_iq_samples == 0U || evidence_metrics.analytical_fft_frames == 0U ||
             evidence_metrics.device_iq_blocks < 2U ||
             evidence_metrics.completed_current_generation_fft_frames.size() != 2U ||
@@ -414,6 +418,12 @@ int main() {
             evidence_metrics.completed_line_analysis_geometry_mismatches != 0U) return 11;
         coordinator.stop();
         const auto stopped_metrics = coordinator.metrics();
+        const auto stopped_again = coordinator.metrics();
+        if (stopped_metrics.source_refill_calls != stopped_again.source_refill_calls ||
+            stopped_metrics.source_refill_wait_ns != stopped_again.source_refill_wait_ns ||
+            stopped_metrics.source_canonicalization_ns != stopped_again.source_canonicalization_ns ||
+            stopped_metrics.source_inter_refill_gap_ns != stopped_again.source_inter_refill_gap_ns ||
+            stopped_metrics.source_inter_refill_gap_count != stopped_again.source_inter_refill_gap_count) return 72;
         const auto valid_timing = [](const sdr_pluto::ContinuousSweepStageTiming& timing) {
             return timing.count >= 4U && timing.total_ns >= timing.max_ns && timing.max_ns > 0U;
         };
@@ -435,6 +445,10 @@ int main() {
         if (!wait_for_completed(single_window, 4U)) return 9;
         const auto single_window_metrics = single_window.metrics();
         single_window.stop();
+        if (single_window_metrics.source_refill_calls == 0U ||
+            single_window_metrics.source_refill_wait_ns == 0U ||
+            single_window_metrics.source_canonicalization_ns == 0U ||
+            single_window_metrics.source_inter_refill_gap_count > single_window_metrics.source_refill_calls) return 73;
         if (single_window_metrics.segment_reconfigurations != 1U ||
             single_window_metrics.segment_stop_timing.count != 0U ||
             single_window_metrics.segment_configure_timing.count != 0U ||
@@ -461,6 +475,12 @@ int main() {
                 << " error=" << single_window.metrics().has_error << std::endl;
             return 10;
         }
+
+        single_window.configure(single_window_config());
+        const auto reset_ingress = single_window.metrics();
+        if (reset_ingress.source_refill_calls != 0U || reset_ingress.source_refill_wait_ns != 0U ||
+            reset_ingress.source_canonicalization_ns != 0U || reset_ingress.source_inter_refill_gap_ns != 0U ||
+            reset_ingress.source_inter_refill_gap_count != 0U) return 74;
 
         // Scalar evidence can release completed line buffers entirely in the
         // native data plane. No Python spectrum-vector construction is needed.

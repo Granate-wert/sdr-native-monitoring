@@ -740,6 +740,11 @@ public:
         last_accounted_generation_ = 0U;
         device_iq_samples_.store(0U, std::memory_order_relaxed);
         device_iq_blocks_.store(0U, std::memory_order_relaxed);
+        source_refill_calls_.store(0U, std::memory_order_relaxed);
+        source_refill_wait_ns_.store(0U, std::memory_order_relaxed);
+        source_canonicalization_ns_.store(0U, std::memory_order_relaxed);
+        source_inter_refill_gap_ns_.store(0U, std::memory_order_relaxed);
+        source_inter_refill_gap_count_.store(0U, std::memory_order_relaxed);
         analytical_fft_frames_.store(0U, std::memory_order_relaxed);
         secondary_analytical_fft_frames_.store(0U, std::memory_order_relaxed);
         last_secondary_fft_ = 0;
@@ -874,6 +879,11 @@ public:
         result.expected_cancellations = expected_cancellations_.load(std::memory_order_relaxed);
         result.device_iq_samples = device_iq_samples_.load(std::memory_order_relaxed);
         result.device_iq_blocks = device_iq_blocks_.load(std::memory_order_relaxed);
+        result.source_refill_calls = source_refill_calls_.load(std::memory_order_relaxed);
+        result.source_refill_wait_ns = source_refill_wait_ns_.load(std::memory_order_relaxed);
+        result.source_canonicalization_ns = source_canonicalization_ns_.load(std::memory_order_relaxed);
+        result.source_inter_refill_gap_ns = source_inter_refill_gap_ns_.load(std::memory_order_relaxed);
+        result.source_inter_refill_gap_count = source_inter_refill_gap_count_.load(std::memory_order_relaxed);
         result.analytical_fft_frames = analytical_fft_frames_.load(std::memory_order_relaxed);
         result.secondary_analytical_fft_frames = secondary_analytical_fft_frames_.load(std::memory_order_relaxed);
         {
@@ -1305,6 +1315,21 @@ private:
             delta(metrics.engine.iq_blocks_received, previous ? previous->engine.iq_blocks_received : 0U),
             std::memory_order_relaxed
         );
+        source_refill_calls_.fetch_add(
+            delta(metrics.device.refill_calls, previous ? previous->device.refill_calls : 0U),
+            std::memory_order_relaxed);
+        source_refill_wait_ns_.fetch_add(
+            delta(metrics.device.refill_wait_ns, previous ? previous->device.refill_wait_ns : 0U),
+            std::memory_order_relaxed);
+        source_canonicalization_ns_.fetch_add(
+            delta(metrics.device.canonicalization_ns, previous ? previous->device.canonicalization_ns : 0U),
+            std::memory_order_relaxed);
+        source_inter_refill_gap_ns_.fetch_add(
+            delta(metrics.device.inter_refill_gap_ns, previous ? previous->device.inter_refill_gap_ns : 0U),
+            std::memory_order_relaxed);
+        source_inter_refill_gap_count_.fetch_add(
+            delta(metrics.device.inter_refill_gap_count, previous ? previous->device.inter_refill_gap_count : 0U),
+            std::memory_order_relaxed);
         analytical_fft_frames_.fetch_add(
             delta(metrics.engine.fft_frames_computed, previous ? previous->engine.fft_frames_computed : 0U),
             std::memory_order_relaxed
@@ -1678,6 +1703,11 @@ private:
     std::uint64_t last_accounted_generation_{};
     std::atomic<std::uint64_t> device_iq_samples_{};
     std::atomic<std::uint64_t> device_iq_blocks_{};
+    std::atomic<std::uint64_t> source_refill_calls_{};
+    std::atomic<std::uint64_t> source_refill_wait_ns_{};
+    std::atomic<std::uint64_t> source_canonicalization_ns_{};
+    std::atomic<std::uint64_t> source_inter_refill_gap_ns_{};
+    std::atomic<std::uint64_t> source_inter_refill_gap_count_{};
     std::atomic<std::uint64_t> analytical_fft_frames_{};
     std::atomic<std::uint64_t> secondary_analytical_fft_frames_{};
     std::uint64_t last_secondary_fft_{};

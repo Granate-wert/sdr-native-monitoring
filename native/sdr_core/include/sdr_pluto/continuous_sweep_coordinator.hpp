@@ -150,6 +150,16 @@ struct ContinuousSweepCoordinatorMetrics {
     // with its presentation LPS.
     std::uint64_t device_iq_samples{};
     std::uint64_t device_iq_blocks{};
+    // Existing device host-wall counters, delta-accounted at admitted segment
+    // snapshots across configuration generations. One shared ingress, not a
+    // sum of paired RX views. Includes attempted refill errors/cancellations
+    // observed at those snapshots; not whole-run terminal-tail/RF duty proof.
+    // Live reads are relaxed; zero before admission is not zero-cost transport.
+    std::uint64_t source_refill_calls{};
+    std::uint64_t source_refill_wait_ns{};
+    std::uint64_t source_canonicalization_ns{};
+    std::uint64_t source_inter_refill_gap_ns{};
+    std::uint64_t source_inter_refill_gap_count{};
     std::uint64_t analytical_fft_frames{};
     // In paired mode the legacy analytical count above is RX1 only, NOT two
     // streams summed. This separate RX2 count excludes repeated common IQ.

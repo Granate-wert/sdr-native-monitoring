@@ -172,6 +172,19 @@ void completed(Hooks& hooks, bool single) {
     owner.start(); wait_lines(owner, single ? 8 : 3);
     owner.stop();
     require(owner.state() == sdr_core::EngineState::Stopped && !owner.metrics().has_error, "paired stop failed");
+    const auto ingress = owner.metrics();
+    const auto common_buffers = ingress.device_iq_samples /
+        profile.primary.segments.front().fixed_band.device.buffer_samples;
+    require(ingress.source_refill_calls >= common_buffers &&
+        ingress.source_refill_wait_ns > 0 && ingress.source_canonicalization_ns > 0 &&
+        ingress.source_inter_refill_gap_count <= ingress.source_refill_calls,
+        "paired common ingress timing missing or incoherent");
+    // Every admitted common buffer counts once, not once for each RX view.
+    // One observed in-flight API return may precede samples_received in each
+    // configured generation. Compare common source counters, not relaxed DSP
+    // worker counters read at a different instant.
+    require(ingress.source_refill_calls <= common_buffers + ingress.segment_reconfigurations,
+        "paired refill timing double-counted the common device");
     require(hooks.created_contexts() == contexts + 1 && hooks.contexts() == 1 && hooks.buffers() == 0,
             "paired owner duplicated context or leaked buffer");
     require(hooks.lo() - lo == static_cast<int>(owner.metrics().segment_reconfigurations), "more than one LO write per step");
