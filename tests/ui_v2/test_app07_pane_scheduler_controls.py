@@ -271,8 +271,15 @@ class PaneSchedulerControlsTests(unittest.TestCase):
             set_active_locale(locale)
             self.pane_ui.set_locale()
             self.app.processEvents()
-            self.assertEqual(self.pane_ui.board._timing_labels[1].text(),
-                             text("analyzer.independent.timing.stopped_empty"))
+            label_lines = self.pane_ui.board._timing_labels[1].text().splitlines()
+            self.assertEqual(len(label_lines), 2)
+            self.assertEqual(label_lines[0], " · ".join((
+                text("analyzer.independent.timing.host_input_age",
+                     age=text("analyzer.independent.timing.age_unknown")),
+                text("analyzer.independent.timing.plot_last_updated",
+                     age=text("analyzer.independent.timing.age_unknown")),
+            )))
+            self.assertEqual(label_lines[1], text("analyzer.independent.timing.stopped_empty"))
             self.assertIsNone(self.pane_ui.board.pane(1).last_bundle)
             self.assertEqual(self.native.engines, [])
 

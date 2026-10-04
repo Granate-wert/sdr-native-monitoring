@@ -122,7 +122,7 @@ class IndependentPaneFreshnessTests(unittest.TestCase):
         }[phase]
         summary = self.surface._timing_summary_text(
             slot, pane_id, state, has_retained_frame=has_frame,
-            details=" · " + text("analyzer.independent.timing." + phase_key))
+            details=text("analyzer.independent.timing." + phase_key))
         self.board.set_pane_timing(slot, summary,
                                    text("analyzer.independent.timing.scope"))
         return summary

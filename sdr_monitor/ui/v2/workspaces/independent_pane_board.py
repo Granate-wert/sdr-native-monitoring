@@ -96,6 +96,7 @@ class IndependentPaneBoardV2(QWidget):
         self._grid = QGridLayout(self)
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setSpacing(4)
+        self._grid.setVerticalSpacing(2)
         self._cells: dict[int, QFrame] = {}
         self._stacked_layout = False
         self._layout_ready = False
@@ -108,8 +109,8 @@ class IndependentPaneBoardV2(QWidget):
             cell.setProperty("ui2Role", "panel")
             cell.setObjectName(f"independentPaneCell{slot.number}")
             cell_layout = QVBoxLayout(cell)
-            cell_layout.setContentsMargins(4, 4, 4, 4)
-            cell_layout.setSpacing(3)
+            cell_layout.setContentsMargins(4, 2, 4, 2)
+            cell_layout.setSpacing(2)
             header = QHBoxLayout()
             select = QPushButton(str(slot.number), cell)
             select.setProperty("ui2Role", "utility-action")

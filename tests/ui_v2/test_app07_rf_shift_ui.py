@@ -137,8 +137,15 @@ class RfShiftUiTests(unittest.TestCase):
             for locale in (UiLocale.EN, UiLocale.RU):
                 set_active_locale(locale)
                 product.ui.set_locale()
-                self.assertEqual(product.ui.board._timing_labels[1].text(),
-                                 text("analyzer.independent.timing.stopped"))
+                label_lines = product.ui.board._timing_labels[1].text().splitlines()
+                self.assertEqual(len(label_lines), 2)
+                self.assertIn(text("analyzer.independent.timing.host_input_age",
+                                   age=text("analyzer.independent.timing.age_unknown")),
+                              label_lines[0])
+                self.assertIn(text("analyzer.independent.timing.plot_last_updated",
+                                   age=""),
+                              label_lines[0])
+                self.assertEqual(label_lines[1], text("analyzer.independent.timing.stopped"))
             count = len(product.native.engines)
             dialog = self.preview(product)
             self.assertFalse(product.ui._rf_preview.resource.restart_required)
@@ -148,12 +155,18 @@ class RfShiftUiTests(unittest.TestCase):
             self.assertIs(self.state(product).phase, PanePumpPhase.STOPPED)
             self.assertIn("110–118", product.ui.board._captions[1].text())
             self.assertIsNone(product.ui.board.pane(1).last_bundle)
-            self.assertEqual(product.ui.board._timing_labels[1].text(),
-                             text("analyzer.independent.timing.stopped_empty"))
             for locale in (UiLocale.EN, UiLocale.RU):
                 set_active_locale(locale)
                 product.ui.set_locale()
-                self.assertEqual(product.ui.board._timing_labels[1].text(),
+                label_lines = product.ui.board._timing_labels[1].text().splitlines()
+                self.assertEqual(len(label_lines), 2)
+                self.assertIn(text("analyzer.independent.timing.host_input_age",
+                                   age=text("analyzer.independent.timing.age_unknown")),
+                              label_lines[0])
+                self.assertIn(text("analyzer.independent.timing.plot_last_updated",
+                                   age=text("analyzer.independent.timing.age_unknown")),
+                              label_lines[0])
+                self.assertEqual(label_lines[1],
                                  text("analyzer.independent.timing.stopped_empty"))
             product.ui.start_selected.click()
             self.wait(lambda: self.state(product).phase is PanePumpPhase.RUNNING)

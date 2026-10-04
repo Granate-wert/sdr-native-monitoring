@@ -594,20 +594,20 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Ошибка ресурса · требуется явный Stop",
             UiLocale.EN: "Resource error · explicit Stop required"}),
         "analyzer.independent.timing.continuous": MappingProxyType({
-            UiLocale.RU: " · без чередования ресурса",
-            UiLocale.EN: " · resource not time-sliced"}),
+            UiLocale.RU: "без чередования ресурса",
+            UiLocale.EN: "resource not time-sliced"}),
         "analyzer.independent.timing.continuous_no_frame": MappingProxyType({
-            UiLocale.RU: " · Нет принятого кадра · ресурс без чередования",
-            UiLocale.EN: " · No accepted frame · resource not time-sliced"}),
+            UiLocale.RU: "Нет принятого кадра · ресурс без чередования",
+            UiLocale.EN: "No accepted frame · resource not time-sliced"}),
         "analyzer.independent.timing.sliced": MappingProxyType({
-            UiLocale.RU: " · возврат {observed} / модель {modeled}",
-            UiLocale.EN: " · revisit {observed} / model {modeled}"}),
+            UiLocale.RU: "возврат {observed} / модель {modeled}",
+            UiLocale.EN: "revisit {observed} / model {modeled}"}),
         "analyzer.independent.timing.sliced_no_frame": MappingProxyType({
-            UiLocale.RU: " · Нет принятого кадра · модель возврата {modeled}",
-            UiLocale.EN: " · No accepted frame · modeled revisit {modeled}"}),
+            UiLocale.RU: "Нет принятого кадра · модель возврата {modeled}",
+            UiLocale.EN: "No accepted frame · modeled revisit {modeled}"}),
         "analyzer.independent.timing.sliced_first": MappingProxyType({
-            UiLocale.RU: " · ждём второй визит (модель {modeled})",
-            UiLocale.EN: " · awaiting second visit (model {modeled})"}),
+            UiLocale.RU: "ждём второй визит (модель {modeled})",
+            UiLocale.EN: "awaiting second visit (model {modeled})"}),
         "analyzer.independent.timing.host_input_age": MappingProxyType({
             UiLocale.RU: "Вход хоста: {age}", UiLocale.EN: "Host input age: {age}"}),
         "analyzer.independent.timing.plot_last_updated": MappingProxyType({

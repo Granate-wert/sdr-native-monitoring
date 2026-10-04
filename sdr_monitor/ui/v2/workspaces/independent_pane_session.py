@@ -497,7 +497,7 @@ class IndependentPaneSessionV2(QWidget):
                 PanePumpPhase.STOP_REQUIRED: "stop_required",
                 PanePumpPhase.STOPPED: "stopped" if has_retained_frame else "stopped_empty",
             }[phase]
-            return " · " + text(f"analyzer.independent.timing.{key}")
+            return text(f"analyzer.independent.timing.{key}")
         try:
             timing = self.handle.session.pane_host_timing(pane_id)
         except (RuntimeError, ValueError):
