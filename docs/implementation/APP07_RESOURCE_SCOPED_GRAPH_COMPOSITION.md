@@ -4214,3 +4214,71 @@ cause of this failure. The result does not establish universal impossibility
 or promise additive USB/Ethernet throughput. Production paired RX retains one
 owner/context/buffer on one chosen transport with native fanout. APP-07 physical
 paired, four-source, rotation, performance and release acceptance remain open.
+
+### 2026-10-04: first four-physical-source delivery and isolation witness
+
+A private, bounded hardware runner now uses the actual UI V2 application graph,
+fresh source Stage, inert Preview, explicit Apply, per-resource pump and the
+normal Qt delivery path. One cooperating-process hardware lease encloses all
+SDK access and confirmed Stop/terminal drain/join/graph close. It does not replace
+the product path with four bare native engines or mock/replay streams.
+
+The witness uses unchanged runtime/build `7cf584e`, its qualified packaged native
+extension and source UI with Qt 6.11.1. Six Qt DLL/extension files match the package
+on disk. It is **not** a frozen EXE, visible Windows/DWM paint, exhaustive loaded
+module, DPI, RF-accuracy, throughput or soak qualification. Documentation commits
+must not relabel that runtime/build.
+
+The four actual sources were mapped to separate logical slots:
+
+| Slot | Source | Requested profile |
+|---|---|---|
+| 1 | AD936x / user-labelled AD9364 USB unit | RTBW, 61.44 MS/s, 56 MHz receive band, FFT 4096 |
+| 2 | HackRF | RTBW, 20 MS/s, 20 MHz receive band, FFT 4096 |
+| 3 | tinySA | Repeated instrument Sweep, 100–300 MHz, 1001 points, LOW, RBW 300 kHz with readback requested |
+| 4 | RTL-SDR | RTBW, 100 MHz center, 2.4 MS/s, FFT 4096, 1 MHz display crop |
+
+Ten immutable pane observations prove advancing source sequences, exact selected
+producer identities, separate resource/endpoint mapping and correct units:
+AD936x/HackRF/RTL `dBFS/bin`, tinySA instrument `dBm`. Initial accepted Qt delivery
+counts were 70/108/2/40; the last observation was 305/373/8/235. These are **not**
+paint FPS or a count of every analytical FFT.
+
+Explicit RTL Stop reached STOPPED while all three peers continued. Its separate
+Start admitted a new epoch and activation, both 1→2; subsequent new-epoch data
+advanced. HackRF Stop/Start demonstrated the same pattern. Across those actions,
+independent peer source/session/config/epoch/activation/unit/clock/LO/Fs/FFT/range
+anchors remained unchanged and history was not cleared. A delivery completed
+while RTL Stop was in progress; the result proves eventual STOPPED, not immediate
+publication cessation or RF silence at the click. All owners subsequently closed,
+with zero retained resources and SDR workers; the lease was released.
+
+Independent review first refused the runner's retained-frame restart race and
+incomplete fidelity predicates. The corrected runner waits for an actually
+accepted new activation/epoch, allows sequence reset across epochs, then requires
+new sequence advancement. Producer/unit/generation/full-frame geometry checks
+have nine pure regression tests. Root independently revalidated the actual log,
+and a separate reviewer accepted only its bounded functional scope.
+
+Important limitations are retained:
+
+- RTL SDK reported direct-sampling enable/disable messages and `PLL not locked!`
+  at initial Start and restart. Cause and RF effect are unproven; this is not
+  warning-free startup or evidence of correct/calibrated RF tuning.
+- tinySA's 300 kHz RBW was requested with readback enabled, but this log does not
+  contain the actual settings object. Do not substitute intent for saved readback.
+- Four logical occupied slots were exercised, but actual 2×2 widget geometry and
+  screenshots were not captured. F01 remains partial; visible UI acceptance is open.
+- The approximately 17-second start-event-to-PASS span includes configuration and
+  cleanup, excludes earlier package preflight, and is not a sustained-rate benchmark.
+- Current AD9363 capabilities expose a maximum 30.72 MS/s in its present topology,
+  while the product draft/compiler currently offers AD profiles at 20/61.44 MS/s.
+  An explicitly capability-qualified 30.72 MS/s product/UI profile is needed before
+  peak AD9363 replacement/rotation; no silent downgrade or firmware change is allowed.
+
+Bounded functional F02–F05 are now supported by physical evidence. Shared Pluto
+group events, positive paired RX/Sweep, AD9363 replacement, dual AD devices,
+source rotations, mixed supported Sweep, faults, performance, soak, matched visible
+EXE and release qualification remain separate open work. No product source,
+current/static EXE, firewall, driver, firmware or system setting changed in this
+increment; the previous split-transport experiment was not repeated.
