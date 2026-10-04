@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
 from sdr_monitor.services.pane_resource_session import PaneResourceSession
+from sdr_monitor.services.parallel_receiver_identity import validate_parallel_receiver_identity
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 
 from .v2_application_graph import V2AnalyzerApplicationGraph, build_v2_analyzer_application_graph
@@ -46,6 +47,7 @@ class PaneProductGraphPool:
         self._factory = graph_factory
         self._graphs: dict[str, V2AnalyzerApplicationGraph] = {}
         self._source_ids: dict[str, str] = {}
+        self._selections: dict[str, AnalyzerSourceSelection] = {}
         self._cleanup_pending: dict[str, V2AnalyzerApplicationGraph] = {}
         self._session: PaneResourceSession | None = None
         self._closed = False
@@ -74,7 +76,7 @@ class PaneProductGraphPool:
         if (not isinstance(resource_id, str) or not resource_id.strip()
                 or not isinstance(source_id, str) or not source_id.strip()):
             raise ValueError("pane resource and source identity are required")
-        if (self._closed or self._session is not None or resource_id in self._graphs
+        if (self._closed or self._session is not None or self._cleanup_pending or resource_id in self._graphs
                 or resource_id in self._cleanup_pending or source_id in self._source_ids.values()):
             raise PaneGraphPoolError("pane source cannot be staged twice or after plan composition")
         try:
@@ -107,27 +109,22 @@ class PaneProductGraphPool:
                     or selection.release_pending
                     or graph.sources.current() is not selection):
                 raise PaneGraphPoolError("pane source selection lacks a current binding")
-            if any(
-                (prior := retained.live.current_source_selection()) is not None
-                and prior.selected is not None
-                and prior.selected.family is selected.family
-                and (prior.selected.binding.identity_key is None or selected.binding.identity_key is None)
-                for retained in self._graphs.values()
-            ):
-                raise PaneGraphPoolError("same-family receivers require distinct observed identities")
-            if any(
-                (prior := retained.live.current_source_selection()) is not None
-                and prior.selected is not None
-                and selected.binding.identity_key is not None
-                and prior.selected.binding.identity_key == selected.binding.identity_key
-                for retained in self._graphs.values()
-            ):
-                raise PaneGraphPoolError("two pane resources alias one physical receiver")
+            staged_choices = {prior.selected.device_id: prior.selected
+                              for prior in self._selections.values() if prior.selected is not None}
+            all_choices = (*staged_choices.values(), selected)
+            source_ids = {item.device_id for item in all_choices}
+            validate_parallel_receiver_identity(
+                source_ids,
+                {item.device_id: item.binding.identity_key for item in all_choices},
+                {item.device_id: item.family for item in all_choices},
+                {item.device_id: item.usb_connection for item in all_choices},
+            )
         except Exception:
             self._close_unstaged(resource_id, graph)
             raise PaneGraphPoolError("pane source discovery or selection did not confirm") from None
         self._graphs[resource_id] = graph
         self._source_ids[resource_id] = source_id
+        self._selections[resource_id] = selection
         return selected
 
     def compose(self, layout: PaneLayout, groups: tuple[AcquisitionGroup, ...],
@@ -139,7 +136,14 @@ class PaneProductGraphPool:
                     {item.physical_stream_resource_id for item in layout.schedule.resources})
         if expected != set(self._graphs):
             raise PaneGraphPoolError("pane plan differs from the explicitly staged sources")
-        session = compose_v2_pane_resource_session(layout, groups, self._graphs, leases)
+        for resource_id, captured in self._selections.items():
+            graph = self._graphs[resource_id]
+            current = graph.live.current_source_selection()
+            if (current is not captured or current.revision != captured.revision
+                    or graph.sources is None or graph.sources.current() is not captured):
+                raise PaneGraphPoolError("pane source selection changed after Stage")
+        session = compose_v2_pane_resource_session(layout, groups, self._graphs, leases,
+                                                   expected_selections=self._selections)
         self._session = session
         return session
 
@@ -165,6 +169,7 @@ class PaneProductGraphPool:
             else:
                 self._graphs.pop(resource_id, None)
                 self._source_ids.pop(resource_id, None)
+                self._selections.pop(resource_id, None)
                 self._cleanup_pending.pop(resource_id, None)
         if failures:
             raise PaneGraphPoolError("pane application graph close did not confirm for every resource")

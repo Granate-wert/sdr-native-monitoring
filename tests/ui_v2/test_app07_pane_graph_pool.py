@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from sdr_monitor.domain.hackrf_live import HackrfLiveRequest
 from sdr_monitor.domain.identity import SourceId
+from sdr_monitor.domain.pluto_connection import PlutoUsbConnectionExpectation
 from sdr_monitor.domain.pane_scheduler import (
     CaptureEpochCost, HackrfRtbwPaneProfile, PaneCaptureProfile,
     PaneLayoutSlot, PaneProfile, TinySaTracePaneProfile, compile_pane_layout,
@@ -19,6 +20,7 @@ from sdr_monitor.domain.receiver_topology import (
 )
 from sdr_monitor.domain.tinysa_analyzer import TinySaSweepRequest
 from sdr_monitor.services.native_live import NativeLiveSessionService
+from sdr_monitor.services.pane_resource_session import PaneResourceSession
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.services.rtl_analyzer import RtlAnalyzerService
 from sdr_monitor.services.rtl_capability_provider import (
@@ -29,6 +31,7 @@ from sdr_monitor.services.source_capability_providers import NativeLiveCapabilit
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_graph_pool import PaneGraphPoolError, PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
+from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, compile_user_pane_plan
 
 from tests.test_app07_ad936x_rtbw_pane_owner import _UnusedSweep
 from tests.test_app07_rtl_product_route import _Native as _MockRtlNative
@@ -49,6 +52,35 @@ def _ad_graph(*, uri="ip:pluto-app07.local", serial="app07-distinct-pluto"):
     graph = build_v2_analyzer_application_graph(SimpleNamespace(
         live_sdr=live, analyzer_display=_UnusedSweep(), device_catalog=catalog))
     return native, graph
+
+
+def _bind_mock_usb_selection(graph, expectation):
+    """Attach a typed mock USB observation to the current selected choice."""
+    real_select = graph.live.select_device
+    real_source_current = graph.sources.current
+    retained = {}
+
+    def select(source_id):
+        result = real_select(source_id)
+        state = real_source_current()
+        assert state is not None and state.selected is not None
+        selected = replace(state.selected, usb_connection=expectation)
+        retained["selection"] = replace(state, choices=(selected,), selected_id=source_id)
+        return result
+
+    def current_selection():
+        if "selection" in retained:
+            return retained["selection"]
+        return real_source_current()
+
+    patchers = (
+        patch.object(graph.live, "select_device", side_effect=select),
+        patch.object(graph.live, "current_source_selection", side_effect=current_selection),
+        patch.object(graph.sources, "current", side_effect=current_selection),
+    )
+    for patcher in patchers:
+        patcher.start()
+    return retained, patchers
 
 
 class PaneProductGraphPoolTests(unittest.TestCase):
@@ -190,15 +222,156 @@ class PaneProductGraphPoolTests(unittest.TestCase):
         finally:
             pool.close()
 
+    def test_distinct_usb_plutos_stage_and_compose_in_both_orders(self) -> None:
+        expectation_sets = (
+            (PlutoUsbConnectionExpectation(2, 18, 5, 0x0456, 0xb673, "KNOWN-A"),
+             PlutoUsbConnectionExpectation(2, 19, 5, 0x0456, 0xb673, "")),
+            (PlutoUsbConnectionExpectation(2, 18, 5, 0x0456, 0xb673, ""),
+             PlutoUsbConnectionExpectation(2, 19, 5, 0x0456, 0xb673, "")),
+        )
+        for expectations_tuple in expectation_sets:
+            for order in (("a", "b"), ("b", "a")):
+                with self.subTest(order=order, expectations=expectations_tuple):
+                    graphs = {
+                        "a": _ad_graph(uri="usb:fixture-a", serial="")[1],
+                        "b": _ad_graph(uri="usb:fixture-b", serial="")[1],
+                    }
+                    source_ids = {key: graph.live.discover(startup=True)[0].device_id
+                                  for key, graph in graphs.items()}
+                    expectations = dict(zip(("a", "b"), expectations_tuple, strict=True))
+                    retained, patchers = {}, []
+                    for key, graph in graphs.items():
+                        selected, installed = _bind_mock_usb_selection(graph, expectations[key])
+                        retained[key] = selected
+                        patchers.extend(installed)
+                    pool = PaneProductGraphPool(lambda resource: graphs[
+                        "a" if resource.endswith("1") else "b"])
+                    try:
+                        staged = {}
+                        for key in order:
+                            resource_id = f"pane-resource-{1 if key == 'a' else 2}"
+                            staged[source_ids[key]] = pool.stage(resource_id, source_ids[key])
+                        self.assertEqual(tuple(pool.staged_resource_ids),
+                                         tuple(f"pane-resource-{1 if key == 'a' else 2}"
+                                               for key in order))
+                        revisions = {source_id: retained[key]["selection"].revision
+                                     for key, source_id in source_ids.items()}
+                        plan = compile_user_pane_plan((
+                            PaneSlotDraft(1, source_ids["a"], 100e6, 108e6, sample_rate_hz=20e6),
+                            PaneSlotDraft(2, source_ids["b"], 120e6, 128e6, sample_rate_hz=20e6),
+                        ), staged, revisions)
+                        with patch("sdr_monitor.ui.v2_pane_composition.PaneResourceSession",
+                                   wraps=PaneResourceSession) as session_factory:
+                            session = pool.compose(plan.layout, plan.groups,
+                                ReceiverLeaseManager(max_active_resources=4))
+                        self.assertIsNotNone(session)
+                        self.assertEqual(session_factory.call_args.kwargs["source_usb_connections"],
+                                         {source_ids[key]: expectations[key] for key in source_ids})
+                    finally:
+                        pool.close()
+                        for patcher in reversed(patchers):
+                            patcher.stop()
+
+    def test_parallel_usb_aliases_and_unresolved_usb_ip_fail_closed(self) -> None:
+        cases = (
+            (PlutoUsbConnectionExpectation(2, 18, 5, 0x0456, 0xb673, ""),
+             PlutoUsbConnectionExpectation(2, 18, 6, 0x0456, 0xb673, "")),
+            (PlutoUsbConnectionExpectation(2, 18, 5, 0x0456, 0xb673, "SAME"),
+             PlutoUsbConnectionExpectation(2, 19, 5, 0x0456, 0xb673, "same")),
+        )
+        for first_usb, second_usb in cases:
+            first_graph = _ad_graph(uri="usb:alias-a", serial="")[1]
+            second_graph = _ad_graph(uri="usb:alias-b", serial="")[1]
+            ids = (first_graph.live.discover(startup=True)[0].device_id,
+                   second_graph.live.discover(startup=True)[0].device_id)
+            _, first_patchers = _bind_mock_usb_selection(first_graph, first_usb)
+            _, second_patchers = _bind_mock_usb_selection(second_graph, second_usb)
+            pool = PaneProductGraphPool(lambda resource: first_graph if resource.endswith("1") else second_graph)
+            try:
+                pool.stage("pane-resource-1", ids[0])
+                with self.assertRaisesRegex(PaneGraphPoolError, "did not confirm"):
+                    pool.stage("pane-resource-2", ids[1])
+                self.assertEqual(pool.staged_resource_ids, ("pane-resource-1",))
+            finally:
+                pool.close()
+                for patcher in reversed((*first_patchers, *second_patchers)):
+                    patcher.stop()
+
+        for order in (("usb", "ip"), ("ip", "usb")):
+            usb_graph = _ad_graph(uri="usb:unresolved", serial="")[1]
+            ip_graph = _ad_graph(uri="ip:unresolved.local", serial="")[1]
+            graphs = {"usb": usb_graph, "ip": ip_graph}
+            ids = {key: graph.live.discover(startup=True)[0].device_id
+                   for key, graph in graphs.items()}
+            resource_keys = {f"pane-resource-{index + 1}": key
+                             for index, key in enumerate(order)}
+            _, usb_patchers = _bind_mock_usb_selection(
+                usb_graph, PlutoUsbConnectionExpectation(2, 18, 5, 0x0456, 0xb673, ""))
+            pool = PaneProductGraphPool(lambda resource: graphs[resource_keys[resource]])
+            try:
+                for index, key in enumerate(order):
+                    if index == 0:
+                        pool.stage(f"pane-resource-{index + 1}", ids[key])
+                    else:
+                        with self.assertRaisesRegex(PaneGraphPoolError, "did not confirm"):
+                            pool.stage(f"pane-resource-{index + 1}", ids[key])
+            finally:
+                pool.close()
+                for patcher in reversed(usb_patchers):
+                    patcher.stop()
+
+    def test_compose_rejects_changed_selection_with_same_operational_id(self) -> None:
+        _, graph = _ad_graph()
+        source_id = graph.live.discover(startup=True)[0].device_id
+        pool = PaneProductGraphPool(lambda _resource: graph)
+        try:
+            choice = pool.stage("pane-resource-1", source_id)
+            captured = pool._selections["pane-resource-1"]
+            plan = compile_user_pane_plan((
+                PaneSlotDraft(1, source_id, 100e6, 108e6, sample_rate_hz=20e6),
+            ), {source_id: choice}, {source_id: captured.revision})
+            changed = replace(captured, revision=captured.revision + 1)
+            with (patch.object(graph.live, "current_source_selection", return_value=changed),
+                  patch.object(graph.sources, "current", return_value=changed)):
+                with self.assertRaisesRegex(PaneGraphPoolError, "changed after Stage"):
+                    pool.compose(plan.layout, plan.groups,
+                                 ReceiverLeaseManager(max_active_resources=2))
+        finally:
+            pool.close()
+
     def test_failed_selection_keeps_failed_close_for_explicit_retry(self) -> None:
         _, graph = _ad_graph()
-        pool = PaneProductGraphPool(lambda _resource: graph)
+        factory_calls = []
+        pool = PaneProductGraphPool(lambda resource: factory_calls.append(resource) or graph)
         with patch.object(graph.live, "shutdown", side_effect=RuntimeError("private SDK close")):
             with self.assertRaisesRegex(PaneGraphPoolError, "did not confirm"):
                 pool.stage("first", "absent-source")
+            with self.assertRaisesRegex(PaneGraphPoolError, "cannot be staged"):
+                pool.stage("second", "absent-source")
+            self.assertEqual(factory_calls, ["first"])
         self.assertEqual(pool.cleanup_pending_resource_ids, ("first",))
         pool.close()
         self.assertEqual(pool.cleanup_pending_resource_ids, ())
+
+    def test_failed_close_retains_staged_selection_until_explicit_retry(self) -> None:
+        _, graph = _ad_graph()
+        source_id = graph.live.discover(startup=True)[0].device_id
+        pool = PaneProductGraphPool(lambda _resource: graph)
+        selected = pool.stage("pane-resource-1", source_id)
+        captured = pool._selections["pane-resource-1"]
+        with patch.object(graph.live, "shutdown", side_effect=RuntimeError("private SDK close")):
+            with self.assertRaisesRegex(PaneGraphPoolError, "did not confirm"):
+                pool.close()
+        self.assertEqual(pool.cleanup_pending_resource_ids, ("pane-resource-1",))
+        self.assertEqual(pool.staged_resource_ids, ("pane-resource-1",))
+        self.assertIs(pool._selections["pane-resource-1"], captured)
+        self.assertEqual(captured.selected, selected)
+        with self.assertRaisesRegex(PaneGraphPoolError, "cannot be staged"):
+            pool.stage("pane-resource-2", source_id)
+        pool.close()
+        self.assertEqual(pool.cleanup_pending_resource_ids, ())
+        self.assertEqual(pool.staged_resource_ids, ())
+        self.assertEqual(pool._selections, {})
 
     def test_network_stage_is_explicit_and_uses_full_discovery_only_when_requested(self) -> None:
         _, graph = _ad_graph(uri="ip:pluto-app07-network")

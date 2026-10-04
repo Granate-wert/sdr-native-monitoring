@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from functools import partial
 
+from sdr_monitor.domain.analyzer_sources import AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.pane_scheduler import Ad936xPairedSweepPaneProfile, CaptureMeasurementMode, PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
@@ -20,6 +21,7 @@ from sdr_monitor.services.ad936x_paired_sweep_pane_owner import Ad936xPairedSwee
 from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
 from sdr_monitor.services.rtl_rtbw_pane_owner import RtlRtbwPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
+from sdr_monitor.services.parallel_receiver_identity import validate_parallel_receiver_identity
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.services.tinysa_trace_pane_owner import TinySaTracePaneOwner
 
@@ -31,6 +33,7 @@ def compose_v2_pane_resource_session(
     groups: tuple[AcquisitionGroup, ...],
     graphs: Mapping[str, V2AnalyzerApplicationGraph],
     leases: ReceiverLeaseManager,
+    *, expected_selections: Mapping[str, AnalyzerSourceSelection] | None = None,
 ) -> PaneResourceSession | None:
     """Bind selected sources to one owner/lease per physical resource.
 
@@ -70,18 +73,38 @@ def compose_v2_pane_resource_session(
     owner_factories: dict[str, Callable[[], PaneCaptureOwner]] = {}
     identities: dict[str, str | None] = {}
     families: dict[str, DeviceFamily] = {}
+    usb_connections = {}
+    selected_by_resource = {}
+    selections_by_resource = {}
+    if expected_selections is not None and set(expected_selections) != expected:
+        raise PaneResourceError("staged source selection snapshots differ from plan resources")
     for group in groups:
         resource_id = group.physical_stream_resource_id
         graph = graphs[resource_id]
         selection = graph.live.current_source_selection()
         selected = None if selection is None else selection.selected
+        captured = None if expected_selections is None else expected_selections.get(resource_id)
         if (selection is None or selected is None or selection.release_pending
                 or graph.sources is None or graph.sources.current() is not selection
+                or (expected_selections is not None and
+                    (selection is not captured or selection.revision != captured.revision))
                 or any(endpoint.source_id != selected.device_id for endpoint in group.endpoints)):
-            raise PaneResourceError("pane source lacks one current selected binding")
-        endpoint = group.endpoints[0]
+            raise PaneResourceError("pane source lacks one current staged selection")
+        selected_by_resource[resource_id] = selected
+        selections_by_resource[resource_id] = selection
         identities[selected.device_id] = selected.binding.identity_key
         families[selected.device_id] = selected.family
+        usb_connections[selected.device_id] = selected.usb_connection
+    try:
+        validate_parallel_receiver_identity(set(identities), identities, families, usb_connections)
+    except ValueError as error:
+        raise PaneResourceError(str(error)) from None
+    for group in groups:
+        resource_id = group.physical_stream_resource_id
+        graph = graphs[resource_id]
+        selected = selected_by_resource[resource_id]
+        selection = selections_by_resource[resource_id]
+        endpoint = group.endpoints[0]
         if selected.family is DeviceFamily.AD936X and len(group.endpoints) == 2:
             if any(not isinstance(item, ReceiverEndpoint) for item in group.endpoints):
                 raise PaneResourceError("paired AD936x requires two digital RX endpoints")
@@ -131,6 +154,7 @@ def compose_v2_pane_resource_session(
         owners[resource_id] = owner_factories[resource_id]()
     return PaneResourceSession(layout.schedule, groups, owners, leases,
                                source_identity_keys=identities, source_families=families,
+                               source_usb_connections=usb_connections,
                                owner_factories=owner_factories)
 
 
