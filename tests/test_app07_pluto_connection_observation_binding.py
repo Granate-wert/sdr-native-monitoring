@@ -55,7 +55,18 @@ for name in names:
             else:
                 raise AssertionError("asserted physical resource opened twice")
         assert hooks.mock_iio_created_contexts() == before
-        owner.stop_stream() if name == "PlutoDevice" else owner.stop()
+        if name == "PlutoDevice":
+            owner.stop_stream()
+        elif name == "PlutoFixedBandEngine":
+            # No RX was started in this metadata-only test. Preserve the
+            # engine's explicit RUNNING-only Stop guard, rather than changing
+            # product lifecycle just to exercise connection ownership.
+            try:
+                owner.stop()
+            except native.ConfigurationError as error:
+                assert "requires RUNNING state" in str(error)
+            else:
+                raise AssertionError("idle engine Stop unexpectedly admitted")
         try:
             create_identity_bound_owner(native, "PlutoDevice", "usb:alias", 3000,
                                         expected_usb_connection=assertion)
@@ -87,7 +98,7 @@ owner.disconnect()
 assert hooks.mock_iio_live_contexts() == 0
 assert hooks.mock_iio_rf_mutation_calls() == writes
 assert hooks.mock_iio_created_buffers() == buffers
-print("typed SAME-context assertion/3 native owners/duplicate-before-open/Stop retains/cleanup/reopen PASS; mock only")
+print("typed SAME-context assertion/3 native owners/duplicate-before-open/device Stop retains/idle engine Stop refuses/cleanup/reopen PASS; mock only")
 """
         environment = dict(os.environ, LIBIIO_DLL_PATH=str(MOCK))
         for key in tuple(environment):
