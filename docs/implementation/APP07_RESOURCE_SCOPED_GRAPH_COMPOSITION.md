@@ -4797,3 +4797,78 @@ qualify a matching package. Final2×2 RX reports must include original
 screenshots for different source assignments/modes, with build/resolution/
 scaling and explicit capture scope; previous screenshots are not new-build
 acceptance evidence.
+
+## 2026-10-04: product USB session admission and current 2×2 qualification
+
+Backend b10b0d5 and UI integration 5fdb8f0 connect the previously opt-in native
+USB assertion to selected product owners. Actual context observations travel
+through the device descriptor, source choice, captured Stage selection and
+composition into the same RTBW/Sweep native owner. A requested assertion requires
+the supported native protocol; missing, invalid or changed facts cannot silently
+fall back to another interface or IP. Stage checks the aggregate layout before
+owner creation, Compose rejects a changed selection/revision, and uncertain
+close retains its graph and claims until a successful explicit retry.
+
+Two distinct observed USB connections can now be admitted even if one device
+has a genuinely empty serial. Different interfaces at the same bus/address are
+still aliases; known serial aliases and unresolved unknown USB/IP relationships
+refuse. These are bounded connection-lifetime observations, not permanent
+calibration identity, liveness, indistinguishable hot-swap detection, or global
+cross-process exclusion. No invented serial or relaxed paired-tuner architecture
+was introduced. Stage/Apply remain inert with respect to RX; Start is explicit.
+
+Exact diagnostic package APP07-USB-20261004-5FDB8F0 was built from 5fdb8f0:
+46/46 native CTest in54.20s;665 package files verified;3 packaged MOCK binding
+tests in2.776s. The full V2 gate ran serially after freezing:1375 total,
+1309 passed,66 skipped,0 failures/errors in488.254s, exact provenance with clean
+tracked source before and after. Native SHA256 is
+033724259775926cc05af06cf254341472296f48a92eb8080bf7c3c3c59ed6ca;
+the C++ bytes are unchanged from the prior native increment, but this matching
+build manifest and source snapshot are attributed to 5fdb8f0, not a later
+documentation-only commit. Existing NaN and optional OpenGL freezer warnings
+remain recorded; they were not suppressed.
+
+Six separate physical four-source workflows passed, with eight original PNG
+captures at1920×1080 and2560×1440, DPR1.0:
+
+- Canonical AD9363 USB / HackRF / tinySA / RTL RTBW layout, FHD and QHD.
+- mini AD9364 USB RTBW with RTL/HackRF/tinySA in rotated positions, FHD.
+- Two different Pluto USB devices, each RX1, plus HackRF and tinySA,
+  in two different layouts, FHD/QHD and FHD respectively.
+- Mixed AD9364 Sweep / HackRF Sweep / tinySA Sweep / RTL RTBW.
+- Rotated mixed AD9363 Sweep / HackRF Sweep / tinySA Sweep / RTL RTBW.
+
+Every source delivered advancing frame counters and visible spectrum/history
+bundles. RTBW actual settings included AD9363 Fs30.72MS/s with30MHz RF window,
+mini AD9364 Fs61.44MS/s with56MHz RF window, HackRF20MS/s, and RTL2.4MS/s.
+The AD9363 value is the observed current firmware profile, not a universal chip
+limit. Sweep used the respective30/36MHz useful AD windows,4096 analysis bins
+and8192 physical FFT. tinySA returned1001 points over100–300MHz and actual
+300kHz RBW. Fs is an acquisition setting, not lossless transport throughput.
+
+The two mixed Sweep workflows retained eight accepted partial-before-complete
+pairs across Pluto and HackRF: each partial result belonged to the same scan as
+its later complete result, with pending segments preserved rather than painted
+as fresh measured data. This verifies progressive UI delivery, not DWM paint
+cadence or a claimed FFT/LPS performance target. Each workflow ended with normal
+Stop/terminal drain/worker join/graph close, no retained resources and a released
+cooperating-process hardware lease. RTL startup SDK warnings remain in evidence;
+no RF accuracy or SDK-cause fix is inferred.
+
+Captures are actual UI V2 QWidget.grab/source-UI/offscreen renders with physical
+sources and matching packaged native/Qt bytes. They are not mock/replay, but are
+also not visible frozen-EXE desktop screenshots or Windows monitor-DPI/DWM proof.
+The gallery records exact mapping, ranges, modes, capture scope and image hashes.
+Root inspected all original rasters. Long RTL detail is clipped at FHD and
+technical typography/frequency formatting remain UI follow-up work. A separate
+scoped UI review approved the Stage/composition change; this is not whole-release
+approval. Sweep Fs selector recoverability is a separate queued UI finding.
+
+Canonical fresh four-source delivery/geometry and mixed progressive delivery
+have current bounded evidence. Selected-source Stop/Restart isolation still needs
+current-head revalidation after the admission change. Dual-USB AD RTBW is now
+positive bounded evidence, not simultaneous paired RX1/RX2 of one device,
+independent dual-AD Sweep, product Ethernet, or hot single-pane replacement.
+Performance, fault/unplug recovery, soak, visible Windows/DPI, runtime licensing
+and independent release qualification remain open. APP-07 is still PARTIAL.
+Current/static EXE, firewall and the dirty legacy checkout were not changed.
