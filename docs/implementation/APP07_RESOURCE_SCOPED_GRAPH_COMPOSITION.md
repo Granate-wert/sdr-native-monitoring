@@ -5750,3 +5750,50 @@ captions. Historical source Qt images are not current packaged EXE/DPI/DWM proof
 APP07/M8 PARTIAL/H02 TODO; full APP00..14 unchanged. Root only this increment,
 no new subagent/current independent backend-release review. Main dirty product,
 static EXE/firewall preserved; public whitelist only. No whole-release claim.
+
+
+## M8-067 — original-ID native owner custody evidence
+
+Exact runtime d67b3ee99e662dd1774800bce6bafa40c44d27db, UI V2 only.
+The five actual owner dispositions now append ORIGINAL ready refs to the SAME
+bounded native event ring. No second ring, unbounded identity registry, arrays,
+raw I/Q transfer or producer-rate Python callback. Owner event protocol2 adds
+explicit generated-event conservation:2*offered-outstanding+owner dispositions.
+Ready ref/presentation/release contracts stay1. Counter-space reservation allows
+three events per offer before exhaustion; full/disabled rings declare exact
+new-evidence loss/bounds. Invalid/excess owner decisions do not append events.
+Internal queue hooks are not an exhaustive native per-ID dedup registry.
+
+Host reads known v1/v2 schemas explicitly; v2 requires original event kinds,
+strict native event count and matching presentation totals. Unknown/missing/
+malformed evidence refuses rather than falling back to fabricated zero.
+Bounded custody audit retains at most256 scalar original refs/states, charged
+inside the existing1MiB host reservation including index storage. Duplicate
+terminal cannot settle a different offer; ready time/generation/clock identity
+must match the original. Native all-offers counters remain denominator.
+Only small stopped runs with complete retained offer/retirement/owner evidence,
+no native loss, window eviction, overflow, accounting/drain/release failure can
+claim complete NATIVE ID custody. Larger/incomplete runs remain explicit. This
+is not adapter/pane/queue/paint, RF duty/loss or global50ms acceptance.
+No RF/Fs/FFT/gain/cadence/quality-time/native queue ceiling changes.
+
+Exact diagnostic APP07-OWNERIDS-20261005-D67B3EE-R0:47/47CTest54.24s/665frozen/
+source/runtime/sharedDLL/ONEUSB/offscreen gates verified. Serial fullUIV2:
+1384total/1318PASS/66skip/0fail493.203s, exact source/native/cleanbeforeafter.
+Additional matching packaged compiled/mock/root tests76PASS6.697s aftergate,
+source snapshot unchanged. Candidate47CTest56.39s/76compiled6.521s/24Qt0.576s/
+Ruff7mypy3compile7 PASS retained separately. First pure legacy test fixture
+error corrected explicit v1 defaults, not v2 fallback or product guard change.
+Historical warnings retained. Native055dc369341754dd8f11a57fc25d5441bbd63e0717567d01cf94989816459104;
+EXE24ea72f219f310548d602fb92fd26dbf1b3dacd589c1d5129e4f22ce36ecadf3.
+Diagnostic not static/current promoted. Later doc SHA must not relabel d67 build.
+
+Still mandatory: actual pane fanout/admission/prepare/queue obligations, separate
+Sweep/density ready provenance, dedicated UI layer terminals/review, cached
+tinySA stale first cause before new HIL, current2x2 galleries/rotations, remaining
+fault/performance/soak/visibleDPI/release qualification. No current067 physical
+run or new screenshots;064 gallery historical only. End physical tests include
+original2x2 source/mode/RF/actualtransport/build/freshness/partial-error captions.
+APP07/M8 PARTIAL/H02TODO/fullAPP00..14 unchanged. Root only this increment,
+no new agents/current independent backend-release review. Dirty main product,
+static EXE/firewall unchanged; public whitelist only.
