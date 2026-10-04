@@ -5797,3 +5797,31 @@ original2x2 source/mode/RF/actualtransport/build/freshness/partial-error caption
 APP07/M8 PARTIAL/H02TODO/fullAPP00..14 unchanged. Root only this increment,
 no new agents/current independent backend-release review. Dirty main product,
 static EXE/firewall unchanged; public whitelist only.
+# M8-068: graph-scoped native Spectrum pane custody (root contract)
+
+The applied resource graph now issues an immutable per-pane obligation only
+after exact current measurement admission. The reference preserves the original
+native Spectrum ready receipt plus owner/resource/capture/RX/pane/run/activation
+binding and a fresh graph custody namespace. It does not identify new hardware.
+Fanout into two panes is two deliveries of ONE native offer, not two FFTs.
+
+The graph owns one additional declared 1 MiB host scalar component with at most
+256 records/128 events/four fixed pane markers. It stores no measurement arrays
+or device handles. Pending records are not evicted; capacity failure leaves the
+delivery untracked without changing acquisition. Terminal/event evictions and
+unknown/untracked/duplicate admissions are explicit. Existing native and paired
+aggregate memory, Fs/FFT, epoch, control, queue and quality policies remain.
+
+Routing-close Stop/retune/error cancels only unclaimed ADMITTED records of the
+affected resource. Actual preparation/queue/Qt/paint owners must report their
+own transitions using the exact original reference. The contract's stage enum
+does NOT by itself prove those UI callbacks or visible paint. Host receipt time
+is not native-ready/RF/photon time; invalid clock readings remain unknown.
+
+This scope is native RTBW Spectrum only. Sweep, instrument trace, persistence
+and waterfall require independent ready provenance and remain unqualified here.
+Root unit/fake graph/queue tests are not physical acceptance or M8/H02 closure.
+Dedicated UI implementation/review, frozen package/full regression, cached
+tinySA first-cause diagnostics and current HIL remain required. At the end of
+new HIL, provide original 2x2 screenshots of each tested configuration/rotation
+with source/native/EXE provenance; do not relabel historical galleries.

@@ -22,6 +22,9 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analytical_journal import OwnerJournalScope
 from sdr_monitor.domain.analytical_ready import DetectorReadyReceipt
 from sdr_monitor.domain.pane_analytical_identity import PaneAnalyticalIdentity
+from sdr_monitor.domain.pane_delivery_obligation import (
+    PaneDeliveryLedgerSnapshot, PaneDeliveryObligationRef, PaneDeliveryStage,
+)
 from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
@@ -36,6 +39,7 @@ from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 from sdr_monitor.domain.pluto_connection import PlutoUsbConnectionExpectation
 
 from .receiver_lease_manager import ReceiverLease, ReceiverLeaseManager
+from .pane_delivery_ledger import PaneDeliveryLedger
 from .parallel_receiver_identity import validate_parallel_receiver_identity
 from .pane_resource_diagnostics import (
     PaneDiagnosticError, PaneFailureReason, PaneFailureStage, pane_failure_from_exception,
@@ -224,6 +228,7 @@ class PaneDelivery:
     host_received_monotonic_s: float
     host_run_serial: int = 0
     analytical_identity: PaneAnalyticalIdentity | None = None
+    obligation_ref: PaneDeliveryObligationRef | None = None
 
     def __post_init__(self) -> None:
         ref = self.analytical_identity
@@ -236,6 +241,10 @@ class PaneDelivery:
                 or not isinstance(self.bundle.spectrum, LiveSpectrumFrame)
                 or ref.ready is not self.bundle.spectrum.detector_ready):
             raise ValueError("analytical delivery must retain its exact measurement and host binding")
+        if self.obligation_ref is not None and (
+                not isinstance(self.obligation_ref, PaneDeliveryObligationRef)
+                or ref is None or self.obligation_ref.identity != ref):
+            raise ValueError("pane obligation must retain its original analytical identity")
 
     @property
     def pane_id(self) -> str:
@@ -436,6 +445,7 @@ class PaneResourceSession:
         self._runtimes = runtimes
         self._schedule = schedule
         self._pane_resources = pane_resources
+        self._delivery_ledger = PaneDeliveryLedger(tuple(sorted(pane_resources)))
         self._endpoints = {endpoint.endpoint_id: endpoint for group in groups for endpoint in group.endpoints}
         self._expected_receivers = expected_receivers
         self._leases = lease_manager
@@ -448,6 +458,19 @@ class PaneResourceSession:
         self._pane_last_revisit_s: dict[str, float] = {}
         self._applied = False
         self._retired = False
+
+    def pane_delivery_ledger_snapshot(self) -> PaneDeliveryLedgerSnapshot:
+        """Cached graph scalars only; never hardware, native drain or clock."""
+        return self._delivery_ledger.snapshot()
+
+    def record_pane_delivery_stage(self, ref: PaneDeliveryObligationRef,
+                                   stage: PaneDeliveryStage) -> bool:
+        """Actual custody boundary reports the original ref, no hardware locks."""
+        return self._delivery_ledger.note(ref, stage)
+
+    def _bind_delivery_obligations(self, deliveries: tuple[PaneDelivery, ...]) -> tuple[PaneDelivery, ...]:
+        return tuple(replace(item, obligation_ref=self._delivery_ledger.admit(
+            item.pane_id, item.analytical_identity)) for item in deliveries)
 
     @property
     def active_resource_count(self) -> int:
@@ -768,6 +791,7 @@ class PaneResourceSession:
                     runtime.active = False
                     runtime.current_activation = None
                     runtime.stop_required = True  # Close routing before blocking Stop.
+                    self._delivery_ledger.cancel_unclaimed(resource_id)
                 try:
                     runtime.owner.stop_capture_and_wait()
                 except Exception as error:
@@ -903,6 +927,7 @@ class PaneResourceSession:
                 runtime.rejected_publications += 1
                 return ()  # Stale/foreign evidence never receives this activation.
             if not prepare_pair:
+                deliveries = self._bind_delivery_obligations(deliveries)
                 self._commit_deliveries(runtime, activation, admission, deliveries, now)
                 if qualified and ready is not None:
                     runtime.last_analytical_receipts[endpoint_id] = ready
@@ -1005,6 +1030,7 @@ class PaneResourceSession:
             if any(not items for items in prepared):
                 return ()
             delivered = tuple(item for items in prepared for item in items)
+            delivered = self._bind_delivery_obligations(delivered)
             self._commit_deliveries(runtime, activation, admission, delivered, now)
             runtime.last_paired_sweep_key = key
             runtime.last_paired_sweep_run = run
@@ -1039,6 +1065,7 @@ class PaneResourceSession:
                     runtime.active = False
                     runtime.current_activation = None
                     runtime.stop_required = True
+                    self._delivery_ledger.cancel_unclaimed(resource_id)
                 raise PaneResourceError("receiver publication failed; explicit Stop is required",
                     failure=pane_failure_from_exception(error, failure_stage,
                         reason=(PaneFailureReason.INVALID_PUBLICATION
@@ -1115,6 +1142,7 @@ class PaneResourceSession:
             runtime.active = False  # No late frame may reach a pane during join.
             runtime.current_activation = None
             runtime.stop_required = needs_stop
+            self._delivery_ledger.cancel_unclaimed(runtime.group.physical_stream_resource_id)
         if needs_stop:
             try:
                 runtime.owner.stop_capture_and_wait()
@@ -1192,6 +1220,7 @@ class PaneResourceSession:
                     runtime.active = False
                     runtime.current_activation = None
                     runtime.stop_required = True
+                    self._delivery_ledger.cancel_unclaimed(runtime.group.physical_stream_resource_id)
             raise PaneResourceError("owner control transaction failed; explicit Stop may be required",
                 failure=pane_failure_from_exception(error, PaneFailureStage.TRANSACTION)) from None
 
