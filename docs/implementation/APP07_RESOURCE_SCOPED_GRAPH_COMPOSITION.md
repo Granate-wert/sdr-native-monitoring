@@ -4599,3 +4599,62 @@ positive paired RF, product Ethernet, faults, performance, soak, visible Windows
 and independent UI/release/licensing qualification remain open. APP07 remains
 partially qualified. No product/build/system change or static-package promotion
 was made for this rotation packet.
+
+## Dual-AD admission and mixed-Sweep pane rotations — 2026-10-04
+
+Six physical Stage-only requests exposed a current identity-admission limitation:
+the AD9363 unit has an observed stable serial, while Pluto mini AD9364 supplies
+an empty serial and only an operational USB route. With both units in one plan,
+the same-family identity guard refuses Stage in either order, before Apply,
+Start or RF changes. Five source/mock tests confirm refusal, cleanup and the
+different case of two distinct observed serials. This is negative admission
+evidence, not a simultaneous streaming failure or positive dual-AD qualification.
+Different route IDs or location-dependent Windows instance IDs must not be
+promoted to stable serial/calibration identity. An owned native USB-session
+attestation contract is proposed for further investigation, not implemented;
+the guard remains intact. The generic refusal needs an actionable typed reason.
+
+The unchanged runtime `a8d3aa50dfefbad343e67b616203e122e98a5c5d` also passed
+seven new bounded physical four-source mixed-Sweep layouts using the rotation
+table above: AD9363 layouts 1–3 and AD9364 layouts 0–3. AD9363 layout 0 was
+already qualified in the separate window test. Together these establish basic
+all-position coverage for both AD choices in RTBW and mixed Sweep, not live
+per-source replacement.
+
+AD9363 swept 300–620 MHz at actual Fs 30.72 MS/s, usable window 30 MHz,
+analysis N4096 and physical FFT 8192 over 11 segments. AD9364 swept the same
+range at 61.44 MS/s, window 36 MHz, N4096 and physical FFT 8192 over 10 segments.
+Compiled RF-filter intents 30/40 MHz are not segment filter readbacks.
+HackRF swept 100–300 MHz at actual per-segment Fs 20 MS/s/physical FFT 4096;
+its terminal usable 5 MHz/N1024 must not be confused with the physical FFT or
+a full 20 MHz usable Sweep window. tinySA used 100–300 MHz/1001 points/LOW/
+queried RBW 300 kHz, and RTL used RTBW 99.5–100.5 MHz/2.4 MS/s/FFT 4096.
+
+Thirty-five observations retain actual pane assignments and advancing counters.
+Twenty-eight same-scan partial-before-complete pairs demonstrate progressive
+acceptance by Qt for AD and HackRF. Seven original 1920×1080 Qt rasters include
+same-frame provenance and geometry receipts; original log/image hashes were
+audited and all images inspected. These are real-hardware source-UI/offscreen
+captures, not visible frozen EXE, monitor DPI/DWM, paint FPS, transport-rate,
+RF-accuracy or soak evidence. Long RTL status and some right-edge Sweep HUD
+text remain clipped and require dedicated UI follow-up.
+
+An initial test failed in the private geometry validator because immutable
+tinySA command acknowledgements are a tuple, whereas the validator expected
+a list. The failed log/image were retained. Seven pure regression tests now
+cover runtime tuples and serialized lists while rejecting wrong or reordered
+commands. This correction changes only the private test harness, not product
+code, device settings, command-content guards or test timing.
+
+All seven successful runs stopped, drained, joined and closed with zero retained
+resources/workers, no native RTL quarantine, a released hardware lease and
+unchanged source/native snapshots. Each retained an RTL PLL warning; AD9364
+layout 1 also emitted READ LINE/READ INTEGER -9. Their exact SDK origin and
+operation phase remain unknown. Functional delivery and cleanup do not prove
+error-free SDK operation or repair of historical failures.
+
+APP07 remains partially qualified. Simultaneous distinct AD admission, selected
+slot replacement preserving independent peers, positive paired RF, product
+Ethernet, faults, performance, soak, visible Windows/DPI, independent UI/release
+review and licensing remain open. No product change, new build, system mutation
+or static/current package promotion was made in these two test packets.
