@@ -10,7 +10,6 @@ from esw_dfl.sdr import native_api
 from esw_dfl.sdr.contracts import CONTRACT_SCHEMA_VERSION
 from sdr_monitor.services.native_live import NativeLiveSessionService
 from sdr_monitor.ui.v2.state.analyzer_readouts import spectrum_numerical_readout
-from tests.test_native_live_discovery import _FakeNative
 import tests.test_app02_analyzer_workspace_product as product_fixture
 
 
@@ -35,12 +34,16 @@ class NumericalCompositionTests(unittest.TestCase):
             ))
             samples = np.asarray(.5 * np.exp(2j * np.pi * 73 * np.arange(size) / size), dtype=np.complex64)
             backend.push_samples(samples, config.sample_rate_hz, config.center_hz)
-            bridge = NativeLiveSessionService(_FakeNative())
+            # The native CPU receipt belongs to SAME module, not fake SDK.
+            # Construction/conversion do not open a device or start RX.
+            bridge = NativeLiveSessionService(native)
             self.assertTrue(bridge._publish_frame(backend.poll_spectrum(0)[0]))
             # The fixture owns a fake device/session; only identity is rebound.
             # Numerical arrays and producer metadata are untouched.
             frame = replace(bridge.latest_snapshot().spectrum, source_id=baseline.device.device_id,
-                            config_generation=baseline.generation)
+                            config_generation=baseline.generation, detector_ready=None)
+            # Explicit synthetic routing cannot retain physical-ready identity
+            # after rewriting its source/generation. Numerical evidence remains.
             snapshot = replace(baseline, spectrum=frame)
             fixture.live._snapshot = snapshot
             fixture.presenter.offer_snapshot_for_render(snapshot)

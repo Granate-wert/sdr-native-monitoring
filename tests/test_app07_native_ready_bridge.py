@@ -170,6 +170,7 @@ class NativeReadyClockTests(unittest.TestCase):
         ref = convert(value, frame(receipt()))
         self.assertIsInstance(ref, DetectorReadyReceipt)
         for changes in ({"ready_native_ns": 200}, {"mapping": "bounded"}, {"acquisition_epoch": True},
+                        {"source_id": " chain "}, {"session_id": " session "}, {"receiver_id": " RX2 "},
                         {"mapping": ReadyClockMapping.OUTSIDE_SAMPLES}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 replace(ref, **changes)

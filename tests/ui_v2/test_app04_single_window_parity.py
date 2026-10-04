@@ -18,7 +18,6 @@ from sdr_monitor.services.native_live import NativeLiveSessionService
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
 from tests import test_app02_analyzer_workspace_product as product_fixture
 from tests.test_app01_product_analyzer import _FakeAnalyzerDisplay
-from tests.test_native_live_discovery import _FakeNative
 
 
 class SingleWindowParityTests(unittest.TestCase):
@@ -81,13 +80,16 @@ class SingleWindowParityTests(unittest.TestCase):
                     raw = backend.poll_spectrum(0)[-1]
                     raw_line = native._make_test_single_segment_line(raw, size // 4, size // 2)
                     line = _to_domain_line(raw_line)
-                    bridge = NativeLiveSessionService(_FakeNative())
+                    # SAME CPU module clock scope; no device construction/RX.
+                    bridge = NativeLiveSessionService(native)
                     self.assertTrue(bridge._publish_frame(raw))
                     original = bridge.latest_snapshot().spectrum
                     # Only fake-session routing identity changes, never numbers,
                     # geometry, producer timestamps or numerical provenance.
                     live = replace(original, source_id=baseline.device.device_id,
-                                   config_generation=baseline.generation)
+                                   config_generation=baseline.generation, detector_ready=None)
+                    # Synthetic alias/profile rebinding cannot preserve the
+                    # original producer-ready identity. Values remain untouched.
                     snapshot = replace(baseline, spectrum=live)
                     harness.live._snapshot = snapshot
                     harness.presenter.offer_snapshot_for_render(snapshot)

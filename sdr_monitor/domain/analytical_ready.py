@@ -84,7 +84,9 @@ class DetectorReadyReceipt:
 
     def __post_init__(self) -> None:
         if (type(self.adapter_clock_scope_id) is not str or not self.adapter_clock_scope_id.strip()
-                or type(self.source_id) is not str or not self.source_id.strip()):
+                or self.adapter_clock_scope_id != self.adapter_clock_scope_id.strip()
+                or type(self.source_id) is not str or not self.source_id.strip()
+                or self.source_id != self.source_id.strip()):
             raise ValueError("ready receipt requires exact scope and source")
         for label in ("host_process_id", "producer_instance_id", "offer_sequence"):
             _integer(getattr(self, label), label, 1, (1 << 64) - 1)
@@ -94,7 +96,7 @@ class DetectorReadyReceipt:
             _integer(self.acquisition_epoch, "acquisition_epoch", 1, (1 << 64) - 1)
         for label in ("receiver_id", "session_id"):
             value = getattr(self, label)
-            if value is not None and (type(value) is not str or not value.strip()):
+            if value is not None and (type(value) is not str or not value.strip() or value != value.strip()):
                 raise ValueError(f"ready receipt has invalid {label}")
         if not isinstance(self.mapping, ReadyClockMapping):
             raise ValueError("ready mapping must be typed")
