@@ -56,6 +56,19 @@ struct ContextProbe {
     std::optional<std::string> usb_serial;
 };
 
+// A bounded USB connection assertion, NOT a permanent/calibration identity.
+// Values must come from an observed context, not a source label/caller URI.
+// Explicitly empty serial is supported; missing serial is not an assertion.
+// The owner checks these facts on its own freshly opened context before RF.
+struct ExpectedUsbConnection {
+    std::uint32_t bus{};
+    std::uint32_t device_address{};
+    std::uint32_t interface_number{};
+    std::uint32_t vendor_id{};
+    std::uint32_t product_id{};
+    std::string usb_serial;
+};
+
 // A read-only IIO topology observation.  It intentionally contains no buffer,
 // no enabled state and no transport/rate claim.  A visible I/Q pair proves
 // only the digital scan layout; RF-path routing/independence is separate E6
@@ -178,7 +191,8 @@ public:
     // When supplied, identity is checked on the owned context before any RF
     // configure/stream call. Nullopt is explicitly unknown, not stable proof.
     explicit PlutoDevice(std::string uri, std::uint32_t timeout_ms = 3000U,
-                         std::optional<std::string> expected_serial = std::nullopt);
+                         std::optional<std::string> expected_serial = std::nullopt,
+                         std::optional<ExpectedUsbConnection> expected_usb_connection = std::nullopt);
     ~PlutoDevice();
 
     PlutoDevice(const PlutoDevice&) = delete;

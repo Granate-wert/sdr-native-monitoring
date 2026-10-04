@@ -15,6 +15,88 @@ MOCK = Path(os.environ.get("SDR_APP07_TEST_MOCK_LIBIIO",
 
 @unittest.skipUnless(MODULE and MOCK.is_file(), "requires explicit matching staged native/mock")
 class PlutoConnectionObservationBindingTests(unittest.TestCase):
+    def test_typed_usb_assertion_and_lifetime_claim_reach_all_native_owners(self) -> None:
+        code = r"""
+import ctypes
+import importlib.util
+import os
+import pathlib
+import sys
+from sdr_monitor.services.ad936x_identity_admission import PlutoUsbConnectionExpectation, create_identity_bound_owner
+path = pathlib.Path(sys.argv[1]).resolve(strict=True)
+cookie = os.add_dll_directory(str(path.parent))
+spec = importlib.util.spec_from_file_location("_sdr_native", path)
+native = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native)
+assert pathlib.Path(native.__file__).resolve() == path
+assert native.PLUTO_USB_CONNECTION_ADMISSION_PROTOCOL_VERSION == 1
+hooks = ctypes.CDLL(os.environ["LIBIIO_DLL_PATH"])
+for name in ("mock_iio_created_contexts", "mock_iio_destroyed_contexts", "mock_iio_live_contexts",
+             "mock_iio_rf_mutation_calls", "mock_iio_created_buffers"):
+    getattr(hooks, name).restype = ctypes.c_int
+os.environ["SDR_MOCK_LIBIIO_CONTEXT_NAME"] = "usb"
+os.environ["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.42.5"
+temporary = native.probe_pluto_context("usb:caller-alias")
+assertion = PlutoUsbConnectionExpectation.from_probe(temporary)
+writes = hooks.mock_iio_rf_mutation_calls()
+buffers = hooks.mock_iio_created_buffers()
+names = ("PlutoDevice", "PlutoFixedBandEngine", "NativeContinuousSweepCoordinator")
+for name in names:
+    owner = create_identity_bound_owner(native, name, "usb:caller-alias", 3000,
+                                       expected_serial="MOCK", expected_usb_connection=assertion)
+    try:
+        before = hooks.mock_iio_created_contexts()
+        for other in names:
+            try:
+                create_identity_bound_owner(native, other, "usb:other-interface", 3000,
+                                            expected_usb_connection=assertion)
+            except RuntimeError as error:
+                assert "already held" in str(error)
+            else:
+                raise AssertionError("asserted physical resource opened twice")
+        assert hooks.mock_iio_created_contexts() == before
+        owner.stop_stream() if name == "PlutoDevice" else owner.stop()
+        try:
+            create_identity_bound_owner(native, "PlutoDevice", "usb:alias", 3000,
+                                        expected_usb_connection=assertion)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Stop released connection ownership")
+    finally:
+        owner.disconnect()
+    assert hooks.mock_iio_live_contexts() == 0
+
+# A stale temporary observation must not admit a new, different owned context.
+os.environ["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.43.5"
+for name in names:
+    before = hooks.mock_iio_created_contexts()
+    try:
+        create_identity_bound_owner(native, name, "usb:caller-alias", 3000,
+                                    expected_usb_connection=assertion)
+    except RuntimeError as error:
+        assert "not confirmed" in str(error)
+    else:
+        raise AssertionError("stale connection assertion admitted")
+    assert hooks.mock_iio_created_contexts() == before + 1
+    assert hooks.mock_iio_live_contexts() == 0
+os.environ["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.42.5"
+owner = create_identity_bound_owner(native, "PlutoDevice", "usb:alias", 3000,
+                                   expected_usb_connection=assertion)
+owner.disconnect()
+assert hooks.mock_iio_live_contexts() == 0
+assert hooks.mock_iio_rf_mutation_calls() == writes
+assert hooks.mock_iio_created_buffers() == buffers
+print("typed SAME-context assertion/3 native owners/duplicate-before-open/Stop retains/cleanup/reopen PASS; mock only")
+"""
+        environment = dict(os.environ, LIBIIO_DLL_PATH=str(MOCK))
+        for key in tuple(environment):
+            if key.startswith("SDR_MOCK_LIBIIO_"):
+                environment.pop(key)
+        result = subprocess.run([sys.executable, "-c", code, MODULE], cwd=ROOT, env=environment,
+                                text=True, capture_output=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_optional_observations_are_raw_readonly_and_owned(self) -> None:
         code = r"""
 import importlib.util

@@ -658,8 +658,9 @@ void validate(const PairedContinuousSweepCoordinatorConfig& value) {
 
 class ContinuousSweepCoordinator::Impl final {
 public:
-    Impl(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
-        : uri_(std::move(uri)), engine_(uri_, timeout_ms, std::move(expected_serial)) {}
+    Impl(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial,
+         std::optional<ExpectedUsbConnection> expected_usb_connection)
+        : uri_(std::move(uri)), engine_(uri_, timeout_ms, std::move(expected_serial), std::move(expected_usb_connection)) {}
 
     ~Impl() noexcept {
         shutdown_noexcept();
@@ -1709,8 +1710,9 @@ private:
     std::thread worker_;
 };
 
-ContinuousSweepCoordinator::ContinuousSweepCoordinator(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
-    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, std::move(expected_serial))) {}
+ContinuousSweepCoordinator::ContinuousSweepCoordinator(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial,
+                                                       std::optional<ExpectedUsbConnection> expected_usb_connection)
+    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, std::move(expected_serial), std::move(expected_usb_connection))) {}
 
 ContinuousSweepCoordinator::~ContinuousSweepCoordinator() noexcept = default;
 void ContinuousSweepCoordinator::configure(ContinuousSweepCoordinatorConfig config) { impl_->configure(std::move(config)); }

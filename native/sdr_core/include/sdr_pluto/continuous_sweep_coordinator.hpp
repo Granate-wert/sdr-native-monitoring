@@ -188,7 +188,8 @@ struct ContinuousSweepCoordinatorMetrics {
 class ContinuousSweepCoordinator final {
 public:
     explicit ContinuousSweepCoordinator(std::string uri, std::uint32_t timeout_ms = 3000U,
-                                        std::optional<std::string> expected_serial = std::nullopt);
+                                        std::optional<std::string> expected_serial = std::nullopt,
+                                        std::optional<ExpectedUsbConnection> expected_usb_connection = std::nullopt);
     ~ContinuousSweepCoordinator() noexcept;
 
     ContinuousSweepCoordinator(const ContinuousSweepCoordinator&) = delete;

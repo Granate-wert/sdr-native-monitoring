@@ -71,6 +71,7 @@ void bind_pluto(py::module_& module) {
     // Separate from spectrum schema: known-serial callers must fail closed on
     // older runtimes rather than perform a separate, non-owning preflight.
     module.attr("PLUTO_IDENTITY_ADMISSION_PROTOCOL_VERSION") = 1;
+    module.attr("PLUTO_USB_CONNECTION_ADMISSION_PROTOCOL_VERSION") = 1;
     module.attr("PLUTO_OBSERVATION_PROTOCOL_VERSION") = 1;
     // This identifies the reduced native boundary, not product lease/receipt
     // admission or physical paired-Sweep qualification.
@@ -296,6 +297,15 @@ void bind_pluto(py::module_& module) {
     py::class_<sdr_pluto::ContextInfo>(module, "PlutoContextInfo")
         .def_readonly("uri", &sdr_pluto::ContextInfo::uri)
         .def_readonly("description", &sdr_pluto::ContextInfo::description);
+
+    py::class_<sdr_pluto::ExpectedUsbConnection>(module, "PlutoExpectedUsbConnection")
+        .def(py::init<>())
+        .def_readwrite("bus", &sdr_pluto::ExpectedUsbConnection::bus)
+        .def_readwrite("device_address", &sdr_pluto::ExpectedUsbConnection::device_address)
+        .def_readwrite("interface_number", &sdr_pluto::ExpectedUsbConnection::interface_number)
+        .def_readwrite("vendor_id", &sdr_pluto::ExpectedUsbConnection::vendor_id)
+        .def_readwrite("product_id", &sdr_pluto::ExpectedUsbConnection::product_id)
+        .def_readwrite("usb_serial", &sdr_pluto::ExpectedUsbConnection::usb_serial);
 
     py::class_<sdr_pluto::ContextProbe>(module, "PlutoContextProbe")
         .def_readonly("uri", &sdr_pluto::ContextProbe::uri)
@@ -1083,7 +1093,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("spectrum_queue_high_water", &sdr_pluto::ContinuousSweepCoordinatorMetrics::spectrum_queue_high_water);
 
     py::class_<sdr_pluto::ContinuousSweepCoordinator>(module, "NativeContinuousSweepCoordinator")
-        .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
+        .def(py::init<std::string, std::uint32_t, std::optional<std::string>, std::optional<sdr_pluto::ExpectedUsbConnection>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::arg("expected_usb_connection") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def("configure", &sdr_pluto::ContinuousSweepCoordinator::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("configure_paired", &sdr_pluto::ContinuousSweepCoordinator::configure_paired, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("start", &sdr_pluto::ContinuousSweepCoordinator::start, py::call_guard<py::gil_scoped_release>())
@@ -1115,7 +1125,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("paired_processing_ms", &sdr_pluto::PairedFixedBandMetrics::paired_processing_ms);
 
     py::class_<sdr_pluto::FixedBandEngine>(module, "PlutoFixedBandEngine")
-        .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
+        .def(py::init<std::string, std::uint32_t, std::optional<std::string>, std::optional<sdr_pluto::ExpectedUsbConnection>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::arg("expected_usb_connection") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def("configure", &sdr_pluto::FixedBandEngine::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("configure_paired", &sdr_pluto::FixedBandEngine::configure_paired, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("paired_metrics", &sdr_pluto::FixedBandEngine::paired_metrics, py::call_guard<py::gil_scoped_release>())
@@ -1149,7 +1159,7 @@ void bind_pluto(py::module_& module) {
         .def("poll_events", &sdr_pluto::FixedBandEngine::poll_events, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>());
 
     py::class_<sdr_pluto::PlutoDevice>(module, "PlutoDevice")
-        .def(py::init<std::string, std::uint32_t, std::optional<std::string>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::call_guard<py::gil_scoped_release>())
+        .def(py::init<std::string, std::uint32_t, std::optional<std::string>, std::optional<sdr_pluto::ExpectedUsbConnection>>(), py::arg("uri"), py::arg("timeout_ms") = 3000U, py::arg("expected_serial") = py::none(), py::arg("expected_usb_connection") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("connected", py::cpp_function(
             &sdr_pluto::PlutoDevice::connected, py::call_guard<py::gil_scoped_release>()))
         .def_property_readonly("streaming", py::cpp_function(

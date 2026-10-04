@@ -196,8 +196,12 @@ void test_progress_complete_and_owned_stop() {
 
     state->emit(transfer(1U, 7U), 20'000);
     expect(eventually([&] {
-        return control->metrics().analysis.lines.completed_lines == 1U;
-    }), "native worker did not complete the numerical Sweep line");
+        // Analysis completion and host publication have separate locks. The
+        // numerical counter is not a publication fence: wait for the actual
+        // terminal slot too, without changing the existing 3-second deadline.
+        const auto observed = control->metrics();
+        return observed.analysis.lines.completed_lines == 1U && observed.terminal_pending;
+    }), "native worker did not publish the completed numerical Sweep line");
     const auto line = line_from(control->poll_next_publication());
     expect(line && line->state == sdr_core::SweepLineState::Complete &&
                line->source.source_id == "hackrf:runtime-test" &&

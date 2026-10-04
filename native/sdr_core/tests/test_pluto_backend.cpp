@@ -3,6 +3,7 @@
 #include "sdr_pluto/continuous_sweep_coordinator.hpp"
 #include "sdr_core/dual_rx_dsp.hpp"
 #include "sdr_core/errors.hpp"
+#include "../src/pluto/context_probe.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -49,6 +50,9 @@ struct MockHooks final {
     int_fn live_contexts{};
     int_fn mutation_calls{};
     int_fn created_buffers{};
+    void_fn reset_context_destroy{};
+    int_fn context_destroy_entered{};
+    void_fn release_context_destroy{};
 
     MockHooks() {
         const char* path = std::getenv("LIBIIO_DLL_PATH");
@@ -65,10 +69,14 @@ struct MockHooks final {
         live_contexts = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_live_contexts"));
         mutation_calls = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_rf_mutation_calls"));
         created_buffers = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_created_buffers"));
+        reset_context_destroy = reinterpret_cast<void_fn>(GetProcAddress(module, "mock_iio_reset_context_destroy_gate"));
+        context_destroy_entered = reinterpret_cast<int_fn>(GetProcAddress(module, "mock_iio_context_destroy_entered"));
+        release_context_destroy = reinterpret_cast<void_fn>(GetProcAddress(module, "mock_iio_release_context_destroy"));
         if (reset == nullptr || entered == nullptr || release == nullptr || destroyed == nullptr ||
             reset_context_counts == nullptr || created_contexts == nullptr ||
             destroyed_contexts == nullptr || live_contexts == nullptr ||
-            mutation_calls == nullptr || created_buffers == nullptr) {
+            mutation_calls == nullptr || created_buffers == nullptr || reset_context_destroy == nullptr ||
+            context_destroy_entered == nullptr || release_context_destroy == nullptr) {
             throw std::runtime_error("mock lifecycle hooks are missing");
         }
     }
@@ -126,11 +134,136 @@ void check_connection_observations() {
         hooks.mutation_calls() != writes_before || hooks.created_buffers() != buffers_before)
         throw std::runtime_error("observation opened RX or leaked context");
 }
+
+void check_usb_connection_admission() {
+    MockHooks hooks;
+    const sdr_pluto::ExpectedUsbConnection expected{2U, 42U, 5U, 0x0456U, 0xb673U, "MOCK"};
+    _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_NAME", "usb");
+    _putenv_s("SDR_MOCK_LIBIIO_BACKEND_URI", "usb:2.42.5");
+    const auto writes_before = hooks.mutation_calls();
+    const auto buffers_before = hooks.created_buffers();
+    const auto construct = [&](const int kind, const sdr_pluto::ExpectedUsbConnection& assertion) {
+        if (kind == 0) { sdr_pluto::PlutoDevice owner("usb:mock", 3000U, std::nullopt, assertion); }
+        if (kind == 1) { sdr_pluto::FixedBandEngine owner("usb:mock", 3000U, std::nullopt, assertion); }
+        if (kind == 2) { sdr_pluto::ContinuousSweepCoordinator owner("usb:mock", 3000U, std::nullopt, assertion); }
+    };
+    for (int kind = 0; kind < 3; ++kind) {
+        hooks.reset_context_counts();
+        construct(kind, expected);
+        if (hooks.created_contexts() != 1 || hooks.destroyed_contexts() != 1 || hooks.live_contexts() != 0)
+            throw std::runtime_error("asserted owner did not close exactly one context");
+        for (const char* mode : {"missing", "empty", "raw"}) {
+            hooks.reset_context_counts();
+            _putenv_s("SDR_MOCK_LIBIIO_CONNECTION_ATTR_MODE", mode);
+            bool rejected = false;
+            try { construct(kind, expected); } catch (const std::runtime_error&) { rejected = true; }
+            _putenv_s("SDR_MOCK_LIBIIO_CONNECTION_ATTR_MODE", "");
+            if (!rejected || hooks.created_contexts() != 1 || hooks.destroyed_contexts() != 1 ||
+                hooks.live_contexts() != 0)
+                throw std::runtime_error("bad owned USB observation not rejected/cleaned");
+            construct(kind, expected);  // Failed admission must release its claim.
+        }
+    }
+    for (const char* route : {"usb:2.43.5", "usb:2.42.6", "usb:02.42.5", "usb:2.42.5tail",
+                              "usb:2.42949672960.5", "ip:2.42.5", "usb:2.0.5"}) {
+        _putenv_s("SDR_MOCK_LIBIIO_BACKEND_URI", route);
+        bool rejected = false;
+        try { construct(0, expected); } catch (const std::runtime_error&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("bad actual USB route admitted");
+    }
+    _putenv_s("SDR_MOCK_LIBIIO_BACKEND_URI", "usb:2.42.5");
+    for (const char* serial : {"OTHER", "UNKNOWN", "bad serial"}) {
+        _putenv_s("SDR_MOCK_LIBIIO_USB_SERIAL", serial);
+        bool rejected = false;
+        try { construct(0, expected); } catch (const std::runtime_error&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("contradictory/unknown USB serial admitted");
+    }
+    _putenv_s("SDR_MOCK_LIBIIO_USB_SERIAL", "");
+    _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_NAME", "ip");
+    bool rejected = false;
+    try { construct(0, expected); } catch (const std::runtime_error&) { rejected = true; }
+    if (!rejected) throw std::runtime_error("non-USB backend admitted as USB");
+    _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_NAME", "usb");
+
+    hooks.reset_context_counts();
+    auto invalid = expected;
+    invalid.device_address = 128U;
+    rejected = false;
+    try { construct(0, invalid); } catch (const std::invalid_argument&) { rejected = true; }
+    if (!rejected || hooks.created_contexts() != 0) throw std::runtime_error("invalid host assertion opened USB");
+    rejected = false;
+    try { sdr_pluto::PlutoDevice owner("ip:test", 3000U, std::nullopt, expected); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    if (!rejected || hooks.created_contexts() != 0) throw std::runtime_error("USB assertion silently downgraded to IP");
+    rejected = false;
+    try { sdr_pluto::PlutoDevice owner("usb:mock", 3000U, "OTHER", expected); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    if (!rejected || hooks.created_contexts() != 0) throw std::runtime_error("conflicting host identities opened USB");
+
+    {
+        sdr_pluto::PlutoDevice held("usb:mock", 3000U, "mock", expected);
+        held.stop_stream();  // Does NOT free the owned-context claim.
+        auto other_interface = expected;
+        other_interface.interface_number = 6U;
+        const auto opens = hooks.created_contexts();
+        for (const auto& assertion : {expected, other_interface}) {
+            rejected = false;
+            try { construct(1, assertion); } catch (const std::runtime_error&) { rejected = true; }
+            if (!rejected || hooks.created_contexts() != opens) throw std::runtime_error("USB interface alias reopened");
+        }
+        auto moved_known_serial = expected;
+        moved_known_serial.device_address = 43U;
+        rejected = false;
+        try { construct(2, moved_known_serial); } catch (const std::runtime_error&) { rejected = true; }
+        if (!rejected || hooks.created_contexts() != opens) throw std::runtime_error("serial alias reopened");
+        held.disconnect();
+        held.disconnect();
+        construct(1, expected);  // Confirmed disconnect permits a new owner.
+    }
+    {
+        sdr_pluto::PlutoDevice closing("usb:mock", 3000U, "MOCK", expected);
+        hooks.reset_context_destroy();
+        _putenv_s("SDR_MOCK_LIBIIO_HOLD_CONTEXT_DESTROY", "1");
+        std::thread closer([&closing] { closing.disconnect(); });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (!hooks.context_destroy_entered() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const bool entered = hooks.context_destroy_entered() != 0;
+        const auto opens = hooks.created_contexts();
+        rejected = false;
+        if (entered) {
+            try { construct(1, expected); } catch (const std::runtime_error&) { rejected = true; }
+        }
+        const bool retained = entered && rejected && hooks.created_contexts() == opens;
+        hooks.release_context_destroy();
+        closer.join();
+        _putenv_s("SDR_MOCK_LIBIIO_HOLD_CONTEXT_DESTROY", "");
+        if (!retained) throw std::runtime_error("unconfirmed context close released USB claim early");
+        construct(2, expected);
+    }
+    _putenv_s("SDR_MOCK_LIBIIO_EMPTY_SERIAL", "1");
+    auto empty = expected;
+    empty.usb_serial.clear();
+    {
+        sdr_pluto::PlutoDevice first("usb:mock", 3000U, std::nullopt, empty);
+        auto distinct = empty;
+        distinct.device_address = 43U;
+        _putenv_s("SDR_MOCK_LIBIIO_BACKEND_URI", "usb:2.43.5");
+        sdr_pluto::PlutoDevice second("usb:mock", 3000U, std::nullopt, distinct);
+        if (hooks.live_contexts() != 2) throw std::runtime_error("distinct empty-serial USB contexts not held");
+    }
+    _putenv_s("SDR_MOCK_LIBIIO_EMPTY_SERIAL", "");
+    _putenv_s("SDR_MOCK_LIBIIO_BACKEND_URI", "");
+    _putenv_s("SDR_MOCK_LIBIIO_CONTEXT_NAME", "");
+    if (hooks.live_contexts() != 0 || hooks.mutation_calls() != writes_before ||
+        hooks.created_buffers() != buffers_before) throw std::runtime_error("USB admission mutated RF/leaked context");
+}
 }
 
 int main() {
     try {
         check_connection_observations();
+        check_usb_connection_admission();
         const auto runtime = sdr_pluto::runtime_info();
         if (!runtime.available || runtime.major != 0U || runtime.minor != 26U) return 1;
         if (!runtime.supports_kernel_buffer_count || !runtime.supports_buffer_blocking_mode || !runtime.supports_buffer_poll_fd) return 13;

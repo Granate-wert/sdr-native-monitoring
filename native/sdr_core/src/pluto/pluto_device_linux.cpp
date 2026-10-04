@@ -360,10 +360,15 @@ void store_le_i16(std::uint8_t* destination, const std::int16_t value) {
 
 class PlutoDevice::Impl final {
 public:
-    Impl(std::string uri, const std::uint32_t timeout_ms, const std::optional<std::string>& expected_serial)
+    Impl(std::string uri, const std::uint32_t timeout_ms, const std::optional<std::string>& expected_serial,
+         const std::optional<ExpectedUsbConnection>& expected_usb_connection)
         : api_(std::make_unique<Api>()), uri_(std::move(uri)) {
         if (!(uri_.starts_with("usb:") || uri_.starts_with("ip:"))) throw std::invalid_argument("Pluto URI must start with usb: or ip:");
         detail::validate_expected_serial(expected_serial);
+        detail::validate_expected_usb_connection(uri_, expected_serial, expected_usb_connection);
+        if (expected_usb_connection) {
+            usb_claim_ = std::make_unique<detail::UsbConnectionClaim>(*expected_usb_connection);
+        }
         context_ = api_->create_context(uri_.c_str());
         if (context_ == nullptr) throw std::runtime_error("iio_create_context_from_uri failed for " + uri_);
         try {
@@ -371,12 +376,14 @@ public:
             if (timeout_result < 0) throw std::runtime_error("iio_context_set_timeout failed: " + api_->error(timeout_result));
             probe_ = detail::inspect_open_context(*api_, context_, uri_);
             detail::admit_context_identity(probe_, expected_serial);
+            detail::admit_context_usb_connection(probe_, expected_usb_connection);
             discover_locked();
             capabilities_ = read_capabilities_locked();
             connected_.store(true, std::memory_order_release);
         } catch (...) {
             api_->destroy_context(context_);
             context_ = nullptr;
+            usb_claim_.reset();  // Only after owned context destruction returned.
             throw;
         }
     }
@@ -818,6 +825,7 @@ public:
         pool_.reset();
         if (context_ != nullptr && api_ != nullptr) api_->destroy_context(context_);
         context_ = nullptr;
+        usb_claim_.reset();  // Stop alone retains this claim; disconnect releases it.
         connected_.store(false, std::memory_order_release);
         phy_ = nullptr;
         phy_rx_ = nullptr;
@@ -953,6 +961,7 @@ private:
     }
 
     std::unique_ptr<Api> api_;
+    std::unique_ptr<detail::UsbConnectionClaim> usb_claim_;
     std::string uri_;
     mutable std::mutex mutex_;
     std::atomic<bool> connected_{false};
@@ -983,8 +992,9 @@ private:
     StreamMetrics metrics_;
     std::unique_ptr<sdr_core::BufferPool> pool_;
 };
-PlutoDevice::PlutoDevice(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
-    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, expected_serial)) {}
+PlutoDevice::PlutoDevice(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial,
+                         std::optional<ExpectedUsbConnection> expected_usb_connection)
+    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, expected_serial, expected_usb_connection)) {}
 PlutoDevice::~PlutoDevice() = default;
 PlutoDevice::PlutoDevice(PlutoDevice&&) noexcept = default;
 PlutoDevice& PlutoDevice::operator=(PlutoDevice&&) noexcept = default;

@@ -71,6 +71,7 @@ std::atomic<int> live_buffers{}, created_buffers{};
 std::atomic<int> live_contexts{}, created_contexts{}, destroyed_contexts{};
 std::atomic<int> rf_mutation_calls{};
 std::atomic<int> lo_write_calls{};
+std::atomic<bool> context_destroy_entered{}, context_destroy_release{true};
 
 void phase_gate(int kind, long long center) {
     if (phase_gate_kind.load() != kind || phase_gate_frequency.load() != center) return;
@@ -210,10 +211,20 @@ __declspec(dllexport) iio_context* iio_create_context_from_uri(const char* uri) 
     return context;
 }
 __declspec(dllexport) void iio_context_destroy(iio_context* value) {
+    if (std::getenv("SDR_MOCK_LIBIIO_HOLD_CONTEXT_DESTROY") != nullptr) {
+        context_destroy_entered = true;
+        while (!context_destroy_release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     if (value != nullptr) { --live_contexts; ++destroyed_contexts; }
     delete value;
 }
-__declspec(dllexport) const char* iio_context_get_name(const iio_context*) { return "mock"; }
+__declspec(dllexport) void mock_iio_reset_context_destroy_gate() { context_destroy_entered = false; context_destroy_release = false; }
+__declspec(dllexport) int mock_iio_context_destroy_entered() { return context_destroy_entered.load() ? 1 : 0; }
+__declspec(dllexport) void mock_iio_release_context_destroy() { context_destroy_release = true; }
+__declspec(dllexport) const char* iio_context_get_name(const iio_context*) {
+    const auto* value = std::getenv("SDR_MOCK_LIBIIO_CONTEXT_NAME");
+    return value != nullptr ? value : "mock";
+}
 __declspec(dllexport) const char* iio_context_get_description(const iio_context*) { return "mock Pluto context"; }
 __declspec(dllexport) int iio_context_get_version(const iio_context*, unsigned int* major, unsigned int* minor, char tag[8]) {
     if (std::getenv("SDR_MOCK_LIBIIO_CONTEXT_VERSION_FAIL") != nullptr) return -EIO;
@@ -239,9 +250,14 @@ __declspec(dllexport) const char* iio_context_get_attr_value(const iio_context* 
             if (std::strcmp(attr, "usb,idProduct") == 0) return "";
             return "CONTRADICTS-HARDWARE";
         }
-        if (std::strcmp(attr, "uri") == 0) return context->backend_uri.c_str();
+        if (std::strcmp(attr, "uri") == 0) {
+            const auto* value = std::getenv("SDR_MOCK_LIBIIO_BACKEND_URI");
+            return value != nullptr ? value : context->backend_uri.c_str();
+        }
         if (std::strcmp(attr, "usb,idVendor") == 0) return "0456";
         if (std::strcmp(attr, "usb,idProduct") == 0) return "b673";
+        const auto* usb_serial = std::getenv("SDR_MOCK_LIBIIO_USB_SERIAL");
+        if (usb_serial != nullptr) return usb_serial;
         return std::getenv("SDR_MOCK_LIBIIO_EMPTY_SERIAL") != nullptr ? "" : context->serial.c_str();
     }
     if (std::strcmp(attr, "hw_model") == 0) {

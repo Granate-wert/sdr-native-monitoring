@@ -536,8 +536,9 @@ struct FixedBandIqEnvelope {
 
 class FixedBandEngine::Impl final : private FixedBandChannelState {
 public:
-    Impl(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
-        : device_(std::move(uri), timeout_ms, std::move(expected_serial)) {}
+    Impl(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial,
+         std::optional<ExpectedUsbConnection> expected_usb_connection)
+        : device_(std::move(uri), timeout_ms, std::move(expected_serial), std::move(expected_usb_connection)) {}
 
     ~Impl() noexcept {
         shutdown_noexcept();
@@ -2664,8 +2665,9 @@ private:
     std::thread dsp_thread_;
 };
 
-FixedBandEngine::FixedBandEngine(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial)
-    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, std::move(expected_serial))) {}
+FixedBandEngine::FixedBandEngine(std::string uri, const std::uint32_t timeout_ms, std::optional<std::string> expected_serial,
+                                 std::optional<ExpectedUsbConnection> expected_usb_connection)
+    : impl_(std::make_unique<Impl>(std::move(uri), timeout_ms, std::move(expected_serial), std::move(expected_usb_connection))) {}
 FixedBandEngine::~FixedBandEngine() noexcept = default;
 AppliedConfig FixedBandEngine::configure(const FixedBandConfig& config) {
     return impl_->configure(config);

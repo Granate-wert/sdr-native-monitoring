@@ -240,7 +240,8 @@ private:
 class FixedBandEngine final {
 public:
     explicit FixedBandEngine(std::string uri, std::uint32_t timeout_ms = 3000U,
-                             std::optional<std::string> expected_serial = std::nullopt);
+                             std::optional<std::string> expected_serial = std::nullopt,
+                             std::optional<ExpectedUsbConnection> expected_usb_connection = std::nullopt);
     ~FixedBandEngine() noexcept;
 
     FixedBandEngine(const FixedBandEngine&) = delete;

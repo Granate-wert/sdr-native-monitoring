@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <initializer_list>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -52,6 +55,118 @@ inline void admit_context_identity(const ContextProbe& probe, const std::optiona
         throw std::runtime_error("Pluto receiver identity was not confirmed on the opened context");
     }
 }
+
+inline void validate_expected_usb_connection(
+    const std::string& requested_uri,
+    const std::optional<std::string>& expected_serial,
+    const std::optional<ExpectedUsbConnection>& expected
+) {
+    if (!expected) return;
+    const auto& value = *expected;
+    if (!requested_uri.starts_with("usb:") || value.bus > 255U ||
+        value.device_address == 0U || value.device_address > 127U ||
+        value.interface_number > 255U || value.vendor_id == 0U || value.vendor_id > 65535U ||
+        value.product_id == 0U || value.product_id > 65535U ||
+        value.usb_serial.size() > 256U ||
+        (!value.usb_serial.empty() && !normalized_serial(value.usb_serial))) {
+        throw std::invalid_argument("expected Pluto USB connection is invalid");
+    }
+    if (expected_serial && normalized_serial(*expected_serial) != normalized_serial(value.usb_serial)) {
+        throw std::invalid_argument("expected Pluto USB and hardware identities conflict");
+    }
+}
+
+// Parse only the backend's complete bus.address.interface observation. Caller
+// route aliases, signs, whitespace, trailing text and integer overflow refuse.
+inline std::optional<std::array<std::uint32_t, 3>> observed_usb_route(const std::string& uri) {
+    if (!uri.starts_with("usb:")) return std::nullopt;
+    std::array<std::uint32_t, 3> result{};
+    const char* cursor = uri.data() + 4U;
+    const char* end = uri.data() + uri.size();
+    for (std::size_t index = 0U; index < result.size(); ++index) {
+        const auto* first = cursor;
+        while (cursor != end && *cursor >= '0' && *cursor <= '9') ++cursor;
+        if (cursor == first || (cursor - first > 1 && *first == '0')) return std::nullopt;
+        const auto parsed = std::from_chars(first, cursor, result[index]);
+        if (parsed.ec != std::errc{} || parsed.ptr != cursor) return std::nullopt;
+        if (index + 1U != result.size()) {
+            if (cursor == end || *cursor++ != '.') return std::nullopt;
+        } else if (cursor != end) return std::nullopt;
+    }
+    if (result[0] > 255U || result[1] == 0U || result[1] > 127U || result[2] > 255U) return std::nullopt;
+    return result;
+}
+
+inline std::optional<std::uint32_t> observed_usb_descriptor(const std::optional<std::string>& text) {
+    if (!text || text->size() != 4U) return std::nullopt;
+    for (const auto character : *text) {
+        if (!((character >= '0' && character <= '9') ||
+              (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F'))) {
+            return std::nullopt;
+        }
+    }
+    std::uint32_t value{};
+    const auto parsed = std::from_chars(text->data(), text->data() + text->size(), value, 16);
+    if (parsed.ec != std::errc{} || value == 0U) return std::nullopt;
+    return value;
+}
+
+inline void admit_context_usb_connection(
+    const ContextProbe& probe, const std::optional<ExpectedUsbConnection>& expected
+) {
+    if (!expected) return;
+    const auto route = probe.backend_uri ? observed_usb_route(*probe.backend_uri) : std::nullopt;
+    // Genuinely empty serials are allowed only as a consistent observed pair.
+    // Unknown placeholders/invalid serials cannot masquerade as empty identity.
+    const bool valid_serials = probe.usb_serial.has_value() && probe.usb_serial->size() <= 256U &&
+        probe.serial.size() <= 256U &&
+        (probe.usb_serial->empty() || normalized_serial(*probe.usb_serial).has_value()) &&
+        (probe.serial.empty() || normalized_serial(probe.serial).has_value());
+    if (probe.context_name != "usb" || !route ||
+        *route != std::array<std::uint32_t, 3>{expected->bus, expected->device_address, expected->interface_number} ||
+        observed_usb_descriptor(probe.usb_vendor_id) != expected->vendor_id ||
+        observed_usb_descriptor(probe.usb_product_id) != expected->product_id || !valid_serials ||
+        normalized_serial(*probe.usb_serial) != normalized_serial(expected->usb_serial) ||
+        normalized_serial(probe.serial) != normalized_serial(*probe.usb_serial)) {
+        throw std::runtime_error("Pluto USB connection was not confirmed on the opened context");
+    }
+}
+
+// Cooperative, process-local claims for explicitly asserted USB owners only.
+// Interfaces of one bus/address are ONE resource. Known serials add an alias
+// claim across addresses. This is not USB/IP discovery, cross-process exclusion
+// or hot-swap/liveness proof, and it must not relax the product identity gate.
+class UsbConnectionClaim final {
+public:
+    explicit UsbConnectionClaim(const ExpectedUsbConnection& expected)
+        : bus_(expected.bus), address_(expected.device_address), serial_(normalized_serial(expected.usb_serial)) {
+        auto& state = registry();
+        std::lock_guard lock(state.mutex);
+        for (const auto* prior : state.owners) {
+            if ((prior->bus_ == bus_ && prior->address_ == address_) ||
+                (serial_ && prior->serial_ == serial_)) {
+                throw std::runtime_error("Pluto USB resource is already held by an asserted owner");
+            }
+        }
+        state.owners.push_back(this);
+    }
+    ~UsbConnectionClaim() {
+        auto& state = registry();
+        std::lock_guard lock(state.mutex);
+        std::erase(state.owners, this);
+    }
+    UsbConnectionClaim(const UsbConnectionClaim&) = delete;
+    UsbConnectionClaim& operator=(const UsbConnectionClaim&) = delete;
+private:
+    struct Registry {
+        std::mutex mutex;
+        std::vector<const UsbConnectionClaim*> owners;
+    };
+    static Registry& registry() { static Registry value; return value; }
+    std::uint32_t bus_;
+    std::uint32_t address_;
+    std::optional<std::string> serial_;
+};
 
 // Observe the caller-owned context through that owner's libiio function table.
 // Never open, destroy, configure, enable a channel, or allocate an IIO buffer.
