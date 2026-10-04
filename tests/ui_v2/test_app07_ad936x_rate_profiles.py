@@ -9,6 +9,7 @@ from sdr_monitor.domain.ad936x_pane_profiles import (
 )
 from sdr_monitor.domain.device_capabilities import CapabilityEvidenceOrigin, CapabilityField, CapabilityRange, DeviceFamily
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
+from sdr_monitor.domain.live import LiveConfiguration
 from sdr_monitor.domain.receiver_topology import (
     IqComponent, ReceiverBindingMode, ReceiverChain, ReceiverChainSelection,
     ReceiverTopologySnapshot, StreamScanElement,
@@ -52,6 +53,17 @@ def thirty_graph():
 
 
 class Ad936xRateProfileTests(unittest.TestCase):
+    def test_same_live_staging_preserves_admitted_30mhz_filter_without_start(self):
+        requested = LiveConfiguration(center_hz=115e6, sample_rate_hz=30.72e6,
+                                      analog_bandwidth_hz=30e6, gain_db=20., fft_size=4096)
+        snapshot = self.graph.live.apply_configuration(requested)
+        self.assertIsNone(snapshot.error)
+        self.assertIsNotNone(snapshot.applied)
+        self.assertEqual(snapshot.applied.applied, requested)
+        self.assertEqual(snapshot.applied.adjustments, ())
+        self.assertFalse(self.graph.live.is_running())
+        self.assertEqual(self.native.engines, [])
+
     def setUp(self):
         self.native, self.graph = thirty_graph()
         source = self.graph.live.discover(startup=True)[0]

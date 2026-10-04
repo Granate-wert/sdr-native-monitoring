@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 
 from sdr_monitor.domain import BackendKind, DeviceTransport, LiveConfiguration, SweepConfiguration, SweepExecutionMode, LiveSessionState
-from sdr_monitor.services.native_live import NativeLiveSessionService
+from sdr_monitor.services.native_live import NativeLiveSessionService, _domain_capabilities
 from sdr_monitor.services.native_sweep import NativeLiveSweepService
 
 
@@ -196,6 +196,23 @@ class _FakeNative:
 
 
 class NativeLiveDiscoveryTests(unittest.TestCase):
+    def test_30mhz_filter_preset_uses_observed_range_and_step_without_adding_fs(self) -> None:
+        native = _FakeNative()
+        native.capabilities.sample_rate_ranges_hz = (
+            SimpleNamespace(minimum=2083333., maximum=30720000., step=1.),)
+        for maximum, step, admitted in ((56e6, 1., True), (29.9e6, 1., False),
+                                        (56e6, 2e6, False)):
+            with self.subTest(maximum=maximum, step=step):
+                native.capabilities.analog_bandwidth_ranges_hz = (
+                    SimpleNamespace(minimum=.2e6, maximum=maximum, step=step),)
+                capabilities = _domain_capabilities(native, native.capabilities)
+                self.assertEqual(30e6 in capabilities.analog_bandwidths_hz, admitted)
+                self.assertNotIn(30e6, capabilities.sample_rates_hz)
+                self.assertTrue(all(.2e6 <= value <= maximum
+                                    for value in capabilities.analog_bandwidths_hz))
+        del native.capabilities.analog_bandwidth_ranges_hz
+        self.assertNotIn(30e6, _domain_capabilities(native, native.capabilities).analog_bandwidths_hz)
+
     def test_native_sweep_lease_rejects_running_live_without_a_hidden_restart(self) -> None:
         native = _FakeNative()
         service = NativeLiveSessionService(native)

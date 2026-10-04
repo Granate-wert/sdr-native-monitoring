@@ -3018,7 +3018,12 @@ def _domain_capabilities(
     else:
         rates = _representative_rates(native_capabilities.sample_rate_ranges_hz)
         ranges = getattr(native_capabilities, "analog_bandwidth_ranges_hz", None)
-        bandwidths = _representative_rates(ranges) if ranges else (2e6, 10e6, 20e6, 40e6, 56e6)
+        # 30 MHz is the explicit filter intent of the 30.72 MS/s pane profile.
+        # Admit it through the SAME observed range/step logic, not by rounding
+        # that intent to the nearby 30.72 MHz sample-rate preset. Unknown ranges
+        # keep the legacy fallback and native readback remains authoritative.
+        bandwidths = (_representative_rates(ranges, preferred_additions=(30e6,))
+                      if ranges else (2e6, 10e6, 20e6, 40e6, 56e6))
         gain = native_capabilities.gain_range_db
         gain_range = (float(gain.minimum), float(gain.maximum))
 
@@ -3039,7 +3044,7 @@ def _domain_capabilities(
     )
 
 
-def _representative_rates(ranges: Any) -> tuple[float, ...]:
+def _representative_rates(ranges: Any, *, preferred_additions: tuple[float, ...] = ()) -> tuple[float, ...]:
     """Build stable presets from native min/max/step capability ranges."""
 
     values: set[float] = set()
@@ -3055,7 +3060,7 @@ def _representative_rates(ranges: Any) -> tuple[float, ...]:
         50e6,
         56e6,
         61.44e6,
-    )
+    ) + preferred_additions
     for rate_range in ranges:
         minimum = float(rate_range.minimum)
         maximum = float(rate_range.maximum)
