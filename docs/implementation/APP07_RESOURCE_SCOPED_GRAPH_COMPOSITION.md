@@ -5364,3 +5364,43 @@ APP07/M8/H01 PARTIAL, H02 TODO for complete ready-clock/offered-disposition/
 coverage/Waterfall/Visual paint ledger. No50ms/p95/p99/soak/release claim.
 Next root060 analytical-ready producer receipts/clock/coverage/dispositions and
 bounded tinySA mismatch investigation; do not repeat unchanged B to obtainPASS.
+
+## M8-060 — native CPU analytical-ready producer foundation
+
+Runtime3143fbbc1ff09b63f0d76e26331005fe3af857c4 adds optional ephemeral
+AnalyticalReadyRef after CPU detector values/axis/metadata are complete and
+BEFORE output eviction. Native producer instance and lifetime offer sequence
+do not alias on reset/configure; RF/sample timestamp remains unchanged.
+This is detector-ready, not fully stitched Sweep/density/Qt/DWM readiness.
+The feature version is ANALYTICAL_READY_CONTRACT_VERSION=1; wire schema5 and
+recording/replay formats remain unchanged. Historical frames carry None.
+
+Bounded optional0..4096 scalar native ring, allocated once, no retained frame/
+I/Q/NumPy or Python callback per FFT. Full ring drops NEW evidence and reports
+exact lost-event count and first/last bounds, not a fabricated complete trace.
+Existing hardware owners remain summary-only(capacity0); real-owner ring budget/
+drain admission remains open. Added inline AD single/paired receipt backlog is
+charged within existing ceilings. This is not an exhaustive RSS budget proof.
+FIFO retirement refuses duplicate/foreign/out-of-order closure. Conservation:
+offered = handed_off + producer_superseded + producer_cancelled + outstanding;
+events_generated = drained + pending + lost. HandedOff is NOT painted.
+Regressing native clocks retain original values and latch regression; no zero
+clipping or assumed comparability with Python. Vendor journals remain unsupported.
+
+Exact clean matching build47/47CTest56.19s/665frozen; packaged5binding tests
+PASS0.008s; serial full V2 1384total/1318PASS/66skip/0fail489.763s/exacttrue/
+cleanbeforeafter/deferred[]/outside[]. Four historical NaN warnings retained.
+Native5060a085be18f721312a361e89c66ebb8d1a6c7d1cc712620bf2141969b9cd7e;
+EXE274874bce44648ea89c6913da0abe275fcc2b2ffbe4bd02e2b4785ee36045938.
+APP07-READY-20261004-3143FBB is diagnostic, not static/current/release promoted.
+Candidate binding failures were test constructor/enum/exception mismatches;
+corrected without changing existing product guards and retained as diagnostics.
+
+Root native/backend/build/testing only; no subagent/model calls or UI changes
+in this increment. Independent backend/release approval remains OPEN. No new
+physical RX,2x2 or screenshots;059 gallery remains059 evidence, not3143 HIL.
+APP07/M8/H01 PARTIAL/H02TODO/fullAPP00..14 retained. Next measured native-host
+clock bridge, budgeted actual-owner journals, validated process/resource/RX/run/
+epoch typed adapters, downstream dispositions, independent Sweep/density offers
+and coverage, then dedicated UI terminal implementation/review. No50ms/p95/p99/
+WindowsDPI/DWM/soak/RFduty/lossless/dualRF/Ethernet qualification from these tests.
