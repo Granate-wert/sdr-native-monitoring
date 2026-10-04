@@ -42,6 +42,7 @@ include(Platform)
 include(Sanitizers)
 
 add_library(sdr_core STATIC
+    src/core/analytical_ready.cpp
     src/core/api.cpp
     src/core/buffer_pool.cpp
     src/core/contracts.cpp
@@ -640,6 +641,12 @@ if(SDR_CORE_BUILD_TESTS)
     add_test(NAME sdr_core.window COMMAND sdr_core_window_test)
     set_tests_properties(sdr_core.window PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_cpu_dsp_backend_test tests/test_cpu_dsp_backend.cpp)
+    add_executable(sdr_core_analytical_ready_test tests/test_analytical_ready.cpp)
+    target_link_libraries(sdr_core_analytical_ready_test PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_analytical_ready_test)
+    sdr_core_apply_sanitizers(sdr_core_analytical_ready_test)
+    add_test(NAME sdr_core.analytical_ready COMMAND sdr_core_analytical_ready_test)
+    set_tests_properties(sdr_core.analytical_ready PROPERTIES TIMEOUT 120)
     target_link_libraries(sdr_core_cpu_dsp_backend_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_cpu_dsp_backend_test)
     sdr_core_apply_sanitizers(sdr_core_cpu_dsp_backend_test)
@@ -901,6 +908,7 @@ if(SDR_CORE_BUILD_TESTS)
             sdr_core_transport_stress_test
             sdr_core_window_test
             sdr_core_cpu_dsp_backend_test
+            sdr_core_analytical_ready_test
             sdr_core_dual_rx_dsp_test
             sdr_core_dsp_bench
             sdr_core_performance_bench

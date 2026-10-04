@@ -963,6 +963,79 @@ void test_clipping_flag_with_nonzero_base() {
     );
 }
 
+void test_analytical_ready_pre_eviction_and_averaging() {
+    constexpr std::uint32_t n = 256U;
+    sdr_core::CpuDspOptions options;
+    options.output_capacity = 1U;
+    options.analytical_event_capacity = 64U;
+    auto backend = sdr_core::make_cpu_dsp_backend(options);
+    auto config = make_config(n, n, sdr_core::WindowType::Rectangular);
+    config.batch_size = 1U;
+    backend->configure(config);
+    auto block = make_cf32_block(tone(n * 3U, 256000.0, 1000.0, 0.5), 0U,
+                                256000.0, 100000000.0);
+    const auto before = sdr_core::analytical_ready_clock_ns();
+    backend->push_iq(block);
+    const auto after = sdr_core::analytical_ready_clock_ns();
+    const auto s = backend->analytical_ready_summary();
+    expect(s.offered == 3U && s.producer_superseded == 2U && s.outstanding == 1U,
+           "ready journal must observe pre-eviction A/B/C");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const auto frames = backend->poll_spectrum(0U);
+    expect(frames.size() == 1U && frames[0].frame_sequence == 2U,
+           "output capacity was altered by telemetry");
+    const auto ref = *frames[0].analytical_ready;
+    expect(ref.offer_sequence == 3U && ref.ready_native_ns >= before &&
+           ref.ready_native_ns <= after && ref.config_generation == block.config_generation,
+           "origin was stamped downstream at poll or lost generation");
+    expect(frames[0].timestamp_ns == block.timestamp_ns + 2000000,
+           "RF/sample timestamp was changed by host-ready telemetry");
+    auto events = backend->poll_analytical_ready_events(0U);
+    expect(events.size() == 6U && events.front().kind == sdr_core::AnalyticalReadyEventKind::Offered &&
+           events.front().ref.offer_sequence == 1U &&
+           events.back().ref == ref, "evicted detector result receipt was not retained");
+    backend->configure(make_config(n, n, sdr_core::WindowType::Rectangular,
+        sdr_core::DetectorType::AveragePower, sdr_core::SpectrumUnit::DbfsBin,
+        sdr_core::PrecisionMode::ReferenceF64, 4U));
+    backend->push_iq(make_cf32_block(tone(n * 8U, 256000.0, 1000.0, 0.5), 0U,
+                                   256000.0, 100000000.0));
+    const auto averaged = backend->poll_spectrum(0U);
+    expect(averaged.size() == 1U && averaged[0].averaging_frames == 4U &&
+           averaged[0].frame_sequence == 1U && averaged[0].analytical_ready->offer_sequence == 5U &&
+           averaged[0].analytical_ready->producer_instance_id == ref.producer_instance_id,
+           "configure aliased offer sequence or averaged FFT count into offer count");
+    expect(backend->metrics().fft_frames_computed == 8U &&
+           backend->analytical_ready_summary().offered == 5U,
+           "FFT and detector offers were conflated");
+}
+
+void test_analytical_ready_reset_cancel_and_default_support() {
+    constexpr std::uint32_t n = 256U;
+    auto backend = sdr_core::make_cpu_dsp_backend({});
+    auto config = make_config(n, n, sdr_core::WindowType::Rectangular);
+    config.batch_size = 1U;
+    backend->configure(config);
+    auto block = make_cf32_block(tone(n, 256000.0, 1000.0, 0.5), 0U,
+                                256000.0, 100000000.0);
+    backend->push_iq(block);
+    const auto id = backend->analytical_ready_summary().producer_instance_id;
+    backend->reset();
+    auto s = backend->analytical_ready_summary();
+    expect(s.offered == 1U && s.producer_cancelled == 1U && s.outstanding == 0U &&
+           s.events_lost == 2U && s.event_storage_bytes == 0U,
+           "reset hid cancellation or default ring allocated memory");
+    backend->push_iq(block);
+    const auto frames = backend->poll_spectrum(0U);
+    expect(frames[0].analytical_ready->producer_instance_id == id &&
+           frames[0].analytical_ready->offer_sequence == 2U,
+           "reset silently reused producer offer identity");
+    s = backend->analytical_ready_summary();
+    expect(s.offered == s.handed_off + s.producer_superseded + s.producer_cancelled + s.outstanding,
+           "CPU producer conservation failed after reset/rearm");
+    expect(!sdr_core::SpectrumFrame{}.analytical_ready.has_value(),
+           "historical/unsupported frame fabricated ready clock");
+}
+
 }  // namespace
 
 int main() {
@@ -991,6 +1064,8 @@ int main() {
         test_pluto_int12_full_scale_and_clipping();
         test_hackrf_ci8_normalization_clipping_and_length();
         test_clipping_flag_with_nonzero_base();
+        test_analytical_ready_pre_eviction_and_averaging();
+        test_analytical_ready_reset_cancel_and_default_support();
         std::cout << "P05 CPU DSP backend OK\n";
         return 0;
     } catch (const std::exception& error) {

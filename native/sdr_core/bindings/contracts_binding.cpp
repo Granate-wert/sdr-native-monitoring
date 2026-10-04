@@ -744,6 +744,7 @@ void bind_contracts(py::module_& module) {
         .def_readonly("hop_size", &SpectrumFrame::hop_size)
         .def_readonly("window", &SpectrumFrame::window)
         .def_readonly("averaging_frames", &SpectrumFrame::averaging_frames)
+        .def_readonly("analytical_ready", &SpectrumFrame::analytical_ready)
         .def_readonly("detector", &SpectrumFrame::detector)
         .def_readonly("precision_mode", &SpectrumFrame::precision_mode)
         .def_readonly("unit", &SpectrumFrame::unit)

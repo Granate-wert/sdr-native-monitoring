@@ -186,6 +186,15 @@ struct LiveResourceBudget {
         16U,
         "spectrum backlog"
     );
+    spectrum_backlog_bytes = checked_add(spectrum_backlog_bytes,
+        checked_multiply(checked_add(
+                             2U * static_cast<std::uint64_t>(dsp_output_capacity(config)),
+                             static_cast<std::uint64_t>(config.spectrum_queue_capacity) + 1U +
+                                 (native_spectrum_recording_enabled(config)
+                                      ? config.recording.queue_capacity : 0U),
+                             "analytical receipt slots"),
+                         sizeof(std::optional<sdr_core::AnalyticalReadyRef>),
+                         "analytical receipt backlog"), "spectrum backlog");
     if (native_spectrum_recording_enabled(config)) {
         spectrum_backlog_bytes = checked_add(
             spectrum_backlog_bytes,

@@ -103,12 +103,14 @@ void validate_shared_plan_compatibility(
 class CpuDspBackend final : public DspBackend {
 public:
     explicit CpuDspBackend(CpuDspOptions options)
-        : options_(std::move(options)) {
+        : options_(std::move(options)), ready_journal_(options_.analytical_event_capacity) {
         if (options_.output_capacity == 0U) {
             throw ConfigurationError("DSP output capacity must be positive");
         }
         options_.source = effective_source(options_.source);
     }
+
+    ~CpuDspBackend() override { cancel_pending_output(); }
 
     void configure(const DspConfig& config) override {
         validate(config);
@@ -309,6 +311,8 @@ public:
         std::vector<SpectrumFrame> result;
         while (!output_.empty() && (max_items == 0U || result.size() < max_items)) {
             result.push_back(std::move(output_.front()));
+            ready_journal_.retire(*result.back().analytical_ready,
+                                  AnalyticalReadyEventKind::HandedOff);
             output_.pop_front();
         }
         metrics_.output_pending = output_.size();
@@ -330,6 +334,7 @@ public:
         generation_valid_ = false;
         axis_valid_ = false;
         input_flag_until_pos_.fill(0U);
+        cancel_pending_output();
         output_.clear();
         std::fill(ring_d_.begin(), ring_d_.end(), std::complex<double>{});
         std::fill(ring_f_.begin(), ring_f_.end(), std::complex<float>{});
@@ -361,7 +366,20 @@ public:
         return result;
     }
 
+    [[nodiscard]] AnalyticalReadySummary analytical_ready_summary() const override {
+        return ready_journal_.summary();
+    }
+    [[nodiscard]] std::vector<AnalyticalReadyEvent> poll_analytical_ready_events(
+        const std::size_t max_items
+    ) override { return ready_journal_.poll_events(max_items); }
+
 private:
+    void cancel_pending_output() {
+        for (const auto& frame : output_) {
+            ready_journal_.retire(*frame.analytical_ready,
+                                  AnalyticalReadyEventKind::ProducerCancelled);
+        }
+    }
     struct FrameMeta {
         std::uint64_t first_sample_index{};
         std::int64_t timestamp_ns{};
@@ -766,15 +784,31 @@ private:
         frame.dropped_fft_frames_before = metrics_.fft_frames_dropped;
         frame.quality_flags = flags;
 
+        // Stamp after detector values/axis/metadata are complete, BEFORE the
+        // first output eviction. Later owner enrichment is downstream work.
+        frame.analytical_ready = ready_journal_.offer(frame.config_generation);
+
         if (output_.size() >= options_.output_capacity) {
+            ready_journal_.retire(*output_.front().analytical_ready,
+                                  AnalyticalReadyEventKind::ProducerSuperseded);
             output_.pop_front();
             ++metrics_.fft_frames_dropped;
         }
-        output_.push_back(std::move(frame));
+        const auto receipt = *frame.analytical_ready;
+        try {
+            output_.push_back(std::move(frame));
+        } catch (...) {
+            cancel_pending_output();
+            output_.clear();
+            ready_journal_.retire(receipt, AnalyticalReadyEventKind::ProducerCancelled);
+            metrics_.output_pending = 0U;
+            throw;
+        }
         metrics_.output_pending = output_.size();
     }
 
     CpuDspOptions options_;
+    AnalyticalReadyJournal ready_journal_;
     DspConfig config_{};
     bool configured_{false};
     std::shared_ptr<const CpuDspSharedPlan> shared_plan_;

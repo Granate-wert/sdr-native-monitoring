@@ -200,12 +200,58 @@ void bind_dsp(py::module_& module) {
         .def("request_cancel", &NativeIqRecordingReprocessor::request_cancel)
         .def_property_readonly("progress", &NativeIqRecordingReprocessor::progress);
 
+    module.attr("ANALYTICAL_READY_CONTRACT_VERSION") = 1;
+    py::enum_<AnalyticalReadyClock>(module, "AnalyticalReadyClock")
+        .value("NativeSteady", AnalyticalReadyClock::NativeSteady);
+    py::enum_<AnalyticalReadyClockState>(module, "AnalyticalReadyClockState")
+        .value("Monotonic", AnalyticalReadyClockState::Monotonic)
+        .value("Regressed", AnalyticalReadyClockState::Regressed);
+    py::enum_<AnalyticalReadyEventKind>(module, "AnalyticalReadyEventKind")
+        .value("Offered", AnalyticalReadyEventKind::Offered)
+        .value("HandedOff", AnalyticalReadyEventKind::HandedOff)
+        .value("ProducerSuperseded", AnalyticalReadyEventKind::ProducerSuperseded)
+        .value("ProducerCancelled", AnalyticalReadyEventKind::ProducerCancelled);
+    py::class_<AnalyticalReadyRef>(module, "AnalyticalReadyRef")
+        .def_readonly("producer_instance_id", &AnalyticalReadyRef::producer_instance_id)
+        .def_readonly("offer_sequence", &AnalyticalReadyRef::offer_sequence)
+        .def_readonly("config_generation", &AnalyticalReadyRef::config_generation)
+        .def_readonly("ready_native_ns", &AnalyticalReadyRef::ready_native_ns)
+        .def_readonly("clock", &AnalyticalReadyRef::clock)
+        .def_readonly("clock_state", &AnalyticalReadyRef::clock_state);
+    py::class_<AnalyticalReadyEvent>(module, "AnalyticalReadyEvent")
+        .def_readonly("event_sequence", &AnalyticalReadyEvent::event_sequence)
+        .def_readonly("ref", &AnalyticalReadyEvent::ref)
+        .def_readonly("kind", &AnalyticalReadyEvent::kind);
+    py::class_<AnalyticalReadySummary>(module, "AnalyticalReadySummary")
+        .def_readonly("supported", &AnalyticalReadySummary::supported)
+        .def_readonly("producer_instance_id", &AnalyticalReadySummary::producer_instance_id)
+        .def_readonly("offered", &AnalyticalReadySummary::offered)
+        .def_readonly("handed_off", &AnalyticalReadySummary::handed_off)
+        .def_readonly("producer_superseded", &AnalyticalReadySummary::producer_superseded)
+        .def_readonly("producer_cancelled", &AnalyticalReadySummary::producer_cancelled)
+        .def_readonly("outstanding", &AnalyticalReadySummary::outstanding)
+        .def_readonly("clock_regressions", &AnalyticalReadySummary::clock_regressions)
+        .def_readonly("events_generated", &AnalyticalReadySummary::events_generated)
+        .def_readonly("events_drained", &AnalyticalReadySummary::events_drained)
+        .def_readonly("events_lost", &AnalyticalReadySummary::events_lost)
+        .def_readonly("first_lost_event_sequence", &AnalyticalReadySummary::first_lost_event_sequence)
+        .def_readonly("last_lost_event_sequence", &AnalyticalReadySummary::last_lost_event_sequence)
+        .def_readonly("event_capacity", &AnalyticalReadySummary::event_capacity)
+        .def_readonly("events_pending", &AnalyticalReadySummary::events_pending)
+        .def_readonly("event_storage_bytes", &AnalyticalReadySummary::event_storage_bytes);
+    module.def("analytical_ready_clock_ns", &analytical_ready_clock_ns);
+
     // Bound under the CPU implementation name through the replaceable
     // DspBackend interface (P05 §7).
     py::class_<DspBackend, std::shared_ptr<DspBackend>>(module, "CpuDspBackend")
         .def(py::init([]() {
             return std::shared_ptr<DspBackend>(make_cpu_dsp_backend({}));
         }))
+        .def(py::init([](const std::uint32_t capacity) {
+            CpuDspOptions options;
+            options.analytical_event_capacity = capacity;
+            return std::shared_ptr<DspBackend>(make_cpu_dsp_backend(std::move(options)));
+        }), py::arg("analytical_event_capacity"))
         .def("configure", &DspBackend::configure, py::arg("config"))
         .def(
             "push_iq",
@@ -244,6 +290,9 @@ void bind_dsp(py::module_& module) {
         )
         .def("reset", &DspBackend::reset)
         .def("metrics", &DspBackend::metrics)
+        .def("analytical_ready_summary", &DspBackend::analytical_ready_summary)
+        .def("poll_analytical_ready_events", &DspBackend::poll_analytical_ready_events,
+             py::arg("max_items") = 0U)
         .def("info", &DspBackend::info);
 
     module.def(

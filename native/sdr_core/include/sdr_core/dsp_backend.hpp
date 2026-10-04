@@ -63,6 +63,9 @@ struct DspOptions {
     // backends.  It is deliberately CPU-specific and ignored by non-CPU
     // implementations; the factory validates compatibility on configure.
     std::shared_ptr<const CpuDspSharedPlan> cpu_shared_plan;
+    // Opt-in scalar diagnostic ring. Existing owner budgets/admission must be
+    // extended before enabling this there; zero retains only lifetime counters.
+    std::uint32_t analytical_event_capacity{};
 };
 
 // Source compatibility for the accepted CPU P05 API. The generic type is the owner.
@@ -138,6 +141,12 @@ public:
     [[nodiscard]] virtual DspBackendMetrics metrics() const = 0;
     // P08/P08H-00 vendor-neutral identity of this backend implementation.
     [[nodiscard]] virtual BackendInfo info() const = 0;
+    // Unsupported vendors/failover wrappers report supported=false, not fake
+    // CPU timing. These are producer-local, NOT end-to-end paint dispositions.
+    [[nodiscard]] virtual AnalyticalReadySummary analytical_ready_summary() const { return {}; }
+    [[nodiscard]] virtual std::vector<AnalyticalReadyEvent> poll_analytical_ready_events(
+        std::size_t /*max_items*/
+    ) { return {}; }
 };
 
 [[nodiscard]] std::unique_ptr<DspBackend> make_cpu_dsp_backend(CpuDspOptions options);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sdr_core/analytical_ready.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -300,6 +302,9 @@ struct SpectrumFrame {
     // Producer-reported detector accumulation count; zero means unavailable
     // for historical deserialized/test frames, never implicit average=1.
     std::uint32_t averaging_frames{};
+    // Ephemeral host producer receipt; absent on unsupported/historical/replay
+    // paths. Acquisition timestamp/wire schema remain unchanged.
+    std::optional<AnalyticalReadyRef> analytical_ready;
 };
 
 struct SweepSegmentMetadata {

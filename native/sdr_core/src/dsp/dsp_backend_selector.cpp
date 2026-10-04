@@ -416,6 +416,11 @@ std::unique_ptr<DspBackend> make_dsp_backend(
     DspOptions options
 ) {
     validate(selection);
+    if (options.analytical_event_capacity != 0U &&
+        selection.preference != ComputeBackendKind::Cpu &&
+        selection.preference != ComputeBackendKind::Auto) {
+        throw ConfigurationError("analytical event journal is qualified only for CPU DSP");
+    }
     switch (selection.preference) {
     case ComputeBackendKind::Cpu: {
         auto backend = make_cpu_dsp_backend(std::move(options));
