@@ -5593,3 +5593,25 @@ downstream dispositions, separate stitchedSweep/density coverage, then dedicated
 UI per-layer terminals/review. Ethernet/pairedRF/fault/soak/visibleWindowsDPI/
 DWM/independentwhole-release acceptance remains open. Root only/no new
 subagents or model calls; historical UI-only approval is not backend approval.
+
+## M8-063 — exact RTBW owner-offer to pane namespace and refreshed gallery
+
+Exact runtime 1d6ac718d7297ef1eaa289d8090a0c7e1f2a3a3a; later doc-only commits must not relabel this source/build.
+SAME actual native journal authenticates producer and offer before a ready receipt gets owner_run_id. Legacy/incomplete/unsupported evidence stays unknown without stopping measurement or inventing counters/time. Cached application access uses only the SAME dispatched owner; no native/SDK competing drain or second SDR open.
+
+Typed immutable PaneAnalyticalIdentity retains the exact ready receipt and owner clock/process/run/source/session/generation/epoch, plus resource/capture/endpoint/pane/hostrun/activation. Active admission checks ordered endpoint-producer identities and paired common owner lifetime. Stale/foreign owner, producer or offer regression cannot acquire a fresh pane namespace. Distinct panes may reference one offer; fanout is not extra FFTs or physical streams. At most two endpoint receipt scalars are retained. No UI/C++/DSP/Fs/FFT/gain/cadence/quality/budget change.
+
+Focused103PASS4explicit compiled-lane skip; separate14matchingcompiled PASS; 14owner testsPASS. Ruff17/mypy14/compile17/diff PASS. Test fixture failures retained; existing safety guards not weakened. Exact diagnostic build47/47CTest55.15s/665frozen/runtime/source PASS. ONE after-freeze serial fullV2:1384total/1318PASS/66skip/0fail-error487.647s, exacttrue/cleanbeforeafter/deferred[]/outside[]; four historical NaN warnings retained.
+EXE3d55b192baf964193788a50edeabe30eca68b82e8f75e217b4f4c27a08f5695d; native d80e7a9dd900bc9fe4a6d99c4630d96f29210d7e6f1f464e8df3cc98a226230e;
+source CONTENT41a43b27df9461fcd25dadb2068da1969a3b0b1dab02c36b37b3fad7a4addc11 / FILE289fd35f04ad91e17e082bf916400f49d79fd8442a9816add33c22420cf4aa29.
+APP07-OUTERSCOPE-20261004-1D6AC71-R0 is diagnostic, not static/current promoted.
+
+Fresh sequential physical four-source tests, each15s warmup/60s steady/61samples:
+A AD9364USB/HackRF/tinySA/RTL canonical; B tinySA/RTL/AD9363USB/HackRF rotation2. Same explicit profiles as062: AD4 Fs61.44/useful36MHz, AD3 Fs30.72/useful30MHz, logicalN4096/physicalFFT8192; HF Fs20/FFT4096; tiny100..300MHz/1001points/manualRBW300k/device-dBm; RTL RTBW99.5..100.5MHz/Fs2.4/FFT4096. Not Ethernet or fixed18MHz. Sweep36MHz restriction is not RTBW full-bandwidth restriction.
+ComputedFFT/s: AD350.51/263.32, HF813.88/781.46, RTL1172.02/1171.93; completeSweep/s AD0.566/0.383, HF40.69/39.07; tinyUIadmissions0.733/0.733. Distinct rates, not DWM FPS/latency. Different profiles do not isolate a rotation effect.
+
+Bounded read-only observer after SAME committed deliveries: RTL3541/3585 exact qualified namespaces, zero unknown or observererrors; no perFFT hook/SDK access/new opener. SAME automatic terminal journal91615/92831offers; pending/outstanding/nativeeventloss/regressions0. Host evictions183214/185630 explicit, NOT full all-offers history or lossless proof. tiny59/60same-read checks no mismatch/observererror; historical059cause still unknown. RTL SDK startup warnings retained.
+
+Four original1920x1080DPR1 PNG root-reviewed (before/after each configuration); sourceQt with matching packaged Qt/native, not visible frozen EXE or Windows DPI/DWM evidence. All sources fresh; AD/HF progressive frames precede same-scan completion. A/B Stop/drain/join/close zero owners/workers/leaseReleased/PIDsabsent; postRX665inventory/source snapshot PASS.
+
+APP07/M8/H01 PARTIAL; H02 TODO. This completes the bounded RTBW outer-binding prerequisite, not mandatory downstream all-offers dispositions, independent Sweep/density readiness/coverage, or per-layer UI paint terminals. Ethernet/pairedRF/fault/soak/visibleWindowsDPI/50ms/Pd/independent whole-release acceptance remain open. Root only/no new agents-modelcalls063; prior LunaUI/SolUI reviews are not current backend/release approval. Full APP00..14 goal unchanged.
