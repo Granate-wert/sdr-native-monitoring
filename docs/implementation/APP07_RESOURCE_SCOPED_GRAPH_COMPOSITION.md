@@ -4282,3 +4282,56 @@ source rotations, mixed supported Sweep, faults, performance, soak, matched visi
 EXE and release qualification remain separate open work. No product source,
 current/static EXE, firewall, driver, firmware or system setting changed in this
 increment; the previous split-transport experiment was not repeated.
+
+### 2026-10-04: canonical 2×2 geometry and same-frame settings witness
+
+An expanded private hardware harness now records actual UI V2 widget geometry,
+offscreen Qt rasters and metadata from each already delivered frame. It uses
+the same unchanged `7cf584e` source/runtime and qualified packaged native module.
+All four physical sources run concurrently at the prior profiles; resizing
+1920×1080 → 2560×1440 → 1920×1080 does not change their source, configuration,
+epoch, activation, RF range or FFT/sample-rate anchors. Fresh source sequences
+and accepted Qt deliveries advance after every resize and capture.
+
+Three saved PNGs and eleven pane observations establish an actual nonstacked
+canonical grid: AD936x upper-left, HackRF upper-right, tinySA lower-left, RTL
+lower-right. Each pane has a visible spectrum/waterfall pair and readable source,
+range and unit captions. At FHD, cells are 958×494 logical pixels; at QHD they
+are 1278×674. Raster dimensions are 1920×1080 and 2560×1440 with DPR 1. These
+are offscreen QWidget captures—not real-monitor, Windows DWM, scaling, paint-FPS,
+frozen EXE or release qualification.
+
+The first capture attempt retained a headless-test defect: nearly all text was
+square glyphs. The standalone harness had omitted the existing V2 shell font
+bootstrap. The corrected harness uses that same application-local registration
+of installed Windows Segoe UI and Consolas, checks sampled Latin/digit/Cyrillic
+glyph availability before discovery, and records font hashes. It installs or
+changes no system font and changes no product source. Original defective rasters
+remain preserved; independent inspection of all corrected captures verifies
+readable labels. The original apparent caption overflow was not carried forward
+as a product defect after correct typography removed it.
+
+Saved tinySA frame provenance now includes queried RBW **300 kHz**, attenuation
+**0 dB** and screen-sweep-time readout **4.487 s**. The last value is an instrument
+screen readout, not host-measured scanraw duration. LOW input and command ACKs
+remain requested/acknowledged intent, not measured input-mode readback. SDR native
+quality masks and estimated timestamp quality are retained unchanged; unknown
+RF time, losses and calibration are not inferred from a readable raster.
+
+Root offline validation checks the actual log, PNG bytes/hashes/dimensions,
+canonical rectangles, same-frame receipts, unchanged peer anchors and freshness.
+An independent reviewer verified those artifacts and inspected all three rasters.
+Eight pure verifier tests support rejection of clipped/hidden/stacked layouts,
+cross-frame receipts and absent readback; those fixtures are not hardware proof.
+All owners subsequently Stop/drain/join/close, leaving zero retained resources
+and SDR workers with the cooperating-process lease released.
+
+F01's physical fresh-source canonical-2×2 criterion is now satisfied within this
+bounded offscreen source-UI scope; earlier Stop/Restart isolation F02–F05 remains
+supported by its separate witness. J visible Windows UI and K matched-EXE/release
+remain open. A remaining UX issue is the long RTL supplemental SDK explanation
+clipping at the FHD right edge; source/range/unit captions remain readable. RTL
+again reports `PLL not locked!`; its cause and RF effect remain unknown. No
+warning-free, RF-accuracy, sustained-rate, lossless, soak or full APP-07 claim is
+made. Next work is mixed supported Sweep, then capability-qualified AD9363
+30.72 MS/s admission, device rotations and the remaining qualification gates.
