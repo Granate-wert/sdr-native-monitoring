@@ -17,6 +17,7 @@ from ..domain.analytical_journal import (
     AdapterDispositionCounters, AdapterPacketDisposition, JournalCounters, JournalEvent,
     JournalEventKind, JournalState, NativePresentationCounters, OwnerJournalScope, OwnerJournalSnapshot,
 )
+from .owner_event_audit import OwnerEventAudit
 
 EVENT_CAPACITY = 4096
 BATCH_CAPACITY = 256
@@ -47,13 +48,21 @@ def discard_terminal_owner_presentation(native: object, owner: object) -> int | 
 def owner_journal_capacity(native: object, backend: str = "cpu") -> int:
     """Pure protocol gate, no SDK/capability probe/backend substitution.
 
-The current protocol1 factory admits CPU/Auto journals; forced vendor paths
+Known protocol1/2 factories admit CPU/Auto journals; forced vendor paths
 stay unchanged and unsupported. Do not turn an unavailable vendor into CPU.
 """
     version = getattr(native, "OWNER_ANALYTICAL_READY_CONTRACT_VERSION", None)
     ready = getattr(native, "ANALYTICAL_READY_CONTRACT_VERSION", None)
-    return EVENT_CAPACITY if (type(version) is int and version == 1 and type(ready) is int and ready == 1
-        and backend in ("cpu", "auto") and getattr(native, "AnalyticalReadyEventKind", None) is not None) else 0
+    kinds = getattr(native, "AnalyticalReadyEventKind", None)
+    if (type(version) is not int or version not in (1, 2) or type(ready) is not int or ready != 1
+            or backend not in ("cpu", "auto") or kinds is None):
+        return 0
+    presentation_version = getattr(native, "OWNER_PRESENTATION_DISPOSITION_CONTRACT_VERSION", None)
+    if version == 2 and (type(presentation_version) is not int or presentation_version != 1
+            or any(not hasattr(kinds, name) for name in (
+                "OwnerForwarded", "OwnerSuperseded", "OwnerCoalesced", "OwnerCancelled", "OwnerCadenceSuppressed"))):
+        return 0
+    return EVENT_CAPACITY
 
 
 def _scalar_bytes(value: object) -> int:
@@ -80,6 +89,7 @@ class NativeOwnerJournal:
         self._last_event = self._missing_events = 0
         self._failed = False
         self._history_evictions = 0
+        self._id_audit = OwnerEventAudit()
 
     @property
     def enabled(self) -> bool:
@@ -141,6 +151,8 @@ class NativeOwnerJournal:
                 candidate = replace(value, adapter=updated)
                 if (_scalar_bytes(candidate) + _scalar_bytes(value)
                         + sum(_scalar_bytes(item) for item in self._history)
+                        + _scalar_bytes(self._id_audit.scalar_payload)
+                        + self._id_audit.index_storage_bytes
                         + BATCH_CAPACITY * 512 > HOST_SCALAR_BUDGET):
                     raise ValueError("adapter accounting exceeds existing host scalar reservation")
                 self._snapshot = candidate
@@ -170,6 +182,7 @@ class NativeOwnerJournal:
                 terminal_windows_evicted=self._history_evictions)
             self._last_event = self._missing_events = 0
             self._failed = False
+            self._id_audit = OwnerEventAudit()
 
     def begin(self, scope: OwnerJournalScope, *, capacity: int | None = None) -> None:
         with self._lock:
@@ -187,14 +200,23 @@ class NativeOwnerJournal:
                 terminal_windows_evicted=self._history_evictions)
             self._last_event = self._missing_events = 0
             self._failed = False
+            self._id_audit = OwnerEventAudit()
 
     def _convert(self, batch: Any) -> tuple[JournalCounters, tuple[JournalEvent, ...], int, NativePresentationCounters | None]:
         raw = batch.summary
         if raw.supported is not True:
             raise ValueError("admitted native owner lost journal support")
-        counters = JournalCounters(**{item.name: getattr(raw, item.name) for item in fields(JournalCounters)})
+        event_version = getattr(self._native, "OWNER_ANALYTICAL_READY_CONTRACT_VERSION")
+        if type(event_version) is not int or event_version not in (1, 2):
+            raise ValueError("owner event protocol differs")
+        counters = JournalCounters(**{item.name: getattr(raw, item.name) for item in fields(JournalCounters)
+            if item.name not in ("event_contract_version", "owner_disposition_events")},
+            event_contract_version=event_version,
+            owner_disposition_events=getattr(raw, "owner_disposition_events") if event_version == 2 else 0)
         presentation = None
         version = getattr(self._native, "OWNER_PRESENTATION_DISPOSITION_CONTRACT_VERSION", None)
+        if event_version == 2 and version is None:
+            raise ValueError("owner event protocol lacks its disposition contract")
         if version is not None:
             if type(version) is not int or version != 1:
                 raise ValueError("native owner presentation protocol differs")
@@ -209,6 +231,9 @@ class NativeOwnerJournal:
             elif any(type(getattr(actual, item.name)) is not int or getattr(actual, item.name) != 0
                      for item in fields(NativePresentationCounters)):
                 raise ValueError("unsupported native owner claims disposition counters")
+            if event_version == 2 and counters.owner_disposition_events != (
+                    presentation.classified_handoffs if presentation is not None else 0):
+                raise ValueError("owner event count differs from actual dispositions")
             old_presentation = self._snapshot.native_presentation
             if old_presentation is not None:
                 if presentation is None or any(getattr(presentation, item.name) < getattr(old_presentation, item.name)
@@ -218,10 +243,11 @@ class NativeOwnerJournal:
             raise ValueError("actual owner journal capacity differs from admitted request")
         previous = self._snapshot.counters
         if previous is not None:
-            if previous.producer_instance_id != counters.producer_instance_id:
+            if (previous.producer_instance_id != counters.producer_instance_id
+                    or previous.event_contract_version != counters.event_contract_version):
                 raise ValueError("owner journal producer changed without a new Start")
             for name in ("offered", "handed_off", "producer_superseded", "producer_cancelled", "clock_regressions",
-                         "events_generated", "events_drained", "events_lost"):
+                         "events_generated", "events_drained", "events_lost", "owner_disposition_events"):
                 if getattr(counters, name) < getattr(previous, name):
                     raise ValueError("owner journal lifetime counters regressed")
         raw_events = tuple(islice(iter(batch.events), BATCH_CAPACITY + 1))
@@ -230,6 +256,12 @@ class NativeOwnerJournal:
         kinds = getattr(self._native, "AnalyticalReadyEventKind")
         mapping = {kinds.Offered: JournalEventKind.OFFERED, kinds.HandedOff: JournalEventKind.HANDED_OFF,
             kinds.ProducerSuperseded: JournalEventKind.SUPERSEDED, kinds.ProducerCancelled: JournalEventKind.CANCELLED}
+        if event_version == 2:
+            mapping.update({kinds.OwnerForwarded: JournalEventKind.OWNER_FORWARDED,
+                kinds.OwnerSuperseded: JournalEventKind.OWNER_SUPERSEDED,
+                kinds.OwnerCoalesced: JournalEventKind.OWNER_COALESCED,
+                kinds.OwnerCancelled: JournalEventKind.OWNER_CANCELLED,
+                kinds.OwnerCadenceSuppressed: JournalEventKind.OWNER_CADENCE_SUPPRESSED})
         clock = getattr(self._native, "AnalyticalReadyClock")
         states = getattr(self._native, "AnalyticalReadyClockState")
         scope = self._snapshot.scope
@@ -261,14 +293,20 @@ class NativeOwnerJournal:
                 return
             try:
                 counters, events, missing, presentation = self._convert(reader(BATCH_CAPACITY))
+                if counters.event_contract_version == 2 and presentation is not None:
+                    self._id_audit.consume(events)
+                evicted = self._snapshot.host_window_events_evicted + (
+                    len(self._snapshot.events) if events else 0)
                 candidate = replace(self._snapshot, counters=counters, native_presentation=presentation,
                     events=events if events else self._snapshot.events,
-                    host_window_events_evicted=self._snapshot.host_window_events_evicted +
-                        (len(self._snapshot.events) if events else 0))
+                    host_window_events_evicted=evicted,
+                    owner_id_coverage=self._id_audit.snapshot(counters, presentation, host_evictions=evicted))
                 # Includes old/new host snapshots and retained terminal windows;
                 # allow bounded raw proxy payload while converting one native batch.
                 if (_scalar_bytes(candidate) + _scalar_bytes(self._snapshot)
-                        + sum(_scalar_bytes(item) for item in self._history) + BATCH_CAPACITY * 512 > HOST_SCALAR_BUDGET):
+                        + sum(_scalar_bytes(item) for item in self._history)
+                        + _scalar_bytes(self._id_audit.scalar_payload) + self._id_audit.index_storage_bytes
+                        + BATCH_CAPACITY * 512 > HOST_SCALAR_BUDGET):
                     raise ValueError("owner journal exceeds host scalar reservation")
                 self._snapshot = candidate
                 self._missing_events = missing
@@ -277,7 +315,10 @@ class NativeOwnerJournal:
             except Exception:  # noqa: BLE001 - telemetry failure must not alter RF/lifecycle or claim coverage.
                 self._failed = True
                 self._snapshot = replace(self._snapshot, state=JournalState.INCOMPLETE,
-                    drain_failures=self._snapshot.drain_failures + 1)
+                    drain_failures=self._snapshot.drain_failures + 1,
+                    owner_id_coverage=self._id_audit.snapshot(
+                        self._snapshot.counters, self._snapshot.native_presentation,
+                        evidence_failed=True))
 
     def finish(self, reader: Callable[[int], object], *, before_capture: Callable[[], object] | None = None) -> None:
         """After confirmed native Stop/join, BEFORE control release. No SDK calls."""
@@ -301,4 +342,7 @@ class NativeOwnerJournal:
                     and value.counters.events_pending == 0 and value.counters.outstanding == 0):
                 state = JournalState.FINAL
             self._snapshot = replace(value, state=state, native_stop_confirmed=True,
-                                     native_presentation_release_failed=release_failed)
+                native_presentation_release_failed=release_failed,
+                owner_id_coverage=self._id_audit.snapshot(value.counters, value.native_presentation,
+                    stopped=True, host_evictions=value.host_window_events_evicted,
+                    evidence_failed=self._failed or release_failed))

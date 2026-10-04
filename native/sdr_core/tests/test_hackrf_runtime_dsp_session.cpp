@@ -192,7 +192,7 @@ void test_composed_frames_and_exact_shutdown_order() {
     const auto journal = session->drain_analytical_ready_events(0U);
     expect(journal.summary.supported && journal.summary.offered == 4U &&
            journal.summary.handed_off == 4U && journal.summary.events_lost == 0U &&
-           journal.events.size() == 8U, "actual HackRF owner journal not delivered");
+           journal.events.size() == 12U, "actual HackRF owner journal not delivered");
 
     state->close_guard = [&] {
         const auto metrics = session->metrics();

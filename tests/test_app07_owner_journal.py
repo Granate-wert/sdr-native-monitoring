@@ -295,7 +295,9 @@ class OwnerJournalTests(unittest.TestCase):
         native = Journal()
         from dataclasses import fields
         raw = native.read(256).summary
-        value = JournalCounters(**{f.name: getattr(raw, f.name) for f in fields(JournalCounters)})
+        # Explicit legacy protocol1 defaults, not fabricated v2 native fields.
+        value = JournalCounters(**{f.name: getattr(raw, f.name) for f in fields(JournalCounters)
+            if f.name not in ("event_contract_version", "owner_disposition_events")})
         for changes in ({"offered": 1}, {"events_generated": 1}, {"event_storage_bytes": 0}):
             with self.assertRaises(ValueError):
                 replace(value, **changes)

@@ -210,7 +210,12 @@ void bind_dsp(py::module_& module) {
         .value("Offered", AnalyticalReadyEventKind::Offered)
         .value("HandedOff", AnalyticalReadyEventKind::HandedOff)
         .value("ProducerSuperseded", AnalyticalReadyEventKind::ProducerSuperseded)
-        .value("ProducerCancelled", AnalyticalReadyEventKind::ProducerCancelled);
+        .value("ProducerCancelled", AnalyticalReadyEventKind::ProducerCancelled)
+        .value("OwnerForwarded", AnalyticalReadyEventKind::OwnerForwarded)
+        .value("OwnerSuperseded", AnalyticalReadyEventKind::OwnerSuperseded)
+        .value("OwnerCoalesced", AnalyticalReadyEventKind::OwnerCoalesced)
+        .value("OwnerCancelled", AnalyticalReadyEventKind::OwnerCancelled)
+        .value("OwnerCadenceSuppressed", AnalyticalReadyEventKind::OwnerCadenceSuppressed);
     py::class_<AnalyticalReadyRef>(module, "AnalyticalReadyRef")
         .def_readonly("producer_instance_id", &AnalyticalReadyRef::producer_instance_id)
         .def_readonly("offer_sequence", &AnalyticalReadyRef::offer_sequence)
@@ -249,9 +254,13 @@ void bind_dsp(py::module_& module) {
         .def_readonly("event_capacity", &AnalyticalReadySummary::event_capacity)
         .def_readonly("events_pending", &AnalyticalReadySummary::events_pending)
         .def_readonly("event_storage_bytes", &AnalyticalReadySummary::event_storage_bytes)
-        .def_readonly("presentation", &AnalyticalReadySummary::presentation);
+        .def_readonly("presentation", &AnalyticalReadySummary::presentation)
+        .def_property_readonly("owner_disposition_events", [](const AnalyticalReadySummary& s) {
+            const auto& p = s.presentation;
+            return p.forwarded + p.superseded + p.coalesced + p.cancelled + p.cadence_suppressed;
+        });
     module.def("analytical_ready_clock_ns", &analytical_ready_clock_ns);
-    module.attr("OWNER_ANALYTICAL_READY_CONTRACT_VERSION") = 1;
+    module.attr("OWNER_ANALYTICAL_READY_CONTRACT_VERSION") = 2;
     py::class_<AnalyticalReadyDrain>(module, "AnalyticalReadyDrain")
         .def_readonly("events", &AnalyticalReadyDrain::events)
         .def_readonly("summary", &AnalyticalReadyDrain::summary);

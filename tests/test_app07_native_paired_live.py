@@ -221,11 +221,15 @@ def run_case(path: str, case: str) -> None:
         assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
         assert service._poller is service._engine is None
         terminals = service.analytical_journal_snapshots()
+        assert native.OWNER_ANALYTICAL_READY_CONTRACT_VERSION == 2
         assert native.OWNER_PRESENTATION_RELEASE_CONTRACT_VERSION == 1
         assert all(not value.native_presentation_release_failed and
                    value.native_owner_handoffs_unclassified == 0 for value in terminals)
         assert all(value.state is JournalState.FINAL and value.native_stop_confirmed for value in terminals)
         assert all(value.counters.outstanding == value.counters.events_pending == 0 for value in terminals)
+        assert all(value.counters.event_contract_version == 2 and
+                   value.counters.owner_disposition_events == value.native_presentation.classified_handoffs
+                   for value in terminals)
         assert all(value.events for value in terminals)
         assert all(value.adapter is not None and value.adapter.published_packets > 0 for value in terminals)
         assert all(value.adapter.binding_failures == value.adapter.unqualified_packets == 0 for value in terminals)

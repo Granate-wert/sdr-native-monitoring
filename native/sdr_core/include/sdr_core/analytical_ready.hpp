@@ -24,6 +24,7 @@ struct AnalyticalReadyRef {
 
 enum class AnalyticalReadyEventKind : std::uint8_t {
     Offered, HandedOff, ProducerSuperseded, ProducerCancelled,
+    OwnerForwarded, OwnerSuperseded, OwnerCoalesced, OwnerCancelled, OwnerCadenceSuppressed,
 };
 struct AnalyticalReadyEvent {
     std::uint64_t event_sequence{};
@@ -31,7 +32,9 @@ struct AnalyticalReadyEvent {
     AnalyticalReadyEventKind kind{AnalyticalReadyEventKind::Offered};
 };
 // Actual owner decisions AFTER DSP handoff, not producer loss or layer paint.
-// Scalar totals have no retained per-offer coverage claim. Internal owners
+// Scalar totals alone have no per-offer coverage claim. Original refs also
+// enter the SAME bounded event ring; loss prevents exhaustive ID coverage.
+// Internal owners
 // report each decision once, at the queue/cadence boundary; never infer IDs
 // from offer-sequence gaps. Unsupported vendors leave supported=false.
 enum class OwnerPresentationDisposition : std::uint8_t {

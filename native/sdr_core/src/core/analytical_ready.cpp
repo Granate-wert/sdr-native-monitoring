@@ -47,9 +47,10 @@ AnalyticalReadyJournal::AnalyticalReadyJournal(const std::size_t capacity, Clock
 
 AnalyticalReadyRef AnalyticalReadyJournal::offer(const std::uint64_t generation) {
     std::lock_guard lock(mutex_);
-    // An offer generates at most one later retirement; reserve counter space
+    // An offer generates at most one retirement and one owner disposition;
+    // reserve counter space even if owner presentation is enabled later.
     // before publication rather than wrap IDs or cumulative event accounting.
-    if (summary_.offered >= std::numeric_limits<std::uint64_t>::max() / 2U) {
+    if (summary_.offered >= std::numeric_limits<std::uint64_t>::max() / 3U) {
         throw ConfigurationError("analytical offer identity space exhausted");
     }
     const auto ready = clock_();
@@ -132,15 +133,26 @@ void AnalyticalReadyJournal::record_owner_presentation(
         if (p.accounting_failures != std::numeric_limits<std::uint64_t>::max()) ++p.accounting_failures;
         return; // Telemetry failure must not throw out of an owner queue hook.
     }
+    AnalyticalReadyEventKind event_kind;
     switch (kind) {
-    case OwnerPresentationDisposition::Forwarded: ++p.forwarded; break;
-    case OwnerPresentationDisposition::Superseded: ++p.superseded; break;
-    case OwnerPresentationDisposition::Coalesced: ++p.coalesced; break;
-    case OwnerPresentationDisposition::Cancelled: ++p.cancelled; break;
-    case OwnerPresentationDisposition::CadenceSuppressed: ++p.cadence_suppressed; break;
+    case OwnerPresentationDisposition::Forwarded:
+        ++p.forwarded; event_kind = AnalyticalReadyEventKind::OwnerForwarded; break;
+    case OwnerPresentationDisposition::Superseded:
+        ++p.superseded; event_kind = AnalyticalReadyEventKind::OwnerSuperseded; break;
+    case OwnerPresentationDisposition::Coalesced:
+        ++p.coalesced; event_kind = AnalyticalReadyEventKind::OwnerCoalesced; break;
+    case OwnerPresentationDisposition::Cancelled:
+        ++p.cancelled; event_kind = AnalyticalReadyEventKind::OwnerCancelled; break;
+    case OwnerPresentationDisposition::CadenceSuppressed:
+        ++p.cadence_suppressed; event_kind = AnalyticalReadyEventKind::OwnerCadenceSuppressed; break;
     default:
         if (p.accounting_failures != std::numeric_limits<std::uint64_t>::max()) ++p.accounting_failures;
+        return;
     }
+    // No new ring or per-ID registry: actual SAME queue refs are retained
+    // with bounded loss. Host coverage must validate retained custody transitions
+    // and refuse completeness for loss/missing/duplicate evidence.
+    append(ref, event_kind);
 }
 
 std::vector<AnalyticalReadyEvent> AnalyticalReadyJournal::poll_events(std::size_t max_items) {

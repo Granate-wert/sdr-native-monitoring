@@ -21,6 +21,10 @@ void conservation(const AnalyticalReadySummary& s) {
            s.producer_cancelled + s.outstanding, "producer conservation failed");
     expect(s.events_generated == s.events_drained + s.events_pending +
            s.events_lost, "event conservation failed");
+    const auto& p = s.presentation;
+    expect(s.events_generated == 2U * s.offered - s.outstanding +
+        p.forwarded + p.superseded + p.coalesced + p.cancelled + p.cadence_suppressed,
+        "owner event generation conservation failed");
 }
 std::int64_t fake_time = 100;
 std::int64_t fake_clock() noexcept { return fake_time; }
@@ -155,13 +159,82 @@ void test_actual_owner_scalar_decisions_share_atomic_summary() {
     conservation(s);
     expect(s.presentation.forwarded == 1 && s.presentation.coalesced == 1 &&
         s.presentation.superseded == 1 && s.presentation.accounting_failures == 0 &&
-        s.events_generated == 6 && s.events_lost == 4,
-        "owner counters changed producer event ring or lost exact scalar counts");
+        s.events_generated == 9 && s.events_lost == 7,
+        "owner counters/events lost exact dispositions or declared ring loss");
     const auto wrong = foreign.offer(1);
     journal.record_owner_presentation(wrong, OwnerPresentationDisposition::Cancelled);
     journal.record_owner_presentation(c, OwnerPresentationDisposition::Forwarded);
     expect(journal.summary().presentation.accounting_failures == 2 &&
         journal.summary().presentation.forwarded == 1, "invalid/excess owner decisions alter outcomes");
+}
+void test_original_owner_refs_all_dispositions_and_invalid_kind() {
+    AnalyticalReadyJournal journal(32U);
+    journal.enable_owner_presentation();
+    const OwnerPresentationDisposition decisions[] = {
+        OwnerPresentationDisposition::Forwarded, OwnerPresentationDisposition::Superseded,
+        OwnerPresentationDisposition::Coalesced, OwnerPresentationDisposition::Cancelled,
+        OwnerPresentationDisposition::CadenceSuppressed};
+    const AnalyticalReadyEventKind expected[] = {
+        AnalyticalReadyEventKind::OwnerForwarded, AnalyticalReadyEventKind::OwnerSuperseded,
+        AnalyticalReadyEventKind::OwnerCoalesced, AnalyticalReadyEventKind::OwnerCancelled,
+        AnalyticalReadyEventKind::OwnerCadenceSuppressed};
+    std::vector<AnalyticalReadyRef> refs;
+    for (int i = 0; i < 5; ++i) {
+        const auto ref = journal.offer(7);
+        refs.push_back(ref);
+        journal.retire(ref, AnalyticalReadyEventKind::HandedOff);
+    }
+    journal.record_owner_presentation(refs[0], static_cast<OwnerPresentationDisposition>(255));
+    expect(journal.summary().events_generated == 10 &&
+        journal.summary().presentation.accounting_failures == 1,
+        "invalid owner disposition appended an event");
+    for (int i = 4; i >= 0; --i) journal.record_owner_presentation(refs[i], decisions[i]);
+    const auto batch = journal.drain(0);
+    expect(batch.events.size() == 15 && batch.summary.events_lost == 0,
+        "original owner decisions missing");
+    for (int i = 0; i < 5; ++i) {
+        expect(batch.events[10 + i].ref == refs[4 - i] &&
+            batch.events[10 + i].kind == expected[4 - i],
+            "nonFIFO owner terminal changed original receipt");
+    }
+    conservation(batch.summary);
+}
+void test_owner_events_zero_capacity_and_concurrent_drain() {
+    AnalyticalReadyJournal disabled;
+    disabled.enable_owner_presentation();
+    const auto ref = disabled.offer(7);
+    disabled.retire(ref, AnalyticalReadyEventKind::HandedOff);
+    disabled.record_owner_presentation(ref, OwnerPresentationDisposition::Cancelled);
+    expect(disabled.summary().events_lost == 3 && disabled.summary().events_pending == 0,
+        "disabled owner events fake complete IDs");
+    conservation(disabled.summary());
+    AnalyticalReadyJournal journal(128U);
+    journal.enable_owner_presentation();
+    const auto bytes = journal.summary().event_storage_bytes;
+    std::atomic<bool> done{};
+    std::jthread producer([&] {
+        for (int i = 0; i < 10000; ++i) {
+            const auto current = journal.offer(9);
+            journal.retire(current, AnalyticalReadyEventKind::HandedOff);
+            journal.record_owner_presentation(current, OwnerPresentationDisposition::Forwarded);
+        }
+        done.store(true);
+    });
+    std::uint64_t last{}, count{};
+    do {
+        const auto batch = journal.drain(32U);
+        conservation(batch.summary);
+        for (const auto& event : batch.events) {
+            expect(event.event_sequence > last, "owner concurrent drain reordered or duplicated");
+            last = event.event_sequence;
+            ++count;
+        }
+    } while (!done.load() || journal.summary().events_pending);
+    producer.join();
+    const auto end = journal.summary();
+    expect(count + end.events_lost == 30000 && end.presentation.forwarded == 10000 &&
+        end.event_storage_bytes == bytes, "owner event drain changed memory or lost accounting");
+    conservation(end);
 }
 }  // namespace
 int main() {
@@ -173,7 +246,9 @@ int main() {
         test_independent_instances_and_foreign_refusal();
         test_concurrent_owner_drain_and_budget();
         test_actual_owner_scalar_decisions_share_atomic_summary();
-        std::cout << "analytical-ready journal: 7 cases OK\n";
+        test_original_owner_refs_all_dispositions_and_invalid_kind();
+        test_owner_events_zero_capacity_and_concurrent_drain();
+        std::cout << "analytical-ready journal: 9 cases OK\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

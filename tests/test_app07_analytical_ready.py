@@ -168,7 +168,7 @@ class AnalyticalReadyBindingTests(unittest.TestCase):
         # Actual compiled computation, not an RF or pane paint qualification.
 
     def test_atomic_bounded_drain_binding(self):
-        self.assertEqual(self.native.OWNER_ANALYTICAL_READY_CONTRACT_VERSION, 1)
+        self.assertEqual(self.native.OWNER_ANALYTICAL_READY_CONTRACT_VERSION, 2)
         backend = self.backend(capacity=4)
         backend.push_samples(np.ones(768, dtype=np.complex64), 256000.0, 100000000.0)
         frames = backend.poll_spectrum()
@@ -178,6 +178,9 @@ class AnalyticalReadyBindingTests(unittest.TestCase):
         self.assertEqual(len(final.events), 2)
         self.assertEqual([e.event_sequence for e in (*first.events, *final.events)], [1, 2, 3, 4])
         summary = final.summary
+        self.assertEqual(summary.owner_disposition_events, 0)  # Standalone DSP is not an owner.
+        with self.assertRaises(AttributeError):
+            summary.owner_disposition_events = 7
         self.assertEqual((summary.offered, summary.handed_off, summary.outstanding), (3, 3, 0))
         self.assertEqual(summary.events_generated,
                          summary.events_drained + summary.events_pending + summary.events_lost)

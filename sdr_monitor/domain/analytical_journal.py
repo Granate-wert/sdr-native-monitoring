@@ -19,12 +19,47 @@ class JournalEventKind(StrEnum):
     HANDED_OFF = "native_output_handed_off"
     SUPERSEDED = "native_output_superseded"
     CANCELLED = "native_output_cancelled"
+    OWNER_FORWARDED = "owner_forwarded"
+    OWNER_SUPERSEDED = "owner_superseded"
+    OWNER_COALESCED = "owner_coalesced"
+    OWNER_CANCELLED = "owner_cancelled"
+    OWNER_CADENCE_SUPPRESSED = "owner_cadence_suppressed"
 
 
 class AdapterPacketDisposition(StrEnum):
     PUBLISHED = "adapter_snapshot_published"
     REJECTED = "adapter_packet_rejected"
     CANCELLED = "adapter_cancelled_before_publication"
+
+
+class OwnerIdCoverageState(StrEnum):
+    UNSUPPORTED = "unsupported"
+    ACTIVE = "active_bounded_window"
+    INCOMPLETE = "incomplete_id_evidence"
+    COMPLETE = "complete_native_owner_ids"
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerIdCoverage:
+    """Native owner custody ONLY; never adapter/pane/paint or RF coverage."""
+
+    state: OwnerIdCoverageState = OwnerIdCoverageState.UNSUPPORTED
+    retained_offers: int = 0
+    retired_offers: int = 0
+    owner_dispositions: int = 0
+    transition_failures: int = 0
+    capacity_exceeded: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, OwnerIdCoverageState) or type(self.capacity_exceeded) is not bool:
+            raise ValueError("owner ID coverage must be typed")
+        for name in ("retained_offers", "retired_offers", "owner_dispositions", "transition_failures"):
+            _integer(getattr(self, name), name, 0, (1 << 64) - 1)
+        if (self.retained_offers > 256 or self.retired_offers > self.retained_offers
+                or self.owner_dispositions > self.retired_offers):
+            raise ValueError("owner ID custody exceeds bounded offers")
+        if self.state is OwnerIdCoverageState.COMPLETE and (self.transition_failures or self.capacity_exceeded):
+            raise ValueError("incomplete owner ID evidence cannot be complete")
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +171,8 @@ class JournalCounters:
     event_capacity: int
     events_pending: int
     event_storage_bytes: int
+    event_contract_version: int = 1
+    owner_disposition_events: int = 0
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -146,7 +183,12 @@ class JournalCounters:
             raise ValueError("journal offer conservation failed")
         if self.events_generated != self.events_drained + self.events_pending + self.events_lost:
             raise ValueError("journal evidence conservation failed")
-        if self.events_generated != 2 * self.offered - self.outstanding or self.events_pending > self.event_capacity:
+        if (self.event_contract_version not in (1, 2)
+                or (self.event_contract_version == 1 and self.owner_disposition_events != 0)
+                or self.owner_disposition_events > self.handed_off):
+            raise ValueError("journal owner event version/count not admitted")
+        if (self.events_generated != 2 * self.offered - self.outstanding + self.owner_disposition_events
+                or self.events_pending > self.event_capacity):
             raise ValueError("journal generation/pending accounting failed")
         if self.clock_regressions > self.offered or not self.event_capacity * 48 <= self.event_storage_bytes <= self.event_capacity * 256:
             raise ValueError("journal scalar storage/clock accounting failed")
@@ -191,6 +233,7 @@ class OwnerJournalSnapshot:
     adapter: AdapterDispositionCounters | None = None
     native_presentation: NativePresentationCounters | None = None
     native_presentation_release_failed: bool = False
+    owner_id_coverage: OwnerIdCoverage = OwnerIdCoverage()
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, JournalState) or type(self.events) is not tuple or len(self.events) > 256:
@@ -199,6 +242,8 @@ class OwnerJournalSnapshot:
             raise ValueError("journal snapshot cannot retain frames/arrays/proxies")
         if self.counters is not None and not isinstance(self.counters, JournalCounters):
             raise ValueError("journal counters must be immutable")
+        if not isinstance(self.owner_id_coverage, OwnerIdCoverage):
+            raise ValueError("owner ID coverage must be immutable")
         if self.scope is not None and not isinstance(self.scope, OwnerJournalScope):
             raise ValueError("journal scope must be immutable")
         for name in ("host_window_events_evicted", "terminal_windows_evicted", "drain_failures"):
@@ -227,6 +272,18 @@ class OwnerJournalSnapshot:
         if self.state is JournalState.UNSUPPORTED and (self.counters is not None or self.events
                                                      or self.adapter is not None):
             raise ValueError("unsupported journal cannot claim event coverage")
+        if self.owner_id_coverage.state is not OwnerIdCoverageState.UNSUPPORTED and (
+                self.counters is None or self.counters.event_contract_version != 2
+                or self.native_presentation is None):
+            raise ValueError("owner ID evidence requires supported version2 owner counters")
+        if self.owner_id_coverage.state is OwnerIdCoverageState.COMPLETE:
+            c, p, ids = self.counters, self.native_presentation, self.owner_id_coverage
+            if (self.state is not JournalState.FINAL or c is None or p is None
+                    or c.event_contract_version != 2 or c.events_lost or self.host_window_events_evicted
+                    or self.native_presentation_release_failed or p.accounting_failures
+                    or ids.retained_offers != c.offered or ids.retired_offers != c.offered
+                    or ids.owner_dispositions != c.handed_off or c.owner_disposition_events != c.handed_off):
+                raise ValueError("complete native ID custody lacks terminal all-offer evidence")
 
     @property
     def adapter_native_handoffs_unclassified(self) -> int | None:
