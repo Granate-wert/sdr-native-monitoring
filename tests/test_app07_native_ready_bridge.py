@@ -186,8 +186,9 @@ class ActualReadyAdapterTests(unittest.TestCase):
             HackrfAnalyzerService(native, Mock(), Mock(), Mock(), Mock()),
             RtlAnalyzerService(native, Mock(), Mock(), Mock()))
         for owner in owners:
+            cached_read = owner.latest_snapshot if isinstance(owner, NativeLiveSessionService) else owner.current_snapshot
             for _ in range(10):
-                owner.current_snapshot()
+                cached_read()
         native.analytical_ready_clock_ns.assert_not_called()
 
     def test_pluto_actual_converter_preserves_typed_chain_and_sidecar(self):
