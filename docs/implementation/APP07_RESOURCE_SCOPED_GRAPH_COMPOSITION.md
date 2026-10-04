@@ -5534,3 +5534,62 @@ historical successful evidence is retained, not silently transferred or erased.
 No new subagents/model calls062; previous UI-only review is not current native
 or release approval. No50ms, DWM/DPI, RF duty/Pd, lossless, Ethernet/dualRF,
 sustained/soak or independent whole-release acceptance follows from this packet.
+
+## M8-062 — actual automatic service journal consumers and fresh 2x2 evidence
+
+Exact runtime c2259d45b41895278a6516b4fdc9a8c9d918c209; test-only terminal
+observer fixture ba48fcb124254785f8ba5f54bb23a6461a573ce3. Never relabel the
+c2259 source/build as the later fixture or documentation HEAD.
+UI V2 only; no UI product edits in this backend increment, no second SDR opener.
+
+Typed immutable scalar domain snapshots validate native conservation, producer,
+generation, sequence, original ready time and declared loss. SAME supported
+CPU/Auto service profiles now explicitly admit4096event journals; default
+native configuration remains0 and unsupported vendors are not forced to CPU.
+Existing Pluto single/paired, HackRF coordinator and RTL workers drain at most
+256events per tick. Cached public reads never drain or access hardware.
+Host scalar reservation1MiB per chain/4retained terminal windows is separate
+from native existing aggregate ceilings, not a whole-process RSS guarantee.
+Malformed or failed readers latch INCOMPLETE, not fake zero counters or changed
+hardware lifecycle. Stop terminal capture occurs after acknowledged native
+Stop/join and before owner release; final pending/outstanding must be zero.
+The host clock/process/source/RX/session/owner-run scope is not yet the complete
+physical-resource/capture/run/activation admission and pane-disposition ledger.
+HandedOff means native output, not painted; finite host eviction stays explicit.
+
+107focusedPASS13.297s/Ruff11/mypy8/compile11. Matching diagnostic build47/47CTest
+53.65s/665frozen/runtime/source gates PASS. Initial fullV2 retained2subtesterrors
+in an old SimpleNamespace terminal observer missing the new journal hook.
+TESTONLYba48 corrects that fixture/order; unchanged runtime serialR1:
+1384total/1318PASS/66skip/0fail-error498.488s/exacttrue/cleanbeforeafter,
+deferred[]/outside[]; four historical NaN warnings retained.
+Native d80e7a9dd900bc9fe4a6d99c4630d96f29210d7e6f1f464e8df3cc98a226230e;
+EXE be1244cad955e667f38303cd0489fa7277bba3d5a727d865b711b9a41ac53573.
+APP07-HOSTJOURNAL-20261004-C2259D4-R0 remains diagnostic, not static/current.
+
+Fresh sequential physical4source tests, each15s warmup/60s steady/61samples:
+A AD9364USB/HackRF/tinySA/RTL canonical; B tinySA/RTL/AD9363USB/HackRF rotation2.
+AD4 Sweep300..620MHz/Fs61.44/useful36/logicalN4096/physicalFFT8192;
+AD3 same range/explicitFs30.72/useful30/N4096/FFT8192, not fixed18 or fallback.
+HF Sweep100..300/Fs20/FFT4096; tiny100..300/1001points/manualRBW300k/device-dBm;
+RTL RTBW99.5..100.5/Fs2.4/FFT4096. Both AD tests are USB, not Ethernet.
+Computed FFT/s: AD349.44/263.44, HF814.18/781.31, RTL1172.36/1172.02.
+Complete Sweep/s: AD0.566/0.383, HF40.71/39.07; tiny GUI admissions0.733/0.750/s.
+FFT, completeSweep, GUIadmission and relevant Qtpaint-return are distinct rates.
+
+Actual automaticRTL terminal journal A91663offers/183326events, B92767/
+185534; nativepending/outstanding/loss/regression0. Hostevictions183294/185518
+mean a finite last-window, NOT complete history or lossless reception.
+tinySA59/60same-read version checks no mismatch; historical059causeUNKNOWN,
+not claimed fixed. RTL startupPLL/directsampling warnings retained.
+Four original1920x1080DPR1 PNG root-reviewed, sourceQt with matching packaged
+Qt/native, not visible frozenEXE/DPI/DWM evidence. Partial sweep and accumulating
+history are visible; slow tinySA is expected. No actualpaint latency/50ms claim.
+A/B terminalStop/drain/join/close0owners-workers/leaseReleased/PIDsabsent;
+postRX source snapshot and all665frozen inventory PASS.
+
+APP07/M8/H01 PARTIAL/H02 TODO. NEXT full typed outer attribution and all-offers
+downstream dispositions, separate stitchedSweep/density coverage, then dedicated
+UI per-layer terminals/review. Ethernet/pairedRF/fault/soak/visibleWindowsDPI/
+DWM/independentwhole-release acceptance remains open. Root only/no new
+subagents or model calls; historical UI-only approval is not backend approval.
