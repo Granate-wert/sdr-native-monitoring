@@ -5059,3 +5059,105 @@ Ethernet qualification follows. Current/static EXE and system settings remain
 unchanged. APP-07 remains PARTIAL. Next is M8 source-specific metric definitions,
 instrumentation and performance baseline; remaining fault classes, stability,
 visible UI and independent release qualification remain open.
+
+## 2026-10-04 — M8 exploratory four-source performance baseline (056)
+
+This packet measures the unchanged immutable runtime source
+`9b635e229c734a8c29b3dfe225ebf481b7487aa9`, native SHA256
+`033724259775926cc05af06cf254341472296f48a92eb8080bf7c3c3c59ed6ca`,
+matching packaged Qt6.11.1 at documentation HEAD
+`1f86c4abda9bd9c7ea6cc5259a6d0c9197fe7805`. Later documentation commits do not
+relabel these source/build/physical results. No product/UI/native changes,
+new build, static/current promotion or system/security changes were made.
+
+Two serialized physical layouts, each with 15s warmup and 61 scalar observations
+across a 60s steady window, were measured on the same active resource owners:
+
+| Pane | Layout A | Layout B, rotated by two slots |
+|---|---|---|
+| top-left | mini AD9364 USB | tinySA Ultra USB |
+| top-right | HackRF USB | RTL-SDR USB |
+| bottom-left | tinySA Ultra USB | full AD9363 USB |
+| bottom-right | RTL-SDR USB | HackRF USB |
+
+AD9364 Sweep300–620MHz: actualFs61.44MS/s, useful window36MHz, logicalN4096,
+physicalFFT8192. AD9363 Sweep300–620MHz: actualFs30.72MS/s, useful30MHz,
+logicalN4096/physical8192; this is a lower admitted profile, not a permanent18MHz
+limit. Both are USB witnesses, not Ethernet. HackRF Sweep100–300MHz uses actual
+Fs20MS/s/FFT4096. tinySA LOW100–300MHz uses1001points/manual observedRBW300kHz,
+device-calibrated dBm. RTL RTBW99.5–100.5MHz uses actualFs2.4MS/s/FFT4096/hop2048.
+No implicit sample-rate/FFT/quality reduction occurred.
+
+| Source | Computed FFT/s, A / B | Full Sweep/s, A / B | Successful GUI data applications/s, A / B |
+|---|---:|---:|---:|
+| AD9364 / AD9363 |349.52 /263.35|0.566 /0.383|5.55 /4.18|
+| HackRF |unknown /unknown|40.70 /39.10|39.90 /39.10|
+| tinySA |not an IQ/FFT source|native device counter unavailable|0.73 /0.73|
+| RTL |1172.10 /1171.78|not Sweep|39.30 /39.79|
+
+These boundaries are deliberately distinct. HackRF's current Sweep binding
+does not export existing analytical DSP/decoded-IQ counters; callback bytes
+include protocol headers and are not substituted for IQ or FFT counts. tinySA's
+physical scan cadence is not itself a UI defect. Successful Qt data application
+is not paint FPS or compositor presentation. Analytical-ready-to-paint latency
+and actual Spectrum/Waterfall paint FPS remain unmeasured, not zero.
+
+Native AD received samples averaged4.363/3.287MSps across the entire host Sweep
+window; RTL admitted samples averaged2.40046/2.39981MSps. These are not the
+configured hardware sampling frequency, continuous RF coverage, USB link
+capacity, acquisition duty or detection probability. In particular the measured
+AD full320MHz scan periods are approximately1.77s/2.61s; high FFT calculation
+counts alone do not establish Spectrozir-class scan speed. Comparing different
+frequency spans, physicalN, detectors or devices is not a like-for-like benchmark.
+
+Own-process total CPU145.47%/139.14% of one logical core corresponds to
+9.09%/8.70% normalized across16logical CPUs. RSS211533824→215445504 and
+210317312→213979136bytes, peaks216641536/215777280. Minute growth approximately
+3.7MiB/3.5MiB is neither leak proof nor long-run stability proof. Private commit
+and post-cleanup memory are also retained. Queue pending sampled maxima2/3 of8
+at1Hz are not guaranteed transient maxima. Native scalar query overhead was
+measured (largest observed HF query~5.22/5.02ms); instrumentation is not free.
+
+Observed host/native input, analytical FFT-drop, refill/gapped-line and worker
+failure counters stayed zero in the available native scopes. Hardware overrun
+and RF continuity cannot be inferred from this. Presentation coalescing is
+separate: RTL native final-frame supersession increased58864/58852; common UI
+queue latest supersession1376/952 and terminal supersession388/255, stale0.
+These intentionally skipped presentation snapshots are not analytical FFT loss.
+
+The initial uninstrumented attempt failed after two tinySA traces at the typed
+`owner_poll / instrument_failure / version / identity` boundary; first exact
+cause remains unknown, and it is not relabeled PASS. A bounded diagnostic using
+the existing inert factory seam observes the same already-read version bytes,
+retains redacted comparison hashes, and returns identical bytes to the unchanged
+inherited guard. No extra serial command/open/reset, identity weakening or retry
+inside the owner is introduced. Its first measurement attempt exposed a private
+observer error (nonexistent RTL snapshot/counter API), not a product defect;
+that failure is retained. Corrected interface mocks cover the actual same-owned
+RTL native scalar control. Corrected complete windows retained59/60 equal
+version checks, zero observer failures, no mismatch and no SDK ERROR lines;
+this does not prove the earlier identity failure or historical SDK-9 was fixed.
+
+Nine scalar/interface tests, six offline audit/negative tests and eight existing
+version-observer mock tests passed. Offline audits independently recompute all
+rates from122 observations and verify source/runtime/native/Qt attribution,
+progressive partial-before-same-scan-complete witnesses, terminal cleanup and
+four original1920×1080/DPR1 PNG hashes/frame receipts. Captures were taken before
+warmup and after the steady window, not during performance measurement. Root
+inspected all four. No new subagent or independent UI/release review occurred.
+
+Captures remain physical SOURCEQt/offscreen evidence, not visible frozen-EXE
+Windows DPI/DWM/paint-latency qualification. Sparse waterfall history, HF dark
+horizontal strips/Y-axis autorange and occasional accepted-region HUD proximity
+to the pane badge are recorded visual debt, not declared fixed. Partial spectrum
+extents at capture are progressive pending portions of that scan.
+
+All acquisition owners stopped, terminal queues drained, threads joined, graphs
+closed, cooperating hardware leases released and source/native hashes preserved.
+This is not RF-silence or pre-test RF-settings-restoration proof. M8/H01 is
+PARTIAL, actual paint/latency H02 remains TODO and APP-07 remains PARTIAL. Next:
+qualify exported HackRF analytical metrics, measure AD per-step retune/refill/DSP/
+publication timing, and define the analytical-ready→actual-paint offered/disposition
+ledger before optimization/latency qualification. Paired/dual-AD/Ethernet and
+additional profiles, remaining faults, stability/soak, visible UI, independent
+release qualification, closure and later APP08…14 remain open.
