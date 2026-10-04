@@ -4457,13 +4457,28 @@ window 36 MHz and overlap 2 MHz. Full RTBW remains RF filter/window 56 MHz;
 at 30.72 MS/s full RTBW is 30 MHz. Native Apply/Start readback still decides
 whether the exact requested hardware settings are accepted. The legacy pure
 draft API retains its explicit edge-trim compatibility default; new UI V2
-AD/HackRF RTBW drafts are to select Full Receive by default, with saved explicit
-band choices preserved. UI implementation and matched-build/HIL are pending.
+AD/HackRF RTBW drafts now select Full Receive by default, with explicit
+band choices preserved. UI source implementation is complete; matched-build/HIL
+qualification is pending.
 
 Analysis N refers to bins inside the selected Sweep W. Physical FFT F is
 ceilPow2(Fs*N/W), never a relabelled N or silently reduced workload. Paired RX
 must resolve one common Fs/filter/W/overlap/tuner sequence, though pane display
 crops can differ. Unsupported or inconsistent choices refuse before RF.
 
-Backend/compiler source and mock Stage/Preview tests are implemented; no new
-physical, frozen-GUI, throughput, RF-flatness or release claim is made here.
+Backend/compiler source and mock Stage/Preview tests are implemented. UI V2 uses
+capability-derived profiles, an optional AD Sweep window control and a preview
+that distinguishes RF filter, W, N and physical FFT. Both mode-specific Fs
+requests survive passive source refresh, including a narrowed capability snapshot:
+unsupported intent remains visible and must be explicitly corrected or refused,
+not silently lowered. Explicitly selecting a new source may choose a new admitted
+default. The new control has pane-scoped EN/RU accessibility names.
+
+Root integration review found and corrected a lost opposite-mode Fs cache before
+integration. Dedicated UI source and root focused tests cover the regression;
+independent backend contract review passed, but the later independent UI review
+attempt was unavailable due an agent usage limit. No independent UI approval is
+inferred. No new physical, frozen-GUI, throughput, RF-flatness or release claim
+is made here. Requested 2x2 screenshots from multiple hardware configurations
+remain a test deliverable; source/offscreen and visible frozen-EXE evidence must
+be labelled separately.
