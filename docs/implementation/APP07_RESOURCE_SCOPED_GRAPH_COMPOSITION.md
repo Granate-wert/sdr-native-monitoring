@@ -5710,3 +5710,43 @@ error states. Source Qt captures are not visible packaged Windows EXE/DPI/DWM.
 APP07/M8 PARTIAL/H02TODO; fullAPP00..14 goal unchanged. Root only, no new agents
 or current independent backend/release review. No main product/static/firewall
 change. Later documentation HEAD must not relabel exact5bcf build evidence.
+
+
+## M8-066 — explicit final native presentation release
+
+Exact runtime 8bc9e944f780604d223a15d17c4cd84fc5b55c03, UI V2 only.
+AD single/paired, HackRF and RTL owners now expose a strict final presentation
+release after acquisition/processing join and acknowledged Stop. It cancels
+actual queued frame references once, before final journal capture and owner
+release. Ordinary native Stop still permits post-Stop draining. Running,
+incomplete Stop and ambiguous close refuse disposal; host failure is retained
+as INCOMPLETE, not zero or a successful final receipt. Paired receivers use the
+SAME owner/context; per-chain capture does not duplicate physical acquisition.
+Legacy unsupported protocol remains unavailable. No RF/Fs/FFT/gain/cadence,
+quality/time, native queue budget or raw-I/Q Python boundary changes.
+
+Exact diagnostic build APP07-OWNERRELEASE-20261004-8BC9E94-R0:47/47 native tests,
+665 frozen files/runtime/source/shared DLL/ONEUSB/offscreen gates verified.
+Serial full V2:1384 total/1318 PASS/66 skip/0 fail,492.520s; tracked source clean
+before/after, exact provenance. Matching packaged compiled/mock tests65 PASS
+6.202s after that gate; postgate inventory and posttest source snapshot verified.
+Initial candidate test-only metrics field compile failure retained; corrected
+without product guard reduction. Candidate duration56.00s is NOT exact build
+CTest duration (latter not captured). Four historical NaN warnings retained.
+Native1f715cc9737d8731f07d6a71a1a8dd1442e08c81c8d0706dd6378652ec4a84c7;
+EXEf8e2b319a9bef14889b751307b88d2225603c56f949329458e7846cb171073f0.
+Diagnostic package not static/current promoted. Later documentation commit must
+not relabel this source/build. No current066 physical test or screenshot.
+
+Still mandatory: original-ID owner dispositions with explicit bounded event
+loss/coverage, pane/queue obligations, independent Sweep/density readiness,
+UI layer terminal evidence and independent review. Scalar conservation and
+zero queued residual are NOT exhaustive per-ID or paint acceptance. Before new
+HIL diagnose tinySA stale state from SAME cached worker/command/read progress;
+no competing serial read or unchanged green-selecting retry. At end of physical
+tests deliver original 2x2 galleries for exercised configurations/rotations with
+source, mode, RF range, actual transport, build, freshness and partial/error
+captions. Historical source Qt images are not current packaged EXE/DPI/DWM proof.
+APP07/M8 PARTIAL/H02 TODO; full APP00..14 unchanged. Root only this increment,
+no new subagent/current independent backend-release review. Main dirty product,
+static EXE/firewall preserved; public whitelist only. No whole-release claim.
