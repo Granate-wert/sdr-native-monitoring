@@ -5161,3 +5161,75 @@ publication timing, and define the analytical-ready→actual-paint offered/dispo
 ledger before optimization/latency qualification. Paired/dual-AD/Ethernet and
 additional profiles, remaining faults, stability/soak, visible UI, independent
 release qualification, closure and later APP08…14 remain open.
+
+## M8-057 — HackRF Sweep analytical counters and two physical 2×2 baselines
+
+Runtime `b39bf9631f174529bee35df38e482dabf72e0281` exports SAME native-analysis
+snapshot counters for accepted CI8 payload, computed/dropped FFT, DSP-tail
+samples and pending output. Optional metrics contract1 matches the native build
+manifest; missing/half-paired/wrong-type versions refuse build preflight. Older
+artifacts with both metadata items absent remain valid, but their new metrics
+remain unknown. Factory/bridge1, schema5, FFT/Fs/quality/lifecycle/queue policy
+are unchanged. No raw I/Q moved to Python and no UI product change.
+
+One accepted firmware block contains 8187 complex CI8 samples excluding header;
+only its final FFT-N tail is analyzed. One FFT yields two disjoint 5 MHz crops.
+Decoded payload, DSP input, callback bytes, full sweeps, GUI admissions and
+actual paint are different measures. New fields project actual native counters,
+not Python estimates from blocks or callback bytes.
+
+Exact diagnostic build APP07-HFMETRICS-20261004-B39BF96:
+46/46 CTest in53.23s; frozen665 files; full serial V2 1381 total/1315PASS/66skip/
+0fail-error in469.060s, trackedclean before/after, exact provenance, no deferred
+compiled tests or product imports outside checkout. Packaged new-contract tests
+6PASS. Native SHA8f841e98b52e17139ecacb5fb4d867f91d5ba3a516782872e07c2118cc6ef424;
+EXE SHA333ba0c42453ba9f3d70855a3b3685ac7a4d538d3e5cb994c6c3a38c10e8fbfa.
+Diagnostic only, not static/current promotion or independent release approval.
+A later documentation commit must not relabel this build's source provenance.
+
+Two physical sourceQt/offscreen windows, each15s warmup/60s steady/61samples:
+A AD9364mini USB Sweep300..620/Fs61.44/useful36/logical4096-physical8192,
+HackRF Sweep100..300/Fs20/FFT4096, tinySA LOW100..300/1001/RBW300k/device-dBm,
+RTL RTBW99.5..100.5/Fs2.4/FFT4096.
+B tinySA/RTL/AD9363full USB/HackRF rotation2; AD3 uses actual30.72/useful30/
+logical4096-physical8192. This is fresh layout reassignment, not hot rotation or
+Ethernet proof. Four original1920×1080/DPR1 images attributed by hash, geometry,
+source/resource, config and producer receipts, captured outside measurement.
+
+| Native/host metric | A | B |
+|---|---:|---:|
+| AD computed FFT/s |349.48|263.52|
+| AD completed Sweep/s |0.566|0.383|
+| HF computed FFT/s |814.27|782.04|
+| HF accepted CI8 payload MSamples/s |6.666|6.403|
+| HF DSP-tail MSamples/s |3.335|3.203|
+| HF completed Sweep/s |40.71|39.10|
+| HF GUI admissions/s |39.08|40.16|
+| RTL computed FFT/s |1172.63|1172.53|
+| tinySA GUI trace admissions/s |0.733|0.733|
+| Own CPU whole16-logical machine % |9.30|8.58|
+| Own RSS delta MiB/60s |8.29|3.33|
+| Sampled max queue /capacity |2/8|2/8|
+
+Known native input/FFT/gap error counters were zero; presentation supersession
+was nonzero and separate. No device overrun counter/continuous ADC/RF-duty/
+lossless/soak inference. No SDK error-line matches or tiny identity observer
+failures in these two runs; historical first causes remain UNKNOWN, not fixed.
+Both runs terminal0owners/workers/leaseReleased. Four screenshots root-inspected;
+accepted-segment HUD may overlap pane badge, autorange/sparse history remain UI
+review debt. These are SAME-native/Qt sourceUI captures, not visible frozenEXE,
+WindowsDPI/DWM/actualpaint-FPS or50ms qualification.
+
+Existing exported AD live host-stage aggregate counters were also sampled:
+A approximate mean Stop0.59/configure16.07/Start47.82/framewait115.25ms.
+Independent relaxed live reads do not yield exact post-Stop fences, per-step
+percentiles, RF dwell, or causal separation of refill/DSP/publication. Inspect
+the existing counters before adding duplicate instrumentation.
+
+Evidence ID m8-hfmetrics-b39bf96-057. Private logs/audits/gallery retained locally.
+No new subagent/model call or independent whole-backend/release review.
+M8/H01 and APP07 remain PARTIAL; actualpaint/latency H02 TODO. Next M8-058:
+attribute missing first-FFT/refill/DSP/publication stages, then analytical-ready
+to first relevant paint-return offered/disposition ledger. No repeated baseline
+without new scope. Remaining paired/dualAD/Ethernet/fault/stability/visible/release/
+closure requirements and APP08..14 stay open.
