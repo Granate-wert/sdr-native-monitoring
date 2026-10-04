@@ -104,6 +104,63 @@ class Ad936xProfileUiTests(unittest.TestCase):
             editor.close()
             graph.live.shutdown()
 
+    def test_both_mode_requests_band_and_custom_window_survive_refresh(self) -> None:
+        native, graph = thirty_graph()
+        editor, row, choice = self.editor(graph)
+        try:
+            row.rate.setCurrentIndex(row.rate.findData(20e6))
+            row.band.setCurrentIndex(row.band.findData(RtbwBandPolicy.EDGE_TRIMMED))
+            row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.SWEEP.value))
+            row.sweep_window.setValue(18.0)
+            self.assertEqual(row.rate.currentData(), 30.72e6)
+            self.assertEqual(editor._read_drafts()[0].sweep_window_hz, 18e6)
+
+            snapshot = choice.binding.snapshot
+            narrowed = replace(snapshot,
+                sample_rate_ranges_hz=(CapabilityRange(2e6, 20e6, "Hz"),),
+                analog_bandwidth_ranges_hz=(CapabilityRange(.2e6, 20e6, "Hz"),))
+            refreshed = replace(choice, binding=replace(choice.binding, snapshot=narrowed))
+            editor.update_sources(AnalyzerSourceSelection(revision=2, choices=(refreshed,)))
+            editor._refresh_actions()
+            self.assertEqual(row.rate.currentData(), 30.72e6)
+            self.assertFalse(row.rate.model().item(row.rate.currentIndex()).isEnabled())
+            row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.RTBW.value))
+            self.assertEqual(row.rate.currentData(), 20e6)
+            self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.EDGE_TRIMMED)
+            row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.SWEEP.value))
+            self.assertEqual(row.rate.currentData(), 30.72e6)
+            self.assertFalse(row.rate.model().item(row.rate.currentIndex()).isEnabled())
+            self.assertEqual(row.sweep_window.value(), 18.0)
+            self.assertEqual(editor._read_drafts()[0].sweep_window_hz, 18e6)
+            self.assertEqual(native.engines, [])
+
+            row.source.setCurrentIndex(row.source.findData(None))
+            row.source.setCurrentIndex(row.source.findData(choice.device_id))
+            self.assertEqual(row.rate.currentData(), 20e6)
+            self.assertEqual(row.sweep_window.value(), 0.0)
+            self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.FULL_RECEIVE)
+        finally:
+            editor.release_after_shutdown()
+            editor.close()
+            graph.live.shutdown()
+
+    def test_sweep_window_accessible_name_is_pane_scoped_in_both_locales(self) -> None:
+        native, graph = thirty_graph()
+        editor, row, _choice = self.editor(graph)
+        locale = current_locale()
+        try:
+            for language, phrase in ((UiLocale.EN, "Pane 1:"), (UiLocale.RU, "Окно 1:")):
+                set_active_locale(language)
+                editor.set_locale()
+                self.assertIn(phrase, row.sweep_window.accessibleName())
+                self.assertIn("MHz" if language is UiLocale.EN else "МГц",
+                              row.sweep_window.accessibleName())
+        finally:
+            set_active_locale(locale)
+            editor.release_after_shutdown()
+            editor.close()
+            graph.live.shutdown()
+
     def test_passive_same_source_refresh_preserves_unsupported_request_for_stage_refusal(self) -> None:
         native, graph = thirty_graph()
         editor, row, choice = self.editor(graph)

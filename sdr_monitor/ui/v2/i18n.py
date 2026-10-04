@@ -315,6 +315,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Нет профиля Fs/фильтра по наблюдаемым возможностям", UiLocale.EN: "No Fs/filter profile admitted by observed capabilities"}),
         "analyzer.pane.setup.ad_sweep_window": MappingProxyType({
             UiLocale.RU: "Окно Sweep W", UiLocale.EN: "Sweep window W"}),
+        "analyzer.pane.setup.ad_sweep_window_name": MappingProxyType({
+            UiLocale.RU: "Окно {pane}: ширина окна анализа Sweep AD936x, МГц",
+            UiLocale.EN: "Pane {pane}: AD936x Sweep analysis window width in MHz"}),
         "analyzer.pane.setup.ad_sweep_window_auto": MappingProxyType({
             UiLocale.RU: "Профиль", UiLocale.EN: "Profile default"}),
         "analyzer.pane.setup.ad_sweep_window_help": MappingProxyType({
