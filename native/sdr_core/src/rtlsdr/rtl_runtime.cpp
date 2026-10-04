@@ -108,7 +108,8 @@ void validate_rtl_profile(const RtlProfile& profile) {
     // separately; it is not a whole-process RSS or FFT scratch-space proof.
     const auto allocation = static_cast<std::uint64_t>(profile.slot_count) * input_bytes +
         static_cast<std::uint64_t>(2U * profile.dsp_output_capacity +
-                                   profile.presentation_capacity) * frame_bytes;
+                                   profile.presentation_capacity) * frame_bytes +
+        sdr_core::analytical_ready_reserved_bytes(profile.analytical_event_capacity);
     if (allocation > component_budget) {
         throw sdr_core::ConfigurationError("RTL component memory estimate exceeds 64 MiB");
     }
@@ -135,6 +136,7 @@ struct RtlRuntimeSession::Impl final {
         sdr_core::DspOptions options;
         options.dc_removal = sdr_core::DcRemovalMode::Off;
         options.output_capacity = profile.dsp_output_capacity;
+        options.analytical_event_capacity = profile.analytical_event_capacity;
         options.source.source_type = sdr_core::SourceType::LiveIq;
         options.source.source_id = profile.source_id;
         options.source.display_name = "RTL-SDR Live";
@@ -615,4 +617,7 @@ RtlAcquisitionReadback RtlRuntimeSession::readback() const noexcept {
     return impl_->readback;
 }
 
+sdr_core::AnalyticalReadyDrain RtlRuntimeSession::drain_analytical_ready_events(std::size_t max_items) {
+    return impl_->dsp->drain_analytical_ready(max_items);
+}
 }  // namespace sdr_rtlsdr

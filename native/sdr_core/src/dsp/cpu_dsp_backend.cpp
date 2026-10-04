@@ -369,6 +369,9 @@ public:
     [[nodiscard]] AnalyticalReadySummary analytical_ready_summary() const override {
         return ready_journal_.summary();
     }
+    [[nodiscard]] AnalyticalReadyDrain drain_analytical_ready(std::size_t max_items) override {
+        return ready_journal_.drain(max_items);
+    }
     [[nodiscard]] std::vector<AnalyticalReadyEvent> poll_analytical_ready_events(
         const std::size_t max_items
     ) override { return ready_journal_.poll_events(max_items); }

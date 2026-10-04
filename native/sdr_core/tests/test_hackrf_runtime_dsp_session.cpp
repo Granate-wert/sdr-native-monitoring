@@ -171,14 +171,28 @@ bool wait_until(Predicate&& predicate, const std::chrono::milliseconds timeout =
 void test_composed_frames_and_exact_shutdown_order() {
     auto state = std::make_shared<FakeState>();
     state->start_blocks = 4U;
+    auto requested = config();
+    requested.processing.dsp.analytical_event_capacity = 16U;
+    auto invalid_capacity = requested;
+    invalid_capacity.processing.dsp.analytical_event_capacity = 4097U;
+    bool refused = false;
+    try {
+        static_cast<void>(sdr_hackrf::HackrfRuntimeDspSession::start(
+            std::make_unique<FakeRuntime>(state), invalid_capacity));
+    } catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused && state->calls.empty(), "journal admission touched HackRF runtime");
     auto session = sdr_hackrf::HackrfRuntimeDspSession::start(
         std::make_unique<FakeRuntime>(state),
-        config()
+        requested
     );
     expect(wait_until([&] {
         return session->metrics().processing.worker_blocks_processed == 4U;
     }), "composed worker did not drain all startup blocks");
     expect(session->poll_spectrum_frames().size() == 4U, "composed frames are missing");
+    const auto journal = session->drain_analytical_ready_events(0U);
+    expect(journal.summary.supported && journal.summary.offered == 4U &&
+           journal.summary.handed_off == 4U && journal.summary.events_lost == 0U &&
+           journal.events.size() == 8U, "actual HackRF owner journal not delivered");
 
     state->close_guard = [&] {
         const auto metrics = session->metrics();
@@ -188,6 +202,8 @@ void test_composed_frames_and_exact_shutdown_order() {
     };
     const auto stopped = session->stop(1s);
     expect(stopped.complete(), "composed shutdown did not complete");
+    expect(session->drain_analytical_ready_events(0U).events.empty(),
+           "stopped HackRF replays drained evidence");
     expect(state->close_observed_guard, "close ran before worker drain/join");
     const auto metrics = session->metrics();
     expect(!metrics.lifecycle_open, "composed source lifecycle stayed open");

@@ -552,10 +552,52 @@ void test_analytical_sink_failure(bool at_begin, bool compound = false) {
 }
 } // namespace
 
+void test_pair_owner_journals(Hooks& hooks) {
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    auto requested = paired_config();
+    requested.primary.analytical_event_capacity = 32U;
+    requested.secondary.analytical_event_capacity = 32U;
+    const auto mutations = hooks.mutations();
+    auto invalid_capacity = requested;
+    invalid_capacity.primary.analytical_event_capacity = 4097U;
+    invalid_capacity.secondary.analytical_event_capacity = 4097U;
+    refused([&] { static_cast<void>(engine.configure_paired(invalid_capacity)); },
+            "unbounded pair journal accepted");
+    require(hooks.mutations() == mutations, "journal refusal changed RF");
+    auto resource = sdr_core::DualRxDspConfig{};
+    // Existing combined budget must charge two rings AND two bounded drains.
+    resource.primary.dsp = requested.primary.dsp;
+    const auto before = sdr_core::dual_rx_dsp_resource_budget(resource);
+    resource.analytical_event_capacity = 32U;
+    const auto after = sdr_core::dual_rx_dsp_resource_budget(resource);
+    require(after.total_bytes - before.total_bytes ==
+        2U * sdr_core::analytical_ready_reserved_bytes(32U), "paired journal reservation not aggregate");
+    static_cast<void>(engine.configure_paired(requested));
+    engine.start();
+    wait_pair(engine, [](const auto& m) { return m.dsp.paired_frames_formed >= 8U; });
+    const auto p = engine.drain_analytical_ready_events(Selection::Rx1, 0U);
+    const auto q = engine.drain_analytical_ready_events(Selection::Rx2, 0U);
+    require(p.summary.supported && q.summary.supported &&
+        p.summary.producer_instance_id != q.summary.producer_instance_id &&
+        p.summary.offered >= 8U && q.summary.offered >= 8U &&
+        p.summary.event_capacity == 32U && q.summary.event_capacity == 32U,
+        "paired owner does not expose separate admitted CPU producer journals");
+    refused([&] { static_cast<void>(engine.drain_analytical_ready_events(Selection::Both, 0U)); },
+        "BOTH aliases an individual journal");
+    engine.stop();
+    for (auto rx : {Selection::Rx1, Selection::Rx2}) {
+        const auto final = engine.drain_analytical_ready_events(rx, 0U).summary;
+        require(final.outstanding == 0U && final.events_generated ==
+            final.events_drained + final.events_pending + final.events_lost,
+            "terminal paired journal conservation failed");
+    }
+    engine.disconnect();
+}
 int main() {
     try {
         Hooks hooks;
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "1");
+        test_pair_owner_journals(hooks);
         test_pair_consumers_and_same_owner_restart(hooks);
         test_pair_guards_before_rf(hooks);
         test_pair_unicode_alias_before_rf(hooks);
@@ -574,7 +616,7 @@ int main() {
         test_analytical_sink_failure(false, true);
         require(hooks.contexts() == 0 && hooks.buffers() == 0, "paired ownership leaks");
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "");
-        std::cout << "paired same-owner data plane 15 cases PASS (mock ONLY)\n";
+        std::cout << "paired same-owner data plane 16 cases PASS (mock ONLY)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

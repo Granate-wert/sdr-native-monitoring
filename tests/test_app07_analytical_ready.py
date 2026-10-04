@@ -136,5 +136,33 @@ class AnalyticalReadyBindingTests(unittest.TestCase):
         # Fresh computation receipt above is NOT a physical acquisition proof.
 
 
+    def test_atomic_bounded_drain_binding(self):
+        self.assertEqual(self.native.OWNER_ANALYTICAL_READY_CONTRACT_VERSION, 1)
+        backend = self.backend(capacity=4)
+        backend.push_samples(np.ones(768, dtype=np.complex64), 256000.0, 100000000.0)
+        frames = backend.poll_spectrum()
+        first = backend.drain_analytical_ready_events(2)
+        final = backend.drain_analytical_ready_events(0)
+        self.assertEqual(len(first.events), 2)
+        self.assertEqual(len(final.events), 2)
+        self.assertEqual([e.event_sequence for e in (*first.events, *final.events)], [1, 2, 3, 4])
+        summary = final.summary
+        self.assertEqual((summary.offered, summary.handed_off, summary.outstanding), (3, 3, 0))
+        self.assertEqual(summary.events_generated,
+                         summary.events_drained + summary.events_pending + summary.events_lost)
+        self.assertEqual(summary.events_lost, 2)
+        self.assertEqual(first.events[0].ref.ready_native_ns, frames[0].analytical_ready.ready_native_ns)
+        with self.assertRaises(self.native.ConfigurationError):
+            backend.drain_analytical_ready_events(4097)
+        self.assertEqual(backend.drain_analytical_ready_events(0).events, [])
+        with self.assertRaises(AttributeError):
+            final.summary = None
+
+    def test_owner_drain_api_exists_without_starting_hardware(self):
+        # API qualification only. Native injected-owner tests exercise delivery.
+        for name in ("PlutoFixedBandEngine", "HackrfRuntimeDspControl", "RtlRuntimeControl"):
+            self.assertTrue(callable(getattr(getattr(self.native, name), "drain_analytical_ready_events", None)))
+
+
 if __name__ == "__main__":
     unittest.main()

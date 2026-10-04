@@ -42,6 +42,11 @@ namespace {
 
 void validate_hackrf_fixed_band_dsp_config(const HackrfFixedBandDspConfig& config) {
     sdr_core::validate(config.dsp);
+    const auto journal_bytes = sdr_core::analytical_ready_reserved_bytes(config.analytical_event_capacity);
+    const auto output_bytes = (2ULL * config.dsp_output_capacity + config.presentation_capacity) *
+        (16ULL * config.dsp.fft_size + sizeof(sdr_core::SpectrumFrame));
+    if (config.analytical_event_capacity != 0U && output_bytes + journal_bytes > 128ULL * 1024U * 1024U)
+        invalid("HackRF analytical/presentation/journal payload exceeds 128 MiB");
     sdr_core::validate(config.source);
     if (config.source.source_type != sdr_core::SourceType::LiveIq) {
         invalid("HackRF fixed-band source_type must be LiveIq");
@@ -98,6 +103,7 @@ struct HackrfFixedBandDsp::Impl final {
         options.dc_removal = config.dc_removal;
         options.source = config.source;
         options.output_capacity = config.dsp_output_capacity;
+        options.analytical_event_capacity = config.analytical_event_capacity;
         dsp = sdr_core::make_cpu_dsp_backend(std::move(options));
         dsp->configure(config.dsp);
     }
@@ -350,4 +356,7 @@ assess_hackrf_fixed_band_dsp_delivery(const HackrfFixedBandDspMetrics& metrics) 
     return result;
 }
 
+sdr_core::AnalyticalReadyDrain HackrfFixedBandDsp::drain_analytical_ready_events(std::size_t max_items) {
+    return impl_->dsp->drain_analytical_ready(max_items);
+}
 }  // namespace sdr_hackrf

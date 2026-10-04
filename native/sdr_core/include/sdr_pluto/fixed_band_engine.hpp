@@ -87,6 +87,7 @@ struct FixedBandConfig {
     // A single native producer selects one admitted digital chain. BOTH needs
     // a paired group owner/publication contract, not two calls to this engine.
     ReceiverSelection receiver_selection{ReceiverSelection::Rx1};
+    std::uint32_t analytical_event_capacity{};
 };
 
 void validate(const FixedBandConfig& value);
@@ -270,6 +271,8 @@ public:
     [[nodiscard]] AppliedConfig applied_config() const;
     [[nodiscard]] FixedBandMetrics metrics() const;
     [[nodiscard]] PairedFixedBandMetrics paired_metrics() const;
+    [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(
+        ReceiverSelection receiver, std::size_t max_items);
     [[nodiscard]] std::vector<sdr_core::DualRxSpectrumFrame> poll_paired_spectrum_frames(std::size_t max_items);
     [[nodiscard]] sdr_core::LatestDualRxSpectrumFrameDrain drain_latest_paired_spectrum_frame();
     [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_receiver_persistence_snapshots(

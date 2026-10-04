@@ -256,6 +256,8 @@ void bind_hackrf(py::module_& module) {
     module.attr("HACKRF_UI_BRIDGE_CONTRACT_VERSION") = 1;
 
     py::class_<sdr_hackrf::HackrfRuntimeDspSession>(module, "HackrfRuntimeDspControl")
+        .def("drain_analytical_ready_events", &sdr_hackrf::HackrfRuntimeDspSession::drain_analytical_ready_events,
+             py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_persistence_snapshots",
             &sdr_hackrf::HackrfRuntimeDspSession::poll_persistence_snapshots,
             py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())

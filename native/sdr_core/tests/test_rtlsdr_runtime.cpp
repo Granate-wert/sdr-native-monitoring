@@ -191,7 +191,9 @@ void check_callback_dsp_and_stop(const bool delayed, const bool malformed,
     auto observed = std::make_shared<Observed>();
     auto session = sdr_rtlsdr::RtlRuntimeSession::start(
         std::make_unique<MockRtlPort>(observed, delayed, false, malformed, short_first,
-                                      Fault::None, empty_first), profile());
+                                      Fault::None, empty_first), [&] {
+            auto request = profile(); request.analytical_event_capacity = 128U; return request;
+        }());
     if (!delayed) {
         for (int trial = 0; trial < 200 && session->metrics().dsp.fft_frames_computed == 0U; ++trial) {
             std::this_thread::sleep_for(2ms);
@@ -213,9 +215,17 @@ void check_callback_dsp_and_stop(const bool delayed, const bool malformed,
         assert(sdr_core::has_flag(newest.frame->quality_flags, sdr_core::QualityFlag::Uncalibrated));
         assert(sdr_core::has_flag(newest.frame->quality_flags, sdr_core::QualityFlag::TimestampEstimated));
         assert(metrics.presentation_frames_superseded > 0U);  // delivery, not FFT loss
+        const auto journal = session->drain_analytical_ready_events(0U);
+        assert(journal.summary.supported && journal.summary.offered > 0U &&
+               journal.summary.handed_off == journal.summary.offered &&
+               journal.summary.events_lost == 0U && !journal.events.empty());
     }
     const auto stopped = session->stop(2000ms);
     assert(stopped.complete());
+    const auto final_journal = session->drain_analytical_ready_events(0U).summary;
+    assert(final_journal.outstanding == 0U &&
+           final_journal.events_generated == final_journal.events_drained +
+               final_journal.events_pending + final_journal.events_lost);
     assert(!session->cleanup_required());
     assert(observed->opens.load() == 1);
     assert(observed->reads.load() == 1);

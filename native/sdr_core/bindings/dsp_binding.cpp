@@ -240,6 +240,10 @@ void bind_dsp(py::module_& module) {
         .def_readonly("events_pending", &AnalyticalReadySummary::events_pending)
         .def_readonly("event_storage_bytes", &AnalyticalReadySummary::event_storage_bytes);
     module.def("analytical_ready_clock_ns", &analytical_ready_clock_ns);
+    module.attr("OWNER_ANALYTICAL_READY_CONTRACT_VERSION") = 1;
+    py::class_<AnalyticalReadyDrain>(module, "AnalyticalReadyDrain")
+        .def_readonly("events", &AnalyticalReadyDrain::events)
+        .def_readonly("summary", &AnalyticalReadyDrain::summary);
 
     // Bound under the CPU implementation name through the replaceable
     // DspBackend interface (P05 §7).
@@ -291,6 +295,8 @@ void bind_dsp(py::module_& module) {
         .def("reset", &DspBackend::reset)
         .def("metrics", &DspBackend::metrics)
         .def("analytical_ready_summary", &DspBackend::analytical_ready_summary)
+        .def("drain_analytical_ready_events", &DspBackend::drain_analytical_ready,
+             py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_analytical_ready_events", &DspBackend::poll_analytical_ready_events,
              py::arg("max_items") = 0U)
         .def("info", &DspBackend::info);

@@ -737,7 +737,8 @@ void bind_pluto(py::module_& module) {
             const PersistenceConfig& persistence,
             const RecordingConfig& recording,
             const std::optional<sdr_pluto::ContinuousSweepLineConfig>& continuous_sweep_line,
-            const sdr_pluto::ReceiverSelection receiver_selection
+            const sdr_pluto::ReceiverSelection receiver_selection,
+            const std::uint32_t analytical_event_capacity
         ) {
             sdr_pluto::FixedBandConfig result;
             result.device = device;
@@ -755,6 +756,7 @@ void bind_pluto(py::module_& module) {
             result.recording = recording;
             result.continuous_sweep_line = continuous_sweep_line;
             result.receiver_selection = receiver_selection;
+            result.analytical_event_capacity = analytical_event_capacity;
             sdr_pluto::validate(result);
             return result;
         }),
@@ -772,10 +774,12 @@ void bind_pluto(py::module_& module) {
             py::arg("persistence") = PersistenceConfig{},
             py::arg("recording") = RecordingConfig{},
             py::arg("continuous_sweep_line") = std::nullopt,
-            py::arg("receiver_selection") = sdr_pluto::ReceiverSelection::Rx1
+            py::arg("receiver_selection") = sdr_pluto::ReceiverSelection::Rx1,
+            py::arg("analytical_event_capacity") = 0U
         )
         .def_readonly("device", &sdr_pluto::FixedBandConfig::device)
         .def_readonly("receiver_selection", &sdr_pluto::FixedBandConfig::receiver_selection)
+        .def_readonly("analytical_event_capacity", &sdr_pluto::FixedBandConfig::analytical_event_capacity)
         .def_readonly("dsp", &sdr_pluto::FixedBandConfig::dsp)
         .def_readonly("persistence", &sdr_pluto::FixedBandConfig::persistence)
         .def_readonly("recording", &sdr_pluto::FixedBandConfig::recording)
@@ -1134,6 +1138,8 @@ void bind_pluto(py::module_& module) {
         .def("configure", &sdr_pluto::FixedBandEngine::configure, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("configure_paired", &sdr_pluto::FixedBandEngine::configure_paired, py::arg("config"), py::call_guard<py::gil_scoped_release>())
         .def("paired_metrics", &sdr_pluto::FixedBandEngine::paired_metrics, py::call_guard<py::gil_scoped_release>())
+        .def("drain_analytical_ready_events", &sdr_pluto::FixedBandEngine::drain_analytical_ready_events,
+             py::arg("receiver"), py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_paired_spectrum_frames", &sdr_pluto::FixedBandEngine::poll_paired_spectrum_frames, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("drain_latest_paired_spectrum_frame", &sdr_pluto::FixedBandEngine::drain_latest_paired_spectrum_frame, py::call_guard<py::gil_scoped_release>())
         .def("poll_receiver_persistence_snapshots", &sdr_pluto::FixedBandEngine::poll_receiver_persistence_snapshots, py::arg("receiver"), py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())

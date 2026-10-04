@@ -1038,6 +1038,30 @@ int main() {
 #endif
 
         std::cout << "P07 fixed-band native pipeline passed\n";
+        {
+            sdr_pluto::FixedBandEngine journal_owner("usb:mock");
+            auto requested = config();
+            requested.analytical_event_capacity = 32U;
+            static_cast<void>(journal_owner.configure(requested));
+            journal_owner.start();
+            if (!wait_for_frames(journal_owner, 8U)) throw std::runtime_error("journal owner FFT timeout");
+            const auto journal = journal_owner.drain_analytical_ready_events(
+                sdr_pluto::ReceiverSelection::Rx1, 0U);
+            if (!journal.summary.supported || journal.summary.event_capacity != 32U ||
+                journal.summary.offered < 8U || journal.events.empty())
+                throw std::runtime_error("actual Pluto owner journal missing");
+            bool refused = false;
+            try { static_cast<void>(journal_owner.drain_analytical_ready_events(
+                sdr_pluto::ReceiverSelection::Rx2, 0U)); }
+            catch (const sdr_core::ConfigurationError&) { refused = true; }
+            if (!refused) throw std::runtime_error("unadmitted journal RX2 accepted");
+            journal_owner.stop();
+            const auto final = journal_owner.drain_analytical_ready_events(
+                sdr_pluto::ReceiverSelection::Rx1, 0U).summary;
+            if (final.events_generated != final.events_drained + final.events_pending + final.events_lost ||
+                final.outstanding != 0U) throw std::runtime_error("terminal Pluto journal conservation failed");
+            journal_owner.disconnect();
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

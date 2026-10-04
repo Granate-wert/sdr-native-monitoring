@@ -2,6 +2,8 @@
 #include "sdr_core/errors.hpp"
 
 #include <iostream>
+#include <atomic>
+#include <thread>
 #include <stdexcept>
 
 namespace {
@@ -106,6 +108,37 @@ void test_independent_instances_and_foreign_refusal() {
     b.retire(right, AnalyticalReadyEventKind::ProducerCancelled);
     conservation(a.summary()); conservation(b.summary());
 }
+void test_concurrent_owner_drain_and_budget() {
+    refuses([] { static_cast<void>(analytical_ready_reserved_bytes(4097U)); });
+    expect(analytical_ready_reserved_bytes(128U) == 256U * sizeof(AnalyticalReadyEvent),
+           "journal plus drain reservation missing");
+    AnalyticalReadyJournal journal(128U);
+    refuses([&] { static_cast<void>(journal.drain(4097U)); });
+    std::atomic<bool> done{};
+    std::jthread producer([&] {
+        for (int index = 0; index < 10000; ++index) {
+            const auto ref = journal.offer(7U);
+            journal.retire(ref, AnalyticalReadyEventKind::HandedOff);
+        }
+        done.store(true);
+    });
+    std::uint64_t count{}, last_sequence{};
+    do {
+        const auto batch = journal.drain(32U);
+        conservation(batch.summary);
+        for (const auto& event : batch.events) {
+            expect(event.event_sequence > last_sequence, "concurrent drain duplicates or reorders evidence");
+            last_sequence = event.event_sequence;
+            ++count;
+        }
+    } while (!done.load() || journal.summary().events_pending != 0U);
+    producer.join();
+    const auto terminal = journal.drain(0U).summary;
+    conservation(terminal);
+    expect(terminal.offered == 10000U && terminal.handed_off == 10000U &&
+           terminal.outstanding == 0U && count + terminal.events_lost == 20000U,
+           "concurrent drain loses unaccounted offers or terminal dispositions");
+}
 }  // namespace
 int main() {
     try {
@@ -114,7 +147,8 @@ int main() {
         test_disabled_journal_not_false_complete_evidence();
         test_clock_regression_never_clipped_or_recovered_silently();
         test_independent_instances_and_foreign_refusal();
-        std::cout << "analytical-ready journal: 5 cases OK\n";
+        test_concurrent_owner_drain_and_budget();
+        std::cout << "analytical-ready journal: 6 cases OK\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

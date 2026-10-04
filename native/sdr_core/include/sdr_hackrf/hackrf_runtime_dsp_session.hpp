@@ -54,6 +54,7 @@ public:
     );
     [[nodiscard]] HackrfLatestSpectrumFrameDrain drain_latest_spectrum_frame();
     [[nodiscard]] HackrfRuntimeDspMetrics metrics() const;
+    [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(std::size_t max_items);
     [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
         std::size_t max_items = 0U
     );

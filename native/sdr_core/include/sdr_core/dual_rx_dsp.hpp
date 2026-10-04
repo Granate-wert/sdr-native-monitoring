@@ -32,6 +32,7 @@ struct DualRxDspConfig {
     // capacity is derived from this bound and the common hop/batch geometry.
     std::uint32_t max_input_samples_per_push{262'144U};
     DspBackendSelectionOptions backend{.preference = ComputeBackendKind::Cpu};
+    std::uint32_t analytical_event_capacity{};
 };
 
 void validate(const DualRxDspConfig& value);
@@ -119,6 +120,7 @@ public:
     );
     [[nodiscard]] LatestDualRxSpectrumFrameDrain drain_latest_spectrum_frame();
     [[nodiscard]] DualRxDspMetrics metrics() const;
+    [[nodiscard]] AnalyticalReadyDrain drain_analytical_ready_events(bool primary, std::size_t max_items);
 
 private:
     void reset_for_shared_gap();

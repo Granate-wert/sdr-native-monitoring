@@ -187,6 +187,9 @@ struct LiveResourceBudget {
         "spectrum backlog"
     );
     spectrum_backlog_bytes = checked_add(spectrum_backlog_bytes,
+        sdr_core::analytical_ready_reserved_bytes(config.analytical_event_capacity),
+        "analytical journal and drain");
+    spectrum_backlog_bytes = checked_add(spectrum_backlog_bytes,
         checked_multiply(checked_add(
                              2U * static_cast<std::uint64_t>(dsp_output_capacity(config)),
                              static_cast<std::uint64_t>(config.spectrum_queue_capacity) + 1U +
@@ -412,6 +415,7 @@ namespace {
         .max_input_samples_per_push = config.primary.device.buffer_samples,
         .backend = {.preference = config.primary.backend,
                     .allow_runtime_fallback = config.primary.allow_runtime_fallback},
+        .analytical_event_capacity = config.primary.analytical_event_capacity,
     };
 }
 } // namespace
@@ -442,7 +446,8 @@ void validate(const PairedFixedBandConfig& value) {
         p.acquisition_queue_capacity != q.acquisition_queue_capacity ||
         p.acquisition_overflow != q.acquisition_overflow ||
         p.snapshot_rate_hz != q.snapshot_rate_hz ||
-        p.discard_blocks_after_start != q.discard_blocks_after_start) {
+        p.discard_blocks_after_start != q.discard_blocks_after_start ||
+        p.analytical_event_capacity != q.analytical_event_capacity) {
         invalid("paired engine requires one common RF/gain/acquisition/cadence policy");
     }
     const auto dsp = paired_dsp_config(value, {});
@@ -916,6 +921,19 @@ public:
         return channel_metrics(*this);
     }
 
+    [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(
+        ReceiverSelection receiver, std::size_t max_items) {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (!configured_) invalid("analytical journal requires a configured owner");
+        if (receiver != ReceiverSelection::Rx1 && receiver != ReceiverSelection::Rx2)
+            invalid("analytical journal requires one exact receiver");
+        if (secondary_) return paired_dsp_->drain_analytical_ready_events(
+            receiver == ReceiverSelection::Rx1, max_items);
+        if (receiver != config_.receiver_selection)
+            invalid("analytical journal receiver is not admitted by this owner");
+        return backend_->drain_analytical_ready(max_items);
+    }
+
     [[nodiscard]] PairedFixedBandMetrics paired_metrics() const {
         std::lock_guard lock(lifecycle_mutex_);
         if (!secondary_) invalid("paired metrics require a paired configuration");
@@ -1379,6 +1397,7 @@ private:
                 2U, sdr_core::OverflowPolicy::LatestWins);
         sdr_core::CpuDspOptions options;
         options.output_capacity = dsp_output_capacity(config);
+        options.analytical_event_capacity = config.analytical_event_capacity;
         options.dc_removal = config.dc_removal_block_mean
                                  ? sdr_core::DcRemovalMode::BlockMean
                                  : sdr_core::DcRemovalMode::Off;
@@ -2775,4 +2794,8 @@ void FixedBandEngine::set_dsp_delay_for_test(const std::uint32_t milliseconds) n
     impl_->set_dsp_delay_for_test(milliseconds);
 }
 #endif
+sdr_core::AnalyticalReadyDrain FixedBandEngine::drain_analytical_ready_events(
+    ReceiverSelection receiver, std::size_t max_items) {
+    return impl_->drain_analytical_ready_events(receiver, max_items);
+}
 }  // namespace sdr_pluto

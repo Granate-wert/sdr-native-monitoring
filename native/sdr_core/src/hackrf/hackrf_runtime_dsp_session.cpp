@@ -84,4 +84,7 @@ HackrfRuntimeDspStopResult HackrfRuntimeDspSession::stop(
     return impl_->stop_result;
 }
 
+sdr_core::AnalyticalReadyDrain HackrfRuntimeDspSession::drain_analytical_ready_events(std::size_t max_items) {
+    return impl_->processing->drain_analytical_ready_events(max_items);
+}
 }  // namespace sdr_hackrf

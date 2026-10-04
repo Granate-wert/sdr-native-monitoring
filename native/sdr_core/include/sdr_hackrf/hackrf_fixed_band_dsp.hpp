@@ -32,6 +32,7 @@ struct HackrfFixedBandDspConfig {
     std::uint32_t dsp_output_capacity{256U};
     std::uint32_t presentation_capacity{4U};
     sdr_core::PersistenceConfig persistence{};
+    std::uint32_t analytical_event_capacity{};
 };
 
 struct HackrfFixedBandDspMetrics {
@@ -120,6 +121,7 @@ public:
     );
     [[nodiscard]] HackrfLatestSpectrumFrameDrain drain_latest_spectrum_frame();
     [[nodiscard]] HackrfFixedBandDspMetrics metrics() const;
+    [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(std::size_t max_items);
     [[nodiscard]] std::vector<sdr_core::PersistenceSnapshot> poll_persistence_snapshots(
         std::size_t max_items = 0U
     );

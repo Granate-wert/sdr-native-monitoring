@@ -92,6 +92,8 @@ void bind_rtl(py::module_& module) {
         .def_readonly("presentation_frames_superseded", &sdr_rtlsdr::RtlMetrics::presentation_frames_superseded)
         .def_readonly("dsp", &sdr_rtlsdr::RtlMetrics::dsp);
     py::class_<sdr_rtlsdr::RtlRuntimeSession>(module, "RtlRuntimeControl")
+        .def("drain_analytical_ready_events", &sdr_rtlsdr::RtlRuntimeSession::drain_analytical_ready_events,
+             py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("readback", &sdr_rtlsdr::RtlRuntimeSession::readback)
         .def("drain_latest_spectrum_frame", &sdr_rtlsdr::RtlRuntimeSession::drain_latest_spectrum_frame,
              py::call_guard<py::gil_scoped_release>())
@@ -123,7 +125,8 @@ void bind_rtl(py::module_& module) {
         const std::uint64_t configuration_generation, std::string source_id,
         const sdr_core::DetectorType detector, std::string expected_unique_serial,
         std::optional<sdr_rtlsdr::RtlSessionRoute> session_route,
-        std::optional<int> manual_tuner_gain_tenth_db) {
+        std::optional<int> manual_tuner_gain_tenth_db,
+        const std::uint32_t analytical_event_capacity) {
         sdr_rtlsdr::RtlProfile profile;
         profile.center_hz = center_hz;
         profile.sample_rate_hz = sample_rate_hz;
@@ -139,6 +142,7 @@ void bind_rtl(py::module_& module) {
         profile.expected_unique_serial = std::move(expected_unique_serial);
         profile.session_route = std::move(session_route);
         profile.manual_tuner_gain_tenth_db = manual_tuner_gain_tenth_db;
+        profile.analytical_event_capacity = analytical_event_capacity;
         profile.official_unbundled_runtime = true;
         sdr_rtlsdr::validate_rtl_profile(profile);
         py::gil_scoped_release release;
@@ -150,7 +154,8 @@ void bind_rtl(py::module_& module) {
        py::arg("presentation_capacity"), py::arg("configuration_generation"),
        py::arg("source_id"), py::arg("detector"), py::arg("expected_unique_serial") = "",
        py::arg("session_route") = py::none(),
-       py::arg("manual_tuner_gain_tenth_db") = py::none());
+       py::arg("manual_tuner_gain_tenth_db") = py::none(),
+       py::arg("analytical_event_capacity") = 0U);
 }
 
 }  // namespace sdr_core::python

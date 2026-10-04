@@ -150,6 +150,8 @@ DualRxDspResourceBudget dual_rx_dsp_resource_budget(const DualRxDspConfig& value
         checked_add(capacity, static_cast<std::uint64_t>(value.output_queue_capacity) + 1U)
     );
     result.spectrum_backlog_bytes = checked_add(result.spectrum_backlog_bytes,
+        2U * analytical_ready_reserved_bytes(value.analytical_event_capacity));
+    result.spectrum_backlog_bytes = checked_add(result.spectrum_backlog_bytes,
         checked_multiply(2U * sizeof(std::optional<AnalyticalReadyRef>),
             checked_add(capacity, static_cast<std::uint64_t>(value.output_queue_capacity) + 1U)));
     result.total_bytes = checked_add(
@@ -177,6 +179,7 @@ void DualRxDspPublisher::configure(const DualRxDspConfig& config) {
     primary_options.source = config.primary.source;
     primary_options.output_capacity = resource_budget.analytical_output_capacity;
     primary_options.cpu_shared_plan = shared_plan;
+    primary_options.analytical_event_capacity = config.analytical_event_capacity;
     DspOptions secondary_options = primary_options;
     secondary_options.source = config.secondary.source;
 
@@ -413,4 +416,11 @@ void DualRxDspPublisher::publish_ready_frames(const bool flush_partial_batch) {
     }
 }
 
+AnalyticalReadyDrain DualRxDspPublisher::drain_analytical_ready_events(
+    bool primary, std::size_t max_items) {
+    require_configured(configured_);
+    // Backend pointers are fixed during a configured owner's active lifetime.
+    // Only the journal is concurrent-safe; this is not a thread-safe configure.
+    return (primary ? primary_backend_ : secondary_backend_)->drain_analytical_ready(max_items);
+}
 }  // namespace sdr_core

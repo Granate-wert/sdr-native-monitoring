@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace sdr_core {
@@ -48,6 +49,14 @@ struct AnalyticalReadySummary {
     std::uint64_t event_storage_bytes{};
 };
 
+// Atomic post-drain summary: conservation may be checked without racing the
+// producer. Events are scalar, never IQ/frame/array payloads.
+struct AnalyticalReadyDrain {
+    std::vector<AnalyticalReadyEvent> events;
+    AnalyticalReadySummary summary;
+};
+[[nodiscard]] std::uint64_t analytical_ready_reserved_bytes(std::uint32_t capacity);
+
 // Native single-owner primitive. The owning output queue supplies exactly one
 // FIFO retirement per offer (duplicate/out-of-order retirements refuse); this
 // is NOT the downstream pane-obligation ledger.
@@ -65,6 +74,7 @@ public:
     void retire(const AnalyticalReadyRef& ref, AnalyticalReadyEventKind kind);
     [[nodiscard]] AnalyticalReadySummary summary() const noexcept;
     [[nodiscard]] std::vector<AnalyticalReadyEvent> poll_events(std::size_t max_items);
+    [[nodiscard]] AnalyticalReadyDrain drain(std::size_t max_items);
 private:
     void append(const AnalyticalReadyRef& ref, AnalyticalReadyEventKind kind) noexcept;
     Clock clock_;
@@ -73,6 +83,8 @@ private:
     AnalyticalReadySummary summary_;
     std::int64_t last_clock_ns_{};
     bool clock_seen_{}, clock_regressed_{};
+    mutable std::mutex mutex_;
+    std::mutex drain_mutex_; // one native drain allocation in flight per journal
 };
 
 // Native sample for an externally bracketed clock bridge. A unit name alone

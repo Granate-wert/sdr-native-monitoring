@@ -144,6 +144,7 @@ public:
     // Unsupported vendors/failover wrappers report supported=false, not fake
     // CPU timing. These are producer-local, NOT end-to-end paint dispositions.
     [[nodiscard]] virtual AnalyticalReadySummary analytical_ready_summary() const { return {}; }
+    [[nodiscard]] virtual AnalyticalReadyDrain drain_analytical_ready(std::size_t /*max_items*/) { return {}; }
     [[nodiscard]] virtual std::vector<AnalyticalReadyEvent> poll_analytical_ready_events(
         std::size_t /*max_items*/
     ) { return {}; }

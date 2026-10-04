@@ -43,6 +43,7 @@ struct RtlProfile {
     sdr_core::DetectorType detector{sdr_core::DetectorType::Sample};
     // Absent = existing automatic default. Integer tenths of dB, exact table entry.
     std::optional<int> manual_tuner_gain_tenth_db;
+    std::uint32_t analytical_event_capacity{};
 };
 
 void validate_rtl_profile(const RtlProfile& profile);
@@ -143,6 +144,7 @@ public:
 
     [[nodiscard]] RtlLatestFrame drain_latest_spectrum_frame();
     [[nodiscard]] RtlMetrics metrics() const;
+    [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(std::size_t max_items);
     [[nodiscard]] RtlStopResult stop(std::chrono::milliseconds timeout) noexcept;
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool cleanup_required() const noexcept;
