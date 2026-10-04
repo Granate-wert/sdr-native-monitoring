@@ -188,6 +188,12 @@ def run_case(path: str, case: str) -> None:
         assert [value.scope.source_id for value in journals] == ["actual:rx1", "actual:rx2"]
         assert journals[0].scope.owner_run_id == journals[1].scope.owner_run_id
         assert journals[0].counters.producer_instance_id != journals[1].counters.producer_instance_id
+        assert app.analytical_journal_snapshots() == journals
+        for publication, journal in zip((latest.primary, latest.secondary), journals, strict=True):
+            ref = publication.spectrum.detector_ready
+            assert ref is not None and ref.owner_run_id == journal.scope.owner_run_id
+            assert ref.producer_instance_id == journal.counters.producer_instance_id
+            assert ref.source_id == journal.scope.source_id
         assert sum(value.host_scalar_reserved_bytes for value in journals) == 2_097_152
         assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 1
         if case == "guards":

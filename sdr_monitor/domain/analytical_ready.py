@@ -81,6 +81,9 @@ class DetectorReadyReceipt:
     session_id: SessionId | None
     mapping: ReadyClockMapping
     host_bounds: ReadyHostBounds | None = None
+    # Only assigned after SAME-owner native journal producer validation.
+    # Legacy/vendor/replay receipts have no authenticated owner-run binding.
+    owner_run_id: str | None = None
 
     def __post_init__(self) -> None:
         if (type(self.adapter_clock_scope_id) is not str or not self.adapter_clock_scope_id.strip()
@@ -94,10 +97,13 @@ class DetectorReadyReceipt:
         _integer(self.ready_native_ns, "ready_native_ns", -(1 << 63), (1 << 63) - 1)
         if self.acquisition_epoch is not None:
             _integer(self.acquisition_epoch, "acquisition_epoch", 1, (1 << 64) - 1)
-        for label in ("receiver_id", "session_id"):
+        for label in ("receiver_id", "session_id", "owner_run_id"):
             value = getattr(self, label)
             if value is not None and (type(value) is not str or not value.strip() or value != value.strip()):
                 raise ValueError(f"ready receipt has invalid {label}")
+        if self.owner_run_id is not None and (len(self.owner_run_id) > 4096
+                or "\x00" in self.owner_run_id or self.owner_run_id == "unknown"):
+            raise ValueError("ready receipt owner run must be exact and bounded")
         if not isinstance(self.mapping, ReadyClockMapping):
             raise ValueError("ready mapping must be typed")
         if self.mapping is ReadyClockMapping.BOUNDED:

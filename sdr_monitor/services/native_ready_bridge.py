@@ -11,13 +11,16 @@ from collections import deque
 from collections.abc import Callable
 import os
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
 from ..domain.analytical_ready import (
     DetectorReadyReceipt, ReadyClockBracket, ReadyClockMapping, ReadyHostBounds,
 )
 from ..domain.identity import ConfigurationGeneration, SessionId, SourceId
+
+if TYPE_CHECKING:
+    from ..domain.analytical_journal import OwnerJournalSnapshot
 
 
 class NativeReadyBridge:
@@ -75,7 +78,8 @@ class NativeReadyBridge:
 
     def convert(self, frame: Any, *, source_id: SourceId,
                 config_generation: ConfigurationGeneration, receiver_id: str | None,
-                acquisition_epoch: int | None, session_id: SessionId | None) -> DetectorReadyReceipt | None:
+                acquisition_epoch: int | None, session_id: SessionId | None,
+                owner_journal: OwnerJournalSnapshot | None = None) -> DetectorReadyReceipt | None:
         ref = getattr(frame, "analytical_ready", None)
         if ref is None:  # Historical/replay/vendor/mocks: not a fresh receipt.
             return None
@@ -95,6 +99,21 @@ class NativeReadyBridge:
                 or frame.config_generation != config_generation
                 or ref.config_generation != config_generation):
             raise ValueError("native ready receipt has foreign source/generation")
+        owner_run_id = None
+        if owner_journal is not None:
+            from ..domain.analytical_journal import JournalState
+            scope, counters = owner_journal.scope, owner_journal.counters
+            if owner_journal.state is JournalState.ACTIVE and scope is not None and counters is not None:
+                if (scope.clock_scope_id != self._scope or scope.host_process_id != self._process_id
+                        or scope.source_id != source_id or scope.session_id != session_id
+                        or scope.configuration_generation != config_generation
+                        or scope.acquisition_epoch != acquisition_epoch
+                        or counters.producer_instance_id != ref.producer_instance_id
+                        or type(ref.offer_sequence) is not int or not 1 <= ref.offer_sequence <= counters.offered):
+                    raise ValueError("ready receipt differs from the SAME admitted owner journal")
+                owner_run_id = scope.owner_run_id
+        # Missing/incomplete/unsupported journal is unknown, never a fabricated
+        # native producer proof or a reason to change RF/acquisition lifecycle.
         bounds = None
         mapping = self._failure or ReadyClockMapping.OUTSIDE_SAMPLES
         if ref.clock_state == regressed:
@@ -112,5 +131,5 @@ class NativeReadyBridge:
         return DetectorReadyReceipt(
             self._scope, self._process_id, ref.producer_instance_id, ref.offer_sequence,
             config_generation, ref.ready_native_ns, source_id, receiver_id,
-            acquisition_epoch, session_id, mapping, bounds,
+            acquisition_epoch, session_id, mapping, bounds, owner_run_id,
         )

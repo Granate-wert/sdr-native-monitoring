@@ -41,6 +41,8 @@ from ..domain.recording import RecordingState
 from ..domain.tinysa_analyzer import TinySaSweepRequest
 from ..domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamily
 from ..services.source_capability_admission import admit_source_request
+from ..domain.analytical_journal import OwnerJournalSnapshot
+from ..services.owner_journal_scope import cached_owner_journals
 
 
 _Args = ParamSpec("_Args")
@@ -166,6 +168,11 @@ class LiveSessionApplicationService:
     def current_source_selection(self) -> AnalyzerSourceSelection | None:
         """Immutable low-rate control metadata; no SDK/catalog rebuild."""
         return self._sources.current() if self._sources is not None else None
+
+    def analytical_journal_snapshots(self) -> tuple[OwnerJournalSnapshot, ...]:
+        """Immutable cached scalar scope; no device discovery, poll or drain."""
+        return (self._rtbw.analytical_journal_snapshots() if self._rtbw is not None
+                else cached_owner_journals(self._port))
 
     def rtl_controls_available(self, source_id: str, selection_revision: int) -> bool:
         """No-I/O exact graph/selection readiness, never hardware or Start proof."""

@@ -2178,7 +2178,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             detector_ready=self._ready_bridge.convert(frame, source_id=source_id,
                 config_generation=generation, receiver_id=receiver_id,
                 acquisition_epoch=publication_context.acquisition_epoch,
-                session_id=publication_context.session_id),
+                session_id=publication_context.session_id,
+                owner_journal=self._owner_journals[1 if receiver_id == "RX2" else 0].current()),
         )
 
     def _convert_persistence(self, value: Any, publication_context: LiveSnapshot) -> LivePersistenceFrame:

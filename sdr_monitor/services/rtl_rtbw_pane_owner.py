@@ -15,6 +15,7 @@ from sdr_monitor.domain.pane_scheduler import CaptureJob, CaptureMeasurementMode
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
 from .pane_resource_session import PaneCaptureAdmission
+from .owner_journal_scope import capture_owner_scopes
 
 
 class RtlRtbwPaneOwner:
@@ -109,7 +110,8 @@ class RtlRtbwPaneOwner:
             started.unit, (self._endpoint_id,), started.acquisition_epoch,
             session_id=str(started.session_id), config_generation=started.active_config_generation,
             sample_rate_hz=applied.sample_rate_hz, fft_size=applied.fft_size,
-            hop_size=applied.hop_size)
+            hop_size=applied.hop_size,
+            owner_journal_scopes=capture_owner_scopes(self._live, ((self._endpoint_id, self._source_id),)))
 
     def stop_capture_and_wait(self) -> None:
         stopped = self._live.stop()

@@ -11,6 +11,8 @@ from ..services.rtl_capability_provider import RTL_ADAPTER_ID
 from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
 from ..domain.rtl_live import RtlConfigurationPatch, RtlLiveRequest
 from ..domain.live import LiveAdmissionRejected, LiveSnapshot
+from ..domain.analytical_journal import OwnerJournalSnapshot
+from ..services.owner_journal_scope import cached_owner_journals
 from .analyzer_sources import AnalyzerSourceSelectionApplicationService
 
 
@@ -59,6 +61,10 @@ class AnalyzerRtbwRouter:
             self._hackrf.bind_selection(self._sources.current())
         if self._rtl is not None:
             self._rtl.bind_selection(self._sources.current())
+
+    def analytical_journal_snapshots(self) -> tuple[OwnerJournalSnapshot, ...]:
+        """Cached SAME dispatched owner only; no selection fallback or SDK."""
+        return cached_owner_journals(self._dispatched) if self._dispatched is not None else ()
 
     @property
     def hackrf_selected(self) -> bool:

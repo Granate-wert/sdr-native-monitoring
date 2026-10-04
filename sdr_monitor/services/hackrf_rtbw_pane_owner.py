@@ -21,6 +21,7 @@ from sdr_monitor.domain.pane_scheduler import CaptureJob, CaptureMeasurementMode
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
 from .pane_resource_session import PaneCaptureAdmission
+from .owner_journal_scope import capture_owner_scopes
 
 
 def _same_request_intent(actual: HackrfLiveRequest | None, expected: HackrfLiveRequest) -> bool:
@@ -123,6 +124,7 @@ class HackrfRtbwPaneOwner:
             sample_rate_hz=applied.sample_rate_hz,
             fft_size=applied.fft_size,
             hop_size=applied.hop_size,
+            owner_journal_scopes=capture_owner_scopes(self._live, ((self._endpoint_id, self._source_id),)),
         )
 
     def stop_capture_and_wait(self) -> None:

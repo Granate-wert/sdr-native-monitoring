@@ -19,6 +19,10 @@ from typing import Callable, ContextManager, Iterator, Mapping, Protocol
 import numpy as np
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.analytical_journal import OwnerJournalScope
+from sdr_monitor.domain.analytical_ready import DetectorReadyReceipt
+from sdr_monitor.domain.pane_analytical_identity import PaneAnalyticalIdentity
+from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
@@ -69,6 +73,7 @@ class PaneCaptureAdmission:
     # Paired native RX keeps its two caller-provided SourceDescriptors intact.
     endpoint_source_ids: tuple[tuple[str, str], ...] = ()
     paired_sweep_run: PairedSweepRunIdentity | None = None
+    owner_journal_scopes: tuple[tuple[str, OwnerJournalScope], ...] = ()
 
     def __post_init__(self) -> None:
         if not all(isinstance(value, str) and value for value in (self.capture_id, self.source_id, self.unit)):
@@ -90,6 +95,22 @@ class PaneCaptureAdmission:
                 or (self.mode is not CaptureMeasurementMode.RTBW and self.paired_sweep_run is None)):
             raise ValueError("endpoint producer bindings require exact ordered RTBW endpoint/source identities")
         object.__setattr__(self, "endpoint_source_ids", bindings)
+        scopes = self.owner_journal_scopes
+        if (type(scopes) is not tuple or len(scopes) > 2
+                or scopes and (self.mode is not CaptureMeasurementMode.RTBW
+                    or tuple(item[0] for item in scopes if isinstance(item, tuple) and len(item) == 2) != endpoints)
+                or any(not isinstance(item, tuple) or len(item) != 2
+                       or not isinstance(item[1], OwnerJournalScope) for item in scopes)):
+            raise ValueError("capture admission requires exact ordered immutable owner scopes")
+        for endpoint_id, scope in scopes:
+            if (scope.source_id != self.producer_source_id(endpoint_id)
+                    or scope.session_id != self.session_id
+                    or scope.configuration_generation != self.config_generation
+                    or scope.acquisition_epoch != self.acquisition_epoch):
+                raise ValueError("owner scope differs from capture admission")
+        if len({(scope.clock_scope_id, scope.host_process_id, scope.owner_run_id)
+                for _, scope in scopes}) > 1:
+            raise ValueError("paired owner scopes require one common owner lifetime")
         if type(self.acquisition_epoch) is not int or self.acquisition_epoch < 0:
             raise ValueError("capture admission requires a non-negative producer epoch")
         if self.config_generation is not None and (
@@ -202,6 +223,19 @@ class PaneDelivery:
     bundle: AnalyzerFrameBundle
     host_received_monotonic_s: float
     host_run_serial: int = 0
+    analytical_identity: PaneAnalyticalIdentity | None = None
+
+    def __post_init__(self) -> None:
+        ref = self.analytical_identity
+        if ref is not None and (
+                not isinstance(ref, PaneAnalyticalIdentity)
+                or ref.physical_stream_resource_id != self.physical_stream_resource_id
+                or ref.capture_id != self.capture_id or ref.receiver_endpoint_id != self.receiver_endpoint_id
+                or ref.pane_id != self.crop.pane_id or ref.host_run_serial != self.host_run_serial
+                or ref.host_activation_serial != self.host_activation_serial
+                or not isinstance(self.bundle.spectrum, LiveSpectrumFrame)
+                or ref.ready is not self.bundle.spectrum.detector_ready):
+            raise ValueError("analytical delivery must retain its exact measurement and host binding")
 
     @property
     def pane_id(self) -> str:
@@ -277,6 +311,8 @@ class _Runtime:
     last_admission_session_id: str | None = None
     new_epoch_required: bool = False
     rejected_publications: int = 0
+    # At most the admitted two endpoints; receipts only, never measurement arrays.
+    last_analytical_receipts: dict[str, DetectorReadyReceipt] = field(default_factory=dict)
     last_paired_sweep_key: tuple[int, int, int, int] | None = None
     last_paired_sweep_run: PairedSweepRunIdentity | None = None
     last_pane_observation: dict[str, tuple[PairedSweepRunIdentity, tuple[int, ...]]] = field(default_factory=dict)
@@ -844,11 +880,32 @@ class PaneResourceSession:
             if now is None:
                 runtime.rejected_publications += 1
                 return ()
-            deliveries = tuple(PaneDelivery(resource_id, capture_id, endpoint_id,
-                                           runtime.activation_serial, crop, bundle, now, runtime.run_serial)
-                               for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)
+            ready = bundle.spectrum.detector_ready if isinstance(bundle.spectrum, LiveSpectrumFrame) else None
+            scope = dict(admission.owner_journal_scopes).get(endpoint_id)
+            qualified = ready is not None and ready.owner_run_id is not None and scope is not None
+            prior = runtime.last_analytical_receipts.get(endpoint_id)
+            if (qualified and prior is not None and ready is not None
+                    and prior.owner_run_id == ready.owner_run_id
+                    and (prior.producer_instance_id != ready.producer_instance_id
+                         or ready.offer_sequence < prior.offer_sequence
+                         or ready.offer_sequence == prior.offer_sequence and ready != prior)):
+                runtime.rejected_publications += 1
+                return ()
+            try:
+                deliveries = tuple(PaneDelivery(
+                    resource_id, capture_id, endpoint_id, runtime.activation_serial,
+                    crop, bundle, now, runtime.run_serial,
+                    PaneAnalyticalIdentity(scope, ready, resource_id, capture_id, endpoint_id,
+                        crop.pane_id, runtime.run_serial, runtime.activation_serial)
+                    if qualified and scope is not None and ready is not None else None)
+                    for crop in job.crops if crop.receiver_endpoint_id == endpoint_id)
+            except ValueError:
+                runtime.rejected_publications += 1
+                return ()  # Stale/foreign evidence never receives this activation.
             if not prepare_pair:
                 self._commit_deliveries(runtime, activation, admission, deliveries, now)
+                if qualified and ready is not None:
+                    runtime.last_analytical_receipts[endpoint_id] = ready
             return deliveries
 
     def _commit_deliveries(self, runtime: _Runtime, activation: PaneActivation,
@@ -1175,6 +1232,12 @@ class PaneResourceSession:
                          or admission.fft_size != job.profile.fft_size
                          or admission.hop_size != job.profile.hop_size))):
             raise PaneResourceError("owner admission differs from the scheduled capture")
+        by_endpoint = {endpoint.endpoint_id: endpoint for endpoint in runtime.group.endpoints}
+        for endpoint_id, scope in admission.owner_journal_scopes:
+            endpoint = by_endpoint[endpoint_id]
+            if (scope.receiver_id is not None and (
+                    not isinstance(endpoint, ReceiverEndpoint) or endpoint.selection.name != scope.receiver_id)):
+                raise PaneResourceError("owner analytical chain differs from the typed receiver endpoint")
 
     def _required_runtime(self, resource_id: str) -> _Runtime:
         try:

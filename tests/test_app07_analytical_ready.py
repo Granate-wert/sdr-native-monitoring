@@ -136,6 +136,37 @@ class AnalyticalReadyBindingTests(unittest.TestCase):
         # Fresh computation receipt above is NOT a physical acquisition proof.
 
 
+    def test_compiled_same_owner_receipt_gets_exact_outer_identity(self):
+        from sdr_monitor.domain.analytical_journal import OwnerJournalScope
+        from sdr_monitor.domain.identity import ConfigurationGeneration, FrameSequence, SessionId
+        from sdr_monitor.domain.live import LiveSessionState, LiveSnapshot
+        from sdr_monitor.domain.pane_analytical_identity import PaneAnalyticalIdentity
+        from sdr_monitor.services.native_live import NativeLiveSessionService
+
+        backend = self.backend(capacity=4096)
+        owner = NativeLiveSessionService(self.native)
+        owner._ready_bridge.begin()
+        backend.push_samples(np.ones(768, dtype=np.complex64), 256000., 100000000.)
+        raw = backend.poll_spectrum()[-1]
+        owner._ready_bridge.sample()
+        scope = OwnerJournalScope(owner._ready_bridge.clock_scope_id,
+            owner._ready_bridge.host_process_id, "compiled-owner-run",
+            raw.source.source_id, None, "compiled-session", raw.config_generation, 1)
+        owner._owner_journals[0].begin(scope, capacity=4096)
+        owner._owner_journals[0].drain(backend.drain_analytical_ready_events)
+        context = LiveSnapshot(ConfigurationGeneration(raw.config_generation), FrameSequence(0),
+            LiveSessionState.CONNECTED, acquisition_epoch=1, session_id=SessionId("compiled-session"))
+        mapped = owner._convert_spectrum(raw, context)
+        ref = mapped.detector_ready
+        self.assertEqual(ref.owner_run_id, scope.owner_run_id)
+        self.assertEqual(ref.producer_instance_id,
+                         owner._owner_journals[0].current().counters.producer_instance_id)
+        self.assertEqual((ref.ready_native_ns, ref.offer_sequence),
+                         (raw.analytical_ready.ready_native_ns, raw.analytical_ready.offer_sequence))
+        outer = PaneAnalyticalIdentity(scope, ref, "resource", "capture", "endpoint", "pane", 1, 1)
+        self.assertIs(outer.ready, ref)
+        # Actual compiled computation, not an RF or pane paint qualification.
+
     def test_atomic_bounded_drain_binding(self):
         self.assertEqual(self.native.OWNER_ANALYTICAL_READY_CONTRACT_VERSION, 1)
         backend = self.backend(capacity=4)

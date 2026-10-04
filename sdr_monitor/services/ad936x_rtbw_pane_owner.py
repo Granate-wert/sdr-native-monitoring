@@ -20,6 +20,7 @@ from sdr_monitor.domain.pane_scheduler import CaptureJob, CaptureMeasurementMode
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
 from .pane_resource_session import PaneCaptureAdmission
+from .owner_journal_scope import capture_owner_scopes
 
 
 _REQUIRED_READBACK = frozenset({"center_hz", "sample_rate_hz", "analog_bandwidth_hz", "gain_db"})
@@ -155,6 +156,7 @@ class Ad936xRtbwPaneOwner:
             sample_rate_hz=applied.applied.sample_rate_hz,
             fft_size=applied.applied.fft_size,
             hop_size=profile.hop_size,
+            owner_journal_scopes=capture_owner_scopes(self._live, ((self._endpoint_id, self._source_id),)),
         )
 
     def stop_capture_and_wait(self) -> None:

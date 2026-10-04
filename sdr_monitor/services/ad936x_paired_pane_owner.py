@@ -22,6 +22,7 @@ from .ad936x_rtbw_pane_owner import (
     Ad936xRtbwPaneOwner, _KNOWN_DETECTORS, _KNOWN_WINDOWS, _REQUIRED_READBACK, _applied_covers_job,
 )
 from .pane_resource_session import PaneCaptureAdmission
+from .owner_journal_scope import capture_owner_scopes
 
 
 class Ad936xPairedPaneOwner(Ad936xRtbwPaneOwner):
@@ -136,7 +137,9 @@ class Ad936xPairedPaneOwner(Ad936xRtbwPaneOwner):
             session_id=self._session_id, config_generation=started.active_config_generation,
             sample_rate_hz=applied.applied.sample_rate_hz, fft_size=applied.applied.fft_size,
             hop_size=profile.hop_size,
-            endpoint_source_ids=tuple((item, item) for item in job.receiver_endpoint_ids))
+            endpoint_source_ids=tuple((item, item) for item in job.receiver_endpoint_ids),
+            owner_journal_scopes=capture_owner_scopes(
+                self._live, tuple((item, item) for item in job.receiver_endpoint_ids)))
 
     def stop_capture_and_wait(self) -> None:
         super().stop_capture_and_wait()

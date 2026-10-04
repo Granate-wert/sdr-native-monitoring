@@ -288,7 +288,8 @@ class HackrfAnalyzerService:
             clock_domain=context.clock_domain, numerical_provenance=provenance,
             detector_ready=self._ready_bridge.convert(frame, source_id=source,
                 config_generation=generation, receiver_id=None,
-                acquisition_epoch=context.acquisition_epoch, session_id=context.session_id))
+                acquisition_epoch=context.acquisition_epoch, session_id=context.session_id,
+                owner_journal=self._journal.current()))
 
     def _convert_persistence(self, value: Any, context: LiveSnapshot) -> LivePersistenceFrame:
         request = context.hackrf_request

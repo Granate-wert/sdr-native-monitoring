@@ -353,7 +353,7 @@ class RtlAnalyzerService:
             detector_ready=self._ready_bridge.convert(frame, source_id=request.source_id,
                 config_generation=ConfigurationGeneration(request.configuration_generation),
                 receiver_id=None, acquisition_epoch=current.acquisition_epoch,
-                session_id=current.session_id))
+                session_id=current.session_id, owner_journal=self._journal.current()))
 
     def _poll(self) -> None:
         last_metrics = time.monotonic()
