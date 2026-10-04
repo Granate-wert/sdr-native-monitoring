@@ -4437,3 +4437,33 @@ refill failure with code -138. Exact server/driver cause remains unknown, and no
 universal impossibility or additive-link-throughput conclusion is made. Both
 experimental owners closed and original RF settings/gain modes were restored.
 Production paired capture still uses one owner/context/buffer and one transport.
+
+## AD936x lower-rate profile and explicit Sweep window — 2026-10-04
+
+User clarification: the established 36 MHz analysis-window crop applies to
+**Sweep**, because edge distortion was observed outside that window. It is not
+an RTBW limit. RTBW is intended to use the full available receive/filter band;
+displaying a smaller frequency crop does not reduce the configured sample rate.
+
+The new explicit 30.72 MS/s mode is capability-qualified, not inferred from
+an AD9363 label, and does not impose an 18 MHz window. Its profile requests a
+30 MHz RF filter and defaults to a 30 MHz Sweep window, with 1 MHz overlap.
+An explicit smaller `sweep_window_hz` is allowed (including 18 MHz), but must
+exceed overlap and fit sample rate, RF filter and the 36 MHz Sweep ceiling.
+This is engineering intent, not a measured flatness/calibration guarantee.
+
+At 61.44 MS/s the established Sweep profile remains RF filter 40 MHz, usable
+window 36 MHz and overlap 2 MHz. Full RTBW remains RF filter/window 56 MHz;
+at 30.72 MS/s full RTBW is 30 MHz. Native Apply/Start readback still decides
+whether the exact requested hardware settings are accepted. The legacy pure
+draft API retains its explicit edge-trim compatibility default; new UI V2
+AD/HackRF RTBW drafts are to select Full Receive by default, with saved explicit
+band choices preserved. UI implementation and matched-build/HIL are pending.
+
+Analysis N refers to bins inside the selected Sweep W. Physical FFT F is
+ceilPow2(Fs*N/W), never a relabelled N or silently reduced workload. Paired RX
+must resolve one common Fs/filter/W/overlap/tuner sequence, though pane display
+crops can differ. Unsupported or inconsistent choices refuse before RF.
+
+Backend/compiler source and mock Stage/Preview tests are implemented; no new
+physical, frozen-GUI, throughput, RF-flatness or release claim is made here.

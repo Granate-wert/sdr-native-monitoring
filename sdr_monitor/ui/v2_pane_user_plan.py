@@ -14,7 +14,9 @@ from math import ceil, floor, isfinite
 from typing import Mapping
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
-from sdr_monitor.domain.ad936x_pane_profiles import ad936x_pane_profile_supported, ad936x_pane_rate_profile
+from sdr_monitor.domain.ad936x_pane_profiles import (
+    ad936x_pane_profile_supported, ad936x_pane_rate_profile, ad936x_pane_sweep_window,
+)
 from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
 from sdr_monitor.domain.calibration import CalibrationProfile
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
@@ -117,12 +119,18 @@ class PaneSlotDraft:
     rtbw_band: RtbwBandPolicy = field(default=RtbwBandPolicy.EDGE_TRIMMED, kw_only=True)
     receiver_selection: ReceiverChainSelection = field(default=ReceiverChainSelection.RX1, kw_only=True)
     manual_tuner_gain_tenth_db: int | None = field(default=None, kw_only=True)
+    sweep_window_hz: float | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
             raise PaneUserPlanError("pane number must be in [1, 4]")
         if type(self.network_discovery) is not bool:
             raise PaneUserPlanError("pane network discovery intent must be explicit")
+        if self.sweep_window_hz is not None and (
+                type(self.sweep_window_hz) not in {int, float} or not isfinite(self.sweep_window_hz)
+                or not 0 < self.sweep_window_hz <= 36_000_000.
+                or self.measurement_mode != CaptureMeasurementMode.SWEEP):
+            raise PaneUserPlanError("explicit analysis window is an AD936x Sweep-only intent in (0, 36 MHz]")
         if self.tinysa is not None and not isinstance(self.tinysa, TinySaPaneIntent):
             raise PaneUserPlanError("pane tinySA settings require typed intent")
         if not isinstance(self.rtbw_band, RtbwBandPolicy):
@@ -152,6 +160,7 @@ class PaneSlotDraft:
                     or self.maximum_revisit_s is not None or self.tinysa is not None
                     or self.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED
                     or self.receiver_selection is not ReceiverChainSelection.RX1
+                    or self.sweep_window_hz is not None
                     or gain is not None):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
@@ -379,6 +388,13 @@ def compile_user_pane_plan(
         if rate_profile.sweep_overlap_hz is None or analysis_bins == 2048:
             raise PaneUserPlanError("paired Sweep requires an explicit 30.72 or 61.44 MS/s analysis profile",
                                     reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT)
+        try:
+            windows = {ad936x_pane_sweep_window(rate_profile, draft.sweep_window_hz) for draft in source_drafts}
+            if len(windows) != 1:
+                raise ValueError("paired Sweep needs one common analysis window")
+            sweep_window = windows.pop()
+        except ValueError as error:
+            raise PaneUserPlanError(str(error), reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT) from None
         starts = tuple(float(draft.start_hz) for draft in source_drafts if draft.start_hz is not None)
         stops = tuple(float(draft.stop_hz) for draft in source_drafts if draft.stop_hz is not None)
         common_start, common_stop = min(starts), max(stops)
@@ -391,7 +407,7 @@ def compile_user_pane_plan(
                             for bounds in capability.tuning_ranges_hz)):
             raise PaneUserPlanError("paired Sweep common LO sequence exceeds one observed tuning range",
                                     reason=PaneUserRefusal.OBSERVED_RANGE_EXCEEDED)
-        minimum_f = ceil(rate * analysis_bins / rate_profile.trimmed_window_hz)
+        minimum_f = ceil(rate * analysis_bins / sweep_window)
         physical_f = 1 << (minimum_f - 1).bit_length()
         configuration = LiveConfiguration(
             center_hz=(common_start + common_stop) / 2.0, sample_rate_hz=rate,
@@ -400,7 +416,7 @@ def compile_user_pane_plan(
             snapshot_rate_hz=240.0, backend=BackendKind.CPU,
             persistence_enabled=False, persistence_mode="disabled")
         request = ContinuousSweepPlanRequest(
-            common_start, common_stop, usable_window_hz=rate_profile.trimmed_window_hz,
+            common_start, common_stop, usable_window_hz=sweep_window,
             overlap_hz=rate_profile.sweep_overlap_hz, output_queue_capacity=2,
             analysis_bins_per_usable_window=analysis_bins)
         receipt = pairs[source_id]
@@ -435,6 +451,8 @@ def compile_user_pane_plan(
             continue
         source_id = draft.source_id
         choice = selected[source_id]
+        if draft.sweep_window_hz is not None and choice.family is not DeviceFamily.AD936X:
+            raise PaneUserPlanError("explicit Sweep analysis window belongs only to AD936x panes")
         if draft.tinysa is not None and choice.family is not DeviceFamily.TINYSA:
             raise PaneUserPlanError("tinySA settings cannot be attached to an SDR pane")
         if draft.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED and (
@@ -461,12 +479,15 @@ def compile_user_pane_plan(
             if source_id in paired_sweep_profiles:
                 profile = paired_sweep_profiles[source_id]
             elif draft.measurement_mode is CaptureMeasurementMode.SWEEP:
-                if rate_profile.sweep_overlap_hz is None:
-                    raise PaneUserPlanError("AD936x pane Sweep requires an explicit 30.72 or 61.44 MS/s profile")
+                try:
+                    sweep_window = ad936x_pane_sweep_window(rate_profile, draft.sweep_window_hz)
+                except ValueError as error:
+                    raise PaneUserPlanError(str(error)) from None
+                assert rate_profile.sweep_overlap_hz is not None
                 # The displayed selection is analysis N INSIDE the profile's W.
                 # Choose and expose the minimum power-of-two physical F whose
                 # Fs/F spacing can support W/N; never reinterpret N as F.
-                minimum_f = ceil(draft.sample_rate_hz * draft.fft_size / rate_profile.trimmed_window_hz)
+                minimum_f = ceil(draft.sample_rate_hz * draft.fft_size / sweep_window)
                 physical_f = 1 << (minimum_f - 1).bit_length()
                 configuration = LiveConfiguration(
                     center_hz=center, sample_rate_hz=draft.sample_rate_hz,
@@ -475,7 +496,7 @@ def compile_user_pane_plan(
                     snapshot_rate_hz=240.0, backend=BackendKind.CPU,
                     persistence_enabled=False, persistence_mode="disabled")
                 request = ContinuousSweepPlanRequest(
-                    draft.start_hz, draft.stop_hz, usable_window_hz=rate_profile.trimmed_window_hz,
+                    draft.start_hz, draft.stop_hz, usable_window_hz=sweep_window,
                     overlap_hz=rate_profile.sweep_overlap_hz, output_queue_capacity=2,
                     analysis_bins_per_usable_window=draft.fft_size)
                 try:

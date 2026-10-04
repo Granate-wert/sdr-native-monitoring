@@ -8,6 +8,7 @@ existing native Apply/Start readback and selected-session guards remain final.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 from .device_capabilities import (
     CapabilityEvidenceOrigin, CapabilityField, DeviceCapabilitySnapshot, DeviceFamily,
@@ -25,7 +26,7 @@ class Ad936xPaneRateProfile:
 
 AD936X_PANE_RATE_PROFILES = (
     Ad936xPaneRateProfile(20_000_000., 10_000_000., 10_000_000., 20_000_000., None),
-    Ad936xPaneRateProfile(30_720_000., 20_000_000., 18_000_000., 30_000_000., 1_000_000.),
+    Ad936xPaneRateProfile(30_720_000., 30_000_000., 30_000_000., 30_000_000., 1_000_000.),
     Ad936xPaneRateProfile(61_440_000., 40_000_000., 36_000_000., 56_000_000., 2_000_000.),
 )
 
@@ -74,3 +75,20 @@ def ad936x_pane_rate_choices(
     return tuple(profile.sample_rate_hz for profile in AD936X_PANE_RATE_PROFILES
                  if (not sweep or profile.sweep_overlap_hz is not None)
                  and ad936x_pane_profile_supported(snapshot, profile, full_receive=full_receive))
+
+
+def ad936x_pane_sweep_window(profile: Ad936xPaneRateProfile, requested_hz: float | None = None) -> float:
+    """Explicit Sweep window, capped at 36 MHz; never hardcode 18 MHz at low Fs.
+
+    36 MHz is the established high-rate Sweep crop due to observed edge
+    distortion. It is NOT an RTBW limit or a calibrated flatness guarantee for
+    every device. Native geometry additionally validates overlap and spacing.
+    """
+    if profile not in AD936X_PANE_RATE_PROFILES or profile.sweep_overlap_hz is None:
+        raise ValueError("AD936x pane Sweep requires an explicit 30.72 or 61.44 MS/s profile")
+    window = profile.trimmed_window_hz if requested_hz is None else requested_hz
+    maximum = min(profile.sample_rate_hz, profile.trimmed_filter_hz, 36_000_000.)
+    if (type(window) not in {int, float} or not isfinite(window)
+            or not profile.sweep_overlap_hz < window <= maximum):
+        raise ValueError("Sweep analysis window must exceed overlap and fit Fs, RF filter and the 36 MHz Sweep limit")
+    return float(window)

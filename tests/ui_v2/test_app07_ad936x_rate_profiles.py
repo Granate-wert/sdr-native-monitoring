@@ -7,7 +7,7 @@ import unittest
 from sdr_monitor.domain.ad936x_pane_profiles import (
     ad936x_pane_profile_supported, ad936x_pane_rate_choices, ad936x_pane_rate_profile,
 )
-from sdr_monitor.domain.device_capabilities import CapabilityEvidenceOrigin, CapabilityField, CapabilityRange
+from sdr_monitor.domain.device_capabilities import CapabilityEvidenceOrigin, CapabilityField, CapabilityRange, DeviceFamily
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
 from sdr_monitor.domain.receiver_topology import (
     IqComponent, ReceiverBindingMode, ReceiverChain, ReceiverChainSelection,
@@ -70,7 +70,7 @@ class Ad936xRateProfileTests(unittest.TestCase):
             paired_selections={} if pair is None else {source.device_id: pair})
 
     def draft(self, **changes):
-        return replace(PaneSlotDraft(1, self.source.device_id, 100e6, 118e6,
+        return replace(PaneSlotDraft(1, self.source.device_id, 100e6, 130e6,
                                     sample_rate_hz=30.72e6), **changes)
 
     def test_rate_choices_are_observed_not_chip_label_or_transport(self):
@@ -103,7 +103,7 @@ class Ad936xRateProfileTests(unittest.TestCase):
         self.assertFalse(ad936x_pane_profile_supported(gap, ad936x_pane_rate_profile(30.72e6)))
 
     def test_rtbw_exact_trimmed_and_full_receive_no_hidden_downgrade(self):
-        for band, stop, bandwidth in ((RtbwBandPolicy.EDGE_TRIMMED, 118e6, 20e6),
+        for band, stop, bandwidth in ((RtbwBandPolicy.EDGE_TRIMMED, 130e6, 30e6),
                                       (RtbwBandPolicy.FULL_RECEIVE, 130e6, 30e6)):
             with self.subTest(band=band):
                 plan = self.compile((self.draft(stop_hz=stop, rtbw_band=band),))
@@ -116,18 +116,18 @@ class Ad936xRateProfileTests(unittest.TestCase):
                     self.compile((self.draft(stop_hz=stop + 1, rtbw_band=band),))
         self.assertEqual(self.native.engines, [])
 
-    def test_filter_limits_refuse_full_but_not_trimmed(self):
+    def test_filter_limits_refuse_profile_without_silent_narrowing(self):
         capability = replace(self.capability, analog_bandwidth_ranges_hz=(CapabilityRange(.2e6, 20e6, "Hz"),))
         source = replace(self.source, binding=replace(self.source.binding, snapshot=capability))
-        self.compile((self.draft(),), source=source)
-        with self.assertRaises(PaneUserPlanError):
-            self.compile((self.draft(rtbw_band=RtbwBandPolicy.FULL_RECEIVE),), source=source)
+        for band in (RtbwBandPolicy.EDGE_TRIMMED, RtbwBandPolicy.FULL_RECEIVE):
+            with self.subTest(band=band), self.assertRaises(PaneUserPlanError):
+                self.compile((self.draft(rtbw_band=band),), source=source)
 
     def test_exact_capability_boundaries_and_legacy_6144_geometry(self):
         profile = ad936x_pane_rate_profile(30.72e6)
         self.assertTrue(ad936x_pane_profile_supported(self.capability, profile))
         for changes in ({"sample_rate_ranges_hz": (CapabilityRange(2e6, 30.72e6 - 1, "Hz"),)},
-                        {"analog_bandwidth_ranges_hz": (CapabilityRange(.2e6, 20e6 - 1, "Hz"),)}):
+                        {"analog_bandwidth_ranges_hz": (CapabilityRange(.2e6, 30e6 - 1, "Hz"),)}):
             self.assertFalse(ad936x_pane_profile_supported(replace(self.capability, **changes), profile))
         capability = replace(self.capability, sample_rate_ranges_hz=(CapabilityRange(2e6, 61.44e6, "Hz"),))
         source = replace(self.source, binding=replace(self.source.binding, snapshot=capability))
@@ -149,16 +149,16 @@ class Ad936xRateProfileTests(unittest.TestCase):
         self.assertEqual(self.native.engines, [])
         self.assertIsNone(self.graph.live.current_snapshot().applied)
 
-    def test_sweep_analysis_n_inside_18mhz_uses_explicit_physical_fft(self):
+    def test_sweep_analysis_n_inside_default_30mhz_uses_explicit_physical_fft(self):
         for bins, physical in ((1024, 2048), (4096, 8192), (16384, 32768)):
             with self.subTest(bins=bins):
                 plan = self.compile((self.draft(stop_hz=220e6, measurement_mode=CaptureMeasurementMode.SWEEP,
                                                 fft_size=bins),))
                 profile = plan.layout.schedule.resources[0].jobs[0].profile
                 self.assertEqual((profile.configuration.sample_rate_hz, profile.configuration.analog_bandwidth_hz,
-                                  profile.configuration.fft_size), (30.72e6, 20e6, physical))
+                                  profile.configuration.fft_size), (30.72e6, 30e6, physical))
                 self.assertEqual((profile.request_template.usable_window_hz, profile.request_template.overlap_hz,
-                                  profile.request_template.analysis_bins_per_usable_window), (18e6, 1e6, bins))
+                                  profile.request_template.analysis_bins_per_usable_window), (30e6, 1e6, bins))
                 self.assertEqual(plan.initial_ad_configurations[0][1], profile.configuration)
         self.assertEqual(self.native.engines, [])
 
@@ -201,10 +201,10 @@ class Ad936xRateProfileTests(unittest.TestCase):
         self.assertEqual(len(resource.jobs[0].receiver_endpoint_ids), 2)
         self.assertEqual(plan.initial_ad_configurations[0][1].sample_rate_hz, 30.72e6)
 
-    def test_paired_rtbw_incompatible_rate_or_band_refuses_without_owner_creation(self):
+    def test_paired_rtbw_incompatible_rate_refuses_without_owner_creation(self):
         drafts = (self.draft(stop_hz=108e6), self.draft(number=2, start_hz=108e6, stop_hz=116e6,
                    receiver_selection=ReceiverChainSelection.RX2))
-        for changes in ({"sample_rate_hz": 20e6}, {"rtbw_band": RtbwBandPolicy.FULL_RECEIVE}):
+        for changes in ({"sample_rate_hz": 20e6}, {"sample_rate_hz": 61.44e6}):
             with self.subTest(changes=changes), self.assertRaises(PaneUserPlanError):
                 self.compile((drafts[0], replace(drafts[1], **changes)), pair=self.pair())
         self.assertEqual(self.native.engines, [])
@@ -220,10 +220,52 @@ class Ad936xRateProfileTests(unittest.TestCase):
         profile = resource.jobs[0].profile
         self.assertEqual((profile.configuration.sample_rate_hz, profile.configuration.fft_size), (30.72e6, 8192))
         self.assertEqual((profile.request_template.start_hz, profile.request_template.stop_hz), (100e6, 220e6))
-        self.assertEqual(profile.request_template.usable_window_hz, 18e6)
+        self.assertEqual(profile.request_template.usable_window_hz, 30e6)
         self.assertEqual(self.native.engines, [])
         with self.assertRaises(PaneUserPlanError):
             self.compile((drafts[0], replace(drafts[1], sample_rate_hz=61.44e6)), pair=self.pair())
         for rate in (16e6, 20e6, 61.44e6):
             with self.subTest(rate=rate), self.assertRaises(PaneUserPlanError):
                 self.compile(tuple(replace(draft, sample_rate_hz=rate) for draft in drafts), pair=self.pair())
+
+    def test_explicit_sweep_window_not_hardcoded18_and_never_changes_fs_or_filter(self):
+        for window, physical in ((30e6, 8192), (24e6, 8192), (18e6, 8192), (8e6, 16384)):
+            with self.subTest(window=window):
+                plan = self.compile((self.draft(stop_hz=220e6, measurement_mode=CaptureMeasurementMode.SWEEP,
+                                                sweep_window_hz=window),))
+                profile = plan.layout.schedule.resources[0].jobs[0].profile
+                self.assertEqual(profile.configuration.sample_rate_hz, 30.72e6)
+                self.assertEqual(profile.configuration.analog_bandwidth_hz, 30e6)
+                self.assertEqual(profile.configuration.fft_size, physical)
+                self.assertEqual(profile.request_template.usable_window_hz, window)
+                self.assertEqual(profile.request_template.analysis_bins_per_usable_window, 4096)
+        for invalid in (True, "18", 0, -1, float("nan"), 36e6 + 1):
+            with self.subTest(invalid=invalid), self.assertRaises(PaneUserPlanError):
+                self.draft(measurement_mode=CaptureMeasurementMode.SWEEP, sweep_window_hz=invalid)
+        for window in (1e6, 30e6 + 1, 36e6):
+            with self.subTest(window=window), self.assertRaises(PaneUserPlanError):
+                self.compile((self.draft(measurement_mode=CaptureMeasurementMode.SWEEP, sweep_window_hz=window),))
+        with self.assertRaises(PaneUserPlanError):
+            self.draft(sweep_window_hz=18e6)
+
+    def test_paired_sweep_common_window_is_resolved_not_inferred_from_rate(self):
+        first = self.draft(stop_hz=160e6, measurement_mode=CaptureMeasurementMode.SWEEP)
+        second = self.draft(number=2, start_hz=140e6, stop_hz=220e6,
+                            measurement_mode=CaptureMeasurementMode.SWEEP,
+                            receiver_selection=ReceiverChainSelection.RX2, sweep_window_hz=30e6)
+        plan = self.compile((first, second), pair=self.pair())
+        self.assertEqual(len(plan.layout.schedule.resources[0].jobs), 1)
+        with self.assertRaisesRegex(PaneUserPlanError, "common analysis window"):
+            self.compile((first, replace(second, sweep_window_hz=18e6)), pair=self.pair())
+        custom = self.compile((replace(first, sweep_window_hz=18e6), replace(second, sweep_window_hz=18e6)),
+                              pair=self.pair())
+        self.assertEqual(custom.layout.schedule.resources[0].jobs[0].profile.request_template.usable_window_hz, 18e6)
+        self.assertEqual(self.native.engines, [])
+
+    def test_explicit_window_is_not_silently_ignored_by_other_families(self):
+        for family in (DeviceFamily.HACKRF, DeviceFamily.TINYSA):
+            source = replace(self.source, runtime=None, binding=replace(self.source.binding,
+                family=family, snapshot=None, calibration_identity=None))
+            with self.subTest(family=family), self.assertRaisesRegex(PaneUserPlanError, "only to AD936x"):
+                self.compile((self.draft(measurement_mode=CaptureMeasurementMode.SWEEP,
+                                         sweep_window_hz=18e6),), source=source)
