@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import math
+from time import monotonic
 
 from PySide6.QtCore import QSettings, Signal, Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
@@ -48,12 +49,16 @@ class IndependentPaneBoardV2(QWidget):
     def __init__(self, preparer: PaneDeliveryPreparer, *,
                  projector_factory: Callable[[], SpectrumProjector] | None = None,
                  source_labels: Mapping[str, str] | None = None,
+                 monotonic_clock: Callable[[], float] = monotonic,
                  settings: QSettings | None = None,
                  parent: QWidget | None = None) -> None:
         if not isinstance(preparer, PaneDeliveryPreparer):
             raise TypeError("independent pane board requires a qualified presentation plan")
+        if not callable(monotonic_clock):
+            raise TypeError("pane presentation clock must be callable")
         super().__init__(parent)
         self._preparer = preparer
+        self._monotonic_clock = monotonic_clock
         self._installed_bindings = dict(preparer.bindings)
         self._paired_resources = preparer.paired_resource_ids
         self._retired_bindings: dict[str, PanePresentationBinding] = {}
@@ -69,6 +74,7 @@ class IndependentPaneBoardV2(QWidget):
         self._range_anchors: dict[int, tuple[object, ...]] = {}
         self._last_order: dict[int, tuple[int, int, int, int, int]] = {}
         self._last_run_serial: dict[int, int] = {}
+        self._plot_updated_at: dict[int, float] = {}
         self._paired_visual_context: dict[str, _PairedVisualContext] = {}
         self._paired_awaiting_activation: set[str] = set()
         schedule = preparer.layout.schedule
@@ -169,6 +175,8 @@ class IndependentPaneBoardV2(QWidget):
                 timing.setTextFormat(Qt.TextFormat.PlainText)
                 timing.setMinimumWidth(0)
                 timing.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                timing.setWordWrap(False)
+                timing.setFixedHeight(timing.fontMetrics().lineSpacing() * 2 + 2)
                 timing.hide()
                 cell_layout.addWidget(timing)
                 self._timing_labels[slot.number] = timing
@@ -374,6 +382,7 @@ class IndependentPaneBoardV2(QWidget):
             self._range_anchors.pop(number, None)
             self._last_order.pop(number, None)
             self._last_run_serial.pop(number, None)
+            self._plot_updated_at.pop(number, None)
             self._panes[number].clear_shared_view()
             for view in (self._panes[number].spectrum_scene.view_box,
                          self._panes[number].waterfall_pane.view_box):
@@ -404,10 +413,25 @@ class IndependentPaneBoardV2(QWidget):
         order = self._last_order.get(slot_number)
         return None if order is None else order[0]
 
+    def plot_update_age_s(self, slot_number: int, *, now: float | None = None) -> float | None:
+        """Monotonic age since this pane last accepted a GUI presentation packet."""
+        if slot_number not in self._timing_labels:
+            raise ValueError("plot age requires one active occupied pane")
+        updated_at = self._plot_updated_at.get(slot_number)
+        if (updated_at is None or not isinstance(updated_at, (int, float))
+                or not math.isfinite(updated_at)):
+            return None
+        current = self._monotonic_clock() if now is None else now
+        if not isinstance(current, (int, float)) or not math.isfinite(current):
+            return None
+        age = float(current) - updated_at
+        return age if age >= 0 else None
+
     def set_pane_timing(self, slot_number: int, summary: str, explanation: str) -> None:
         """Show a compact, truthful host-timing row for one occupied pane."""
         if self._terminal_released or slot_number not in self._timing_labels:
             raise ValueError("timing requires one active occupied pane")
+        self._reserve_timing_rows()
         label = self._timing_labels[slot_number]
         if label.text() != summary:
             label.setText(summary)
@@ -433,6 +457,14 @@ class IndependentPaneBoardV2(QWidget):
         self.setStyleSheet(stylesheet_for_theme(theme))
         for pane in self._panes.values():
             pane.set_theme(theme)
+        self._reserve_timing_rows()
+
+    def _reserve_timing_rows(self) -> None:
+        for label in self._timing_labels.values():
+            label.ensurePolished()
+            height = label.fontMetrics().lineSpacing() * 2 + 4
+            label.setMinimumHeight(height)
+            label.setMaximumHeight(height)
 
     def set_locale(self) -> None:
         for number, button in self._headers.items():
@@ -570,6 +602,7 @@ class IndependentPaneBoardV2(QWidget):
                         self._panes[sibling.slot_number].clear_paired_synchronization_history()
                         self._last_order.pop(sibling.slot_number, None)
                         self._last_run_serial.pop(sibling.slot_number, None)
+                        self._plot_updated_at.pop(sibling.slot_number, None)
                 previous = None
         scheduled_visit_boundary = (
             previous is not None and binding.pane_id in self._time_sliced_pane_ids
@@ -580,6 +613,14 @@ class IndependentPaneBoardV2(QWidget):
                                           scheduled_visit_boundary=scheduled_visit_boundary)
         self._last_order[binding.slot_number] = order
         self._last_run_serial[binding.slot_number] = prepared.delivery.host_run_serial
+        try:
+            accepted_at = self._monotonic_clock()
+        except Exception:
+            accepted_at = None
+        if (isinstance(accepted_at, (int, float)) and math.isfinite(accepted_at)):
+            self._plot_updated_at[binding.slot_number] = float(accepted_at)
+        else:
+            self._plot_updated_at.pop(binding.slot_number, None)
         if next_context is not None:
             self._paired_visual_context[binding.physical_stream_resource_id] = next_context
             self._paired_awaiting_activation.discard(binding.physical_stream_resource_id)
@@ -594,6 +635,7 @@ class IndependentPaneBoardV2(QWidget):
         self._range_anchors.clear()
         self._last_order.clear()
         self._last_run_serial.clear()
+        self._plot_updated_at.clear()
         self._paired_visual_context.clear()
         self._paired_awaiting_activation.clear()
         self._terminal_released = True

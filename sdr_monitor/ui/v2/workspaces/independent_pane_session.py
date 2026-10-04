@@ -438,6 +438,46 @@ class IndependentPaneSessionV2(QWidget):
             return text("analyzer.independent.timing.under_hundredth")
         return text("analyzer.independent.timing.seconds", value=f"{interval_s:.2f}")
 
+    def _host_input_age_text(self, pane_id: str, phase: PanePumpPhase) -> str:
+        if phase is not PanePumpPhase.RUNNING:
+            age = None
+        else:
+            try:
+                timing = self.handle.session.pane_host_timing(pane_id)
+            except (RuntimeError, ValueError):
+                timing = PaneHostTiming(None, None)
+                self._error_key = "analyzer.independent.operation_failed"
+            age = self._age_text(timing.frame_age_s)
+        return text("analyzer.independent.timing.host_input_age",
+                    age=age or text("analyzer.independent.timing.age_unknown"))
+
+    def _freshness_prefix(self, slot_number: int, pane_id: str,
+                          state: PanePumpResourceState) -> str:
+        plot_age = self._age_text(self.board.plot_update_age_s(slot_number))
+        return (self._host_input_age_text(pane_id, state.phase) + " · " +
+            text("analyzer.independent.timing.plot_last_updated",
+                 age=plot_age or text("analyzer.independent.timing.age_unknown")))
+
+    def _retained_prior_activation(self, slot_number: int, state: PanePumpResourceState,
+                                   *, has_retained_frame: bool) -> bool:
+        if not has_retained_frame:
+            return False
+        accepted_serial = self.board.accepted_activation_serial(slot_number)
+        activation_serial = (None if state.activation is None else
+                             state.activation.host_activation_serial)
+        return ((activation_serial is None and state.phase in {
+                    PanePumpPhase.STARTING, PanePumpPhase.RUNNING})
+                or (activation_serial is not None and accepted_serial != activation_serial))
+
+    def _timing_summary_text(self, slot_number: int, pane_id: str,
+                             state: PanePumpResourceState, *, has_retained_frame: bool,
+                             details: str) -> str:
+        line1 = self._freshness_prefix(slot_number, pane_id, state)
+        marker = (text("analyzer.independent.timing.retained_prior_activation") + " · "
+                  if self._retained_prior_activation(slot_number, state,
+                                                     has_retained_frame=has_retained_frame) else "")
+        return line1 + "\n" + marker + details
+
     def _target_text(self, pane_id: str, timing: PaneHostTiming) -> str:
         target = self._pane_revisits[pane_id].requested_maximum_revisit_s
         if target is None:
@@ -457,7 +497,7 @@ class IndependentPaneSessionV2(QWidget):
                 PanePumpPhase.STOP_REQUIRED: "stop_required",
                 PanePumpPhase.STOPPED: "stopped" if has_retained_frame else "stopped_empty",
             }[phase]
-            return text(f"analyzer.independent.timing.{key}")
+            return " · " + text(f"analyzer.independent.timing.{key}")
         try:
             timing = self.handle.session.pane_host_timing(pane_id)
         except (RuntimeError, ValueError):
@@ -473,12 +513,12 @@ class IndependentPaneSessionV2(QWidget):
                 return text("analyzer.independent.timing.sliced_no_frame", modeled=modeled) + target
             observed = timing.last_revisit_s
             if observed is None or not isfinite(observed) or observed <= 0:
-                return text("analyzer.independent.timing.sliced_first", age=age, modeled=modeled) + target
+                return text("analyzer.independent.timing.sliced_first", modeled=modeled) + target
             return text("analyzer.independent.timing.sliced",
-                        age=age, observed=self._interval_text(observed), modeled=modeled) + target
+                        observed=self._interval_text(observed), modeled=modeled) + target
         if age is None:
             return text("analyzer.independent.timing.continuous_no_frame")
-        return text("analyzer.independent.timing.continuous", age=age)
+        return text("analyzer.independent.timing.continuous")
 
     @staticmethod
     def _rtl_actual_readout(
@@ -596,13 +636,14 @@ class IndependentPaneSessionV2(QWidget):
                 pane = self.board.pane(slot.number)
                 bundle = None if pane is None else pane.last_bundle
                 frame = None if bundle is None else bundle.spectrum
-                summary_text = self._timing_text(pane_id, state.phase,
-                                                 has_retained_frame=frame is not None)
+                detail_text = self._timing_text(pane_id, state.phase,
+                                                has_retained_frame=frame is not None)
+                accepted_serial = self.board.accepted_activation_serial(slot.number)
                 if pane_id in self._rtl_pane_ids:
                     binding = self.handle.preparer.bindings[pane_id]
                     actual = self._rtl_actual_readout(
-                        bundle, state, binding, self.board.accepted_activation_serial(slot.number))
-                    summary_text += " · " + actual
+                        bundle, state, binding, accepted_serial)
+                    detail_text += " · " + actual
                     explanation += "\n\n" + actual + "\n" + text("analyzer.independent.rtl_scope")
                     context = self.handle.rf_context
                     if context is not None:
@@ -623,11 +664,13 @@ class IndependentPaneSessionV2(QWidget):
                 if isinstance(frame, SweepLineFrame) and frame.instrument is not None:
                     observation = frame.instrument.settings
                     actual_rbw = None if observation is None else observation.actual_rbw_hz
-                    summary_text += " · " + text("analyzer.independent.tinysa.rbw_actual",
+                    detail_text += " · " + text("analyzer.independent.tinysa.rbw_actual",
                         value="—" if actual_rbw is None else f"{actual_rbw / 1000:g}")
                     explanation += "\n\n" + tinysa_settings_readout(frame)
                     explanation += "\n" + text("analyzer.pane.setup.preview_tinysa_scope")
-                self.board.set_pane_timing(slot.number, summary_text, explanation)
+                self.board.set_pane_timing(slot.number, self._timing_summary_text(
+                    slot.number, pane_id, state, has_retained_frame=frame is not None,
+                    details=detail_text), explanation)
         detail = ("" if self._error_key is None else text(self._error_key, pane=self._error_pane or ""))
         if failures:
             detail = "\n".join(failures)

@@ -522,8 +522,10 @@ class IndependentPaneSetupTests(unittest.TestCase):
                               return_value=PaneHostTiming(1.6, 2.4)):
                 pane_ui._refresh()
                 self.assertIn("без чередования ресурса", pane_ui.board._timing_labels[1].text())
-                self.assertIn("Возраст: 1 с", pane_ui.board._timing_labels[2].text())
-                self.assertIn("не частота FFT", pane_ui.board._timing_labels[1].toolTip())
+                self.assertIn("График обновлён: неизвестно", pane_ui.board._timing_labels[1].text())
+                self.assertIn("Вход хоста: 1 с", pane_ui.board._timing_labels[2].text())
+                self.assertIn("не являются временем RF", pane_ui.board._timing_labels[1].toolTip())
+                self.assertIn("не измеряет фактическую отрисовку", pane_ui.board._timing_labels[1].toolTip())
             pane_ui._refresh()
             self.assertIn("остановлен", pane_ui.board._timing_labels[1].text())
             for future in handle.pump.stop_all().values():
@@ -597,38 +599,49 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 pane_ui._refresh()
                 first = pane_ui.board._timing_labels[1].text()
                 second = pane_ui.board._timing_labels[2].text()
-                self.assertIn("Возраст: <1 с", first)
-                self.assertIn("возврат 2.40 с", first)
-                self.assertIn("модель 0.16 с", first)
+                first_lines = first.splitlines()
+                second_lines = second.splitlines()
+                self.assertEqual(len(first_lines), 2)
+                self.assertEqual(len(second_lines), 2)
+                self.assertIn("Вход хоста: <1 с", first_lines[0])
+                self.assertIn("График обновлён: неизвестно", first_lines[0])
+                self.assertIn("возврат 2.40 с", first_lines[1])
+                self.assertIn("модель 0.16 с", first_lines[1])
                 self.assertNotIn("макс.", first)
-                self.assertIn("Возраст: 3 с", second)
-                self.assertIn("возврат 2.50 с", second)
-                for number, summary in ((1, first), (2, second)):
+                self.assertIn("Вход хоста: 3 с", second_lines[0])
+                self.assertIn("возврат 2.50 с", second_lines[1])
+                for number, lines in ((1, first_lines), (2, second_lines)):
                     label = pane_ui.board._timing_labels[number]
-                    self.assertLessEqual(label.fontMetrics().horizontalAdvance(summary), label.width())
+                    for line in lines:
+                        self.assertLessEqual(label.fontMetrics().horizontalAdvance(line), label.width())
                 observed["pane-2"] = PaneHostTiming(None, None)
                 pane_ui._refresh()
                 self.assertIn("Нет принятого кадра", pane_ui.board._timing_labels[2].text())
                 self.assertIn("модель возврата", pane_ui.board._timing_labels[2].text())
                 pending = pane_ui.board._timing_labels[2]
-                self.assertLessEqual(pending.fontMetrics().horizontalAdvance(pending.text()), pending.width())
+                self.assertLessEqual(pending.fontMetrics().horizontalAdvance(pending.text().splitlines()[0]),
+                                     pending.width())
+                self.assertLessEqual(pending.fontMetrics().horizontalAdvance(pending.text().splitlines()[1]),
+                                     pending.width())
                 observed["pane-2"] = PaneHostTiming(0.5, None)
                 pane_ui._refresh()
                 first_visit = pane_ui.board._timing_labels[2]
                 self.assertIn("ждём второй визит", first_visit.text())
-                self.assertLessEqual(first_visit.fontMetrics().horizontalAdvance(first_visit.text()),
+                self.assertLessEqual(first_visit.fontMetrics().horizontalAdvance(first_visit.text().splitlines()[1]),
                                      first_visit.width())
                 previous_locale = current_locale()
                 try:
                     set_active_locale(UiLocale.EN)
                     pane_ui.set_locale()
-                    self.assertIn("Data age", pane_ui.board._timing_labels[1].text())
+                    self.assertIn("Host input age", pane_ui.board._timing_labels[1].text().splitlines()[0])
+                    self.assertIn("Plot last updated", pane_ui.board._timing_labels[1].text().splitlines()[0])
                     self.assertIn("revisit 2.40 s / model 0.16 s",
-                                  pane_ui.board._timing_labels[1].text())
-                    self.assertIn("not a guaranteed device maximum",
+                                  pane_ui.board._timing_labels[1].text().splitlines()[1])
+                    self.assertIn("not a guaranteed maximum",
                                   pane_ui.board._timing_labels[1].toolTip())
                     for label in pane_ui.board._timing_labels.values():
-                        self.assertLessEqual(label.fontMetrics().horizontalAdvance(label.text()), label.width())
+                        for line in label.text().splitlines():
+                            self.assertLessEqual(label.fontMetrics().horizontalAdvance(line), label.width())
                 finally:
                     set_active_locale(previous_locale)
                     pane_ui.set_locale()

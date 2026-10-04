@@ -594,20 +594,29 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "Ошибка ресурса · требуется явный Stop",
             UiLocale.EN: "Resource error · explicit Stop required"}),
         "analyzer.independent.timing.continuous": MappingProxyType({
-            UiLocale.RU: "Возраст: {age} · без чередования ресурса",
-            UiLocale.EN: "Data age: {age} · no resource time-slicing"}),
+            UiLocale.RU: " · без чередования ресурса",
+            UiLocale.EN: " · resource not time-sliced"}),
         "analyzer.independent.timing.continuous_no_frame": MappingProxyType({
-            UiLocale.RU: "Нет принятого кадра · ресурс без чередования",
-            UiLocale.EN: "No accepted frame · resource not time-sliced"}),
+            UiLocale.RU: " · Нет принятого кадра · ресурс без чередования",
+            UiLocale.EN: " · No accepted frame · resource not time-sliced"}),
         "analyzer.independent.timing.sliced": MappingProxyType({
-            UiLocale.RU: "Возраст: {age} · возврат {observed} / модель {modeled}",
-            UiLocale.EN: "Data age: {age} · revisit {observed} / model {modeled}"}),
+            UiLocale.RU: " · возврат {observed} / модель {modeled}",
+            UiLocale.EN: " · revisit {observed} / model {modeled}"}),
         "analyzer.independent.timing.sliced_no_frame": MappingProxyType({
-            UiLocale.RU: "Нет принятого кадра · модель возврата {modeled}",
-            UiLocale.EN: "No accepted frame · modeled revisit {modeled}"}),
+            UiLocale.RU: " · Нет принятого кадра · модель возврата {modeled}",
+            UiLocale.EN: " · No accepted frame · modeled revisit {modeled}"}),
         "analyzer.independent.timing.sliced_first": MappingProxyType({
-            UiLocale.RU: "Возраст: {age} · ждём второй визит (модель {modeled})",
-            UiLocale.EN: "Data age: {age} · awaiting second visit (model {modeled})"}),
+            UiLocale.RU: " · ждём второй визит (модель {modeled})",
+            UiLocale.EN: " · awaiting second visit (model {modeled})"}),
+        "analyzer.independent.timing.host_input_age": MappingProxyType({
+            UiLocale.RU: "Вход хоста: {age}", UiLocale.EN: "Host input age: {age}"}),
+        "analyzer.independent.timing.plot_last_updated": MappingProxyType({
+            UiLocale.RU: "График обновлён: {age}", UiLocale.EN: "Plot last updated: {age}"}),
+        "analyzer.independent.timing.retained_prior_activation": MappingProxyType({
+            UiLocale.RU: "график сохранён с прошлого запуска",
+            UiLocale.EN: "retained from prior activation"}),
+        "analyzer.independent.timing.age_unknown": MappingProxyType({
+            UiLocale.RU: "неизвестно", UiLocale.EN: "unknown"}),
         "analyzer.independent.timing.under_one": MappingProxyType({
             UiLocale.RU: "<1 с", UiLocale.EN: "<1 s"}),
         "analyzer.independent.timing.under_hundredth": MappingProxyType({
@@ -617,8 +626,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.independent.timing.age_over_limit": MappingProxyType({
             UiLocale.RU: "≥999 с", UiLocale.EN: "≥999 s"}),
         "analyzer.independent.timing.scope": MappingProxyType({
-            UiLocale.RU: "Возраст — от последнего кадра, принятого host-маршрутизатором. Для чередуемого ресурса возврат — последний интервал между первыми принятыми кадрами двух посещений этого окна. Модель — расчёт по заданным затратам на переключение и активный участок, а не гарантированный максимум на устройстве; фактический возврат может быть медленнее. Для отдельного SDR или медленного прибора tinySA такой возврат не вычисляется. Это не частота FFT, отрисовки/DWM, АЦП, непрерывность RF или вероятность обнаружения импульса.",
-            UiLocale.EN: "Age is since the last host-router-accepted frame. For a time-sliced resource, revisit is the last interval between first accepted frames in two visits to this pane. The model uses configured control and active costs, not a guaranteed device maximum; the actual revisit can be slower. No such revisit is computed for a dedicated SDR or slow tinySA instrument. These are not FFT, paint/DWM or ADC rates, RF continuity or pulse-detection probability."}),
+            UiLocale.RU: "Возраст входа хоста считается от последнего кадра, принятого маршрутизатором. Время обновления графика — монотонное время последнего принятого UI-пакета; оно не измеряет фактическую отрисовку. После Stop/Start сохранённый график относится к прошлой активации, пока не принят новый пакет. Для чередуемого ресурса возврат — последний интервал между первыми кадрами двух посещений окна; модель основана на заданных затратах, а не гарантирует максимум. Эти показатели не являются временем RF, duty/Pd, частотой FFT/DWM/отрисовки или частотой обновления полосы обзора.",
+            UiLocale.EN: "Host input age is since the last frame accepted by the host router. Plot last updated uses the monotonic time of the last accepted UI packet; it does not measure actual painting. After Stop/Start, a retained graph belongs to the prior activation until a new packet is accepted. For a time-sliced resource, revisit is the interval between first frames in two visits; the model uses configured costs and is not a guaranteed maximum. These metrics are not RF time, duty/Pd, FFT/DWM/paint rate, or Sweep-bin update rate."}),
         "analyzer.independent.shared_stop.title": MappingProxyType({
             UiLocale.RU: "Общий приёмник", UiLocale.EN: "Shared receiver"}),
         "analyzer.independent.shared_stop.detail": MappingProxyType({
