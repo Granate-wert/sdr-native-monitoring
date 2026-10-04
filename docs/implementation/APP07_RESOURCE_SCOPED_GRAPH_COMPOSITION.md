@@ -5799,6 +5799,18 @@ no new agents/current independent backend-release review. Dirty main product,
 static EXE/firewall unchanged; public whitelist only.
 # M8-068: graph-scoped native Spectrum pane custody (root contract)
 
+Software checkpoint: runtime `f7257d438e1d7736b7a694d981f5f2c3d95d8b9a`,
+47 native CTest passes / 665 frozen inventory verified / exact serial full
+UI V2 1384 total, 1318 passed, 66 skipped, zero failures (665.512 s) / 91
+matching packaged-native compiled-mock/root custody tests passed (7.139 s).
+Source clean before/after and unchanged native SHA256 `055dc369…` verified.
+These are source/mock/offscreen software gates, not current physical/visible
+performance or complete UI callback qualification. A distinct gpt-6-sol/high
+UI-only read-only design review is complete; implementation and whole backend/
+release review remain separate. Root retained-plot Stop policy is frozen:
+confirmed Stop ends pending UI custody while preserving the last plot; later
+retained repaint is not a new delivery. No new 2x2 hardware gallery in 068.
+
 The applied resource graph now issues an immutable per-pane obligation only
 after exact current measurement admission. The reference preserves the original
 native Spectrum ready receipt plus owner/resource/capture/RX/pane/run/activation
