@@ -67,7 +67,7 @@ class Ad936xProfileUiTests(unittest.TestCase):
             self.assertEqual(native.engines, [])
             editor._prepared = prepared
             for language, window_label in ((UiLocale.EN, "Sweep window W"),
-                                           (UiLocale.RU, "Окно Sweep W")):
+                                           (UiLocale.RU, "Окно сканирования W")):
                 set_active_locale(language)
                 editor.set_locale()
                 self.assertIn(window_label, tuple(label.text() for label in editor.band_headers))

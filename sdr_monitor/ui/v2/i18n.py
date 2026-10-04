@@ -314,14 +314,14 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.ad_rate_unavailable": MappingProxyType({
             UiLocale.RU: "Нет профиля Fs/фильтра по наблюдаемым возможностям", UiLocale.EN: "No Fs/filter profile admitted by observed capabilities"}),
         "analyzer.pane.setup.ad_sweep_window": MappingProxyType({
-            UiLocale.RU: "Окно Sweep W", UiLocale.EN: "Sweep window W"}),
+            UiLocale.RU: "Окно сканирования W", UiLocale.EN: "Sweep window W"}),
         "analyzer.pane.setup.ad_sweep_window_name": MappingProxyType({
-            UiLocale.RU: "Окно {pane}: ширина окна анализа Sweep AD936x, МГц",
+            UiLocale.RU: "Окно {pane}: ширина окна анализа сканирования AD936x, МГц",
             UiLocale.EN: "Pane {pane}: AD936x Sweep analysis window width in MHz"}),
         "analyzer.pane.setup.ad_sweep_window_auto": MappingProxyType({
             UiLocale.RU: "Профиль", UiLocale.EN: "Profile default"}),
         "analyzer.pane.setup.ad_sweep_window_help": MappingProxyType({
-            UiLocale.RU: "Только AD936x Sweep: окно анализа W в МГц. «Профиль» использует профильное значение; явное W проверяется до запуска. Для RTBW используется выбранная полоса приёма.",
+            UiLocale.RU: "Только сканирование AD936x: окно анализа W в МГц. «Профиль» использует профильное значение; явное W проверяется до запуска. Для RTBW используется выбранная полоса приёма.",
             UiLocale.EN: "AD936x Sweep only: analysis window W in MHz. Profile default uses the selected profile; explicit W is validated before Start. RTBW uses the selected receive band."}),
         "analyzer.pane.setup.ad_sweep_window_refusal": MappingProxyType({
             UiLocale.RU: "Нет профиля Fs/фильтра по наблюдаемым возможностям; измените явный запрос. Подготовка не начата.",
