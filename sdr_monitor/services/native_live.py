@@ -71,6 +71,7 @@ from ..domain.device_capabilities import (
     DeviceCapabilityInventory, DeviceFamily, build_device_capability_inventory,
 )
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
+from .native_ready_bridge import NativeReadyBridge
 from .source_capability_admission import (
     admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
 )
@@ -199,6 +200,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             allow_nonstandard_evidence_buffer_geometry=allow_nonstandard_evidence_buffer_geometry,
         )
         self._native = native_module
+        self._ready_bridge = NativeReadyBridge(native_module)
         self._timeout_ms = timeout_ms
         # The product composition root keeps the established 262144-sample
         # default. R10-D6 passes a smaller, explicitly bounded geometry to
@@ -776,6 +778,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     else:
                         candidate_applied = candidate.configure_paired(self._paired_native_config(paired_request, route))
                         self._validate_paired_applied(candidate_applied)
+                    self._ready_bridge.begin()
                     candidate.start()
                     if paired_request is not None:
                         candidate_metrics = candidate.paired_metrics().primary
@@ -1704,6 +1707,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             except Exception as error:
                 self._publish_error(f"Pluto RX polling failed: {error}")
                 return
+            self._ready_bridge.sample()
             if frame is not None:
                 self._record_bridge_batch(native_frames, self._publish_frame(frame, expected_engine=engine))
                 last_frame_at = time.monotonic()
@@ -1739,6 +1743,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             try:
                 drained = engine.drain_latest_paired_spectrum_frame()
                 value, coalesced = drained.frame, drained.coalesced_frames
+                self._ready_bridge.sample()
                 if type(coalesced) is not int or coalesced < 0 or (value is None and coalesced):
                     raise ValueError("invalid native paired coalescing receipt")
                 if value is not None:
@@ -2109,6 +2114,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             clock_domain=publication_context.clock_domain,
             numerical_provenance=provenance,
             receiver_id=receiver_id,
+            detector_ready=self._ready_bridge.convert(frame, source_id=source_id,
+                config_generation=generation, receiver_id=receiver_id,
+                acquisition_epoch=publication_context.acquisition_epoch,
+                session_id=publication_context.session_id),
         )
 
     def _convert_persistence(self, value: Any, publication_context: LiveSnapshot) -> LivePersistenceFrame:

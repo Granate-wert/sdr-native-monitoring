@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .analytical_ready import DetectorReadyReceipt
 from .identity import (
     ConfigurationGeneration,
     FrameSequence,
@@ -551,8 +552,15 @@ class LiveSpectrumFrame:
     clock_domain: str | None = None
     accumulation_id: str | None = None
     numerical_provenance: SpectrumProvenance | None = None
+    detector_ready: DetectorReadyReceipt | None = None
 
     def __post_init__(self) -> None:
+        if self.detector_ready is not None:
+            ref = self.detector_ready
+            if (not isinstance(ref, DetectorReadyReceipt)
+                    or ref.source_id != self.source_id or ref.config_generation != self.config_generation
+                    or ref.receiver_id != self.receiver_id or ref.acquisition_epoch != self.acquisition_epoch):
+                raise ValueError("detector-ready receipt differs from its spectrum frame")
         if self.numerical_provenance is not None and not isinstance(self.numerical_provenance, SpectrumProvenance):
             raise ValueError("numerical provenance must be immutable SpectrumProvenance or unknown")
         frequencies = np.asarray(self.frequencies_hz, dtype=np.float64).reshape(-1)

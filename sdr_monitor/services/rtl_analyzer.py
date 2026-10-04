@@ -26,6 +26,7 @@ from ..domain.live import (
 from ..domain.rtl_live import RtlConfigurationPatch, RtlLiveRequest
 from .native_live import _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
+from .native_ready_bridge import NativeReadyBridge
 from .rtl_capability_provider import RtlControlPort, RtlRuntimeProvision
 from .source_capability_admission import admit_source_request
 
@@ -41,6 +42,7 @@ class RtlAnalyzerService:
                  provision_for: Callable[[DeviceCapabilityBinding, AdapterRuntimeSnapshot],
                                          RtlRuntimeProvision]) -> None:
         self._native, self._exclusion = native, exclusion
+        self._ready_bridge = NativeReadyBridge(native)
         self._inventory, self._provision_for = inventory, provision_for
         self._lock = threading.RLock()
         self._commands = threading.Lock()
@@ -190,6 +192,10 @@ class RtlAnalyzerService:
                     active_config_generation=request.configuration_generation)
             try:
                 native = provision.native
+                # SAME provision module as the actual native owner, not the
+                # catalog/default module used for general capability gates.
+                self._ready_bridge = NativeReadyBridge(native)
+                self._ready_bridge.begin()
                 selected = native.RtlSessionRoute(route.manufacturer, route.product, route.serial,
                     route.tuner_type, route.observation_revision)
                 gain_arguments: dict[str, object] = {}
@@ -319,7 +325,11 @@ class RtlAnalyzerService:
             dropped_iq_blocks_before=frame.dropped_iq_blocks_before,
             dropped_fft_frames_before=frame.dropped_fft_frames_before,
             native_quality_flags=int(frame.quality_flags), acquisition_epoch=current.acquisition_epoch,
-            clock_domain=current.clock_domain, numerical_provenance=provenance)
+            clock_domain=current.clock_domain, numerical_provenance=provenance,
+            detector_ready=self._ready_bridge.convert(frame, source_id=request.source_id,
+                config_generation=ConfigurationGeneration(request.configuration_generation),
+                receiver_id=None, acquisition_epoch=current.acquisition_epoch,
+                session_id=current.session_id))
 
     def _poll(self) -> None:
         last_metrics = time.monotonic()
@@ -330,6 +340,7 @@ class RtlAnalyzerService:
                 if control is None:
                     break
                 result = control.drain_latest_spectrum_frame()
+                self._ready_bridge.sample()
                 frame = result.frame
                 if frame is not None:
                     current = self.current_snapshot()

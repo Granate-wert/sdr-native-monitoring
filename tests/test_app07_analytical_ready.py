@@ -107,6 +107,34 @@ class AnalyticalReadyBindingTests(unittest.TestCase):
         self.assertEqual((summary.events_lost, summary.event_storage_bytes), (2, 0))
         self.assertEqual(backend.poll_analytical_ready_events(), [])
 
+    def test_actual_native_receipt_survives_existing_pluto_converter_clock_bridge(self):
+        from sdr_monitor.domain.identity import ConfigurationGeneration, FrameSequence, SessionId
+        from sdr_monitor.domain.live import LiveSessionState, LiveSnapshot
+        from sdr_monitor.services.native_live import NativeLiveSessionService
+        from sdr_monitor.domain.analytical_ready import ReadyClockMapping
+
+        backend = self.backend()
+        owner = NativeLiveSessionService(self.native)
+        owner._ready_bridge.begin()
+        backend.push_samples(np.ones(256, dtype=np.complex64), 256000.0, 100000000.0)
+        raw = backend.poll_spectrum()[0]
+        owner._ready_bridge.sample()
+        context = LiveSnapshot(ConfigurationGeneration(raw.config_generation), FrameSequence(0),
+            LiveSessionState.CONNECTED, acquisition_epoch=1, session_id=SessionId("mock-computation"))
+        mapped = owner._convert_spectrum(raw, context)
+        ref = mapped.detector_ready
+        self.assertEqual(ref.ready_native_ns, raw.analytical_ready.ready_native_ns)
+        self.assertEqual(ref.offer_sequence, raw.analytical_ready.offer_sequence)
+        self.assertEqual(ref.producer_instance_id, raw.analytical_ready.producer_instance_id)
+        self.assertEqual(ref.source_id, raw.source.source_id)
+        self.assertEqual(ref.mapping, ReadyClockMapping.BOUNDED)
+        before = ref.host_bounds.earliest_host_ns
+        after = ref.host_bounds.latest_host_ns
+        self.assertLessEqual(before, after)
+        self.assertEqual(mapped.timestamp_ns, raw.timestamp_ns)
+        self.assertEqual(owner._convert_spectrum(raw, context).detector_ready, ref)
+        # Fresh computation receipt above is NOT a physical acquisition proof.
+
 
 if __name__ == "__main__":
     unittest.main()

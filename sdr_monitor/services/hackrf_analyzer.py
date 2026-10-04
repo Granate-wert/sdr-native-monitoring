@@ -33,6 +33,7 @@ from .hackrf_live_admission import admit_hackrf_live
 from .hackrf_product_live import HackrfNativeFactoryPort, HackrfProductLiveCoordinator, HackrfProductLiveState
 from .native_live import _native_frame_metadata, _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
+from .native_ready_bridge import NativeReadyBridge
 from .source_capability_admission import admit_source_request
 
 
@@ -49,6 +50,7 @@ class HackrfAnalyzerService:
                  preflight: HackrfActivationPreflightService,
                  coordinator: HackrfProductLiveCoordinator) -> None:
         self._native, self._exclusion, self._inventory = native, exclusion, inventory
+        self._ready_bridge = NativeReadyBridge(native)
         self._preflight, self._coordinator = preflight, coordinator
         self._lock = threading.RLock()
         self._commands = threading.Lock()
@@ -200,6 +202,7 @@ class HackrfAnalyzerService:
                 verified = self._preflight.verify(admission.plan)
                 if verified.permit is None:
                     return self._error("HackRF identity preflight refused; explicit Stop required")
+                self._ready_bridge.begin()
                 started = self._coordinator.start_after_confirmation(verified.permit, user_confirmed=True)
                 if not started.started:
                     return self._error("HackRF native activation failed; explicit Stop required")
@@ -259,7 +262,10 @@ class HackrfAnalyzerService:
             dropped_iq_blocks_before=frame.dropped_iq_blocks_before,
             dropped_fft_frames_before=frame.dropped_fft_frames_before,
             native_quality_flags=int(frame.quality_flags), acquisition_epoch=context.acquisition_epoch,
-            clock_domain=context.clock_domain, numerical_provenance=provenance)
+            clock_domain=context.clock_domain, numerical_provenance=provenance,
+            detector_ready=self._ready_bridge.convert(frame, source_id=source,
+                config_generation=generation, receiver_id=None,
+                acquisition_epoch=context.acquisition_epoch, session_id=context.session_id))
 
     def _convert_persistence(self, value: Any, context: LiveSnapshot) -> LivePersistenceFrame:
         request = context.hackrf_request
@@ -313,6 +319,7 @@ class HackrfAnalyzerService:
                         if candidate_density.update_sequence > self._last_density_sequence:
                             density = candidate_density
                 frame, coalesced = self._coordinator.drain_latest_spectrum_frame()
+                self._ready_bridge.sample()
                 spectrum = None
                 if frame is not None:
                     candidate_spectrum = self._convert(frame, context)
