@@ -5000,3 +5000,62 @@ thread stalls, RSS/render pressure, remaining native/physical fault classes,
 performance, visible Windows DPI/DWM, soak and release qualification stay open.
 Next work is the dedicated UI freshness repair and source-specific performance
 baseline. APP-07 remains PARTIAL; current/static EXE and system settings unchanged.
+
+## 2026-10-04: separate per-pane host and displayed-data freshness
+
+UI-only runtime9b635e2 (original11af plus corrected spacing/status follow-up)
+labels Host input age separately from Plot last updated. A per-pane monotonic
+timestamp advances only after successful GUI data acceptance. Rejected/stale
+packets and hardware Start do not reset it. Unknown/nonfinite/backwards clock
+values remain unknown. A retained previous-activation graph is explicitly marked
+until a packet from the current admitted activation is displayed; affected RF/
+paired history clears invalidate the matching timestamps. These ages do not
+claim RF time, per-bin sweep freshness, real paint or DWM completion.
+
+The first candidate's full regression exposed a1280x700 extra-scroll regression
+and three obsolete whole-status assertions. The corrected candidate reclaims
+vertical grid/cell spacing without reducing font size, plot minimums, the two
+timing rows or control guards. Independent scoped UI source review found no
+blocker. Native/DSP/Fs/FFT/gain/budgets and RF/Start/Stop policy are unchanged.
+
+A matching665-file diagnostic package passed46 native tests in53.13s. Serial
+full UI V2 regression AFTERfreeze passed1381 total:1315 passed,66 skipped,
+zero failures/errors in469.658s, exact tracked-clean source before/after,
+no product modules outside the checkout or deferred compiled tests.
+The initial synthetic RTL native-test assertion failure remains retained;
+its exact causal branch is unknown and was not declared fixed by later passes.
+
+Two new physical four-source workflows used canonical AD9364USB/HackRF/tinySA/
+RTL and rotated tinySA/RTL/AD9363USB/HackRF. Pluto and HackRF ran progressive
+Sweep, tinySA instrument Sweep, RTL RTBW. Only the GUI delivery timer was paused
+for20s; acquisition/preparation and Qt control processing continued. Each run
+recorded47 observations, including40 interval samples. Plot age reached20–21s
+while host input remained fresh. Pending packets stayed at most6 of8, offered
+increments1668/1614 were coalesced explicitly, and no packets were delivered
+during pause. These are presentation counters, not RF/IQ loss or FFT throughput.
+
+Explicit selected Stop/Start of RTL, then separately HackRF, created activation2
+and epoch2 without resetting the three independent peers. The prior-activation
+warning appeared only on the selected pane, survived until new admitted data,
+and cleared after resume; stale target epochs did not return. Ten accepted
+partial-before-complete pairs from their same scans confirmed progressive Sweep.
+Both processes closed normally with zero retained resources/workers, released
+cooperating-process leases and unchanged source/native inputs.
+
+Eight original1920x1080/DPR1 PNGs cover two configurations and normal/pause/
+retained-prior-activation/resumed states. Complete logs, timestamps, image
+geometry/hashes and control receipts passed offline audit. Root and independent
+UI reviewer inspected all eight: no timing-label/control overlap at this size.
+Waterfall dark horizontal patterns differed between some before/pause images;
+unchanged accepted-history counters are NOT pixel-identical-image proof.
+Large sparse/black waterfall regions and dense RTL details remain visual debt.
+AD9363 SDK `ERROR: WRITE ALL: -9` is retained with exact SDK phase/cause unknown;
+combined stdout ordering does not establish cleanup causality.
+
+Captures are physical source-UI/offscreen evidence using matching packaged Qt/
+native bytes, not visible frozen-EXE Windows DPI/DWM/paint-latency qualification.
+No50ms, continuous transport/lossless/duty/Pd, RF calibration, paired RF or
+Ethernet qualification follows. Current/static EXE and system settings remain
+unchanged. APP-07 remains PARTIAL. Next is M8 source-specific metric definitions,
+instrumentation and performance baseline; remaining fault classes, stability,
+visible UI and independent release qualification remain open.
