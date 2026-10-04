@@ -14,6 +14,7 @@ from math import ceil, floor, isfinite
 from typing import Mapping
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice
+from sdr_monitor.domain.ad936x_pane_profiles import ad936x_pane_profile_supported, ad936x_pane_rate_profile
 from sdr_monitor.domain.analyzer_resources import AnalyzerGeometryPreflight
 from sdr_monitor.domain.calibration import CalibrationProfile
 from sdr_monitor.domain.continuous_sweep_request import ContinuousSweepPlanRequest
@@ -165,7 +166,7 @@ class PaneSlotDraft:
                 or not isfinite(self.start_hz) or not isfinite(self.stop_hz)
                 or self.start_hz < 100_000 or self.stop_hz <= self.start_hz):
             raise PaneUserPlanError("occupied pane needs a source and an increasing RF range")
-        if (self.sample_rate_hz not in {2_048_000.0, 2_400_000.0, 16_000_000.0, 20_000_000.0, 61_440_000.0}
+        if (self.sample_rate_hz not in {2_048_000.0, 2_400_000.0, 16_000_000.0, 20_000_000.0, 30_720_000.0, 61_440_000.0}
                 or type(self.fft_size) is not int or self.fft_size not in {1024, 2048, 4096, 16384}
                 or type(self.points) is not int or not 2 <= self.points <= 10001):
             raise PaneUserPlanError("pane sample rate, FFT or trace points are outside the qualified draft choices")
@@ -371,29 +372,36 @@ def compile_user_pane_plan(
                                     reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT)
         rate = source_drafts[0].sample_rate_hz
         analysis_bins = source_drafts[0].fft_size
-        if rate != 61_440_000.0 or analysis_bins == 2048:
-            raise PaneUserPlanError("paired Sweep requires the qualified 61.44 MS/s analysis profile",
+        try:
+            rate_profile = ad936x_pane_rate_profile(rate)
+        except ValueError as error:
+            raise PaneUserPlanError(str(error), reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT) from None
+        if rate_profile.sweep_overlap_hz is None or analysis_bins == 2048:
+            raise PaneUserPlanError("paired Sweep requires an explicit 30.72 or 61.44 MS/s analysis profile",
                                     reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT)
         starts = tuple(float(draft.start_hz) for draft in source_drafts if draft.start_hz is not None)
         stops = tuple(float(draft.stop_hz) for draft in source_drafts if draft.stop_hz is not None)
         common_start, common_stop = min(starts), max(stops)
         capability = selected[source_id].binding.snapshot
+        if not ad936x_pane_profile_supported(capability, rate_profile):
+            raise PaneUserPlanError("paired Sweep Fs or RF filter is not admitted by observed capabilities",
+                                    reason=PaneUserRefusal.PAIRED_PROFILE_CONFLICT)
         if (capability is not None and capability.tuning_ranges_hz
                 and not any(bounds.minimum <= common_start < common_stop <= bounds.maximum
                             for bounds in capability.tuning_ranges_hz)):
             raise PaneUserPlanError("paired Sweep common LO sequence exceeds one observed tuning range",
                                     reason=PaneUserRefusal.OBSERVED_RANGE_EXCEEDED)
-        minimum_f = ceil(rate * analysis_bins / 36_000_000.0)
+        minimum_f = ceil(rate * analysis_bins / rate_profile.trimmed_window_hz)
         physical_f = 1 << (minimum_f - 1).bit_length()
         configuration = LiveConfiguration(
             center_hz=(common_start + common_stop) / 2.0, sample_rate_hz=rate,
-            analog_bandwidth_hz=40_000_000.0, gain_db=20.0,
+            analog_bandwidth_hz=rate_profile.trimmed_filter_hz, gain_db=20.0,
             fft_size=physical_f, overlap_ratio=0.5, detector="sample", window="hann",
             snapshot_rate_hz=240.0, backend=BackendKind.CPU,
             persistence_enabled=False, persistence_mode="disabled")
         request = ContinuousSweepPlanRequest(
-            common_start, common_stop, usable_window_hz=36_000_000.0,
-            overlap_hz=2_000_000.0, output_queue_capacity=2,
+            common_start, common_stop, usable_window_hz=rate_profile.trimmed_window_hz,
+            overlap_hz=rate_profile.sweep_overlap_hz, output_queue_capacity=2,
             analysis_bins_per_usable_window=analysis_bins)
         receipt = pairs[source_id]
         device = receipt.snapshot.device
@@ -442,25 +450,33 @@ def compile_user_pane_plan(
         center = (draft.start_hz + draft.stop_hz) / 2.0
         profile: PaneProfile
         if choice.family is DeviceFamily.AD936X:
+            try:
+                rate_profile = ad936x_pane_rate_profile(draft.sample_rate_hz)
+            except ValueError as error:
+                raise PaneUserPlanError(str(error)) from None
+            if not ad936x_pane_profile_supported(choice.binding.snapshot, rate_profile,
+                    full_receive=draft.rtbw_band is RtbwBandPolicy.FULL_RECEIVE):
+                raise PaneUserPlanError("AD936x Fs or RF filter is not admitted by observed capabilities",
+                                        reason=PaneUserRefusal.OBSERVED_RANGE_EXCEEDED)
             if source_id in paired_sweep_profiles:
                 profile = paired_sweep_profiles[source_id]
             elif draft.measurement_mode is CaptureMeasurementMode.SWEEP:
-                if draft.sample_rate_hz != 61_440_000.0:
-                    raise PaneUserPlanError("AD936x pane Sweep requires its explicit 61.44 MS/s profile")
-                # The displayed selection is analysis N INSIDE W=36 MHz.
+                if rate_profile.sweep_overlap_hz is None:
+                    raise PaneUserPlanError("AD936x pane Sweep requires an explicit 30.72 or 61.44 MS/s profile")
+                # The displayed selection is analysis N INSIDE the profile's W.
                 # Choose and expose the minimum power-of-two physical F whose
                 # Fs/F spacing can support W/N; never reinterpret N as F.
-                minimum_f = ceil(draft.sample_rate_hz * draft.fft_size / 36_000_000.0)
+                minimum_f = ceil(draft.sample_rate_hz * draft.fft_size / rate_profile.trimmed_window_hz)
                 physical_f = 1 << (minimum_f - 1).bit_length()
                 configuration = LiveConfiguration(
                     center_hz=center, sample_rate_hz=draft.sample_rate_hz,
-                    analog_bandwidth_hz=40_000_000.0, gain_db=20.0,
+                    analog_bandwidth_hz=rate_profile.trimmed_filter_hz, gain_db=20.0,
                     fft_size=physical_f, overlap_ratio=0.5, detector="sample", window="hann",
                     snapshot_rate_hz=240.0, backend=BackendKind.CPU,
                     persistence_enabled=False, persistence_mode="disabled")
                 request = ContinuousSweepPlanRequest(
-                    draft.start_hz, draft.stop_hz, usable_window_hz=36_000_000.0,
-                    overlap_hz=2_000_000.0, output_queue_capacity=2,
+                    draft.start_hz, draft.stop_hz, usable_window_hz=rate_profile.trimmed_window_hz,
+                    overlap_hz=rate_profile.sweep_overlap_hz, output_queue_capacity=2,
                     analysis_bins_per_usable_window=draft.fft_size)
                 try:
                     geometry = NativeContinuousSweepPlanFactory.preflight_profile(configuration, request)
@@ -473,14 +489,12 @@ def compile_user_pane_plan(
             else:
                 if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
                     raise PaneUserPlanError("AD936x pane mode is not supported")
-                if draft.sample_rate_hz not in {20_000_000.0, 61_440_000.0}:
-                    raise PaneUserPlanError("AD936x pane supports the listed 20 or 61.44 MS/s profiles")
-                usable = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 36_000_000.0
+                usable = rate_profile.trimmed_window_hz
                 # RF filter and edge-trimmed usable analysis span are distinct.
                 # Exact native capabilities and Start readback still decide.
-                rf_bandwidth = 10_000_000.0 if draft.sample_rate_hz == 20_000_000.0 else 40_000_000.0
+                rf_bandwidth = rate_profile.trimmed_filter_hz
                 if draft.rtbw_band is RtbwBandPolicy.FULL_RECEIVE:
-                    rf_bandwidth = min(draft.sample_rate_hz, 56_000_000.0)
+                    rf_bandwidth = rate_profile.full_receive_filter_hz
                     usable = rf_bandwidth
                 profile = PaneCaptureProfile(
                     draft.sample_rate_hz, rf_bandwidth, "manual", 20.0,
