@@ -14,12 +14,14 @@ from PySide6.QtWidgets import (
 )
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
+from sdr_monitor.domain.ad936x_pane_profiles import ad936x_pane_rate_choices
 from sdr_monitor.domain.device_capabilities import (
     AdapterRuntimeAvailability, CapabilityEvidenceOrigin, CapabilityField, DeviceFamily,
 )
 from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.pane_scheduler import (
-    Ad936xPairedSweepPaneProfile, CaptureMeasurementMode, HackrfRtbwPaneProfile, PaneCaptureProfile, RtlRtbwPaneProfile,
+    Ad936xPairedSweepPaneProfile, Ad936xSweepPaneProfile, CaptureMeasurementMode, HackrfRtbwPaneProfile,
+    PaneCaptureProfile, RtlRtbwPaneProfile,
     PaneRevisitEstimate, TinySaTracePaneProfile,
 )
 from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ
@@ -90,6 +92,7 @@ class _SlotRow:
         self.mode_points.addWidget(self.points)
         self._last_mode: CaptureMeasurementMode | None = None
         self._rtbw_rate: float | None = None
+        self._sweep_rate: float | None = None
         self.manual_gain = DraftScrollComboBox(parent)
         self.manual_gain.setObjectName(f"independentPaneRtlGain{number}V2")
         self.manual_gain.setProperty("ui2Role", "utility-select")
@@ -104,6 +107,15 @@ class _SlotRow:
         self.band.setProperty("ui2Role", "utility-select")
         for policy in RtbwBandPolicy:
             self.band.addItem(policy.value, policy)
+        self.band.setCurrentIndex(self.band.findData(RtbwBandPolicy.FULL_RECEIVE))
+        self.sweep_window = QDoubleSpinBox(parent)
+        self.sweep_window.setObjectName(f"independentPaneAdSweepWindow{number}V2")
+        self.sweep_window.setProperty("ui2Role", "range-control")
+        self.sweep_window.setRange(0.0, 36.0)
+        self.sweep_window.setDecimals(3)
+        self.sweep_window.setSingleStep(1.0)
+        self.sweep_window.setSpecialValueText("Auto")
+        self.sweep_window.setValue(0.0)
         self.schedule_number_label = QLabel(str(number), parent)
         self.schedule_number_label.setProperty("ui2Role", "secondary")
         self.priority = QSpinBox(parent)
@@ -192,6 +204,8 @@ class IndependentPaneSetupV2(QWidget):
             row.chain.currentIndexChanged.connect(lambda _index: self._refresh_actions())
             row.mode.currentIndexChanged.connect(
                 lambda _index, target=row: self._mode_changed(target))
+            row.band.currentIndexChanged.connect(
+                lambda _index, target=row: self._band_changed(target))
             row.manual_gain.currentIndexChanged.connect(lambda _index: self._refresh_actions())
         layout.addLayout(grid)
         gain_grid = QGridLayout()
@@ -268,13 +282,14 @@ class IndependentPaneSetupV2(QWidget):
         band_grid.setContentsMargins(0, 0, 0, 0)
         band_grid.setHorizontalSpacing(6)
         band_grid.setColumnStretch(2, 1)
-        self.band_headers = tuple(QLabel(self.band_controls) for _ in range(2))
+        self.band_headers = tuple(QLabel(self.band_controls) for _ in range(3))
         for column, header in enumerate(self.band_headers):
             header.setProperty("ui2Role", "secondary")
             band_grid.addWidget(header, 0, column)
         for row_index, row in enumerate(self._rows, 1):
             band_grid.addWidget(row.band_number_label, row_index, 0)
             band_grid.addWidget(row.band, row_index, 1)
+            band_grid.addWidget(row.sweep_window, row_index, 2)
         self.band_help = QLabel(self.band_controls)
         self.band_help.setWordWrap(True)
         self.band_help.setTextFormat(Qt.TextFormat.PlainText)
@@ -730,6 +745,40 @@ class IndependentPaneSetupV2(QWidget):
                               or self._selected_chain(row) is ReceiverChainSelection.RX2)
                              and not self.blocks_single_source)
 
+    def _refresh_ad_rate_choices(self, row: _SlotRow, choice: AnalyzerSourceChoice,
+                                 *, preserve_selection: bool, preferred: float | None = None) -> None:
+        mode = self._selected_mode(row)
+        sweep = mode is CaptureMeasurementMode.SWEEP
+        full_receive = not sweep and RtbwBandPolicy(row.band.currentData()) is RtbwBandPolicy.FULL_RECEIVE
+        choices = ad936x_pane_rate_choices(choice.binding.snapshot, sweep=sweep,
+                                           full_receive=full_receive)
+        requested = row.rate.currentData() if preferred is None else preferred
+        if preserve_selection and requested is not None and requested not in choices:
+            label = text("analyzer.pane.setup.ad_rate_unsupported", rate=f"{requested / 1e6:g}")
+            options = ((label, requested, False),) + tuple(
+                (f"{value / 1_000_000:g} MS/s", value, True) for value in choices)
+        else:
+            options = tuple((f"{value / 1_000_000:g} MS/s", value, True) for value in choices)
+            if not options:
+                options = ((text("analyzer.pane.setup.ad_rate_unavailable"), None, False),)
+        with QSignalBlocker(row.rate):
+            row.rate.clear()
+            for label, value, enabled in options:
+                row.rate.addItem(label, value)
+                if not enabled:
+                    model = row.rate.model()
+                    if isinstance(model, QStandardItemModel):
+                        item = model.item(row.rate.count() - 1)
+                        if item is not None:
+                            item.setEnabled(False)
+            index = row.rate.findData(requested) if requested is not None else -1
+            if index >= 0:
+                row.rate.setCurrentIndex(index)
+            elif preserve_selection:
+                row.rate.setCurrentIndex(0)
+            else:
+                row.rate.setCurrentIndex(row.rate.count() - 1)
+
     def update_sources(self, selection: AnalyzerSourceSelection | None) -> None:
         if self._released or self.blocks_single_source:
             return
@@ -789,7 +838,7 @@ class IndependentPaneSetupV2(QWidget):
             row.rate.clear()
             rates: tuple[tuple[str, float | None], ...]
             if family is DeviceFamily.AD936X:
-                rates = (("20 MS/s", 20_000_000.0), ("61.44 MS/s", 61_440_000.0))
+                rates = ()
             elif family is DeviceFamily.HACKRF:
                 rates = (("16 MS/s", 16_000_000.0), ("20 MS/s", 20_000_000.0))
             elif family is DeviceFamily.RTL_SDR:
@@ -801,8 +850,9 @@ class IndependentPaneSetupV2(QWidget):
                 rates = (("—", None),)
             for label, value in rates:
                 row.rate.addItem(label, value)
-            index = row.rate.findData(previous_rate)
-            row.rate.setCurrentIndex(index if index >= 0 else row.rate.count() - 1)
+            if family is not DeviceFamily.AD936X:
+                index = row.rate.findData(previous_rate)
+                row.rate.setCurrentIndex(index if index >= 0 else row.rate.count() - 1)
         previous_mode = row.mode.currentData()
         with QSignalBlocker(row.mode):
             row.mode.clear()
@@ -823,8 +873,13 @@ class IndependentPaneSetupV2(QWidget):
                 row.mode.addItem(label, mode)
             index = row.mode.findData(previous_mode)
             row.mode.setCurrentIndex(max(index, 0))
+        if family is DeviceFamily.AD936X and choice is not None:
+            row._last_mode = None
+            row._rtbw_rate = previous_rate if preserve_range and self._selected_mode(row) is CaptureMeasurementMode.RTBW else None
+            row._sweep_rate = previous_rate if preserve_range and self._selected_mode(row) is CaptureMeasurementMode.SWEEP else None
+            self._refresh_ad_rate_choices(row, choice, preserve_selection=preserve_range,
+                                          preferred=previous_rate if preserve_range else None)
         row.mode_points.setCurrentWidget(row.points if family is DeviceFamily.TINYSA else row.mode)
-        self._mode_changed(row)
         editable = family is not None and (family is not DeviceFamily.RTL_SDR or rtl_ready)
         row.start.setEnabled(editable and not self.blocks_single_source)
         row.stop.setEnabled(editable and not self.blocks_single_source)
@@ -836,6 +891,11 @@ class IndependentPaneSetupV2(QWidget):
                             (100, 101) if family is DeviceFamily.RTL_SDR else (100, 108))
             row.start.setValue(lower)
             row.stop.setValue(upper)
+            if family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}:
+                with QSignalBlocker(row.band):
+                    row.band.setCurrentIndex(row.band.findData(RtbwBandPolicy.FULL_RECEIVE))
+            row.sweep_window.setValue(0.0)
+        self._mode_changed(row)
         self._refresh_tinysa_row(row)
         self._refresh_tinysa_selector()
 
@@ -861,6 +921,10 @@ class IndependentPaneSetupV2(QWidget):
                 points=row.points.value(), network_discovery=network,
                 measurement_mode=self._selected_mode(row), priority=row.priority.value(),
                 maximum_revisit_s=row.maximum_revisit.value() or None, tinysa=tiny,
+                sweep_window_hz=(row.sweep_window.value() * 1_000_000
+                                 if choice is not None and choice.family is DeviceFamily.AD936X
+                                 and self._selected_mode(row) is CaptureMeasurementMode.SWEEP
+                                 and row.sweep_window.value() > 0 else None),
                 rtbw_band=(RtbwBandPolicy(row.band.currentData())
                            if self._selected_mode(row) is CaptureMeasurementMode.RTBW
                            else RtbwBandPolicy.EDGE_TRIMMED),
@@ -883,9 +947,26 @@ class IndependentPaneSetupV2(QWidget):
         if (row._last_mode is CaptureMeasurementMode.RTBW
                 and mode is CaptureMeasurementMode.SWEEP):
             row._rtbw_rate = row.rate.currentData()
-        if mode is CaptureMeasurementMode.SWEEP:
+        if (row._last_mode is CaptureMeasurementMode.SWEEP
+                and mode is CaptureMeasurementMode.RTBW):
+            row._sweep_rate = row.rate.currentData()
+        if family is DeviceFamily.AD936X and choice is not None:
+            requested = row._sweep_rate if mode is CaptureMeasurementMode.SWEEP else row._rtbw_rate
+            self._refresh_ad_rate_choices(row, choice, preserve_selection=requested is not None,
+                                          preferred=requested)
+            if requested is None:
+                # A deliberate mode selection starts at the highest profile
+                # admitted for that mode; capability refresh never does this.
+                choices = ad936x_pane_rate_choices(
+                    choice.binding.snapshot, sweep=mode is CaptureMeasurementMode.SWEEP,
+                    full_receive=mode is not CaptureMeasurementMode.SWEEP and
+                    RtbwBandPolicy(row.band.currentData()) is RtbwBandPolicy.FULL_RECEIVE)
+                if choices:
+                    with QSignalBlocker(row.rate):
+                        row.rate.setCurrentIndex(row.rate.findData(choices[-1]))
+        elif mode is CaptureMeasurementMode.SWEEP:
             with QSignalBlocker(row.rate):
-                sweep_rate = 61_440_000.0 if family is DeviceFamily.AD936X else 20_000_000.0
+                sweep_rate = 20_000_000.0
                 row.rate.setCurrentIndex(row.rate.findData(sweep_rate))
         elif (row._last_mode is CaptureMeasurementMode.SWEEP
               and mode is CaptureMeasurementMode.RTBW and row._rtbw_rate is not None):
@@ -916,13 +997,30 @@ class IndependentPaneSetupV2(QWidget):
         row.mode.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
         row.band.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
                             and mode is CaptureMeasurementMode.RTBW and not blocked)
+        row.sweep_window.setEnabled(family is DeviceFamily.AD936X
+                                    and mode is CaptureMeasurementMode.SWEEP and not blocked)
+        row.sweep_window.setToolTip(text("analyzer.pane.setup.ad_sweep_window_help"))
         row.fft.setToolTip(text("analyzer.pane.setup.fft_help"))
         row._last_mode = mode
+
+    def _band_changed(self, row: _SlotRow) -> None:
+        choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
+        if choice is not None and choice.family is DeviceFamily.AD936X \
+                and self._selected_mode(row) is CaptureMeasurementMode.RTBW:
+            requested = row.rate.currentData()
+            self._refresh_ad_rate_choices(row, choice, preserve_selection=requested is not None,
+                                          preferred=requested)
 
     def _begin_prepare(self) -> None:
         if self.blocks_single_source or self._released:
             return
         for row in self._rows:
+            choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
+            if (choice is not None and choice.family is DeviceFamily.AD936X
+                    and self._selected_mode(row) in {CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP}
+                    and row.rate.currentData() is None):
+                self._set_error("analyzer.pane.setup.ad_sweep_window_refusal")
+                return
             chain_reason = self._chain_refusal_key(row)
             if chain_reason is not None:
                 self._set_error(chain_reason)
@@ -1177,9 +1275,17 @@ class IndependentPaneSetupV2(QWidget):
                                   modeled=f"{estimate.maximum_revisit_s:.3f}",
                                   visits=estimate.visits_per_cycle))
         for pane_id, geometry in prepared.plan.ad_sweep_geometry:
+            ad_profile = next((job.profile for resource in schedule.resources for job in resource.jobs
+                               if isinstance(job.profile, Ad936xSweepPaneProfile)
+                               and any(crop.pane_id == pane_id for crop in job.crops)), None)
+            if ad_profile is None:
+                raise RuntimeError("AD936x Sweep preview has no typed profile")
+            filter_hz = ad_profile.configuration.analog_bandwidth_hz
             lines.append(text("analyzer.pane.setup.preview_ad_sweep",
                               pane=pane_id.rsplit("-", 1)[-1],
                               rate=f"{geometry.sample_rate_hz / 1_000_000:.2f}",
+                              filter=(text("analyzer.pane.setup.value_unknown") if filter_hz is None
+                                      else f"{filter_hz / 1_000_000:g}"),
                               window=f"{geometry.usable_window_hz / 1_000_000:g}",
                               bins=geometry.analysis_bins_per_usable_window,
                               fft=geometry.physical_fft_size,
@@ -1344,7 +1450,7 @@ class IndependentPaneSetupV2(QWidget):
         for row in self._rows:
             for field in (row.source, row.chain, row.start, row.stop, row.rate, row.fft,
                           row.points, row.mode, row.mode_points, row.priority, row.maximum_revisit,
-                          row.band):
+                          row.band, row.sweep_window):
                 field.ensurePolished()
                 field.setMinimumHeight(field.minimumSizeHint().height())
         self._sync_contents_height()
@@ -1369,6 +1475,8 @@ class IndependentPaneSetupV2(QWidget):
             row.maximum_revisit.setSpecialValueText(text("analyzer.pane.setup.target_unset"))
             row.band.setAccessibleName(text("analyzer.pane.setup.rtbw_band_name", pane=row.number))
             row.band.setToolTip(text("analyzer.pane.setup.rtbw_band_help"))
+            row.sweep_window.setSuffix(text("hackrf.unit.mhz"))
+            row.sweep_window.setSpecialValueText(text("analyzer.pane.setup.ad_sweep_window_auto"))
             with QSignalBlocker(row.band):
                 for index in range(row.band.count()):
                     policy = RtbwBandPolicy(row.band.itemData(index))
@@ -1419,7 +1527,8 @@ class IndependentPaneSetupV2(QWidget):
         self.band_toggle.setAccessibleName(text("analyzer.pane.setup.rtbw_band"))
         self.band_help.setText(text("analyzer.pane.setup.rtbw_band_help"))
         for header, key in zip(self.band_headers, (
-                "analyzer.pane.setup.slot", "analyzer.pane.setup.rtbw_band"), strict=True):
+                "analyzer.pane.setup.slot", "analyzer.pane.setup.rtbw_band",
+                "analyzer.pane.setup.ad_sweep_window"), strict=True):
             header.setText(text(key))
         self.tinysa_toggle.setText(text("analyzer.pane.setup.tinysa_settings"))
         self.tinysa_toggle.setAccessibleName(text("analyzer.pane.setup.tinysa_settings"))

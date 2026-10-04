@@ -83,7 +83,7 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 row.rate.setCurrentIndex(row.rate.findData(rate))
                 row.start.setValue(start)
                 row.stop.setValue(stop)
-                self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.EDGE_TRIMMED)
+                self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.FULL_RECEIVE)
                 row.band.setCurrentIndex(row.band.findData(RtbwBandPolicy.FULL_RECEIVE.value))
                 self.assertTrue(row.band.isEnabled())
                 row.mode.setCurrentIndex(row.mode.findData(CaptureMeasurementMode.SWEEP.value))

@@ -309,10 +309,24 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.start": MappingProxyType({UiLocale.RU: "От", UiLocale.EN: "Start"}),
         "analyzer.pane.setup.stop": MappingProxyType({UiLocale.RU: "До", UiLocale.EN: "Stop"}),
         "analyzer.pane.setup.rate": MappingProxyType({UiLocale.RU: "Fs запрос", UiLocale.EN: "Requested Fs"}),
+        "analyzer.pane.setup.ad_rate_unsupported": MappingProxyType({
+            UiLocale.RU: "{rate} MS/s · текущий запрос недоступен", UiLocale.EN: "{rate} MS/s · current request unavailable"}),
+        "analyzer.pane.setup.ad_rate_unavailable": MappingProxyType({
+            UiLocale.RU: "Нет профиля Fs/фильтра по наблюдаемым возможностям", UiLocale.EN: "No Fs/filter profile admitted by observed capabilities"}),
+        "analyzer.pane.setup.ad_sweep_window": MappingProxyType({
+            UiLocale.RU: "Окно Sweep W", UiLocale.EN: "Sweep window W"}),
+        "analyzer.pane.setup.ad_sweep_window_auto": MappingProxyType({
+            UiLocale.RU: "Профиль", UiLocale.EN: "Profile default"}),
+        "analyzer.pane.setup.ad_sweep_window_help": MappingProxyType({
+            UiLocale.RU: "Только AD936x Sweep: окно анализа W в МГц. «Профиль» использует профильное значение; явное W проверяется до запуска. Для RTBW используется выбранная полоса приёма.",
+            UiLocale.EN: "AD936x Sweep only: analysis window W in MHz. Profile default uses the selected profile; explicit W is validated before Start. RTBW uses the selected receive band."}),
+        "analyzer.pane.setup.ad_sweep_window_refusal": MappingProxyType({
+            UiLocale.RU: "Нет профиля Fs/фильтра по наблюдаемым возможностям; измените явный запрос. Подготовка не начата.",
+            UiLocale.EN: "No Fs/filter profile is admitted by observed capabilities; choose an explicit supported request. Stage did not begin."}),
         "analyzer.pane.setup.fft": MappingProxyType({UiLocale.RU: "FFT / N", UiLocale.EN: "FFT / N"}),
         "analyzer.pane.setup.fft_help": MappingProxyType({
-            UiLocale.RU: "RTBW/HackRF: физическая FFT. Сканирование AD936x: N точек внутри окна 36 МГц; физическая FFT автоматически рассчитывается и явно показана до применения. Шаг сетки не равен RBW.",
-            UiLocale.EN: "RTBW/HackRF: physical FFT. AD936x Sweep: N bins inside W=36 MHz; physical FFT is calculated and explicitly shown before Apply. Grid spacing is not RBW."}),
+            UiLocale.RU: "RTBW/HackRF: физическая FFT. Сканирование AD936x: N точек внутри выбранного окна W; физическая FFT рассчитывается и явно показана до применения. Шаг сетки не равен RBW.",
+            UiLocale.EN: "RTBW/HackRF: physical FFT. AD936x Sweep: N bins inside the selected window W; physical FFT is calculated and explicitly shown before Apply. Grid spacing is not RBW."}),
         "analyzer.pane.setup.points": MappingProxyType({UiLocale.RU: "Точки", UiLocale.EN: "Points"}),
         "analyzer.pane.setup.mode_points": MappingProxyType({UiLocale.RU: "Режим / точки", UiLocale.EN: "Mode / points"}),
         "analyzer.pane.setup.mode_empty": MappingProxyType({UiLocale.RU: "—", UiLocale.EN: "—"}),
@@ -430,8 +444,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.recording_conflict": MappingProxyType({
             UiLocale.RU: "конфликт с записью", UiLocale.EN: "recording conflict"}),
         "analyzer.pane.setup.preview_ad_sweep": MappingProxyType({
-            UiLocale.RU: "Окно {pane}, план сканирования AD936x: Fs {rate} MS/s · W {window} МГц · N {bins} · физическая FFT {fft} · шаг {step} МГц · участков {segments} · сетка {spacing} Гц (не RBW) · спектральные данные ≤ {memory} МиБ (не RSS).",
-            UiLocale.EN: "Pane {pane}, AD936x Sweep plan: Fs {rate} MS/s · W {window} MHz · N {bins} · physical FFT {fft} · step {step} MHz · segments {segments} · grid {spacing} Hz (not RBW) · reduced data ≤ {memory} MiB (not RSS)."}),
+            UiLocale.RU: "Окно {pane}, план сканирования AD936x: Fs {rate} MS/s · RF-фильтр {filter} МГц · W {window} МГц · N {bins} · физическая FFT {fft} · шаг {step} МГц · участков {segments} · сетка {spacing} Гц (не RBW) · спектральные данные ≤ {memory} МиБ (не RSS).",
+            UiLocale.EN: "Pane {pane}, AD936x Sweep plan: Fs {rate} MS/s · RF filter {filter} MHz · W {window} MHz · N {bins} · physical FFT {fft} · step {step} MHz · segments {segments} · grid {spacing} Hz (not RBW) · reduced data ≤ {memory} MiB (not RSS)."}),
         "analyzer.pane.setup.preview_hackrf_sweep": MappingProxyType({
             UiLocale.RU: "Окно {pane}, план сканирования HackRF: запрос Fs {rate} MS/s · 2 раздельных окна по {window} МГц · физическая FFT {fft} · шаг настройки {step} МГц · поддиапазонов {segments} · сетка {spacing} Гц (не RBW) · спектральные данные ≤ {memory} МиБ (не RSS).",
             UiLocale.EN: "Pane {pane}, HackRF Sweep plan: requested Fs {rate} MS/s · 2 disjoint {window} MHz windows · physical FFT {fft} · tuning step {step} MHz · subbands {segments} · grid {spacing} Hz (not RBW) · reduced data ≤ {memory} MiB (not RSS)."}),
