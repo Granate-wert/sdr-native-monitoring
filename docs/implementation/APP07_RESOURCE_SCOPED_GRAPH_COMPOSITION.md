@@ -5615,3 +5615,63 @@ Bounded read-only observer after SAME committed deliveries: RTL3541/3585 exact q
 Four original1920x1080DPR1 PNG root-reviewed (before/after each configuration); sourceQt with matching packaged Qt/native, not visible frozen EXE or Windows DPI/DWM evidence. All sources fresh; AD/HF progressive frames precede same-scan completion. A/B Stop/drain/join/close zero owners/workers/leaseReleased/PIDsabsent; postRX665inventory/source snapshot PASS.
 
 APP07/M8/H01 PARTIAL; H02 TODO. This completes the bounded RTBW outer-binding prerequisite, not mandatory downstream all-offers dispositions, independent Sweep/density readiness/coverage, or per-layer UI paint terminals. Ethernet/pairedRF/fault/soak/visibleWindowsDPI/50ms/Pd/independent whole-release acceptance remain open. Root only/no new agents-modelcalls063; prior LunaUI/SolUI reviews are not current backend/release approval. Full APP00..14 goal unchanged.
+
+## M8-064 — actual adapter packet dispositions and fresh 2x2 gallery
+
+Exact runtime 3f7b0471323d6269910c7b1e2f24c128d81c5958; UI V2 only.
+Immutable SAME-owner scalar adapter counters distinguish publication, rejection,
+cancellation and latest-drain coalescing. All native handed-off offers remain
+the denominator; offer gaps do not infer coalescing or RF loss. Unknown bindings,
+foreign/stale producer/generation/lifetime, malformed scalar and host-budget
+refusals retain explicit incomplete evidence without changing acquisition.
+Existing AD single/paired, HF and RTL pollers record the actual outcome; no
+perFFT callbacks, extra SDK read, new owner, raw Python IQ, C++/DSP/Fs/FFT/gain/
+cadence or queue-budget change. Cached reads and terminal retention stay bounded
+under the existing 1MiB/chain scalar reservation. Native terminal complete is
+not adapter/pane/paint complete. Unsupported evidence is not fabricated zero.
+
+99focused source/mock tests and15matching packaged compiled/mock tests PASS;
+Ruff8/mypy5/compile8. Matching diagnostic build47/47CTest54.15s/665frozen/runtime/
+source/ONEUSB/offscreen gates PASS. ONE serial fullV2 AFTERfreeze1384total/
+1318PASS/66skip/0fail-error498.171s/exacttrue/cleanbeforeafter/deferred[]/
+outside[]; four historical NaN warnings retained. Initial mypy enum accesses,
+one detector-mismatched test fixture and nonexistent test-module loader failure
+were retained and corrected; no product admission guard was weakened.
+Native d80e7a9dd900bc9fe4a6d99c4630d96f29210d7e6f1f464e8df3cc98a226230e;
+EXE2b02c1c9e3ade6bd463fb23da2bda299a448e77a05ba2ec855327efc520161c3.
+APP07-ADAPTER-20261004-3F7B047-R0 is diagnostic, not static/current promoted.
+
+Fresh discovery found twoADUSB routes/HF/RTL/tiny. Two sequential physical
+2x2 runs, each15s warmup/60s steady/61samples: A AD4USB/HF/tiny/RTL canonical;
+B tiny/RTL/AD3USB/HF rotation2. Explicit AD4Fs61.44/useful36MHz and
+AD3Fs30.72/useful30MHz/logicalN4096, HFFs20/FFT4096, tiny100..300MHz/
+1001points/LOW/manualRBW300k/device-dBm, RTL99.5..100.5/Fs2.4/FFT4096.
+Sweep36MHz restriction is not RTBW full-bandwidth restriction; AD3 smaller
+profile is not fixed18MHz. USB is not an Ethernet witness.
+
+A bounded all-source freshness confirmed. B initial fresh4/progressiveAD-HF
+and independentRTL/cleanup confirmed, but tiny admissions14->20 then unchanged
+through samples10..60; visible frame age53s. Root does NOT qualify continuous
+four-source freshness B merely because the exploratory runner exits0. Cause
+UNKNOWN, not asserted normal slow scan/UI bug/rotation causality; no unchanged
+rerun selecting a green result. tiny same-read version checks59/21 without
+mismatch/observererrors. Next diagnosis requires cached worker/command/deadline
+first-cause before Stop, not competing serial reads or shorter test profiles.
+RTL startup warnings retained. Four original FHD/DPR1 images inspected: source
+Qt with matching packagednative/Qt, not desktop frozenEXE/DPI/DWM acceptance.
+AD progress label may overlap pane badge near plot right edge; UI follow-up.
+
+Actual adapter A3469published+10407coalesced, B3522+10566, zero rejected/cancelled/
+unqualified/bindingfailures. Native terminal handoffs91719/92895; explicit
+unclassified77843/78807. Native presentation supersession is a separate actual
+boundary (rtl_runtime.cpp), not RF loss; full pane/queue/layer-paint ledger
+remains open. A/B normalStop/drain/join/close0owners-workers/leaseReleased/
+originalPythonprocesses gone/postRX665inventory-sourcePASS.
+
+APP07/M8/H01 PARTIAL/H02TODO. Mandatory062 step6 remaining owner/pane/queue/paint
+dispositions, step7 Sweep/density readiness/coverage, step8 dedicatedUI terminals/
+review still required. No50ms/lossless/dutyPd/Ethernet/pairedRF/soak/release proof.
+Rootonly/no newagent-modelcalls064; prior UI reviews not current backend/release
+approval. FullAPP00..14 goal unchanged; staticEXE/firewall/main dirtyproduct
+preserved, public whitelist only. Later documentation HEAD must not relabel
+3f7b047 source/build/physical evidence.
