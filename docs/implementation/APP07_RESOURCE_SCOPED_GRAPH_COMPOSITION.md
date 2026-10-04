@@ -4482,3 +4482,43 @@ inferred. No new physical, frozen-GUI, throughput, RF-flatness or release claim
 is made here. Requested 2x2 screenshots from multiple hardware configurations
 remain a test deliverable; source/offscreen and visible frozen-EXE evidence must
 be labelled separately.
+
+## Matched full-RTBW profile qualification — 2026-10-04
+
+Runtime source `a8d3aa50dfefbad343e67b616203e122e98a5c5d` has a new matching
+diagnostic Windows CPU package. It is not promoted to current/static/release.
+The native bytes and DSP/queue/budget contracts are unchanged. All 46 native
+tests passed; the serial exact-source V2 gate passed 1371 tests (1305 passed,
+66 skipped), and package/source integrity was checked before and afterwards.
+
+Physical AD9363 replacement testing exposed a host staging defect: the requested
+30 MHz RF filter was rounded to a nearby 30.72 MHz preset, so the strict owner
+refused Start before native AD receive. A source regression reproduced this.
+The fix adds 30 MHz only to range/step-admitted RF-filter presets; sample-rate
+choices, unknown-range fallback and exact native Start/readback guards remain.
+The 47 focused source tests include this regression and negative range/step cases.
+
+Two bounded four-physical-source configurations subsequently passed through the
+same UI V2 application graph and packaged native module:
+
+| Position | Configuration A | Configuration B |
+|---|---|---|
+| Top left | AD9364 association: RTBW 61.44 MS/s, RF filter/window 56 MHz, FFT 4096 | AD9363 association: RTBW 30.72 MS/s, RF filter/window 30 MHz, FFT 4096 |
+| Top right | HackRF RTBW 20 MS/s, 140–160 MHz, FFT 4096 | Same |
+| Bottom left | tinySA 100–300 MHz, 1001 points, queried RBW 300 kHz | Same |
+| Bottom right | RTL RTBW 2.4 MS/s, 99.5–100.5 MHz, FFT 4096 | Same |
+
+All four received fresh, separately identified data; counters advanced through
+1920×1080 → 2560×1440 → 1920×1080 captures. Six original Qt rasters retain
+same-frame identity/epoch/configuration/quality and geometry receipts. These are
+source UI/offscreen captures with real hardware, not mock traces, visible frozen
+EXE screenshots, physical-monitor DPI/DWM or FPS/transport/soak qualification.
+Actual AD owner routes were USB in both cases; this does not qualify Ethernet.
+Both runs stopped, drained, joined and closed with zero retained resources or
+workers, a released hardware lease and unchanged source/native snapshots.
+
+Root visual inspection found clipped long RTL status text at FHD; this remains
+a dedicated UI follow-up. Independent UI approval is still open. AD9363 Sweep
+window qualification, device/pane rotations, dual-AD and positive paired RF,
+isolation requalification, performance, soak, visible Windows/DPI, packaging
+licensing and release qualification remain open; APP07 is not fully qualified.
