@@ -4697,3 +4697,46 @@ were unchanged. The void destroy API supplies no exhaustive device-release
 readback. No product admission change, new build, RF test, UI change or system
 mutation occurred. Simultaneous product RX on the two Pluto units remains open;
 this API feasibility result is not a substitute for that acceptance test.
+
+## Native owned-context observations implemented — 2026-10-04
+
+Runtime source `574f4e5797a389925773f8d9ef55e37c4e201574` adds four
+optional, read-only `PlutoContextProbe` fields: `backend_uri`,
+`usb_vendor_id`, `usb_product_id` and `usb_serial`. The original `uri`
+continues to mean the requested route. A shared reader copies attributes from
+the same context held by the native owner or temporary probe; no second context
+is opened for an owner's getter. Absent attributes become `None`; observed
+empty strings stay empty. Malformed or contradictory values are retained as
+raw observations, not silently normalized into an admission decision.
+
+Windows and Linux source paths use this reader. Windows compiled successfully;
+Linux compilation is not established. The StageOnly CPU/HackRF/RTL build passed
+all 46 native tests in 55.00 seconds and one matching Python-binding test in
+0.719 seconds. The staged native artifact SHA256 is
+`d187a372a347d2cdfdeaea3faefc764e71d3bd9a0cbfa352692a56e984b60d77`.
+Tests distinguish an owning context from an earlier temporary probe, exercise
+missing/empty/invalid attributes, enforce read-only bindings and verify no RF
+mutation, buffer allocation or leaked mock context during observation.
+
+A separate physical read-only check held two native `PlutoDevice` owners using
+that exact staged module and the previously qualified libiio runtime. They
+reported USB routes `2.18.5` and `2.19.5`, descriptor `0456:b673`, and known
+versus explicitly empty USB serials. Their topology observations retained the
+same context fields. No RF configuration, channel enable, acquisition buffer,
+Start or refill was performed. Both owners disconnected, flags became false
+and the hardware lease was released. This is actual native-owner metadata
+evidence, not simultaneous product RX or an exhaustive USB-handle release audit.
+
+These fields remain cached, untrusted inputs to future connection validation:
+they do not establish liveness, stable calibration identity, hot-swap detection
+or USB/IP alias exclusion. Product admission, UI, DSP settings and control/
+epoch policies are unchanged. Next work is typed connection assertions against
+the actual owner before RF, resource claims that reject aliases and preserve
+uncertain cleanup ownership, and an explicit connection-lifetime policy.
+
+The old a8 diagnostic EXE/native artifact is unchanged. Earlier physical 2×2
+evidence remains attached to that source/build, not relabeled as this candidate.
+Current candidate HIL criteria require revalidation with a matching package
+and actual RX; independent review, full UI regression, visible Windows/DPI,
+performance, soak and release qualification remain open. No static/current
+package promotion or system mutation was made.
