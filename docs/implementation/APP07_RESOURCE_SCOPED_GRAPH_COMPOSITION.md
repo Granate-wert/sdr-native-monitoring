@@ -4522,3 +4522,40 @@ a dedicated UI follow-up. Independent UI approval is still open. AD9363 Sweep
 window qualification, device/pane rotations, dual-AD and positive paired RF,
 isolation requalification, performance, soak, visible Windows/DPI, packaging
 licensing and release qualification remain open; APP07 is not fully qualified.
+
+## AD9363 mixed Sweep window qualification — 2026-10-04
+
+The same diagnostic runtime `a8d3aa50dfefbad343e67b616203e122e98a5c5d`
+passed two separate bounded four-physical-source UI V2 runs. AD9363 USB swept
+300–620 MHz at actual per-segment Fs 30.72 MS/s, analysis N4096 and physical
+FFT 8192. The explicit 30 MHz window used 11 segments; the optional 18 MHz
+window used 19 segments. The smaller window is not a mandatory AD9363 limit.
+These tests do not establish RF flatness or calibration; 30 MHz RF filter is
+the compiled intent, not a filter readback in the accepted acquisition records.
+
+Both runs included HackRF Sweep 100–300 MHz at 20 MS/s, tinySA 100–300 MHz with
+1001 points/queried RBW 300 kHz and RTL RTBW 99.5–100.5 MHz at 2.4 MS/s.
+For each profile, two AD and two HackRF scan pairs prove that an actual partial
+spectrum was accepted by Qt before the same scan's complete spectrum. Two more
+HackRF pairs were observed after its explicit restart. Per-segment acquisition
+records, source/epoch/scan identity and ordering were audited, not inferred
+from screenshots or a final spectrum alone.
+
+Independent RTL and HackRF Stop/Start preserved peer identities, epochs and
+histories while the peers continued receiving fresh data. Each run included a
+fixed 180-second post-restart diagnostic; tinySA identity comparisons matched
+142 and 145 times respectively, with zero observer failures. RTL PLL warnings
+remain recorded and do not establish RF accuracy. Historical tinySA failures
+were not reproduced here; their cause is still unknown, not declared fixed.
+
+Four original 1920×1080 Qt rasters show both window configurations before and
+after restart. These are source UI/offscreen captures with real physical SDR,
+not visible frozen EXE, monitor DPI/DWM, FPS, transport-rate or soak acceptance.
+Both runs stopped, drained, joined and closed all owners; retained resources
+and workers were zero, the hardware lease was released and source/native
+snapshots remained unchanged. No product or system setting changes were made.
+
+Current bounded mixed-Sweep and independent-source isolation criteria are
+requalified. All-slot device rotations, simultaneous distinct AD9363/AD9364,
+positive paired RF, product Ethernet, fault injection, performance, soak,
+visible Windows/DPI and independent UI/release qualification remain open.
