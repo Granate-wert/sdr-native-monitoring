@@ -5319,3 +5319,48 @@ Next narrow UI059 review/integration and root native pre-coalescing ready-ID/
 validatedclock/disposition, then distinct Waterfall/Visual paint identity.
 Remaining paired/dualAD/Ethernet/fault/soak/visible/release/closure and APP08..14
 stay open. Do not restart completed058 qualifications.
+
+## M8-059 — relevant Spectrum paint cadence, software PASS / physical PARTIAL
+
+Runtime root7937a61 + test-only8f8ce5aa6dca4689c5102007d7eaaebf3fb75ad4
+integrates independently scoped-reviewed UI candidate2e1604e +4ca9dd1.
+Only UI V2 paint_cadence.py/scene.py and the existing regression test change.
+Displayed CURRENT scalar key, visible inner curve, clipped viewport/event region
+must agree; cadence counts only after the enclosing base paintEvent returns.
+A fresh unpainted key plus an actual disjoint1x1 repaint stays uncounted until
+a later relevant paint. No native/DSP/RF/FsFFT/gap/quality/queue/control changes.
+
+Root focused81PASS/3subtests13.00s/Ruff/diff PASS. New matching diagnostic build:
+46/46CTest55.27s/665frozen/runtime/source hashes verified; serial full V2
+1384total/1318PASS/66skip/0fail490.630s/exacttrue/cleanbeforeafter/deferred[]/
+outside[]. Four historical NaN-validation warnings retained.
+Native unchangeddf50fe46d12ed8ac6027bf1875b4db81cdd819e354a012763c039bad96fd0d05;
+EXEd3e7dbf0f4dc0564e5ac82c247cd50cefde22701ca944c70a7595b388b55c2b2.
+APP07-PAINT-20261004-8F8CE5A is diagnostic, not promoted static/current/release.
+
+Matching real A four-source sourceQt window PASS: AD4USB canonical/HFUSB/
+tinyUSB/RTLUSB,15swarmup+60ssteady/61samples/progressiveSweep/original2FHDPNG.
+Private bounded scalar observer counts SAME production cadence commits only:
+AD5.547292/HF34.433194/tiny0.732976/RTL35.066220 per second, distinct from
+GUI admissions5.563923/36.598622/0.732972/36.482013 and native FFT rates.
+No per-FFT Python callback/new paint/SDK command or unsupported ready latency.
+Not DWM FPS, full offered ledger, native-rate improvement or RF continuity.
+
+Matching B AD3USB rotation2 FAIL: all4fresh initialFHDPNG and11steady samples,
+then tinySA owner_poll/instrument_failure/version/identity at observation24.
+Only firmware fingerprint differed, same model/device/control; normalized
+second line25->26chars/rawresponse67->68bytes. Exact changed-text/transport
+cause UNKNOWN; no firmware mutation, UI-causality, guard relaxation, automatic
+retry or60s acceptance. Firstfailure/redacted diagnostics and originalPNG retained.
+Bothruns normalfinal0resources/0workers/leaseReleased/source-nativeunchanged/
+PIDsabsent; postphysical665/source integrity verified. Three originals rootviewed.
+SourceQt matching packaged native/Qt NOT visibleWindowsEXE/DPI/DWM qualification.
+BothPluto USB here, no Ethernet/pairedRF/hotrotation proof. Existing UIdebt remains.
+
+Luna gpt-6-luna/high authored059 in prior isolated packet; Sol gpt-6-sol/high
+independently scoped-reviewed it. This packet reuses Sol for UI-only060 design;
+root integration/native/backend/RX/build/provenance. No whole release approval.
+APP07/M8/H01 PARTIAL, H02 TODO for complete ready-clock/offered-disposition/
+coverage/Waterfall/Visual paint ledger. No50ms/p95/p99/soak/release claim.
+Next root060 analytical-ready producer receipts/clock/coverage/dispositions and
+bounded tinySA mismatch investigation; do not repeat unchanged B to obtainPASS.
