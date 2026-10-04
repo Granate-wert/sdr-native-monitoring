@@ -4911,3 +4911,48 @@ by this increment. Current selected-source isolation criteria now have
 bounded evidence; APP-07 remains PARTIAL. Current/static EXE, firewall and
 the dirty legacy checkout are unchanged. End-of-test galleries retain
 exact device-to-pane mapping, modes, ranges, capture scope and image hashes.
+
+## 2026-10-04: controlled owner-poll software fault with four physical sources
+
+Two further bounded four-source workflows used the unchanged5fdb8f0 diagnostic
+package/native033724. Documentation HEAD during RX wasb1c9c8d, not a new build
+source. One canonical layout used mini AD9364 Sweep/HackRF Sweep/tinySA Sweep/
+RTL RTBW; a second rotated layout used tinySA/RTL/AD9363 Sweep/HackRF Sweep.
+
+A private diagnostic hook installed on one already-owned adapter instance
+under its control lock deliberately raised one software exception from
+poll_bundles. This did not unplug USB, kill a native acquisition worker, change
+RF settings, or mutate a driver, hub, network, firmware or security setting.
+Actual physical native RX remained the source of all measured spectra.
+
+For RTL and separately HackRF, the resource pump latched the finite first
+cause owner_poll/operation_failed with no instrument cause and moved only the
+target to STOP_REQUIRED. Its owner and lease remained retained. Start selected
+and Start all were disabled, Stop selected remained available, and the UI showed
+a sanitized explicit error. No raw private exception text was exposed.
+The three independent peers continued advancing with unchanged identity/
+configuration/epoch/activation/clock/unit and nondecreasing histories.
+
+Clicks on disabled Start controls did not retry: one hook invocation, unchanged
+target run serial/owner/presented spectrum/history and immutable first cause.
+An explicit Stop released the target lease; a separate Start used a fresh
+adapter owner and new epoch/activation1→2, cleared the previous failure and
+delivered fresh data without resetting peers. Recovered HackRF again delivered
+two partial-before-complete results from their same scans.
+
+Across both workflows:20 observations,10 progressive pairs,6 original FHD
+before/fault/recovery PNG captures and24 pure hook/predicate tests passed.
+Both processes ended normally with0 retained resources/workers, released
+cooperating-process leases and unchanged source/native inputs. The665-file
+package/native-artifact command and source snapshot were reverified.
+Existing RTL startup warnings and AD9363 READ LINE/INTEGER -9 output remain
+recorded; their exact SDK operation/cause is unknown. Normal product cleanup
+does not imply a universally error-free SDK path or identify that SDK cause.
+
+Captures are source-UI/offscreen physical-functional evidence with matching
+packaged native/Qt bytes, not visible frozen-EXE Windows DPI/DWM/FPS/latency or
+soak qualification. This is partial failure-isolation evidence for the actual
+pump handling an injected adapter error, not native-worker death or physical
+USB removal/reconnect proof. These remaining fault classes, presentation
+backlog, performance, visible UI and independent release qualification remain
+open. APP-07 remains PARTIAL; no current/static EXE promotion occurred.
