@@ -4386,3 +4386,54 @@ Mixed Sweep remains partial; full-range, paired RX/Sweep, AD9363 capability
 admission/rotations, faults, performance, soak, visible Windows/DPI, matched EXE,
 licensing and release qualification remain open. No product code, current/static
 EXE, firmware, network, firewall, driver or security setting changed here.
+
+## 2026-10-04: bounded mixed Sweep acceptance and tinySA diagnostic
+
+The next independently reviewed diagnostic used the existing inert tinySA
+acquisition-factory seam. The SAME serial owner observes its already-read version
+response and returns the original bytes unchanged. The inherited model/firmware
+identity guard, commands, framing bounds and refusal before measurement remain
+unchanged. Only bounded comparison hashes, typed model/control tokens and changed
+field names are retained; there is no second serial reader, extra command or retry.
+Eight new diagnostic tests, thirteen rolling-witness tests and twenty-five existing
+owned-acquisition tests passed, with lint/compile checks. These are software proofs,
+not substitutes for the physical result below.
+
+One actual four-source UI V2 application-graph run completed successfully with
+the unchanged `7cf584ecde116fba3dd27a4e31061cbf5d6a217b` runtime/native build:
+
+- AD936x USB Sweep at 61.44 MS/s, physical FFT8192, 36-MHz usable windows;
+- HackRF Sweep at 20 MS/s and FFT4096;
+- tinySA instrument trace, 200-MHz span, 1001 points, requested/read-back RBW300kHz;
+- RTL-SDR independent RTBW at 2.4 MS/s and FFT4096.
+
+Six same-scan partial-to-complete pairs were accepted by the actual Qt delivery
+path: two initial AD pairs, two initial HackRF pairs and two HackRF pairs after
+Stop/Start. Their source, epoch, activation, scan sequence and segment generations
+match; per-segment acquisition records retain actual Fs/FFT. RTL and HackRF
+individual Stop/Start preserve independent peer identities/history and allow fresh
+peer data. Two hashed, readable FHD 2x2 source-UI rasters accompany sixteen pane
+observations. This is offscreen source UI, not visible frozen-EXE/DPI/paint proof.
+
+All 141 observed tinySA version comparisons matched the admitted identity, with
+zero observer failures. The earlier version/identity failure was NOT reproduced
+and its intermittent cause remains UNKNOWN; this clean run is not a product fix
+or a retrospective promotion of the failed run. The fixed 180-second observation
+window and approximately 196-second total event span are not soak or throughput
+qualification. RTL PLL warnings and FHD supplemental-caption clipping remain.
+
+All four resources Stop/drain/join/close, leaving zero retained resources/workers;
+the hardware lease is released and source/native snapshots remain unchanged.
+Independent protocol and actual-log/raster reviews support a bounded APP07-F09
+PASS. Overall APP07 remains in progress: AD9363 peak-rate capability profiles,
+paired physical RX/Sweep, rotations, full-range tests, faults, performance, soak,
+visible Windows/DPI, matched EXE and redistribution/release qualification remain.
+
+An additional explicitly requested same-AD9363 experiment repeated Ethernet RX1
+plus USB RX2. Individual short baselines delivered approximately 2.74 and 7.20
+MS/s respectively, but both start orders failed to deliver simultaneous fresh
+data. One order stalled both streams; the reverse order reported an acquisition
+refill failure with code -138. Exact server/driver cause remains unknown, and no
+universal impossibility or additive-link-throughput conclusion is made. Both
+experimental owners closed and original RF settings/gain modes were restored.
+Production paired capture still uses one owner/context/buffer and one transport.
