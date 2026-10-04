@@ -4872,3 +4872,42 @@ independent dual-AD Sweep, product Ethernet, or hot single-pane replacement.
 Performance, fault/unplug recovery, soak, visible Windows/DPI, runtime licensing
 and independent release qualification remain open. APP-07 is still PARTIAL.
 Current/static EXE, firewall and the dirty legacy checkout were not changed.
+
+## 2026-10-04: current-package selected-source isolation qualification
+
+The same immutable 5fdb8f0 diagnostic package was used for two additional
+physical four-source mixed-Sweep workflows, one with AD9363 USB at30.72MS/s/
+30MHz useful window, the other with mini AD9364 USB at61.44MS/s/36MHz useful
+window. Each also used HackRF20MS/s Sweep, tinySA1001-point100–300MHz Sweep
+with actual300kHz RBW, and RTL2.4MS/s RTBW. The documentation HEAD during
+these tests was8ef5ec7; it is not the source identity of the5fdb8f0 build.
+No product source or native bytes were changed and completed build/full-gate
+qualifications were not repeated or relabeled.
+
+Actual UI V2 selected Stop and separate Start were exercised for RTL and
+HackRF in each workflow. Stop reached STOPPED; the restarted target received
+new epoch and activation1→2 and advancing new data. All three independent
+peers continued with unchanged identity/configuration/epoch/activation/clock/
+unit and nondecreasing histories. tinySA repeatedly advanced sequence1→9
+and history2→10 in both runs while RTL delivered initial and restarted data.
+Restarted HackRF again delivered accepted partial-before-complete results
+from the same scan. There were26 four-pane observations,8 action receipts,
+12 progressive pairs and4 original before/after FHD PNG captures. Sixteen
+pure predicate tests also passed; they are auditor tests, not additional RX.
+
+Both workflows ended with normal Stop, terminal drain, worker join and graph
+close, zero retained resources/workers, unchanged source/native inputs and
+a released cooperating-process lease. The unchanged665-file diagnostic
+package and its native-artifact command were reverified after testing.
+Existing RTL startup SDK warnings remain recorded. Root inspected all
+original captures; clipped RTL detail and small/inconsistent technical
+labels remain UI follow-up work.
+
+These are bounded source-UI/offscreen physical-functional isolation results,
+not visible frozen-EXE Windows-DPI/DWM or FFT/LPS/latency/soak measurements.
+Software fault injection, actual USB removal/reconnect, native worker failure,
+paired RX1/RX2, product Ethernet and independent dual-AD Sweep are not proven
+by this increment. Current selected-source isolation criteria now have
+bounded evidence; APP-07 remains PARTIAL. Current/static EXE, firewall and
+the dirty legacy checkout are unchanged. End-of-test galleries retain
+exact device-to-pane mapping, modes, ranges, capture scope and image hashes.
