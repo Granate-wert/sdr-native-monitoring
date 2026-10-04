@@ -4559,3 +4559,43 @@ Current bounded mixed-Sweep and independent-source isolation criteria are
 requalified. All-slot device rotations, simultaneous distinct AD9363/AD9364,
 positive paired RF, product Ethernet, fault injection, performance, soak,
 visible Windows/DPI and independent UI/release qualification remain open.
+
+## All-slot physical pane rotations — 2026-10-04
+
+The same runtime `a8d3aa50dfefbad343e67b616203e122e98a5c5d` passed eight
+bounded four-physical-source runs through UI V2: four layouts with AD9363 USB
+at actual Fs 30.72 MS/s and full RTBW RF filter/window 30 MHz, then the same
+four layouts with Pluto mini AD9364 USB at 61.44 MS/s and full 56 MHz. Both use
+FFT 4096. HackRF used 20 MS/s/140–160 MHz/FFT 4096, RTL 2.4 MS/s/99.5–100.5 MHz/
+FFT 4096, and tinySA instrument Sweep 100–300 MHz/1001 points/queried RBW 300 kHz.
+
+| Layout | Upper left | Upper right | Lower left | Lower right |
+|---|---|---|---|---|
+| 0 | Selected AD | HackRF | tinySA | RTL |
+| 1 | RTL | Selected AD | HackRF | tinySA |
+| 2 | tinySA | RTL | Selected AD | HackRF |
+| 3 | HackRF | tinySA | RTL | Selected AD |
+
+Each physical source occupied every actual pane position with fresh, separately
+identified data. Forty observations retain real pane/source/producer, epoch,
+unit, configuration and advancing counters. Eight original 1920×1080 Qt rasters
+include same-frame provenance and spatial 2×2 geometry receipts; all originals
+were inspected. Long RTL status text still clips at FHD, an open UI follow-up.
+
+Each layout used explicit StopAll/drain/join/Close before fresh Stage/Apply and
+explicit Start. All eight runs closed with zero retained resources/workers,
+no native RTL quarantine, a released hardware lease and unchanged source/native
+snapshots. Seven new private pure validation tests cover negative assignments
+and receipts; root audited actual logs and original image hashes. No independent
+UI/release approval is inferred. One RTL PLL warning per run remains recorded.
+
+These are real-hardware source-UI/offscreen captures, not visible frozen EXE,
+monitor DPI/DWM, paint FPS, continuous sample delivery or RF-accuracy evidence.
+Full-layout teardown deliberately affects every owner and does not prove live
+per-source replacement preserving unaffected peers. The two AD units were
+tested separately, not simultaneously; actual routes were USB, not Ethernet.
+Mixed-Sweep all-slot rotation, five-device selected-slot replacement, dual-AD,
+positive paired RF, product Ethernet, faults, performance, soak, visible Windows
+and independent UI/release/licensing qualification remain open. APP07 remains
+partially qualified. No product/build/system change or static-package promotion
+was made for this rotation packet.
