@@ -5675,3 +5675,38 @@ Rootonly/no newagent-modelcalls064; prior UI reviews not current backend/release
 approval. FullAPP00..14 goal unchanged; staticEXE/firewall/main dirtyproduct
 preserved, public whitelist only. Later documentation HEAD must not relabel
 3f7b047 source/build/physical evidence.
+
+
+## M8-065 — native owner presentation and cadence dispositions
+
+Exact runtime 5bcf2fe8472239acfce4b64d2b9d8400ea4fd871, UI V2 only.
+The SAME native producer journal now contains bounded scalar counts for actual
+forwarding, queue supersession, latest-drain coalescing, cancellation and
+cadence suppression in AD single/paired, HackRF and RTL owner paths. Per-chain
+paired counters preserve ONE device/context/acquisition owner. These are actual
+decisions, not inference from sequence gaps or RF/input loss. Unsupported
+evidence remains unavailable; host validation rejects malformed/regressing
+counters and leaves unclassified handoffs explicit. No per-FFT Python callback,
+raw I/Q transfer, second event ring, larger queue/budget, RF/FFT/cadence change.
+
+Matching diagnostic build:47/47CTest56.19s/665frozen/runtime/source/ONEUSB/
+offscreen gates PASS. Serial fullV2:1384total/1318PASS/66skip/0fail492.357s,
+exact provenance and tracked-clean source before/after. Matching packaged
+compiled/mock focused tests58PASS6.216s. Interrupted first gate has no final
+result and is not PASS; its partial log remains retained.
+Native ca6ec0535fbb9ee3bdfd0f7446614be1c147dd3f27585cb49bc767254c852554;
+EXE3460dd77b4dca93d1bff96da9a1913e71752487880d393620f05fa2064d717ee.
+APP07-OWNERQUEUE-20261004-5BCF2FE-R0 is diagnostic, not static/current promoted.
+
+Scalar conservation is not an exhaustive per-ID owner/pane/paint ledger.
+Ordinary Stop still retains drainable queued frames; explicit final-release
+disposal, pane obligations, Sweep/density readiness and UI terminals remain
+mandatory. No new physical065 test: previous064 gallery is historical, not
+current-source hardware evidence; changed HIL requirements return to VERIFY.
+tinySA rotated stale-frame first cause remains UNKNOWN before next HIL.
+End-of-tests galleries must include actual 2x2 configurations, source/mode/RF/
+transport captions, build identity, freshness observations and honest partial/
+error states. Source Qt captures are not visible packaged Windows EXE/DPI/DWM.
+APP07/M8 PARTIAL/H02TODO; fullAPP00..14 goal unchanged. Root only, no new agents
+or current independent backend/release review. No main product/static/firewall
+change. Later documentation HEAD must not relabel exact5bcf build evidence.
