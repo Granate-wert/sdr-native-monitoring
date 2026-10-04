@@ -61,6 +61,7 @@ from ..domain.paired_live import PairedLiveRequest, PairedLivePublication, Paire
 from ..domain.paired_sweep import PairedSweepRequest
 from .native_paired_live import pair_performance, pair_publication
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
+from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from .ad936x_capability_adapter import (
     AD936X_LIBIIO_ADAPTER_ID, Ad936xCapabilityObservationError, Ad936xLibiioCapabilityAdapter,
 )
@@ -447,7 +448,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             )
         self._clear_selected_route()
         failures: list[dict[str, str]] = []
-        for uri in _ordered_routes(selected):
+        # An explicitly observed USB selection is pinned to that connection.
+        # A mismatch cannot silently fall back to another interface or IP.
+        selection_routes = ((selected.uri,) if selected.usb_connection is not None else _ordered_routes(selected))
+        for uri in selection_routes:
             started = time.monotonic()
             try:
                 # Probe with a temporary device and release its context
@@ -456,6 +460,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 observation = self._observation_owner.observe(
                     uri,
                     expected_serial=normalized_pluto_serial(selected.serial),
+                    expected_usb_connection=selected.usb_connection,
                 )
                 fresh = self._descriptor_for_observation(uri, selected.label, observation)
                 self._native_uri = uri
@@ -470,6 +475,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     route_rf_capabilities=fresh.route_rf_capabilities,
                     serial=fresh.serial,
                     identity_key=fresh.identity_key,
+                    usb_connection=fresh.usb_connection,
                 )
                 self._devices = tuple(
                     selected if item.device_id == device_id else item
@@ -703,6 +709,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             reason = self._start_capability_refusal(prepared)
             if reason is not None:
                 return self._fail(reason, kind=LiveErrorKind.CONFIGURATION_REJECTED)
+            if device is not None and device.usb_connection is not None and self._native_uri != device.uri:
+                return self._fail("Selected Pluto USB connection changed; explicitly select it again",
+                                  kind=LiveErrorKind.CONNECTION_FAILED)
             routes = _start_routes(device, self._native_uri)
             recording_request = self._native_recording_armed
             paired_request = self._paired_request
@@ -746,6 +755,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     candidate = create_identity_bound_owner(
                         self._native, "PlutoFixedBandEngine", route, self._timeout_ms,
                         expected_serial=normalized_pluto_serial(device.serial) if device else None,
+                        expected_usb_connection=device.usb_connection if device else None,
                     )
                     if paired_request is None:
                         candidate_applied = candidate.configure(
@@ -1245,6 +1255,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     f"native-sweep:{snapshot.device.device_id}",
                     snapshot.applied.applied,
                     expected_serial=normalized_pluto_serial(snapshot.device.serial),
+                    expected_usb_connection=snapshot.device.usb_connection,
                 )
                 paired_configuration = None
                 if paired_request is not None:
@@ -2325,6 +2336,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             except Ad936xCapabilityObservationError:
                 pass  # No empty-serial/coherent/bounded facts; no RF route admission.
         description_text = (description or "").strip()
+        usb_connection = None
+        usb_protocol = getattr(self._native, "PLUTO_USB_CONNECTION_ADMISSION_PROTOCOL_VERSION", None)
+        if uri.startswith("usb:") and usb_protocol is not None:
+            if type(usb_protocol) is not int or usb_protocol != 1:
+                raise LiveAdmissionRejected("Native Pluto USB connection admission protocol is unsupported")
+            usb_connection = PlutoUsbConnectionExpectation.from_probe(probe)
         model_prefix = model.split("(", 1)[0].strip().casefold()
         label = model if not description_text or model_prefix in description_text.casefold() else f"{model} — {description_text}"
         return DeviceDescriptor(
@@ -2338,6 +2355,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             capability_snapshot=capability_snapshot,
             calibration_identity=calibration_identity,
             route_rf_capabilities=route_rf_capabilities,
+            usb_connection=usb_connection,
         )
 
     def _fail(
@@ -2843,6 +2861,8 @@ def _start_routes(
 
     if device is None:
         return (current_uri,)
+    if device.usb_connection is not None:
+        return (device.uri,)  # No implicit USB assertion downgrade/failover.
     ordered = _ordered_routes(device)
     return tuple(dict.fromkeys((current_uri, *ordered)))
 

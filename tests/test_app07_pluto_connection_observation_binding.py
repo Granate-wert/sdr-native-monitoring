@@ -15,6 +15,77 @@ MOCK = Path(os.environ.get("SDR_APP07_TEST_MOCK_LIBIIO",
 
 @unittest.skipUnless(MODULE and MOCK.is_file(), "requires explicit matching staged native/mock")
 class PlutoConnectionObservationBindingTests(unittest.TestCase):
+    def test_live_product_path_asserts_same_compiled_context_before_rf(self) -> None:
+        code = r"""
+import ctypes
+import importlib.util
+import os
+import pathlib
+import sys
+from sdr_monitor.domain import BackendKind, LiveConfiguration, LiveSessionState
+from sdr_monitor.services.native_live import NativeLiveSessionService
+from sdr_monitor.services.ad936x_identity_admission import create_identity_bound_owner
+path = pathlib.Path(sys.argv[1]).resolve(strict=True)
+cookie = os.add_dll_directory(str(path.parent))
+spec = importlib.util.spec_from_file_location("_sdr_native", path)
+native = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native)
+hooks = ctypes.CDLL(os.environ["LIBIIO_DLL_PATH"])
+for name in ("mock_iio_created_contexts", "mock_iio_live_contexts", "mock_iio_rf_mutation_calls",
+             "mock_iio_created_buffers"):
+    getattr(hooks, name).restype = ctypes.c_int
+os.environ["SDR_MOCK_LIBIIO_CONTEXT_NAME"] = "usb"
+os.environ["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.42.5"
+service = NativeLiveSessionService(native)
+try:
+    descriptor = service.discover_devices()[0]
+    selected = service.select_device(descriptor.device_id)
+    assert selected.state is LiveSessionState.CONNECTED, selected.error
+    assert selected.device.usb_connection.device_address == 42
+    assert hooks.mock_iio_live_contexts() == 0
+    requested = LiveConfiguration(center_hz=2450e6, sample_rate_hz=20e6,
+                                  analog_bandwidth_hz=10e6, gain_db=20,
+                                  fft_size=1024, backend=BackendKind.CPU)
+    service.apply_configuration(requested)
+    writes = hooks.mock_iio_rf_mutation_calls()
+    buffers = hooks.mock_iio_created_buffers()
+    os.environ["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.43.5"
+    refused = service.start_admitted()
+    assert refused.state is LiveSessionState.ERROR
+    assert service._engine is None
+    assert hooks.mock_iio_rf_mutation_calls() == writes
+    assert hooks.mock_iio_created_buffers() == buffers
+    assert hooks.mock_iio_live_contexts() == 0
+    os.environ["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.42.5"
+    selected = service.select_device(descriptor.device_id)
+    assert selected.state is LiveSessionState.CONNECTED, selected.error
+    service.apply_configuration(requested)
+    running = service.start_admitted()
+    assert running.state is LiveSessionState.RUNNING, running.error
+    assert hooks.mock_iio_live_contexts() == 1
+    before = hooks.mock_iio_created_contexts()
+    try:
+        create_identity_bound_owner(native, "PlutoDevice", selected.device.uri, 3000,
+                                    expected_serial=selected.device.serial,
+                                    expected_usb_connection=selected.device.usb_connection)
+    except RuntimeError as error:
+        assert "already held" in str(error)
+    else:
+        raise AssertionError("product Live owner did not hold the native USB claim")
+    assert hooks.mock_iio_created_contexts() == before
+finally:
+    service.close_live()
+assert hooks.mock_iio_live_contexts() == 0
+print("actual Live product -> compiled SAMEowner/stale-beforeRF/Start claim/StopClose PASS; MOCK only")
+"""
+        environment = dict(os.environ, LIBIIO_DLL_PATH=str(MOCK))
+        for key in tuple(environment):
+            if key.startswith("SDR_MOCK_LIBIIO_"):
+                environment.pop(key)
+        result = subprocess.run([sys.executable, "-c", code, MODULE], cwd=ROOT, env=environment,
+                                text=True, capture_output=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_typed_usb_assertion_and_lifetime_claim_reach_all_native_owners(self) -> None:
         code = r"""
 import ctypes

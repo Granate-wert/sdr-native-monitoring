@@ -39,6 +39,7 @@ from ..domain import (
 )
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
 from ..domain.paired_sweep import PairedSweepRequest, PairedSweepRunIdentity
+from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from .native_live import build_native_fixed_band_config
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from .sweep_stitching import SweepStitchOptions, stitch_sweep_segments
@@ -57,6 +58,7 @@ class NativeSweepSource:
     source_id: str
     live_configuration: LiveConfiguration
     expected_serial: str | None = field(default=None, repr=False)
+    expected_usb_connection: PlutoUsbConnectionExpectation | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.context_uri.strip() or not self.source_id.strip():
@@ -65,6 +67,13 @@ class NativeSweepSource:
             raise ValueError("native sweep currently requires the verified CPU backend")
         if self.expected_serial is not None and normalized_pluto_serial(self.expected_serial) is None:
             raise ValueError("expected Pluto identity must be a known serial")
+        if self.expected_usb_connection is not None:
+            if (not isinstance(self.expected_usb_connection, PlutoUsbConnectionExpectation)
+                    or not self.context_uri.startswith("usb:")
+                    or (self.expected_serial is not None and normalized_pluto_serial(self.expected_serial)
+                        != normalized_pluto_serial(self.expected_usb_connection.usb_serial))):
+                raise ValueError("native sweep USB expectation does not match its leased route")
+            self.expected_usb_connection.__post_init__()
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +232,7 @@ class NativeSweepService:
                 engine = create_identity_bound_owner(
                     self._native, "PlutoFixedBandEngine", self._source.context_uri,
                     self._timeout_ms, expected_serial=self._source.expected_serial,
+                    expected_usb_connection=self._source.expected_usb_connection,
                 )
                 self._engine = engine
                 self._shutdown_phase = 0

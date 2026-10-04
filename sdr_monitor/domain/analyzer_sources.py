@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 
 from .device_capabilities import AdapterRuntimeSnapshot, DeviceCapabilityBinding, DeviceFamily
+from .pluto_connection import PlutoUsbConnectionExpectation
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +15,8 @@ class AnalyzerSourceChoice:
     runtime: AdapterRuntimeSnapshot | None
     label: str
     transport_label: str
+    # Fresh selected descriptor observation; never a stable calibration key.
+    usb_connection: PlutoUsbConnectionExpectation | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, DeviceCapabilityBinding):
@@ -23,6 +26,10 @@ class AnalyzerSourceChoice:
         if self.runtime is not None and (self.runtime.adapter_id != self.binding.adapter_id
                                         or self.runtime.family is not self.binding.family):
             raise ValueError("source choice runtime must match its adapter")
+        if self.usb_connection is not None:
+            if self.family is not DeviceFamily.AD936X or not isinstance(self.usb_connection, PlutoUsbConnectionExpectation):
+                raise ValueError("only AD936x sources may carry typed Pluto USB observations")
+            self.usb_connection.__post_init__()
         for value in (self.label, self.transport_label):
             if (not isinstance(value, str) or not value or len(value) > 160
                     or any(ord(character) < 32 for character in value)):

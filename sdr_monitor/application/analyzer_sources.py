@@ -75,7 +75,8 @@ class AnalyzerSourceSelectionApplicationService:
                 family_label = binding.snapshot.label
             # Fixed model/transport + opaque suffix: no USB serial, COM, URI.
             label = f"{family_label} · {transport} · {binding.source_id[-8:]}"
-            values.append(AnalyzerSourceChoice(binding, inventory.runtime_for_adapter(binding.adapter_id), label, transport))
+            values.append(AnalyzerSourceChoice(binding, inventory.runtime_for_adapter(binding.adapter_id), label, transport,
+                                              None if descriptor is None else descriptor.usb_connection))
         return tuple(values)
 
     def discover(self, *, startup: bool = False, local_only: bool = False) -> tuple[AnalyzerSourceChoice, ...]:
@@ -123,7 +124,8 @@ class AnalyzerSourceSelectionApplicationService:
                 binding = DeviceCapabilityBinding(descriptor.device_id, DeviceFamily.AD936X, runtime.adapter_id,
                                                   descriptor.capability_snapshot, descriptor.calibration_identity)
                 transport = descriptor.transport.value.upper()
-                choice = AnalyzerSourceChoice(binding, runtime, f"AD936x SDR · {transport} · {binding.source_id[-8:]}", transport)
+                choice = AnalyzerSourceChoice(binding, runtime, f"AD936x SDR · {transport} · {binding.source_id[-8:]}", transport,
+                                              descriptor.usb_connection)
                 # A manual operational binding is not inserted into catalog
                 # truth or automatically joined to a USB/IP alias.
                 choices = tuple(value for value in self._state.choices if value.device_id != choice.device_id)

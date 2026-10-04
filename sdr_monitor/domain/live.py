@@ -31,6 +31,7 @@ from .presentation_omission import PresentationOmission
 from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilitySnapshot, DeviceFamily
 from .ad936x_route_capabilities import Ad936xRouteCapabilities
 from .analyzer_sources import AnalyzerSourceChoice
+from .pluto_connection import PlutoUsbConnectionExpectation, normalized_pluto_serial
 
 if TYPE_CHECKING:
     from .hackrf_live import HackrfLiveRequest
@@ -312,8 +313,18 @@ class DeviceDescriptor:
     # Coherent read-only bounds of this exact EMPTY-serial route. These are
     # deliberately excluded from stable capability/calibration catalogs.
     route_rf_capabilities: Ad936xRouteCapabilities | None = None
+    # Bounded observed USB connection, NOT a stable device/calibration key.
+    # Native owners must confirm it again on their own fresh context before RF.
+    usb_connection: PlutoUsbConnectionExpectation | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        connection = self.usb_connection
+        if connection is not None:
+            if (not isinstance(connection, PlutoUsbConnectionExpectation)
+                    or self.transport is not DeviceTransport.USB or not self.uri.startswith("usb:")
+                    or normalized_pluto_serial(self.serial) != normalized_pluto_serial(connection.usb_serial)):
+                raise ValueError("device USB observation must agree with its selected route and serial")
+            connection.__post_init__()
         route = self.route_rf_capabilities
         if route is not None:
             if (not isinstance(route, Ad936xRouteCapabilities) or route.uri != self.uri

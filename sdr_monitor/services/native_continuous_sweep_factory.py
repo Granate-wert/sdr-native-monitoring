@@ -320,6 +320,7 @@ class NativeContinuousSweepPlanFactory:
             lambda: NativeContinuousSweepDisplayService(
                 self._lease.native_module, self._lease.source.context_uri,
                 expected_serial=self._lease.source.expected_serial,
+                expected_usb_connection=self._lease.source.expected_usb_connection,
             ),
             lambda owner: owner.close(),
         )
@@ -340,6 +341,7 @@ class NativeContinuousSweepPlanFactory:
                 self._lease.native_module, "NativeContinuousSweepCoordinator",
                 self._lease.source.context_uri, timeout_ms,
                 expected_serial=self._lease.source.expected_serial,
+                expected_usb_connection=self._lease.source.expected_usb_connection,
             ),
             lambda owner: owner.disconnect(),
         )

@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 
 
@@ -50,7 +51,8 @@ class PlutoReadOnlyObserver:
                 raise PlutoObservationError(_FAILURE) from None
             self._pending = None
 
-    def observe(self, uri: str, *, expected_serial: str | None = None) -> PlutoReadOnlyObservation:
+    def observe(self, uri: str, *, expected_serial: str | None = None,
+                expected_usb_connection: PlutoUsbConnectionExpectation | None = None) -> PlutoReadOnlyObservation:
         if (not isinstance(uri, str) or uri != uri.strip() or
                 not uri.startswith(("usb:", "ip:")) or not uri.split(":", 1)[1]):
             raise PlutoObservationError(_FAILURE)
@@ -61,6 +63,7 @@ class PlutoReadOnlyObserver:
                 owner = create_identity_bound_owner(
                     self._native, "PlutoDevice", uri, self._timeout_ms,
                     expected_serial=expected_serial,
+                    expected_usb_connection=expected_usb_connection,
                 )
                 self._pending = owner
                 probe = owner.probe()

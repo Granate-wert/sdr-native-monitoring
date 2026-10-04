@@ -19,6 +19,7 @@ from ..domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousS
 from ..domain.sweep_progress import SweepProgressFrame
 from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
 from ..domain.sweep_statistics import SweepStatisticsFrame
+from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from .ad936x_identity_admission import create_identity_bound_owner
 from .completed_line_rate import CompletedLineRateObservation
 
@@ -58,7 +59,8 @@ class NativeContinuousSweepDisplayService:
     """
 
     def __init__(self, native_module: Any, context_uri: str, *, timeout_ms: int = 3000,
-                 expected_serial: str | None = None) -> None:
+                 expected_serial: str | None = None,
+                 expected_usb_connection: PlutoUsbConnectionExpectation | None = None) -> None:
         if not context_uri.strip() or timeout_ms <= 0:
             raise ValueError("continuous sweep context URI and timeout must be positive")
         coordinator_type = getattr(native_module, "NativeContinuousSweepCoordinator", None)
@@ -67,6 +69,7 @@ class NativeContinuousSweepDisplayService:
         self._coordinator = create_identity_bound_owner(
             native_module, "NativeContinuousSweepCoordinator", context_uri, timeout_ms,
             expected_serial=expected_serial,
+            expected_usb_connection=expected_usb_connection,
         )
         self._lock = threading.RLock()
         self._closed = False
