@@ -31,6 +31,14 @@ class NativeReadyBridge:
         self._samples: deque[ReadyClockBracket] = deque(maxlen=self.SAMPLE_CAPACITY)
         self._failure: ReadyClockMapping | None = None
 
+    @property
+    def clock_scope_id(self) -> str:
+        return self._scope
+
+    @property
+    def host_process_id(self) -> int:
+        return self._process_id
+
     def _supported(self) -> bool:
         version = getattr(self._native, "ANALYTICAL_READY_CONTRACT_VERSION", None)
         return type(version) is int and version == 1 and callable(

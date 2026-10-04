@@ -14,6 +14,7 @@ from importlib import import_module
 from typing import cast
 
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID
+from .native_owner_journal import EVENT_CAPACITY, owner_journal_capacity
 from .hackrf_activation_preflight import (
     HackrfActivationPermit,
     _claim_hackrf_activation_permit,
@@ -76,10 +77,14 @@ def _native_detector(native_module: object, value: str) -> object:
 class HackrfNativeRuntimeFactory:
     """One explicit bridge from a preflight permit to coarse native control."""
 
-    def __init__(self, native_loader: Callable[[], object] = _load_canonical_native_module) -> None:
+    def __init__(self, native_loader: Callable[[], object] = _load_canonical_native_module,
+                 *, analytical_event_capacity: int = 0) -> None:
         if not callable(native_loader):
             raise ValueError("native_loader must be callable")
+        if type(analytical_event_capacity) is not int or analytical_event_capacity not in (0, EVENT_CAPACITY):
+            raise ValueError("HackRF owner journal capacity was not admitted")
         self._native_loader = native_loader
+        self._analytical_event_capacity = analytical_event_capacity
 
     def create(self, permit: HackrfActivationPermit) -> object:
         """Construct a native owner once; no fallback or automatic retry exists."""
@@ -105,6 +110,10 @@ class HackrfNativeRuntimeFactory:
                 )
             request = plan.request
             extras: dict[str, object] = {}
+            if self._analytical_event_capacity:
+                if owner_journal_capacity(native_module) != self._analytical_event_capacity:
+                    raise HackrfNativeFactoryError(HackrfNativeFactoryFailure.NATIVE_FACTORY_UNAVAILABLE)
+                extras["analytical_event_capacity"] = self._analytical_event_capacity
             if request.persistence_enabled:
                 version = getattr(native_module, "HACKRF_PERSISTENCE_CONTRACT_VERSION", None)
                 if type(version) is not int or version != 1:

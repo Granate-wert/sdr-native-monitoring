@@ -8,6 +8,7 @@ SDK handle, discovery, retry or unrelated workflow path enters this module.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 import threading
@@ -251,7 +252,17 @@ class HackrfProductLiveCoordinator:
             raise RuntimeError("HackRF native persistence poll exceeded its bound")
         return frames
 
-    def stop(self, timeout_ms: int) -> HackrfProductLiveStopResult:
+    def drain_analytical_ready_events(self, max_items: int) -> object:
+        if type(max_items) is not int or not 1 <= max_items <= 256:
+            raise ValueError("analytical drain requires a bounded scalar batch")
+        with self._lock:
+            control = self._control if self._state is HackrfProductLiveState.ACTIVE else None
+        drain = getattr(control, "drain_analytical_ready_events", None)
+        if not callable(drain):
+            raise RuntimeError("HackRF owner journal unavailable")
+        return drain(max_items)
+
+    def stop(self, timeout_ms: int, *, after_native_stop: Callable[[object], None] | None = None) -> HackrfProductLiveStopResult:
         """Run only the existing explicit three-phase native stop once requested."""
 
         if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or not _MIN_STOP_TIMEOUT_MS <= timeout_ms <= _MAX_STOP_TIMEOUT_MS:
@@ -271,6 +282,13 @@ class HackrfProductLiveCoordinator:
             stopped = _stop_complete(control.stop(timeout_ms))
         except Exception:
             stopped = False
+        if stopped and after_native_stop is not None:
+            # SAME stopped/joined control before release. A telemetry callback
+            # must not turn acknowledged hardware cleanup into a failed Stop.
+            try:
+                after_native_stop(control)
+            except Exception:  # noqa: BLE001 - optional observer does not own hardware lifecycle.
+                pass
         with self._lock:
             if not stopped:
                 self._state = HackrfProductLiveState.ACTIVE

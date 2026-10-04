@@ -15,7 +15,8 @@ from tests.native_test_dependencies import explicit_native_dependencies
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = os.environ.get("SDR_APP07_TEST_NATIVE_MODULE", "")
-MOCK = ROOT / "native/sdr_core/out/build/windows-msvc-cpu-hackrf/libiio.dll"
+MOCK = Path(os.environ.get("SDR_APP07_TEST_MOCK_LIBIIO",
+    str(ROOT / "native/sdr_core/out/build/windows-msvc-cpu-hackrf/libiio.dll")))
 
 
 @explicit_native_dependencies
@@ -28,6 +29,7 @@ def run_case(path: str, case: str) -> None:
     from sdr_monitor.domain.live import LiveSessionState
     from sdr_monitor.domain.paired_live import PairedLiveRequest
     from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
+    from sdr_monitor.domain.analytical_journal import JournalState
     from sdr_monitor.services.native_live import NativeLiveSessionService
 
     module_path = Path(path).resolve(strict=True)
@@ -103,12 +105,14 @@ def run_case(path: str, case: str) -> None:
             for stale in (replace(request, device_id="other"), replace(request, session_id="old"),
                           replace(request, configuration=replace(profile, gain_db=40.))):
                 refuses(lambda: app.stage_paired_rtbw(stale))
-            for broken_device in (replace(device, serial=None), replace(device, identity_key=None),
+            refuses(lambda: replace(device, serial=None))  # USB/domain guard is earlier than paired admission
+            for broken_device in (replace(device, serial=None, usb_connection=None), replace(device, identity_key=None),
                                   replace(device, capability_snapshot=None, calibration_identity=None)):
                 broken = replace(selected, device=broken_device)
                 refuses(lambda: request.validate_snapshot(broken))
             refuses(lambda: replace(request, secondary_source_id=request.primary_source_id))
         before = service.latest_snapshot()
+        assert all(value.scope is None for value in service.analytical_journal_snapshots())
         assert app.stage_paired_rtbw(request) is before
         assert hooks.mock_iio_rf_mutation_calls() == writes
         assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
@@ -172,6 +176,20 @@ def run_case(path: str, case: str) -> None:
             time.sleep(.005)
         metrics = app.paired_performance()
         assert metrics is not None and latest is not None
+        deadline = time.monotonic() + 2
+        while any(value.counters is None for value in service.analytical_journal_snapshots()):
+            assert time.monotonic() < deadline, "actual paired worker journal admission deadline"
+            assert service.latest_snapshot().error is None
+            time.sleep(.005)
+        journals = service.analytical_journal_snapshots()
+        assert len(journals) == 2
+        assert all(value.state is JournalState.ACTIVE and value.scope is not None for value in journals)
+        assert [value.scope.receiver_id for value in journals] == ["RX1", "RX2"]
+        assert [value.scope.source_id for value in journals] == ["actual:rx1", "actual:rx2"]
+        assert journals[0].scope.owner_run_id == journals[1].scope.owner_run_id
+        assert journals[0].counters.producer_instance_id != journals[1].counters.producer_instance_id
+        assert sum(value.host_scalar_reserved_bytes for value in journals) == 2_097_152
+        assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 1
         if case == "guards":
             for change in (
                     {"first_sample_index": -1}, {"shared_input_gaps_before": True},
@@ -190,6 +208,11 @@ def run_case(path: str, case: str) -> None:
         assert app.poll_paired_publications() == () and service.poll_paired_frames() == ()
         assert hooks.mock_iio_live_contexts() == hooks.mock_iio_live_buffers() == 0
         assert service._poller is service._engine is None
+        terminals = service.analytical_journal_snapshots()
+        assert all(value.state is JournalState.FINAL and value.native_stop_confirmed for value in terminals)
+        assert all(value.counters.outstanding == value.counters.events_pending == 0 for value in terminals)
+        assert all(value.events for value in terminals)
+        assert service._journal_engine is None
         assert app.paired_performance() is not None
         # Stopped plan is armed only; separate Start makes a fresh actual epoch.
         restarted = app.start()
@@ -205,6 +228,11 @@ def run_case(path: str, case: str) -> None:
             assert time.monotonic() < deadline
             time.sleep(.005)
         app.stop()
+        fresh = service.analytical_journal_snapshots()
+        assert all(value.state is JournalState.FINAL for value in fresh)
+        assert fresh[0].scope.owner_run_id != terminals[0].scope.owner_run_id
+        assert all(history == (terminal,) for history, terminal in
+                   zip(service.analytical_journal_terminal_history(), terminals, strict=True))
         app.clear_paired_rtbw()
         assert service.poll_frames() == [] and service.paired_performance() is None
         app.apply_configuration(profile)
@@ -220,6 +248,10 @@ class NativePairedLiveTests(unittest.TestCase):
     def _run(self, case: str) -> None:
         environment = dict(os.environ)
         environment["LIBIIO_DLL_PATH"] = str(MOCK)
+        # Current native USB admission observes the SAME context, not caller
+        # aliases. Keep one deterministic mock connection across owner opens.
+        environment["SDR_MOCK_LIBIIO_CONTEXT_NAME"] = "usb"
+        environment["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.42.5"
         environment["SDR_MOCK_LIBIIO_TOPOLOGY_DUAL"] = "1"
         if case == "single-layout":
             environment.pop("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", None)

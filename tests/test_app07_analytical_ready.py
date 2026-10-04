@@ -163,6 +163,32 @@ class AnalyticalReadyBindingTests(unittest.TestCase):
         for name in ("PlutoFixedBandEngine", "HackrfRuntimeDspControl", "RtlRuntimeControl"):
             self.assertTrue(callable(getattr(getattr(self.native, name), "drain_analytical_ready_events", None)))
 
+    def test_real_compiled_batch_consumed_by_finite_host_journal(self):
+        from sdr_monitor.domain.analytical_journal import JournalState, OwnerJournalScope
+        from sdr_monitor.services.native_owner_journal import EVENT_CAPACITY, NativeOwnerJournal
+
+        backend = self.backend(capacity=EVENT_CAPACITY)
+        consumer = NativeOwnerJournal(self.native, EVENT_CAPACITY)
+        consumer.begin(OwnerJournalScope("native-test-clock", os.getpid(), "computation-run",
+            "native-computation", None, "native-computation-session", 1, 1))  # push_samples binding uses generation1
+        backend.push_samples(np.ones(256 * 300, dtype=np.complex64), 256000., 100000000.)
+        backend.poll_spectrum()
+        consumer.drain(backend.drain_analytical_ready_events)
+        first = consumer.current()
+        self.assertIs(first.state, JournalState.ACTIVE)
+        self.assertEqual(first.counters.offered, 300)
+        self.assertEqual(len(first.events), 256)
+        backend.reset()  # native terminal cancellation, not a hardware Stop proof
+        consumer.finish(backend.drain_analytical_ready_events)
+        final = consumer.current()
+        self.assertIs(final.state, JournalState.FINAL)
+        self.assertEqual(final.counters.offered, 300)
+        self.assertEqual(final.counters.events_drained, 600)
+        self.assertEqual(final.counters.events_lost, 0)
+        self.assertEqual(final.counters.event_storage_bytes,
+                         backend.analytical_ready_summary().event_storage_bytes)
+        self.assertEqual(final.host_window_events_evicted + len(final.events), 600)
+
 
 if __name__ == "__main__":
     unittest.main()

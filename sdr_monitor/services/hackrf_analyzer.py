@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Protocol, cast
+from uuid import uuid4
 
 from ..domain.analyzer_sources import AnalyzerSourceSelection
 from ..domain.device_capabilities import DeviceCapabilityInventory, DeviceFamily
@@ -34,6 +35,8 @@ from .hackrf_product_live import HackrfNativeFactoryPort, HackrfProductLiveCoord
 from .native_live import _native_frame_metadata, _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
+from ..domain.analytical_journal import OwnerJournalScope, OwnerJournalSnapshot
+from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
 from .source_capability_admission import admit_source_request
 
 
@@ -51,6 +54,7 @@ class HackrfAnalyzerService:
                  coordinator: HackrfProductLiveCoordinator) -> None:
         self._native, self._exclusion, self._inventory = native, exclusion, inventory
         self._ready_bridge = NativeReadyBridge(native)
+        self._journal = NativeOwnerJournal(native, owner_journal_capacity(native))
         self._preflight, self._coordinator = preflight, coordinator
         self._lock = threading.RLock()
         self._commands = threading.Lock()
@@ -95,6 +99,12 @@ class HackrfAnalyzerService:
     def current_snapshot(self) -> LiveSnapshot:
         with self._lock:
             return self._snapshot
+
+    def analytical_journal_snapshot(self) -> OwnerJournalSnapshot:
+        return self._journal.current()
+
+    def analytical_journal_terminal_history(self) -> tuple[OwnerJournalSnapshot, ...]:
+        return self._journal.terminal_history()
 
     def is_running(self) -> bool:
         with self._lock:
@@ -203,6 +213,9 @@ class HackrfAnalyzerService:
                 if verified.permit is None:
                     return self._error("HackRF identity preflight refused; explicit Stop required")
                 self._ready_bridge.begin()
+                self._journal.begin(OwnerJournalScope(self._ready_bridge.clock_scope_id,
+                    self._ready_bridge.host_process_id, uuid4().hex, str(request.source_id), None,
+                    str(self._snapshot.session_id), request.configuration_generation, self._epoch))
                 started = self._coordinator.start_after_confirmation(verified.permit, user_confirmed=True)
                 if not started.started:
                     return self._error("HackRF native activation failed; explicit Stop required")
@@ -225,8 +238,18 @@ class HackrfAnalyzerService:
             if thread is not None and thread.ident is not None:
                 thread.join(timeout=1.0)
             stopped = self._coordinator.snapshot().state is HackrfProductLiveState.IDLE
+            if stopped and not self._journal.current().native_stop_confirmed:
+                # A failed activation may never have returned a control. There
+                # is no fabricated empty terminal journal for that attempt.
+                self._journal.finish(lambda _count: None)
             if not stopped:
-                stopped = self._coordinator.stop(5000).stopped
+                if self._journal.enabled:
+                    stopped = self._coordinator.stop(5000, after_native_stop=lambda control:
+                        self._journal.finish(lambda count: cast(Any, control).drain_analytical_ready_events(count))).stopped
+                else:
+                    stopped = self._coordinator.stop(5000).stopped
+                    if stopped:
+                        self._journal.finish(lambda _count: None)
             try:
                 self._preflight.close()  # Explicit same-observer cleanup only.
             except Exception:  # noqa: BLE001 - preserve the same pending identity observer.
@@ -320,6 +343,7 @@ class HackrfAnalyzerService:
                             density = candidate_density
                 frame, coalesced = self._coordinator.drain_latest_spectrum_frame()
                 self._ready_bridge.sample()
+                self._journal.drain(self._coordinator.drain_analytical_ready_events)
                 spectrum = None
                 if frame is not None:
                     candidate_spectrum = self._convert(frame, context)
@@ -404,7 +428,8 @@ def build_hackrf_analyzer_service(native_live: Any, catalog: Any) -> HackrfAnaly
     preflight = HackrfActivationPreflightService(lambda: cast(HackrfRuntimeIdentityPort,
         LibhackrfRuntimeIdentityPort(directory / "hackrf.dll", directory)))
     return HackrfAnalyzerService(native, native_live, catalog.snapshot, preflight,
-        HackrfProductLiveCoordinator(cast(HackrfNativeFactoryPort, HackrfNativeRuntimeFactory(lambda: native))))
+        HackrfProductLiveCoordinator(cast(HackrfNativeFactoryPort, HackrfNativeRuntimeFactory(lambda: native,
+            analytical_event_capacity=owner_journal_capacity(native)))))
 
 
 __all__ = ["HackrfAnalyzerService", "build_hackrf_analyzer_service"]

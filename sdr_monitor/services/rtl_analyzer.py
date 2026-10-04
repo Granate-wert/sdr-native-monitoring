@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import replace
 from typing import Any, Callable, Protocol
+from uuid import uuid4
 
 import numpy as np
 
@@ -27,6 +28,8 @@ from ..domain.rtl_live import RtlConfigurationPatch, RtlLiveRequest
 from .native_live import _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
+from ..domain.analytical_journal import OwnerJournalScope, OwnerJournalSnapshot
+from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
 from .rtl_capability_provider import RtlControlPort, RtlRuntimeProvision
 from .source_capability_admission import admit_source_request
 
@@ -43,6 +46,7 @@ class RtlAnalyzerService:
                                          RtlRuntimeProvision]) -> None:
         self._native, self._exclusion = native, exclusion
         self._ready_bridge = NativeReadyBridge(native)
+        self._journal = NativeOwnerJournal(native)
         self._inventory, self._provision_for = inventory, provision_for
         self._lock = threading.RLock()
         self._commands = threading.Lock()
@@ -88,6 +92,12 @@ class RtlAnalyzerService:
     def current_snapshot(self) -> LiveSnapshot:
         with self._lock:
             return self._snapshot
+
+    def analytical_journal_snapshot(self) -> OwnerJournalSnapshot:
+        return self._journal.current()
+
+    def analytical_journal_terminal_history(self) -> tuple[OwnerJournalSnapshot, ...]:
+        return self._journal.terminal_history()
 
     def native_control_available(self) -> bool:
         quarantined = getattr(self._native, "rtl_process_is_quarantined", None)
@@ -196,9 +206,12 @@ class RtlAnalyzerService:
                 # catalog/default module used for general capability gates.
                 self._ready_bridge = NativeReadyBridge(native)
                 self._ready_bridge.begin()
+                self._journal.prepare(native=native, capacity=owner_journal_capacity(native))
                 selected = native.RtlSessionRoute(route.manufacturer, route.product, route.serial,
                     route.tuner_type, route.observation_revision)
                 gain_arguments: dict[str, object] = {}
+                if owner_journal_capacity(native):
+                    gain_arguments["analytical_event_capacity"] = owner_journal_capacity(native)
                 if request.manual_tuner_gain_tenth_db is not None:
                     gain_arguments["manual_tuner_gain_tenth_db"] = request.manual_tuner_gain_tenth_db
                 control = native.create_rtl_runtime_control(provision.runtime,
@@ -229,6 +242,12 @@ class RtlAnalyzerService:
                         acquisition_epoch=readback.session_epoch, clock_domain="host_steady_ns",
                         rtl_cached_tuner_gain_tenth_db=cached_gain,
                         session_id=SessionId(f"rtl-session-{readback.session_epoch}"))
+                # Preserve the SAME provision module identity, never the default
+                # catalog loader. Old terminal windows are retained on this consumer.
+                self._journal.begin(OwnerJournalScope(self._ready_bridge.clock_scope_id,
+                    self._ready_bridge.host_process_id, uuid4().hex, str(request.source_id), None,
+                    str(self._snapshot.session_id), request.configuration_generation, readback.session_epoch),
+                    capacity=owner_journal_capacity(native))
                 self._poller = threading.Thread(target=self._poll, name="sdr-rtl-analyzer", daemon=False)
                 self._poller.start()
                 return self.current_snapshot()
@@ -250,6 +269,7 @@ class RtlAnalyzerService:
                     result = control.stop(5000)
                     if result.complete() is not True or control.cleanup_required() is True:
                         return self._error("RTL native Stop/close unconfirmed; owner retained")
+                    self._journal.finish(lambda count: getattr(control, "drain_analytical_ready_events")(count))
                 except Exception as error:  # noqa: BLE001 - never release an ambiguous owner.
                     self._retain_fault("native_stop", error)
                     return self._error("RTL native Stop failed; owner retained")
@@ -263,6 +283,10 @@ class RtlAnalyzerService:
                 except Exception as error:  # noqa: BLE001 - unknown process state cannot release RX.
                     self._retain_fault("native_cleanup_status", error)
                     return self._error("RTL native cleanup status failed; owner retained")
+            if control is None and not self._journal.current().native_stop_confirmed:
+                # Failed factory after prepare: confirmed process cleanup above
+                # permits a new attempt, but supplies no counters/epoch proof.
+                self._journal.finish(lambda _count: None)
             if self._claimed:
                 self._exclusion.release_external_analyzer_rx(self._token)
                 self._claimed = False
@@ -341,6 +365,7 @@ class RtlAnalyzerService:
                     break
                 result = control.drain_latest_spectrum_frame()
                 self._ready_bridge.sample()
+                self._journal.drain(lambda count: getattr(control, "drain_analytical_ready_events")(count))
                 frame = result.frame
                 if frame is not None:
                     current = self.current_snapshot()

@@ -22,6 +22,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable, cast
+from uuid import uuid4
 from ..domain.live import LiveAdmissionRejected
 from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 
@@ -72,6 +73,8 @@ from ..domain.device_capabilities import (
 )
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
+from ..domain.analytical_journal import OwnerJournalScope, OwnerJournalSnapshot
+from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
 from .source_capability_admission import (
     admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
 )
@@ -201,6 +204,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         )
         self._native = native_module
         self._ready_bridge = NativeReadyBridge(native_module)
+        self._owner_journals = (NativeOwnerJournal(native_module), NativeOwnerJournal(native_module))
+        self._journal_chain_count = 1
+        self._journal_engine: object | None = None
         self._timeout_ms = timeout_ms
         # The product composition root keeps the established 262144-sample
         # default. R10-D6 passes a smaller, explicitly bounded geometry to
@@ -773,12 +779,17 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                                 allow_nonstandard_evidence_buffer_geometry=(
                                     self._allow_nonstandard_evidence_buffer_geometry
                                 ),
+                                analytical_event_capacity=owner_journal_capacity(self._native, requested.backend.value),
                             )
                         )
                     else:
                         candidate_applied = candidate.configure_paired(self._paired_native_config(paired_request, route))
                         self._validate_paired_applied(candidate_applied)
                     self._ready_bridge.begin()
+                    self._journal_chain_count = 2 if paired_request is not None else 1
+                    for journal in self._owner_journals[:self._journal_chain_count]:
+                        journal.prepare(capacity=owner_journal_capacity(self._native, requested.backend.value))
+                    self._journal_engine = candidate
                     candidate.start()
                     if paired_request is not None:
                         candidate_metrics = candidate.paired_metrics().primary
@@ -790,7 +801,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 except Exception as error:
                     if candidate is not None:
                         try:
-                            _shutdown_engine_instance(candidate)
+                            _shutdown_engine_instance(candidate, before_disconnect=lambda:
+                                self._finish_owner_journals(candidate))
                         except Exception:
                             # Retain the failed candidate instead of trying another
                             # route over an owner whose release is unconfirmed.
@@ -944,6 +956,18 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if paired_request is not None:
                 # An explicit next Start uses actual numerical readback.
                 self._paired_request = replace(paired_request, configuration=final_applied.applied)
+            owner_run = uuid4().hex
+            generation = self._snapshot.active_config_generation
+            if type(generation) is int:
+                sources = ((paired_request.primary_source_id, paired_request.secondary_source_id)
+                    if paired_request is not None else (str(device.device_id),))
+                for index, source in enumerate(sources):
+                    self._owner_journals[index].begin(OwnerJournalScope(self._ready_bridge.clock_scope_id,
+                        self._ready_bridge.host_process_id, owner_run, str(source), ("RX1", "RX2")[index],
+                        str(self._snapshot.session_id), generation, int(self._generation)))
+            else:
+                for journal in self._owner_journals[:self._journal_chain_count]:
+                    journal.drain(lambda _count: None)  # Unavailable scope stays incomplete, never invented.
             self._stop_event.clear()
             self._poller = threading.Thread(
                 target=self._poll_loop,
@@ -1059,6 +1083,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     raise RuntimeError("native poller did not confirm termination")
             if engine is not None:
                 engine.join()
+                self._finish_owner_journals(engine)
                 # Capture the finalized writer before disconnect. If any stage
                 # fails, retain both owners; an explicit Stop can retry safely.
                 self._capture_native_recording_completion(engine)
@@ -1101,11 +1126,45 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         if self._paired_request is not None:
             raise RuntimeError("clear the stopped paired RTBW plan before a single-receiver operation")
 
+    def analytical_journal_snapshots(self) -> tuple[OwnerJournalSnapshot, ...]:
+        """Cached scalar views only; no native/SDK poll or channel-name parsing."""
+        return tuple(journal.current() for journal in self._owner_journals[:self._journal_chain_count])
+
+    def analytical_journal_terminal_history(self) -> tuple[tuple[OwnerJournalSnapshot, ...], ...]:
+        return tuple(journal.terminal_history() for journal in self._owner_journals)
+
+    def _drain_owner_journals(self, engine: Any) -> None:
+        if engine is not self._journal_engine:
+            return
+        for index, journal in enumerate(self._owner_journals[:self._journal_chain_count]):
+            journal.drain(self._owner_journal_reader(engine, index))
+
+    def _owner_journal_reader(self, engine: Any, index: int) -> Callable[[int], object]:
+        receivers = getattr(self._native, "PlutoReceiverSelection", None)
+
+        def read(count: int) -> object:
+            # Resolve only when the admitted journal is enabled; legacy native
+            # modules need no added method or receiver enum.
+            if receivers is None:
+                raise ValueError("admitted native journal has no typed receiver enum")
+            receiver = (receivers.RX1, receivers.RX2)[index]
+            return engine.drain_analytical_ready_events(receiver, count)
+
+        return read
+
+    def _finish_owner_journals(self, engine: Any) -> None:
+        if engine is not self._journal_engine:
+            return
+        for index, journal in enumerate(self._owner_journals[:self._journal_chain_count]):
+            journal.finish(self._owner_journal_reader(engine, index))
+        self._journal_engine = None
+
     def _paired_native_config(self, request: PairedLiveRequest, uri: str) -> Any:
         rx = self._native.PlutoReceiverSelection
         configurations = [
             _native_fixed_band_config(self._native, request.configuration, uri,
                 source_id=source, receiver_selection=selection,
+                analytical_event_capacity=owner_journal_capacity(self._native, request.configuration.backend.value),
                 device_buffer_samples=self._device_buffer_samples,
                 allow_nonstandard_evidence_buffer_geometry=self._allow_nonstandard_evidence_buffer_geometry)
             for source, selection in ((request.primary_source_id, rx.RX1), (request.secondary_source_id, rx.RX2))
@@ -1708,6 +1767,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 self._publish_error(f"Pluto RX polling failed: {error}")
                 return
             self._ready_bridge.sample()
+            self._drain_owner_journals(engine)
             if frame is not None:
                 self._record_bridge_batch(native_frames, self._publish_frame(frame, expected_engine=engine))
                 last_frame_at = time.monotonic()
@@ -1744,6 +1804,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 drained = engine.drain_latest_paired_spectrum_frame()
                 value, coalesced = drained.frame, drained.coalesced_frames
                 self._ready_bridge.sample()
+                self._drain_owner_journals(engine)
                 if type(coalesced) is not int or coalesced < 0 or (value is None and coalesced):
                     raise ValueError("invalid native paired coalescing receipt")
                 if value is not None:
@@ -2397,7 +2458,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._paired_density_sequence_floor = None
 
 
-def _shutdown_engine_instance(engine: Any) -> None:
+def _shutdown_engine_instance(engine: Any, *, before_disconnect: Callable[[], None] | None = None) -> None:
     """Require join/disconnect before a failed Start may try another route."""
 
     try:
@@ -2405,6 +2466,8 @@ def _shutdown_engine_instance(engine: Any) -> None:
     except Exception:
         pass
     engine.join()
+    if before_disconnect is not None:
+        before_disconnect()
     engine.disconnect()
 
 
@@ -2433,6 +2496,7 @@ def _native_fixed_band_config(
     snapshot_rate_hz: float | None = None,
     allow_r10d5_evidence_buffer_geometry: bool = False,
     allow_nonstandard_evidence_buffer_geometry: bool = False,
+    analytical_event_capacity: int = 0,
 ) -> Any:
     """Build the P07 fixed-band native config from the applied live config.
 
@@ -2460,6 +2524,8 @@ def _native_fixed_band_config(
     if not math.isfinite(effective_snapshot_rate_hz) or not 1.0 <= effective_snapshot_rate_hz <= 2000.0:
         raise ValueError("native snapshot rate must be finite and in [1, 2000] Hz")
     bandwidth_hz = live.analog_bandwidth_hz if live.analog_bandwidth_hz is not None else live.sample_rate_hz
+    if type(analytical_event_capacity) is not int or analytical_event_capacity not in (0, 4096):
+        raise ValueError("native owner journal capacity must be explicitly bounded")
     device = native_module.DeviceConfig(
         source_id,
         context_uri,
@@ -2513,6 +2579,10 @@ def _native_fixed_band_config(
         persistence,
     )
     receiver_arguments = {} if receiver_selection is None else {"receiver_selection": receiver_selection}
+    if analytical_event_capacity:
+        if analytical_event_capacity != owner_journal_capacity(native_module, live.backend.value):
+            raise ValueError("native owner journal capacity/protocol was not admitted")
+        receiver_arguments["analytical_event_capacity"] = analytical_event_capacity
     if recording_options is None:
         return native_module.FixedBandConfig(*fixed_arguments, **receiver_arguments)
     recording_config = native_module.RecordingConfig(
