@@ -4740,3 +4740,60 @@ Current candidate HIL criteria require revalidation with a matching package
 and actual RX; independent review, full UI regression, visible Windows/DPI,
 performance, soak and release qualification remain open. No static/current
 package promotion or system mutation was made.
+
+## 2026-10-04: opt-in owned USB connection assertion and lifetime claim
+
+Runtime commit eb2325b introduces typed ExpectedUsbConnection on all three
+native Pluto owner constructors: device, fixed-band engine and continuous
+Sweep coordinator. The optional trailing argument preserves existing calls.
+Host values are range checked before opening a context. The actual newly
+owned context must confirm USB backend, bus/address/interface, VID/PID and
+consistent known or genuinely empty USB/hardware serials before RF operations.
+The requested URI, label and a previous temporary probe cannot substitute for
+that check. A separate USB admission protocol is required; no legacy fallback
+is allowed when an explicit assertion was requested.
+
+Explicitly asserted native owners use a cooperative process-local lifetime
+claim. Different interfaces at one USB bus/address are one resource. A known
+serial also excludes aliases across USB addresses. Stop retains the claim;
+disconnect releases it only after SDK context destruction returns. A mock
+destruction barrier tests retention while close is pending. Missing/invalid/
+changed connection facts refuse; failed admission destroys its context before
+releasing the claim. This does not provide cross-process exclusion or prove
+exhaustive hardware/OS release from libiio's void-return destruction call.
+
+The Qt-free service factory can explicitly construct these typed owners.
+Current product descriptor/Stage/composition paths do not yet request the
+new assertion, and the unknown-serial same-family guard is unchanged. Ordinary
+legacy owners do not participate in the opt-in claim registry. Product-wide
+USB/IP alias exclusion, session invalidation, stable calibration identity and
+same-port indistinguishable hot-swap remain unsolved; cached attributes are
+not liveness. Do not relax application admission based solely on this increment.
+
+Exact staged CPU/HackRF/RTLofficial native build: 46/46 CTest PASS in53.53s,
+native SHA256 033724259775926cc05af06cf254341472296f48a92eb8080bf7c3c3c59ed6ca.
+Additional checks:19 Python identity/USB tests,8 unchanged Stage guards,2
+matching native binding tests. Initial candidate45/46 native failure is retained:
+the HackRF test waited for numerical completion rather than actual terminal
+publication. Its wait now checks both with the unchanged3-second deadline and
+all geometry assertions; no HackRF runtime implementation changed. Initial
+binding witness also incorrectly called Stop on an idle engine. Test-only
+fd339c2 corrects that witness and preserves the existing RUNNING-only guard;
+the native build remains attributed to eb2325b, not fd339c2.
+
+A separate exact physical metadata-only witness held two asserted Pluto USB
+owners concurrently, one with known serial and one genuinely empty. Duplicate
+asserted owners refused, an expected descriptor mismatch refused, and explicit
+reopen after disconnect succeeded. No RF configure, buffer, Start or refill
+occurred; all owners disconnected and the cooperating-process lease released.
+This is not simultaneous application RX or RF/transport performance proof.
+Windows compiled; Linux source equivalent is not Linux build qualification.
+
+The current/static EXE and old a8 diagnostic package are unchanged. No new
+frozen EXE/full V2/current RX/visible Windows-DPI/soak/independent-review/release
+acceptance is claimed. Next: wire assertions and bounded session/resource
+claims into the actual product before approving dual-Pluto admission, then
+qualify a matching package. Final2×2 RX reports must include original
+screenshots for different source assignments/modes, with build/resolution/
+scaling and explicit capture scope; previous screenshots are not new-build
+acceptance evidence.
