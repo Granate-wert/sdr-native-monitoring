@@ -5233,3 +5233,89 @@ attribute missing first-FFT/refill/DSP/publication stages, then analytical-ready
 to first relevant paint-return offered/disposition ledger. No repeated baseline
 without new scope. Remaining paired/dualAD/Ethernet/fault/stability/visible/release/
 closure requirements and APP08..14 stay open.
+
+## 2026-10-04 M8-058 — observed shared Pluto ingress timing
+
+Immutable runtime source `60f59794872a36496bd01af3025c1dc59a8ab7cb`.
+Five additive readonly ContinuousSweepCoordinatorMetrics fields:
+`source_refill_calls`, `source_refill_wait_ns`,
+`source_canonicalization_ns`, `source_inter_refill_gap_ns`,
+`source_inter_refill_gap_count`.
+
+Re-use existing PlutoDevice StreamMetrics at admitted segment snapshots,
+delta-accounted across configure generations and incrementally in single-window
+Sweep. One common paired input counted once, not summed per RX; configure resets
+totals; stopped reads are nonconsuming. No new SDK query/timebase/RF/Fs/FFT setting,
+restart, queue budget or raw-I/Q Python path. Live reads relaxed; attempts/errors/
+cancellations observed there are not a complete terminal-tail or successful-block
+counter. Inter-refill gaps exclude reset/reconfigure downtime; no RF duty/Pd claim.
+
+Matched diagnostic APP07-INGRESS-20261004-60F5979:
+46/46 CTest in53.62s; 665 frozen files; exact serial V2 1381 total/1315 PASS/
+66 skip/0 failure-error in500.311s; clean before/after, exact provenance,
+no deferred compiled tests or product imports outside checkout.
+Two matching packaged binding tests passed; schema5/Qt6.11.1 unchanged.
+Native SHA df50fe46d12ed8ac6027bf1875b4db81cdd819e354a012763c039bad96fd0d05.
+EXE SHA 6a3a34766aa850326c0fcf2d28a0403cc9241410a26fab0fe68f2c7f0e65e0a9.
+No static/current promotion; a documentation commit does not relabel the build.
+
+Two physical sourceQt/offscreen windows, each15s warmup/60s steady/61 observations,
+with unchanged explicitly selected057 profiles:
+A AD9364mini USB/HackRF/tinySA/RTL canonical;
+B tinySA/RTL/AD9363full USB/HackRF rotation2.
+AD4 Sweep300..620/Fs61.44/useful36/logical4096-physical8192;
+AD3 Sweep300..620/Fs30.72/useful30/logical4096-physical8192 (not forced18).
+HackRF Sweep100..300/Fs20/FFT4096; tinySA LOW100..300/1001/actualRBW300k/
+device-dBm; RTL RTBW99.5..100.5/Fs2.4/FFT4096.
+Fresh layout reassignment, not hot replacement or Ethernet qualification.
+The Sweep useful-window policy is not an automatic RTBW-bandwidth limit.
+
+| Native/host metric | A: AD4 canonical | B: AD3 rotation2 |
+|---|---:|---:|
+| AD computed FFT/s |350.330|262.282|
+| AD completed Sweep/s |0.566|0.383|
+| Observed refill wait mean, ms/attempt |33.977|54.153|
+| Observed canonicalization mean, ms/attempt |1.296|1.295|
+| Observed inter-refill gap mean, ms/gap |0.002436|0.002237|
+| HF computed FFT/s |813.807|781.483|
+| HF completed Sweep/s |40.690|39.067|
+| HF GUI admissions/s |38.043|35.171|
+| RTL computed FFT/s |1171.695|1171.691|
+| RTL GUI admissions/s |37.327|35.970|
+| tinySA GUI trace admissions/s |0.733|0.749|
+| Own CPU /16-logical whole-machine % |9.118|9.463|
+| Own RSS delta MiB/60s |12.043|2.965|
+| Sampled presentation queue /capacity |3/8|3/8|
+
+Refill attempts1002/750, gap counts668/500; host wall timers, not RF timestamps
+or analytical-ready. Existing coordinator approximate stage delta-means A/B ms:
+Stop0.600/0.620, configure16.256/15.659, Start45.965/45.846,
+framewait116.488/176.977. Independent live reads are not exact postStop fences,
+per-step percentiles or causal DSP/publication separation. Refill wait much
+greater than canonicalization suggests investigating first-buffer/transport/
+start lifecycle before assuming FFT arithmetic is the principal latency cost.
+
+Native HF/RTL FFT rates within about0.3% of057, not a claimed speedup.
+B GUI admissions about12% lower than057 (HF40.16→35.17, RTL40.98→35.97/s)
+with higher ownCPU; exact cause UNKNOWN. Do not select a better unchanged rerun
+or interpret admissions as paint FPS. Known analytical/input error/drop counters
+zero, supersession separate; deviceoverrun/continuousADC/RFduty unknown.
+No lossless, sustained61.44USB or leak-proof claim from one minute.
+No SDK error-line matches/tiny observer mismatch in these runs; historical causes
+remain UNKNOWN, not fixed. Both runs terminal0owners/workers/leaseReleased.
+
+Four original1920×1080/DPR1 screenshots before/after measurement root-inspected,
+hash/geometry/source receipts preserved. SAME packaged native/matchingQt sourceUI,
+**not visible frozenEXE/DPI/DWM/50ms qualification**. Visible UI debt remains:
+accepted-segment caption overlap, denseRTL detail, sparse waterfall fill and
+autorange smoothness; stills do not prove temporal flicker.
+
+Evidence `m8-ingress-60f5979-058`; private logs/audits/gallery retained locally.
+Reused gpt-6-sol/high UI-only read-only paint-contract review058; reused
+gpt-6-luna/high isolated UI-only relevantSpectrum cadence059 candidate is not
+included in this runtime/build/screens. Root owns native/backend/RX/build.
+No independent whole-backend/release approval. APP07/M8/H01 PARTIAL, H02 TODO.
+Next narrow UI059 review/integration and root native pre-coalescing ready-ID/
+validatedclock/disposition, then distinct Waterfall/Visual paint identity.
+Remaining paired/dualAD/Ethernet/fault/soak/visible/release/closure and APP08..14
+stay open. Do not restart completed058 qualifications.
