@@ -12,6 +12,20 @@
 
 namespace sdr_pluto::detail {
 
+// Reader is bound to the caller-owned context. Never infer a missing attribute
+// from the caller URI, description, model or another temporary probe.
+template <typename AttributeReader>
+void inspect_connection_attributes(ContextProbe& result, const AttributeReader& read) {
+    const auto observed = [&read](const char* key) -> std::optional<std::string> {
+        const auto* value = read(key);
+        return value == nullptr ? std::nullopt : std::optional<std::string>{value};
+    };
+    result.backend_uri = observed("uri");
+    result.usb_vendor_id = observed("usb,idVendor");
+    result.usb_product_id = observed("usb,idProduct");
+    result.usb_serial = observed("usb,serial");
+}
+
 // Must match Python normalized_pluto_serial; ASCII only, no route inference.
 inline std::optional<std::string> normalized_serial(const std::string& value) {
     constexpr std::string_view whitespace = " \t\n\r\v\f";
@@ -64,6 +78,9 @@ ContextProbe inspect_open_context(const Api& api, const Context* context, const 
 
     ContextProbe result;
     result.uri = uri;
+    inspect_connection_attributes(result, [&api, context](const char* key) {
+        return api.context_attr(context, key);
+    });
     result.context_name = text(api.context_name(context));
     result.description = text(api.context_description(context));
     std::array<char, 8> tag{};

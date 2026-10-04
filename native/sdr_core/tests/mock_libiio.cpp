@@ -18,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-struct iio_context { std::string serial; };
+struct iio_context { std::string serial; std::string backend_uri; };
 struct iio_scan_context {};
 struct iio_context_info { const char* uri; const char* description; };
 struct iio_device { int kind; };
@@ -203,7 +203,8 @@ __declspec(dllexport) iio_context* iio_create_context_from_uri(const char* uri) 
     const auto ordinal = ++created_contexts;
     auto* context = new iio_context{
         std::getenv("SDR_MOCK_LIBIIO_CONTEXT_SCOPED_IDENTITY") != nullptr
-            ? "OPEN-" + std::to_string(ordinal) : "MOCK"
+            ? "OPEN-" + std::to_string(ordinal) : "MOCK",
+        "usb:2." + std::to_string(41 + ordinal) + ".5"
     };
     ++live_contexts;
     return context;
@@ -225,6 +226,24 @@ __declspec(dllexport) int iio_context_set_timeout(iio_context*, unsigned int) {
     return std::getenv("SDR_MOCK_LIBIIO_CONTEXT_TIMEOUT_FAIL") != nullptr ? -EIO : 0;
 }
 __declspec(dllexport) const char* iio_context_get_attr_value(const iio_context* context, const char* attr) {
+    const bool connection_attribute = std::strcmp(attr, "uri") == 0 ||
+        std::strcmp(attr, "usb,idVendor") == 0 || std::strcmp(attr, "usb,idProduct") == 0 ||
+        std::strcmp(attr, "usb,serial") == 0;
+    if (connection_attribute) {
+        const auto* mode = std::getenv("SDR_MOCK_LIBIIO_CONNECTION_ATTR_MODE");
+        if (mode != nullptr && std::strcmp(mode, "missing") == 0) return nullptr;
+        if (mode != nullptr && std::strcmp(mode, "empty") == 0) return "";
+        if (mode != nullptr && std::strcmp(mode, "raw") == 0) {
+            if (std::strcmp(attr, "uri") == 0) return "not-a-USB-URI";
+            if (std::strcmp(attr, "usb,idVendor") == 0) return "wrong-vendor";
+            if (std::strcmp(attr, "usb,idProduct") == 0) return "";
+            return "CONTRADICTS-HARDWARE";
+        }
+        if (std::strcmp(attr, "uri") == 0) return context->backend_uri.c_str();
+        if (std::strcmp(attr, "usb,idVendor") == 0) return "0456";
+        if (std::strcmp(attr, "usb,idProduct") == 0) return "b673";
+        return std::getenv("SDR_MOCK_LIBIIO_EMPTY_SERIAL") != nullptr ? "" : context->serial.c_str();
+    }
     if (std::strcmp(attr, "hw_model") == 0) {
         return extended_ad9363_profile()
             ? "PlutoSDR mock (AD9363 custom firmware extended profile)"

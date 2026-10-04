@@ -1,4 +1,5 @@
 #include "sdr_pluto/pluto_backend.hpp"
+#include "context_probe.hpp"
 
 #include <dlfcn.h>
 
@@ -188,6 +189,9 @@ ContextProbe probe_context(const std::string& uri, const std::uint32_t timeout_m
     if (timeout_result < 0) throw std::runtime_error("iio_context_set_timeout failed: " + std::to_string(timeout_result));
     ContextProbe result;
     result.uri = uri;
+    detail::inspect_connection_attributes(result, [context_attr, &context](const char* key) {
+        return context_attr(context.get(), key);
+    });
     result.context_name = safe(context_name(context.get()));
     result.description = safe(context_description(context.get()));
     std::array<char, 8> tag{};

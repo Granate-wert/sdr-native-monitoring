@@ -74,10 +74,63 @@ struct MockHooks final {
     }
     ~MockHooks() { if (module != nullptr) FreeLibrary(module); }
 };
+
+void check_connection_observations() {
+    MockHooks hooks;
+    const auto writes_before = hooks.mutation_calls();
+    const auto buffers_before = hooks.created_buffers();
+    for (const char* mode : {"missing", "empty", "raw"}) {
+        _putenv_s("SDR_MOCK_LIBIIO_CONNECTION_ATTR_MODE", mode);
+        const auto temporary = sdr_pluto::probe_context("usb:mock");
+        sdr_pluto::PlutoDevice owner("usb:mock");
+        const auto observed = owner.probe();
+        const auto topology = owner.receiver_topology();
+        if (observed.uri != "usb:mock" || temporary.uri != "usb:mock" ||
+            observed.backend_uri != temporary.backend_uri ||
+            topology.context.backend_uri != observed.backend_uri ||
+            topology.context.usb_serial != observed.usb_serial) {
+            throw std::runtime_error("context observation boundary mismatch");
+        }
+        if (std::string(mode) == "missing") {
+            if (observed.backend_uri || observed.usb_vendor_id || observed.usb_product_id || observed.usb_serial)
+                throw std::runtime_error("missing attribute synthesized");
+        } else if (std::string(mode) == "empty") {
+            for (const auto* value : {&observed.backend_uri, &observed.usb_vendor_id,
+                                      &observed.usb_product_id, &observed.usb_serial}) {
+                if (!value->has_value() || !value->value().empty())
+                    throw std::runtime_error("empty attribute lost");
+            }
+        } else if (observed.backend_uri != "not-a-USB-URI" ||
+                   observed.usb_vendor_id != "wrong-vendor" ||
+                   observed.usb_product_id != "" ||
+                   observed.usb_serial != "CONTRADICTS-HARDWARE") {
+            throw std::runtime_error("raw attributes silently interpreted");
+        }
+        owner.disconnect();
+    }
+    _putenv_s("SDR_MOCK_LIBIIO_CONNECTION_ATTR_MODE", "");
+    hooks.reset_context_counts();
+    const auto preprobe = sdr_pluto::probe_context("usb:mock");
+    {
+        sdr_pluto::PlutoDevice owner("usb:mock");
+        const auto observed = owner.probe();
+        if (observed.backend_uri != "usb:2.43.5" || preprobe.backend_uri != "usb:2.42.5" ||
+            observed.usb_vendor_id != "0456" || observed.usb_product_id != "b673" ||
+            observed.usb_serial != "MOCK" || observed.uri != "usb:mock" ||
+            owner.receiver_topology().context.backend_uri != observed.backend_uri ||
+            hooks.created_contexts() != 2 || hooks.destroyed_contexts() != 1 || hooks.live_contexts() != 1) {
+            throw std::runtime_error("owning context confused with temporary probe");
+        }
+    }
+    if (hooks.live_contexts() != 0 || hooks.destroyed_contexts() != 2 ||
+        hooks.mutation_calls() != writes_before || hooks.created_buffers() != buffers_before)
+        throw std::runtime_error("observation opened RX or leaked context");
+}
 }
 
 int main() {
     try {
+        check_connection_observations();
         const auto runtime = sdr_pluto::runtime_info();
         if (!runtime.available || runtime.major != 0U || runtime.minor != 26U) return 1;
         if (!runtime.supports_kernel_buffer_count || !runtime.supports_buffer_blocking_mode || !runtime.supports_buffer_poll_fd) return 13;

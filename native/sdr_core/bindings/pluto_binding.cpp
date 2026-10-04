@@ -299,6 +299,10 @@ void bind_pluto(py::module_& module) {
 
     py::class_<sdr_pluto::ContextProbe>(module, "PlutoContextProbe")
         .def_readonly("uri", &sdr_pluto::ContextProbe::uri)
+        .def_readonly("backend_uri", &sdr_pluto::ContextProbe::backend_uri)
+        .def_readonly("usb_vendor_id", &sdr_pluto::ContextProbe::usb_vendor_id)
+        .def_readonly("usb_product_id", &sdr_pluto::ContextProbe::usb_product_id)
+        .def_readonly("usb_serial", &sdr_pluto::ContextProbe::usb_serial)
         .def_readonly("context_name", &sdr_pluto::ContextProbe::context_name)
         .def_readonly("description", &sdr_pluto::ContextProbe::description)
         .def_readonly("backend_major", &sdr_pluto::ContextProbe::backend_major)

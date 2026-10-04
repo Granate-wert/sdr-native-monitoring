@@ -47,6 +47,13 @@ struct ContextProbe {
     std::vector<std::string> device_ids;
     std::string phy_device_id;
     std::string rx_stream_device_id;
+    // Raw, cached attributes of the SAME opened context, not the requested
+    // route, stable calibration identity, liveness or admission evidence.
+    // nullopt means absent; an observed empty attribute remains an empty string.
+    std::optional<std::string> backend_uri;
+    std::optional<std::string> usb_vendor_id;
+    std::optional<std::string> usb_product_id;
+    std::optional<std::string> usb_serial;
 };
 
 // A read-only IIO topology observation.  It intentionally contains no buffer,

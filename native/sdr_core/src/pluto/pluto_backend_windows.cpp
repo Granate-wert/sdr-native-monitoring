@@ -1,4 +1,5 @@
 #include "sdr_pluto/pluto_backend.hpp"
+#include "context_probe.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -255,6 +256,9 @@ ContextProbe probe_context(const std::string& uri, const std::uint32_t timeout_m
 
     ContextProbe result;
     result.uri = uri;
+    detail::inspect_connection_attributes(result, [&api, &context](const char* key) {
+        return api.context_attr(context.get(), key);
+    });
     result.context_name = safe(api.context_name(context.get()));
     result.description = safe(api.context_description(context.get()));
     std::array<char, 8> tag{};
