@@ -5477,3 +5477,60 @@ run-activation attribution/downstream dispositions, independent Sweep/density
 readiness and coverage, then dedicated UI layer terminals. No50ms/p95/p99,
 RFduty/Pd/lossless, sustained/soak, WindowsDPI/DWM, dualRF/Ethernet or whole
 independent release qualification follows from this bounded packet.
+
+## M8-062 — concurrent actual-owner analytical journals
+
+Exact runtime source: d37a92862899d6971f227340934849a393ccfe91.
+Pluto single/paired, HackRF runtime/acquisition/DSP and RTL expose bounded
+scalar analytical-event drains on their SAME existing native owners.
+No second hardware opener, raw I/Q transfer, per-FFT Python callback or UI edit.
+
+Offer/retire/summary are protected by a short journal mutex. A drain allocates
+its finite batch outside that producer lock and atomically returns events plus
+the post-drain lifetime summary. A separate drain mutex serializes native drain
+allocations. Capacity and positive drain batches are limited to4096; zero batch
+means currently pending in the admitted ring. Ring plus one native drain payload
+is charged to existing component/paired aggregate budgets. Caller-retained
+Python objects, other batches, allocator overhead and process RSS are not
+exhaustively covered. Default owner capacity remains0 until the host consumer
+is integrated; old profiles/Fs/FFT/backend policy and acquisition are preserved.
+
+Exact conservation at each returned summary:
+offered = handed_off + producer_superseded + producer_cancelled + outstanding;
+events_generated = events_drained + events_pending + events_lost.
+A full/disabled journal drops NEW evidence with explicit loss accounting,
+not raw input or FFT loss. HandedOff means native output-queue handoff,
+NOT a fulfilled pane obligation or paint. The original ready time and producer
+lifetime remain unchanged. Unsupported vendor evidence stays unsupported.
+
+Pluto reads require exact admitted RX1/RX2; BOTH, absent or unconfigured channels
+refuse. Paired rings/producers remain distinct under one shared owner and common
+capacity admission. HF and RTL drains perform no SDK, Start, Stop or retuning.
+Final native events remain readable after Stop, before owner release.
+Append-only binding contract OWNER_ANALYTICAL_READY_CONTRACT_VERSION=1;
+spectrum wire schema5 and recording formats unchanged.
+
+Candidate native47/47 and concurrent10koffers/20kevents conservation PASS.
+Initial binding failure was only the test's wrong public class name; corrected,
+product guards unchanged. Exact matching diagnostic build47/47CTest54.34s,
+665frozen/runtime/source/offscreen gates PASS. AFTER freeze serial fullV2
+1384total/1318PASS/66skip/0fail-error489.109s, exacttrue/cleanbeforeafter,
+deferred[]/outside[]. Four historical NaN warnings retained. Separate matching
+packaged8bindings PASS0.208s. All build/gate handles terminal; no physical RX.
+Native d80e7a9dd900bc9fe4a6d99c4630d96f29210d7e6f1f464e8df3cc98a226230e;
+EXE2713214365061672d9f1167dae869be1456a448c85a916d671a8511033509139.
+APP07-OWNER-20261004-D37A928-R0 is diagnostic, NOT static/current/release promoted.
+Later documentation commits must not relabel this exact runtime/build.
+
+APP07/M8/H01 remain PARTIAL; H02 TODO. This is the native prerequisite, not
+completion of M8-062. Automatic budgeted service drains and preserved terminal
+journals, full validated process/resource/capture/RX/session/run/activation
+attribution, exact downstream dispositions, independent stitched Sweep/density
+readiness/coverage, then per-layer UI terminals remain mandatory. New mutex
+overhead and actual acquisition/paint latency are not physically qualified here.
+Prior061 physical2x2 gallery remains061 evidence, never d37 hardware acceptance.
+Dependent physical qualification needs refresh after relevant native changes;
+historical successful evidence is retained, not silently transferred or erased.
+No new subagents/model calls062; previous UI-only review is not current native
+or release approval. No50ms, DWM/DPI, RF duty/Pd, lossless, Ethernet/dualRF,
+sustained/soak or independent whole-release acceptance follows from this packet.
