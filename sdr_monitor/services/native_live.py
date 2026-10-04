@@ -73,7 +73,7 @@ from ..domain.device_capabilities import (
 )
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
-from ..domain.analytical_journal import OwnerJournalScope, OwnerJournalSnapshot
+from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
 from .source_capability_admission import (
     admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
@@ -1769,7 +1769,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._ready_bridge.sample()
             self._drain_owner_journals(engine)
             if frame is not None:
-                self._record_bridge_batch(native_frames, self._publish_frame(frame, expected_engine=engine))
+                scope = self._owner_journals[0].current().scope
+                published = self._publish_frame(frame, expected_engine=engine)
+                self._owner_journals[0].observe_adapter_result(frame, native_frames - 1,
+                    AdapterPacketDisposition.PUBLISHED if published else (
+                        AdapterPacketDisposition.CANCELLED if self._stop_event.is_set()
+                        else AdapterPacketDisposition.REJECTED), expected_scope=scope)
+                self._record_bridge_batch(native_frames, published)
                 last_frame_at = time.monotonic()
             elif self._engine_state_is_error(engine):
                 self._publish_error("Pluto RX engine entered error state")
@@ -1800,16 +1806,23 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             raise ValueError("paired poller requires its actual engine")
         last_frame_at = time.monotonic()
         while not self._stop_event.is_set():
+            value = None
+            coalesced = 0
+            adapter_scopes: tuple[OwnerJournalScope | None, ...] = ()
+            adapter_recorded = False
             try:
                 drained = engine.drain_latest_paired_spectrum_frame()
                 value, coalesced = drained.frame, drained.coalesced_frames
                 self._ready_bridge.sample()
                 self._drain_owner_journals(engine)
+                adapter_scopes = tuple(journal.current().scope for journal in self._owner_journals)
                 if type(coalesced) is not int or coalesced < 0 or (value is None and coalesced):
                     raise ValueError("invalid native paired coalescing receipt")
                 if value is not None:
                     with self._lock:
                         if engine is not self._engine or self._stop_event.is_set():
+                            self._observe_paired_adapter_result(value, coalesced,
+                                AdapterPacketDisposition.CANCELLED, adapter_scopes)
                             return
                         if self._paired_synchronization_epoch != value.synchronization_epoch:
                             self._paired_densities = (None, None)
@@ -1836,6 +1849,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                                                    density_pair, self._paired_quality)
                     with self._lock:
                         if engine is not self._engine or self._stop_event.is_set():
+                            self._observe_paired_adapter_result(value, coalesced,
+                                AdapterPacketDisposition.CANCELLED, adapter_scopes)
                             return
                         spectrum = publication.primary.spectrum
                         if spectrum is None:
@@ -1849,6 +1864,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                         self._sequence += 1
                         # Control state is NOT an RX1 alias and has no Spectrum.
                         self._snapshot = replace(self._snapshot, sequence=as_frame_sequence(self._sequence))
+                    self._observe_paired_adapter_result(value, coalesced,
+                        AdapterPacketDisposition.PUBLISHED, adapter_scopes)
+                    adapter_recorded = True
                     self._record_bridge_batch(coalesced + 1, True)
                     last_frame_at = time.monotonic()
                 elif time.monotonic() - last_frame_at > _STALL_TIMEOUT_S:
@@ -1867,10 +1885,22 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                         self._paired_performance = performance
                     self._last_metrics_sample_s = now
             except Exception as error:
+                if value is not None and not adapter_recorded:
+                    self._observe_paired_adapter_result(value, coalesced,
+                        AdapterPacketDisposition.REJECTED, adapter_scopes)
                 if not self._stop_event.is_set():
                     self._publish_error(f"Pluto paired RX polling/conversion failed: {error}")
                 return
             self._stop_event.wait(_POLL_INTERVAL_S)
+
+    def _observe_paired_adapter_result(self, value: Any, coalesced: int,
+                                      disposition: AdapterPacketDisposition,
+                                      scopes: tuple[OwnerJournalScope | None, ...]) -> None:
+        if len(scopes) != 2:
+            return  # No exact admitted paired lifetime; never fabricate one.
+        for index, name in enumerate(("primary", "secondary")):
+            self._owner_journals[index].observe_adapter_result(getattr(value, name, None),
+                coalesced, disposition, expected_scope=scopes[index])
 
     @staticmethod
     def _paired_quality(spectrum: LiveSpectrumFrame, context: LiveQuality) -> LiveQuality:

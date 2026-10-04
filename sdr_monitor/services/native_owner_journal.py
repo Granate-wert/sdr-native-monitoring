@@ -14,7 +14,8 @@ import threading
 from typing import Any
 
 from ..domain.analytical_journal import (
-    JournalCounters, JournalEvent, JournalEventKind, JournalState, OwnerJournalScope, OwnerJournalSnapshot,
+    AdapterDispositionCounters, AdapterPacketDisposition, JournalCounters, JournalEvent,
+    JournalEventKind, JournalState, OwnerJournalScope, OwnerJournalSnapshot,
 )
 
 EVENT_CAPACITY = 4096
@@ -71,6 +72,60 @@ class NativeOwnerJournal:
     def terminal_history(self) -> tuple[OwnerJournalSnapshot, ...]:
         with self._lock:
             return tuple(self._history)
+
+    def observe_adapter_result(self, frame: object, coalesced: int,
+                               disposition: AdapterPacketDisposition, *,
+                               expected_scope: OwnerJournalScope | None) -> None:
+        """Once per actual latest-drain result AFTER its publication decision.
+
+        No native/SDK call or perFFT callback. Telemetry refusal must never
+        alter acquisition. A foreign/retired lifetime is not assigned to the
+        current owner; missing identity is explicitly unqualified, not zero.
+        """
+        with self._lock:
+            value = self._snapshot
+            if (not self.enabled or expected_scope is None or value.scope is not expected_scope
+                    or value.native_stop_confirmed):
+                return
+            old = value.adapter or AdapterDispositionCounters()
+            try:
+                if type(coalesced) is not int or not 0 <= coalesced < (1 << 64) - 1:
+                    raise ValueError("invalid actual adapter batch size")
+                if not isinstance(disposition, AdapterPacketDisposition):
+                    raise ValueError("adapter outcome must be typed")
+                ref = getattr(frame, "analytical_ready", None)
+                counters = value.counters
+                if (value.state is not JournalState.ACTIVE or counters is None or ref is None):
+                    updated = replace(old, batches=old.batches + 1,
+                        unqualified_batches=old.unqualified_batches + 1,
+                        unqualified_packets=old.unqualified_packets + coalesced + 1)
+                else:
+                    clock = getattr(self._native, "AnalyticalReadyClock")
+                    states = getattr(self._native, "AnalyticalReadyClockState")
+                    if (type(ref.producer_instance_id) is not int
+                            or ref.producer_instance_id != counters.producer_instance_id
+                            or type(ref.config_generation) is not int
+                            or ref.config_generation != expected_scope.configuration_generation
+                            or type(ref.offer_sequence) is not int
+                            or not old.last_offer_sequence < ref.offer_sequence <= counters.offered
+                            or ref.clock != clock.NativeSteady
+                            or ref.clock_state not in (states.Monotonic, states.Regressed)):
+                        raise ValueError("foreign/stale adapter producer receipt")
+                    name = {AdapterPacketDisposition.PUBLISHED: "published_packets",
+                            AdapterPacketDisposition.REJECTED: "rejected_packets",
+                            AdapterPacketDisposition.CANCELLED: "cancelled_packets"}[disposition]
+                    updated = replace(old, batches=old.batches + 1,
+                        coalesced_packets=old.coalesced_packets + coalesced,
+                        last_offer_sequence=ref.offer_sequence, last_ready_native_ns=ref.ready_native_ns,
+                        **{name: getattr(old, name) + 1})
+                candidate = replace(value, adapter=updated)
+                if (_scalar_bytes(candidate) + _scalar_bytes(value)
+                        + sum(_scalar_bytes(item) for item in self._history)
+                        + BATCH_CAPACITY * 512 > HOST_SCALAR_BUDGET):
+                    raise ValueError("adapter accounting exceeds existing host scalar reservation")
+                self._snapshot = candidate
+            except Exception:  # noqa: BLE001 - evidence failure is NOT a hardware failure.
+                self._snapshot = replace(value, adapter=replace(old, binding_failures=old.binding_failures + 1))
 
     def _archive(self) -> None:
         if len(self._history) == TERMINAL_HISTORY_CAPACITY:

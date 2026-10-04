@@ -35,7 +35,7 @@ from .hackrf_product_live import HackrfNativeFactoryPort, HackrfProductLiveCoord
 from .native_live import _native_frame_metadata, _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
-from ..domain.analytical_journal import OwnerJournalScope, OwnerJournalSnapshot
+from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
 from .source_capability_admission import admit_source_request
 
@@ -321,10 +321,15 @@ class HackrfAnalyzerService:
         last_frame = time.monotonic()
         last_metrics = last_frame
         previous: tuple[int, int, int, int] | None = None
+        frame = None
+        coalesced = 0
+        adapter_scope = None
+        adapter_recorded = False
         try:
             # GUI consumes latest at a much lower rate. Four milliseconds
             # bounds bridge/GIL pressure without changing native FFT/persistence.
             while not self._cancel.wait(0.004):
+                frame, adapter_scope, adapter_recorded = None, None, False
                 context = self.current_snapshot()
                 request = context.hackrf_request
                 assert request is not None
@@ -345,6 +350,7 @@ class HackrfAnalyzerService:
                 frame, coalesced = self._coordinator.drain_latest_spectrum_frame()
                 self._ready_bridge.sample()
                 self._journal.drain(self._coordinator.drain_analytical_ready_events)
+                adapter_scope = self._journal.current().scope
                 spectrum = None
                 if frame is not None:
                     candidate_spectrum = self._convert(frame, context)
@@ -355,6 +361,9 @@ class HackrfAnalyzerService:
                 if spectrum is not None or density is not None:
                     with self._lock:
                         if self._cancel.is_set():
+                            if frame is not None:
+                                self._journal.observe_adapter_result(frame, coalesced,
+                                    AdapterPacketDisposition.CANCELLED, expected_scope=adapter_scope)
                             return
                         candidate = replace(self._snapshot,
                             spectrum=spectrum if spectrum is not None else self._snapshot.spectrum,
@@ -370,6 +379,11 @@ class HackrfAnalyzerService:
                         last_frame = time.monotonic()
                     if density is not None:
                         self._last_density_sequence = int(density.update_sequence)
+                if frame is not None:
+                    self._journal.observe_adapter_result(frame, coalesced,
+                        AdapterPacketDisposition.PUBLISHED if spectrum is not None
+                        else AdapterPacketDisposition.REJECTED, expected_scope=adapter_scope)
+                    adapter_recorded = True
                 now = time.monotonic()
                 if now - last_frame > request.spectrum_stall_timeout_s:
                     self._error("HackRF reduced spectrum stalled; explicit Stop required")
@@ -412,6 +426,9 @@ class HackrfAnalyzerService:
                             self._snapshot = replace(self._snapshot, performance=performance)
                     previous, last_metrics = counts, now
         except Exception:  # noqa: BLE001 - quarantine malformed native publications, never retry RX.
+            if frame is not None and not adapter_recorded:
+                self._journal.observe_adapter_result(frame, coalesced, AdapterPacketDisposition.REJECTED,
+                    expected_scope=adapter_scope)
             if not self._cancel.is_set():
                 self._error("HackRF frame/metrics contract failed closed; explicit Stop required")
 

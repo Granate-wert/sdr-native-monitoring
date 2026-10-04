@@ -190,6 +190,9 @@ def run_case(path: str, case: str) -> None:
         assert journals[0].counters.producer_instance_id != journals[1].counters.producer_instance_id
         assert app.analytical_journal_snapshots() == journals
         for publication, journal in zip((latest.primary, latest.secondary), journals, strict=True):
+            assert journal.adapter is not None and journal.adapter.published_packets > 0
+            assert journal.adapter.binding_failures == journal.adapter.unqualified_packets == 0
+            assert journal.adapter_native_handoffs_unclassified >= 0
             ref = publication.spectrum.detector_ready
             assert ref is not None and ref.owner_run_id == journal.scope.owner_run_id
             assert ref.producer_instance_id == journal.counters.producer_instance_id
@@ -218,6 +221,8 @@ def run_case(path: str, case: str) -> None:
         assert all(value.state is JournalState.FINAL and value.native_stop_confirmed for value in terminals)
         assert all(value.counters.outstanding == value.counters.events_pending == 0 for value in terminals)
         assert all(value.events for value in terminals)
+        assert all(value.adapter is not None and value.adapter.published_packets > 0 for value in terminals)
+        assert all(value.adapter.binding_failures == value.adapter.unqualified_packets == 0 for value in terminals)
         assert service._journal_engine is None
         assert app.paired_performance() is not None
         # Stopped plan is armed only; separate Start makes a fresh actual epoch.

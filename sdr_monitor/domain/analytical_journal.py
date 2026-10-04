@@ -21,6 +21,52 @@ class JournalEventKind(StrEnum):
     CANCELLED = "native_output_cancelled"
 
 
+class AdapterPacketDisposition(StrEnum):
+    PUBLISHED = "adapter_snapshot_published"
+    REJECTED = "adapter_packet_rejected"
+    CANCELLED = "adapter_cancelled_before_publication"
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterDispositionCounters:
+    """Actual latest-drain packets, not pane obligations, paints or RF loss.
+
+    Coalesced packets have SAME owner batch attribution but no individual
+    retained offer identity. Do not infer their offer IDs from sequence gaps.
+    The enclosing journal's handed_off/offered remain the ALL-offers denominator.
+    """
+
+    batches: int = 0
+    coalesced_packets: int = 0
+    published_packets: int = 0
+    rejected_packets: int = 0
+    cancelled_packets: int = 0
+    unqualified_batches: int = 0
+    unqualified_packets: int = 0
+    binding_failures: int = 0
+    last_offer_sequence: int = 0
+    last_ready_native_ns: int | None = None
+
+    def __post_init__(self) -> None:
+        for item in fields(self):
+            if item.name != "last_ready_native_ns":
+                _integer(getattr(self, item.name), item.name, 0, (1 << 64) - 1)
+        if self.last_ready_native_ns is not None:
+            _integer(self.last_ready_native_ns, "last_ready_native_ns", -(1 << 63), (1 << 63) - 1)
+        latest = self.published_packets + self.rejected_packets + self.cancelled_packets
+        _integer(self.qualified_drained_packets + self.unqualified_packets,
+                 "adapter total packets", 0, (1 << 64) - 1)
+        if (self.batches != self.published_packets + self.rejected_packets + self.cancelled_packets
+                + self.unqualified_batches or self.unqualified_packets < self.unqualified_batches
+                or (self.last_offer_sequence == 0) != (self.last_ready_native_ns is None)
+                or (latest == 0) != (self.last_offer_sequence == 0)):
+            raise ValueError("adapter packet conservation/last identity failed")
+
+    @property
+    def qualified_drained_packets(self) -> int:
+        return self.coalesced_packets + self.published_packets + self.rejected_packets + self.cancelled_packets
+
+
 @dataclass(frozen=True, slots=True)
 class OwnerJournalScope:
     # Host assignments from the SAME admitted owner, not native RF attestation.
@@ -115,6 +161,7 @@ class OwnerJournalSnapshot:
     drain_failures: int = 0
     native_stop_confirmed: bool = False
     host_scalar_reserved_bytes: int = 1_048_576
+    adapter: AdapterDispositionCounters | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, JournalState) or type(self.events) is not tuple or len(self.events) > 256:
@@ -131,8 +178,31 @@ class OwnerJournalSnapshot:
             raise ValueError("journal host reservation/terminal flag differs")
         if self.counters is not None and self.scope is None:
             raise ValueError("journal counters require the actual owner scope")
+        if self.adapter is not None and (not isinstance(self.adapter, AdapterDispositionCounters)
+                or self.scope is None):
+            raise ValueError("adapter accounting requires its immutable actual owner scope")
+        if (self.adapter is not None and self.counters is not None
+                and (self.adapter.qualified_drained_packets > self.counters.handed_off
+                     or self.adapter.last_offer_sequence > self.counters.offered)):
+            raise ValueError("adapter attribution exceeds native all-handoff denominator")
         if self.state is JournalState.FINAL and (not self.native_stop_confirmed or self.counters is None
                 or self.counters.outstanding or self.counters.events_pending or self.drain_failures):
             raise ValueError("journal cannot claim a complete native terminal")
-        if self.state is JournalState.UNSUPPORTED and (self.counters is not None or self.events):
+        if self.state is JournalState.UNSUPPORTED and (self.counters is not None or self.events
+                                                     or self.adapter is not None):
             raise ValueError("unsupported journal cannot claim event coverage")
+
+    @property
+    def adapter_native_handoffs_unclassified(self) -> int | None:
+        """Residual native handoffs; NOT inferred dropped packets/RF samples."""
+        if self.counters is None or self.adapter is None:
+            return None
+        return self.counters.handed_off - self.adapter.qualified_drained_packets
+
+    @property
+    def adapter_handoff_reconciled(self) -> bool | None:
+        """This boundary only. Even True does NOT mean pane/paint complete."""
+        if self.counters is None or self.adapter is None:
+            return None
+        return (self.state is JournalState.FINAL and self.adapter_native_handoffs_unclassified == 0
+                and self.adapter.binding_failures == 0 and self.adapter.unqualified_packets == 0)

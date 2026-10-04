@@ -28,7 +28,7 @@ from ..domain.rtl_live import RtlConfigurationPatch, RtlLiveRequest
 from .native_live import _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
-from ..domain.analytical_journal import OwnerJournalScope, OwnerJournalSnapshot
+from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, owner_journal_capacity
 from .rtl_capability_provider import RtlControlPort, RtlRuntimeProvision
 from .source_capability_admission import admit_source_request
@@ -358,8 +358,13 @@ class RtlAnalyzerService:
     def _poll(self) -> None:
         last_metrics = time.monotonic()
         previous: tuple[int, int, int] | None = None
+        frame = None
+        coalesced = 0
+        adapter_scope = None
+        adapter_recorded = False
         try:
             while not self._cancel.wait(0.02):
+                frame, adapter_scope, adapter_recorded = None, None, False
                 control = self._control
                 if control is None:
                     break
@@ -367,6 +372,8 @@ class RtlAnalyzerService:
                 self._ready_bridge.sample()
                 self._journal.drain(lambda count: getattr(control, "drain_analytical_ready_events")(count))
                 frame = result.frame
+                coalesced = result.coalesced_frames
+                adapter_scope = self._journal.current().scope
                 if frame is not None:
                     current = self.current_snapshot()
                     converted = self._convert(frame, current)
@@ -376,12 +383,17 @@ class RtlAnalyzerService:
                     self._bridge_polled += int(result.coalesced_frames) + 1
                     self._bridge_coalesced += int(result.coalesced_frames)
                     self._bridge_published += 1
+                    disposition = AdapterPacketDisposition.CANCELLED
                     with self._lock:
                         if self._snapshot.state is LiveSessionState.RUNNING:
                             self._snapshot = replace(self._snapshot, sequence=converted.sequence,
                                 spectrum=converted,
                                 quality=LiveQuality(backend=BackendKind.CPU,
                                                     loss_reasons=converted.loss_reasons))
+                            disposition = AdapterPacketDisposition.PUBLISHED
+                    self._journal.observe_adapter_result(frame, coalesced, disposition,
+                        expected_scope=adapter_scope)
+                    adapter_recorded = True
                 now = time.monotonic()
                 if now - last_metrics >= 0.25:
                     metrics = control.metrics()
@@ -416,6 +428,9 @@ class RtlAnalyzerService:
                             self._snapshot = replace(self._snapshot, performance=performance)
                     previous, last_metrics = counts, now
         except Exception as error:  # noqa: BLE001 - retain owner; Stop is the only release path.
+            if frame is not None and not adapter_recorded:
+                self._journal.observe_adapter_result(frame, coalesced, AdapterPacketDisposition.REJECTED,
+                    expected_scope=adapter_scope)
             self._retain_fault("reduced_publication", error)
             self._error("RTL reduced publication failed; explicit Stop required")
 

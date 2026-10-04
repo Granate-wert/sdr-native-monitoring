@@ -189,6 +189,30 @@ class AnalyticalReadyBindingTests(unittest.TestCase):
         with self.assertRaises(AttributeError):
             final.summary = None
 
+    def test_compiled_adapter_batch_reconciles_all_native_handoffs(self):
+        from sdr_monitor.domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope
+        from sdr_monitor.services.native_owner_journal import EVENT_CAPACITY, NativeOwnerJournal
+
+        backend = self.backend(capacity=EVENT_CAPACITY)
+        backend.push_samples(np.ones(768, dtype=np.complex64), 256000., 100000000.)
+        frames = backend.poll_spectrum()
+        raw = frames[-1]
+        consumer = NativeOwnerJournal(self.native, EVENT_CAPACITY)
+        scope = OwnerJournalScope("compiled-adapter-clock", os.getpid(), "compiled-adapter-run",
+            raw.source.source_id, None, "compiled-adapter-session", raw.config_generation, 1)
+        consumer.begin(scope)
+        consumer.drain(backend.drain_analytical_ready_events)
+        consumer.observe_adapter_result(raw, len(frames) - 1, AdapterPacketDisposition.PUBLISHED,
+            expected_scope=scope)
+        backend.reset()
+        consumer.finish(backend.drain_analytical_ready_events)
+        value = consumer.current()
+        self.assertEqual(value.counters.offered, 3)
+        self.assertEqual((value.adapter.coalesced_packets, value.adapter.published_packets), (2, 1))
+        self.assertEqual(value.adapter.binding_failures, 0)
+        self.assertEqual(value.adapter.last_ready_native_ns, raw.analytical_ready.ready_native_ns)
+        self.assertTrue(value.adapter_handoff_reconciled)  # NOT pane/paint/RF proof
+
     def test_owner_drain_api_exists_without_starting_hardware(self):
         # API qualification only. Native injected-owner tests exercise delivery.
         for name in ("PlutoFixedBandEngine", "HackrfRuntimeDspControl", "RtlRuntimeControl"):
