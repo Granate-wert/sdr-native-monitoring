@@ -4335,3 +4335,54 @@ again reports `PLL not locked!`; its cause and RF effect remain unknown. No
 warning-free, RF-accuracy, sustained-rate, lossless, soak or full APP-07 claim is
 made. Next work is mixed supported Sweep, then capability-qualified AD9363
 30.72 MS/s admission, device rotations and the remaining qualification gates.
+
+### 2026-10-04: mixed Sweep progress witness and retained instrument failure
+
+A new bounded physical run uses the same unchanged `7cf584e` runtime/package:
+AD936x Sweep 300–620 MHz at requested 61.44 MS/s, HackRF Sweep 100–300 MHz at
+20 MS/s, tinySA instrument Sweep 100–300 MHz with 1001 points/requested RBW
+300 kHz, and RTL RTBW at 2.4 MS/s around 100 MHz. Actual UI V2 Stage/Apply,
+resource workers, fair delivery queue and pane board are exercised; no mock,
+replay, duplicated source or fabricated RTL Sweep is substituted.
+
+For AD and HackRF, two scans each have a nonterminal partial publication accepted
+by the Qt pane board before a complete publication of the **same scan**. Recorded
+source, epoch, sequence, activation, grid size and segment generations agree;
+partial pending/NaN coverage becomes complete without missing bins. AD terminal
+receipts contain ten acquisition records at 61.44 MS/s/physical FFT 8192,
+36 MHz analysis window and analysis N=4096; HackRF contains forty records at
+20 MS/s/FFT 4096, 5 MHz analysis window and N=1024. This directly witnesses
+progressive spectrum delivery before scan completion. It does not establish
+monitor paint timing, FPS, every FFT, continuous transport throughput or RF time.
+Unpaired Sweep global configuration/session/clock identities remain unknown;
+actual generations and acquisition metadata stay with their individual segments.
+
+The saved FHD offscreen Qt raster shows four readable, spatially distinct
+spectrum/waterfall pairs with correct units. TinySA's same-frame provenance
+contains queried RBW 300 kHz, attenuation 0 dB and screen-sweep-time 4.487 s;
+the latter is a device screen readout, not host scan duration. RTL and HackRF
+Stop/Start admit fresh local activation/epoch while independent peer anchors,
+histories and fresh deliveries are preserved. HackRF progress after its restart
+is observed, but a same-scan post-restart terminal pair was not saved.
+
+**The complete candidate failed.** After 110 tinySA prepared publications, its
+owner reports `version / identity`: a successfully parsed version maps to
+capability facts unequal to the retained expectation. The failing fresh
+fingerprint was not recorded, so the differing field and root cause remain
+unknown. This is not a demonstrated HackRF restart failure, and the evidence
+does not justify weakening the identity guard, changing firmware or blindly
+retrying RX. All four resources subsequently Stop/drain/join/close, with zero
+retained resources/workers and the hardware lease released. RTL PLL warnings
+and the known FHD supplemental-text clipping remain explicit.
+
+The private proof collector also had a separate first-eight-scans limitation:
+late valid progress could no longer form a witness. A pure regression reproduces
+that false negative; a separately reviewed rolling bounded window fixes only
+future evidence collection, with thirteen pure tests passing. It does not
+repair the tinySA failure or retroactively prove an unsaved post-restart pair.
+The next step is a reviewed, bounded, redacted expected-versus-fresh identity
+diagnostic on the same tinySA owner, without extra commands or relaxed admission.
+Mixed Sweep remains partial; full-range, paired RX/Sweep, AD9363 capability
+admission/rotations, faults, performance, soak, visible Windows/DPI, matched EXE,
+licensing and release qualification remain open. No product code, current/static
+EXE, firmware, network, firewall, driver or security setting changed here.
