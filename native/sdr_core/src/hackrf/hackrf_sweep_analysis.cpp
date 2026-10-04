@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -232,6 +233,7 @@ struct HackrfSweepAnalysis::Impl final {
     std::uint64_t active_continuity{};
     std::uint32_t next_plan_index{};
     std::uint64_t accepted_blocks{};
+    std::uint64_t iq_payload_samples_accepted{};
     std::uint64_t suppressed_after_gap{};
     std::uint64_t gap_events{};
     bool suppress_scan{};
@@ -280,6 +282,10 @@ std::vector<sdr_core::SweepLineFrame> HackrfSweepAnalysis::admit(
         return emitted;
     }
 
+    if (impl_->iq_payload_samples_accepted >
+        std::numeric_limits<std::uint64_t>::max() - complex_samples_per_block) {
+        throw sdr_core::DeviceError("HackRF Sweep accepted IQ counter overflow");
+    }
     auto frame = impl_->spectrum_for(block);
     const auto low = segment_index(block.plan_index, false);
     const auto high = segment_index(block.plan_index, true);
@@ -293,6 +299,7 @@ std::vector<sdr_core::SweepLineFrame> HackrfSweepAnalysis::admit(
         }
     }
     ++impl_->accepted_blocks;
+    impl_->iq_payload_samples_accepted += complex_samples_per_block;
     impl_->next_plan_index = block.plan_index + 1U;
     return emitted;
 }
@@ -324,6 +331,7 @@ HackrfSweepAnalysisMetrics HackrfSweepAnalysis::metrics() const {
         .gap_events = impl_->gap_events,
         .dsp = impl_->dsp->metrics(),
         .lines = impl_->assembler.metrics(),
+        .iq_payload_samples_accepted = impl_->iq_payload_samples_accepted,
     };
 }
 

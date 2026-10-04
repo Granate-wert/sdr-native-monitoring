@@ -217,6 +217,8 @@ void test_progress_complete_and_owned_stop() {
     expect(!metrics.lifecycle_open && metrics.worker_exited && metrics.worker_joined &&
                !metrics.worker_failed && metrics.worker_blocks_processed == 8U &&
                metrics.analysis.dsp.fft_frames_computed == 8U &&
+               metrics.analysis.iq_payload_samples_accepted == 8U * 8187U &&
+               metrics.analysis.dsp.samples_processed == 8U * 4096U &&
                metrics.source.callbacks_active == 0U &&
                metrics.source.ready_depth == 0U &&
                state->stop_calls == 1U && state->close_calls == 1U,
@@ -236,6 +238,11 @@ void test_stop_flushes_partial_line_and_clears_preview() {
            "partial block did not reach analysis");
     const auto stopped = control->stop(std::chrono::seconds(1));
     expect(stopped.complete(), "partial Sweep Stop did not release owner");
+    const auto partial_metrics = control->metrics();
+    expect(partial_metrics.analysis.iq_payload_samples_accepted == 8187U &&
+               partial_metrics.analysis.dsp.samples_processed == 4096U &&
+               partial_metrics.analysis.dsp.fft_frames_computed == 1U,
+           "partial terminal flush lost the accepted payload/analytical FFT counters");
     const auto gap = line_from(control->poll_next_publication());
     expect(gap && gap->state == sdr_core::SweepLineState::Gap &&
                gap->line_sequence == 1U && !gap->missing_segment_indices.empty() &&
@@ -256,6 +263,8 @@ void test_stop_drains_queued_complete_scan() {
                line->state == sdr_core::SweepLineState::Complete &&
                line->acquired_segments.size() == 16U &&
                observed.worker_blocks_processed == 8U &&
+               observed.analysis.iq_payload_samples_accepted == 8U * 8187U &&
+               observed.analysis.dsp.fft_frames_computed == 8U &&
                observed.source.blocks_abandoned == 0U &&
                observed.source.ready_depth == 0U,
            "immediate Stop dropped copied blocks from a complete Sweep scan");

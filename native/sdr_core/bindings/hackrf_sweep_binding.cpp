@@ -48,6 +48,13 @@ constexpr std::uint64_t sweep_max_stop_timeout_ms = 5'000U;
     result["progress_pending"] = value.progress_pending;
     result["terminal_pending"] = value.terminal_pending;
     result["accepted_blocks"] = value.analysis.accepted_blocks;
+    // All values belong to the SAME analysis snapshot. One accepted firmware
+    // block yields one FFT and two crops; GUI/publication counts are separate.
+    result["iq_payload_samples_accepted"] = value.analysis.iq_payload_samples_accepted;
+    result["fft_frames_computed"] = value.analysis.dsp.fft_frames_computed;
+    result["fft_frames_dropped"] = value.analysis.dsp.fft_frames_dropped;
+    result["dsp_samples_processed"] = value.analysis.dsp.samples_processed;
+    result["dsp_output_pending"] = value.analysis.dsp.output_pending;
     result["suppressed_after_gap"] = value.analysis.suppressed_after_gap;
     result["gap_events"] = value.analysis.gap_events;
     result["completed_lines"] = value.analysis.lines.completed_lines;
@@ -116,6 +123,8 @@ constexpr std::uint64_t sweep_max_stop_timeout_ms = 5'000U;
 
 void bind_hackrf_sweep(py::module_& module) {
     module.attr("HACKRF_SWEEP_BRIDGE_CONTRACT_VERSION") = 1;
+    // Additive scalar metric projection, independent of factory/RF contract1.
+    module.attr("HACKRF_SWEEP_METRICS_CONTRACT_VERSION") = 1;
     py::class_<sdr_hackrf::HackrfSweepRuntimeAnalysisSession>(
         module, "HackrfSweepRuntimeAnalysisControl"
     )

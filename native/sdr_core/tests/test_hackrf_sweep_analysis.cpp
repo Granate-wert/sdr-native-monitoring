@@ -146,6 +146,8 @@ void test_two_disjoint_subbands_and_progressive_line() {
            "all eight firmware blocks did not form one complete 80 MHz line");
     const auto metrics = analysis.metrics();
     expect(metrics.accepted_blocks == 8U &&
+               metrics.iq_payload_samples_accepted == 8U * 8187U &&
+               metrics.dsp.samples_processed == 8U * 4096U &&
                metrics.dsp.fft_frames_computed == 8U &&
                metrics.dsp.fft_frames_dropped == 0U &&
                metrics.lines.completed_lines == 1U &&
@@ -178,6 +180,10 @@ void test_gap_flush_and_next_scan_without_stale_repair() {
            "the next clean scan did not recover after explicit gap");
     const auto metrics = analysis.metrics();
     expect(metrics.gap_events == 1U && metrics.suppressed_after_gap == 2U &&
+               metrics.accepted_blocks == 10U &&
+               metrics.iq_payload_samples_accepted == 10U * 8187U &&
+               metrics.dsp.samples_processed == 10U * 4096U &&
+               metrics.dsp.fft_frames_computed == 10U &&
                metrics.lines.completed_lines == 1U && metrics.lines.gapped_lines == 1U,
            "gap/suppression accounting is not distinct from FFT output");
 }
@@ -281,6 +287,61 @@ void test_extended_full_range_and_partial_final_crop() {
     }
 }
 
+void test_iq_payload_dsp_fft_metrics_are_distinct_and_non_consuming() {
+    for (const auto fft_size : {1024U, 2048U, 4096U}) {
+        auto value = config();
+        value.fft_size = fft_size;
+        sdr_hackrf::HackrfSweepAnalysis analysis(value);
+        expect(analysis.metrics().iq_payload_samples_accepted == 0U &&
+                   analysis.metrics().dsp.fft_frames_computed == 0U,
+               "fresh analysis inherited prior IQ/FFT counters");
+        auto invalid_before_start = block(0U, 1U, 1U);
+        invalid_before_start.config_generation = 100U;
+        bool invalid_refused = false;
+        try {
+            static_cast<void>(analysis.admit(invalid_before_start));
+        } catch (const sdr_core::ConfigurationError&) {
+            invalid_refused = true;
+        }
+        expect(invalid_refused && analysis.metrics().accepted_blocks == 0U &&
+                   analysis.metrics().iq_payload_samples_accepted == 0U &&
+                   analysis.metrics().dsp.samples_processed == 0U,
+               "pre-admission refusal was counted as accepted IQ or DSP input");
+        for (std::uint64_t scan = 1U; scan <= 2U; ++scan) {
+            for (std::uint32_t index = 0U; index < 8U; ++index) {
+                static_cast<void>(analysis.admit(block(index, scan, 1U)));
+                const auto before = analysis.metrics();
+                const auto again = analysis.metrics();
+                const auto blocks = (scan - 1U) * 8U + index + 1U;
+                expect(before.accepted_blocks == blocks &&
+                           before.iq_payload_samples_accepted == blocks * 8187U &&
+                           before.dsp.samples_processed == blocks * fft_size &&
+                           before.dsp.fft_frames_computed == blocks &&
+                           before.dsp.fft_frames_dropped == 0U &&
+                           before.iq_payload_samples_accepted == again.iq_payload_samples_accepted &&
+                           before.dsp.fft_frames_computed == again.dsp.fft_frames_computed,
+                       "metrics confused full CI8 payload, FFT tail or two crops, or consumed data");
+            }
+        }
+        const auto before_stop = analysis.metrics();
+        static_cast<void>(analysis.finish());
+        static_cast<void>(analysis.finish());
+        expect(analysis.metrics().iq_payload_samples_accepted == before_stop.iq_payload_samples_accepted &&
+                   analysis.metrics().dsp.fft_frames_computed == before_stop.dsp.fft_frames_computed,
+               "terminal flush reset or double-counted analytical metrics");
+        auto invalid = block(0U, 3U, 1U);
+        invalid.config_generation = 100U;
+        bool refused = false;
+        try {
+            static_cast<void>(analysis.admit(invalid));
+        } catch (const sdr_core::ConfigurationError&) {
+            refused = true;
+        }
+        expect(refused && analysis.metrics().iq_payload_samples_accepted == before_stop.iq_payload_samples_accepted,
+               "post-Stop invalid block changed payload counters");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -289,6 +350,7 @@ int main() {
         test_gap_flush_and_next_scan_without_stale_repair();
         test_incomplete_finish_and_fail_closed_admission();
         test_extended_full_range_and_partial_final_crop();
+        test_iq_payload_dsp_fft_metrics_are_distinct_and_non_consuming();
         std::cout << "HackRF Sweep native FFT/line analysis OK\n";
         return 0;
     } catch (const std::exception& error) {

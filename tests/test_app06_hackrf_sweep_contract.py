@@ -86,6 +86,29 @@ class HackrfSweepContractTests(unittest.TestCase):
             native.create_hackrf_sweep_runtime_control.assert_not_called()
             native.scan_pluto_contexts.assert_not_called()
 
+    def test_optional_metrics_exact_pair_legacy_absence_and_mismatch_refusal(self):
+        native, manifest = self.native(), self.manifest()
+        validate_hackrf_factory(native, manifest)
+        native.HACKRF_SWEEP_METRICS_CONTRACT_VERSION = 1
+        manifest["hackrf_sweep_metrics_contract_version"] = 1
+        validate_hackrf_factory(native, manifest)
+        for observed, declared in ((None, 1), (1, None), (True, 1), (1, True),
+                                   (0, 1), (1, 2), ("1", 1), (1, "1")):
+            with self.subTest(observed=observed, declared=declared):
+                native.HACKRF_SWEEP_METRICS_CONTRACT_VERSION = observed
+                manifest["hackrf_sweep_metrics_contract_version"] = declared
+                with self.assertRaises(ContractSurfaceError):
+                    validate_hackrf_factory(native, manifest)
+                native.create_hackrf_sweep_runtime_control.assert_not_called()
+        native.HACKRF_SWEEP_METRICS_CONTRACT_VERSION = 1
+        manifest.pop("hackrf_sweep_metrics_contract_version")
+        with self.assertRaises(ContractSurfaceError):
+            validate_hackrf_factory(native, manifest)
+        manifest["hackrf_sweep_metrics_contract_version"] = 1
+        del native.HACKRF_SWEEP_METRICS_CONTRACT_VERSION
+        with self.assertRaises(ContractSurfaceError):
+            validate_hackrf_factory(native, manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

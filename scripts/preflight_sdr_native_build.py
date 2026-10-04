@@ -236,6 +236,10 @@ def validate_manifest(module_path: Path, manifest: Mapping[str, object], expecte
                 or type(sweep_factory) is not int or sweep_factory != 1):
             raise ContractSurfaceError("HackRF optional Sweep bridge/factory staging requires paired contract version1")
         hashes = manifest.get("hackrf_runtime_sha256")
+        if "hackrf_sweep_metrics_contract_version" in manifest and (
+                type(manifest["hackrf_sweep_metrics_contract_version"]) is not int
+                or manifest["hackrf_sweep_metrics_contract_version"] != 1):
+            raise ContractSurfaceError("HackRF optional Sweep metrics staging requires contract version1")
         if not isinstance(hashes, dict) or set(hashes) != {"hackrf.dll", "libusb-1.0.dll", "pthreadVC3.dll"}:
             raise ContractSurfaceError("HackRF staging requires the complete app-local runtime manifest")
         for name, expected in hashes.items():
@@ -294,6 +298,12 @@ def validate_hackrf_factory(module: object, manifest: Mapping[str, object]) -> N
                 or type(declared_factory) is not int or declared_factory != observed_factory
                 or not callable(getattr(module, "create_hackrf_sweep_runtime_control", None))):
             raise ContractSurfaceError("HackRF optional Sweep bridge/factory contract does not match its native manifest")
+        observed_metrics = getattr(module, "HACKRF_SWEEP_METRICS_CONTRACT_VERSION", missing)
+        declared_metrics = manifest.get("hackrf_sweep_metrics_contract_version", missing)
+        if not (observed_metrics is missing and declared_metrics is missing) and (
+                type(observed_metrics) is not int or observed_metrics != 1
+                or type(declared_metrics) is not int or declared_metrics != observed_metrics):
+            raise ContractSurfaceError("HackRF optional Sweep metrics contract does not match its native manifest")
 
 
 def validate_rtl_factory(module: object, manifest: Mapping[str, object]) -> None:

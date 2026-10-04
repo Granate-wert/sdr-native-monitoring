@@ -33,6 +33,11 @@ struct HackrfSweepAnalysisMetrics {
     std::uint64_t gap_events{};
     sdr_core::DspBackendMetrics dsp;
     sdr_core::SweepLineAssemblyMetrics lines;
+    // Complex CI8 samples in complete, validated blocks accepted by analysis.
+    // Includes the unused settling prefix; dsp.samples_processed counts ONLY
+    // the selected FFT tail. Neither count is continuous ADC coverage, device
+    // overrun telemetry, callback bytes (which include headers), or GUI FPS.
+    std::uint64_t iq_payload_samples_accepted{};
 };
 
 // Native CPU DSP and canonical line assembler on already-copied Sweep blocks.
