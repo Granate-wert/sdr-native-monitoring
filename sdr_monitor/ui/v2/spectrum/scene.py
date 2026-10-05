@@ -137,6 +137,7 @@ class SpectrumScene(QWidget):
         self._graphics_terminal_released = False
         self._delivery_stage_callback = None
         self._latest_delivery_ref: PaneDeliveryObligationRef | None = None
+        self._latest_spectrum_setter_accepted = False
         self._displayed_delivery_ref: PaneDeliveryObligationRef | None = None
         self._displayed_delivery_paint_scheduled = False
         self._displayed_delivery_paint_returned = False
@@ -283,14 +284,19 @@ class SpectrumScene(QWidget):
             return self._displayed_delivery_ref
         return None
 
-    def _supersede_delivery_ref(self, ref: PaneDeliveryObligationRef) -> None:
-        stage = (PaneDeliveryStage.PAINT_SUPERSEDED
-                 if ref == self._displayed_delivery_ref and self._displayed_delivery_paint_scheduled
-                 else PaneDeliveryStage.UI_REJECTED)
+    def _supersede_delivery_ref(
+        self, ref: PaneDeliveryObligationRef, *, accepted_before_replacement: bool = False,
+    ) -> None:
+        accepted = (accepted_before_replacement
+                    or ref == self._latest_delivery_ref and self._latest_spectrum_setter_accepted
+                    or any(slot_ref == ref for _source, slot_ref in self._projection_delivery_slots)
+                    or ref == self._displayed_delivery_ref and self._displayed_delivery_paint_scheduled)
+        stage = PaneDeliveryStage.PAINT_SUPERSEDED if accepted else PaneDeliveryStage.UI_REJECTED
         if not (ref == self._displayed_delivery_ref and self._displayed_delivery_paint_returned):
             self._report_delivery(ref, stage)
         if self._latest_delivery_ref == ref:
             self._latest_delivery_ref = None
+            self._latest_spectrum_setter_accepted = False
         if self._displayed_delivery_ref == ref:
             self._displayed_delivery_ref = None
             self._displayed_delivery_paint_scheduled = False
@@ -325,7 +331,7 @@ class SpectrumScene(QWidget):
             if (ref is None or any(source is active_source for active_source, _item in self._projection_delivery_slots)
                     or ref == self._latest_delivery_ref or ref == self._displayed_delivery_ref):
                 continue
-            self._report_delivery(ref, PaneDeliveryStage.UI_REJECTED)
+            self._report_delivery(ref, PaneDeliveryStage.PAINT_SUPERSEDED)
 
     def _schedule_projection(self) -> None:
         if self._projector is not None and self._presentation_active and self._trace_views:
@@ -561,32 +567,82 @@ class SpectrumScene(QWidget):
             self._projector.allocation_budget.observe(frame, self._measurement_grid)
         previous_ref = self._latest_delivery_ref
         previous_view = self._latest_view
-        if previous_ref is not None and previous_ref != obligation_ref:
-            source_is_projecting = (previous_view is not None and any(
-                source is previous_view.source_frame for source, _ref in self._projection_delivery_slots))
-            still_displayed = previous_ref == self._displayed_delivery_ref
-            if not source_is_projecting and not (still_displayed and self._presentation_active):
-                self._supersede_delivery_ref(previous_ref)
+        previous_prepared = self._prepared_spectrum
+        previous_displayed_ref = self._displayed_delivery_ref
+        previous_setter_accepted = self._latest_spectrum_setter_accepted
         if (obligation_ref is not None and obligation_ref.graph_instance_id == self._closed_delivery_graph
                 and obligation_ref.sequence <= self._closed_delivery_sequence):
             obligation_ref = None
         self._latest_delivery_ref = obligation_ref
+        self._latest_spectrum_setter_accepted = False
         self._latest_view = view
         self._prepared_spectrum = prepared
         self._trace_views[TraceKind.CURRENT] = view
-        self._set_trace_view(TraceKind.CURRENT, view)
-        # AxisItem.setLabel rebuilds rich text and invalidates geometry even
-        # when unchanged; frame cadence must not become chrome-update cadence.
-        if self._plot_item.getAxis("left").labelText != view.unit_label:
-            self._plot_item.setLabel("left", view.unit_label)
-        if not same_measurement:
-            self._plot_item.setXRange(float(view.frequencies_hz[0]), float(view.frequencies_hz[-1]), padding=0.0)
-        self._empty_overlay.setVisible(False)
-        self._set_measurement_available(True)
-        self._apply_vertical_range()
-        self._update_markers_for_new_frame()
-        if self._projector is None:
-            self._sweep_position.set_position(getattr(getattr(frame, "spectrum", frame), "last_admitted_segment", None))
+        try:
+            self._set_trace_view(TraceKind.CURRENT, view)
+            # AxisItem.setLabel rebuilds rich text and invalidates geometry even
+            # when unchanged; frame cadence must not become chrome-update cadence.
+            if self._plot_item.getAxis("left").labelText != view.unit_label:
+                self._plot_item.setLabel("left", view.unit_label)
+            if not same_measurement:
+                self._plot_item.setXRange(float(view.frequencies_hz[0]), float(view.frequencies_hz[-1]), padding=0.0)
+            self._empty_overlay.setVisible(False)
+            self._set_measurement_available(True)
+            self._apply_vertical_range()
+            self._update_markers_for_new_frame()
+            if self._projector is None:
+                self._sweep_position.set_position(
+                    getattr(getattr(frame, "spectrum", frame), "last_admitted_segment", None))
+        except BaseException:
+            if obligation_ref is not None and self._displayed_delivery_ref != obligation_ref:
+                self._reject_failed_spectrum_setter(
+                    frame, obligation_ref, previous_ref, previous_view, previous_prepared,
+                    previous_setter_accepted)
+            raise
+        else:
+            if obligation_ref is not None and self._latest_delivery_ref == obligation_ref:
+                self._latest_spectrum_setter_accepted = True
+            if previous_ref is not None and previous_ref != obligation_ref:
+                source_is_projecting = (previous_view is not None and any(
+                    source is previous_view.source_frame for source, _ref in self._projection_delivery_slots))
+                still_displayed = previous_ref == self._displayed_delivery_ref
+                committed_replacement = (previous_displayed_ref == previous_ref
+                                         and self._displayed_delivery_ref != previous_ref)
+                if (not source_is_projecting and not committed_replacement
+                        and not (still_displayed and self._presentation_active)):
+                    self._supersede_delivery_ref(
+                        previous_ref, accepted_before_replacement=previous_setter_accepted)
+
+    def _reject_failed_spectrum_setter(
+        self, frame: object, ref: PaneDeliveryObligationRef,
+        previous_ref: PaneDeliveryObligationRef | None, previous_view: SpectrumFrameView | None,
+        previous_prepared: PreparedSpectrumFrame | None, previous_accepted: bool,
+    ) -> None:
+        projector = self._projector
+        if projector is not None:
+            pending = projector._pending
+            if pending is not None and any(
+                    kind is TraceKind.CURRENT and item.source_frame is frame for kind, item in pending.traces):
+                projector.discard_pending(self._projection_owner)
+            active = projector._active
+            if active is not None and any(
+                    kind is TraceKind.CURRENT and item.source_frame is frame for kind, item in active.traces):
+                projector._cancel_active()
+        self._projection_delivery_slots = tuple(
+            (source, item) for source, item in self._projection_delivery_slots
+            if source is not frame and item != ref)
+        self._latest_delivery_ref = previous_ref
+        self._latest_spectrum_setter_accepted = previous_accepted if previous_ref == ref else False
+        self._latest_view = previous_view
+        self._prepared_spectrum = previous_prepared
+        if previous_view is None:
+            self._trace_views.pop(TraceKind.CURRENT, None)
+        else:
+            self._trace_views[TraceKind.CURRENT] = previous_view
+        if (previous_ref != ref or not previous_accepted) and not (
+                ref.graph_instance_id == self._closed_delivery_graph
+                and ref.sequence <= self._closed_delivery_sequence):
+            self._report_delivery(ref, PaneDeliveryStage.UI_REJECTED)
 
     def set_trace(self, kind: TraceKind, frame: object) -> None:
         """Render a supplied analytical trace without retaining its full frame."""
@@ -626,11 +682,15 @@ class SpectrumScene(QWidget):
             if ref is None or (ref == self._displayed_delivery_ref
                                and self._displayed_delivery_paint_returned):
                 continue
+            accepted = (ref == self._latest_delivery_ref and self._latest_spectrum_setter_accepted
+                        or any(slot_ref == ref for _source, slot_ref in self._projection_delivery_slots))
             stage = (PaneDeliveryStage.PAINT_SUPERSEDED
-                     if ref == self._displayed_delivery_ref and self._displayed_delivery_paint_scheduled
+                     if accepted or ref == self._displayed_delivery_ref
+                     and self._displayed_delivery_paint_scheduled
                      else PaneDeliveryStage.UI_REJECTED)
             self._report_delivery(ref, stage)
         self._latest_delivery_ref = self._displayed_delivery_ref = None
+        self._latest_spectrum_setter_accepted = False
         self._displayed_delivery_paint_scheduled = False
         self._displayed_delivery_paint_returned = False
         self._projection_delivery_slots = ()
@@ -1227,6 +1287,7 @@ class SpectrumScene(QWidget):
         for ref in selected:
             if self._latest_delivery_ref == ref:
                 self._latest_delivery_ref = None
+                self._latest_spectrum_setter_accepted = False
             if self._displayed_delivery_ref == ref:
                 self._displayed_delivery_ref = None
                 self._displayed_delivery_paint_scheduled = False
@@ -1259,8 +1320,9 @@ class SpectrumScene(QWidget):
             return False
         if ref == self._displayed_delivery_ref:
             return False
-        if self._projector is not None and ref == self._latest_delivery_ref:
-            return False  # The bounded latest slot remains eligible for projection/retry.
+        if (self._projector is not None and ref == self._latest_delivery_ref
+                and self._latest_spectrum_setter_accepted):
+            return False  # The setter returned; the bounded projection may still commit.
         if any(slot_ref == ref for _source, slot_ref in self._projection_delivery_slots):
             return False
         if self._latest_delivery_ref == ref:
@@ -1318,6 +1380,7 @@ class SpectrumScene(QWidget):
         self._envelopes[kind] = envelope
         self._curves[kind].setData(envelope.frequencies_hz, envelope.values, connect="finite")
         if kind is TraceKind.CURRENT:
+            self._displayed_view = view
             ref = (self._projection_commit_ref if self._projector is not None
                    else self._latest_delivery_ref if self._latest_view is not None
                    and self._latest_view.source_frame is view.source_frame else None)

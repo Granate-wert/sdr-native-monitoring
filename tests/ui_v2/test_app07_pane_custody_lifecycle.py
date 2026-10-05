@@ -14,7 +14,10 @@ from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage as Stage
 from sdr_monitor.services.pane_delivery_ledger import PaneDeliveryLedger
+from sdr_monitor.ui.v2_pane_delivery_queue import PaneFairDeliveryQueue
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
+from sdr_monitor.ui.v2_pane_presentation import PreparedPaneDelivery
 from tests.test_app07_pane_delivery_obligations import identity
 from tests.ui_v2.test_app05_viewport_projection import ManualWorker
 from sdr_monitor.ui.v2.spectrum.projection import SpectrumProjector
@@ -40,6 +43,25 @@ class _StopBoundaryHarness(QObject):
         IndependentPaneSessionV2._watch_stop_boundary(self, future, resource)
 
 
+class _DeliveryPortHarness(QObject):
+    rendered = Signal(str)
+    render_failed = Signal(str, str)
+
+    def __init__(self, board, queue):
+        super().__init__()
+        self._board = board
+        self._queue = queue
+        self._failed_panes = set()
+
+    def _report(self, packet, stage):
+        callback = getattr(self._board, "_stage_callback", None)
+        if callback is not None:
+            callback(packet.delivery.obligation_ref, stage)
+
+    def _reject_uncommitted(self, packet):
+        IndependentPaneDeliveryPort._reject_uncommitted(self, packet)
+
+
 class PaneCustodyLifecycleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -62,6 +84,17 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         return SimpleNamespace(source_id="source", receiver="rx", session="session",
             epoch=1, config_generation=1, sequence=sequence, unit="dBm",
             frequencies_hz=frequencies, values=values)
+
+    @staticmethod
+    def packet(ref):
+        packet = object.__new__(PreparedPaneDelivery)
+        object.__setattr__(packet, "delivery", SimpleNamespace(
+            pane_id="one", capture_id="capture", obligation_ref=ref,
+            host_activation_serial=1,
+            bundle=SimpleNamespace(terminal_sweep=False, acquisition_epoch=1,
+                publication_kind="preview", spectrum=SimpleNamespace(sequence=ref.sequence, revision=0))))
+        object.__setattr__(packet, "binding", SimpleNamespace(slot_number=1))
+        return packet
 
     def test_confirmed_stop_and_actual_clear_are_pane_local(self):
         first_ref = PaneDeliveryLedger(("one",)).admit("one", identity())
@@ -104,7 +137,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         captured_at_stop = tuple(record.ref for record in ledger.snapshot().records
             if record.ref.identity.physical_stream_resource_id == "resource"
             and record.stage in {Stage.UI_ADMITTED, Stage.PAINT_SCHEDULED})
-        self.assertIn((first, Stage.UI_REJECTED), stages)
+        self.assertIn((first, Stage.PAINT_SUPERSEDED), stages)
         third = self.ui_admitted(ledger, 3)
         scene.set_frame(self.frame(3, -50), obligation_ref=third)
         scene.stop_delivery_custody(captured_at_stop)
@@ -224,8 +257,9 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         with patch.object(scene, "_set_trace_view", side_effect=RuntimeError("precommit")):
             with self.assertRaisesRegex(RuntimeError, "precommit"):
                 scene.set_frame(frame, obligation_ref=rejected)
-        self.assertTrue(scene.delivery_requires_ui_rejection(rejected))
-        self.assertTrue(ledger.note(rejected, Stage.UI_REJECTED))
+        self.assertFalse(scene.delivery_requires_ui_rejection(rejected))
+        stages = [event.stage for event in ledger.snapshot().events if event.ref == rejected]
+        self.assertEqual(stages[-1], Stage.UI_REJECTED)
         scene.set_frame(frame, obligation_ref=rejected)
         self.assertIsNone(scene._latest_delivery_ref)
         self.assertEqual(ledger.snapshot().accounting_failures, 0)
@@ -299,6 +333,220 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         self.assertEqual(scene._latest_delivery_ref, new)
         self.assertEqual(ledger.snapshot().accounting_failures, 0)
         scene.close()
+        self.app.processEvents()
+
+    def test_queue_drained_stop_barrier_closes_before_async_projection_can_paint(self):
+        ledger = PaneDeliveryLedger(("one",))
+        worker = ManualWorker()
+        projector = SpectrumProjector(worker.submit)
+        scene = SpectrumScene()
+        scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
+        scene.set_projection_port(projector)
+        scene.resize(900, 500)
+        scene.show()
+        for _ in range(8):
+            self.app.processEvents()
+        ref = ledger.admit("one", identity())
+        self.assertTrue(ledger.note(ref, Stage.PREPARING))
+        self.assertTrue(ledger.note(ref, Stage.PREPARED))
+        queue = PaneFairDeliveryQueue(("one",), stage_callback=ledger.note)
+        packet = self.packet(ref)
+        self.assertTrue(queue.offer(packet))
+        stop_harness = _StopBoundaryHarness(scene, ledger)
+        stop_future = Future()
+        stop_harness.watch(stop_future)
+
+        class DrainBarrier:
+            pane_ids = queue.pane_ids
+
+            def drain(_self, *, max_items):
+                batch = queue.drain(max_items=max_items)
+                # Worker Stop succeeds after queue drain but before this Qt
+                # turn can call board.apply_prepared.
+                stop_future.set_result(None)
+                return batch
+
+            def clear(_self, pane_id):
+                queue.clear(pane_id)
+
+        board = SimpleNamespace(
+            _stage_callback=ledger.note,
+            pane=lambda _slot: SimpleNamespace(spectrum_scene=scene),
+            apply_prepared=lambda prepared: (
+                ledger.note(ref, Stage.UI_ADMITTED),
+                scene.set_frame(self.frame(1, -70), obligation_ref=prepared.delivery.obligation_ref),
+                True)[-1])
+        port = _DeliveryPortHarness(board, DrainBarrier())
+        IndependentPaneDeliveryPort.tick_once(port)
+        self.assertEqual(ledger.snapshot().records[0].stage, Stage.UI_ADMITTED)
+        scene.commit_projection()
+        self.assertEqual(len(worker.jobs), 1)
+        self.app.sendPostedEvents(stop_harness, QEvent.Type.MetaCall)
+        self.assertEqual(ledger.snapshot().records[0].stage, Stage.STOP_CLEARED)
+        worker.finish()
+        for _ in range(12):
+            self.app.processEvents()
+        snapshot = ledger.snapshot()
+        self.assertEqual(snapshot.panes[0].pending, 0)
+        self.assertEqual(snapshot.panes[0].terminal, 1)
+        self.assertEqual(snapshot.accounting_failures, 0)
+        self.assertNotIn(Stage.PAINT_SCHEDULED, [event.stage for event in snapshot.events if event.ref == ref])
+        self.assertNotIn(Stage.PAINT_RETURNED, [event.stage for event in snapshot.events if event.ref == ref])
+        projector.dispose()
+        scene.close()
+        scene.deleteLater()
+        self.app.processEvents()
+
+    def test_async_spectrum_setter_success_survives_later_waterfall_failure(self):
+        ledger = PaneDeliveryLedger(("one",))
+        worker = ManualWorker()
+        projector = SpectrumProjector(worker.submit)
+        scene = SpectrumScene()
+        scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
+        scene.set_projection_port(projector)
+        scene.resize(900, 500)
+        scene.show()
+        for _ in range(8):
+            self.app.processEvents()
+        ref = ledger.admit("one", identity())
+        for stage in (Stage.PREPARING, Stage.PREPARED):
+            self.assertTrue(ledger.note(ref, stage))
+        queue = PaneFairDeliveryQueue(("one",), stage_callback=ledger.note)
+        packet = self.packet(ref)
+        self.assertTrue(queue.offer(packet))
+
+        def apply_then_waterfall_failure(prepared):
+            self.assertTrue(ledger.note(ref, Stage.UI_ADMITTED))
+            scene.set_frame(self.frame(1, -70), obligation_ref=prepared.delivery.obligation_ref)
+            raise RuntimeError("later Waterfall update failed")
+
+        board = SimpleNamespace(
+            _stage_callback=ledger.note,
+            pane=lambda _slot: SimpleNamespace(spectrum_scene=scene),
+            apply_prepared=apply_then_waterfall_failure)
+        port = _DeliveryPortHarness(board, queue)
+        IndependentPaneDeliveryPort.tick_once(port)
+        self.assertTrue(scene._latest_spectrum_setter_accepted)
+        scene.commit_projection()
+        for _ in range(12):
+            self.app.processEvents()
+            if worker.jobs:
+                worker.finish()
+        for _ in range(8):
+            self.app.processEvents()
+        snapshot = ledger.snapshot()
+        record_stage = {record.ref: record.stage for record in snapshot.records}[ref]
+        self.assertIn(record_stage, {Stage.PAINT_SCHEDULED, Stage.PAINT_RETURNED},
+            (snapshot.events, scene.projection_stale, scene._projection_error, projector.completed))
+        self.assertNotIn(Stage.UI_REJECTED, [event.stage for event in snapshot.events if event.ref == ref])
+        self.assertEqual(snapshot.accounting_failures, 0)
+        projector.dispose()
+        scene.close()
+        scene.deleteLater()
+        self.app.processEvents()
+
+    def test_async_spectrum_setter_throw_cancels_ref_before_current_commit_and_retry(self):
+        ledger = PaneDeliveryLedger(("one",))
+        worker = ManualWorker()
+        projector = SpectrumProjector(worker.submit)
+        scene = SpectrumScene()
+        scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
+        scene.set_projection_port(projector)
+        scene.resize(900, 500)
+        scene.show()
+        ref = ledger.admit("one", identity())
+        for stage in (Stage.PREPARING, Stage.PREPARED):
+            self.assertTrue(ledger.note(ref, stage))
+        queue = PaneFairDeliveryQueue(("one",), stage_callback=ledger.note)
+        packet = self.packet(ref)
+        self.assertTrue(queue.offer(packet))
+        frame = self.frame(1, -70)
+        original_setter = scene._set_trace_view
+
+        def schedule_then_throw(kind, view):
+            original_setter(kind, view)
+            raise RuntimeError("Spectrum setter failed before CURRENT setData")
+
+        def apply_failed_spectrum(prepared):
+            self.assertTrue(ledger.note(ref, Stage.UI_ADMITTED))
+            scene.set_frame(frame, obligation_ref=prepared.delivery.obligation_ref)
+            return True
+
+        board = SimpleNamespace(
+            _stage_callback=ledger.note,
+            pane=lambda _slot: SimpleNamespace(spectrum_scene=scene),
+            apply_prepared=apply_failed_spectrum)
+        port = _DeliveryPortHarness(board, queue)
+        with patch.object(scene, "_set_trace_view", side_effect=schedule_then_throw):
+            IndependentPaneDeliveryPort.tick_once(port)
+        snapshot = ledger.snapshot()
+        self.assertEqual({record.ref: record.stage for record in snapshot.records}[ref], Stage.UI_REJECTED)
+        self.assertIsNone(scene._latest_delivery_ref)
+        self.assertFalse(scene._latest_spectrum_setter_accepted)
+        scene.set_presentation_active(False)
+        scene.set_presentation_active(True)
+        scene.set_frame(frame, obligation_ref=ref)
+        scene.commit_projection()
+        for _ in range(8):
+            self.app.processEvents()
+        if worker.jobs:
+            worker.finish()
+            for _ in range(12):
+                self.app.processEvents()
+        stages = [event.stage for event in ledger.snapshot().events if event.ref == ref]
+        self.assertEqual(stages[-1], Stage.UI_REJECTED)
+        self.assertNotIn(Stage.PAINT_SCHEDULED, stages)
+        self.assertNotIn(Stage.PAINT_RETURNED, stages)
+        self.assertEqual(ledger.snapshot().accounting_failures, 0)
+        projector.dispose()
+        scene.close()
+        scene.deleteLater()
+        self.app.processEvents()
+
+    def test_current_setdata_witness_survives_later_spectrum_chrome_failure(self):
+        ledger = PaneDeliveryLedger(("one",))
+        worker = ManualWorker()
+        projector = SpectrumProjector(worker.submit)
+        scene = SpectrumScene()
+        scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
+        scene.set_projection_port(projector)
+        scene.resize(900, 500)
+        scene.show()
+        for _ in range(8):
+            self.app.processEvents()
+        ref = self.ui_admitted(ledger, 1)
+        frame = self.frame(1, -70)
+        scene.set_frame(frame, obligation_ref=ref)
+        scene.set_trace(TraceKind.AVERAGE, frame)
+        scene.commit_projection()
+        self.assertEqual(len(worker.jobs), 1)
+        _future, operation = worker.jobs[0]
+        result = operation()
+        original_paint_trace = scene._paint_trace
+
+        def fail_after_current_setdata(kind, view, envelope):
+            original_paint_trace(kind, view, envelope)
+            if kind is TraceKind.CURRENT:
+                raise RuntimeError("Spectrum chrome failed after CURRENT setData")
+
+        with patch.object(scene, "_paint_trace", side_effect=fail_after_current_setdata):
+            with self.assertRaisesRegex(RuntimeError, "after CURRENT setData"):
+                scene._accept_projection(result)
+        self.assertIs(scene.displayed_frame, frame)
+        self.assertEqual(scene.displayed_delivery_ref, ref)
+        port = SimpleNamespace(
+            _board=SimpleNamespace(pane=lambda _slot: SimpleNamespace(spectrum_scene=scene)),
+            _report=lambda _prepared, stage: ledger.note(ref, stage))
+        prepared = SimpleNamespace(delivery=SimpleNamespace(obligation_ref=ref),
+                                   binding=SimpleNamespace(slot_number=1))
+        IndependentPaneDeliveryPort._reject_uncommitted(port, prepared)
+        events = [event.stage for event in ledger.snapshot().events if event.ref == ref]
+        self.assertIn(Stage.PAINT_SCHEDULED, events)
+        self.assertNotIn(Stage.UI_REJECTED, events)
+        self.assertEqual(ledger.snapshot().accounting_failures, 0)
+        projector.dispose()
+        scene.close()
+        scene.deleteLater()
         self.app.processEvents()
 
 

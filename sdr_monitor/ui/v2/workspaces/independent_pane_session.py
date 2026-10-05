@@ -12,6 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from math import floor, isfinite
 from typing import Any
+from weakref import ref as weak_ref
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
@@ -407,16 +408,22 @@ class IndependentPaneSessionV2(QWidget):
             self._close_layout(self.handle)
 
     def _watch_stop_boundary(self, future: Future[Any], resource_id: str) -> None:
+        owner_ref = weak_ref(self)
+
         def completed(result: Future[Any]) -> None:
             try:
                 if result.exception() is not None:
                     return
-                snapshot = self.handle.session.pane_delivery_ledger_snapshot()
+                owner = owner_ref()
+                if owner is None:
+                    return
+                snapshot = owner.handle.session.pane_delivery_ledger_snapshot()
                 refs = tuple(record.ref for record in snapshot.records
-                             if record.stage in {PaneDeliveryStage.UI_ADMITTED,
+                             if record.stage in {PaneDeliveryStage.QUEUE_DRAINED,
+                                                 PaneDeliveryStage.UI_ADMITTED,
                                                  PaneDeliveryStage.PAINT_SCHEDULED}
                              and record.ref.identity.physical_stream_resource_id == resource_id)
-                self.stop_boundary.emit(refs)
+                owner.stop_boundary.emit(refs)
             except Exception:
                 # A cached-ledger read or a late deleted QObject is telemetry
                 # only; it must not perturb the already-completed Stop future.
