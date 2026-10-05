@@ -6079,3 +6079,76 @@ remain unchanged; no system changes or new agents/model calls occurred.
 Next: SAME-owner product service conversion/clock authentication/queue-Stop
 outcomes, then dedicated UI V2 per-layer delivery and review. APP07/M8 remains
 PARTIAL, H02 TODO, and the full APP00..14 goal remains unchanged.
+
+## APP-07 M8-076 — original layer references through the UI V2 delivery path
+
+Qualified software runtime source: `f384ec88bbc462b97006a25c5405e2e7aa6badcf`.
+The main implementation commit is `4d7dca6`; the corrected source above includes
+the hidden-history and test-fixture follow-up. Documentation commits must not
+relabel either runtime, its native module, or its physical evidence.
+
+The existing Pluto single/paired and HackRF service paths now authenticate and
+convert their original native creation journals into the SAME resource-scoped
+delivery ledger. Spectrum, Persistence density, and Sweep retain their own
+original source references. RTBW Waterfall uses the original Spectrum creation
+with a separate view obligation. Progressive Sweep remains visible, but only
+a terminal complete/gap publication has the completed Waterfall-row obligation.
+
+Worker preparation, fair queue admission/drain/supersession, UI admission, and
+the individual canvas callbacks settle the exact original view references.
+Spectrum paint cannot prove Waterfall or Persistence paint. Repainting an
+unchanged item cannot mint another completed delivery. Persistence settles at
+its actual image commit and relevant canvas return, including asynchronous
+replacement, Clear, cancellation, and stale-worker failure. A confirmed queued
+Stop clears only its captured resource/view obligations; ordinary Stop retains
+the displayed measurement, while terminal layout cleanup releases source arrays.
+
+The graph still uses its bounded 1 MiB ledger, 256 records and 128 events.
+Each packet carries at most three distinct view references. No new acquisition
+loop, raw-IQ Python delivery, array-copy queue, hardware owner, hidden restart,
+or relaxed Fs/FFT/gain/quality/epoch/time/memory policy was introduced. Missing
+diagnostic evidence does not prevent the actual measurement from being shown.
+Pane counters now count view obligations, not analytical FFTs or RF samples.
+
+A reproduced hidden-Waterfall defect was corrected: accepting a row into the
+bounded history now returns history admission even when painting is disabled.
+This consumes a pending Sweep visit boundary instead of carrying it into the
+next update and resetting retained rows. Hidden admission creates no paint
+receipt. Frozen, ordering, cadence and allocation refusals remain explicit.
+
+Exact corrected build: 47/47 native tests (59.17s), 665 frozen files, 587 source
+inputs, shared runtime hashes and ONE USB library verified. One serial full V2
+gate AFTER freeze: 1422 tests, 1356 passed, 66 skipped, zero failures/errors
+(487.736s); exact provenance and clean tracked source before/after.
+Matching packaged-native/source focus: 62 passed (21.639s). Expanded root
+regression: 549 passed (136.471s). Stricter Qt fixture/terminal regression:
+103 passed and 48 subtests (13.91s). Scoped Ruff/compile checks passed;
+scoped typing is not a whole-project typing claim.
+
+The first `4d7dca6` full gate failed (two error subtests and two failures) and
+was retained. The release observer mock lacked a mandatory service field;
+only that fixture was corrected. A separate combined Qt run exposed deferred
+deletion from preceding paint-test fixtures. Those owned fixtures now deliver
+their DeferredDelete events and verify actual destruction; paint-once and
+Stop-retains-pixels assertions remain unchanged. Original callback object
+identity was not exhaustively traced: this is not a demonstrated vendor/product
+Qt-retirement fix, and Qt exception capture was not suppressed.
+
+Девлог: подтверждения Spectrum, Waterfall и Persistence разделены по реальным
+стадиям доставки и отрисовки; сохранён прогрессивный Sweep; устранён сброс истории
+скрытого водопада. Это проверенное улучшение корректности и измеримости.
+Процент ускорения, FPS, DWM latency и вероятность обнаружения RF-импульса
+по этим тестам не вычисляются.
+
+UI-only implementation/testing used gpt-6-luna/high; distinct read-only UI
+review used gpt-6-sol/high. Root retained backend/native, build, hardware and
+provenance ownership. These reviews are not whole-backend/release approval.
+
+Next: qualify the CURRENT physical layout AD9364 USB / HackRF / AD9363 genuine
+Ethernet 1 Gbit / RTL, rotate source assignments, and collect original UI
+screenshots and per-view latency evidence. tinySA support remains, but is
+excluded from this current physical layout. RTL HF routing remains unverified;
+two labelled antenna connectors are not two concurrent receiver channels.
+Visible Windows/DPI/DWM, sustained/soak, paired RF and full release remain open.
+Static/current EXE and main product source are unchanged. APP-07/M8 remains
+PARTIAL, H02 TODO, full APP-00…APP-14 goal ACTIVE.
