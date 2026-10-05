@@ -22,6 +22,7 @@ from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
 from sdr_monitor.services.rtl_rtbw_pane_owner import RtlRtbwPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
 from sdr_monitor.services.parallel_receiver_identity import validate_parallel_receiver_identity
+from sdr_monitor.services.pluto_pane_route_admission import PlutoPaneRouteAdmission
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.services.tinysa_trace_pane_owner import TinySaTracePaneOwner
 
@@ -34,6 +35,7 @@ def compose_v2_pane_resource_session(
     graphs: Mapping[str, V2AnalyzerApplicationGraph],
     leases: ReceiverLeaseManager,
     *, expected_selections: Mapping[str, AnalyzerSourceSelection] | None = None,
+    route_admissions: Mapping[str, PlutoPaneRouteAdmission] | None = None,
 ) -> PaneResourceSession | None:
     """Bind selected sources to one owner/lease per physical resource.
 
@@ -54,6 +56,9 @@ def compose_v2_pane_resource_session(
         raise PaneResourceError("pane layout and receiver groups differ")
     if set(graphs) != expected:
         raise PaneResourceError("one selected application graph is required for each resource")
+    routes = dict(route_admissions or {})
+    if not routes.keys() <= expected or any(not isinstance(value, PlutoPaneRouteAdmission) for value in routes.values()):
+        raise PaneResourceError("explicit route admissions must belong to this exact resource plan")
     graph_values = tuple(graphs.values())
     if any(not isinstance(graph, V2AnalyzerApplicationGraph) for graph in graph_values):
         raise PaneResourceError("pane resource needs the current V2 application graph")
@@ -91,6 +96,11 @@ def compose_v2_pane_resource_session(
                 or any(endpoint.source_id != selected.device_id for endpoint in group.endpoints)):
             raise PaneResourceError("pane source lacks one current staged selection")
         selected_by_resource[resource_id] = selected
+        route_admission = routes.get(resource_id)
+        if route_admission is not None:
+            if route_admission.selection is not selection or selected.family is not DeviceFamily.AD936X:
+                raise PaneResourceError("explicit route admission belongs to another selection")
+            route_admission.validate()
         selections_by_resource[resource_id] = selection
         identities[selected.device_id] = selected.binding.identity_key
         families[selected.device_id] = selected.family
@@ -115,12 +125,13 @@ def compose_v2_pane_resource_session(
             if all(isinstance(job.profile, Ad936xPairedSweepPaneProfile) for job in resource.jobs):
                 owner_factories[resource_id] = partial(Ad936xPairedSweepPaneOwner,
                     graph.live, physical_stream_resource_id=resource_id,
-                    source_id=selected.device_id, endpoints=(first, second))
+                    source_id=selected.device_id, endpoints=(first, second), route_admission=routes.get(resource_id))
             elif all(job.profile.measurement_mode is CaptureMeasurementMode.RTBW for job in resource.jobs):
                 owner_factories[resource_id] = partial(Ad936xPairedPaneOwner,
                     graph.live, physical_stream_resource_id=resource_id,
                     source_id=selected.device_id, endpoints=(first, second),
-                    expected_selection=selection, expected_snapshot=graph.live.current_snapshot())
+                    expected_selection=selection, expected_snapshot=graph.live.current_snapshot(),
+                    route_admission=routes.get(resource_id))
             else:
                 raise PaneResourceError("paired AD936x requires one coherent RTBW or typed paired Sweep mode")
         elif len(group.endpoints) != 1:
@@ -128,7 +139,8 @@ def compose_v2_pane_resource_session(
         elif selected.family is DeviceFamily.AD936X and isinstance(endpoint, ReceiverEndpoint):
             owner_factories[resource_id] = partial(Ad936xPaneOwner,
                 graph.live, graph.sweep_router, physical_stream_resource_id=resource_id,
-                source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id)
+                source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id,
+                route_admission=routes.get(resource_id))
         elif selected.family is DeviceFamily.HACKRF and isinstance(endpoint, ReceiverEndpoint):
             if graph.services.analyzer_hackrf is None:
                 raise PaneResourceError("selected HackRF graph has no common native RX owner")

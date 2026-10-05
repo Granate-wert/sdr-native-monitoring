@@ -23,6 +23,7 @@ from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from .ad936x_rtbw_pane_owner import Ad936xRtbwPaneOwner
 from .pane_resource_session import PaneCaptureAdmission
+from .pluto_pane_route_admission import PlutoPaneRouteAdmission
 from ..domain.layer_journal import LayerJournalSnapshot
 
 
@@ -31,9 +32,9 @@ class Ad936xPaneOwner(Ad936xRtbwPaneOwner):
 
     def __init__(self, live: LiveSessionApplicationService, sweep: AnalyzerSweepRouter, *,
                  physical_stream_resource_id: str, source_id: str,
-                 receiver_endpoint_id: str) -> None:
+                 receiver_endpoint_id: str, route_admission: PlutoPaneRouteAdmission | None = None) -> None:
         super().__init__(live, physical_stream_resource_id=physical_stream_resource_id,
-                         source_id=source_id, receiver_endpoint_id=receiver_endpoint_id)
+                         source_id=source_id, receiver_endpoint_id=receiver_endpoint_id, route_admission=route_admission)
         if not isinstance(sweep, AnalyzerSweepRouter):
             raise TypeError("AD936x pane requires its common Sweep router")
         self._sweep_router = sweep
@@ -53,6 +54,7 @@ class Ad936xPaneOwner(Ad936xRtbwPaneOwner):
                 else super().layer_journal_snapshots())
 
     def validate_job(self, job: CaptureJob) -> None:
+        self._validate_operational_route()
         profile = job.profile
         if not isinstance(profile, Ad936xSweepPaneProfile):
             super().validate_job(job)

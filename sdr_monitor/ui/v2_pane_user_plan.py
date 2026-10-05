@@ -29,6 +29,7 @@ from sdr_monitor.domain.live import BackendKind, LiveConfiguration, LiveSnapshot
 from sdr_monitor.domain.paired_live import PairedLiveRequest, validate_paired_selection_snapshot
 from sdr_monitor.domain.paired_sweep import PairedSweepRequest
 from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
+from sdr_monitor.domain.pluto_route_intent import PlutoOperationalRouteIntent
 from sdr_monitor.domain.pane_scheduler import (
     Ad936xPairedSweepPaneProfile, Ad936xSweepPaneProfile, CaptureEpochCost, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     HackrfSweepPaneProfile, PaneCaptureProfile, PaneLayout,
@@ -120,12 +121,15 @@ class PaneSlotDraft:
     receiver_selection: ReceiverChainSelection = field(default=ReceiverChainSelection.RX1, kw_only=True)
     manual_tuner_gain_tenth_db: int | None = field(default=None, kw_only=True)
     sweep_window_hz: float | None = field(default=None, kw_only=True)
+    operational_route: PlutoOperationalRouteIntent | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or not 1 <= self.number <= 4:
             raise PaneUserPlanError("pane number must be in [1, 4]")
         if type(self.network_discovery) is not bool:
             raise PaneUserPlanError("pane network discovery intent must be explicit")
+        if self.operational_route is not None and not isinstance(self.operational_route, PlutoOperationalRouteIntent):
+            raise PaneUserPlanError("pane operational route requires typed explicit intent")
         if self.sweep_window_hz is not None and (
                 type(self.sweep_window_hz) not in {int, float} or not isfinite(self.sweep_window_hz)
                 or not 0 < self.sweep_window_hz <= 36_000_000.
@@ -161,6 +165,7 @@ class PaneSlotDraft:
                     or self.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED
                     or self.receiver_selection is not ReceiverChainSelection.RX1
                     or self.sweep_window_hz is not None
+                    or self.operational_route is not None
                     or gain is not None):
                 raise PaneUserPlanError("an Empty pane cannot retain a frequency range")
             return
@@ -313,6 +318,12 @@ def compile_user_pane_plan(
     if set(source_order) != set(selected) or set(source_order) != set(selection_revisions):
         raise PaneUserPlanError("draft sources differ from the exact staged selections",
                                 reason=PaneUserRefusal.SELECTION_CHANGED)
+    for source_id in source_order:
+        routes = {draft.operational_route for draft in drafts if draft.source_id == source_id}
+        if len(routes) != 1:
+            raise PaneUserPlanError("one source has conflicting operational route intent")
+        if next(iter(routes)) is not None and selected[source_id].family is not DeviceFamily.AD936X:
+            raise PaneUserPlanError("explicit USB/IP route intent belongs only to AD936x")
     resource_for = {source_id: f"pane-resource-{index}" for index, source_id in enumerate(source_order, 1)}
     groups: list[AcquisitionGroup] = []
     endpoints: dict[tuple[str, ReceiverChainSelection], str] = {}

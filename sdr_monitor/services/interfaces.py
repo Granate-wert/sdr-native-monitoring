@@ -10,7 +10,9 @@ from __future__ import annotations
 from concurrent.futures import Future
 from pathlib import Path
 import threading
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, runtime_checkable
+
+from ..domain.pluto_route_intent import PlutoOperationalRouteIntent
 
 from ..domain import (
     CalibrationApplicability,
@@ -50,6 +52,14 @@ class LiveSdrService(Protocol):
     def start(self) -> Any: ...
     def stop(self) -> Any: ...
     def latest_snapshot(self) -> Any: ...
+
+
+@runtime_checkable
+class PlutoOperationalRouteOwner(Protocol):
+    """Optional exact-route control port; not advertised by other families."""
+
+    def bind_operational_route(self, intent: PlutoOperationalRouteIntent, *, source_id: str) -> None: ...
+    def validate_operational_route(self, intent: PlutoOperationalRouteIntent, *, source_id: str) -> None: ...
 
 
 class SweepSdrService(Protocol):

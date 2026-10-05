@@ -20,6 +20,7 @@ from sdr_monitor.domain.pane_scheduler import CaptureJob, CaptureMeasurementMode
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint, SpectrumTraceEndpoint
 
 from .pane_resource_session import PaneCaptureAdmission
+from .pluto_pane_route_admission import PlutoPaneRouteAdmission
 from .owner_journal_scope import capture_owner_scopes
 from ..domain.layer_journal import LayerJournalSnapshot
 
@@ -57,7 +58,7 @@ class Ad936xRtbwPaneOwner:
 
     def __init__(self, live: LiveSessionApplicationService, *,
                  physical_stream_resource_id: str, source_id: str,
-                 receiver_endpoint_id: str) -> None:
+                 receiver_endpoint_id: str, route_admission: PlutoPaneRouteAdmission | None = None) -> None:
         if any(not isinstance(value, str) or not value for value in (
                 physical_stream_resource_id, source_id, receiver_endpoint_id)):
             raise ValueError("pane owner requires exact resource, source and RX endpoint identities")
@@ -66,6 +67,16 @@ class Ad936xRtbwPaneOwner:
         self._endpoint_id = receiver_endpoint_id
         self._live = live
         self._control_claim = object()
+        if route_admission is not None and (
+                not isinstance(route_admission, PlutoPaneRouteAdmission)
+                or route_admission.selection.selected is None
+                or route_admission.selection.selected.device_id != source_id):
+            raise ValueError("pane operational route belongs to another source")
+        self._route_admission = route_admission
+
+    def _validate_operational_route(self) -> None:
+        if self._route_admission is not None:
+            self._route_admission.validate()
 
     def layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
         return self._live.density_layer_journal_snapshots()
@@ -80,6 +91,7 @@ class Ad936xRtbwPaneOwner:
 
     def validate_job(self, job: CaptureJob) -> None:
         """Pure fixed refusal before the session reserves a receiver lease."""
+        self._validate_operational_route()
         profile = job.profile
         if (not isinstance(profile, PaneCaptureProfile)
                 or job.physical_stream_resource_id != self.physical_stream_resource_id

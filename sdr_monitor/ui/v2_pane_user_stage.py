@@ -12,9 +12,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sdr_monitor.domain.pane_scheduler import PaneRevisitEstimate
-from sdr_monitor.domain.live import LiveSessionState
+from sdr_monitor.domain.live import LiveSessionState, LiveAdmissionRejected
 from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
+from sdr_monitor.domain.pluto_route_intent import PlutoOperationalRouteIntent
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 
@@ -59,6 +60,7 @@ def prepare_user_pane_session(
     try:
         source_order = tuple(dict.fromkeys(draft.source_id for draft in drafts if draft.source_id is not None))
         network_intent: dict[str, bool] = {}
+        route_intent: dict[str, PlutoOperationalRouteIntent | None] = {}
         for draft in drafts:
             if draft.source_id is None:
                 continue
@@ -66,13 +68,21 @@ def prepare_user_pane_session(
                 raise PaneUserStageError("one source has conflicting network discovery intent",
                                          reason=PaneUserRefusal.NETWORK_INTENT_CONFLICT)
             network_intent[draft.source_id] = draft.network_discovery
+            if draft.source_id in route_intent and route_intent[draft.source_id] != draft.operational_route:
+                raise PaneUserStageError("one source has conflicting operational route intent",
+                                         reason=PaneUserRefusal.INVALID_PLAN)
+            route_intent[draft.source_id] = draft.operational_route
         selected = {}
         revisions = {}
         for index, source_id in enumerate(source_order, 1):
             assert source_id is not None
             resource_id = f"pane-resource-{index}"
-            selected[source_id] = pool.stage(
-                resource_id, source_id, include_network=network_intent[source_id])
+            if route_intent[source_id] is None:
+                selected[source_id] = pool.stage(resource_id, source_id,
+                    include_network=network_intent[source_id])
+            else:
+                selected[source_id] = pool.stage(resource_id, source_id,
+                    include_network=network_intent[source_id], operational_route=route_intent[source_id])
             selection = pool.graph_for(resource_id).live.current_source_selection()
             if selection is None or selection.selected is not selected[source_id]:
                 raise PaneUserStageError("pane source selection changed during Stage",
@@ -119,6 +129,11 @@ def apply_user_pane_session(prepared: PreparedPaneUserSession) -> None:
     if any(item.recording_conflict for item in prepared.preview):
         raise PaneUserStageError("recording conflicts with one or more proposed receiver plans",
                                  reason=PaneUserRefusal.RECORDING_CONFLICT)
+    try:
+        handle.pool.validate_explicit_routes()
+    except LiveAdmissionRejected:
+        raise PaneUserStageError("explicit route selection changed before Apply",
+                                 reason=PaneUserRefusal.SELECTION_CHANGED) from None
     # All paired receipts revalidate BEFORE any proposed resource RF write.
     try:
         for receipt in prepared.plan.paired_selections:

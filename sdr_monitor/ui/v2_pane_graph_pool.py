@@ -12,11 +12,15 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
+from sdr_monitor.domain.device_capabilities import DeviceFamily
+from sdr_monitor.domain.pluto_route_intent import PlutoOperationalRouteIntent
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
 from sdr_monitor.services.pane_resource_session import PaneResourceSession
 from sdr_monitor.services.parallel_receiver_identity import validate_parallel_receiver_identity
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
+from sdr_monitor.services.interfaces import PlutoOperationalRouteOwner
+from sdr_monitor.services.pluto_pane_route_admission import PlutoPaneRouteAdmission
 
 from .v2_application_graph import V2AnalyzerApplicationGraph, build_v2_analyzer_application_graph
 from .v2_pane_composition import compose_v2_pane_resource_session
@@ -48,6 +52,8 @@ class PaneProductGraphPool:
         self._graphs: dict[str, V2AnalyzerApplicationGraph] = {}
         self._source_ids: dict[str, str] = {}
         self._selections: dict[str, AnalyzerSourceSelection] = {}
+        self._route_intents: dict[str, PlutoOperationalRouteIntent] = {}
+        self._route_admissions: dict[str, PlutoPaneRouteAdmission] = {}
         self._cleanup_pending: dict[str, V2AnalyzerApplicationGraph] = {}
         self._session: PaneResourceSession | None = None
         self._closed = False
@@ -65,7 +71,8 @@ class PaneProductGraphPool:
         return self._session
 
     def stage(self, resource_id: str, source_id: str, *,
-              include_network: bool = False) -> AnalyzerSourceChoice:
+              include_network: bool = False,
+              operational_route: PlutoOperationalRouteIntent | None = None) -> AnalyzerSourceChoice:
         """Explicit Discover→Select on a new independent graph.
 
         Network discovery is opt-in per selected source.  It may be slow and
@@ -73,6 +80,8 @@ class PaneProductGraphPool:
         """
         if type(include_network) is not bool:
             raise ValueError("network discovery intent must be explicit")
+        if operational_route is not None and not isinstance(operational_route, PlutoOperationalRouteIntent):
+            raise TypeError("operational route requires typed explicit intent")
         if (not isinstance(resource_id, str) or not resource_id.strip()
                 or not isinstance(source_id, str) or not source_id.strip()):
             raise ValueError("pane resource and source identity are required")
@@ -99,16 +108,46 @@ class PaneProductGraphPool:
         try:
             choices = (graph.live.discover() if include_network else
                        graph.live.discover(local_only=True))
-            if not any(isinstance(choice, AnalyzerSourceChoice) and choice.device_id == source_id
-                       for choice in choices):
+            discovered = next((choice for choice in choices if isinstance(choice, AnalyzerSourceChoice)
+                               and choice.device_id == source_id), None)
+            if discovered is None and operational_route is None:
                 raise PaneGraphPoolError("pane source is absent from current local discovery")
-            graph.live.select_device(source_id)
+            if operational_route is None:
+                graph.live.select_device(source_id)
+            else:
+                if discovered is not None and discovered.family is not DeviceFamily.AD936X:
+                    raise PaneGraphPoolError("explicit USB/IP route belongs only to AD936x")
+                snapshot = graph.live.select_manual_uri(operational_route.uri)
+                if (snapshot.device is None or snapshot.device.uri != operational_route.uri
+                        or snapshot.device.device_id != source_id or snapshot.error is not None):
+                    raise PaneGraphPoolError("explicit route does not retain selected source")
             selection = graph.live.current_source_selection()
             selected = None if selection is None else selection.selected
             if (selection is None or selected is None or selected.device_id != source_id
                     or selection.release_pending
                     or graph.sources.current() is not selection):
                 raise PaneGraphPoolError("pane source selection lacks a current binding")
+            if operational_route is not None:
+                if selected.family is not DeviceFamily.AD936X:
+                    raise PaneGraphPoolError("explicit route observation is not AD936x")
+                if discovered is None:
+                    # Explicitly addressed IP can be absent from broadcast.
+                    # Only SAME fresh stable owned identity may match the
+                    # caller's logical source; unknown stale USB routes refuse.
+                    if not operational_route.uri.startswith("ip:") or selected.binding.identity_key is None:
+                        raise PaneGraphPoolError("unadvertised route needs a stable observed AD936x IP identity")
+                elif (selected.binding.identity_key != discovered.binding.identity_key
+                        or selected.binding.adapter_id != discovered.binding.adapter_id
+                        or (discovered.binding.identity_key is None
+                            and selected.usb_connection != discovered.usb_connection)):
+                    raise PaneGraphPoolError("explicit route changed the freshly discovered identity")
+                route_owner = graph.services.live_sdr
+                if not isinstance(route_owner, PlutoOperationalRouteOwner):
+                    raise PaneGraphPoolError("selected AD936x owner lacks explicit route admission")
+                route_owner.bind_operational_route(operational_route, source_id=source_id)
+                route_admission = PlutoPaneRouteAdmission(operational_route, selection,
+                    graph.live.current_source_selection, route_owner)
+                route_admission.validate()
             staged_choices = {prior.selected.device_id: prior.selected
                               for prior in self._selections.values() if prior.selected is not None}
             all_choices = (*staged_choices.values(), selected)
@@ -125,6 +164,9 @@ class PaneProductGraphPool:
         self._graphs[resource_id] = graph
         self._source_ids[resource_id] = source_id
         self._selections[resource_id] = selection
+        if operational_route is not None:
+            self._route_intents[resource_id] = operational_route
+            self._route_admissions[resource_id] = route_admission
         return selected
 
     def compose(self, layout: PaneLayout, groups: tuple[AcquisitionGroup, ...],
@@ -142,10 +184,26 @@ class PaneProductGraphPool:
             if (current is not captured or current.revision != captured.revision
                     or graph.sources is None or graph.sources.current() is not captured):
                 raise PaneGraphPoolError("pane source selection changed after Stage")
+            intent = self._route_intents.get(resource_id)
+            if intent is not None:
+                try:
+                    route_owner = graph.services.live_sdr
+                    if not isinstance(route_owner, PlutoOperationalRouteOwner):
+                        raise PaneGraphPoolError("selected AD936x owner lacks explicit route admission")
+                    route_owner.validate_operational_route(intent, source_id=self._source_ids[resource_id])
+                except Exception:
+                    raise PaneGraphPoolError("pane explicit route changed after Stage") from None
+        self.validate_explicit_routes()
         session = compose_v2_pane_resource_session(layout, groups, self._graphs, leases,
-                                                   expected_selections=self._selections)
+                                                   expected_selections=self._selections,
+                                                   route_admissions=self._route_admissions)
         self._session = session
         return session
+
+    def validate_explicit_routes(self) -> None:
+        """All pinned resources revalidated before any initial Apply write."""
+        for admission in self._route_admissions.values():
+            admission.validate()
 
     def graph_for(self, resource_id: str) -> V2AnalyzerApplicationGraph:
         try:
@@ -170,6 +228,8 @@ class PaneProductGraphPool:
                 self._graphs.pop(resource_id, None)
                 self._source_ids.pop(resource_id, None)
                 self._selections.pop(resource_id, None)
+                self._route_intents.pop(resource_id, None)
+                self._route_admissions.pop(resource_id, None)
                 self._cleanup_pending.pop(resource_id, None)
         if failures:
             raise PaneGraphPoolError("pane application graph close did not confirm for every resource")

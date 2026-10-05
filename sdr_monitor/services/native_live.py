@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable, cast
 from uuid import uuid4
-from ..domain.live import LiveAdmissionRejected
+from ..domain.live import LiveAdmissionRejected, LiveSessionState
 from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 
 from ..activity_log import log_event
@@ -63,6 +63,7 @@ from ..domain.paired_sweep import PairedSweepRequest
 from .native_paired_live import pair_performance, pair_publication
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from ..domain.pluto_connection import PlutoUsbConnectionExpectation
+from ..domain.pluto_route_intent import PlutoOperationalRouteIntent
 from .ad936x_capability_adapter import (
     AD936X_LIBIIO_ADAPTER_ID, Ad936xCapabilityObservationError, Ad936xLibiioCapabilityAdapter,
 )
@@ -222,6 +223,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         )
         self._observation_owner = PlutoReadOnlyObserver(native_module, timeout_ms=timeout_ms)
         self._native_uri: str | None = None
+        self._operational_route_pin: tuple[PlutoOperationalRouteIntent, str, str | None,
+                                          PlutoUsbConnectionExpectation | None] | None = None
         self._engine: Any | None = None
         self._poller: threading.Thread | None = None
         self._paired_request: PairedLiveRequest | None = None
@@ -441,6 +444,46 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._require_route_selection_idle()
             return self._select_device_unlocked(device_id)
 
+    def bind_operational_route(self, intent: PlutoOperationalRouteIntent, *, source_id: str) -> None:
+        """Bind SAME freshly selected route; no discovery, RF, or fallback.
+
+        Not a hardware identity proof. Native owners still check selected
+        serial/USB facts against their own context before Configure/Start.
+        """
+        if not isinstance(intent, PlutoOperationalRouteIntent):
+            raise TypeError("explicit operational route requires typed intent")
+        with self._recording_transaction_lock:
+            self._require_route_selection_idle()
+            with self._lock:
+                device = self._snapshot.device
+                if (device is None or self._snapshot.state is not LiveSessionState.CONNECTED
+                        or device.device_id != source_id or device.uri != intent.uri
+                        or self._native_uri != intent.uri):
+                    raise LiveAdmissionRejected("explicit operational route was not confirmed by current selection")
+                if self._operational_route_pin is not None and self._operational_route_pin[0] != intent:
+                    raise LiveAdmissionRejected("select the new route explicitly before rebinding it")
+                self._operational_route_pin = (intent, source_id,
+                    normalized_pluto_serial(device.serial), device.usb_connection)
+
+    def validate_operational_route(self, intent: PlutoOperationalRouteIntent, *, source_id: str) -> None:
+        """Cached exact binding check; no SDK query or owner construction."""
+        with self._recording_transaction_lock:
+            with self._lock:
+                if (self._operational_route_pin is None or self._operational_route_pin[:2] != (intent, source_id)):
+                    raise LiveAdmissionRejected("explicit operational route binding changed")
+                self._require_operational_route_pin()
+
+    def _require_operational_route_pin(self) -> None:
+        with self._lock:
+            if self._operational_route_pin is None:
+                return
+            intent, source_id, serial, usb = self._operational_route_pin
+            device = self._snapshot.device
+            if (device is None or device.device_id != source_id or device.uri != intent.uri
+                    or self._native_uri != intent.uri or normalized_pluto_serial(device.serial) != serial
+                    or device.usb_connection != usb):
+                raise LiveAdmissionRejected("selected explicit operational route changed; no transport fallback")
+
     def _require_route_selection_idle(self) -> None:
         with self._sweep_lease_lock:
             with self._lock:
@@ -546,6 +589,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             return self._apply_configuration_unlocked(requested)
 
     def _apply_configuration_unlocked(self, requested: LiveConfiguration) -> LiveSnapshot:
+        self._require_operational_route_pin()
         log_event(
             _LOGGER,
             "configuration",
@@ -668,6 +712,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     def _start_unlocked(self) -> LiveSnapshot:
         self._require_no_external_analyzer_owner()
+        self._require_operational_route_pin()
         with self._lock:
             if self._stream_release_failed or self._observation_owner.cleanup_pending:
                 return self._fail(_RELEASE_FAILED_MESSAGE, kind=LiveErrorKind.INTERNAL)
@@ -724,7 +769,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if device is not None and device.usb_connection is not None and self._native_uri != device.uri:
                 return self._fail("Selected Pluto USB connection changed; explicitly select it again",
                                   kind=LiveErrorKind.CONNECTION_FAILED)
-            routes = _start_routes(device, self._native_uri)
+            routes = ((self._operational_route_pin[0].uri,) if self._operational_route_pin is not None
+                      else _start_routes(device, self._native_uri))
             recording_request = self._native_recording_armed
             paired_request = self._paired_request
             if paired_request is not None:
@@ -1234,6 +1280,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._recording_transaction_lock, self._lock:
             self._require_no_external_analyzer_owner()
             self._require_route_selection_idle()
+            self._require_operational_route_pin()
             if self._snapshot.state is _error_state() or self._sweep_lease_active:
                 raise RuntimeError("explicit Stop is required before staging paired RTBW")
             if self._native_recording_armed is not None or self._native_recording_active is not None:
@@ -1302,6 +1349,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         with self._recording_transaction_lock:
             with self._sweep_lease_lock:
                 self._require_single_receiver_control()
+                self._require_operational_route_pin()
                 if self._sweep_lease_active:
                     raise RuntimeError("native sweep already owns the selected device")
                 with self._lock:
@@ -2546,6 +2594,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     def _clear_selected_route(self) -> None:
         self._observation_owner.close()
+        self._operational_route_pin = None
         self._native_uri = None
         self._paired_request = None
         self._paired_publication = None
