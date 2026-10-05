@@ -632,7 +632,7 @@ class SpectrumScene(QWidget):
             (source, item) for source, item in self._projection_delivery_slots
             if source is not frame and item != ref)
         self._latest_delivery_ref = previous_ref
-        self._latest_spectrum_setter_accepted = previous_accepted if previous_ref == ref else False
+        self._latest_spectrum_setter_accepted = previous_accepted
         self._latest_view = previous_view
         self._prepared_spectrum = previous_prepared
         if previous_view is None:

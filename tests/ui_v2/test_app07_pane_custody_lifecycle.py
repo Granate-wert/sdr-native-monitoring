@@ -503,6 +503,37 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         scene.deleteLater()
         self.app.processEvents()
 
+    def test_scene_defensive_failed_replacement_restores_prior_acceptance(self):
+        """Scene-level defensive invariant; the production port latches failures."""
+        ledger = PaneDeliveryLedger(("one",))
+        scene = SpectrumScene()
+        scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
+        scene.set_presentation_active(False)
+        accepted_a = self.ui_admitted(ledger, 1)
+        failed_b = self.ui_admitted(ledger, 2)
+        replacement_c = self.ui_admitted(ledger, 3)
+
+        scene.set_frame(self.frame(1, -70), obligation_ref=accepted_a)
+        self.assertTrue(scene._latest_spectrum_setter_accepted)
+        with patch.object(scene, "_set_trace_view", side_effect=RuntimeError("B setter failure")):
+            with self.assertRaisesRegex(RuntimeError, "B setter failure"):
+                scene.set_frame(self.frame(2, -60), obligation_ref=failed_b)
+
+        self.assertEqual(scene._latest_delivery_ref, accepted_a)
+        self.assertTrue(scene._latest_spectrum_setter_accepted)
+        scene.set_frame(self.frame(3, -50), obligation_ref=replacement_c)
+        stages = {record.ref: record.stage for record in ledger.snapshot().records}
+        self.assertEqual(stages[accepted_a], Stage.PAINT_SUPERSEDED)
+        self.assertEqual(stages[failed_b], Stage.UI_REJECTED)
+        self.assertEqual(stages[replacement_c], Stage.UI_ADMITTED)
+        self.assertEqual(ledger.snapshot().panes[0].pending, 1)
+        self.assertEqual(ledger.snapshot().panes[0].terminal, 2)
+        self.assertEqual(ledger.snapshot().accounting_failures, 0)
+        self.assertEqual(scene._latest_delivery_ref, replacement_c)
+        self.assertTrue(scene._latest_spectrum_setter_accepted)
+        scene.close()
+        self.app.processEvents()
+
     def test_current_setdata_witness_survives_later_spectrum_chrome_failure(self):
         ledger = PaneDeliveryLedger(("one",))
         worker = ManualWorker()
