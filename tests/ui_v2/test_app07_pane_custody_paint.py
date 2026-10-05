@@ -8,6 +8,8 @@ import unittest
 import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage as Stage
@@ -28,6 +30,14 @@ class PaneCustodyPaintTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def retire_scene(self, scene):
+        scene.release_graphics_after_shutdown()
+        scene.close()
+        scene.deleteLater()
+        QCoreApplication.sendPostedEvents(scene, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+        self.assertFalse(shiboken6.isValid(scene))
+
     def test_relevant_viewport_paint_returns_exact_ref_once(self):
         ref = PaneDeliveryLedger(("one",)).admit("one", identity())
         stages = []
@@ -44,9 +54,7 @@ class PaneCustodyPaintTests(unittest.TestCase):
         scene._graphics.viewport().repaint()
         self.app.processEvents()
         self.assertEqual(stages.count((ref, Stage.PAINT_RETURNED)), 1)
-        scene.close()
-        scene.deleteLater()
-        self.app.processEvents()
+        self.retire_scene(scene)
 
     def test_confirmed_stop_detaches_pending_ref_without_clearing_pixels(self):
         ref = PaneDeliveryLedger(("one",)).admit("one", identity())
@@ -60,9 +68,7 @@ class PaneCustodyPaintTests(unittest.TestCase):
         self.assertIs(scene.latest_frame, retained)
         self.assertIsNone(scene.displayed_delivery_ref)
         self.assertEqual(stages[-1], (ref, Stage.STOP_CLEARED))
-        scene.close()
-        scene.deleteLater()
-        self.app.processEvents()
+        self.retire_scene(scene)
 
 
 if __name__ == "__main__":

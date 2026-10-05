@@ -42,8 +42,9 @@ from .contracts import (
     adapt_waterfall_line,
 )
 from ..spectrum.paint_cadence import UniquePaintCadence, cadence_graphics_widget
-from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
-from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
+from sdr_monitor.ui.v2_pane_obligation_refs import (
+    PaneDeliveryObligationRef, PaneDeliveryStage, PaneDeliveryView,
+)
 
 _SETTINGS_PREFIX = "ui_v2/live/waterfall/v1"
 _SETTINGS_DEBOUNCE_MS = 250
@@ -346,7 +347,12 @@ class WaterfallPane(QWidget):
         self._update_status()
         if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
-            return False
+            if obligation_ref is not None:
+                self._report_waterfall_delivery(obligation_ref, PaneDeliveryStage.UI_REJECTED)
+            # Row admission and canvas visibility are separate outcomes. The
+            # bounded history accepted this row above, but no hidden paint was
+            # scheduled or claimed.
+            return True
         self._upload_tiles()
         self._admit_waterfall_paint(obligation_ref)
         return True
@@ -404,7 +410,11 @@ class WaterfallPane(QWidget):
         self._update_status()
         if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
-            return False
+            if obligation_ref is not None:
+                self._report_waterfall_delivery(obligation_ref, PaneDeliveryStage.UI_REJECTED)
+            # Preserve Sweep history/upsert semantics while keeping hidden
+            # canvas custody explicit and independent from ring admission.
+            return True
         self._upload_tiles()
         self._admit_waterfall_paint(obligation_ref)
         return True

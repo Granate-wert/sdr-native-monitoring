@@ -201,6 +201,7 @@ class SweepVisitPresentationTests(unittest.TestCase):
         self.offer("low", 9, 5, complete=True)
         self.assertEqual(low.history_rows, 3)
         self.assertEqual(low.metrics.presentation_gap_rows, 1)
+        self.assertFalse(self.board.pane(1)._pending_waterfall_gap)
         self.assertEqual(low._renderer.sweep_stamps()[-1].acquisition_epoch, 9)
         self.offer("low", 9, 5, sequence=2)
         self.assertEqual(low.history_rows, 4)

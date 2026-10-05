@@ -208,6 +208,7 @@ class PhysicalUiObserverTests(unittest.TestCase):
                 witness = observer.TerminalNativeCancelWitness()
                 service = SimpleNamespace(_lock=threading.RLock(), _stop_event=threading.Event(),
                                           _poller=None, _engine=Engine(), _paired_request=None,
+                                          _native=SimpleNamespace(),
                                           _finish_owner_journals=lambda _engine: events.append("journal_finish"),
                                           _observation_owner=SimpleNamespace(
                                               close=lambda events=events: events.append("observation_close")))

@@ -63,4 +63,7 @@ def report_delivery_refs(
             pass
 
 
-__all__ = ["delivery_obligation_refs", "refs_by_view", "report_delivery_refs"]
+__all__ = [
+    "PaneDeliveryObligationRef", "PaneDeliveryStage", "PaneDeliveryView",
+    "delivery_obligation_refs", "refs_by_view", "report_delivery_refs",
+]
