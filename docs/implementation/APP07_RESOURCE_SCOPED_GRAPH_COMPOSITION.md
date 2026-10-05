@@ -6195,3 +6195,62 @@ Existing targeted admission/graph-pool/user-plan tests:51passed,
 static EXE, driver, firmware, network, firewall or security setting changed.
 No new subagent was used. APP-07/M8 remains PARTIAL, H02 TODO; full roadmap
 APP-00…APP-14 remains ACTIVE. Whole release/visible UI/performance/soak remain open.
+
+## M8-079 — explicit operational route through the current pane owner
+
+Runtime/source/build fbb9ec8db9c06eec0d6521dd4c0b59910715e3da; earlier f384
+hardware evidence remains separately scoped. The new immutable USB/IP route
+intent is retained by PaneSlotDraft, Stage and the RF context. Stage selects
+and confirms the exact URI through the SAME fresh product graph. Explicit IP
+may be absent from USB/broadcast discovery only with a fresh stable owned
+identity matching the selected logical source. Unknown unadvertised IP refuses.
+
+The SAME NativeLive owner pins URI/source/normalized serial/USB facts and
+checks them before configuration, Start, paired staging and Sweep lease.
+Explicit routes have one Start candidate, not automatic USB failover.
+An immutable admission also retains the exact selected object/revision;
+ALL explicit routes are checked before any initial resource configuration.
+Single/paired RTBW/Sweep capture owners reject a changed route selection
+before capture. Shared-source conflicting routes refuse before discovery.
+No additional context/owner/data pipeline, widget redesign, DSP/Fs/FFT/gain/
+queue/quality/epoch/time-policy change is introduced.
+
+Software qualification:14 new mock route cases; broad211 passed/172subtests
+with five child-import failures retained, then canonical module + explicit
+mock USB context/backend resolves those five (5passed9.523s). This is a runner
+environment correction, not a lowered product guard. Ruff/compile13 and
+scoped mypy5 pass; nine historical transitive typing errors remain outside
+that scope. Matching full pipeline47/47 native tests57.18s/665 frozen files/
+589 source entries; ONE serial-after-freeze UI V2 gate1436total/1370passed/
+66skipped/0failure-error494.271s, exact source/native/clean-before-after true.
+Historical NaN warnings retained. This is not visible Windows qualification.
+
+Actual current079 single-pane Ethernet witness: SAME product Stage/Apply
+remain RX-inert, explicit Start on ip:192.168.1.54, observed AD9363 serial
+10400094c295000f0c001400a9be0c169e;30.72MSps/RF30MHz/center2450MHz/gain20dB/
+FFT4096/CPU.180 prepared bundles in6.003723s, sequence126..39676; actual cached
+native route stays IP. Stop/flush/join/graph-close confirms zero retained
+resources/workers, source snapshot unchanged, physical lease released.
+These are prepared bundles, not painted FPS/LPS, transport throughput,
+continuous30.72MSps, RF accuracy, dual-RX or four-source acceptance.
+Read-only Windows routing confirms this destination via Ethernet2/ASIX,
+interface4/source192.168.1.101/on-link192.168.1.0/24; adapter Up/1Gbps.
+This is current host-side proof, not a new device-side link-speed query.
+
+The remaining current hardware blocker is fresh evidence-bound alias exclusion
+for unknown-serial AD9364USB versus known AD9363Ethernet. Existing parallel
+identity guard is unchanged and still refuses this mixed combination.
+No USB expectation is attached to the Ethernet owner. Next: bind fresh actual
+USB/IP observations and selection revisions, reject aliases/stale/missing proof,
+then four-source RX/isolation/rotations/screenshots. Route controls in the V2
+editor require the dedicated UI-agent workflow; backend intent alone is not
+a finished user-facing selector.
+
+Diagnostic EXE SHA256
+f71d1d9521b6639b27fb2a90c5eeb88ea9f570dddc5631cec7e9ca26691fa37c;
+native SHA256
+5fa7a0632922586ed7311604854edcbeb2cf3f2736ef63f241b12d2046f4188e.
+Static/current EXE, main user product work and system settings are unchanged.
+Root only this increment; historical Luna/Sol UI reviews are not backend079
+approval. APP-07/M8 remains PARTIAL/H02 TODO/full APP-00…APP-14 goal ACTIVE;
+visible/DPI/DWM, paired RF, performance/soak and whole release remain open.
