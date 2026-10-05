@@ -331,10 +331,69 @@ void extended_geometry_test() {
     if (!refused) throw std::runtime_error("AD936x Sweep exceeded its 2048-segment bound");
 }
 
+void layer_owner_test() {
+    using sdr_pluto::ReceiverSelection;
+    using sdr_core::LayerReadyKind;
+    for (const bool single : {false, true}) {
+        auto profile = single ? single_window_config() : coordinator_config();
+        profile.layer_event_capacity = 256;
+        sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+        owner.configure(profile);
+        const auto staged = owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx1, 0);
+        if (staged.summary.created || staged.summary.producer_instance_id == 0)
+            throw std::runtime_error("Sweep Stage invented a creation");
+        owner.start();
+        if (!wait_for_completed(owner, 4)) throw std::runtime_error("Sweep layer owner timed out");
+        owner.stop();
+        const auto events = owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx1, 0);
+        bool terminal = false, progress = false;
+        std::uint64_t previous = 0;
+        for (const auto& event : events.creations) {
+            if (event.producer_instance_id != staged.summary.producer_instance_id ||
+                event.creation_sequence <= previous || event.sweep_epoch != profile.epoch ||
+                event.ready_native_ns <= 0)
+                throw std::runtime_error("Sweep layer identity changed across retunes");
+            previous = event.creation_sequence;
+            terminal |= event.kind == LayerReadyKind::SweepTerminal;
+            progress |= event.kind == LayerReadyKind::SweepProgress;
+        }
+        if (!terminal || (!single && !progress) || events.summary.events_pending ||
+            events.summary.created != events.summary.events_drained + events.summary.events_lost)
+            throw std::runtime_error("Sweep creation/loss accounting incomplete after Stop");
+        for (const auto& line : owner.poll_lines(0)) {
+            if (!line.layer_ready || line.layer_ready->producer_instance_id != staged.summary.producer_instance_id)
+                throw std::runtime_error("Sweep line did not retain upstream creation identity");
+        }
+        owner.configure(profile);
+        const auto rearmed = owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx1, 0);
+        if (rearmed.summary.created || rearmed.summary.producer_instance_id == staged.summary.producer_instance_id)
+            throw std::runtime_error("new Sweep plan retained old producer identity");
+        for (const auto rx : {ReceiverSelection::Rx2, ReceiverSelection::Both}) {
+            bool rejected = false;
+            try { static_cast<void>(owner.drain_sweep_layer_ready_events(rx, 0)); }
+            catch (const sdr_core::ConfigurationError&) { rejected = true; }
+            if (!rejected) throw std::runtime_error("Sweep layer admitted an unselected receiver");
+        }
+        profile.layer_event_capacity = 1;
+        owner.configure(profile); owner.start();
+        if (!wait_for_completed(owner, 4)) throw std::runtime_error("Sweep overflow owner timed out");
+        owner.stop();
+        const auto overflow = owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx1, 0);
+        if (overflow.creations.size() != 1 || overflow.summary.events_lost == 0 ||
+            overflow.summary.created != overflow.summary.events_drained + overflow.summary.events_lost)
+            throw std::runtime_error("Sweep journal overflow was concealed");
+        owner.disconnect();
+        if (owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx1, 0).summary.created != overflow.summary.created)
+            throw std::runtime_error("disconnect lost retained Sweep creation evidence");
+    }
+    std::cout << "Sweep layer owner single/multi retune Stop/rearm overflow PASS\n";
+}
+
 }  // namespace
 
 int main() {
     try {
+        layer_owner_test();
         extended_geometry_test();
         cancellation_phase_matrix();
         // Drain a continuously replenished output with default, explicit-small

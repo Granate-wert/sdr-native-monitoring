@@ -92,6 +92,9 @@ struct FixedBandConfig {
     // disables clock reads/rings; each enabled layer reserves its ring and one
     // serialized drain inside existing component/paired aggregate budgets.
     std::uint32_t layer_event_capacity{};
+    // Native coordinator-only lifetime journal for the one-window relay.
+    // Not bound to Python; charged inside the same Sweep/whole-owner budgets.
+    std::shared_ptr<sdr_core::LayerReadyJournal> sweep_creation_journal;
 };
 
 void validate(const FixedBandConfig& value);

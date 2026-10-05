@@ -288,6 +288,12 @@ struct LiveResourceBudget {
                 sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity),
                 "Sweep creation journal and drain");
         }
+        if (config.sweep_creation_journal) {
+            sweep_line_bytes = checked_add(sweep_line_bytes,
+                sdr_core::LayerReadyJournal::reserved_bytes(
+                    config.sweep_creation_journal->summary().event_capacity),
+                "coordinator Sweep creation journal and drain");
+        }
     }
     auto total_bytes = checked_add(iq_pool_bytes, dsp_working_bytes, "live-engine memory");
     total_bytes = checked_add(total_bytes, spectrum_backlog_bytes, "live-engine memory");
@@ -356,6 +362,11 @@ void validate(const FixedBandConfig& value) {
     sdr_core::validate(value.recording);
     if (value.layer_event_capacity > sdr_core::LayerReadyJournal::max_capacity) {
         invalid("layer_event_capacity must be in [0, 4096]");
+    }
+    if (value.sweep_creation_journal &&
+        (value.layer_event_capacity != 0U || !value.continuous_sweep_line ||
+         !value.continuous_sweep_line->enabled)) {
+        invalid("coordinator journal requires Sweep and no local layer journals");
     }
     if (value.layer_event_capacity != 0U && !value.persistence.enabled &&
         (!value.continuous_sweep_line || !value.continuous_sweep_line->enabled)) {
@@ -1470,6 +1481,7 @@ private:
         }
 
         // Allocate all journal objects/rings before device configure/RF writes.
+        channel->sweep_layer_journal_ = config.sweep_creation_journal;
         // Each chain and layer has a distinct native producer identity.
         if (config.layer_event_capacity != 0U) {
             if (config.persistence.enabled) channel->density_layer_journal_ =

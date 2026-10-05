@@ -48,6 +48,8 @@ struct ContinuousSweepCoordinatorConfig {
     std::vector<ContinuousSweepSegmentConfig> segments;
     std::optional<sdr_core::SweepStatisticsConfig> statistics;
     double statistics_snapshot_rate_hz{15.0};
+    // Optional creation evidence owned for this plan, not for each retune.
+    std::uint32_t layer_event_capacity{};
 };
 
 void validate(const ContinuousSweepCoordinatorConfig& value);
@@ -225,6 +227,11 @@ public:
     [[nodiscard]] std::optional<sdr_core::SweepProgressFrame> poll_progress();
     [[nodiscard]] std::vector<PairedSweepLineFrame> poll_paired_lines(std::size_t max_items);
     [[nodiscard]] std::optional<PairedSweepProgressFrame> poll_paired_progress();
+    // Progress and terminal creations, including unpublished analytical lines.
+    // Exact admitted RX only; Stop/disconnect retain the bounded journal until
+    // the next configure creates a fresh producer identity.
+    [[nodiscard]] sdr_core::LayerReadyDrain drain_sweep_layer_ready_events(
+        ReceiverSelection receiver, std::size_t max_items);
     // Native paired first-cause diagnostic. Legacy single failure reporting
     // remains in its metrics; this string is not an RF validity claim.
     [[nodiscard]] std::string last_error() const;

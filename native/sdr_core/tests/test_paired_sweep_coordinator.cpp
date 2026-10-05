@@ -513,9 +513,12 @@ void statistics_prefix(Hooks& hooks) {
 void statistics_shared_gap(Hooks& hooks) {
     sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
     auto p = config(true); p.primary.statistics = p.secondary.statistics = statistics();
+    p.primary.layer_event_capacity = p.secondary.layer_event_capacity = 32;
     p.primary.segments[0].fixed_band.acquisition_queue_capacity =
         p.secondary.segments[0].fixed_band.acquisition_queue_capacity = 1;
     owner.configure_paired(p); owner.set_dsp_delay_for_test(80); owner.start();
+    const auto layer_id = owner.drain_sweep_layer_ready_events(sdr_pluto::ReceiverSelection::Rx1, 0)
+        .summary.producer_instance_id;
     bool saw_gap = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!saw_gap && std::chrono::steady_clock::now() < deadline && !owner.metrics().has_error) {
@@ -533,13 +536,85 @@ void statistics_shared_gap(Hooks& hooks) {
     // Require a strictly smaller count so an omitted reset cannot pass.
     require(a.unique_passes_seen == b.unique_passes_seen && a.unique_passes_seen < a.newest_pass_sequence &&
         a.newest_pass_sequence == b.newest_pass_sequence, "shared gap failed to reset both rolling kernels");
+    const auto creations = owner.drain_sweep_layer_ready_events(sdr_pluto::ReceiverSelection::Rx1, 0);
+    require(creations.summary.producer_instance_id == layer_id && creations.summary.created > 0,
+        "shared synchronization gap replaced lifetime layer journal");
+    require(lines.back().primary.layer_ready && lines.back().primary.layer_ready->producer_instance_id == layer_id,
+        "new synchronized history lacks same owner creation identity");
     owner.disconnect(); require(hooks.contexts() == 0 && hooks.buffers() == 0, "shared stats gap cleanup leaked");
     std::cout << "paired statistics shared synchronization gap reset PASS\n";
 }
 }
+void layer_journal_owner(Hooks& hooks) {
+    using sdr_pluto::ReceiverSelection;
+    for (const bool single : {false, true}) {
+        auto plan = config(single);
+        plan.primary.layer_event_capacity = plan.secondary.layer_event_capacity = 256;
+        sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
+        const auto mutations = hooks.mutations();
+        owner.configure_paired(plan);
+        const auto a = owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx1, 0);
+        const auto b = owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx2, 0);
+        require(a.summary.created == 0 && b.summary.created == 0 && hooks.mutations() == mutations,
+            "paired journal Stage modified RF or invented creation");
+        require(a.summary.producer_instance_id != b.summary.producer_instance_id,
+            "paired journal producer identity alias");
+        refused([&] { static_cast<void>(owner.drain_sweep_layer_ready_events(ReceiverSelection::Both, 0)); });
+        owner.start(); wait_lines(owner, 4); owner.stop();
+        for (const auto rx : {ReceiverSelection::Rx1, ReceiverSelection::Rx2}) {
+            const auto expected = rx == ReceiverSelection::Rx1 ? a.summary.producer_instance_id : b.summary.producer_instance_id;
+            const auto drain = owner.drain_sweep_layer_ready_events(rx, 0);
+            bool terminal = false, progress = false;
+            std::uint64_t previous = 0;
+            for (const auto& ref : drain.creations) {
+                require(ref.producer_instance_id == expected && ref.creation_sequence > previous &&
+                        ref.sweep_epoch == plan.primary.epoch, "paired retune reset layer identity");
+                previous = ref.creation_sequence;
+                terminal |= ref.kind == sdr_core::LayerReadyKind::SweepTerminal;
+                progress |= ref.kind == sdr_core::LayerReadyKind::SweepProgress;
+            }
+            require(terminal && (single || progress) && drain.summary.events_pending == 0 &&
+                drain.summary.created == drain.summary.events_drained + drain.summary.events_lost,
+                "paired journal Stop lost creations");
+        }
+        for (const auto& pair : owner.poll_paired_lines(0)) {
+            require(pair.primary.layer_ready && pair.secondary.layer_ready &&
+                pair.primary.layer_ready->producer_instance_id == a.summary.producer_instance_id &&
+                pair.secondary.layer_ready->producer_instance_id == b.summary.producer_instance_id,
+                "paired output creation refs not owned by configured plan");
+        }
+        owner.disconnect();
+        require(hooks.contexts() == 0 && hooks.buffers() == 0, "paired journal leaked hardware");
+        ++plan.primary.epoch; ++plan.secondary.epoch; owner.configure_paired(plan);
+        require(owner.drain_sweep_layer_ready_events(ReceiverSelection::Rx1, 0).summary.producer_instance_id !=
+            a.summary.producer_instance_id, "paired reconfigure retained journal producer");
+        owner.disconnect();
+    }
+    // Find actual component headroom without RF: journals must consume that
+    // SAME headroom rather than create a second allowance.
+    auto plan = config();
+    std::uint64_t low = 0, high = sdr_core::sweep_max_reduced_bytes;
+    while (low + 1 < high) {
+        const auto mid = low + (high - low) / 2;
+        plan.product_publication_reserved_bytes = mid;
+        try { sdr_pluto::validate(plan); low = mid; }
+        catch (const sdr_core::ConfigurationError&) { high = mid; }
+    }
+    plan.product_publication_reserved_bytes = low;
+    plan.primary.layer_event_capacity = plan.secondary.layer_event_capacity = 1;
+    sdr_pluto::ContinuousSweepCoordinator bounded("usb:mock");
+    const auto mutations = hooks.mutations(), contexts = hooks.created_contexts();
+    refused([&] { bounded.configure_paired(plan); });
+    plan.primary.layer_event_capacity = 4097;
+    refused([&] { bounded.configure_paired(plan); });
+    require(hooks.mutations() == mutations && hooks.created_contexts() == contexts,
+        "paired journal budget refusal touched RF");
+    std::cout << "paired Sweep lifetime layer journals/common budget PASS\n";
+}
+
 int main() {
     try { gain_readback_validation(); Hooks hooks; validation(hooks); completed(hooks, false); completed(hooks, true); gain_readback_retuning(hooks); cancellation(hooks); progress_and_failure(hooks); start_race_and_one_sided_failure(hooks);
-        statistics_validation(hooks); statistics_pressure(hooks, false, false); statistics_pressure(hooks, true, false);
+        layer_journal_owner(hooks); statistics_validation(hooks); statistics_pressure(hooks, false, false); statistics_pressure(hooks, true, false);
         statistics_pressure(hooks, true, true); statistics_prefix(hooks); statistics_shared_gap(hooks); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     return 0;

@@ -987,7 +987,8 @@ void bind_pluto(py::module_& module) {
             const std::uint32_t analysis_bins_per_usable_window,
             const double line_snapshot_rate_hz,
             const std::optional<SweepStatisticsConfig>& statistics,
-            const double statistics_snapshot_rate_hz
+            const double statistics_snapshot_rate_hz,
+            const std::uint32_t layer_event_capacity
         ) {
             sdr_pluto::ContinuousSweepCoordinatorConfig result{
                 .epoch = epoch,
@@ -1001,6 +1002,7 @@ void bind_pluto(py::module_& module) {
                 .segments = segments,
                 .statistics = statistics,
                 .statistics_snapshot_rate_hz = statistics_snapshot_rate_hz,
+                .layer_event_capacity = layer_event_capacity,
             };
             sdr_pluto::validate(result);
             return result;
@@ -1013,7 +1015,9 @@ void bind_pluto(py::module_& module) {
             py::arg("analysis_bins_per_usable_window") = 0U,
             py::arg("line_snapshot_rate_hz") = 0.0,
             py::arg("statistics") = py::none(),
-            py::arg("statistics_snapshot_rate_hz") = 15.0)
+            py::arg("statistics_snapshot_rate_hz") = 15.0,
+            py::arg("layer_event_capacity") = 0U)
+        .def_readonly("layer_event_capacity", &sdr_pluto::ContinuousSweepCoordinatorConfig::layer_event_capacity)
         .def_readonly("statistics", &sdr_pluto::ContinuousSweepCoordinatorConfig::statistics)
         .def_readonly("statistics_snapshot_rate_hz", &sdr_pluto::ContinuousSweepCoordinatorConfig::statistics_snapshot_rate_hz)
         .def_readonly("epoch", &sdr_pluto::ContinuousSweepCoordinatorConfig::epoch)
@@ -1144,6 +1148,8 @@ void bind_pluto(py::module_& module) {
         .def("poll_progress", &sdr_pluto::ContinuousSweepCoordinator::poll_progress, py::call_guard<py::gil_scoped_release>())
         .def("poll_paired_lines", &sdr_pluto::ContinuousSweepCoordinator::poll_paired_lines, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_paired_progress", &sdr_pluto::ContinuousSweepCoordinator::poll_paired_progress, py::call_guard<py::gil_scoped_release>())
+        .def("drain_sweep_layer_ready_events", &sdr_pluto::ContinuousSweepCoordinator::drain_sweep_layer_ready_events,
+             py::arg("receiver"), py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("last_error", &sdr_pluto::ContinuousSweepCoordinator::last_error, py::call_guard<py::gil_scoped_release>())
         .def("discard_lines", &sdr_pluto::ContinuousSweepCoordinator::discard_lines, py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>());
 

@@ -257,6 +257,9 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
         value.segment_frame_timeout_ms == 0U || value.segment_frame_timeout_ms > 60'000U) {
         invalid("continuous sweep coordinator queue/timeout bound is invalid");
     }
+    if (value.layer_event_capacity > sdr_core::LayerReadyJournal::max_capacity) {
+        invalid("Sweep layer_event_capacity must be in [0, 4096]");
+    }
     if (value.analysis_bins_per_usable_window != 0U &&
         (value.analysis_bins_per_usable_window < 256U ||
          value.analysis_bins_per_usable_window > 262'144U ||
@@ -287,7 +290,7 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
             invalid("continuous sweep analysis grid requires a denser physical FFT transform");
         }
     }
-    if (first.recording.enabled || first.recorder_enabled || first.sweep_statistics_sink ||
+    if (first.recording.enabled || first.recorder_enabled || first.sweep_statistics_sink || first.sweep_creation_journal ||
         (first.continuous_sweep_line.has_value() && first.continuous_sweep_line->enabled)) {
         invalid("continuous sweep coordinator forbids recording and nested line publication");
     }
@@ -295,8 +298,10 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
     for (std::size_t index = 0U; index < value.segments.size(); ++index) {
         const auto& segment = value.segments[index];
         validate(segment.fixed_band);
+        if (value.layer_event_capacity && value.segments.size() == 1 && segment.fixed_band.layer_event_capacity)
+            invalid("one-window coordinator journal conflicts with nested local layer journals");
         if (segment.fixed_band.recording.enabled || segment.fixed_band.recorder_enabled ||
-            segment.fixed_band.sweep_statistics_sink ||
+            segment.fixed_band.sweep_statistics_sink || segment.fixed_band.sweep_creation_journal ||
             (segment.fixed_band.continuous_sweep_line.has_value() &&
              segment.fixed_band.continuous_sweep_line->enabled) ||
             !same_geometry(first, segment.fixed_band) ||
@@ -322,7 +327,8 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
     const auto reduced_bytes = bins * (20U * (value.output_queue_capacity + 3U) + 28U) +
         value.segments.size() * static_cast<std::uint64_t>(first.dsp.fft_size) * 16U + first.dsp.fft_size * 8U +
         (value.output_queue_capacity + 3ULL + definition.max_inflight_lines) *
-            sizeof(std::optional<sdr_core::LayerReadyRef>) + sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>);
+            sizeof(std::optional<sdr_core::LayerReadyRef>) + sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>) +
+        (value.layer_event_capacity ? sdr_core::LayerReadyJournal::reserved_bytes(value.layer_event_capacity) : 0U);
     if (reduced_bytes > sdr_core::sweep_max_reduced_bytes) {
         invalid("continuous sweep reduced spectrum backlog exceeds 128 MiB");
     }
@@ -363,6 +369,11 @@ std::uint64_t paired_sweep_payload_bytes(const PairedContinuousSweepCoordinatorC
     // only to these reduced outputs: the paired DSP burst retains no statistics
     // snapshots. The queue/drain/preview/current bound therefore applies here.
     for (const auto* chain : {&config.primary, &config.secondary}) {
+        const auto journal_bytes = chain->layer_event_capacity
+            ? sdr_core::LayerReadyJournal::reserved_bytes(chain->layer_event_capacity) : 0U;
+        if (journal_bytes > sdr_core::sweep_max_reduced_bytes - bytes)
+            invalid("paired Sweep journals exceed aggregate 128MiB reduced budget");
+        bytes += journal_bytes;
         if (!chain->statistics) continue;
         std::size_t required{};
         try {
@@ -397,11 +408,23 @@ public:
     explicit PairedSweepConsumer(PairedContinuousSweepCoordinatorConfig config)
         : config_(std::move(config)), bytes_(paired_sweep_payload_bytes(config_)),
           output_(config_.primary.output_queue_capacity, sdr_core::OverflowPolicy::LatestWins) {
+        if (config_.primary.layer_event_capacity) primary_journal_ =
+            std::make_shared<sdr_core::LayerReadyJournal>(config_.primary.layer_event_capacity);
+        if (config_.secondary.layer_event_capacity) secondary_journal_ =
+            std::make_shared<sdr_core::LayerReadyJournal>(config_.secondary.layer_event_capacity);
         steps_.reserve(config_.primary.segments.size());
         initialize_statistics();
     }
 
     std::uint64_t payload_bytes() const noexcept override { return bytes_; }
+
+    sdr_core::LayerReadyDrain drain_layer(ReceiverSelection receiver, std::size_t maximum) {
+        if (receiver != ReceiverSelection::Rx1 && receiver != ReceiverSelection::Rx2)
+            invalid("Sweep layer journal requires one exact receiver");
+        const auto& journal = receiver == ReceiverSelection::Rx1 ? primary_journal_ : secondary_journal_;
+        if (!journal) invalid("Sweep layer journal is disabled for this receiver");
+        return journal->drain(maximum);
+    }
 
     // Coordinator ONLY, preceding owner joined. No worker can call consume
     // while these step controls are installed. begin confirms SAME readback.
@@ -488,9 +511,9 @@ public:
         if (!primary_) {
             if (index_ != 0) throw std::runtime_error("paired Sweep missing acquired prefix");
             primary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(
-                applied_definition(config_.primary, {p}));
+                applied_definition(config_.primary, {p}), primary_journal_);
             secondary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(
-                applied_definition(config_.secondary, {q}));
+                applied_definition(config_.secondary, {q}), secondary_journal_);
         } else if (index_ > 0) {
             primary_->bind_segment_generation(static_cast<std::uint32_t>(index_), pair.config_generation);
             secondary_->bind_segment_generation(static_cast<std::uint32_t>(index_), pair.config_generation);
@@ -560,8 +583,8 @@ public:
         if (!primary_) {
             auto definition = planned_definition(config_.primary);
             definition.source.metadata_json["receiver_selection"] = "\"RX1\"";
-            primary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(std::move(definition));
-            secondary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(planned_definition(config_.secondary));
+            primary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(std::move(definition), primary_journal_);
+            secondary_ = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(planned_definition(config_.secondary), secondary_journal_);
         }
         auto left = primary_->flush(reason);
         auto right = secondary_->flush(reason);
@@ -623,6 +646,7 @@ private:
     std::mutex progress_mutex_;
     std::optional<PairedSweepProgressFrame> progress_;
     std::unique_ptr<sdr_core::ContinuousSweepLineAssembler> primary_, secondary_;
+    std::shared_ptr<sdr_core::LayerReadyJournal> primary_journal_, secondary_journal_;
     std::unique_ptr<sdr_core::SweepStatisticsPublisher> primary_statistics_, secondary_statistics_;
     std::vector<PairedSweepStepReceipt> steps_;
     AppliedConfig applied_;
@@ -693,6 +717,8 @@ public:
         if (config.segments.front().fixed_band.device.context_uri != uri_) {
             invalid("continuous sweep coordinator URI differs from its fixed-band segments");
         }
+        auto journal = !paired_mode && config.layer_event_capacity
+            ? std::make_shared<sdr_core::LayerReadyJournal>(config.layer_event_capacity) : nullptr;
         std::shared_ptr<sdr_core::SweepStatisticsPublisher> statistics;
         if (config.statistics && !paired_mode) {
             // Queue copies may share snapshots, but reserve the worst case
@@ -712,6 +738,7 @@ public:
                 grid.frequencies(), config.statistics_snapshot_rate_hz, slots);
         }
         config_ = std::move(config);
+        sweep_journal_ = std::move(journal);
         paired_.reset();
         paired_config_.reset();
         { std::lock_guard error_lock(error_mutex_); last_error_.clear(); }
@@ -985,6 +1012,17 @@ public:
         if (!paired_) invalid("coordinator has no paired plan");
         return paired_->progress();
     }
+    sdr_core::LayerReadyDrain drain_sweep_layer_ready_events(ReceiverSelection receiver, std::size_t maximum) {
+        // Pointer lifetime serializes with configure. Producers
+        // only take the bounded journal mutex, not lifecycle or UI locks.
+        std::lock_guard lock(lifecycle_mutex_);
+        if (paired_) return paired_->drain_layer(receiver, maximum);
+        if (!sweep_journal_) invalid("Sweep layer journal is not configured or enabled");
+        if ((receiver != ReceiverSelection::Rx1 && receiver != ReceiverSelection::Rx2) ||
+            receiver != config_.segments.front().fixed_band.receiver_selection)
+            invalid("Sweep layer journal receiver is not admitted by this owner");
+        return sweep_journal_->drain(maximum);
+    }
     std::string last_error() const {
         std::lock_guard lock(error_mutex_); return last_error_;
     }
@@ -1131,7 +1169,7 @@ private:
         const sdr_core::SweepLineGapReason reason
     ) noexcept {
         try {
-            sdr_core::ContinuousSweepLineAssembler assembler(planned_definition(config_));
+            sdr_core::ContinuousSweepLineAssembler assembler(planned_definition(config_), sweep_journal_);
             auto gap_sequence = sequence;
             if (statistics_ && config_.segments.size() == 1) {
                 // Single-window DSP can be ahead of the coordinator's last
@@ -1217,6 +1255,8 @@ private:
                 : result.snapshot_rate_hz,
         };
         result.sweep_statistics_sink = statistics_;
+        // SAME identity stamps actual creation before relay coalescing.
+        result.sweep_creation_journal = sweep_journal_;
         return result;
     }
 
@@ -1543,7 +1583,7 @@ private:
                     frames.push_back(std::move(*frame));
                     if (!assembler) {
                         assembler = std::make_unique<sdr_core::ContinuousSweepLineAssembler>(
-                            applied_definition(config_, frames));
+                            applied_definition(config_, frames), sweep_journal_);
                     } else {
                         const auto& first = frames.front();
                         const auto& current = frames.back();
@@ -1675,6 +1715,7 @@ private:
     ContinuousSweepCoordinatorConfig config_;
     std::optional<PairedContinuousSweepCoordinatorConfig> paired_config_;
     std::shared_ptr<PairedSweepConsumer> paired_;
+    std::shared_ptr<sdr_core::LayerReadyJournal> sweep_journal_;
     std::uint64_t last_paired_epoch_{};
     std::atomic<std::shared_ptr<StartAdmissionGate>> start_gate_;
     std::uint32_t start_delay_for_test_{};
@@ -1779,6 +1820,10 @@ std::optional<PairedSweepProgressFrame> ContinuousSweepCoordinator::poll_paired_
     return impl_->poll_paired_progress();
 }
 std::string ContinuousSweepCoordinator::last_error() const { return impl_->last_error(); }
+sdr_core::LayerReadyDrain ContinuousSweepCoordinator::drain_sweep_layer_ready_events(
+    ReceiverSelection receiver, std::size_t maximum) {
+    return impl_->drain_sweep_layer_ready_events(receiver, maximum);
+}
 void ContinuousSweepCoordinator::set_start_delay_for_test(std::uint32_t milliseconds) { impl_->set_start_delay_for_test(milliseconds); }
 bool ContinuousSweepCoordinator::start_pending_for_test() const noexcept { return impl_->start_pending_for_test(); }
 void ContinuousSweepCoordinator::set_secondary_nan_step_for_test(std::int32_t index) { impl_->set_secondary_nan_step_for_test(index); }
