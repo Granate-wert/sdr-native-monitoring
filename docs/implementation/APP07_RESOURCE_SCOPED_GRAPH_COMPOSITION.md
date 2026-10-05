@@ -6195,4 +6195,3 @@ Existing targeted admission/graph-pool/user-plan tests:51passed,
 static EXE, driver, firmware, network, firewall or security setting changed.
 No new subagent was used. APP-07/M8 remains PARTIAL, H02 TODO; full roadmap
 APP-00…APP-14 remains ACTIVE. Whole release/visible UI/performance/soak remain open.
-
