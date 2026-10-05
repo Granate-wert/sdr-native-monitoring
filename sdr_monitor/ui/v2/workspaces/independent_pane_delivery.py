@@ -103,7 +103,7 @@ class IndependentPaneDeliveryPort(QObject):
     def _reject_uncommitted(self, prepared) -> None:
         ref = prepared.delivery.obligation_ref
         pane = self._board.pane(prepared.binding.slot_number)
-        if ref is not None and (pane is None or pane.spectrum_scene.displayed_delivery_ref != ref):
+        if ref is not None and (pane is None or pane.spectrum_scene.delivery_requires_ui_rejection(ref)):
             self._report(prepared, PaneDeliveryStage.UI_REJECTED)
 
     def failed_panes(self) -> tuple[str, ...]:

@@ -69,6 +69,13 @@ _TRACE_LABEL_KEYS: Mapping[TraceKind, str] = {
 }
 _PERSISTENCE_Z_VALUE = -20
 _BAND_MASK_Z_VALUE = -10
+_TERMINAL_DELIVERY_STAGES = frozenset({
+    PaneDeliveryStage.PAINT_RETURNED, PaneDeliveryStage.ADMISSION_CANCELLED,
+    PaneDeliveryStage.PREPARATION_FAILED, PaneDeliveryStage.PREPARATION_CANCELLED,
+    PaneDeliveryStage.QUEUE_FAILED, PaneDeliveryStage.QUEUE_REJECTED,
+    PaneDeliveryStage.QUEUE_SUPERSEDED, PaneDeliveryStage.STOP_CLEARED,
+    PaneDeliveryStage.UI_REJECTED, PaneDeliveryStage.PAINT_SUPERSEDED,
+})
 
 
 def _measurement_signature(frame: object, view: SpectrumFrameView) -> tuple[object, ...]:
@@ -131,7 +138,12 @@ class SpectrumScene(QWidget):
         self._delivery_stage_callback = None
         self._latest_delivery_ref: PaneDeliveryObligationRef | None = None
         self._displayed_delivery_ref: PaneDeliveryObligationRef | None = None
+        self._displayed_delivery_paint_scheduled = False
         self._displayed_delivery_paint_returned = False
+        self._projection_delivery_slots: tuple[tuple[object, PaneDeliveryObligationRef | None], ...] = ()
+        self._projection_commit_ref: PaneDeliveryObligationRef | None = None
+        self._closed_delivery_graph: str | None = None
+        self._closed_delivery_sequence = 0
         self._graphics_state_disconnected = False
         self._build_ui()
         self._sweep_position = SweepPositionOverlay(self._plot_item, self._locale)
@@ -242,6 +254,7 @@ class SpectrumScene(QWidget):
         if request.persistence is not None and self._projector is not None and self._projector.has_pending:
             self._request_persistence_projection()
             self.commit_projection()
+        QTimer.singleShot(0, self._sync_projection_delivery_slots)
 
     def _invalidate_projection(self) -> None:
         self._required_projection_dirty = True
@@ -252,10 +265,67 @@ class SpectrumScene(QWidget):
         self._projection_timer.stop()
         if self._projector is not None:
             self._projector.cancel_pending(self._projection_owner)
+        self._sync_projection_delivery_slots(cancelled=True)
 
     def _request_projection(self, *_args) -> None:
         self._required_projection_dirty = True
         self._schedule_projection()
+
+    def _delivery_ref_for_source(self, source: object | None) -> PaneDeliveryObligationRef | None:
+        if source is None:
+            return None
+        for slot_source, ref in self._projection_delivery_slots:
+            if slot_source is source:
+                return ref
+        if self._latest_view is not None and self._latest_view.source_frame is source:
+            return self._latest_delivery_ref
+        if self._displayed_view is not None and self._displayed_view.source_frame is source:
+            return self._displayed_delivery_ref
+        return None
+
+    def _supersede_delivery_ref(self, ref: PaneDeliveryObligationRef) -> None:
+        stage = (PaneDeliveryStage.PAINT_SUPERSEDED
+                 if ref == self._displayed_delivery_ref and self._displayed_delivery_paint_scheduled
+                 else PaneDeliveryStage.UI_REJECTED)
+        if not (ref == self._displayed_delivery_ref and self._displayed_delivery_paint_returned):
+            self._report_delivery(ref, stage)
+        if self._latest_delivery_ref == ref:
+            self._latest_delivery_ref = None
+        if self._displayed_delivery_ref == ref:
+            self._displayed_delivery_ref = None
+            self._displayed_delivery_paint_scheduled = False
+            self._displayed_delivery_paint_returned = False
+        self._projection_delivery_slots = tuple(
+            (source, slot_ref) for source, slot_ref in self._projection_delivery_slots
+            if slot_ref != ref)
+
+    def _sync_projection_delivery_slots(self, *, cancelled: bool = False) -> None:
+        projector = self._projector
+        if projector is None:
+            return
+        old = self._projection_delivery_slots
+        requests = () if cancelled else (projector._active, projector._pending)
+        current: list[tuple[object, PaneDeliveryObligationRef | None]] = []
+        for request in requests:
+            if request is None or request.owner is not self._projection_owner:
+                continue
+            view = dict(request.traces).get(TraceKind.CURRENT)
+            if view is None or any(source is view.source_frame for source, _ref in current):
+                continue
+            source = view.source_frame
+            ref = next((item for prior_source, item in old if prior_source is source), None)
+            if not any(prior_source is source for prior_source, _item in old):
+                if self._latest_view is not None and self._latest_view.source_frame is source:
+                    ref = self._latest_delivery_ref
+                elif self._displayed_view is not None and self._displayed_view.source_frame is source:
+                    ref = self._displayed_delivery_ref
+            current.append((source, ref))
+        self._projection_delivery_slots = tuple(current[:2])
+        for source, ref in old:
+            if (ref is None or any(source is active_source for active_source, _item in self._projection_delivery_slots)
+                    or ref == self._latest_delivery_ref or ref == self._displayed_delivery_ref):
+                continue
+            self._report_delivery(ref, PaneDeliveryStage.UI_REJECTED)
 
     def _schedule_projection(self) -> None:
         if self._projector is not None and self._presentation_active and self._trace_views:
@@ -281,13 +351,15 @@ class SpectrumScene(QWidget):
         if key == self._projection_key:
             return
         self._projection_key = key
-        self._projector.offer(ProjectionRequest(
+        request = ProjectionRequest(
             self._projection_owner, self._projection_generation, viewport,
             tuple(self._trace_views.items()), state.current, state.previous, self._prepared_spectrum,
             requires_preparation_handoff=(self._displayed_projection_geometry !=
                                           (self._projection_generation, viewport)),
             persistence=self._persistence.worker_request,
-            persistence_policy=self._persistence.worker_policy_key, required_work=required))
+            persistence_policy=self._persistence.worker_policy_key, required_work=required)
+        self._projector.offer(request)
+        self._sync_projection_delivery_slots()
 
     def commit_projection(self) -> None:
         """Submit one coherent GUI delivery before the next preparation queues.
@@ -331,8 +403,13 @@ class SpectrumScene(QWidget):
                 self.set_warning(None)
             self._projection_error = None
         views = dict(request.traces)
-        for kind, envelope in result.traces:
-            self._paint_trace(kind, views[kind], envelope)
+        self._projection_commit_ref = self._delivery_ref_for_source(
+            None if views.get(TraceKind.CURRENT) is None else views[TraceKind.CURRENT].source_frame)
+        try:
+            for kind, envelope in result.traces:
+                self._paint_trace(kind, views[kind], envelope)
+        finally:
+            self._projection_commit_ref = None
         self._displayed_view = views.get(TraceKind.CURRENT)
         self._displayed_extent = result.finite_extent
         self._apply_vertical_range()
@@ -406,6 +483,16 @@ class SpectrumScene(QWidget):
         if not active:
             self.paint_cadence.clear()
             self._invalidate_projection()
+            if (self._displayed_delivery_ref is not None
+                    and self._displayed_delivery_ref != self._latest_delivery_ref):
+                if not self._displayed_delivery_paint_returned:
+                    self._report_delivery(
+                        self._displayed_delivery_ref,
+                        PaneDeliveryStage.PAINT_SUPERSEDED
+                        if self._displayed_delivery_paint_scheduled else PaneDeliveryStage.UI_REJECTED)
+                self._displayed_delivery_ref = None
+                self._displayed_delivery_paint_scheduled = False
+                self._displayed_delivery_paint_returned = False
             self._auto_vertical_range.reset()
             # Hidden pixels need not pin a previous coherent bundle (including
             # its potentially large native density). Preserve latest sources,
@@ -472,6 +559,17 @@ class SpectrumScene(QWidget):
             # Source and comparison baseline already exist. Count their actual
             # lifetime; do not claim this observes or caps backend allocations.
             self._projector.allocation_budget.observe(frame, self._measurement_grid)
+        previous_ref = self._latest_delivery_ref
+        previous_view = self._latest_view
+        if previous_ref is not None and previous_ref != obligation_ref:
+            source_is_projecting = (previous_view is not None and any(
+                source is previous_view.source_frame for source, _ref in self._projection_delivery_slots))
+            still_displayed = previous_ref == self._displayed_delivery_ref
+            if not source_is_projecting and not (still_displayed and self._presentation_active):
+                self._supersede_delivery_ref(previous_ref)
+        if (obligation_ref is not None and obligation_ref.graph_instance_id == self._closed_delivery_graph
+                and obligation_ref.sequence <= self._closed_delivery_sequence):
+            obligation_ref = None
         self._latest_delivery_ref = obligation_ref
         self._latest_view = view
         self._prepared_spectrum = prepared
@@ -522,13 +620,20 @@ class SpectrumScene(QWidget):
         Mode, identity and geometry transitions must invalidate that frame too.
         Ordinary Stop deliberately retains the last measurement instead.
         """
-        latest, displayed = self._latest_delivery_ref, self._displayed_delivery_ref
-        if latest is not None and not (latest == displayed and self._displayed_delivery_paint_returned):
-            self._report_delivery(latest, PaneDeliveryStage.PAINT_SUPERSEDED)
-        if displayed is not None and displayed != latest and not self._displayed_delivery_paint_returned:
-            self._report_delivery(displayed, PaneDeliveryStage.PAINT_SUPERSEDED)
+        refs = tuple(dict.fromkeys((self._latest_delivery_ref, self._displayed_delivery_ref,
+                                    *(ref for _source, ref in self._projection_delivery_slots))))
+        for ref in refs:
+            if ref is None or (ref == self._displayed_delivery_ref
+                               and self._displayed_delivery_paint_returned):
+                continue
+            stage = (PaneDeliveryStage.PAINT_SUPERSEDED
+                     if ref == self._displayed_delivery_ref and self._displayed_delivery_paint_scheduled
+                     else PaneDeliveryStage.UI_REJECTED)
+            self._report_delivery(ref, stage)
         self._latest_delivery_ref = self._displayed_delivery_ref = None
+        self._displayed_delivery_paint_scheduled = False
         self._displayed_delivery_paint_returned = False
+        self._projection_delivery_slots = ()
         self._latest_view = None
         self._auto_vertical_range.reset()
         self._displayed_view = None
@@ -1107,16 +1212,29 @@ class SpectrumScene(QWidget):
     def displayed_delivery_ref(self) -> PaneDeliveryObligationRef | None:
         return self._displayed_delivery_ref
 
-    def stop_delivery_custody(self) -> None:
-        """Close UI-owned paint obligation after confirmed Stop, retaining pixels."""
-        latest, displayed = self._latest_delivery_ref, self._displayed_delivery_ref
-        if latest is not None and not (latest == displayed and self._displayed_delivery_paint_returned):
-            self._report_delivery(latest, PaneDeliveryStage.STOP_CLEARED)
-        if displayed is not None and displayed != latest and not self._displayed_delivery_paint_returned:
-            self._report_delivery(displayed, PaneDeliveryStage.STOP_CLEARED)
-        self._latest_delivery_ref = None
-        self._displayed_delivery_ref = None
-        self._displayed_delivery_paint_returned = False
+    def stop_delivery_custody(
+        self, refs: tuple[PaneDeliveryObligationRef, ...] | None = None,
+    ) -> None:
+        """Close only captured successful-Stop refs, retaining plot pixels."""
+        owned = tuple(dict.fromkeys((self._latest_delivery_ref, self._displayed_delivery_ref,
+                                     *(ref for _source, ref in self._projection_delivery_slots))))
+        selected = owned if refs is None else tuple(ref for ref in owned if ref in refs)
+        for ref in selected:
+            if ref is None:
+                continue
+            if not (ref == self._displayed_delivery_ref and self._displayed_delivery_paint_returned):
+                self._report_delivery(ref, PaneDeliveryStage.STOP_CLEARED)
+        for ref in selected:
+            if self._latest_delivery_ref == ref:
+                self._latest_delivery_ref = None
+            if self._displayed_delivery_ref == ref:
+                self._displayed_delivery_ref = None
+                self._displayed_delivery_paint_scheduled = False
+                self._displayed_delivery_paint_returned = False
+        if selected:
+            self._projection_delivery_slots = tuple(
+                (source, ref) for source, ref in self._projection_delivery_slots
+                if ref not in selected)
 
     def _report_delivery(self, ref: PaneDeliveryObligationRef | None, stage: PaneDeliveryStage) -> None:
         callback = self._delivery_stage_callback
@@ -1125,11 +1243,35 @@ class SpectrumScene(QWidget):
                 callback(ref, stage)
             except Exception:
                 pass
+        if ref is not None and stage in _TERMINAL_DELIVERY_STAGES:
+            self._remember_terminal_delivery_ref(ref)
 
-    def set_delivery_ref(self, ref: PaneDeliveryObligationRef | None) -> None:
-        if ref is not None and not isinstance(ref, PaneDeliveryObligationRef):
-            raise TypeError("Spectrum custody requires the original obligation reference")
-        self._latest_delivery_ref = ref
+    def _remember_terminal_delivery_ref(self, ref: PaneDeliveryObligationRef) -> None:
+        if ref.graph_instance_id != self._closed_delivery_graph:
+            self._closed_delivery_graph = ref.graph_instance_id
+            self._closed_delivery_sequence = ref.sequence
+        else:
+            self._closed_delivery_sequence = max(self._closed_delivery_sequence, ref.sequence)
+
+    def delivery_requires_ui_rejection(self, ref: PaneDeliveryObligationRef) -> bool:
+        if (ref.graph_instance_id == self._closed_delivery_graph
+                and ref.sequence <= self._closed_delivery_sequence):
+            return False
+        if ref == self._displayed_delivery_ref:
+            return False
+        if self._projector is not None and ref == self._latest_delivery_ref:
+            return False  # The bounded latest slot remains eligible for projection/retry.
+        if any(slot_ref == ref for _source, slot_ref in self._projection_delivery_slots):
+            return False
+        if self._latest_delivery_ref == ref:
+            self._latest_delivery_ref = None
+        self._projection_delivery_slots = tuple(
+            (source, item) for source, item in self._projection_delivery_slots if item != ref)
+        # The delivery port owns the ledger report, but the scene must keep a
+        # local terminal fence so the same rejected original ref cannot be
+        # resurrected by a delayed retry/show path.
+        self._remember_terminal_delivery_ref(ref)
+        return True
 
     def _spectrum_custody_candidate(self, event):
         if self._spectrum_paint_candidate(event) is None:
@@ -1176,15 +1318,17 @@ class SpectrumScene(QWidget):
         self._envelopes[kind] = envelope
         self._curves[kind].setData(envelope.frequencies_hz, envelope.values, connect="finite")
         if kind is TraceKind.CURRENT:
-            ref = self._latest_delivery_ref
-            if self._latest_view is not None and self._latest_view.source_frame is view.source_frame:
-                previous = self._displayed_delivery_ref
-                if previous != ref:
-                    if previous is not None and not self._displayed_delivery_paint_returned:
-                        self._report_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
-                    self._displayed_delivery_ref = ref
-                    self._displayed_delivery_paint_returned = False
-                    self._report_delivery(ref, PaneDeliveryStage.PAINT_SCHEDULED)
+            ref = (self._projection_commit_ref if self._projector is not None
+                   else self._latest_delivery_ref if self._latest_view is not None
+                   and self._latest_view.source_frame is view.source_frame else None)
+            previous = self._displayed_delivery_ref
+            if previous != ref:
+                if previous is not None and not self._displayed_delivery_paint_returned:
+                    self._report_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
+                self._displayed_delivery_ref = ref
+                self._displayed_delivery_paint_scheduled = ref is not None
+                self._displayed_delivery_paint_returned = False
+                self._report_delivery(ref, PaneDeliveryStage.PAINT_SCHEDULED)
             self.paint_cadence.admit(view.source_frame)
             self._unit_readout.setText(text("spectrum.unit.readout", self._locale, unit=view.unit_label))
             self._unit_readout.setAccessibleDescription(

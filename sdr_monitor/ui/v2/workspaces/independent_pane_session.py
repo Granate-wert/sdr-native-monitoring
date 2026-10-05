@@ -25,6 +25,7 @@ from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.domain.pane_scheduler import PaneControlGapReason, RtlRtbwPaneProfile
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.services.pane_resource_session import PaneActivation, PaneHostTiming
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
 from sdr_monitor.ui.v2_pane_runtime import PanePumpResourceState
@@ -406,30 +407,32 @@ class IndependentPaneSessionV2(QWidget):
             self._close_layout(self.handle)
 
     def _watch_stop_boundary(self, future: Future[Any], resource_id: str) -> None:
-        panes = tuple(pane_id for pane_id, resource in self._pane_resources.items()
-                      if resource == resource_id)
         def completed(result: Future[Any]) -> None:
-            self.stop_boundary.emit((result, panes))
+            try:
+                if result.exception() is not None:
+                    return
+                snapshot = self.handle.session.pane_delivery_ledger_snapshot()
+                refs = tuple(record.ref for record in snapshot.records
+                             if record.stage in {PaneDeliveryStage.UI_ADMITTED,
+                                                 PaneDeliveryStage.PAINT_SCHEDULED}
+                             and record.ref.identity.physical_stream_resource_id == resource_id)
+                self.stop_boundary.emit(refs)
+            except Exception:
+                # A cached-ledger read or a late deleted QObject is telemetry
+                # only; it must not perturb the already-completed Stop future.
+                return
         future.add_done_callback(completed)
 
     def _on_stop_boundary(self, payload: object) -> None:
-        if not isinstance(payload, tuple) or len(payload) != 2:
+        if not isinstance(payload, tuple) or any(
+                not isinstance(ref, PaneDeliveryObligationRef) for ref in payload):
             return
-        future, pane_ids = payload
-        if not isinstance(future, Future):
-            return
-        try:
-            if future.exception() is not None:
-                return
-        except Exception:
-            return
-        for pane_id in pane_ids:
-            binding = self.handle.preparer.bindings.get(pane_id)
-            if binding is None:
+        for slot in self.handle.layout.slots:
+            if slot.request is None:
                 continue
-            pane = self.board.pane(binding.slot_number)
+            pane = self.board.pane(slot.number)
             if pane is not None:
-                pane.spectrum_scene.stop_delivery_custody()
+                pane.spectrum_scene.stop_delivery_custody(payload)
 
     def _ask_shared_stop(self, impact: tuple[str, ...]) -> bool:
         answer = QMessageBox.question(self, text("analyzer.independent.shared_stop.title"),
