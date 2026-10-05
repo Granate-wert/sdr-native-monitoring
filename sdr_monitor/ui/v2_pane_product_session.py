@@ -16,6 +16,7 @@ from sdr_monitor.domain.pane_scheduler import Ad936xPairedSweepPaneProfile
 from sdr_monitor.domain.live import LiveSessionState
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview, PaneResourceSession
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 
 from .v2.spectrum.allocation_budget import PresentationAllocationBudget
 from .v2_pane_delivery_queue import PaneFairDeliveryQueue
@@ -53,12 +54,20 @@ class PaneProductSessionHandle:
                 for value in labels.values())):
             raise ValueError("pane display labels require selected, bounded source facts")
         self.source_labels = labels
+        def report(ref: PaneDeliveryObligationRef | None, stage: PaneDeliveryStage) -> None:
+            if ref is None:
+                return
+            try:
+                session.record_pane_delivery_stage(ref, stage)
+            except Exception:
+                return
+        self.report_delivery_stage = report
         self.preparer = PaneDeliveryPreparer(layout, groups,
             allocation_budget if allocation_budget is not None else PresentationAllocationBudget(),
             admitted_producer_source_id=session.admitted_producer_source_id)
         self.queue = PaneFairDeliveryQueue(tuple(slot.request.pane_id for slot in layout.slots
-                                                 if slot.request is not None))
-        self.pump = PaneResourcePump(session, layout, self.preparer, self.queue)
+                                                 if slot.request is not None), stage_callback=report)
+        self.pump = PaneResourcePump(session, layout, self.preparer, self.queue, stage_callback=report)
         self._applied = False
         self._shutdown = False
         self._rf_presentation_pending = False

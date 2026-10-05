@@ -13,7 +13,7 @@ from concurrent.futures import Future
 from math import floor, isfinite
 from typing import Any
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
@@ -44,6 +44,8 @@ from .rf_shift_dialog import RfImpactDialog, RfShiftEntryDialog, pane_rf_impact_
 class IndependentPaneSessionV2(QWidget):
     """One selected-pane command bar plus distinct 1–4 graph pairs."""
 
+    stop_boundary = Signal(object)
+
     def __init__(self, handle: PaneProductSessionHandle, *,
                  confirm_shared_stop: Callable[[tuple[str, ...]], bool] | None = None,
                  confirm_paired_start: Callable[[tuple[int, ...]], bool] | None = None,
@@ -69,6 +71,7 @@ class IndependentPaneSessionV2(QWidget):
         self._rf_cancelled = False
         self._rf_fault_resource: str | None = None
         self._rf_boundaries: dict[str, PaneActivation] = {}
+        self.stop_boundary.connect(self._on_stop_boundary, Qt.ConnectionType.QueuedConnection)
         schedule = handle.layout.schedule
         assert schedule is not None  # The applied product handle requires a nonempty plan.
         self._pane_resources = {
@@ -122,7 +125,8 @@ class IndependentPaneSessionV2(QWidget):
         self.board_scroll.setMinimumSize(0, 0)
         self.board_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.board = IndependentPaneBoardV2(
-            handle.preparer, source_labels=handle.source_labels, parent=self.board_scroll)
+            handle.preparer, source_labels=handle.source_labels,
+            stage_callback=handle.report_delivery_stage, parent=self.board_scroll)
         self.board_scroll.setWidget(self.board)
         self.board.selected_slot_changed.connect(self._refresh)
         self.board.set_rf_control_available(self._rf_eligible)
@@ -225,6 +229,7 @@ class IndependentPaneSessionV2(QWidget):
             if preview is None or preview.proposal.physical_stream_resource_id == selected[1]:
                 self._cancel_rf_change()
             _, future = self.handle.pump.stop_selected(selected[0], acknowledge_shared=True)
+            self._watch_stop_boundary(future, selected[1])
             self._futures.append(future)
         except (RuntimeError, ValueError):
             self._error_key = "analyzer.independent.operation_failed"
@@ -233,7 +238,10 @@ class IndependentPaneSessionV2(QWidget):
     def _stop_all(self) -> None:
         self._cancel_rf_change()
         try:
-            self._futures.extend(self.handle.pump.stop_all().values())
+            futures = self.handle.pump.stop_all()
+            for resource_id, future in futures.items():
+                self._watch_stop_boundary(future, resource_id)
+            self._futures.extend(futures.values())
         except (RuntimeError, ValueError):
             self._error_key = "analyzer.independent.operation_failed"
         self._refresh()
@@ -310,6 +318,8 @@ class IndependentPaneSessionV2(QWidget):
                 try:
                     self._rf_phase = "stop"
                     self._rf_future = self.handle.stop_for_rf_shift(preview)
+                    self._watch_stop_boundary(
+                        self._rf_future, preview.proposal.physical_stream_resource_id)
                 except (RuntimeError, ValueError):
                     self._error_key = "analyzer.rf.refused"
                     self._finish_rf_change()
@@ -394,6 +404,32 @@ class IndependentPaneSessionV2(QWidget):
     def _request_close_layout(self) -> None:
         if self._close_layout is not None and self.handle.can_close():
             self._close_layout(self.handle)
+
+    def _watch_stop_boundary(self, future: Future[Any], resource_id: str) -> None:
+        panes = tuple(pane_id for pane_id, resource in self._pane_resources.items()
+                      if resource == resource_id)
+        def completed(result: Future[Any]) -> None:
+            self.stop_boundary.emit((result, panes))
+        future.add_done_callback(completed)
+
+    def _on_stop_boundary(self, payload: object) -> None:
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            return
+        future, pane_ids = payload
+        if not isinstance(future, Future):
+            return
+        try:
+            if future.exception() is not None:
+                return
+        except Exception:
+            return
+        for pane_id in pane_ids:
+            binding = self.handle.preparer.bindings.get(pane_id)
+            if binding is None:
+                continue
+            pane = self.board.pane(binding.slot_number)
+            if pane is not None:
+                pane.spectrum_scene.stop_delivery_custody()
 
     def _ask_shared_stop(self, impact: tuple[str, ...]) -> bool:
         answer = QMessageBox.question(self, text("analyzer.independent.shared_stop.title"),
@@ -719,6 +755,11 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: {col
             raise RuntimeError("independent pane owner has not confirmed terminal shutdown")
         self._state_timer.stop()
         self.delivery.stop()
+        for slot in self.handle.layout.slots:
+            if slot.request is not None:
+                pane = self.board.pane(slot.number)
+                if pane is not None:
+                    pane.spectrum_scene.stop_delivery_custody()
         self.board.release_presentation_after_shutdown()
         self._terminal_released = True
 

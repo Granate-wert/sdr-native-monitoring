@@ -28,6 +28,7 @@ from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewState
 from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
 from ..waterfall.contracts import SweepWaterfallLine
 from sdr_monitor.ui.v2_pane_presentation import PreparedPaneDelivery
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef
 
 
 class AnalyzerPaneViewV2(SpectrumWaterfallView):
@@ -169,7 +170,8 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
 
     def _accept_measurement(self, mode: AnalyzerMode, bundle: AnalyzerFrameBundle | None,
                             prepared_spectrum: PreparedSpectrumFrame | None, *,
-                            scheduled_visit_boundary: bool = False) -> bool:
+                            scheduled_visit_boundary: bool = False,
+                            obligation_ref: PaneDeliveryObligationRef | None = None) -> bool:
         if type(scheduled_visit_boundary) is not bool:
             raise TypeError("scheduled visit boundary must be explicit bool")
         identity = None if bundle is None else bundle.identity
@@ -233,7 +235,7 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
             self._last_mode = mode
         self._last_identity = identity
         if bundle is not None and bundle is not self._last_bundle:
-            scene.set_frame(bundle, prepared=prepared_spectrum)
+            scene.set_frame(bundle, prepared=prepared_spectrum, obligation_ref=obligation_ref)
             self._last_bundle = bundle
             if self._on_frame_applied is not None:
                 self._on_frame_applied()
@@ -269,6 +271,7 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         fresh_view = self._accept_measurement(
             prepared.binding.mode, bundle, prepared.spectrum,
             scheduled_visit_boundary=scheduled_visit_boundary,
+            obligation_ref=prepared.delivery.obligation_ref,
         )
         scene = self.spectrum_scene
         if prepared.binding.mode is AnalyzerMode.RTBW:

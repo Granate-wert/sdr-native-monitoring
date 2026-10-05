@@ -102,6 +102,8 @@ class UniquePaintCadence:
 def cadence_graphics_widget(
     parent, cadence: UniquePaintCadence,
     paint_candidate: Callable[[QPaintEvent], PaintKey | None],
+    custody_candidate: Callable[[QPaintEvent], object | None] | None = None,
+    custody_returned: Callable[[object], None] | None = None,
 ):
     """Wrap the selected pg widget implementation, including opt-in observers.
 
@@ -119,9 +121,15 @@ def cadence_graphics_widget(
                 key = self.paint_candidate(event)
             except (AttributeError, RuntimeError, TypeError, ValueError):
                 key = None
+            try:
+                custody = None if custody_candidate is None else custody_candidate(event)
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                custody = None
             super().paintEvent(event)
             if key is not None:
                 self.paint_cadence.painted(key, perf_counter_ns())
+            if custody is not None and custody_returned is not None:
+                custody_returned(custody)
 
     widget = CadenceGraphics(parent)
     widget.paint_cadence = cadence

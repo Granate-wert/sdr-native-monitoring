@@ -18,6 +18,7 @@ import logging
 from threading import Condition, Lock, Thread
 from time import monotonic
 from typing import Any, Callable
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneLayout, ResourcePaneSchedule
 from sdr_monitor.activity_log import log_event
@@ -56,12 +57,14 @@ class PanePumpResourceState:
 class _ResourceWorker:
     def __init__(self, resource: ResourcePaneSchedule, pane_ids: tuple[str, ...],
                  session: PaneResourceSession, preparer: PaneDeliveryPreparer,
-                 queue: PaneFairDeliveryQueue, poll_interval_s: float, resource_number: int = 0) -> None:
+                 queue: PaneFairDeliveryQueue, poll_interval_s: float, resource_number: int = 0,
+                 stage_callback: Callable[[PaneDeliveryObligationRef, PaneDeliveryStage], object] | None = None) -> None:
         self.resource = resource
         self.pane_ids = pane_ids
         self.session = session
         self.preparer = preparer
         self.queue = queue
+        self.stage_callback = stage_callback
         self.poll_interval_s = poll_interval_s
         self._resource_number = resource_number
         self._condition = Condition()
@@ -373,12 +376,22 @@ class _ResourceWorker:
             self._state = replace(self._state, phase=PanePumpPhase.RUNNING,
                                   activation=activation, planned_slot_overrun=False, error=None)
 
+    def _report_stage(self, ref: PaneDeliveryObligationRef, stage: PaneDeliveryStage) -> None:
+        if self.stage_callback is not None:
+            try:
+                self.stage_callback(ref, stage)
+            except Exception:
+                pass
+
     def _poll_and_advance(self) -> None:
         resource_id = self.resource.physical_stream_resource_id
         deliveries = self.session.poll_resource(resource_id)
         prepared_count = 0
         activation = self.snapshot().activation
-        for delivery in deliveries:
+        for index, delivery in enumerate(deliveries):
+            ref = delivery.obligation_ref
+            if ref is not None:
+                self._report_stage(ref, PaneDeliveryStage.PREPARING)
             if activation is not None and delivery.capture_id == activation.capture_id:
                 self._frame_seen = True
                 if delivery.bundle.terminal_sweep:
@@ -386,12 +399,24 @@ class _ResourceWorker:
             try:
                 prepared = self.preparer.prepare(delivery)
             except Exception as error:
+                if ref is not None:
+                    self._report_stage(ref, PaneDeliveryStage.PREPARATION_FAILED)
+                for tail in deliveries[index + 1:]:
+                    if tail.obligation_ref is not None:
+                        self._report_stage(tail.obligation_ref, PaneDeliveryStage.ADMISSION_CANCELLED)
                 raise PaneDiagnosticError("Pane preparation failed; explicit Stop required",
                     failure=pane_failure_from_exception(error, PaneFailureStage.PREPARE,
                                                         reason=PaneFailureReason.INVALID_PUBLICATION)) from None
+            if ref is not None:
+                self._report_stage(ref, PaneDeliveryStage.PREPARED)
             try:
                 self.queue.offer(prepared)
             except Exception as error:
+                if ref is not None:
+                    self._report_stage(ref, PaneDeliveryStage.QUEUE_FAILED)
+                for tail in deliveries[index + 1:]:
+                    if tail.obligation_ref is not None:
+                        self._report_stage(tail.obligation_ref, PaneDeliveryStage.ADMISSION_CANCELLED)
                 raise PaneDiagnosticError("Pane queue publication failed; explicit Stop required",
                     failure=pane_failure_from_exception(error, PaneFailureStage.QUEUE)) from None
             prepared_count += 1
@@ -425,7 +450,8 @@ class PaneResourcePump:
 
     def __init__(self, session: PaneResourceSession, layout: PaneLayout,
                  preparer: PaneDeliveryPreparer, queue: PaneFairDeliveryQueue, *,
-                 poll_interval_s: float = 0.01) -> None:
+                 poll_interval_s: float = 0.01,
+                 stage_callback: Callable[[PaneDeliveryObligationRef, PaneDeliveryStage], object] | None = None) -> None:
         if (not isinstance(session, PaneResourceSession) or not isinstance(layout, PaneLayout)
                 or layout.schedule is None or session.schedule is not layout.schedule
                 or preparer.layout is not layout
@@ -444,7 +470,7 @@ class PaneResourcePump:
             resource.physical_stream_resource_id: _ResourceWorker(
                 resource, tuple(item.pane_id for item in layout.schedule.pane_revisits
                                 if item.physical_stream_resource_id == resource.physical_stream_resource_id),
-                session, preparer, queue, poll_interval_s, resource_number)
+                session, preparer, queue, poll_interval_s, resource_number, stage_callback)
             for resource_number, resource in enumerate(resources, 1)
         }
         self._pane_resources = {

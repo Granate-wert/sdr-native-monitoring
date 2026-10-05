@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from sdr_monitor.ui.v2_pane_delivery_queue import PaneFairDeliveryQueue
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage
 
 from .independent_pane_board import IndependentPaneBoardV2
 
@@ -63,9 +64,11 @@ class IndependentPaneDeliveryPort(QObject):
         """At most four GUI applications, no worker computation or RF call."""
         if QThread.currentThread() is not self.thread():
             raise RuntimeError("pane delivery must render on the Qt thread")
-        for prepared in self._queue.drain(max_items=4):
+        batch = self._queue.drain(max_items=4)
+        for index, prepared in enumerate(batch):
             pane_id = prepared.delivery.pane_id
             if pane_id in self._failed_panes:
+                self._report(prepared, PaneDeliveryStage.UI_REJECTED)
                 continue
             try:
                 applied = self._board.apply_prepared(prepared)
@@ -75,10 +78,33 @@ class IndependentPaneDeliveryPort(QObject):
                 # cross-pane publication inside the UI timer.
                 self._failed_panes.add(pane_id)
                 self._queue.clear(pane_id)
+                self._reject_uncommitted(prepared)
                 self.render_failed.emit(pane_id, "Pane presentation failed; explicit Stop required")
+            except BaseException:
+                self._reject_uncommitted(prepared)
+                for unattempted in batch[index + 1:]:
+                    self._report(unattempted, PaneDeliveryStage.UI_REJECTED)
+                raise
             else:
                 if applied:
                     self.rendered.emit(pane_id)
+                else:
+                    self._report(prepared, PaneDeliveryStage.UI_REJECTED)
+
+    def _report(self, prepared, stage: PaneDeliveryStage) -> None:
+        ref = prepared.delivery.obligation_ref
+        callback = getattr(self._board, "_stage_callback", None)
+        if ref is not None and callback is not None:
+            try:
+                callback(ref, stage)
+            except Exception:
+                pass
+
+    def _reject_uncommitted(self, prepared) -> None:
+        ref = prepared.delivery.obligation_ref
+        pane = self._board.pane(prepared.binding.slot_number)
+        if ref is not None and (pane is None or pane.spectrum_scene.displayed_delivery_ref != ref):
+            self._report(prepared, PaneDeliveryStage.UI_REJECTED)
 
     def failed_panes(self) -> tuple[str, ...]:
         return tuple(pane for pane in self._queue.pane_ids if pane in self._failed_panes)

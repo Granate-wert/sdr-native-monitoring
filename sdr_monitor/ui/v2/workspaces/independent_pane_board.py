@@ -20,6 +20,7 @@ from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PanePresentationBinding, PreparedPaneDelivery
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import current_locale, text
@@ -50,6 +51,7 @@ class IndependentPaneBoardV2(QWidget):
                  projector_factory: Callable[[], SpectrumProjector] | None = None,
                  source_labels: Mapping[str, str] | None = None,
                  monotonic_clock: Callable[[], float] = monotonic,
+                 stage_callback: Callable[[PaneDeliveryObligationRef, PaneDeliveryStage], object] | None = None,
                  settings: QSettings | None = None,
                  parent: QWidget | None = None) -> None:
         if not isinstance(preparer, PaneDeliveryPreparer):
@@ -59,6 +61,7 @@ class IndependentPaneBoardV2(QWidget):
         super().__init__(parent)
         self._preparer = preparer
         self._monotonic_clock = monotonic_clock
+        self._stage_callback = stage_callback
         self._installed_bindings = dict(preparer.bindings)
         self._paired_resources = preparer.paired_resource_ids
         self._retired_bindings: dict[str, PanePresentationBinding] = {}
@@ -152,6 +155,7 @@ class IndependentPaneBoardV2(QWidget):
                     settings=settings,
                     settings_prefix=f"ui_v2/analyzer/resource_pane{slot.number}/v1",
                     parent=cell)
+                pane.spectrum_scene.set_delivery_stage_callback(self._stage_callback)
                 pane.set_compact_grid_geometry(compact)
                 pane.set_selected(slot.number == self._selected_slot)
                 pane.set_rf_shift_provider(self._rf_provider_for(slot.number))
@@ -610,6 +614,12 @@ class IndependentPaneBoardV2(QWidget):
             and prepared.delivery.host_activation_serial > previous[0]
             and prepared.delivery.host_run_serial == self._last_run_serial.get(binding.slot_number)
         )
+        ref = prepared.delivery.obligation_ref
+        if ref is not None and self._stage_callback is not None:
+            try:
+                self._stage_callback(ref, PaneDeliveryStage.UI_ADMITTED)
+            except Exception:
+                pass
         pane.apply_prepared_pane_delivery(prepared,
                                           scheduled_visit_boundary=scheduled_visit_boundary)
         self._last_order[binding.slot_number] = order

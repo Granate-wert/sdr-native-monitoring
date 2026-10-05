@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
+from collections.abc import Callable
 
 from sdr_monitor.domain.analyzer import AnalyzerPublicationKind
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from .v2_pane_presentation import PreparedPaneDelivery
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +51,8 @@ def _order(packet: PreparedPaneDelivery) -> tuple[int, int, int, int, int]:
 class PaneFairDeliveryQueue:
     """At most one terminal plus one latest publication per occupied pane."""
 
-    def __init__(self, pane_ids: tuple[str, ...]) -> None:
+    def __init__(self, pane_ids: tuple[str, ...], *,
+                 stage_callback: Callable[[PaneDeliveryObligationRef | None, PaneDeliveryStage], object] | None = None) -> None:
         panes = tuple(pane_ids)
         if (not 1 <= len(panes) <= 4 or len(set(panes)) != len(panes)
                 or any(not isinstance(pane, str) or not pane.strip() for pane in panes)):
@@ -60,6 +63,15 @@ class PaneFairDeliveryQueue:
         self._next_index = 0
         self._metrics = PaneQueueMetrics()
         self._lock = Lock()
+        self._stage_callback = stage_callback
+
+    def _stage_locked(self, packet: PreparedPaneDelivery, stage: PaneDeliveryStage) -> None:
+        ref = packet.delivery.obligation_ref
+        if ref is not None and self._stage_callback is not None:
+            try:
+                self._stage_callback(ref, stage)
+            except Exception:
+                pass
 
     @property
     def pane_ids(self) -> tuple[str, ...]:
@@ -88,19 +100,24 @@ class PaneFairDeliveryQueue:
                     or current.terminal is not None and order <= _order(current.terminal)
                     or not terminal and current.latest is not None and order <= _order(current.latest)):
                 self._metrics = self._replace_metrics(stale_rejected=1)
+                self._stage_locked(packet, PaneDeliveryStage.QUEUE_REJECTED)
                 return False
             if terminal:
                 if current.terminal is not None:
                     self._metrics = self._replace_metrics(terminal_superseded=1)
+                    self._stage_locked(current.terminal, PaneDeliveryStage.QUEUE_SUPERSEDED)
                 current.terminal = packet
                 if current.latest is not None and _order(current.latest) <= order:
+                    self._stage_locked(current.latest, PaneDeliveryStage.QUEUE_SUPERSEDED)
                     current.latest = None
                     self._metrics = self._replace_metrics(latest_superseded=1)
             else:
                 if current.latest is not None:
                     self._metrics = self._replace_metrics(latest_superseded=1)
+                    self._stage_locked(current.latest, PaneDeliveryStage.QUEUE_SUPERSEDED)
                 current.latest = packet
             self._metrics = self._replace_metrics(offered=1)
+            self._stage_locked(packet, PaneDeliveryStage.QUEUED)
             return True
 
     def drain(self, *, max_items: int = 4) -> tuple[PreparedPaneDelivery, ...]:
@@ -125,9 +142,11 @@ class PaneFairDeliveryQueue:
                 order = _order(packet)
                 self._last_drained[pane_id] = order
                 if pending.latest is not None and _order(pending.latest) <= order:
+                    self._stage_locked(pending.latest, PaneDeliveryStage.QUEUE_SUPERSEDED)
                     pending.latest = None
                     self._metrics = self._replace_metrics(latest_superseded=1)
                 result.append(packet)
+                self._stage_locked(packet, PaneDeliveryStage.QUEUE_DRAINED)
                 self._next_index = (index + 1) % count
                 if len(result) >= max_items:
                     break
@@ -145,6 +164,9 @@ class PaneFairDeliveryQueue:
             for target in targets:
                 pending = self._pending[target]
                 removed += int(pending.terminal is not None) + int(pending.latest is not None)
+                for packet in (pending.terminal, pending.latest):
+                    if packet is not None:
+                        self._stage_locked(packet, PaneDeliveryStage.STOP_CLEARED)
                 pending.terminal = pending.latest = None
             if removed:
                 self._metrics = self._replace_metrics(cleared_on_stop=removed)

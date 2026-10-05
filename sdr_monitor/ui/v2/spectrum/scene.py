@@ -59,6 +59,7 @@ from .projection import ProjectionRequest, SpectrumProjection, SpectrumProjector
 from .screen_dash import ScreenDashPlotDataItem
 from .sweep_coverage_overlay import SweepCoverageOverlay
 from .sweep_position import SweepPositionOverlay
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 
 _TRACE_LABEL_KEYS: Mapping[TraceKind, str] = {
     TraceKind.CURRENT: "spectrum.trace.current",
@@ -127,6 +128,10 @@ class SpectrumScene(QWidget):
         self._shortcut_popover: ContextPopover | None = None
         self._measurement_available: bool | None = None
         self._graphics_terminal_released = False
+        self._delivery_stage_callback = None
+        self._latest_delivery_ref: PaneDeliveryObligationRef | None = None
+        self._displayed_delivery_ref: PaneDeliveryObligationRef | None = None
+        self._displayed_delivery_paint_returned = False
         self._graphics_state_disconnected = False
         self._build_ui()
         self._sweep_position = SweepPositionOverlay(self._plot_item, self._locale)
@@ -438,7 +443,8 @@ class SpectrumScene(QWidget):
             self._toolbar.setParent(None)
         return self._toolbar
 
-    def set_frame(self, frame: object, *, prepared: PreparedSpectrumFrame | None = None) -> None:
+    def set_frame(self, frame: object, *, prepared: PreparedSpectrumFrame | None = None,
+                  obligation_ref: PaneDeliveryObligationRef | None = None) -> None:
         """Set the latest immutable current frame and redraw one bounded envelope."""
 
         if prepared is not None:
@@ -466,6 +472,7 @@ class SpectrumScene(QWidget):
             # Source and comparison baseline already exist. Count their actual
             # lifetime; do not claim this observes or caps backend allocations.
             self._projector.allocation_budget.observe(frame, self._measurement_grid)
+        self._latest_delivery_ref = obligation_ref
         self._latest_view = view
         self._prepared_spectrum = prepared
         self._trace_views[TraceKind.CURRENT] = view
@@ -515,6 +522,13 @@ class SpectrumScene(QWidget):
         Mode, identity and geometry transitions must invalidate that frame too.
         Ordinary Stop deliberately retains the last measurement instead.
         """
+        latest, displayed = self._latest_delivery_ref, self._displayed_delivery_ref
+        if latest is not None and not (latest == displayed and self._displayed_delivery_paint_returned):
+            self._report_delivery(latest, PaneDeliveryStage.PAINT_SUPERSEDED)
+        if displayed is not None and displayed != latest and not self._displayed_delivery_paint_returned:
+            self._report_delivery(displayed, PaneDeliveryStage.PAINT_SUPERSEDED)
+        self._latest_delivery_ref = self._displayed_delivery_ref = None
+        self._displayed_delivery_paint_returned = False
         self._latest_view = None
         self._auto_vertical_range.reset()
         self._displayed_view = None
@@ -896,7 +910,8 @@ class SpectrumScene(QWidget):
         host_layout = QVBoxLayout(self._chart_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         self._graphics = cadence_graphics_widget(
-            self._chart_host, self.paint_cadence, self._spectrum_paint_candidate)
+            self._chart_host, self.paint_cadence, self._spectrum_paint_candidate,
+            self._spectrum_custody_candidate, self._spectrum_custody_returned)
         # V2 already separates the panels; use its 4 px spacing grid instead
         # of stacking pyqtgraph's default outer padding inside another frame.
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
@@ -1085,6 +1100,49 @@ class SpectrumScene(QWidget):
             return None
         return key
 
+    def set_delivery_stage_callback(self, callback) -> None:
+        self._delivery_stage_callback = callback
+
+    @property
+    def displayed_delivery_ref(self) -> PaneDeliveryObligationRef | None:
+        return self._displayed_delivery_ref
+
+    def stop_delivery_custody(self) -> None:
+        """Close UI-owned paint obligation after confirmed Stop, retaining pixels."""
+        latest, displayed = self._latest_delivery_ref, self._displayed_delivery_ref
+        if latest is not None and not (latest == displayed and self._displayed_delivery_paint_returned):
+            self._report_delivery(latest, PaneDeliveryStage.STOP_CLEARED)
+        if displayed is not None and displayed != latest and not self._displayed_delivery_paint_returned:
+            self._report_delivery(displayed, PaneDeliveryStage.STOP_CLEARED)
+        self._latest_delivery_ref = None
+        self._displayed_delivery_ref = None
+        self._displayed_delivery_paint_returned = False
+
+    def _report_delivery(self, ref: PaneDeliveryObligationRef | None, stage: PaneDeliveryStage) -> None:
+        callback = self._delivery_stage_callback
+        if ref is not None and callback is not None:
+            try:
+                callback(ref, stage)
+            except Exception:
+                pass
+
+    def set_delivery_ref(self, ref: PaneDeliveryObligationRef | None) -> None:
+        if ref is not None and not isinstance(ref, PaneDeliveryObligationRef):
+            raise TypeError("Spectrum custody requires the original obligation reference")
+        self._latest_delivery_ref = ref
+
+    def _spectrum_custody_candidate(self, event):
+        if self._spectrum_paint_candidate(event) is None:
+            return None
+        ref = self._displayed_delivery_ref
+        return ref if ref is not None and not self._displayed_delivery_paint_returned else None
+
+    def _spectrum_custody_returned(self, ref: object) -> None:
+        if isinstance(ref, PaneDeliveryObligationRef) and ref == self._displayed_delivery_ref:
+            if not self._displayed_delivery_paint_returned:
+                self._displayed_delivery_paint_returned = True
+                self._report_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
+
     def _make_marker_items(self) -> tuple[dict[str, pg.InfiniteLine], dict[str, pg.TextItem]]:
         tokens = tokens_for_theme(self._theme)
         color = tokens.scientific.marker
@@ -1118,6 +1176,15 @@ class SpectrumScene(QWidget):
         self._envelopes[kind] = envelope
         self._curves[kind].setData(envelope.frequencies_hz, envelope.values, connect="finite")
         if kind is TraceKind.CURRENT:
+            ref = self._latest_delivery_ref
+            if self._latest_view is not None and self._latest_view.source_frame is view.source_frame:
+                previous = self._displayed_delivery_ref
+                if previous != ref:
+                    if previous is not None and not self._displayed_delivery_paint_returned:
+                        self._report_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
+                    self._displayed_delivery_ref = ref
+                    self._displayed_delivery_paint_returned = False
+                    self._report_delivery(ref, PaneDeliveryStage.PAINT_SCHEDULED)
             self.paint_cadence.admit(view.source_frame)
             self._unit_readout.setText(text("spectrum.unit.readout", self._locale, unit=view.unit_label))
             self._unit_readout.setAccessibleDescription(
