@@ -320,7 +320,9 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
     const auto bins = static_cast<std::uint64_t>(value.analysis_bins_per_usable_window
         ? std::ceil(ratio - 1e-12) : std::floor(ratio) + 1.0);
     const auto reduced_bytes = bins * (20U * (value.output_queue_capacity + 3U) + 28U) +
-        value.segments.size() * static_cast<std::uint64_t>(first.dsp.fft_size) * 16U + first.dsp.fft_size * 8U;
+        value.segments.size() * static_cast<std::uint64_t>(first.dsp.fft_size) * 16U + first.dsp.fft_size * 8U +
+        (value.output_queue_capacity + 3ULL + definition.max_inflight_lines) *
+            sizeof(std::optional<sdr_core::LayerReadyRef>) + sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>);
     if (reduced_bytes > sdr_core::sweep_max_reduced_bytes) {
         invalid("continuous sweep reduced spectrum backlog exceeds 128 MiB");
     }
@@ -346,7 +348,9 @@ std::uint64_t paired_sweep_payload_bytes(const PairedContinuousSweepCoordinatorC
     auto bytes = 2ULL * (bins * (20ULL * slots + 28ULL) +
         config.primary.segments.size() * config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
         config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
-        config.primary.segments.size() * (slots * sizeof(PairedSweepStepReceipt) + 512ULL));
+        config.primary.segments.size() * (slots * sizeof(PairedSweepStepReceipt) + 512ULL) +
+        (slots + definition.max_inflight_lines) * sizeof(std::optional<sdr_core::LayerReadyRef>) +
+        sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>));
     if (bytes > sdr_core::sweep_max_reduced_bytes)
         invalid("paired Sweep exceeds aggregate 128MiB reduced budget");
     if (config.product_publication_reserved_bytes > sdr_core::sweep_max_reduced_bytes - bytes)

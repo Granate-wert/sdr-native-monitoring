@@ -1,4 +1,5 @@
 #include "sdr_core/analytical_ready.hpp"
+#include "sdr_core/layer_ready.hpp"
 #include "sdr_core/errors.hpp"
 
 #include <iostream>
@@ -28,6 +29,74 @@ void conservation(const AnalyticalReadySummary& s) {
 }
 std::int64_t fake_time = 100;
 std::int64_t fake_clock() noexcept { return fake_time; }
+
+void test_separate_layer_creation_journal() {
+    fake_time = 100;
+    AnalyticalReadyJournal detector(0U);
+    LayerReadyJournal layers(2U, fake_clock);
+    expect(detector.summary().producer_instance_id != layers.summary().producer_instance_id,
+        "layer and detector IDs must share one collision-free namespace");
+    const auto a = layers.sweep(LayerReadyKind::SweepProgress, 7U, 9U, 1U);
+    const auto b = layers.sweep(LayerReadyKind::SweepTerminal, 7U, 9U);
+    fake_time = 99;
+    const auto c = layers.density(12U, 3U, 20U, 1U);
+    expect(a.ready_native_ns == 100 && a.config_generation == 0U &&
+        a.revision == 1U && b.revision == 0U && c.sweep_epoch == 0U &&
+        c.accumulation_sequence == 1U && c.clock_state == AnalyticalReadyClockState::Regressed,
+        "layer variants borrowed detector generation or repaired clock regression");
+    auto s = layers.summary();
+    expect(s.created == 3U && s.events_pending == 2U && s.events_lost == 1U &&
+        s.first_lost_creation_sequence == 3U && s.last_lost_creation_sequence == 3U,
+        "full layer ring failed to retain explicit evidence loss");
+    auto first = layers.drain(1U);
+    expect(first.creations.size() == 1U && first.creations[0] == a,
+        "layer drain changed original creation identity");
+    fake_time = 110;
+    const auto d = layers.sweep(LayerReadyKind::SweepProgress, 7U, 10U, 1U);
+    expect(d.clock_state == AnalyticalReadyClockState::Regressed,
+        "layer regression silently recovered");
+    auto last = layers.drain(0U);
+    expect(last.creations.size() == 2U && last.creations[0] == b && last.creations[1] == d,
+        "layer wrap lost ordered identities");
+    expect(last.summary.created == last.summary.events_drained + last.summary.events_lost +
+        last.summary.events_pending, "layer creation evidence conservation failed");
+    refuses([&] { static_cast<void>(layers.drain(4097U)); });
+    refuses([&] { static_cast<void>(layers.sweep(LayerReadyKind::Density, 1U, 1U)); });
+    refuses([&] { static_cast<void>(layers.sweep(LayerReadyKind::SweepTerminal, 1U, 1U, 2U)); });
+    refuses([&] { static_cast<void>(layers.density(0U, 1U, 0U, 1U)); });
+    refuses([] { LayerReadyJournal refused(4097U); });
+    expect(LayerReadyJournal::reserved_bytes(2U) == sizeof(LayerReadyJournal) +
+        4U * sizeof(LayerReadyRef), "layer reservation omitted serialized drain storage");
+    LayerReadyJournal summary_only(0U);
+    static_cast<void>(summary_only.sweep(LayerReadyKind::SweepTerminal, 0U, 0U));
+    expect(summary_only.summary().events_lost == 1U && summary_only.drain(0U).creations.empty(),
+        "summary-only mode claimed complete creation evidence");
+}
+
+void test_layer_concurrent_drain_is_bounded() {
+    LayerReadyJournal journal(64U);
+    std::atomic<bool> done{false};
+    std::thread producer([&] {
+        for (std::uint64_t i = 0U; i < 10000U; ++i) {
+            static_cast<void>(journal.sweep(LayerReadyKind::SweepTerminal, 7U, i));
+        }
+        done = true;
+    });
+    std::uint64_t previous = 0U, drained = 0U;
+    do {
+        auto batch = journal.drain(16U);
+        for (const auto& ref : batch.creations) {
+            expect(ref.creation_sequence > previous, "concurrent layer drain reordered IDs");
+            previous = ref.creation_sequence;
+            ++drained;
+        }
+    } while (!done.load() || journal.summary().events_pending != 0U);
+    producer.join();
+    const auto summary = journal.summary();
+    expect(summary.created == 10000U && summary.event_capacity == 64U &&
+        summary.events_pending == 0U && summary.events_drained == drained &&
+        drained + summary.events_lost == summary.created, "layer concurrent evidence conservation failed");
+}
 
 void test_three_offers_latest_only_and_retirement_guards() {
     AnalyticalReadyJournal journal(12U);
@@ -239,6 +308,8 @@ void test_owner_events_zero_capacity_and_concurrent_drain() {
 }  // namespace
 int main() {
     try {
+        test_separate_layer_creation_journal();
+        test_layer_concurrent_drain_is_bounded();
         test_three_offers_latest_only_and_retirement_guards();
         test_ring_wrap_overflow_preserves_loss_and_original_evidence();
         test_disabled_journal_not_false_complete_evidence();
@@ -248,7 +319,7 @@ int main() {
         test_actual_owner_scalar_decisions_share_atomic_summary();
         test_original_owner_refs_all_dispositions_and_invalid_kind();
         test_owner_events_zero_capacity_and_concurrent_drain();
-        std::cout << "analytical-ready journal: 9 cases OK\n";
+        std::cout << "analytical-ready journal: 9 cases + 2 separate layer creation cases OK\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

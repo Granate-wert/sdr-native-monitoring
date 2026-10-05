@@ -2,6 +2,7 @@
 
 #include "sdr_core/dsp_backend.hpp"
 #include "sdr_core/errors.hpp"
+#include "sdr_core/layer_ready.hpp"
 #include "sdr_core/events.hpp"
 #include "sdr_core/recording_reprocess.hpp"
 #include "sdr_core/recording_path.hpp"
@@ -206,6 +207,26 @@ void bind_dsp(py::module_& module) {
     py::enum_<AnalyticalReadyClockState>(module, "AnalyticalReadyClockState")
         .value("Monotonic", AnalyticalReadyClockState::Monotonic)
         .value("Regressed", AnalyticalReadyClockState::Regressed);
+    py::enum_<LayerReadyKind>(module, "LayerReadyKind")
+        .value("SweepProgress", LayerReadyKind::SweepProgress)
+        .value("SweepTerminal", LayerReadyKind::SweepTerminal)
+        .value("Density", LayerReadyKind::Density);
+    module.attr("LAYER_CREATION_CONTRACT_VERSION") = 1;
+    module.attr("DENSITY_LAYER_SCALAR_RESERVATION_BYTES") = density_layer_scalar_reservation_bytes;
+    py::class_<LayerReadyRef>(module, "LayerReadyRef")
+        .def_readonly("kind", &LayerReadyRef::kind)
+        .def_readonly("producer_instance_id", &LayerReadyRef::producer_instance_id)
+        .def_readonly("creation_sequence", &LayerReadyRef::creation_sequence)
+        .def_readonly("ready_native_ns", &LayerReadyRef::ready_native_ns)
+        .def_readonly("clock", &LayerReadyRef::clock)
+        .def_readonly("clock_state", &LayerReadyRef::clock_state)
+        .def_readonly("sweep_epoch", &LayerReadyRef::sweep_epoch)
+        .def_readonly("line_sequence", &LayerReadyRef::line_sequence)
+        .def_readonly("revision", &LayerReadyRef::revision)
+        .def_readonly("config_generation", &LayerReadyRef::config_generation)
+        .def_readonly("update_sequence", &LayerReadyRef::update_sequence)
+        .def_readonly("source_frame_sequence", &LayerReadyRef::source_frame_sequence)
+        .def_readonly("accumulation_sequence", &LayerReadyRef::accumulation_sequence);
     py::enum_<AnalyticalReadyEventKind>(module, "AnalyticalReadyEventKind")
         .value("Offered", AnalyticalReadyEventKind::Offered)
         .value("HandedOff", AnalyticalReadyEventKind::HandedOff)

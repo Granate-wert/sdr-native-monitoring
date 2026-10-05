@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sdr_core/analytical_ready.hpp"
+#include "sdr_core/layer_ready.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -425,6 +426,7 @@ struct SweepLineFrame {
     // Last SUCCESSFUL assembler admission in this pass, not current RF tuning.
     // Absent for empty control gaps and producers without this contract.
     std::optional<SweepLineSegmentDefinition> last_admitted_segment;
+    std::optional<LayerReadyRef> layer_ready;
 };
 
 struct SweepLineAssemblyMetrics {

@@ -26,6 +26,7 @@ struct SweepProgressFrame {
     std::vector<SweepSegmentAcquisition> segment_acquisition;
     std::shared_ptr<const SweepStatisticsSnapshot> statistics;
     std::optional<SweepLineSegmentDefinition> last_admitted_segment;
+    std::optional<LayerReadyRef> layer_ready;
 };
 
 // Bounded native CPU reference for R10-D line construction.  It consumes
@@ -34,7 +35,8 @@ struct SweepProgressFrame {
 // one segment frame per declared line sequence.
 class ContinuousSweepLineAssembler final {
 public:
-    explicit ContinuousSweepLineAssembler(SweepLineDefinition definition);
+    explicit ContinuousSweepLineAssembler(SweepLineDefinition definition,
+        std::shared_ptr<LayerReadyJournal> layer_ready = nullptr);
 
     [[nodiscard]] std::vector<SweepLineFrame> admit(
         std::uint64_t line_sequence,
@@ -75,6 +77,7 @@ private:
         std::vector<std::uint32_t> quality;
         std::vector<std::int32_t> source_indices;
         std::optional<SweepLineSegmentDefinition> last_admitted_segment;
+        mutable std::optional<LayerReadyRef> progress_ready;
     };
 
     [[nodiscard]] SweepLineFrame finalise(
@@ -84,6 +87,8 @@ private:
     ) const;
 
     SweepLineDefinition definition_;
+    std::shared_ptr<LayerReadyJournal> layer_ready_;
+    void stamp_terminal(SweepLineFrame& frame) const;
     SharedArray<double> frequencies_;
     std::map<std::uint64_t, PendingLine> pending_;
     std::uint64_t completed_lines_{};

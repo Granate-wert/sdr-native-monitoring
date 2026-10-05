@@ -23,6 +23,10 @@ std::uint64_t allocate_producer_id() {
 }
 }  // namespace
 
+std::uint64_t allocate_native_ready_producer_id() {
+    return allocate_producer_id();
+}
+
 std::int64_t analytical_ready_clock_ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -40,7 +44,7 @@ AnalyticalReadyJournal::AnalyticalReadyJournal(const std::size_t capacity, Clock
         throw ConfigurationError("analytical event allocator exceeded admitted payload reservation");
     }
     summary_.supported = true;
-    summary_.producer_instance_id = allocate_producer_id();
+    summary_.producer_instance_id = allocate_native_ready_producer_id();
     summary_.event_capacity = capacity;
     summary_.event_storage_bytes = events_.capacity() * sizeof(AnalyticalReadyEvent);
 }

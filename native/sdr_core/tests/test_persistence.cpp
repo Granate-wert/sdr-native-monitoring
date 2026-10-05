@@ -48,6 +48,40 @@ int main() {
     };
     sdr_core::PersistenceAccumulator accumulator(config);
 
+    {
+        auto journal = std::make_shared<sdr_core::LayerReadyJournal>(8U);
+        sdr_core::PersistenceAccumulator measured(config, journal), baseline(config);
+        auto input = frame(1, 1U, -80.0F);
+        input.config_generation = 7U;
+        const auto snapshot = measured.update(input), control = baseline.update(input);
+        require(snapshot && control && snapshot->layer_ready && !control->layer_ready,
+            "density creation evidence opt-in changed default measurement");
+        const auto ref = *snapshot->layer_ready;
+        require(ref.kind == sdr_core::LayerReadyKind::Density && ref.config_generation == 7U &&
+            ref.update_sequence == snapshot->update_sequence && ref.source_frame_sequence == 1U &&
+            snapshot->timestamp_ns == 1 && *snapshot->density == *control->density &&
+            snapshot->probability_scale == control->probability_scale &&
+            snapshot->count_scale == control->count_scale,
+            "density evidence changed data/time/normalization");
+        input.timestamp_ns = 2;
+        input.frame_sequence = 2;
+        require(!measured.update(input) && journal->summary().created == 1U,
+            "snapshot cadence suppression created false density evidence");
+        const auto retained = *snapshot;
+        require(retained.layer_ready == snapshot->layer_ready && journal->summary().created == 1U,
+            "cached density copy created new evidence");
+        measured.reset();
+        const auto restarted = measured.update(input);
+        require(restarted && restarted->layer_ready &&
+            restarted->layer_ready->accumulation_sequence > ref.accumulation_sequence &&
+            restarted->layer_ready->creation_sequence > ref.creation_sequence,
+            "density reset reused previous accumulation identity");
+        input.config_generation = 0U;
+        const auto unknown = measured.update(input);
+        require(unknown && !unknown->layer_ready && journal->summary().created == 2U,
+            "unknown density generation was fabricated");
+    }
+
     const auto first = accumulator.update(frame(1, 1, -80.0F));
     const auto second = accumulator.update(frame(34'000'001LL, 2, -20.0F));
     const auto third = accumulator.update(frame(68'000'001LL, 3, -20.0F));

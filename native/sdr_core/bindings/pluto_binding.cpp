@@ -394,6 +394,7 @@ void bind_pluto(py::module_& module) {
         .def_readonly("estimated_dropped_samples", &sdr_pluto::StreamMetrics::estimated_dropped_samples);
 
     py::class_<sdr_core::PersistenceSnapshot>(module, "PersistenceSnapshot")
+        .def_readonly("layer_ready", &sdr_core::PersistenceSnapshot::layer_ready)
         .def_property_readonly("source_id", [](const sdr_core::PersistenceSnapshot& value) {
             return value.source.source_id;
         })
@@ -471,6 +472,7 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepProgressFrame>(module, "SweepProgressFrame")
+        .def_readonly("layer_ready", &sdr_core::SweepProgressFrame::layer_ready)
         .def_readonly("source", &sdr_core::SweepProgressFrame::source)
         .def_property_readonly("last_admitted_segment", [](const SweepProgressFrame& value) -> py::object {
             if (!value.last_admitted_segment) return py::none();
@@ -512,6 +514,7 @@ void bind_pluto(py::module_& module) {
         });
 
     py::class_<sdr_core::SweepLineFrame>(module, "SweepLineFrame")
+        .def_readonly("layer_ready", &sdr_core::SweepLineFrame::layer_ready)
         .def_readonly("source", &sdr_core::SweepLineFrame::source)
         .def_property_readonly("last_admitted_segment", [](const SweepLineFrame& value) -> py::object {
             if (!value.last_admitted_segment) return py::none();
@@ -602,7 +605,7 @@ void bind_pluto(py::module_& module) {
 
     // Explicit deterministic test-only fixture: no device, I/Q, RF clock or
     // throughput claim. Exercises the real accumulator and array ownership.
-    module.def("_make_test_sweep_position_frames", []() {
+    module.def("_make_test_sweep_position_frames", [](bool layer_creation) {
         SweepLineDefinition definition;
         definition.source.source_id = "synthetic-position";
         definition.source.display_name = "Synthetic position fixture";
@@ -610,7 +613,8 @@ void bind_pluto(py::module_& module) {
         definition.start_frequency_hz = 100e6; definition.stop_frequency_hz = 108e6;
         definition.target_spacing_hz = 1e6;
         definition.segments = {{0, 11, 100e6, 104e6}, {1, 12, 104e6, 108e6}};
-        ContinuousSweepLineAssembler assembler(definition);
+        auto journal = layer_creation ? std::make_shared<LayerReadyJournal>(8U) : nullptr;
+        ContinuousSweepLineAssembler assembler(definition, journal);
         const auto make_segment = [&definition](std::uint32_t index) {
             SpectrumFrame frame;
             frame.source = definition.source; frame.config_generation = 11 + index;
@@ -632,6 +636,25 @@ void bind_pluto(py::module_& module) {
         auto gap = assembler.flush(SweepLineGapReason::Cancellation).at(0);
         auto empty = assembler.emit_gap(3, 1003, SweepLineGapReason::Cancellation);
         return py::make_tuple(progress, terminal, gap, empty);
+    }, py::arg("layer_creation") = false);
+
+    // Deterministic native accumulator fixture, NOT physical RX or paint proof.
+    module.def("_make_test_density_layer_frames", []() {
+        PersistenceConfig config;
+        config.enabled = true;
+        config.mode = PersistenceMode::ExponentialDecay;
+        auto journal = std::make_shared<LayerReadyJournal>(4U);
+        PersistenceAccumulator accumulator(config, journal);
+        SpectrumFrame frame;
+        frame.source.source_id = "synthetic-density";
+        frame.config_generation = 7U; frame.frame_sequence = 20U; frame.timestamp_ns = 123;
+        frame.frequencies_hz = std::make_shared<const std::vector<double>>(
+            std::initializer_list<double>{100e6, 101e6});
+        frame.values = std::make_shared<const std::vector<float>>(2U, -70.0F);
+        const auto first = *accumulator.update(frame);
+        accumulator.reset();
+        const auto restarted = *accumulator.update(frame);
+        return py::make_tuple(first, restarted);
     });
 
     module.def("_make_test_sweep_statistics_frames", [](std::uint32_t bins) {

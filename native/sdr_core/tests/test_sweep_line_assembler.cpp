@@ -96,7 +96,61 @@ namespace {
 
 int main() {
     try {
+        {
+            auto journal = std::make_shared<sdr_core::LayerReadyJournal>(8U);
+            sdr_core::ContinuousSweepLineAssembler measured(definition(), journal);
+            sdr_core::ContinuousSweepLineAssembler baseline(definition());
+            const auto first = measured.admit(9U, 777, segment(0U, 11U));
+            static_cast<void>(baseline.admit(9U, 777, segment(0U, 11U)));
+            if (!first.empty() || journal->summary().created != 0U) return 90;
+            const auto preview = measured.preview(9U);
+            const auto reread = measured.preview(9U);
+            const auto control = baseline.preview(9U);
+            if (!preview || !reread || !control || !preview->layer_ready || control->layer_ready ||
+                preview->layer_ready != reread->layer_ready || journal->summary().created != 1U ||
+                preview->layer_ready->kind != sdr_core::LayerReadyKind::SweepProgress ||
+                preview->layer_ready->sweep_epoch != 7U || preview->layer_ready->revision != 1U ||
+                preview->layer_ready->config_generation != 0U ||
+                *preview->quality_flags_per_bin != *reread->quality_flags_per_bin) return 91;
+            // NaNs remain unknown; compare measured bins and original quality/coverage.
+            if ((*preview->values)[0] != (*control->values)[0] ||
+                *preview->quality_flags_per_bin != *control->quality_flags_per_bin ||
+                preview->pending_segment_indices != control->pending_segment_indices) return 92;
+            const auto terminal = measured.admit(9U, 888, segment(1U, 12U));
+            const auto baseline_line = baseline.admit(9U, 888, segment(1U, 12U));
+            if (terminal.size() != 1U || baseline_line.size() != 1U ||
+                !terminal[0].layer_ready || terminal[0].layer_ready->kind != sdr_core::LayerReadyKind::SweepTerminal ||
+                terminal[0].completed_ns != 888 || *terminal[0].values != *baseline_line[0].values ||
+                *terminal[0].quality_flags_per_bin != *baseline_line[0].quality_flags_per_bin ||
+                journal->summary().created != 2U || measured.preview(9U)) return 93;
+            static_cast<void>(measured.admit(10U, 999, segment(0U, 11U)));
+            const auto gaps = measured.flush(sdr_core::SweepLineGapReason::Cancellation);
+            const auto empty_gap = measured.emit_gap(11U, 1111, sdr_core::SweepLineGapReason::Disconnect);
+            if (gaps.size() != 1U || !gaps[0].layer_ready || !empty_gap.layer_ready ||
+                gaps[0].state != sdr_core::SweepLineState::Gap ||
+                empty_gap.layer_ready->line_sequence != 11U || journal->summary().created != 4U) return 94;
+            const auto records = journal->drain(0U);
+            if (records.creations.size() != 4U || records.summary.events_lost != 0U) return 95;
+        }
         app04_geometry_test::run();
+        {
+            auto three = definition();
+            three.stop_frequency_hz = 112.0;
+            three.segments.push_back({2U, 13U, 108.0, 112.0});
+            auto journal = std::make_shared<sdr_core::LayerReadyJournal>(8U);
+            sdr_core::ContinuousSweepLineAssembler assembler(three, journal);
+            static_cast<void>(assembler.admit(1U, 100, segment(0U, 11U)));
+            const auto before = assembler.preview(1U);
+            static_cast<void>(assembler.admit(1U, 101, segment(1U, 12U)));
+            const auto after = assembler.preview(1U), reread = assembler.preview(1U);
+            if (!before || !after || !reread || !before->layer_ready || !after->layer_ready ||
+                after->revision != 2U || after->layer_ready == before->layer_ready ||
+                reread->layer_ready != after->layer_ready || journal->summary().created != 2U) return 96;
+            const auto cancelled = assembler.flush(sdr_core::SweepLineGapReason::Cancellation);
+            if (cancelled.size() != 1U || !cancelled[0].layer_ready ||
+                cancelled[0].missing_segment_indices != std::vector<std::uint32_t>{2U} ||
+                journal->summary().created != 3U) return 97;
+        }
         {
             auto bounded = definition();
             bounded.stop_frequency_hz = 100.0 + sdr_core::sweep_max_segments;

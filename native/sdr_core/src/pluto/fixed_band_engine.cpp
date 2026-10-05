@@ -249,6 +249,9 @@ struct LiveResourceBudget {
             checked_multiply(config.dsp.fft_size, 24U, "persistence snapshot axes"),
             "persistence snapshots"
         );
+        persistence_snapshot_bytes = checked_add(persistence_snapshot_bytes,
+            sdr_core::density_layer_scalar_reservation_bytes,
+            "persistence creation ref scalars");
     }
     const auto persistence_bytes = checked_add(
         persistence_state_bytes,
@@ -271,6 +274,10 @@ struct LiveResourceBudget {
             ),
             "continuous sweep line"
         );
+        sweep_line_bytes = checked_add(sweep_line_bytes,
+            (continuous_sweep_line_relay_capacity(config) + 3ULL) *
+                sizeof(std::optional<sdr_core::LayerReadyRef>) +
+            sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>), "Sweep creation ref scalars");
     }
     auto total_bytes = checked_add(iq_pool_bytes, dsp_working_bytes, "live-engine memory");
     total_bytes = checked_add(total_bytes, spectrum_backlog_bytes, "live-engine memory");

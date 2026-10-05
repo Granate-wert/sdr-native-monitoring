@@ -34,6 +34,7 @@ struct PersistenceSnapshot {
     std::shared_ptr<const std::vector<float>> density;
     // Latest contributing detector frame, not an aggregate RF-duty assertion.
     QualityFlag quality_flags{QualityFlag::None};
+    std::optional<LayerReadyRef> layer_ready;
 };
 
 struct PersistenceProfilingTiming {
@@ -47,7 +48,8 @@ struct PersistenceProfilingTiming {
 
 class PersistenceAccumulator final {
 public:
-    explicit PersistenceAccumulator(PersistenceConfig config);
+    explicit PersistenceAccumulator(PersistenceConfig config,
+        std::shared_ptr<LayerReadyJournal> layer_ready = nullptr);
 
     void configure(PersistenceConfig config);
     void reset();
@@ -64,6 +66,8 @@ private:
     [[nodiscard]] PersistenceSnapshot make_snapshot(const SpectrumFrame& frame) const;
 
     PersistenceConfig config_{};
+    std::shared_ptr<LayerReadyJournal> layer_ready_;
+    std::uint64_t accumulation_sequence_{};
     std::optional<SourceDescriptor> source_;
     std::uint64_t config_generation_{};
     SpectrumUnit unit_{SpectrumUnit::DbfsBin};

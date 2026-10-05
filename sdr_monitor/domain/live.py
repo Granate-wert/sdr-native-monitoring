@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .analytical_ready import DetectorReadyReceipt
+from .layer_ready import DENSITY_LAYER_SCALAR_RESERVATION_BYTES
 from .identity import (
     ConfigurationGeneration,
     FrameSequence,
@@ -171,6 +172,7 @@ class LiveResourceBudget:
             persistence_snapshot_bytes = (
                 cells * 4 * (_NATIVE_PERSISTENCE_SNAPSHOT_CAPACITY + 2)
                 + configuration.fft_size * 8 * (_NATIVE_PERSISTENCE_SNAPSHOT_CAPACITY + 2)
+                + DENSITY_LAYER_SCALAR_RESERVATION_BYTES
             )
         total_bytes = (
             iq_pool_bytes

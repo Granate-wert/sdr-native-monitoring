@@ -108,5 +108,7 @@ private:
 // Native sample for an externally bracketed clock bridge. A unit name alone
 // does not establish comparability with Python perf_counter or another process.
 [[nodiscard]] std::int64_t analytical_ready_clock_ns() noexcept;
+// Shared identity namespace for detector and layer producers in this library.
+[[nodiscard]] std::uint64_t allocate_native_ready_producer_id();
 
 }  // namespace sdr_core

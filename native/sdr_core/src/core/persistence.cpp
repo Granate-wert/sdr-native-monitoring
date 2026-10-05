@@ -1,4 +1,5 @@
 #include "sdr_core/persistence.hpp"
+#include "sdr_core/errors.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -33,7 +34,9 @@ constexpr double decay_rebase_threshold = 1.0e-6;
 #endif
 }
 
-PersistenceAccumulator::PersistenceAccumulator(PersistenceConfig config) {
+PersistenceAccumulator::PersistenceAccumulator(PersistenceConfig config,
+    std::shared_ptr<LayerReadyJournal> layer_ready)
+    : layer_ready_(std::move(layer_ready)) {
     configure(config);
 }
 
@@ -44,6 +47,12 @@ void PersistenceAccumulator::configure(PersistenceConfig config) {
 }
 
 void PersistenceAccumulator::reset() {
+    if (layer_ready_) {
+        if (accumulation_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+            throw ConfigurationError("density accumulation identity space exhausted");
+        }
+        ++accumulation_sequence_;
+    }
     source_.reset();
     frequencies_.reset();
     frequency_bins_ = 0U;
@@ -232,6 +241,10 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
     const auto snapshot_started = std::chrono::steady_clock::now();
 #endif
     auto snapshot = make_snapshot(frame);
+    if (layer_ready_ && frame.config_generation != 0U) {
+        snapshot.layer_ready = layer_ready_->density(snapshot.config_generation,
+            snapshot.update_sequence, snapshot.source_frame_sequence, accumulation_sequence_);
+    }
 #if SDR_CORE_PROFILING_ENABLED
     snapshot_build_ns_ = saturating_add(
         snapshot_build_ns_, elapsed_ns(snapshot_started)

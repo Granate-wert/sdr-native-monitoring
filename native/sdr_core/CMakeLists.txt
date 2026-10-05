@@ -43,6 +43,7 @@ include(Sanitizers)
 
 add_library(sdr_core STATIC
     src/core/analytical_ready.cpp
+    src/core/layer_ready.cpp
     src/core/api.cpp
     src/core/buffer_pool.cpp
     src/core/contracts.cpp

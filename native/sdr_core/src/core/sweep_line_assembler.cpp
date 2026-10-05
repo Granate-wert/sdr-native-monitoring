@@ -101,8 +101,9 @@ void accumulate_segment_power(
 
 }  // namespace
 
-ContinuousSweepLineAssembler::ContinuousSweepLineAssembler(SweepLineDefinition definition)
-    : definition_(std::move(definition)) {
+ContinuousSweepLineAssembler::ContinuousSweepLineAssembler(SweepLineDefinition definition,
+    std::shared_ptr<LayerReadyJournal> layer_ready)
+    : definition_(std::move(definition)), layer_ready_(std::move(layer_ready)) {
     validate(definition_);
     const auto span = definition_.stop_frequency_hz - definition_.start_frequency_hz;
     const auto count_double = definition_.analysis_bins_per_usable_window == 0U
@@ -158,6 +159,7 @@ std::vector<SweepLineFrame> ContinuousSweepLineAssembler::admit(
             emitted.push_back(finalise(
                 evicted->first, evicted->second, SweepLineGapReason::Capacity
             ));
+            stamp_terminal(emitted.back());
             ++gapped_lines_;
             ++capacity_evicted_lines_;
             pending_.erase(evicted);
@@ -197,8 +199,10 @@ std::vector<SweepLineFrame> ContinuousSweepLineAssembler::admit(
     // Commit only after all admission checks and accumulation succeeded.
     // Definition/map order and timestamps need not match arrival order.
     staging.last_admitted_segment = *expected;
+    staging.progress_ready.reset();
     if (pending->second.segments.size() == definition_.segments.size()) {
         auto line = finalise(line_sequence, pending->second, SweepLineGapReason::MissingSegment);
+        stamp_terminal(line);
         if (line.state == SweepLineState::Complete) {
             ++completed_lines_;
         } else {
@@ -233,6 +237,7 @@ std::vector<SweepLineFrame> ContinuousSweepLineAssembler::flush(const SweepLineG
     emitted.reserve(pending_.size());
     for (const auto& [sequence, pending] : pending_) {
         emitted.push_back(finalise(sequence, pending, reason));
+        stamp_terminal(emitted.back());
         ++gapped_lines_;
     }
     pending_.clear();
@@ -252,6 +257,7 @@ SweepLineFrame ContinuousSweepLineAssembler::emit_gap(
     }
     PendingLine pending{.completed_ns = completed_ns};
     auto result = finalise(line_sequence, pending, reason);
+    stamp_terminal(result);
     ++gapped_lines_;
     return result;
 }
@@ -370,7 +376,7 @@ std::optional<SweepProgressFrame> ContinuousSweepLineAssembler::preview(
             acquired.push_back(definition);
         }
     }
-    return SweepProgressFrame{
+    SweepProgressFrame result{
         .source = view.source,
         .line_sequence = line_sequence,
         .epoch = view.epoch,
@@ -385,6 +391,21 @@ std::optional<SweepProgressFrame> ContinuousSweepLineAssembler::preview(
         .segment_acquisition = std::move(view.acquired_segments),
         .last_admitted_segment = view.last_admitted_segment,
     };
+    if (layer_ready_) {
+        if (!pending.progress_ready) {
+            pending.progress_ready = layer_ready_->sweep(LayerReadyKind::SweepProgress,
+                result.epoch, result.line_sequence, result.revision);
+        }
+        result.layer_ready = pending.progress_ready;
+    }
+    return result;
+}
+
+void ContinuousSweepLineAssembler::stamp_terminal(SweepLineFrame& frame) const {
+    if (layer_ready_) {
+        frame.layer_ready = layer_ready_->sweep(LayerReadyKind::SweepTerminal,
+            frame.epoch, frame.line_sequence);
+    }
 }
 
 }  // namespace sdr_core

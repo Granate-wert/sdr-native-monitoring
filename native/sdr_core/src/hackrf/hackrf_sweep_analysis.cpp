@@ -125,7 +125,9 @@ sdr_core::SweepLineDefinition make_definition(
     const auto bins = static_cast<std::uint64_t>(std::ceil(
         (definition.stop_frequency_hz - definition.start_frequency_hz) / bin_hz - 1e-12));
     const auto reduced_bytes = bins * 128U +
-        definition.segments.size() * static_cast<std::uint64_t>(config.fft_size) * 16U + config.fft_size * 8U;
+        definition.segments.size() * static_cast<std::uint64_t>(config.fft_size) * 16U + config.fft_size * 8U +
+        (5ULL + definition.max_inflight_lines) * sizeof(std::optional<sdr_core::LayerReadyRef>) +
+        sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>);
     if (reduced_bytes > sdr_core::sweep_max_reduced_bytes) {
         throw sdr_core::ConfigurationError("HackRF Sweep reduced spectrum backlog exceeds 128 MiB");
     }
