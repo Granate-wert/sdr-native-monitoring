@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, cast
+from typing import Protocol, TypeVar, cast
 
 from ..domain.tinysa_settings import (
     TinySaInputMode,
@@ -46,6 +46,15 @@ from .tinysa_serial_trace_collector import (
 )
 from .tinysa_serial_version_probe import _parse_version
 from .tinysa_source_composition import TinySaIdentityAssurance, TinySaTransportEndpoint
+from .tinysa_acquisition_diagnostics import (
+    TinySaAcquisitionDiagnosticSnapshot,
+    TinySaDiagnosticClock,
+    TinySaDiagnosticOperation as DiagnosticOperation,
+    TinySaDiagnosticPhase as DiagnosticPhase,
+    TinySaDiagnosticRecorder,
+)
+
+_T = TypeVar("_T")
 
 
 class TinySaEndpointResolver(Protocol):
@@ -119,6 +128,40 @@ class TinySaOwnedAcquisition:
         self._settings_readback = False
         self._settings_observation: TinySaSettingsObservation | None = None
         self._settings_request: TinySaScanRawRequest | None = None
+        self._diagnostics = TinySaDiagnosticRecorder()
+
+    @property
+    def acquisition_diagnostics(self) -> TinySaAcquisitionDiagnosticSnapshot:
+        """Coherent bounded cache; no SDK, clock, lifecycle or transport lock."""
+        return self._diagnostics.snapshot()
+
+    def note_publication_started(self) -> None:
+        """One-shot service publication witness, no measurement/lifecycle effect."""
+        self._diagnostics.begin_phase(DiagnosticPhase.PUBLISH)
+        self._diagnostics.enter(DiagnosticOperation.PUBLISH)
+
+    def note_publication_returned(self) -> None:
+        self._diagnostics.returned(DiagnosticOperation.PUBLISH)
+        self._diagnostics.published()
+
+    def note_publication_failed(self, error: Exception) -> None:
+        """Diagnostic only; keep the service's existing error/cleanup policy."""
+        self._diagnostics.fault(error.reason.value if isinstance(error, TinySaTraceCollectionError) else "transport",
+                                cancelled=isinstance(error, TinySaTraceCollectionCancelled))
+
+    def _diagnostic_io(self, operation: DiagnosticOperation, call: Callable[[], _T], *,
+                       write_size: int | None = None) -> _T:
+        self._diagnostics.enter(operation)
+        try:
+            result = call()
+        except Exception as error:
+            self._diagnostics.fault(error.reason.value if isinstance(error, TinySaTraceCollectionError)
+                                    else ("close" if operation is DiagnosticOperation.CLOSE else "transport"),
+                                    cancelled=isinstance(error, TinySaTraceCollectionCancelled))
+            raise
+        self._diagnostics.returned(operation, response_bytes=len(result) if isinstance(result, bytes) else 0,
+                                   command_accepted=result == write_size if write_size is not None else None)
+        return result
 
     def configure_runtime_settings(self, request: TinySaScanRawRequest, plan: TinySaSweepSettingsPlan,
                                    input_mode: TinySaInputMode, *, readback: bool = False) -> None:
@@ -148,6 +191,8 @@ class TinySaOwnedAcquisition:
         return self._failure  # immutable cached scalar codes, no serial I/O
 
     def _record_failure(self, error: Exception, *, phase: TinySaAcquisitionPhase | None = None) -> None:
+        self._diagnostics.fault(error.reason.value if isinstance(error, TinySaTraceCollectionError) else "transport",
+                                cancelled=isinstance(error, TinySaTraceCollectionCancelled))
         if self._failure is None and not isinstance(error, TinySaTraceCollectionCancelled):
             reason = (error.reason if isinstance(error, TinySaTraceCollectionError)
                       else TinySaTraceFailureReason.TRANSPORT)
@@ -184,6 +229,7 @@ class TinySaOwnedAcquisition:
     def cancel(self) -> None:
         """No transport command or close from the cancelling caller."""
         self._cancel.set()
+        self._diagnostics.cancel()
 
     @property
     def cancellation_requested(self) -> bool:
@@ -204,12 +250,14 @@ class TinySaOwnedAcquisition:
             raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
 
     def _endpoint_matches(self) -> TinySaTransportEndpoint:
-        current = self._backend.resolve_endpoint(self._endpoint)
-        if (current.assurance is not TinySaIdentityAssurance.USB_SERIAL
-                or current.identity_key != self._endpoint.identity_key
-                or self._current_endpoint is not None and current != self._current_endpoint):
-            raise TinySaTraceCollectionError("tinySA selected endpoint changed")
-        return current
+        def resolve() -> TinySaTransportEndpoint:
+            current = self._backend.resolve_endpoint(self._endpoint)
+            if (current.assurance is not TinySaIdentityAssurance.USB_SERIAL
+                    or current.identity_key != self._endpoint.identity_key
+                    or self._current_endpoint is not None and current != self._current_endpoint):
+                raise TinySaTraceCollectionError("tinySA selected endpoint changed")
+            return current
+        return self._diagnostic_io(DiagnosticOperation.VALIDATE, resolve)
 
     def _admit(self, request: TinySaScanRawRequest) -> None:
         if not isinstance(request, TinySaScanRawRequest):
@@ -233,14 +281,16 @@ class TinySaOwnedAcquisition:
             if self._used or self._closing or self._closed:
                 raise TinySaTraceCollectionError("tinySA acquisition requires explicit close/new Start")
             self._request = request
+            self._diagnostics.begin_pass()
             if self._settings_commands or self._settings_readback:
                 result = self._collect_configured_once(request)
             else:
                 result = collect_tinysa_scanraw_trace(self._endpoint.route, request,
                     serial_factory=lambda _: self, cancel_requested=self._cancel.is_set,
-                    monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
+                    monotonic_ns=self._monotonic_ns, finish_on_cancel=True, diagnostics=self._diagnostics)
             self._measurement_pending = False
             self._endpoint_matches()  # Changed/removed endpoint cannot publish a result.
+            self._diagnostics.pass_completed()
             return result
         except TinySaTraceCollectionCancelled:
             raise
@@ -257,7 +307,7 @@ class TinySaOwnedAcquisition:
         try:
             self.open()
             response = collect_tinysa_open_pass(self, request, cancel_requested=self._cancel.is_set,
-                monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
+                monotonic_ns=self._monotonic_ns, finish_on_cancel=True, diagnostics=self._diagnostics)
             self._observe_settings()
             self._endpoint_matches()
         except Exception as error:
@@ -293,17 +343,25 @@ class TinySaOwnedAcquisition:
                 self.open()
                 while True:
                     self._cancelled()
+                    self._diagnostics.begin_pass()
                     self._pass_started_ns = self._monotonic_ns()
                     result = collect_tinysa_open_pass(self, request, cancel_requested=self._cancel.is_set,
-                                                     monotonic_ns=self._monotonic_ns, finish_on_cancel=True)
+                                                     monotonic_ns=self._monotonic_ns, finish_on_cancel=True,
+                                                     diagnostics=self._diagnostics)
                     self._observe_settings()
                     self._measurement_pending = False
                     self._endpoint_matches()
                     if not result.prompt_confirmed:
                         raise TinySaTraceCollectionError("tinySA completed pass lacks its prompt")
-                    publish(result)
+                    self._diagnostics.pass_completed()
+                    self._diagnostics.begin_phase(DiagnosticPhase.PUBLISH)
+                    self._diagnostic_io(DiagnosticOperation.PUBLISH, lambda: publish(result))
+                    self._diagnostics.published()
+                    self._diagnostics.begin_phase(DiagnosticPhase.INTERVAL)
+                    self._diagnostics.enter(DiagnosticOperation.WAIT)
                     if self._cancel.wait(interval_s):
                         self._cancelled()
+                    self._diagnostics.returned(DiagnosticOperation.WAIT)
                     # No discard/reset. Only a completed prompt permits the
                     # next transaction on the SAME object and pinned endpoint.
                     self._commands = 0
@@ -327,23 +385,24 @@ class TinySaOwnedAcquisition:
             raise TinySaTraceCollectionError("tinySA acquisition cannot reopen a used owner")
         self._used = True  # Before ANY factory or SDK effect.
         self._phase = TinySaAcquisitionPhase.OPEN
+        self._diagnostics.begin_phase(DiagnosticPhase.OPEN)
         self._cancelled()
         current = self._endpoint_matches()
         self._current_endpoint = current
-        port = self._factory(current.route)
+        port = self._diagnostic_io(DiagnosticOperation.FACTORY, lambda: self._factory(current.route))
         self._port = cast(TinySaTraceSerialPort, port)  # Retain before validation/partial open.
         if not _is_serial_port(port) or not all(hasattr(port, name) for name in ("is_open", "dtr", "rts")):
             raise TinySaTraceCollectionError("tinySA serial factory contract is invalid")
         if port.is_open is not False:
             raise TinySaTraceCollectionError("tinySA factory must return an unopened serial object")
         port.dtr = port.rts = False
-        port.open()
+        self._diagnostic_io(DiagnosticOperation.OPEN, port.open)
         if port.is_open is not True:
             raise TinySaTraceCollectionError("tinySA serial open was not confirmed")
         self._cancelled()
         # Only the pre-command startup buffer is discarded. A consumed scan
         # is finished before release; this is NOT mid-response resynchronization.
-        port.reset_input_buffer()
+        self._diagnostic_io(DiagnosticOperation.RESET, port.reset_input_buffer)
         self._verify_version(port, current)
         self._execute_settings()
         self._ready = True
@@ -359,15 +418,23 @@ class TinySaOwnedAcquisition:
         port = self._port
         if port is None or self._closing or self._closed:
             raise TinySaTraceCollectionError("tinySA settings owner is unavailable")
-        if port.write(command) != len(command):
+        phase = DiagnosticPhase.READBACK if self._phase is TinySaAcquisitionPhase.READBACK else DiagnosticPhase.SETTINGS
+        self._diagnostics.begin_phase(phase, command=True)
+        if self._diagnostic_io(DiagnosticOperation.WRITE, lambda: port.write(command), write_size=len(command)) != len(command):
             raise TinySaTraceCollectionError("tinySA settings write was incomplete",
                 reason=TinySaTraceFailureReason.TRANSPORT)
-        port.flush()
-        deadline = self._monotonic() + 2.0
+        self._diagnostic_io(DiagnosticOperation.FLUSH, port.flush)
+        started = self._monotonic()
+        deadline = started + 2.0
+        self._diagnostics.clock(TinySaDiagnosticClock.MONOTONIC_SECONDS, started, deadline=deadline)
         response = bytearray()
-        while self._monotonic() < deadline:
+        while True:
+            observed = self._monotonic()
+            self._diagnostics.clock(TinySaDiagnosticClock.MONOTONIC_SECONDS, observed)
+            if not observed < deadline:
+                break
             size = min(128, 512 - len(response) + 1)
-            chunk = port.read(size)
+            chunk = self._diagnostic_io(DiagnosticOperation.READ, lambda: port.read(size))
             if not isinstance(chunk, bytes) or len(chunk) > size:
                 raise TinySaTraceCollectionError("tinySA settings read contract is invalid",
                     reason=TinySaTraceFailureReason.TRANSPORT)
@@ -378,6 +445,7 @@ class TinySaOwnedAcquisition:
             if b"ch> " in response:
                 _settings_payload(bytes(response), command)
                 self._endpoint_matches()
+                self._diagnostics.prompt()
                 return bytes(response)
         raise TinySaTraceCollectionError("tinySA settings response deadline expired",
             reason=TinySaTraceFailureReason.DEADLINE)
@@ -426,12 +494,15 @@ class TinySaOwnedAcquisition:
 
     def _verify_version(self, port: TinySaTraceSerialPort, current: TinySaTransportEndpoint) -> None:
         self._phase = TinySaAcquisitionPhase.VERSION
+        self._diagnostics.begin_phase(DiagnosticPhase.VERSION, command=True)
         self._cancelled()
-        if port.write(b"version\r") != len(b"version\r"):
+        if self._diagnostic_io(DiagnosticOperation.WRITE, lambda: port.write(b"version\r"),
+                               write_size=len(b"version\r")) != len(b"version\r"):
             raise TinySaTraceCollectionError("tinySA version write was incomplete",
                                              reason=TinySaTraceFailureReason.TRANSPORT)
-        port.flush()
+        self._diagnostic_io(DiagnosticOperation.FLUSH, port.flush)
         response = self._read_version(port)
+        self._diagnostics.enter(DiagnosticOperation.PARSE)
         try:
             version = _parse_version(response)
         except ValueError:
@@ -442,17 +513,24 @@ class TinySaOwnedAcquisition:
         if fresh != self._expected:
             raise TinySaTraceCollectionError("tinySA model/firmware identity changed before measurement",
                                              reason=TinySaTraceFailureReason.IDENTITY)
+        self._diagnostics.returned(DiagnosticOperation.PARSE)
         self._cancelled()
         self._endpoint_matches()  # Same route/USB serial before zero/scan writes.
 
     def _read_version(self, port: TinySaTraceSerialPort) -> bytes:
-        deadline = self._monotonic() + 2.0
+        started = self._monotonic()
+        deadline = started + 2.0
+        self._diagnostics.clock(TinySaDiagnosticClock.MONOTONIC_SECONDS, started, deadline=deadline)
         response = bytearray()
-        while self._monotonic() < deadline:
+        while True:
+            observed = self._monotonic()
+            self._diagnostics.clock(TinySaDiagnosticClock.MONOTONIC_SECONDS, observed)
+            if not observed < deadline:
+                break
             # The version write is already consumed. Finish its prompt within
             # this two-second deadline, then cancellation refuses zero/scan.
             size = min(256, 4096 - len(response) + 1)
-            chunk = port.read(size)
+            chunk = self._diagnostic_io(DiagnosticOperation.READ, lambda: port.read(size))
             if not isinstance(chunk, bytes) or len(chunk) > size:
                 raise TinySaTraceCollectionError("tinySA version read contract is invalid",
                                                  reason=TinySaTraceFailureReason.TRANSPORT)
@@ -465,6 +543,7 @@ class TinySaOwnedAcquisition:
                 if response.count(b"ch> ") != 1 or any(value not in b"\t\r\n " for value in response[end:]):
                     raise TinySaTraceCollectionError("tinySA version response framing is invalid",
                                                      reason=TinySaTraceFailureReason.FRAMING)
+                self._diagnostics.prompt()
                 return bytes(response)
         raise TinySaTraceCollectionError("tinySA version response deadline expired",
                                          reason=TinySaTraceFailureReason.DEADLINE)
@@ -492,18 +571,22 @@ class TinySaOwnedAcquisition:
         self._endpoint_matches()
         port = self._active_port()
         self._phase = TinySaAcquisitionPhase.ZERO if self._commands == 0 else TinySaAcquisitionPhase.SCAN
+        self._diagnostics.begin_phase(DiagnosticPhase.ZERO if self._commands == 0 else DiagnosticPhase.SCAN,
+                                      command=True)
         if self._commands == 1:
             self._measurement_pending = True  # Partial writes are consumed too.
         self._commands += 1  # Even a partial write is consumed, never retried.
-        return port.write(data)
+        return self._diagnostic_io(DiagnosticOperation.WRITE, lambda: port.write(data), write_size=len(data))
 
     def flush(self) -> None:
-        self._active_port(finish_consumed_response=True).flush()
+        port = self._active_port(finish_consumed_response=True)
+        self._diagnostic_io(DiagnosticOperation.FLUSH, port.flush)
 
     def read(self, size: int = 1) -> bytes:
         if type(size) is not int or not 1 <= size <= MAX_TINYSA_SCANRAW_READ_BYTES:
             raise TinySaTraceCollectionError("tinySA acquisition read exceeds its bound")
-        chunk = self._active_port(finish_consumed_response=True).read(size)
+        port = self._active_port(finish_consumed_response=True)
+        chunk = self._diagnostic_io(DiagnosticOperation.READ, lambda: port.read(size))
         if not isinstance(chunk, bytes) or len(chunk) > size:
             raise TinySaTraceCollectionError("tinySA acquisition read contract is invalid")
         return chunk
@@ -524,10 +607,11 @@ class TinySaOwnedAcquisition:
         if self._closed:
             return
         self._closing = True  # All commands permanently refused, including failed close.
+        self._diagnostics.begin_phase(DiagnosticPhase.CLOSE)
         port = self._port
         if port is not None:
             try:
-                port.close()  # Also on partial open/is_open=False.
+                self._diagnostic_io(DiagnosticOperation.CLOSE, port.close)  # Also on partial open/is_open=False.
                 if getattr(port, "is_open", None) is not False:
                     raise TinySaTraceCollectionError("tinySA serial close was not confirmed")
             except Exception:  # noqa: BLE001 - retained/redacted transport boundary.

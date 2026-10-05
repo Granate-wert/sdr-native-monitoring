@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import numpy as np
@@ -27,6 +27,15 @@ from .source_capability_catalog import SourceCapabilityCatalog
 from .tinysa_capability_adapter import TinySaModel
 from .tinysa_owned_acquisition import TinySaAcquisitionFailure, TinySaOwnedAcquisition
 from .tinysa_serial_trace_collector import TinySaScanRawRequest, TinySaTraceCollectionCancelled, TinySaTracePass
+from .tinysa_acquisition_diagnostics import TinySaAcquisitionDiagnosticSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class TinySaRunDiagnosticSnapshot:
+    """Host generation plus SAME owner facts; no device/response payload."""
+    generation: int | None
+    acquisition: TinySaAcquisitionDiagnosticSnapshot | None
+    owner_retained: bool
 
 
 class InstrumentExclusionPort(Protocol):
@@ -52,6 +61,29 @@ class TinySaCommonAnalyzerService:
         self._first_completion: float | None = None
         self._snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
         self._acquisition_failure: TinySaAcquisitionFailure | None = None
+        self._diagnostic_lock = threading.Lock()
+        self._diagnostic_owner: TinySaOwnedAcquisition | None = None
+        self._diagnostic_generation: int | None = None
+        self._terminal_diagnostic: TinySaAcquisitionDiagnosticSnapshot | None = None
+
+    @property
+    def acquisition_diagnostics(self) -> TinySaRunDiagnosticSnapshot:
+        """Bounded cache from one captured generation; no I/O/clock/join.
+
+        A concurrent Stop/Start may return the older captured generation, never
+        a newer generation bound to an older owner's data. No lifecycle lock.
+        """
+        with self._diagnostic_lock:
+            owner, generation, terminal = (self._diagnostic_owner, self._diagnostic_generation,
+                                          self._terminal_diagnostic)
+        return TinySaRunDiagnosticSnapshot(generation,
+            owner.acquisition_diagnostics if owner is not None else terminal, owner is not None)
+
+    @property
+    def acquisition_worker_alive(self) -> bool | None:
+        """Actual Python worker fact, separate from the cached owner snapshot."""
+        thread = self._thread
+        return None if thread is None else thread.is_alive()
 
     @property
     def stop_required(self) -> bool:
@@ -120,11 +152,19 @@ class TinySaCommonAnalyzerService:
             # Inert preparation is retained BEFORE graph acquisition. A later
             # claim/start failure therefore requires Stop, not admission reset.
             self._owner = self._catalog.prepare_tinysa_acquisition(source.binding, source.runtime)
+            with self._diagnostic_lock:
+                self._diagnostic_owner = self._owner
+                self._diagnostic_generation = None  # prepared attempt, no admitted run yet
+                self._terminal_diagnostic = None
             self._owner.configure_runtime_settings(scan, request.settings, request.input_mode,
                                                    readback=request.readback_settings)
             self._request = request
             self._generation += 1
             self._run_identity = TinySaSweepRunIdentity(request, self._generation)
+            with self._diagnostic_lock:
+                self._diagnostic_owner = self._owner
+                self._diagnostic_generation = self._generation
+                self._terminal_diagnostic = None
             self._completed = self._gapped = self._sequence = 0
             self._first_completion = None
             with self._lock:
@@ -185,6 +225,7 @@ class TinySaCommonAnalyzerService:
             result = owner.collect(scan)
             if owner.cancellation_requested:
                 raise TinySaTraceCollectionCancelled("tinySA trace collection was cancelled")
+            owner.note_publication_started()
             line = self._line(result.trace.values_dbm, zero=result.trace.scanraw_zero_offset_db,
                               elapsed=self._clock() - started)
             snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(
@@ -198,7 +239,8 @@ class TinySaCommonAnalyzerService:
             self._gapped += 1
             snapshot = ContinuousSweepDisplaySnapshot(line, ContinuousSweepDisplayMetrics(
                 completed_lines=self._completed, gapped_lines=self._gapped))
-        except Exception:  # noqa: BLE001 - never publish serial routes/vendor exception strings.
+        except Exception as error:  # noqa: BLE001 - never publish serial routes/vendor exception strings.
+            owner.note_publication_failed(error)
             failure = owner.failure
             suffix = f" [{failure.phase.value}/{failure.reason.value}]" if failure is not None else ""
             with self._lock:
@@ -210,6 +252,8 @@ class TinySaCommonAnalyzerService:
                 error="tinySA acquisition failed; Stop/release required" + suffix))
         with self._lock:
             self._snapshot = snapshot
+        if snapshot.metrics.acquisition_finished:
+            owner.note_publication_returned()
 
     def _publish_pass(self, result: TinySaTracePass) -> None:
         """One latest immutable response; no accumulation or queue on the producer."""
@@ -257,6 +301,11 @@ class TinySaCommonAnalyzerService:
             if self._claimed:
                 self._exclusion.release_external_analyzer_rx(self)
                 self._claimed = False
+            if owner is not None:
+                diagnostic = owner.acquisition_diagnostics
+                with self._diagnostic_lock:
+                    self._terminal_diagnostic = diagnostic
+                    self._diagnostic_owner = None
             self._thread = self._owner = None
             with self._lock:
                 self._snapshot = replace(self._snapshot,
