@@ -23,6 +23,7 @@ from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from .ad936x_rtbw_pane_owner import Ad936xRtbwPaneOwner
 from .pane_resource_session import PaneCaptureAdmission
+from ..domain.layer_journal import LayerJournalSnapshot
 
 
 class Ad936xPaneOwner(Ad936xRtbwPaneOwner):
@@ -43,6 +44,13 @@ class Ad936xPaneOwner(Ad936xRtbwPaneOwner):
         self._last_progress: tuple[int, int, int] | None = None
         self._last_line: tuple[int, int] | None = None
         self._validated_grid: np.ndarray | None = None
+        self._terminal_layers: tuple[LayerJournalSnapshot, ...] = ()
+
+    def layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        if self._active_mode is None:
+            return self._terminal_layers
+        return (self._sweep_router.layer_journal_snapshots() if self._active_mode is CaptureMeasurementMode.SWEEP
+                else super().layer_journal_snapshots())
 
     def validate_job(self, job: CaptureJob) -> None:
         profile = job.profile
@@ -63,6 +71,7 @@ class Ad936xPaneOwner(Ad936xRtbwPaneOwner):
 
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission:
         self.validate_job(job)
+        self._terminal_layers = ()
         profile = job.profile
         if not isinstance(profile, Ad936xSweepPaneProfile):
             self._active_mode = CaptureMeasurementMode.RTBW
@@ -105,6 +114,10 @@ class Ad936xPaneOwner(Ad936xRtbwPaneOwner):
         # The same common Stop releases the native Sweep lease or RTBW owner.
         # Do not clear retained state on a failed release.
         super().stop_capture_and_wait()
+        try:
+            self._terminal_layers = self.layer_journal_snapshots()
+        except Exception:  # noqa: BLE001 - cached optional telemetry, not hardware cleanup.
+            self._terminal_layers = ()
         self._active_mode = None
         self._active_sweep_profile = None
         self._geometry = None

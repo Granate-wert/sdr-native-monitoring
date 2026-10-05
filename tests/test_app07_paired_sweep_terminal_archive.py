@@ -58,6 +58,22 @@ def run_archive_case(graph, intent, case, hooks):
         assert isinstance(archive, PairedSweepTerminalArchive)
         assert archive.run is run and len(archive.terminals) == 1
         terminal = archive.terminals[0]
+        journals = coordinator.layer_journal_snapshots()
+        from sdr_monitor.domain.layer_journal import LayerJournalState
+        from sdr_monitor.domain.layer_ready import LayerReadyKind
+        assert all(value.state is LayerJournalState.FINAL and value.native_stop_confirmed
+                   and value.counters.events_pending == 0 for value in journals)
+        assert journals[0].scope.owner_run_id == journals[1].scope.owner_run_id
+        assert journals[0].counters.producer_instance_id != journals[1].counters.producer_instance_id
+        for frame, journal, receiver in zip((terminal.primary, terminal.secondary), journals, ("RX1", "RX2")):
+            ref = frame.layer_ready
+            assert ref is not None and ref.kind is LayerReadyKind.SWEEP_TERMINAL
+            assert ref.identity.receiver_id == frame.receiver_id == receiver
+            assert ref.identity.epoch == journal.scope.acquisition_epoch == frame.epoch
+            assert ref.session_id == intent.pair.session_id
+            assert ref.producer_instance_id == journal.counters.producer_instance_id
+            assert any(event.creation_sequence == ref.creation_sequence and
+                       event.ready_native_ns == ref.ready_native_ns for event in journal.events)
         assert terminal.primary.state is terminal.secondary.state is SweepLineState.GAP
         assert "cancellation" in terminal.primary.gap_reasons
         refused(lambda: bundles_from_paired_sweep(archive))
@@ -81,10 +97,12 @@ def run_archive_case(graph, intent, case, hooks):
         coordinator.configure_paired(config)
         refused(coordinator.poll_retired_archive)  # old run removed before reconfigure/start
         new_run = coordinator.start()
+        assert all(value.scope.acquisition_epoch is None for value in coordinator.layer_journal_snapshots())
         refused(coordinator.poll_retired_archive)
         assert new_run.acquisition_epoch > run.acquisition_epoch
         coordinator.stop()
         newer = coordinator.poll_retired_archive()
+        assert all(value.native_stop_confirmed for value in coordinator.layer_journal_snapshots())
         assert newer.run is new_run
         assert all(item.primary.epoch > terminal.primary.epoch for item in newer.terminals)
         factory.close()

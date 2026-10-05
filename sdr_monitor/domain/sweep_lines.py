@@ -17,6 +17,7 @@ from .sweep import SweepBinQuality, SweepPlan
 from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, validate_acquisition, validate_position
 from .sweep_statistics import SweepStatisticsFrame
 from .tinysa_analyzer import TinySaSweepProvenance
+from .layer_ready import LayerReadyReceipt, validate_sweep_layer_receipt
 
 
 _VALIDATION_BATCH = 65_536
@@ -125,8 +126,20 @@ class SweepLineFrame:
     statistics: SweepStatisticsFrame | None = None
     last_admitted_segment: SweepSegmentPosition | None = None
     instrument: TinySaSweepProvenance | None = None
+    receiver_id: str | None = None
+    layer_ready: LayerReadyReceipt | None = None
 
     def __post_init__(self) -> None:
+        if self.receiver_id not in (None, "RX1", "RX2"):
+            raise ValueError("Sweep terminal receiver must be explicit typed metadata")
+        if self.instrument is not None and (self.receiver_id is not None or self.layer_ready is not None):
+            raise ValueError("instrument trace cannot borrow native SDR layer readiness/receiver")
+        if self.layer_ready is not None:
+            validate_sweep_layer_receipt(self.layer_ready, source_id=self.source_id,
+                epoch=self.epoch, sequence=self.sequence, revision=None,
+                acquired=tuple(pair for pair in self.segment_config_generations
+                    if pair[0] not in self.missing_segment_indices),
+                pending=tuple(self.missing_segment_indices), receiver_id=self.receiver_id)
         validate_position(self.last_admitted_segment, tuple(
             pair for pair in self.segment_config_generations if pair[0] not in self.missing_segment_indices))
         object.__setattr__(self, "segment_acquisition", validate_acquisition(

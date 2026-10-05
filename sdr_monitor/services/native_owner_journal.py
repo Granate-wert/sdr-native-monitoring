@@ -77,11 +77,14 @@ def _scalar_bytes(value: object) -> int:
 
 
 class NativeOwnerJournal:
-    def __init__(self, native: object, capacity: int = 0) -> None:
+    def __init__(self, native: object, capacity: int = 0, *, reserved_host_bytes: int = 0) -> None:
         if type(capacity) is not int or capacity not in (0, EVENT_CAPACITY):
             raise ValueError("owner journal requires its fixed admitted capacity")
         if capacity and owner_journal_capacity(native) != capacity:
             raise ValueError("owner journal protocol not supported")
+        if type(reserved_host_bytes) is not int or not 0 <= reserved_host_bytes <= HOST_SCALAR_BUDGET // 4:
+            raise ValueError("shared host scalar reservation is out of bounds")
+        self._host_budget = HOST_SCALAR_BUDGET - reserved_host_bytes
         self._native, self._capacity = native, capacity
         self._lock = threading.RLock()
         self._snapshot = OwnerJournalSnapshot()
@@ -153,7 +156,7 @@ class NativeOwnerJournal:
                         + sum(_scalar_bytes(item) for item in self._history)
                         + _scalar_bytes(self._id_audit.scalar_payload)
                         + self._id_audit.index_storage_bytes
-                        + BATCH_CAPACITY * 512 > HOST_SCALAR_BUDGET):
+                        + BATCH_CAPACITY * 512 > self._host_budget):
                     raise ValueError("adapter accounting exceeds existing host scalar reservation")
                 self._snapshot = candidate
             except Exception:  # noqa: BLE001 - evidence failure is NOT a hardware failure.
@@ -164,7 +167,8 @@ class NativeOwnerJournal:
             self._history_evictions += 1
         self._history.append(self._snapshot)
 
-    def prepare(self, *, native: object | None = None, capacity: int | None = None) -> None:
+    def prepare(self, *, native: object | None = None, capacity: int | None = None,
+                reserved_host_bytes: int | None = None) -> None:
         """New actual Start attempt, before owner creation; no counters are fabricated."""
         with self._lock:
             selected_native = self._native if native is None else native
@@ -172,11 +176,18 @@ class NativeOwnerJournal:
             if type(selected) is not int or selected not in (0, EVENT_CAPACITY) or (
                     selected and owner_journal_capacity(selected_native) != selected):
                 raise ValueError("owner journal capacity/protocol was not admitted")
+            if reserved_host_bytes is not None and (type(reserved_host_bytes) is not int
+                    or not 0 <= reserved_host_bytes <= HOST_SCALAR_BUDGET // 4):
+                raise ValueError("shared host scalar reservation is out of bounds")
             if self._snapshot.scope is not None or self._snapshot.state is not JournalState.UNSUPPORTED:
                 if not self._snapshot.native_stop_confirmed:
                     raise ValueError("previous owner journal has no confirmed native Stop")
                 self._archive()
             self._native, self._capacity = selected_native, selected
+            if reserved_host_bytes is not None:
+                # Snapshot's 1MiB remains the TOTAL per-chain host reservation,
+                # including the layer slice, not another independent journal pool.
+                self._host_budget = HOST_SCALAR_BUDGET - reserved_host_bytes
             self._snapshot = OwnerJournalSnapshot(
                 state=JournalState.ACTIVE if self.enabled else JournalState.UNSUPPORTED,
                 terminal_windows_evicted=self._history_evictions)
@@ -306,7 +317,7 @@ class NativeOwnerJournal:
                 if (_scalar_bytes(candidate) + _scalar_bytes(self._snapshot)
                         + sum(_scalar_bytes(item) for item in self._history)
                         + _scalar_bytes(self._id_audit.scalar_payload) + self._id_audit.index_storage_bytes
-                        + BATCH_CAPACITY * 512 > HOST_SCALAR_BUDGET):
+                        + BATCH_CAPACITY * 512 > self._host_budget):
                     raise ValueError("owner journal exceeds host scalar reservation")
                 self._snapshot = candidate
                 self._missing_events = missing

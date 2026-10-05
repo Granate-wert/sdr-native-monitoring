@@ -9,6 +9,8 @@ from ..domain.device_capabilities import DeviceFamily
 from ..domain.hackrf_sweep import HackrfSweepRequest
 from ..domain.live import LiveAdmissionRejected
 from ..domain.tinysa_analyzer import TinySaSweepRequest, TinySaSweepRunIdentity
+from ..domain.layer_journal import LayerJournalSnapshot
+from ..services.pane_layer_admission import cached_layer_journals
 from .analyzer_sources import AnalyzerSourceSelectionApplicationService
 
 
@@ -38,6 +40,11 @@ class AnalyzerSweepRouter:
         self._native, self._sources, self._instrument, self._hackrf = native, sources, instrument, hackrf
         self._dispatched: NativeSweepPort | InstrumentSweepPort | HackrfSweepPort | None = None
         self._terminal: NativeSweepPort | InstrumentSweepPort | HackrfSweepPort | None = None
+
+    def layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        """Same captured Sweep owner, including confirmed terminal output."""
+        port = self._dispatched or self._terminal
+        return cached_layer_journals(port) if port is not None else ()
 
     @property
     def instrument_run_identity(self) -> TinySaSweepRunIdentity | None:

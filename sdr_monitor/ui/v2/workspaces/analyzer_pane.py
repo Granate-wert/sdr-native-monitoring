@@ -17,6 +17,8 @@ from PySide6.QtWidgets import QLabel, QWidget
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analyzer_display import ContinuousSweepDisplaySnapshot
 from sdr_monitor.domain.analyzer_identity import MeasurementIdentity
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage
+from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 
 from ..i18n import text
 from ..spectrum import PersistenceDensityFrame
@@ -29,6 +31,7 @@ from ..waterfall import SpectrumWaterfallView, WaterfallLineFrame
 from ..waterfall.contracts import SweepWaterfallLine
 from sdr_monitor.ui.v2_pane_presentation import PreparedPaneDelivery
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef
+from sdr_monitor.ui.v2_pane_obligation_refs import refs_by_view
 
 
 class AnalyzerPaneViewV2(SpectrumWaterfallView):
@@ -268,33 +271,81 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         if not isinstance(prepared, PreparedPaneDelivery) or prepared.binding.slot_number != self.pane_number:
             raise ValueError("prepared pane delivery belongs to another visual slot")
         bundle = prepared.bundle
+        scene = self.spectrum_scene
+        refs = refs_by_view(prepared)
+        stage_callback = getattr(self, "_delivery_stage_callback", None)
+
+        def report(view: PaneDeliveryView, stage: PaneDeliveryStage) -> None:
+            if stage_callback is not None:
+                for ref in refs[view]:
+                    try:
+                        stage_callback(ref, stage)
+                    except Exception:
+                        pass
+
+        spectrum_ready = self.isVisible() and scene.isVisible() and prepared.spectrum is not None
+        report(PaneDeliveryView.SPECTRUM,
+               PaneDeliveryStage.UI_ADMITTED if spectrum_ready else PaneDeliveryStage.UI_REJECTED)
+        spectrum_ref = refs[PaneDeliveryView.SPECTRUM][-1] if spectrum_ready and refs[PaneDeliveryView.SPECTRUM] else None
         fresh_view = self._accept_measurement(
             prepared.binding.mode, bundle, prepared.spectrum,
             scheduled_visit_boundary=scheduled_visit_boundary,
-            obligation_ref=prepared.delivery.obligation_ref,
+            obligation_ref=spectrum_ref,
         )
-        scene = self.spectrum_scene
         if prepared.binding.mode is AnalyzerMode.RTBW:
             density = prepared.persistence
+            persistence_ready = (density is not None and self.isVisible() and scene.isVisible()
+                                 and scene.persistence_visible)
+            report(PaneDeliveryView.PERSISTENCE,
+                   PaneDeliveryStage.UI_ADMITTED if persistence_ready else PaneDeliveryStage.UI_REJECTED)
+            persistence_ref = refs[PaneDeliveryView.PERSISTENCE][-1] if persistence_ready and refs[PaneDeliveryView.PERSISTENCE] else None
+            scene.set_persistence_delivery_ref(persistence_ref, density)
             if density is not None and density is not self._last_persistence:
                 scene.set_persistence_frame(density)
                 self._last_persistence = density
+                if (persistence_ref is not None
+                        and not scene.persistence_delivery_waiting_for_upload(persistence_ref)):
+                    report(PaneDeliveryView.PERSISTENCE, PaneDeliveryStage.UI_REJECTED)
+                    scene.clear_persistence_delivery_ref(persistence_ref)
+            elif persistence_ref is not None:
+                report(PaneDeliveryView.PERSISTENCE, PaneDeliveryStage.UI_REJECTED)
+                scene.clear_persistence_delivery_ref(persistence_ref)
             elif (density is None and self._last_persistence is not None
                   and "persistence_pending" not in bundle.coherence_issues):
                 scene.clear_persistence_display()
                 self._last_persistence = None
+            waterfall_ready = (isinstance(prepared.waterfall, WaterfallLineFrame)
+                               and prepared.waterfall is not self._last_waterfall and self.isVisible()
+                               and self.waterfall_pane.isVisible() and self.waterfall_pane.render_visible
+                               and not self.waterfall_pane.frozen)
+            report(PaneDeliveryView.WATERFALL,
+                   PaneDeliveryStage.UI_ADMITTED if waterfall_ready else PaneDeliveryStage.UI_REJECTED)
+            waterfall_ref = refs[PaneDeliveryView.WATERFALL][-1] if waterfall_ready and refs[PaneDeliveryView.WATERFALL] else None
             if isinstance(prepared.waterfall, WaterfallLineFrame) and prepared.waterfall is not self._last_waterfall:
-                self.waterfall_pane.set_line(prepared.waterfall,
-                                             segment_boundary=self._pending_waterfall_gap)
+                admitted = self.waterfall_pane.set_line(
+                    prepared.waterfall, segment_boundary=self._pending_waterfall_gap,
+                    obligation_ref=waterfall_ref)
+                if waterfall_ready and not admitted:
+                    report(PaneDeliveryView.WATERFALL, PaneDeliveryStage.UI_REJECTED)
                 if not self.waterfall_pane.frozen:
                     self._pending_waterfall_gap = False
                 self._last_waterfall = prepared.waterfall
         else:
             self._apply_sweep_statistics(bundle)
+            waterfall_ready = (isinstance(prepared.waterfall, SweepWaterfallLine) and self.isVisible()
+                               and self.waterfall_pane.isVisible() and self.waterfall_pane.render_visible
+                               and not self.waterfall_pane.frozen)
+            report(PaneDeliveryView.WATERFALL,
+                   PaneDeliveryStage.UI_ADMITTED if waterfall_ready else PaneDeliveryStage.UI_REJECTED)
+            waterfall_ref = refs[PaneDeliveryView.WATERFALL][-1] if waterfall_ready and refs[PaneDeliveryView.WATERFALL] else None
             if isinstance(prepared.waterfall, SweepWaterfallLine):
-                if self.waterfall_pane.set_sweep_line(
-                        prepared.waterfall, segment_boundary=self._pending_waterfall_gap):
+                admitted = self.waterfall_pane.set_sweep_line(
+                        prepared.waterfall, segment_boundary=self._pending_waterfall_gap,
+                        obligation_ref=waterfall_ref)
+                if admitted:
                     self._pending_waterfall_gap = False
+                elif waterfall_ready:
+                    report(PaneDeliveryView.WATERFALL, PaneDeliveryStage.UI_REJECTED)
         # Crop is a per-pane viewport, never an alteration of producer bins.
         crop = prepared.binding.crop
         if fresh_view:
@@ -306,6 +357,8 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         if self._terminal_released:
             return
         self.hide()
+        self.spectrum_scene.stop_delivery_custody()
+        self.waterfall_pane.stop_delivery_custody()
         self.spectrum_scene.set_presentation_active(False)
         self.spectrum_scene.clear_measurement()
         self.waterfall_pane.release_presentation_after_shutdown()
@@ -336,6 +389,13 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self._last_identity = self._last_sweep_snapshot = self._last_statistics_key = None
         self._sweep_waterfall_error = False
         self._pending_waterfall_gap = False
+
+    def delivery_requires_ui_rejection(self, ref: PaneDeliveryObligationRef) -> bool:
+        if ref.view is PaneDeliveryView.WATERFALL:
+            return self.waterfall_pane.delivery_requires_ui_rejection(ref)
+        if ref.view is PaneDeliveryView.PERSISTENCE:
+            return self.spectrum_scene.persistence_delivery_requires_ui_rejection(ref)
+        return self.spectrum_scene.delivery_requires_ui_rejection(ref)
 
 
 __all__ = ["AnalyzerPaneViewV2"]

@@ -23,6 +23,7 @@ from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from .hackrf_rtbw_pane_owner import HackrfRtbwPaneOwner
 from .pane_resource_session import PaneCaptureAdmission
+from ..domain.layer_journal import LayerJournalSnapshot
 
 
 class HackrfPaneOwner(HackrfRtbwPaneOwner):
@@ -42,6 +43,13 @@ class HackrfPaneOwner(HackrfRtbwPaneOwner):
         self._last_progress: tuple[int, int, int] | None = None
         self._last_line: tuple[int, int] | None = None
         self._active_sweep_profile: HackrfSweepPaneProfile | None = None
+        self._terminal_layers: tuple[LayerJournalSnapshot, ...] = ()
+
+    def layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        if self._active_mode is None:
+            return self._terminal_layers
+        return (self._sweep_router.layer_journal_snapshots() if self._active_mode is CaptureMeasurementMode.SWEEP
+                else super().layer_journal_snapshots())
 
     def validate_job(self, job: CaptureJob) -> None:
         profile = job.profile
@@ -66,6 +74,7 @@ class HackrfPaneOwner(HackrfRtbwPaneOwner):
 
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission:
         self.validate_job(job)
+        self._terminal_layers = ()
         profile = job.profile
         if not isinstance(profile, HackrfSweepPaneProfile):
             self._active_mode = CaptureMeasurementMode.RTBW  # retain Stop duty on a partial Start
@@ -109,6 +118,10 @@ class HackrfPaneOwner(HackrfRtbwPaneOwner):
             if (stopped.error is not None or stopped.stop_required or state is None
                     or state.phase is not AnalyzerPhase.IDLE):
                 raise RuntimeError("HackRF pane Sweep Stop did not confirm common owner release")
+        try:
+            self._terminal_layers = self.layer_journal_snapshots()
+        except Exception:  # noqa: BLE001 - cached optional telemetry, not hardware cleanup.
+            self._terminal_layers = ()
         self._active_mode = None
         self._last_progress = None
         self._last_line = None

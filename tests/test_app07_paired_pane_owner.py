@@ -120,7 +120,9 @@ def run_native_case(path: str, case: str) -> None:
     leases = ReceiverLeaseManager()
     try:
         app.discover(startup=True)
-        selected = app.select_manual_uri("usb:mock")
+        # Pin this fixture to one deterministic numeric observed connection;
+        # do not rely on default mock context attributes or synthetic aliases.
+        selected = app.select_manual_uri("usb:2.42.5")
         assert selected.error is None, selected.error
         selected = app.apply_configuration(LiveConfiguration(
             center_hz=2_450_000_000., sample_rate_hz=61_440_000.,
@@ -211,13 +213,15 @@ def run_native_case(path: str, case: str) -> None:
         assert prepared[0].bundle.paired_capture == prepared[1].bundle.paired_capture
         # A typed BOTH group cannot downgrade to a single RX packet, nor may
         # a source-correct frame impersonate the other selected chain.
-        for malformed in (
-                replace(deliveries[0], bundle=replace(left, paired_capture=None)),
-                replace(deliveries[0], bundle=replace(left, spectrum=replace(
+        for construct in (
+                lambda: replace(deliveries[0], bundle=replace(left, paired_capture=None)),
+                lambda: replace(deliveries[0], bundle=replace(left, spectrum=replace(
                     left.spectrum, receiver_id="RX2"), receiver_id="RX2", identity=None,
                     persistence=None, waterfall_line=None))):
             try:
-                preparer.prepare(malformed)
+                # Native ready provenance may refuse forgery even at immutable
+                # frame construction, before the preparation boundary exists.
+                preparer.prepare(construct())
             except ValueError:
                 pass
             else:
@@ -233,7 +237,11 @@ def run_native_case(path: str, case: str) -> None:
         assert session.accept_frame(first, "caller:rx1", right) == ()
         # Operational route ID and a forged producer ID cannot borrow RX1.
         for source_id in (source, "foreign"):
-            forged_frame = replace(left.spectrum, source_id=source_id)
+            try:
+                forged_frame = replace(left.spectrum, source_id=source_id)
+            except ValueError as error:
+                assert "detector-ready receipt differs" in str(error), error
+                continue  # ORIGINAL ready source guard rejects before graph admission.
             # Isolate the route guard: an actual density still carrying the
             # original source would rightly refuse even earlier in the bundle.
             forged = replace(left, spectrum=forged_frame, identity=None, persistence=None, waterfall_line=None)
@@ -316,6 +324,8 @@ class NativePairedPaneTests(unittest.TestCase):
     def run_case(self, case: str):
         environment = dict(os.environ)
         environment["LIBIIO_DLL_PATH"] = str(MOCK)
+        environment["SDR_MOCK_LIBIIO_CONTEXT_NAME"] = "usb"
+        environment["SDR_MOCK_LIBIIO_BACKEND_URI"] = "usb:2.42.5"
         environment["SDR_MOCK_LIBIIO_TOPOLOGY_DUAL"] = "1"
         environment["SDR_MOCK_LIBIIO_REFILL_DELAY_MS"] = "1"
         environment["QT_QPA_PLATFORM"] = "offscreen"

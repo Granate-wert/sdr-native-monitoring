@@ -156,6 +156,8 @@ class IndependentPaneBoardV2(QWidget):
                     settings_prefix=f"ui_v2/analyzer/resource_pane{slot.number}/v1",
                     parent=cell)
                 pane.spectrum_scene.set_delivery_stage_callback(self._stage_callback)
+                pane.waterfall_pane.set_delivery_stage_callback(self._stage_callback)
+                pane._delivery_stage_callback = self._stage_callback
                 pane.set_compact_grid_geometry(compact)
                 pane.set_selected(slot.number == self._selected_slot)
                 pane.set_rf_shift_provider(self._rf_provider_for(slot.number))
@@ -614,12 +616,6 @@ class IndependentPaneBoardV2(QWidget):
             and prepared.delivery.host_activation_serial > previous[0]
             and prepared.delivery.host_run_serial == self._last_run_serial.get(binding.slot_number)
         )
-        ref = prepared.delivery.obligation_ref
-        if ref is not None and self._stage_callback is not None:
-            try:
-                self._stage_callback(ref, PaneDeliveryStage.UI_ADMITTED)
-            except Exception:
-                pass
         pane.apply_prepared_pane_delivery(prepared,
                                           scheduled_visit_boundary=scheduled_visit_boundary)
         self._last_order[binding.slot_number] = order

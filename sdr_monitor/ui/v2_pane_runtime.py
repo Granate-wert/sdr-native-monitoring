@@ -19,6 +19,8 @@ from threading import Condition, Lock, Thread
 from time import monotonic
 from typing import Any, Callable
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
+from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
+from .v2_pane_obligation_refs import delivery_obligation_refs, refs_by_view
 
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneLayout, ResourcePaneSchedule
 from sdr_monitor.activity_log import log_event
@@ -383,15 +385,18 @@ class _ResourceWorker:
             except Exception:
                 pass
 
+    def _report_delivery_stage(self, delivery, stage: PaneDeliveryStage) -> None:
+        for ref in delivery_obligation_refs(delivery):
+            self._report_stage(ref, stage)
+
     def _poll_and_advance(self) -> None:
         resource_id = self.resource.physical_stream_resource_id
         deliveries = self.session.poll_resource(resource_id)
         prepared_count = 0
         activation = self.snapshot().activation
         for index, delivery in enumerate(deliveries):
-            ref = delivery.obligation_ref
-            if ref is not None:
-                self._report_stage(ref, PaneDeliveryStage.PREPARING)
+            refs = refs_by_view(delivery)
+            self._report_delivery_stage(delivery, PaneDeliveryStage.PREPARING)
             if activation is not None and delivery.capture_id == activation.capture_id:
                 self._frame_seen = True
                 if delivery.bundle.terminal_sweep:
@@ -399,24 +404,27 @@ class _ResourceWorker:
             try:
                 prepared = self.preparer.prepare(delivery)
             except Exception as error:
-                if ref is not None:
-                    self._report_stage(ref, PaneDeliveryStage.PREPARATION_FAILED)
+                self._report_delivery_stage(delivery, PaneDeliveryStage.PREPARATION_FAILED)
                 for tail in deliveries[index + 1:]:
-                    if tail.obligation_ref is not None:
-                        self._report_stage(tail.obligation_ref, PaneDeliveryStage.ADMISSION_CANCELLED)
+                    self._report_delivery_stage(tail, PaneDeliveryStage.ADMISSION_CANCELLED)
                 raise PaneDiagnosticError("Pane preparation failed; explicit Stop required",
                     failure=pane_failure_from_exception(error, PaneFailureStage.PREPARE,
                                                         reason=PaneFailureReason.INVALID_PUBLICATION)) from None
-            if ref is not None:
-                self._report_stage(ref, PaneDeliveryStage.PREPARED)
+            prepared_views = {PaneDeliveryView.SPECTRUM}
+            if getattr(prepared, "waterfall", None) is not None:
+                prepared_views.add(PaneDeliveryView.WATERFALL)
+            if getattr(prepared, "persistence", None) is not None:
+                prepared_views.add(PaneDeliveryView.PERSISTENCE)
+            for view, view_refs in refs.items():
+                for view_ref in view_refs:
+                    self._report_stage(view_ref, PaneDeliveryStage.PREPARED if view in prepared_views
+                                       else PaneDeliveryStage.PREPARATION_CANCELLED)
             try:
                 self.queue.offer(prepared)
             except Exception as error:
-                if ref is not None:
-                    self._report_stage(ref, PaneDeliveryStage.QUEUE_FAILED)
+                self._report_delivery_stage(prepared, PaneDeliveryStage.QUEUE_FAILED)
                 for tail in deliveries[index + 1:]:
-                    if tail.obligation_ref is not None:
-                        self._report_stage(tail.obligation_ref, PaneDeliveryStage.ADMISSION_CANCELLED)
+                    self._report_delivery_stage(tail, PaneDeliveryStage.ADMISSION_CANCELLED)
                 raise PaneDiagnosticError("Pane queue publication failed; explicit Stop required",
                     failure=pane_failure_from_exception(error, PaneFailureStage.QUEUE)) from None
             prepared_count += 1

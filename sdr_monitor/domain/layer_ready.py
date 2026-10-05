@@ -42,9 +42,12 @@ class SweepLayerIdentity:
     revision: int | None
     acquired_segment_generations: tuple[tuple[int, int], ...]
     pending_segment_indices: tuple[int, ...]
+    receiver_id: str | None = None
 
     def __post_init__(self) -> None:
         _text(self.source_id)
+        if self.receiver_id is not None:
+            _text(self.receiver_id)
         _number(self.epoch)
         _number(self.line_sequence)
         acquired, pending = self.acquired_segment_generations, self.pending_segment_indices
@@ -79,6 +82,7 @@ class DensityLayerIdentity:
     accumulation_id: str
     receiver_id: str | None
     acquisition_epoch: int | None
+    native_accumulation_sequence: int | None = None
 
     def __post_init__(self) -> None:
         _text(self.source_id)
@@ -90,6 +94,8 @@ class DensityLayerIdentity:
             _text(self.receiver_id)
         if self.acquisition_epoch is not None:
             _number(self.acquisition_epoch, minimum=1)
+        if self.native_accumulation_sequence is not None:
+            _number(self.native_accumulation_sequence, minimum=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +109,8 @@ class LayerReadyReceipt:
     ready_native_ns: int
     mapping: ReadyClockMapping
     host_bounds: ReadyHostBounds | None = None
+    owner_run_id: str | None = None
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, LayerReadyKind):
@@ -129,3 +137,21 @@ class LayerReadyReceipt:
                 raise ValueError("layer readiness must be enclosed by actual native clock probes")
         elif self.host_bounds is not None:
             raise ValueError("unknown layer clock mapping cannot claim host bounds")
+        if (self.owner_run_id is None) != (self.session_id is None):
+            raise ValueError("layer owner authentication requires run and session together")
+        if self.owner_run_id is not None:
+            _text(self.owner_run_id)
+            _text(self.session_id)
+
+
+def validate_sweep_layer_receipt(receipt: LayerReadyReceipt | None, *, source_id: str,
+        epoch: int, sequence: int, revision: int | None,
+        acquired: tuple[tuple[int, int], ...], pending: tuple[int, ...], receiver_id: str | None) -> None:
+    """Identity/coverage guard only, NOT authentication or timing generation."""
+    if receipt is None:
+        return
+    kind = LayerReadyKind.SWEEP_TERMINAL if revision is None else LayerReadyKind.SWEEP_PROGRESS
+    if (not isinstance(receipt, LayerReadyReceipt) or receipt.kind is not kind
+            or receipt.identity != SweepLayerIdentity(source_id, epoch, sequence, revision,
+                acquired, pending, receiver_id)):
+        raise ValueError("Sweep layer readiness does not belong to its exact frame/coverage/receiver")

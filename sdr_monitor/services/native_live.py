@@ -75,6 +75,9 @@ from .native_spectrum_provenance import native_spectrum_provenance, validate_abs
 from .native_ready_bridge import NativeReadyBridge
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
+from ..domain.layer_journal import LayerJournalSnapshot
+from ..domain.layer_ready import DensityLayerIdentity
+from .native_layer_journal import HOST_LAYER_RESERVATION, NativeLayerJournal, layer_journal_capacity
 from .source_capability_admission import (
     admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
 )
@@ -205,6 +208,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._native = native_module
         self._ready_bridge = NativeReadyBridge(native_module)
         self._owner_journals = (NativeOwnerJournal(native_module), NativeOwnerJournal(native_module))
+        self._density_journals = (NativeLayerJournal(native_module), NativeLayerJournal(native_module))
         self._journal_chain_count = 1
         self._journal_engine: object | None = None
         self._timeout_ms = timeout_ms
@@ -780,16 +784,31 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                                     self._allow_nonstandard_evidence_buffer_geometry
                                 ),
                                 analytical_event_capacity=owner_journal_capacity(self._native, requested.backend.value),
+                                layer_event_capacity=_pluto_density_capacity(self._native, requested),
                             )
                         )
                     else:
                         candidate_applied = candidate.configure_paired(self._paired_native_config(paired_request, route))
                         self._validate_paired_applied(candidate_applied)
                     self._ready_bridge.begin()
+                    owner_run = uuid4().hex
                     self._journal_chain_count = 2 if paired_request is not None else 1
-                    for journal in self._owner_journals[:self._journal_chain_count]:
-                        journal.prepare(capacity=owner_journal_capacity(self._native, requested.backend.value))
+                    layer_capacity = _pluto_density_capacity(self._native, requested)
+                    for index in range(self._journal_chain_count):
+                        self._owner_journals[index].prepare(
+                            capacity=owner_journal_capacity(self._native, requested.backend.value),
+                            reserved_host_bytes=HOST_LAYER_RESERVATION if layer_capacity else 0)
+                        self._density_journals[index].prepare(capacity=layer_capacity)
                     self._journal_engine = candidate
+                    generation_before_start = getattr(candidate_applied, "config_generation", None)
+                    if type(generation_before_start) is int:
+                        sources = ((paired_request.primary_source_id, paired_request.secondary_source_id)
+                            if paired_request is not None else (str(device.device_id),))
+                        for index, source in enumerate(sources):
+                            self._density_journals[index].preflight_scope(OwnerJournalScope(
+                                self._ready_bridge.clock_scope_id, self._ready_bridge.host_process_id,
+                                owner_run, str(source), ("RX1", "RX2")[index], str(self._session_id),
+                                generation_before_start, int(self._generation) + 1))
                     candidate.start()
                     if paired_request is not None:
                         candidate_metrics = candidate.paired_metrics().primary
@@ -801,7 +820,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 except Exception as error:
                     if candidate is not None:
                         try:
-                            _shutdown_engine_instance(candidate, before_disconnect=lambda:
+                            _shutdown_engine_instance(candidate, native_module=self._native, before_disconnect=lambda:
                                 self._finish_owner_journals(candidate))
                         except Exception:
                             # Retain the failed candidate instead of trying another
@@ -956,15 +975,16 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if paired_request is not None:
                 # An explicit next Start uses actual numerical readback.
                 self._paired_request = replace(paired_request, configuration=final_applied.applied)
-            owner_run = uuid4().hex
             generation = self._snapshot.active_config_generation
             if type(generation) is int:
                 sources = ((paired_request.primary_source_id, paired_request.secondary_source_id)
                     if paired_request is not None else (str(device.device_id),))
                 for index, source in enumerate(sources):
-                    self._owner_journals[index].begin(OwnerJournalScope(self._ready_bridge.clock_scope_id,
+                    scope = OwnerJournalScope(self._ready_bridge.clock_scope_id,
                         self._ready_bridge.host_process_id, owner_run, str(source), ("RX1", "RX2")[index],
-                        str(self._snapshot.session_id), generation, int(self._generation)))
+                        str(self._snapshot.session_id), generation, int(self._generation))
+                    self._owner_journals[index].begin(scope)
+                    self._density_journals[index].begin(scope)
             else:
                 for journal in self._owner_journals[:self._journal_chain_count]:
                     journal.drain(lambda _count: None)  # Unavailable scope stays incomplete, never invented.
@@ -1082,7 +1102,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 if poller.is_alive():
                     raise RuntimeError("native poller did not confirm termination")
             if engine is not None:
-                engine.join()
+                _join_stopped_engine(engine, self._native)
                 self._finish_owner_journals(engine)
                 # Capture the finalized writer before disconnect. If any stage
                 # fails, retain both owners; an explicit Stop can retry safely.
@@ -1133,11 +1153,22 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
     def analytical_journal_terminal_history(self) -> tuple[tuple[OwnerJournalSnapshot, ...], ...]:
         return tuple(journal.terminal_history() for journal in self._owner_journals)
 
+    def density_layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        """Cached scalar evidence, not a new native poll or clock sample."""
+        return tuple(journal.current() for journal in self._density_journals[:self._journal_chain_count])
+
     def _drain_owner_journals(self, engine: Any) -> None:
         if engine is not self._journal_engine:
             return
         for index, journal in enumerate(self._owner_journals[:self._journal_chain_count]):
             journal.drain(self._owner_journal_reader(engine, index))
+            self._density_journals[index].drain(self._density_journal_reader(engine, index))
+
+    def _density_journal_reader(self, engine: Any, index: int) -> Callable[[int], object]:
+        def read(count: int) -> object:
+            receivers = self._native.PlutoReceiverSelection
+            return engine.drain_density_layer_ready_events((receivers.RX1, receivers.RX2)[index], count)
+        return read
 
     def _owner_journal_reader(self, engine: Any, index: int) -> Callable[[int], object]:
         receivers = getattr(self._native, "PlutoReceiverSelection", None)
@@ -1158,6 +1189,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         for index, journal in enumerate(self._owner_journals[:self._journal_chain_count]):
             journal.finish(self._owner_journal_reader(engine, index),
                 before_capture=lambda: discard_terminal_owner_presentation(self._native, engine))
+            self._density_journals[index].finish(self._density_journal_reader(engine, index))
         self._journal_engine = None
 
     def _paired_native_config(self, request: PairedLiveRequest, uri: str) -> Any:
@@ -1166,6 +1198,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             _native_fixed_band_config(self._native, request.configuration, uri,
                 source_id=source, receiver_selection=selection,
                 analytical_event_capacity=owner_journal_capacity(self._native, request.configuration.backend.value),
+                layer_event_capacity=_pluto_density_capacity(self._native, request.configuration),
                 device_buffer_samples=self._device_buffer_samples,
                 allow_nonstandard_evidence_buffer_geometry=self._allow_nonstandard_evidence_buffer_geometry)
             for source, selection in ((request.primary_source_id, rx.RX1), (request.secondary_source_id, rx.RX2))
@@ -1767,6 +1800,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             except Exception as error:
                 self._publish_error(f"Pluto RX polling failed: {error}")
                 return
+            # Read bounded density BEFORE the existing clock probe. A diagnostic
+            # drain failure is isolated by NativeLayerJournal, not an RX error.
+            persistence = ()
+            try:
+                persistence = engine.poll_persistence_snapshots(2)
+            except Exception:
+                pass  # Existing best-effort persistence policy, Spectrum remains live.
             self._ready_bridge.sample()
             self._drain_owner_journals(engine)
             if frame is not None:
@@ -1787,7 +1827,6 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 self._publish_error("Pluto RX stream stalled (no frames)")
                 return
             try:
-                persistence = engine.poll_persistence_snapshots(2)
                 if persistence:
                     self._publish_persistence(persistence[-1], expected_engine=engine)
             except Exception:
@@ -1814,6 +1853,11 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             try:
                 drained = engine.drain_latest_paired_spectrum_frame()
                 value, coalesced = drained.frame, drained.coalesced_frames
+                native_densities = []
+                if value is not None:
+                    for selection in (self._native.PlutoReceiverSelection.RX1,
+                                      self._native.PlutoReceiverSelection.RX2):
+                        native_densities.append(engine.poll_receiver_persistence_snapshots(selection, 2))
                 self._ready_bridge.sample()
                 self._drain_owner_journals(engine)
                 adapter_scopes = tuple(journal.current().scope for journal in self._owner_journals)
@@ -1833,11 +1877,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                             self._paired_density_sequence_floor = int(value.primary.frame_sequence)
                         context = self._snapshot
                     densities = list(self._paired_densities)
-                    for index, selection in enumerate((self._native.PlutoReceiverSelection.RX1,
-                                                       self._native.PlutoReceiverSelection.RX2)):
-                        values = cast(Any, engine).poll_receiver_persistence_snapshots(selection, 2)
+                    for index, values in enumerate(native_densities):
                         if values:
-                            density = self._convert_persistence(values[-1], context)
+                            density = self._convert_persistence(values[-1], context, receiver_id=("RX1", "RX2")[index])
                             expected_source = (request.primary_source_id, request.secondary_source_id)[index]
                             if (not density.producer_identity_available or density.source_id != expected_source
                                     or density.config_generation != context.active_config_generation):
@@ -2213,7 +2255,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 owner_journal=self._owner_journals[1 if receiver_id == "RX2" else 0].current()),
         )
 
-    def _convert_persistence(self, value: Any, publication_context: LiveSnapshot) -> LivePersistenceFrame:
+    def _convert_persistence(self, value: Any, publication_context: LiveSnapshot,
+                             *, receiver_id: str = "RX1") -> LivePersistenceFrame:
+        if receiver_id not in ("RX1", "RX2"):
+            raise ValueError("persistence requires a typed admitted receiver")
         source = getattr(value, "source_id", None)
         native_generation = getattr(value, "config_generation", None)
         native_unit = getattr(value, "unit", None)
@@ -2221,7 +2266,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         source_id = as_source_id(source if source is not None else "unknown")
         generation = as_configuration_generation(native_generation if native_generation is not None else 0)
         timestamp_quality = TimestampQuality.UNKNOWN
-        return LivePersistenceFrame(
+        try:
+            original_ref = getattr(value, "layer_ready", None)
+            accumulation = getattr(original_ref, "accumulation_sequence", None)
+        except Exception:  # noqa: BLE001 - optional diagnostics must not reject valid density.
+            original_ref, accumulation = None, None
+        accumulation = accumulation if type(accumulation) is int and 1 <= accumulation < (1 << 64) else None
+        density = LivePersistenceFrame(
             update_sequence=as_frame_sequence(value.update_sequence),
             timestamp_ns=as_timestamp_ns(value.timestamp_ns),
             source_frame_sequence=as_frame_sequence(value.source_frame_sequence),
@@ -2242,7 +2293,21 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             timestamp_quality=timestamp_quality,
             acquisition_epoch=publication_context.acquisition_epoch,
             clock_domain=publication_context.clock_domain,
+            receiver_id=receiver_id,
+            accumulation_id=publication_context.session_id,
+            native_accumulation_sequence=accumulation,
+            native_quality_flags=int(getattr(value, "quality_flags", 0)),
         )
+        identity: DensityLayerIdentity | None = None
+        try:
+            if identity_available and publication_context.session_id is not None:
+                identity = DensityLayerIdentity(density.source_id, density.config_generation,
+                    density.update_sequence, density.source_frame_sequence, publication_context.session_id,
+                    receiver_id, density.acquisition_epoch, accumulation)
+        except ValueError:
+            pass  # Valid legacy density may not have a qualified creation identity.
+        journal = self._density_journals[1 if receiver_id == "RX2" else 0]
+        return replace(density, layer_ready=journal.receipt(original_ref, identity, self._ready_bridge))
 
     def _publish_frame(self, frame: Any, *, expected_engine: Any = None) -> bool:
         with self._lock:
@@ -2490,14 +2555,34 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._paired_density_sequence_floor = None
 
 
-def _shutdown_engine_instance(engine: Any, *, before_disconnect: Callable[[], None] | None = None) -> None:
+def _join_stopped_engine(engine: Any, native_module: Any) -> None:
+    """Exact native idle state has no started worker to join.
+
+    request_stop() intentionally does not transition CREATED/CONFIGURED, and
+    join() rejects those states. Never skip join for an unknown/running/error
+    state, missing state API or non-boolean/true streaming readback.
+    """
+    states = getattr(native_module, "EngineState", None)
+    try:
+        actual = engine.state()
+        idle = (() if states is None else tuple(getattr(states, name, None)
+            for name in ("CREATED", "CONFIGURED") if getattr(states, name, None) is not None))
+        if idle and type(actual) is type(idle[0]) and actual in idle and engine.streaming is False:
+            return
+    except Exception:
+        pass  # A failed diagnostic state read is NOT proof of idle ownership.
+    engine.join()
+
+
+def _shutdown_engine_instance(engine: Any, *, native_module: Any = None,
+                              before_disconnect: Callable[[], None] | None = None) -> None:
     """Require join/disconnect before a failed Start may try another route."""
 
     try:
         engine.request_stop()
     except Exception:
         pass
-    engine.join()
+    _join_stopped_engine(engine, native_module)
     if before_disconnect is not None:
         before_disconnect()
     engine.disconnect()
@@ -2515,6 +2600,16 @@ def _error_state() -> Any:
     return LiveSessionState.ERROR
 
 
+def _pluto_density_capacity(native: object, live: LiveConfiguration) -> int:
+    """Pure loaded CPU/Auto API admission, no RF probe or vendor substitution."""
+    if (not live.persistence_enabled or live.backend.value not in ("cpu", "auto")
+            or getattr(native, "PlutoReceiverSelection", None) is None
+            or not callable(getattr(getattr(native, "PlutoFixedBandEngine", None),
+                                    "drain_density_layer_ready_events", None))):
+        return 0
+    return layer_journal_capacity(native)
+
+
 def _native_fixed_band_config(
     native_module: Any,
     live: LiveConfiguration,
@@ -2529,6 +2624,7 @@ def _native_fixed_band_config(
     allow_r10d5_evidence_buffer_geometry: bool = False,
     allow_nonstandard_evidence_buffer_geometry: bool = False,
     analytical_event_capacity: int = 0,
+    layer_event_capacity: int = 0,
 ) -> Any:
     """Build the P07 fixed-band native config from the applied live config.
 
@@ -2558,6 +2654,9 @@ def _native_fixed_band_config(
     bandwidth_hz = live.analog_bandwidth_hz if live.analog_bandwidth_hz is not None else live.sample_rate_hz
     if type(analytical_event_capacity) is not int or analytical_event_capacity not in (0, 4096):
         raise ValueError("native owner journal capacity must be explicitly bounded")
+    if (type(layer_event_capacity) is not int or layer_event_capacity not in (0, 64)
+            or (layer_event_capacity and layer_event_capacity != _pluto_density_capacity(native_module, live))):
+        raise ValueError("native density journal capacity/protocol was not admitted")
     device = native_module.DeviceConfig(
         source_id,
         context_uri,
@@ -2611,6 +2710,8 @@ def _native_fixed_band_config(
         persistence,
     )
     receiver_arguments = {} if receiver_selection is None else {"receiver_selection": receiver_selection}
+    if layer_event_capacity:
+        receiver_arguments["layer_event_capacity"] = layer_event_capacity
     if analytical_event_capacity:
         if analytical_event_capacity != owner_journal_capacity(native_module, live.backend.value):
             raise ValueError("native owner journal capacity/protocol was not admitted")

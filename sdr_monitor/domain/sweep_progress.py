@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, validate_acquisition, validate_position
 from .sweep_statistics import SweepStatisticsFrame
+from .layer_ready import LayerReadyReceipt, validate_sweep_layer_receipt
 
 
 _VALIDATION_BATCH = 65_536
@@ -60,8 +61,12 @@ class SweepProgressFrame:
     segment_acquisition: tuple[SweepSegmentAcquisition, ...] | None = None
     statistics: SweepStatisticsFrame | None = None
     last_admitted_segment: SweepSegmentPosition | None = None
+    receiver_id: str | None = None
+    layer_ready: LayerReadyReceipt | None = None
 
     def __post_init__(self) -> None:
+        if self.receiver_id not in (None, "RX1", "RX2"):
+            raise ValueError("Sweep progress receiver must be explicit typed metadata")
         if not self.source_id.strip() or not self.unit.strip():
             raise ValueError("progress requires explicit source and unit")
         for number in (self.sequence, self.epoch, self.revision):
@@ -88,6 +93,9 @@ class SweepProgressFrame:
             raise ValueError("invalid native progress array types")
         _validate_progress_arrays(arrays, indices)
         generation_pairs = tuple((pair[0], pair[1]) for pair in acquired)
+        validate_sweep_layer_receipt(self.layer_ready, source_id=self.source_id,
+            epoch=self.epoch, sequence=self.sequence, revision=self.revision,
+            acquired=generation_pairs, pending=pending, receiver_id=self.receiver_id)
         validate_position(self.last_admitted_segment, generation_pairs)
         object.__setattr__(self, "acquired_segment_generations", generation_pairs)
         object.__setattr__(self, "pending_segment_indices", pending)

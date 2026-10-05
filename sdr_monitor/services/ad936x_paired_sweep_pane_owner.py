@@ -19,6 +19,8 @@ from .ad936x_rtbw_pane_owner import Ad936xRtbwPaneOwner
 from .ad936x_identity_admission import normalized_pluto_serial
 from .native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
 from .pane_resource_session import PaneCaptureAdmission
+from ..domain.layer_journal import LayerJournalSnapshot
+from .pane_layer_admission import cached_layer_journals
 
 
 class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
@@ -43,6 +45,10 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         self._terminal_archive: PairedSweepTerminalArchive | None = None
         self._terminal_archive_error: str | None = None
         self._started_run: PairedSweepRunIdentity | None = None
+        self._terminal_layers: tuple[LayerJournalSnapshot, ...] = ()
+
+    def layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        return cached_layer_journals(self._coordinator) if self._coordinator is not None else self._terminal_layers
 
     def validate_endpoint(self, endpoint: ReceiverEndpoint | SpectrumTraceEndpoint) -> None:
         if endpoint not in self._endpoints:
@@ -87,6 +93,7 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         profile.paired_request.validate_applied(self._live.current_snapshot(), selected.revision)
         if self._factory is not None:
             raise RuntimeError("paired Sweep still owns a prior capture; explicit Stop required")
+        self._terminal_layers = ()
         # One bounded retained drain, not another active queue. Release the
         # previous archive BEFORE a new native/publication reservation begins.
         self._terminal_archive = None
@@ -125,6 +132,11 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
                 if archive_error is not None:
                     raise ExceptionGroup("paired Sweep archival and cleanup failed", [archive_error, cleanup_error])
                 raise
+        if self._coordinator is not None:
+            try:
+                self._terminal_layers = cached_layer_journals(self._coordinator)
+            except Exception:  # noqa: BLE001 - cannot undo confirmed native cleanup.
+                self._terminal_layers = ()
         self._factory = None
         self._coordinator = None
         self._started_run = None

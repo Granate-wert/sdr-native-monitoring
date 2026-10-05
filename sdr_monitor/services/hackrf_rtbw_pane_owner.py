@@ -22,6 +22,7 @@ from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, Receive
 
 from .pane_resource_session import PaneCaptureAdmission
 from .owner_journal_scope import capture_owner_scopes
+from ..domain.layer_journal import LayerJournalSnapshot
 
 
 def _same_request_intent(actual: HackrfLiveRequest | None, expected: HackrfLiveRequest) -> bool:
@@ -45,6 +46,9 @@ class HackrfRtbwPaneOwner:
         self._live = live
         self._control_claim = object()
         self._last_publication: tuple[object, object, object] | None = None
+
+    def layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        return self._live.density_layer_journal_snapshots()
 
     def validate_endpoint(self, endpoint: ReceiverEndpoint | SpectrumTraceEndpoint) -> None:
         if (not isinstance(endpoint, ReceiverEndpoint)

@@ -112,8 +112,29 @@ class NativeReadyBridge:
                         or type(ref.offer_sequence) is not int or not 1 <= ref.offer_sequence <= counters.offered):
                     raise ValueError("ready receipt differs from the SAME admitted owner journal")
                 owner_run_id = scope.owner_run_id
-        # Missing/incomplete/unsupported journal is unknown, never a fabricated
-        # native producer proof or a reason to change RF/acquisition lifecycle.
+        mapping, bounds = self.map_native_clock(ref)
+        return DetectorReadyReceipt(
+            self._scope, self._process_id, ref.producer_instance_id, ref.offer_sequence,
+            config_generation, ref.ready_native_ns, source_id, receiver_id,
+            acquisition_epoch, session_id, mapping, bounds, owner_run_id,
+        )
+
+    def map_native_clock(self, ref: Any) -> tuple[ReadyClockMapping, ReadyHostBounds | None]:
+        """Map an original SAME-library clock ref using retained probes only.
+
+        Shared by detector and layer adapters. No sampling, cached-frame
+        re-timestamping or unsupported-clock extrapolation occurs here.
+        """
+        if not self._supported():
+            raise ValueError("native ready receipt has no supported clock protocol")
+        clock = getattr(getattr(self._native, "AnalyticalReadyClock", None), "NativeSteady", None)
+        states = getattr(self._native, "AnalyticalReadyClockState", None)
+        monotonic, regressed = getattr(states, "Monotonic", None), getattr(states, "Regressed", None)
+        if (clock is None or ref.clock != clock or monotonic is None or regressed is None
+                or ref.clock_state not in (monotonic, regressed)
+                or type(ref.ready_native_ns) is not int
+                or not -(1 << 63) <= ref.ready_native_ns < (1 << 63)):
+            raise ValueError("native ready receipt clock contract differs")
         bounds = None
         mapping = self._failure or ReadyClockMapping.OUTSIDE_SAMPLES
         if ref.clock_state == regressed:
@@ -128,8 +149,4 @@ class NativeReadyBridge:
             if lower is not None and upper is not None:
                 bounds = ReadyHostBounds(lower, upper)
                 mapping = ReadyClockMapping.BOUNDED
-        return DetectorReadyReceipt(
-            self._scope, self._process_id, ref.producer_instance_id, ref.offer_sequence,
-            config_generation, ref.ready_native_ns, source_id, receiver_id,
-            acquisition_epoch, session_id, mapping, bounds, owner_run_id,
-        )
+        return mapping, bounds

@@ -48,7 +48,7 @@ def admit_layer_ready(
             kind = LayerReadyKind.SWEEP_PROGRESS
             identity: SweepLayerIdentity | DensityLayerIdentity = SweepLayerIdentity(
                 frame.source_id, frame.epoch, frame.sequence, frame.revision,
-                frame.acquired_segment_generations, frame.pending_segment_indices)
+                frame.acquired_segment_generations, frame.pending_segment_indices, frame.receiver_id)
         elif isinstance(frame, SweepLineFrame):
             if frame.instrument is not None:
                 # Instrument completion timing cannot become native SDR readiness.
@@ -58,14 +58,15 @@ def admit_layer_ready(
             missing_set = frozenset(missing)
             identity = SweepLayerIdentity(frame.source_id, frame.epoch, frame.sequence, None,
                 tuple(pair for pair in frame.segment_config_generations if pair[0] not in missing_set),
-                missing)
+                missing, frame.receiver_id)
         elif isinstance(frame, LivePersistenceFrame):
-            if frame.producer_identity_available is not True or frame.accumulation_id is None:
+            if (frame.producer_identity_available is not True or frame.accumulation_id is None
+                    or receipt.session_id is not None and receipt.session_id != frame.accumulation_id):
                 return LayerReadyAdmission(LayerReadyAdmissionState.REFUSED)
             kind = LayerReadyKind.DENSITY
             identity = DensityLayerIdentity(frame.source_id, frame.config_generation,
                 frame.update_sequence, frame.source_frame_sequence, frame.accumulation_id,
-                frame.receiver_id, frame.acquisition_epoch)
+                frame.receiver_id, frame.acquisition_epoch, frame.native_accumulation_sequence)
         else:
             return LayerReadyAdmission(LayerReadyAdmissionState.REFUSED)
     except (TypeError, ValueError):

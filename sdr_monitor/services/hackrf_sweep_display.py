@@ -13,18 +13,23 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any, cast
+from uuid import uuid4
 
 from ..domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from ..domain.analyzer_sources import AnalyzerSourceSelection
 from ..domain.device_capabilities import DeviceFamily
 from ..domain.hackrf_sweep import HackrfSweepRequest
-from ..domain.live import LiveAdmissionRejected
+from ..domain.live import DEFAULT_LIVE_RESOURCE_BUDGET, LiveAdmissionRejected
+from ..domain.layer_journal import LayerJournalSnapshot, SweepLayerScope
 from .hackrf_activation_preflight import HackrfRuntimeIdentityProbe, _identity_key
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID, HackrfBoardKind
 from .hackrf_sweep_contract import hackrf_sweep_contract_version
 from .completed_line_rate import CompletedLineRateObservation
 from .libhackrf_runtime_identity import LibhackrfRuntimeIdentityPort
 from .native_continuous_sweep import _to_domain_line, _to_domain_progress
+from .native_layer_journal import NativeLayerJournal, layer_journal_capacity
+from .native_ready_bridge import NativeReadyBridge
+from .native_sweep_layer_journal import sweep_layer_receipt, sweep_layer_reserved_bytes
 from .readonly_observation_owner import RetainedReadOnlyObserver
 from .source_capability_admission import admit_source_request
 from .source_capability_providers import _qualified_hackrf_sdk_directory
@@ -51,6 +56,8 @@ class HackrfSweepDisplayService:
         self._last_line = -1
         self._completed_rate = CompletedLineRateObservation()
         self._last_snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
+        self._ready_bridge = NativeReadyBridge(native)
+        self._layer_journal = NativeLayerJournal(native, density=False)
 
     def bind_selection(self, selection: AnalyzerSourceSelection) -> None:
         with self._lock:
@@ -103,6 +110,11 @@ class HackrfSweepDisplayService:
                                         hackrf_sweep_runtime_available=True)
         if not admitted.accepted:
             raise LiveAdmissionRejected("HackRF Sweep request is not admitted")
+        if layer_journal_capacity(self._native, hackrf=True):
+            geometry = request.geometry
+            if (geometry.reduced.total_bytes + sweep_layer_reserved_bytes(geometry.segment_count)
+                    > DEFAULT_LIVE_RESOURCE_BUDGET.max_spectrum_backlog_bytes):
+                raise LiveAdmissionRejected("HackRF Sweep layer retention exceeds existing reduced budget")
 
     def start(self, request: HackrfSweepRequest, selection: AnalyzerSourceSelection) -> None:
         with self._lock:
@@ -116,6 +128,17 @@ class HackrfSweepDisplayService:
             self._selection = selection
             if request.epoch < 1 or request.epoch > (1 << 64) - 1:
                 raise LiveAdmissionRejected("HackRF Sweep requires an assigned positive epoch")
+            capacity = layer_journal_capacity(self._native, hackrf=True)
+            journal = NativeLayerJournal(self._native, capacity, density=False,
+                sweep_segments=request.geometry.segment_count if capacity else 1)
+            if capacity:
+                self._ready_bridge.begin()
+                run = uuid4().hex
+                # Factory binds exactly this epoch; unlike paired AD Configure,
+                # no previous native Sweep owner can silently raise it.
+                journal.begin(SweepLayerScope(self._ready_bridge.clock_scope_id,
+                    self._ready_bridge.host_process_id, run, str(request.source.device_id),
+                    None, run, request.epoch))
             observed = self._identity.observe()
             if (not isinstance(observed, HackrfRuntimeIdentityProbe)
                     or observed.board_kind is not HackrfBoardKind.HACKRF_ONE
@@ -133,11 +156,13 @@ class HackrfSweepDisplayService:
             # terminal poll. It can NEVER serve as cleanup authority for this
             # new claim if the new factory fails before returning a handle.
             self._control = None
+            self._layer_journal = journal
             try:
+                extras = {"layer_event_capacity": capacity} if capacity else {}
                 control = self._native.create_hackrf_sweep_runtime_control(
                     observed.serial_words, str(request.source.device_id), request.epoch,
                     request.fft_size, request.start_hz // 1_000_000,
-                    request.stop_hz // 1_000_000, request.lna_gain, request.vga_gain)
+                    request.stop_hz // 1_000_000, request.lna_gain, request.vga_gain, **extras)
                 if not all(callable(getattr(control, name, None)) for name in
                            ("poll_next_publication", "metrics", "stop")):
                     self._control = control  # uncertain effect: retain, never guess cleanup.
@@ -161,6 +186,9 @@ class HackrfSweepDisplayService:
                 return self._last_snapshot
             try:
                 item = control.poll_next_publication()
+                if self._layer_journal.enabled:
+                    self._layer_journal.drain(self._read_layer_events)
+                    self._ready_bridge.sample()
                 line = progress = None
                 if item is not None:
                     source, epoch, unit = (getattr(item, "source_id", None),
@@ -178,7 +206,8 @@ class HackrfSweepDisplayService:
                             if any(type(pair) is not tuple or len(pair) != 2 or pair[1] != request.epoch
                                    for pair in acquired):
                                 raise ValueError("Sweep progress generation mismatch")
-                            progress = _to_domain_progress(item)
+                            progress = _to_domain_progress(item, layer_ready=sweep_layer_receipt(
+                                item, self._layer_journal, self._ready_bridge, None, progress=True))
                             self._last_progress = (seq, rev)
                     elif hasattr(item, "completed_ns") or hasattr(item, "completed_at_ns"):
                         seq = getattr(item, "line_sequence", getattr(item, "sequence", None))
@@ -189,7 +218,8 @@ class HackrfSweepDisplayService:
                             if any(type(pair) is not tuple or len(pair) != 2 or pair[1] != request.epoch
                                    for pair in generations):
                                 raise ValueError("Sweep terminal generation mismatch")
-                            line = _to_domain_line(item)
+                            line = _to_domain_line(item, layer_ready=sweep_layer_receipt(
+                                item, self._layer_journal, self._ready_bridge, None, progress=False))
                             self._last_line = seq
                     else:
                         raise ValueError("unknown Sweep publication type")
@@ -244,6 +274,11 @@ class HackrfSweepDisplayService:
                 self._stopped = True
             except Exception:  # noqa: BLE001 - only confirmed completion waives explicit cleanup obligation.
                 raise RuntimeError("HackRF Sweep Stop was not confirmed; owner retained") from None
+            if self._layer_journal.enabled:
+                self._ready_bridge.sample()
+            # Joined SAME owner, before exclusion release; diagnostic failure
+            # latches INCOMPLETE without hiding a confirmed native Stop.
+            self._layer_journal.finish(self._read_layer_events)
             release = getattr(self._exclusion, "release_external_analyzer_rx", None)
             try:
                 if not callable(release):
@@ -253,6 +288,18 @@ class HackrfSweepDisplayService:
                 raise RuntimeError("HackRF analyzer RX release failed; owner retained") from None
             self._claimed = self._stop_required = False
             # Keep the stopped control so poll_latest can drain terminal output.
+
+    def layer_journal_snapshot(self) -> LayerJournalSnapshot:
+        """Cached scalar evidence even after close; never probe, drain or Start."""
+        with self._lock:
+            return self._layer_journal.current()
+
+    def _read_layer_events(self, maximum: int) -> object:
+        control = self._control
+        drain = getattr(control, "drain_sweep_layer_ready_events", None)
+        if not callable(drain):
+            raise RuntimeError("HackRF Sweep layer journal unavailable on SAME control")
+        return drain(maximum)
 
     def close(self) -> None:
         with self._lock:

@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .analytical_ready import DetectorReadyReceipt
-from .layer_ready import DENSITY_LAYER_SCALAR_RESERVATION_BYTES
+from .layer_ready import (
+    DENSITY_LAYER_SCALAR_RESERVATION_BYTES, DensityLayerIdentity, LayerReadyKind, LayerReadyReceipt,
+)
 from .identity import (
     ConfigurationGeneration,
     FrameSequence,
@@ -627,6 +629,9 @@ class LivePersistenceFrame:
     clock_domain: str | None = None
     accumulation_id: str | None = None
     native_quality_flags: int = 0
+    # Native reset identity is distinct from the application's session ID.
+    native_accumulation_sequence: int | None = None
+    layer_ready: LayerReadyReceipt | None = None
 
     def __post_init__(self) -> None:
         frequencies = np.asarray(self.frequencies_hz, dtype=np.float64).reshape(-1)
@@ -647,6 +652,20 @@ class LivePersistenceFrame:
         object.__setattr__(self, "timestamp_quality", as_timestamp_quality(self.timestamp_quality))
         object.__setattr__(self, "probability_scale", float(self.probability_scale))
         object.__setattr__(self, "count_scale", float(self.count_scale))
+        if self.native_accumulation_sequence is not None and (
+                type(self.native_accumulation_sequence) is not int
+                or not 1 <= self.native_accumulation_sequence < (1 << 64)):
+            raise ValueError("native density accumulation sequence must be positive or unknown")
+        if self.layer_ready is not None:
+            ref = self.layer_ready
+            if (not isinstance(ref, LayerReadyReceipt) or ref.kind is not LayerReadyKind.DENSITY
+                    or self.producer_identity_available is not True or self.accumulation_id is None
+                    or ref.identity != DensityLayerIdentity(self.source_id, self.config_generation,
+                        self.update_sequence, self.source_frame_sequence, self.accumulation_id,
+                        self.receiver_id, self.acquisition_epoch, self.native_accumulation_sequence)):
+                raise ValueError("density layer receipt differs from the original frame")
+            if ref.session_id is not None and ref.session_id != self.accumulation_id:
+                raise ValueError("density layer owner belongs to a different application session")
 
 
 @dataclass(frozen=True, slots=True)

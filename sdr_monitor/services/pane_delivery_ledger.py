@@ -17,9 +17,10 @@ from time import perf_counter_ns
 from uuid import uuid4
 
 from ..domain.pane_analytical_identity import PaneAnalyticalIdentity
+from ..domain.pane_layer_identity import PaneDeliveryView, PaneLayerAnalyticalIdentity
 from ..domain.pane_delivery_obligation import (
     PaneDeliveryCounters, PaneDeliveryEvent, PaneDeliveryLedgerSnapshot,
-    PaneDeliveryObligationRef, PaneDeliveryRecord, PaneDeliveryStage as Stage,
+    PaneDeliveryObligationRef, PaneDeliveryRecord, PaneDeliveryStage as Stage, PaneViewDeliveryCounters,
 )
 
 HOST_GRAPH_SCALAR_BUDGET = 1_048_576
@@ -56,13 +57,15 @@ class PaneDeliveryLedger:
         self._supported = (0 < len(pane_ids) <= PANE_CAPACITY and len(set(pane_ids)) == len(pane_ids)
                            and all(type(pane) is str and 0 < len(pane) <= 4096 for pane in pane_ids))
         self._counts = {pane: PaneDeliveryCounters(pane) for pane in pane_ids} if self._supported else {}
+        self._view_counts = {(pane, view): PaneDeliveryCounters(pane)
+                             for pane in self._counts for view in PaneDeliveryView}
         # Fixed high-water dedup metadata, NOT an identity authority. Exact
         # original references below (not digests) authorize all transitions.
-        self._markers: dict[str, tuple[int, int, int, int, bytes, bytes]] = {}
+        self._markers: dict[tuple[str, PaneDeliveryView], tuple[int, int, int, int, bytes, bytes]] = {}
         self._records: OrderedDict[int, tuple[PaneDeliveryRecord, int]] = OrderedDict()
         self._terminal_order: OrderedDict[int, None] = OrderedDict()
         self._events: deque[tuple[PaneDeliveryEvent, int]] = deque()
-        self._bytes = BASE_RESERVATION + 2 * _weight(tuple(self._counts.values()))
+        self._bytes = BASE_RESERVATION + 2 * _weight(tuple(self._counts.values())) + 2 * _weight(tuple(self._view_counts.values()))
         self._sequence = self._event_sequence = 0
         self._record_evictions = self._event_evictions = self._event_drops = 0
         self._duplicate_events = self._accounting_failures = self._clock_failures = 0
@@ -70,30 +73,42 @@ class PaneDeliveryLedger:
         self._now_ns = now_ns
         self._lock = Lock()
 
-    def _count(self, pane: str, **increments: int) -> None:
+    def _count(self, pane: str, view: PaneDeliveryView, **increments: int) -> None:
         current = self._counts[pane]
         self._counts[pane] = replace(current, **{
             key: getattr(current, key) + value for key, value in increments.items()})
+        current = self._view_counts[pane, view]
+        self._view_counts[pane, view] = replace(current, **{
+            key: getattr(current, key) + value for key, value in increments.items()})
 
-    def admit(self, pane_id: str, identity: PaneAnalyticalIdentity | None) -> PaneDeliveryObligationRef | None:
+    def admit(self, pane_id: str, identity: PaneAnalyticalIdentity | PaneLayerAnalyticalIdentity | None,
+              *, view: PaneDeliveryView = PaneDeliveryView.SPECTRUM) -> PaneDeliveryObligationRef | None:
         """Called ONLY after exact graph measurement admission, not from UI.
 
-        A high-water marker per pane prevents a repeated native offer becoming
+        A high-water marker per pane/view prevents a repeated native offer becoming
         a new obligation, including after its terminal record was evicted.
         """
         with self._lock:
             if not self._supported:
                 return None
-            if pane_id not in self._counts:
+            if pane_id not in self._counts or not isinstance(view, PaneDeliveryView):
                 self._accounting_failures += 1
                 return None
             if identity is None:
-                self._count(pane_id, unqualified_deliveries=1)
+                self._count(pane_id, view, unqualified_deliveries=1)
                 return None
-            if not isinstance(identity, PaneAnalyticalIdentity) or identity.pane_id != pane_id:
+            if not isinstance(identity, (PaneAnalyticalIdentity, PaneLayerAnalyticalIdentity)) or identity.pane_id != pane_id:
                 self._accounting_failures += 1
                 return None
-            prior = self._markers.get(pane_id)
+            try:
+                # Validate the view BEFORE counters/high-water mutation.
+                PaneDeliveryObligationRef(self._graph_id, 1, identity, view)
+            except ValueError:
+                self._accounting_failures += 1
+                return None
+            offer_sequence = (identity.ready.offer_sequence if isinstance(identity, PaneAnalyticalIdentity)
+                              else identity.ready.creation_sequence)
+            prior = self._markers.get((pane_id, view))
             fingerprint = sha256(repr(identity).encode("utf-8")).digest()
             namespace = sha256(repr((identity.owner_scope, identity.physical_stream_resource_id,
                 identity.capture_id, identity.receiver_endpoint_id,
@@ -108,30 +123,30 @@ class PaneDeliveryLedger:
                     if identity.ready.producer_instance_id != prior[2] or namespace != prior[5]:
                         self._accounting_failures += 1
                         return None
-                    if identity.ready.offer_sequence <= prior[3]:
-                        if identity.ready.offer_sequence == prior[3] and fingerprint != prior[4]:
+                    if offer_sequence <= prior[3]:
+                        if offer_sequence == prior[3] and fingerprint != prior[4]:
                             self._accounting_failures += 1
                         else:
-                            self._count(pane_id, duplicate_admissions=1)
+                            self._count(pane_id, view, duplicate_admissions=1)
                         return None
             # Markers remain fixed scalar tuples even when admitted identities
             # contain maximum-length strings. Charged in BASE_RESERVATION.
-            self._markers[pane_id] = (identity.host_run_serial, identity.host_activation_serial,
-                identity.ready.producer_instance_id, identity.ready.offer_sequence, fingerprint, namespace)
-            self._count(pane_id, qualified_admissions=1)
+            self._markers[pane_id, view] = (identity.host_run_serial, identity.host_activation_serial,
+                identity.ready.producer_instance_id, offer_sequence, fingerprint, namespace)
+            self._count(pane_id, view, qualified_admissions=1)
             self._sequence += 1
             if self._sequence >= (1 << 64):
-                self._count(pane_id, untracked_admissions=1)
+                self._count(pane_id, view, untracked_admissions=1)
                 return None
-            ref = PaneDeliveryObligationRef(self._graph_id, self._sequence, identity)
+            ref = PaneDeliveryObligationRef(self._graph_id, self._sequence, identity, view)
             weight = 2 * _weight(ref) + 512  # record + index + internal snapshot duplicate allowance
             self._make_room(weight)
             if len(self._records) >= RECORD_CAPACITY or self._bytes + weight > HOST_GRAPH_SCALAR_BUDGET:
-                self._count(pane_id, untracked_admissions=1)
+                self._count(pane_id, view, untracked_admissions=1)
                 return None
             self._records[ref.sequence] = (PaneDeliveryRecord(ref, Stage.ADMITTED), weight)
             self._bytes += weight
-            self._count(pane_id, pending=1)
+            self._count(pane_id, view, pending=1)
             self._append_event(ref, Stage.ADMITTED)
             return ref
 
@@ -197,7 +212,7 @@ class PaneDeliveryLedger:
         self._records[record.ref.sequence] = (replace(record, stage=stage), weight)
         if stage in _TERMINAL:
             self._terminal_order[record.ref.sequence] = None
-            self._count(record.ref.identity.pane_id, pending=-1, terminal=1)
+            self._count(record.ref.identity.pane_id, record.ref.view, pending=-1, terminal=1)
         self._append_event(record.ref, stage)
 
     def cancel_unclaimed(self, resource_id: str) -> None:
@@ -216,4 +231,6 @@ class PaneDeliveryLedger:
                 tuple(event for event, _ in self._events), self._record_evictions,
                 self._event_evictions, self._event_drops, self._duplicate_events,
                 self._accounting_failures, self._clock_failures,
-                HOST_GRAPH_SCALAR_BUDGET, self._bytes)
+                HOST_GRAPH_SCALAR_BUDGET, self._bytes,
+                tuple(PaneViewDeliveryCounters(view, counts)
+                      for (_, view), counts in self._view_counts.items()))

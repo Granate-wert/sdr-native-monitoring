@@ -7,6 +7,7 @@ import unittest
 
 from sdr_monitor.domain.pane_analytical_identity import PaneAnalyticalIdentity
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage as Stage
+from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 from sdr_monitor.services.pane_delivery_ledger import (
     EVENT_CAPACITY, HOST_GRAPH_SCALAR_BUDGET, RECORD_CAPACITY, PaneDeliveryLedger,
 )
@@ -183,7 +184,10 @@ class PaneGraphObligationTests(unittest.TestCase):
         self.assertNotEqual(items[0].obligation_ref, items[1].obligation_ref)
         repeated = session.accept_frame(activation, "rx", good)
         self.assertTrue(all(item.obligation_ref is None for item in repeated))
-        self.assertEqual(len(session.pane_delivery_ledger_snapshot().records), 2)
+        self.assertEqual(len(session.pane_delivery_ledger_snapshot().records), 4)
+        self.assertTrue(all(len(item.layer_obligation_refs) == 1 for item in items))
+        self.assertTrue(all(item.layer_obligation_refs[0].view is PaneDeliveryView.WATERFALL for item in items))
+        self.assertTrue(all(item.layer_obligation_refs == () for item in repeated))
         with self.assertRaises(ValueError):
             replace(items[0], obligation_ref=items[1].obligation_ref)
 
@@ -195,8 +199,10 @@ class PaneGraphObligationTests(unittest.TestCase):
         self.assertTrue(session.record_pane_delivery_stage(ref, Stage.PREPARED))
         session.stop_resource("device")
         snapshot = session.pane_delivery_ledger_snapshot()
-        self.assertEqual([record.stage for record in snapshot.records],
+        self.assertEqual([record.stage for record in snapshot.records if record.ref.view is PaneDeliveryView.SPECTRUM],
                          [Stage.PREPARED, Stage.ADMISSION_CANCELLED])
+        self.assertTrue(all(record.stage is Stage.ADMISSION_CANCELLED for record in snapshot.records
+                            if record.ref.view is PaneDeliveryView.WATERFALL))
         self.assertFalse(session.record_pane_delivery_stage(items[1].obligation_ref, Stage.PREPARING))
         self.assertTrue(session.record_pane_delivery_stage(ref, Stage.PREPARATION_CANCELLED))
 
@@ -222,7 +228,8 @@ class PaneGraphObligationTests(unittest.TestCase):
         delivered = session.accept_frame(activation, "rx", bundle)[0]
         self.assertIsNone(delivered.obligation_ref)
         snapshot = session.pane_delivery_ledger_snapshot()
-        self.assertEqual(snapshot.panes[0].unqualified_deliveries, 1)
+        self.assertEqual(snapshot.panes[0].unqualified_deliveries, 2)
+        self.assertEqual([view.counters.unqualified_deliveries for view in snapshot.views], [1, 1, 0])
         self.assertEqual(snapshot.records, ())
         self.assertTrue(owner.running)
 

@@ -90,6 +90,12 @@ def run_case(path: str, case: str) -> None:
                 selected.applied.applied, "product-left", "product-right")
             return PairedSweepRequest("product-resource", pair, sweep, selection.revision, selected)
 
+        if case.startswith("layer-"):
+            from tests.test_app07_paired_sweep_layer_bridge import run_layer_case
+
+            run_layer_case(graph, request(), case, hooks, native)
+            return
+
         if case.startswith("pane-"):
             from tests.test_app07_paired_sweep_capture_job import run_pane_case
 
@@ -105,7 +111,10 @@ def run_case(path: str, case: str) -> None:
         if case == "placeholder-serial":
             # Unknown observations must not downgrade paired admission to the
             # legacy unbound single-route constructor, even when nonblank.
-            selected = replace(selected, device=replace(device, serial="unknown"))
+            # A descriptor cannot keep a known-serial USB expectation while
+            # claiming an unknown serial. Test paired admission, not rejection
+            # by the earlier descriptor-coherence constructor.
+            selected = replace(selected, device=replace(device, serial="unknown", usb_connection=None))
             device = selected.device
             service._snapshot = selected
             refuses_admission(request())
@@ -560,6 +569,7 @@ def run_case(path: str, case: str) -> None:
 class PairedSweepProductLeaseTests(unittest.TestCase):
     def run_native(self, case):
         environment = dict(os.environ, LIBIIO_DLL_PATH=str(Path(MOCK).resolve(strict=True)),
+            SDR_MOCK_LIBIIO_CONTEXT_NAME="usb", SDR_MOCK_LIBIIO_BACKEND_URI="usb:2.42.5",
             SDR_MOCK_LIBIIO_TOPOLOGY_DUAL="1",
             SDR_MOCK_LIBIIO_REFILL_DELAY_MS="1")
         if case == "single":

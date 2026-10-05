@@ -13,6 +13,8 @@ from ..domain.rtl_live import RtlConfigurationPatch, RtlLiveRequest
 from ..domain.live import LiveAdmissionRejected, LiveSnapshot
 from ..domain.analytical_journal import OwnerJournalSnapshot
 from ..services.owner_journal_scope import cached_owner_journals
+from ..domain.layer_journal import LayerJournalSnapshot
+from ..services.pane_layer_admission import cached_layer_journals
 from .analyzer_sources import AnalyzerSourceSelectionApplicationService
 
 
@@ -55,6 +57,7 @@ class AnalyzerRtbwRouter:
                  hackrf: HackrfRtbwPort | None, rtl: RtlRtbwPort | None = None) -> None:
         self._native, self._sources, self._hackrf, self._rtl = native, sources, hackrf, rtl
         self._dispatched: NativeRtbwPort | HackrfRtbwPort | RtlRtbwPort | None = None
+        self._terminal_layers: tuple[LayerJournalSnapshot, ...] = ()
 
     def refresh_selection(self) -> None:
         if self._hackrf is not None:
@@ -65,6 +68,10 @@ class AnalyzerRtbwRouter:
     def analytical_journal_snapshots(self) -> tuple[OwnerJournalSnapshot, ...]:
         """Cached SAME dispatched owner only; no selection fallback or SDK."""
         return cached_owner_journals(self._dispatched) if self._dispatched is not None else ()
+
+    def density_layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        """Cached SAME dispatched owner, never the newly selected device."""
+        return cached_layer_journals(self._dispatched) if self._dispatched is not None else self._terminal_layers
 
     @property
     def hackrf_selected(self) -> bool:
@@ -140,6 +147,7 @@ class AnalyzerRtbwRouter:
         if self._dispatched is not None:
             raise LiveAdmissionRejected("Release the existing RTBW port before another Start")
         port = self._selected_port()
+        self._terminal_layers = ()  # Retired scalar evidence cannot shadow a new owner.
         self._dispatched = port  # Capture BEFORE SDK effects; Stop uses this exact owner.
         try:
             return self._native.start_admitted() if port is self._native else cast(HackrfRtbwPort | RtlRtbwPort, port).start()
@@ -151,6 +159,10 @@ class AnalyzerRtbwRouter:
         port = self._dispatched or self._selected_port()
         snapshot = port.stop()
         if snapshot.error is None and not snapshot.stop_required and not port.is_running():
+            try:
+                self._terminal_layers = cached_layer_journals(port)
+            except Exception:  # noqa: BLE001 - optional diagnostics cannot undo confirmed Stop.
+                self._terminal_layers = ()
             self._dispatched = None
         return snapshot
 

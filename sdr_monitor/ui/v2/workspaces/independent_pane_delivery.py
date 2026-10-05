@@ -12,6 +12,8 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from sdr_monitor.ui.v2_pane_delivery_queue import PaneFairDeliveryQueue
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage
+from sdr_monitor.ui.v2_pane_obligation_refs import report_delivery_refs
+from sdr_monitor.ui.v2_pane_obligation_refs import delivery_obligation_refs
 
 from .independent_pane_board import IndependentPaneBoardV2
 
@@ -92,19 +94,28 @@ class IndependentPaneDeliveryPort(QObject):
                     self._report(prepared, PaneDeliveryStage.UI_REJECTED)
 
     def _report(self, prepared, stage: PaneDeliveryStage) -> None:
-        ref = prepared.delivery.obligation_ref
         callback = getattr(self._board, "_stage_callback", None)
-        if ref is not None and callback is not None:
-            try:
-                callback(ref, stage)
-            except Exception:
-                pass
+        report_delivery_refs(prepared, callback, stage)
 
     def _reject_uncommitted(self, prepared) -> None:
-        ref = prepared.delivery.obligation_ref
+        refs = delivery_obligation_refs(prepared)
         pane = self._board.pane(prepared.binding.slot_number)
-        if ref is not None and (pane is None or pane.spectrum_scene.delivery_requires_ui_rejection(ref)):
-            self._report(prepared, PaneDeliveryStage.UI_REJECTED)
+        for ref in refs:
+            if pane is None:
+                reject = True
+            elif hasattr(pane, "delivery_requires_ui_rejection"):
+                reject = pane.delivery_requires_ui_rejection(ref)
+            elif ref.view.value == "spectrum":
+                reject = pane.spectrum_scene.delivery_requires_ui_rejection(ref)
+            else:
+                reject = True
+            if reject:
+                callback = getattr(self._board, "_stage_callback", None)
+                if callback is not None:
+                    try:
+                        callback(ref, PaneDeliveryStage.UI_REJECTED)
+                    except Exception:
+                        pass
 
     def failed_panes(self) -> tuple[str, ...]:
         return tuple(pane for pane in self._queue.pane_ids if pane in self._failed_panes)

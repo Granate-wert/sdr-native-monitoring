@@ -7,10 +7,12 @@ from ..spectrum.allocation_budget import PresentationBudgetExceeded
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Callable, cast
+import weakref
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, QSettings, QSignalBlocker, QTimer, Signal
+from PySide6.QtGui import QPaintEvent, QRegion
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,6 +41,9 @@ from .contracts import (
     SweepWaterfallLine,
     adapt_waterfall_line,
 )
+from ..spectrum.paint_cadence import UniquePaintCadence, cadence_graphics_widget
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
+from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 
 _SETTINGS_PREFIX = "ui_v2/live/waterfall/v1"
 _SETTINGS_DEBOUNCE_MS = 250
@@ -101,6 +106,12 @@ class WaterfallPane(QWidget):
         self._metrics = WaterfallPaneMetrics()
         self._graphics_terminal_released = False
         self._graphics_state_disconnected = False
+        self._delivery_stage_callback = None
+        self._waterfall_delivery_ref: PaneDeliveryObligationRef | None = None
+        self._waterfall_delivery_scheduled = False
+        self._waterfall_delivery_returned = False
+        self._closed_waterfall_graph: str | None = None
+        self._closed_waterfall_sequence = 0
         self._x_syncing = False
         self._linked_frequency_source: pg.ViewBox | None = None
         self._source_x_range_callback: Callable[..., None] | None = None
@@ -253,7 +264,8 @@ class WaterfallPane(QWidget):
             self._waterfall_x_range_callback = None
         self._linked_frequency_source = None
 
-    def set_line(self, frame: object, *, segment_boundary: bool = False) -> None:
+    def set_line(self, frame: object, *, segment_boundary: bool = False,
+                 obligation_ref: PaneDeliveryObligationRef | None = None) -> bool:
         """Admit a declared row; an explicit same-grid handoff may retain history.
 
         Only a caller that already checked pane/source identity may request a
@@ -266,7 +278,7 @@ class WaterfallPane(QWidget):
         line = adapt_waterfall_line(frame)
         if self._frozen:
             self._set_metrics(rows_frozen_suppressed=self._metrics.rows_frozen_suppressed + 1)
-            return
+            return False
         signature = line.grid_signature
         was_sweep = self._sweep_mode
         if self._sweep_mode:
@@ -292,7 +304,7 @@ class WaterfallPane(QWidget):
                                           rows=rows, timestamp_ns=line.timestamp_ns)
                 except PresentationBudgetExceeded:
                     self._status.setText(text("waterfall.memory_limited"))
-                    return
+                    return False
                 self._grid_signature = signature
                 self._epoch += 1
                 self._last_admitted_timestamp_ns = None
@@ -303,14 +315,14 @@ class WaterfallPane(QWidget):
                 self._begin_epoch(signature)
         if line.timestamp_known and self._last_seen_timestamp_ns is not None and line.timestamp_ns < self._last_seen_timestamp_ns:
             self._set_metrics(rows_out_of_order_rejected=self._metrics.rows_out_of_order_rejected + 1)
-            return
+            return False
         if not line.timestamp_known and line.sequence is not None and self._last_seen_sequence is not None and line.sequence < self._last_seen_sequence:
             self._set_metrics(rows_out_of_order_rejected=self._metrics.rows_out_of_order_rejected + 1)
-            return
+            return False
         if not line.timestamp_known and line.sequence is not None and line.sequence == self._last_seen_sequence:
             # Reconstructed snapshots may carry the same acquisition again.
             # Object identity and unqualified timestamp changes are not new rows.
-            return
+            return False
         if line.timestamp_known:
             self._last_seen_timestamp_ns = line.timestamp_ns
         elif line.sequence is not None:
@@ -320,13 +332,13 @@ class WaterfallPane(QWidget):
             and line.timestamp_ns - self._last_admitted_timestamp_ns < self._config.interval_ns
         ):
             self._set_metrics(rows_cadence_suppressed=self._metrics.rows_cadence_suppressed + 1)
-            return
+            return False
         rows, _ = self._config.dimensions(int(line.values.size))
         try:
             self._renderer.append(line.values, rows=rows, timestamp_ns=line.timestamp_ns)
         except PresentationBudgetExceeded:
             self._status.setText(text("waterfall.memory_limited"))
-            return
+            return False
         self._last_admitted_timestamp_ns = line.timestamp_ns if line.timestamp_known else None
         self._set_metrics(rows_admitted=self._metrics.rows_admitted + 1)
         self._show_initial_physical_grid_if_needed(line.grid_signature)
@@ -334,10 +346,13 @@ class WaterfallPane(QWidget):
         self._update_status()
         if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
-            return
+            return False
         self._upload_tiles()
+        self._admit_waterfall_paint(obligation_ref)
+        return True
 
-    def set_sweep_line(self, update: SweepWaterfallLine, *, segment_boundary: bool = False) -> bool:
+    def set_sweep_line(self, update: SweepWaterfallLine, *, segment_boundary: bool = False,
+                       obligation_ref: PaneDeliveryObligationRef | None = None) -> bool:
         """Replace passes; only a proven scheduled visit may keep same-grid history.
 
         Return whether the publication was admitted, so a frozen/blocked pane
@@ -389,9 +404,86 @@ class WaterfallPane(QWidget):
         self._update_status()
         if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
-            return True
+            return False
         self._upload_tiles()
+        self._admit_waterfall_paint(obligation_ref)
         return True
+
+    def set_delivery_stage_callback(self, callback) -> None:
+        self._delivery_stage_callback = callback
+
+    def stop_delivery_custody(self, refs: tuple[PaneDeliveryObligationRef, ...] | None = None) -> None:
+        ref = self._waterfall_delivery_ref
+        if ref is not None and (refs is None or ref in refs):
+            if not self._waterfall_delivery_returned:
+                self._report_waterfall_delivery(ref, PaneDeliveryStage.STOP_CLEARED)
+            self._waterfall_delivery_ref = None
+            self._waterfall_delivery_scheduled = False
+            self._waterfall_delivery_returned = False
+
+    def delivery_requires_ui_rejection(self, ref: PaneDeliveryObligationRef) -> bool:
+        if ref == self._waterfall_delivery_ref:
+            return False
+        return not (ref.graph_instance_id == self._closed_waterfall_graph
+                    and ref.sequence <= self._closed_waterfall_sequence)
+
+    def _admit_waterfall_paint(self, ref: PaneDeliveryObligationRef | None) -> None:
+        if ref is not None and ref.view is not PaneDeliveryView.WATERFALL:
+            raise ValueError("Waterfall canvas cannot claim another pane view")
+        previous = self._waterfall_delivery_ref
+        if previous == ref and (self._waterfall_delivery_scheduled or self._waterfall_delivery_returned):
+            return
+        if previous is not None and previous != ref and not self._waterfall_delivery_returned:
+            self._report_waterfall_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
+        self._waterfall_delivery_ref = ref
+        self._waterfall_delivery_scheduled = ref is not None
+        self._waterfall_delivery_returned = False
+        if ref is not None:
+            self._report_waterfall_delivery(ref, PaneDeliveryStage.PAINT_SCHEDULED)
+            self._graphics.update()
+
+    def _report_waterfall_delivery(self, ref: PaneDeliveryObligationRef,
+                                   stage: PaneDeliveryStage) -> None:
+        callback = self._delivery_stage_callback
+        if callback is not None:
+            try:
+                callback(ref, stage)
+            except Exception:
+                pass
+        if stage in {PaneDeliveryStage.PAINT_RETURNED, PaneDeliveryStage.PAINT_SUPERSEDED,
+                     PaneDeliveryStage.STOP_CLEARED, PaneDeliveryStage.UI_REJECTED}:
+            if ref.graph_instance_id != self._closed_waterfall_graph:
+                self._closed_waterfall_graph = ref.graph_instance_id
+                self._closed_waterfall_sequence = ref.sequence
+            else:
+                self._closed_waterfall_sequence = max(self._closed_waterfall_sequence, ref.sequence)
+
+    def _waterfall_paint_candidate(self, event: QPaintEvent) -> PaneDeliveryObligationRef | None:
+        ref = self._waterfall_delivery_ref
+        graphics = self._graphics
+        if (ref is None or not self._waterfall_delivery_scheduled or self._waterfall_delivery_returned or not self._render_visible
+                or not self._presentation_active or not graphics.isVisible()
+                or not graphics.viewport().isVisible()):
+            return None
+        for image in self._image_items:
+            if not image.isVisible():
+                continue
+            scene_rect = image.mapRectToScene(image.boundingRect()).intersected(
+                self._view_box.sceneBoundingRect())
+            if scene_rect.isEmpty():
+                continue
+            viewport_rect = graphics.mapFromScene(scene_rect).boundingRect()
+            viewport_rect = viewport_rect.intersected(graphics.viewport().rect())
+            if (not viewport_rect.isEmpty()
+                    and not event.region().intersected(QRegion(viewport_rect)).isEmpty()):
+                return ref
+        return None
+
+    def _waterfall_paint_returned(self, ref: object) -> None:
+        if isinstance(ref, PaneDeliveryObligationRef) and ref == self._waterfall_delivery_ref:
+            if not self._waterfall_delivery_returned:
+                self._waterfall_delivery_returned = True
+                self._report_waterfall_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
 
     def set_linked_frequency_available(self, available: bool) -> None:
         """Only a real linked spectrum, not a default ViewBox, supplies an axis."""
@@ -407,6 +499,13 @@ class WaterfallPane(QWidget):
         """Hide/show paint delivery without changing acquisition or ring admission."""
 
         self._render_visible = bool(visible)
+        if not self._render_visible and self._waterfall_delivery_ref is not None:
+            if not self._waterfall_delivery_returned:
+                self._report_waterfall_delivery(self._waterfall_delivery_ref,
+                                                PaneDeliveryStage.PAINT_SUPERSEDED)
+            self._waterfall_delivery_ref = None
+            self._waterfall_delivery_scheduled = False
+            self._waterfall_delivery_returned = False
         with QSignalBlocker(self._visible_toggle):
             self._visible_toggle.setChecked(self._render_visible)
         if self._render_visible:
@@ -421,6 +520,13 @@ class WaterfallPane(QWidget):
         if active == self._presentation_active:
             return
         self._presentation_active = active
+        if not active and self._waterfall_delivery_ref is not None:
+            if not self._waterfall_delivery_returned:
+                self._report_waterfall_delivery(self._waterfall_delivery_ref,
+                                                PaneDeliveryStage.PAINT_SUPERSEDED)
+            self._waterfall_delivery_ref = None
+            self._waterfall_delivery_scheduled = False
+            self._waterfall_delivery_returned = False
         if active:
             self._update_time_axis()
             self._upload_tiles()
@@ -436,6 +542,11 @@ class WaterfallPane(QWidget):
     def clear_history(self, *, reset_kind: bool = False) -> None:
         """Clear the local ring and images without modifying spectrum, persistence or RX."""
 
+        if self._waterfall_delivery_ref is not None and not self._waterfall_delivery_returned:
+            self._report_waterfall_delivery(self._waterfall_delivery_ref, PaneDeliveryStage.PAINT_SUPERSEDED)
+        self._waterfall_delivery_ref = None
+        self._waterfall_delivery_scheduled = False
+        self._waterfall_delivery_returned = False
         self._renderer.clear()
         if reset_kind:
             self._sweep_mode = False
@@ -554,6 +665,7 @@ class WaterfallPane(QWidget):
         """Synchronously persist presentation choices for a clean close or test."""
 
         self._settings_timer.stop()
+        self.stop_delivery_custody()
         self._write_settings()
 
     def closeEvent(self, event) -> None:
@@ -573,7 +685,20 @@ class WaterfallPane(QWidget):
         self._chart_host.setProperty("ui2Role", "panel")
         host_layout = QVBoxLayout(self._chart_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
-        self._graphics = pg.GraphicsLayoutWidget(self._chart_host)
+        pane_ref = weakref.ref(self)
+
+        def candidate(event):
+            pane = pane_ref()
+            return None if pane is None else pane._waterfall_paint_candidate(event)
+
+        def returned(ref):
+            pane = pane_ref()
+            if pane is not None:
+                pane._waterfall_paint_returned(ref)
+
+        self._graphics = cadence_graphics_widget(
+            self._chart_host, UniquePaintCadence(), lambda _event: None, candidate, returned,
+        )
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
         self._time_axis = WaterfallTimeAxis(locale=self._locale)
         self._frequency_axis = FrequencyAxis(orientation="bottom", locale=self._locale)

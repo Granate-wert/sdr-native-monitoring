@@ -18,6 +18,8 @@ from ..domain.analyzer_sources import AnalyzerSourceSelection
 from ..domain.device_capabilities import DeviceCapabilityInventory, DeviceFamily
 from ..domain.hackrf_live import HackrfConfigurationPatch, HackrfLiveRequest
 from ..domain.identity import ConfigurationGeneration, FrameSequence, SessionId, TimestampQuality
+from ..domain.layer_journal import LayerJournalSnapshot
+from ..domain.layer_ready import DensityLayerIdentity
 from ..domain.live import (
     BackendKind,
     LiveAdmissionRejected,
@@ -35,6 +37,7 @@ from .hackrf_product_live import HackrfNativeFactoryPort, HackrfProductLiveCoord
 from .native_live import _native_frame_metadata, _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
+from .native_layer_journal import HOST_LAYER_RESERVATION, NativeLayerJournal, layer_journal_capacity
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
 from .source_capability_admission import admit_source_request
@@ -54,7 +57,9 @@ class HackrfAnalyzerService:
                  coordinator: HackrfProductLiveCoordinator) -> None:
         self._native, self._exclusion, self._inventory = native, exclusion, inventory
         self._ready_bridge = NativeReadyBridge(native)
-        self._journal = NativeOwnerJournal(native, owner_journal_capacity(native))
+        self._layer_journal = NativeLayerJournal(native, layer_journal_capacity(native, hackrf=True))
+        self._journal = NativeOwnerJournal(native, owner_journal_capacity(native),
+            reserved_host_bytes=HOST_LAYER_RESERVATION if self._layer_journal.enabled else 0)
         self._preflight, self._coordinator = preflight, coordinator
         self._lock = threading.RLock()
         self._commands = threading.Lock()
@@ -102,6 +107,10 @@ class HackrfAnalyzerService:
 
     def analytical_journal_snapshot(self) -> OwnerJournalSnapshot:
         return self._journal.current()
+
+    def density_layer_journal_snapshot(self) -> LayerJournalSnapshot:
+        """Immutable cached diagnostics; no native drain, probe or hardware call."""
+        return self._layer_journal.current()
 
     def analytical_journal_terminal_history(self) -> tuple[OwnerJournalSnapshot, ...]:
         return self._journal.terminal_history()
@@ -213,9 +222,11 @@ class HackrfAnalyzerService:
                 if verified.permit is None:
                     return self._error("HackRF identity preflight refused; explicit Stop required")
                 self._ready_bridge.begin()
-                self._journal.begin(OwnerJournalScope(self._ready_bridge.clock_scope_id,
+                scope = OwnerJournalScope(self._ready_bridge.clock_scope_id,
                     self._ready_bridge.host_process_id, uuid4().hex, str(request.source_id), None,
-                    str(self._snapshot.session_id), request.configuration_generation, self._epoch))
+                    str(self._snapshot.session_id), request.configuration_generation, self._epoch)
+                self._journal.begin(scope)
+                self._layer_journal.begin(scope, enabled=request.persistence_enabled)
                 started = self._coordinator.start_after_confirmation(verified.permit, user_confirmed=True)
                 if not started.started:
                     return self._error("HackRF native activation failed; explicit Stop required")
@@ -244,15 +255,10 @@ class HackrfAnalyzerService:
                 # A failed activation may never have returned a control. There
                 # is no fabricated empty terminal journal for that attempt.
                 self._journal.finish(lambda _count: None)
+            if stopped and not self._layer_journal.current().native_stop_confirmed:
+                self._layer_journal.finish(lambda _count: None)
             if not stopped:
-                if self._journal.enabled:
-                    stopped = self._coordinator.stop(5000, after_native_stop=lambda control:
-                        self._journal.finish(lambda count: cast(Any, control).drain_analytical_ready_events(count),
-                            before_capture=lambda: discard_terminal_owner_presentation(self._native, control))).stopped
-                else:
-                    stopped = self._coordinator.stop(5000).stopped
-                    if stopped:
-                        self._journal.finish(lambda _count: None)
+                stopped = self._coordinator.stop(5000, after_native_stop=self._finish_journals).stopped
             try:
                 self._preflight.close()  # Explicit same-observer cleanup only.
             except Exception:  # noqa: BLE001 - preserve the same pending identity observer.
@@ -267,6 +273,15 @@ class HackrfAnalyzerService:
                 self._snapshot = replace(self._snapshot, state=LiveSessionState.CONNECTED,
                                          error=None, error_kind=None, stop_required=False)
                 return self._snapshot
+
+    def _finish_journals(self, control: object) -> None:
+        """Joined SAME native control; cache terminal evidence before release."""
+        if self._journal.enabled:
+            self._journal.finish(lambda count: cast(Any, control).drain_analytical_ready_events(count),
+                before_capture=lambda: discard_terminal_owner_presentation(self._native, control))
+        else:
+            self._journal.finish(lambda _count: None)
+        self._layer_journal.finish(lambda count: cast(Any, control).drain_density_layer_ready_events(count))
 
     def _convert(self, frame: Any, context: LiveSnapshot) -> LiveSpectrumFrame:
         request = context.hackrf_request
@@ -302,6 +317,13 @@ class HackrfAnalyzerService:
                 or getattr(value, "quality_flags", None) is None
                 or isinstance(value.quality_flags, bool)):
             raise ValueError("missing/foreign HackRF persistence producer metadata")
+        try:
+            original_ref = getattr(value, "layer_ready", None)
+            accumulation = getattr(original_ref, "accumulation_sequence", None)
+        except Exception:  # noqa: BLE001 - broken optional telemetry must not reject valid density.
+            original_ref, accumulation = None, None
+        # Missing/malformed diagnostic scalar never changes valid RF data.
+        accumulation = accumulation if type(accumulation) is int and 1 <= accumulation < (1 << 64) else None
         density = LivePersistenceFrame(
             update_sequence=value.update_sequence, timestamp_ns=value.timestamp_ns,
             source_frame_sequence=value.source_frame_sequence,
@@ -315,7 +337,18 @@ class HackrfAnalyzerService:
             timestamp_quality=TimestampQuality.ESTIMATED
                 if _native_quality_mask(self._native, value, "TIMESTAMP_ESTIMATED") else TimestampQuality.UNKNOWN,
             acquisition_epoch=context.acquisition_epoch, clock_domain=context.clock_domain,
-            accumulation_id=str(context.session_id), native_quality_flags=int(value.quality_flags))
+            accumulation_id=str(context.session_id), native_quality_flags=int(value.quality_flags),
+            native_accumulation_sequence=accumulation)
+        identity: DensityLayerIdentity | None = None
+        try:
+            identity = DensityLayerIdentity(density.source_id, density.config_generation, density.update_sequence,
+                density.source_frame_sequence, str(context.session_id), density.receiver_id,
+                density.acquisition_epoch, density.native_accumulation_sequence)
+        except ValueError:
+            # Historical measurement may lack a qualified creation identity.
+            # Its pre-existing profile/quality guards below remain authoritative.
+            pass
+        density = replace(density, layer_ready=self._layer_journal.receipt(original_ref, identity, self._ready_bridge))
         # Validate before caching, including disabled/profile/grid/source guards.
         replace(context, persistence=density)
         return density
@@ -337,6 +370,7 @@ class HackrfAnalyzerService:
                 request = context.hackrf_request
                 assert request is not None
                 density = None
+                native_density = None
                 if request.persistence_enabled:
                     # Snapshot first, then the latest spectrum. Reading in the
                     # opposite order can consistently pair a new accumulation
@@ -345,14 +379,18 @@ class HackrfAnalyzerService:
                     # genuinely future endpoint; polling order is not proof.
                     densities = self._coordinator.poll_persistence_snapshots(2)
                     if densities:
-                        candidate_density = self._convert_persistence(densities[-1], context)
-                        if candidate_density.update_sequence < self._last_density_sequence:
-                            raise ValueError("HackRF persistence update sequence regressed")
-                        if candidate_density.update_sequence > self._last_density_sequence:
-                            density = candidate_density
+                        native_density = densities[-1]
                 frame, coalesced = self._coordinator.drain_latest_spectrum_frame()
                 self._ready_bridge.sample()
                 self._journal.drain(self._coordinator.drain_analytical_ready_events)
+                if request.persistence_enabled:
+                    self._layer_journal.drain(self._coordinator.drain_density_layer_ready_events)
+                if native_density is not None:
+                    candidate_density = self._convert_persistence(native_density, context)
+                    if candidate_density.update_sequence < self._last_density_sequence:
+                        raise ValueError("HackRF persistence update sequence regressed")
+                    if candidate_density.update_sequence > self._last_density_sequence:
+                        density = candidate_density
                 adapter_scope = self._journal.current().scope
                 spectrum = None
                 if frame is not None:
@@ -450,7 +488,8 @@ def build_hackrf_analyzer_service(native_live: Any, catalog: Any) -> HackrfAnaly
         LibhackrfRuntimeIdentityPort(directory / "hackrf.dll", directory)))
     return HackrfAnalyzerService(native, native_live, catalog.snapshot, preflight,
         HackrfProductLiveCoordinator(cast(HackrfNativeFactoryPort, HackrfNativeRuntimeFactory(lambda: native,
-            analytical_event_capacity=owner_journal_capacity(native)))))
+            analytical_event_capacity=owner_journal_capacity(native),
+            layer_event_capacity=layer_journal_capacity(native, hackrf=True)))))
 
 
 __all__ = ["HackrfAnalyzerService", "build_hackrf_analyzer_service"]

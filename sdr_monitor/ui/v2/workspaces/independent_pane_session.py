@@ -440,6 +440,9 @@ class IndependentPaneSessionV2(QWidget):
             pane = self.board.pane(slot.number)
             if pane is not None:
                 pane.spectrum_scene.stop_delivery_custody(payload)
+                waterfall = getattr(pane, "waterfall_pane", None)
+                if waterfall is not None:
+                    waterfall.stop_delivery_custody(payload)
 
     def _ask_shared_stop(self, impact: tuple[str, ...]) -> bool:
         answer = QMessageBox.question(self, text("analyzer.independent.shared_stop.title"),
@@ -770,6 +773,7 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: {col
                 pane = self.board.pane(slot.number)
                 if pane is not None:
                     pane.spectrum_scene.stop_delivery_custody()
+                    pane.waterfall_pane.stop_delivery_custody()
         self.board.release_presentation_after_shutdown()
         self._terminal_released = True
 

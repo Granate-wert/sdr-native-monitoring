@@ -18,6 +18,7 @@ from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 
 from .v2_pane_presentation import PreparedPaneDelivery
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
+from .v2_pane_obligation_refs import report_delivery_refs
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,12 +67,7 @@ class PaneFairDeliveryQueue:
         self._stage_callback = stage_callback
 
     def _stage_locked(self, packet: PreparedPaneDelivery, stage: PaneDeliveryStage) -> None:
-        ref = packet.delivery.obligation_ref
-        if ref is not None and self._stage_callback is not None:
-            try:
-                self._stage_callback(ref, stage)
-            except Exception:
-                pass
+        report_delivery_refs(packet, self._stage_callback, stage)
 
     @property
     def pane_ids(self) -> tuple[str, ...]:

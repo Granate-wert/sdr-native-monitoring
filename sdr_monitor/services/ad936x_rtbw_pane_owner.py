@@ -21,6 +21,7 @@ from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, Receive
 
 from .pane_resource_session import PaneCaptureAdmission
 from .owner_journal_scope import capture_owner_scopes
+from ..domain.layer_journal import LayerJournalSnapshot
 
 
 _REQUIRED_READBACK = frozenset({"center_hz", "sample_rate_hz", "analog_bandwidth_hz", "gain_db"})
@@ -65,6 +66,9 @@ class Ad936xRtbwPaneOwner:
         self._endpoint_id = receiver_endpoint_id
         self._live = live
         self._control_claim = object()
+
+    def layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        return self._live.density_layer_journal_snapshots()
 
     def validate_endpoint(self, endpoint: ReceiverEndpoint | SpectrumTraceEndpoint) -> None:
         if (not isinstance(endpoint, ReceiverEndpoint)

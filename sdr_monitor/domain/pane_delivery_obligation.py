@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .pane_analytical_identity import PaneAnalyticalIdentity
+from .pane_layer_identity import PaneDeliveryView, PaneLayerAnalyticalIdentity
+from .layer_ready import LayerReadyKind
 
 
 class PaneDeliveryStage(StrEnum):
@@ -29,7 +31,7 @@ class PaneDeliveryStage(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PaneDeliveryObligationRef:
-    """Native spectrum ONLY. Other layers need their own ready provenance.
+    """One view's custody, with its exact native spectrum/layer provenance.
 
     The random graph ID scopes custody, never identifies a physical device.
     A successful paint return is still not a DWM/photon presentation receipt.
@@ -37,15 +39,28 @@ class PaneDeliveryObligationRef:
 
     graph_instance_id: str
     sequence: int
-    identity: PaneAnalyticalIdentity
+    identity: PaneAnalyticalIdentity | PaneLayerAnalyticalIdentity
+    view: PaneDeliveryView = PaneDeliveryView.SPECTRUM
 
     def __post_init__(self) -> None:
         if (type(self.graph_instance_id) is not str or not self.graph_instance_id
                 or self.graph_instance_id != self.graph_instance_id.strip()
                 or len(self.graph_instance_id) > 128 or "\x00" in self.graph_instance_id
                 or type(self.sequence) is not int or not 1 <= self.sequence < (1 << 64)
-                or not isinstance(self.identity, PaneAnalyticalIdentity)):
+                or not isinstance(self.identity, (PaneAnalyticalIdentity, PaneLayerAnalyticalIdentity))
+                or not isinstance(self.view, PaneDeliveryView)):
             raise ValueError("pane custody requires an exact graph and analytical identity")
+        allowed: tuple[PaneDeliveryView, ...]
+        if isinstance(self.identity, PaneAnalyticalIdentity):
+            allowed = (PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL)
+        elif self.identity.ready.kind is LayerReadyKind.DENSITY:
+            allowed = (PaneDeliveryView.PERSISTENCE,)
+        elif self.identity.ready.kind is LayerReadyKind.SWEEP_PROGRESS:
+            allowed = (PaneDeliveryView.SPECTRUM,)
+        else:
+            allowed = (PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL)
+        if self.view not in allowed:
+            raise ValueError("pane view cannot borrow another layer's ready provenance")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +89,12 @@ class PaneDeliveryCounters:
 
 
 @dataclass(frozen=True, slots=True)
+class PaneViewDeliveryCounters:
+    view: PaneDeliveryView
+    counters: PaneDeliveryCounters
+
+
+@dataclass(frozen=True, slots=True)
 class PaneDeliveryLedgerSnapshot:
     graph_instance_id: str
     supported: bool
@@ -88,6 +109,7 @@ class PaneDeliveryLedgerSnapshot:
     clock_failures: int
     reserved_bytes: int
     retained_scalar_bytes: int
+    views: tuple[PaneViewDeliveryCounters, ...] = ()
 
     # Native all-offers counters remain a different denominator. No lifetime
     # completeness or latency verdict is implied by this finite host window.

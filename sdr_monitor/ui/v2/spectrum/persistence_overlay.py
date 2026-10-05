@@ -70,6 +70,7 @@ class PersistenceOverlay:
         self.allocation_budget: PresentationAllocationBudget | None = None
         self.allocation_limited = False
         self.on_budget_changed: Callable[[], None] | None = None
+        self.on_image_uploaded: Callable[[PersistenceDensityView], None] | None = None
         self.request_projection: Callable[[], None] | None = None
         self._worker_revision = 0
         self._worker_generation = 0
@@ -109,6 +110,16 @@ class PersistenceOverlay:
     @property
     def worker_request(self) -> PersistenceImageRequest | None:
         return self._worker_request
+
+    @property
+    def pending_view(self) -> PersistenceDensityView | None:
+        """The one bounded latest density waiting behind cadence/worker work."""
+        return self._pending_view
+
+    def upload_pending_for(self, source_frame: object) -> bool:
+        """Whether this exact source is waiting in the bounded cadence slot."""
+        pending = self._pending_view
+        return pending is not None and pending.source_frame is source_frame
 
     def _invalidate_worker(self, *, history: bool = False) -> None:
         self._worker_generation += 1
@@ -152,7 +163,11 @@ class PersistenceOverlay:
             self._set_allocation_limited(True)
             return True
         if result is None:
-            return False
+            # The exact current request settled without a density image. It is
+            # handled, but it is not an upload and must not leave its UI receipt
+            # waiting for an unrelated repaint or a later Stop.
+            self._discard_pending()
+            return True
         self._image.setImage(result.image, autoLevels=False, levels=(0.0, 1.0))
         self._image.setRect(QRectF(*result.view.physical_rect))
         self._image.setVisible(True)
@@ -167,6 +182,7 @@ class PersistenceOverlay:
         self._last_upload_ns = self._worker_request_ns
         self._set_allocation_limited(False)
         self._set_metrics(image_uploads=self._metrics.image_uploads + 1, retained_extra_image_buffers=1)
+        self._notify_image_uploaded(result.view)
         latest = self._latest_view
         if latest is not None and latest.density is not self._uploaded_density:
             self._pending_view = latest
@@ -372,6 +388,16 @@ class PersistenceOverlay:
             image_uploads=self._metrics.image_uploads + 1,
             retained_extra_image_buffers=1,
         )
+        self._notify_image_uploaded(view)
+
+    def _notify_image_uploaded(self, view: PersistenceDensityView) -> None:
+        callback = self.on_image_uploaded
+        if callback is not None:
+            try:
+                callback(view)
+            except Exception:
+                # UI custody telemetry cannot perturb the bounded image path.
+                pass
 
     def _render_image(self, view: PersistenceDensityView, *, rematerialize: bool = False) -> np.ndarray:
         if self._render_mode is PersistenceRenderMode.DIRECT:

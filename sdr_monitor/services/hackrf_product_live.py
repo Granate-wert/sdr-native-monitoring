@@ -262,6 +262,17 @@ class HackrfProductLiveCoordinator:
             raise RuntimeError("HackRF owner journal unavailable")
         return drain(max_items)
 
+    def drain_density_layer_ready_events(self, max_items: int) -> object:
+        """SAME publication worker and retained owner; never a second SDK open."""
+        if type(max_items) is not int or not 1 <= max_items <= 32:
+            raise ValueError("density layer drain requires its admitted scalar batch")
+        with self._lock:
+            control = self._control if self._state is HackrfProductLiveState.ACTIVE else None
+        drain = getattr(control, "drain_density_layer_ready_events", None)
+        if not callable(drain):
+            raise RuntimeError("HackRF density layer journal unavailable")
+        return drain(max_items)
+
     def stop(self, timeout_ms: int, *, after_native_stop: Callable[[object], None] | None = None) -> HackrfProductLiveStopResult:
         """Run only the existing explicit three-phase native stop once requested."""
 

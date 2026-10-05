@@ -17,6 +17,9 @@ from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverChain
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.services.pane_resource_session import PaneDelivery
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef
+from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
+from .v2_pane_obligation_refs import delivery_obligation_refs
 
 from .v2.spectrum.allocation_budget import PresentationAllocationBudget
 from .v2.spectrum.contracts import PreparedSpectrumFrame
@@ -63,6 +66,9 @@ class PreparedPaneDelivery:
     # The selected device route remains binding.source_id. A paired native
     # frame instead carries its admitted per-RX producer SourceDescriptor.
     producer_source_id: str | None = None
+    # Only refs whose requested layer exists in this exact worker preparation.
+    # None preserves legacy facade behavior when optional metadata is absent.
+    active_obligation_refs: tuple[PaneDeliveryObligationRef, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.spectrum.view.source_frame is not self.delivery.bundle:
@@ -70,6 +76,33 @@ class PreparedPaneDelivery:
         if type(self.delivery.host_run_serial) is not int or self.delivery.host_run_serial < 0:
             raise ValueError("pane publication requires an explicit non-negative host run serial")
         binding, delivery = self.binding, self.delivery
+        active_refs = self.active_obligation_refs
+        if active_refs is not None:
+            if (not isinstance(active_refs, tuple) or len(active_refs) > 3
+                    or any(not isinstance(ref, PaneDeliveryObligationRef) for ref in active_refs)):
+                raise ValueError("prepared custody refs must be a bounded immutable tuple")
+            source_refs = delivery_obligation_refs(delivery)
+            seen_views: set[PaneDeliveryView] = set()
+            prepared_refs: list[PaneDeliveryObligationRef] = []
+            for ref in active_refs:
+                if not any(ref is source for source in source_refs) or ref.view in seen_views:
+                    raise ValueError("prepared custody refs must be exact unique-view source refs")
+                layer_prepared = (ref.view is PaneDeliveryView.SPECTRUM and self.spectrum is not None
+                                  or ref.view is PaneDeliveryView.WATERFALL and self.waterfall is not None
+                                  or ref.view is PaneDeliveryView.PERSISTENCE and self.persistence is not None)
+                if not layer_prepared:
+                    raise ValueError("prepared custody ref has no corresponding prepared layer")
+                seen_views.add(ref.view)
+                prepared_refs.append(ref)
+            expected_refs = tuple(
+                ref for ref in source_refs
+                if (ref.view is PaneDeliveryView.SPECTRUM and self.spectrum is not None
+                    or ref.view is PaneDeliveryView.WATERFALL and self.waterfall is not None
+                    or ref.view is PaneDeliveryView.PERSISTENCE and self.persistence is not None))
+            if (len(expected_refs) != len(prepared_refs)
+                    or any(not any(ref is source_ref for source_ref in expected_refs)
+                           for ref in prepared_refs)):
+                raise ValueError("prepared custody refs must retain each prepared source view")
         producer = self.producer_source_id
         if (producer is not None and (not isinstance(producer, str) or not producer
                 or producer != producer.strip())
@@ -82,12 +115,13 @@ class PreparedPaneDelivery:
             raise ValueError("paired pane delivery differs from its typed receiver selection")
         if delivery.bundle.paired_sweep is not None:
             request = delivery.bundle.paired_sweep.run.request
-            expected = (request.pair.primary_source_id if binding.receiver_selection is ReceiverChainSelection.RX1
-                        else request.pair.secondary_source_id)
+            paired_expected_source_id = (
+                request.pair.primary_source_id if binding.receiver_selection is ReceiverChainSelection.RX1
+                else request.pair.secondary_source_id)
             if (not delivery.bundle.paired_sweep.steps
                     or request.resource_id != binding.physical_stream_resource_id
                     or request.pair.device_id != binding.source_id
-                    or expected != producer):
+                    or paired_expected_source_id != producer):
                 raise ValueError("paired Sweep delivery differs from its selected producer and resource")
         if (delivery.pane_id != binding.pane_id
                 or delivery.physical_stream_resource_id != binding.physical_stream_resource_id
@@ -348,7 +382,14 @@ class PaneDeliveryPreparer:
             with self.allocation_budget.reserve(int(columns * 12 + 8), frame) as allocation:
                 waterfall = waterfall_line_from_sweep(frame, grid_cache=self._grids[binding.pane_id])
                 allocation.commit(waterfall)
-        return PreparedPaneDelivery(binding, delivery, prepared, waterfall, persistence, producer)
+        ready_views = {PaneDeliveryView.SPECTRUM}
+        if waterfall is not None:
+            ready_views.add(PaneDeliveryView.WATERFALL)
+        if persistence is not None:
+            ready_views.add(PaneDeliveryView.PERSISTENCE)
+        source_refs = delivery_obligation_refs(delivery)
+        active_refs = tuple(dict.fromkeys(ref for ref in source_refs if ref.view in ready_views))
+        return PreparedPaneDelivery(binding, delivery, prepared, waterfall, persistence, producer, active_refs)
 
 
 __all__ = ["PanePresentationBinding", "PreparedPaneDelivery", "PaneDeliveryPreparer"]

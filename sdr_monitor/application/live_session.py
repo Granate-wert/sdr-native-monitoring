@@ -43,6 +43,8 @@ from ..domain.device_capabilities import AdapterRuntimeAvailability, DeviceFamil
 from ..services.source_capability_admission import admit_source_request
 from ..domain.analytical_journal import OwnerJournalSnapshot
 from ..services.owner_journal_scope import cached_owner_journals
+from ..domain.layer_journal import LayerJournalSnapshot
+from ..services.pane_layer_admission import cached_layer_journals
 
 
 _Args = ParamSpec("_Args")
@@ -173,6 +175,11 @@ class LiveSessionApplicationService:
         """Immutable cached scalar scope; no device discovery, poll or drain."""
         return (self._rtbw.analytical_journal_snapshots() if self._rtbw is not None
                 else cached_owner_journals(self._port))
+
+    def density_layer_journal_snapshots(self) -> tuple[LayerJournalSnapshot, ...]:
+        """Immutable cached layers from the SAME RTBW owner; no native I/O."""
+        return (self._rtbw.density_layer_journal_snapshots() if self._rtbw is not None
+                else cached_layer_journals(self._port))
 
     def rtl_controls_available(self, source_id: str, selection_revision: int) -> bool:
         """No-I/O exact graph/selection readiness, never hardware or Start proof."""

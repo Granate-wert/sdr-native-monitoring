@@ -4,9 +4,10 @@ Called by the admitted coordinator only. No hardware ownership, IQ or clock
 inference here. BOTH scalar receipts are checked before either grid converts.
 """
 
-from typing import Any
+from typing import Any, Callable
 
 from ..domain.identity import TimestampQuality
+from ..domain.layer_ready import LayerReadyReceipt
 from ..domain.paired_sweep import (
     PairedSweepRunIdentity, PairedSweepStepIdentity, PairedSweepStepObservation,
     PairedSweepStepPair, PairedSweepGainMode, PairedSweepGainReadback,
@@ -19,7 +20,9 @@ from .native_continuous_sweep import _to_domain_line, _to_domain_progress
 
 
 def observed_paired_publication(native: Any, run: PairedSweepRunIdentity,
-                                *, progress: bool = False) -> PairedSweepPublication:
+                                *, progress: bool = False,
+                                layer_receipt: Callable[[Any, str, bool], LayerReadyReceipt | None] | None = None
+                                ) -> PairedSweepPublication:
     """Conversion alone does not authorize a run or hardware."""
     request = run.request
     a, b = native.primary, native.secondary
@@ -90,4 +93,12 @@ def observed_paired_publication(native: Any, run: PairedSweepRunIdentity,
         pair.validate_active(request, identity)
         pairs.append(pair)
     convert = _to_domain_progress if progress else _to_domain_line
-    return PairedSweepPublication(run, tuple(pairs), convert(a), convert(b))
+    # BOTH provenance checks precede diagnostic admission and the ONE domain
+    # array conversion. No replace(frame) array copies or fabricated RF time.
+    if layer_receipt is None:
+        return PairedSweepPublication(run, tuple(pairs), convert(a), convert(b))
+    left = layer_receipt(a, "RX1", progress)
+    right = layer_receipt(b, "RX2", progress)
+    return PairedSweepPublication(run, tuple(pairs),
+        convert(a, receiver_id="RX1", layer_ready=left),
+        convert(b, receiver_id="RX2", layer_ready=right))

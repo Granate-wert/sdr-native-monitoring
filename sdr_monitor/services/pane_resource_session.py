@@ -22,10 +22,11 @@ from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
 from sdr_monitor.domain.analytical_journal import OwnerJournalScope
 from sdr_monitor.domain.analytical_ready import DetectorReadyReceipt
 from sdr_monitor.domain.pane_analytical_identity import PaneAnalyticalIdentity
+from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView, PaneLayerAnalyticalIdentity
 from sdr_monitor.domain.pane_delivery_obligation import (
     PaneDeliveryLedgerSnapshot, PaneDeliveryObligationRef, PaneDeliveryStage,
 )
-from sdr_monitor.domain.live import LiveSpectrumFrame
+from sdr_monitor.domain.live import LiveSpectrumFrame, LivePersistenceFrame
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
@@ -40,6 +41,8 @@ from sdr_monitor.domain.pluto_connection import PlutoUsbConnectionExpectation
 
 from .receiver_lease_manager import ReceiverLease, ReceiverLeaseManager
 from .pane_delivery_ledger import PaneDeliveryLedger
+from .pane_layer_admission import bind_pane_layer_identity, cached_layer_journals
+from ..domain.layer_journal import LayerJournalSnapshot
 from .parallel_receiver_identity import validate_parallel_receiver_identity
 from .pane_resource_diagnostics import (
     PaneDiagnosticError, PaneFailureReason, PaneFailureStage, pane_failure_from_exception,
@@ -229,6 +232,9 @@ class PaneDelivery:
     host_run_serial: int = 0
     analytical_identity: PaneAnalyticalIdentity | None = None
     obligation_ref: PaneDeliveryObligationRef | None = None
+    # Distinct view custody. Legacy Spectrum remains in obligation_ref; these
+    # references never imply that a view was actually prepared/queued/painted.
+    layer_obligation_refs: tuple[PaneDeliveryObligationRef, ...] = ()
 
     def __post_init__(self) -> None:
         ref = self.analytical_identity
@@ -245,6 +251,26 @@ class PaneDelivery:
                 not isinstance(self.obligation_ref, PaneDeliveryObligationRef)
                 or ref is None or self.obligation_ref.identity != ref):
             raise ValueError("pane obligation must retain its original analytical identity")
+        refs = self.layer_obligation_refs
+        if (type(refs) is not tuple or len(refs) > 3
+                or any(not isinstance(item, PaneDeliveryObligationRef) for item in refs)
+                or len({item.view for item in refs}) != len(refs)):
+            raise ValueError("layer custody requires bounded distinct view references")
+        for item in refs:
+            layer = item.identity
+            if (layer.physical_stream_resource_id != self.physical_stream_resource_id
+                    or layer.capture_id != self.capture_id or layer.receiver_endpoint_id != self.receiver_endpoint_id
+                    or layer.pane_id != self.pane_id or layer.host_run_serial != self.host_run_serial
+                    or layer.host_activation_serial != self.host_activation_serial):
+                raise ValueError("layer custody belongs to another pane activation")
+            if isinstance(layer, PaneAnalyticalIdentity):
+                if item.view is not PaneDeliveryView.WATERFALL or layer is not ref:
+                    raise ValueError("RTBW Waterfall must retain the admitted Spectrum creation")
+            else:
+                frame = self.bundle.persistence if item.view is PaneDeliveryView.PERSISTENCE else self.bundle.spectrum
+                if (not isinstance(frame, (LivePersistenceFrame, SweepLineFrame, SweepProgressFrame))
+                        or layer.ready is not frame.layer_ready):
+                    raise ValueError("layer custody must retain its original measurement receipt")
 
     @property
     def pane_id(self) -> str:
@@ -469,8 +495,58 @@ class PaneResourceSession:
         return self._delivery_ledger.note(ref, stage)
 
     def _bind_delivery_obligations(self, deliveries: tuple[PaneDelivery, ...]) -> tuple[PaneDelivery, ...]:
-        return tuple(replace(item, obligation_ref=self._delivery_ledger.admit(
-            item.pane_id, item.analytical_identity)) for item in deliveries)
+        # One cached read per resource/batch, including BOTH paired receivers.
+        # Optional diagnostic failure never invalidates an admitted measurement.
+        journals: dict[str, tuple[LayerJournalSnapshot, ...]] = {}
+        for item in deliveries:
+            resource = item.physical_stream_resource_id
+            if resource not in journals:
+                try:
+                    journals[resource] = cached_layer_journals(self._runtimes[resource].owner)
+                except Exception:  # noqa: BLE001 - telemetry is not RX/measurement control.
+                    journals[resource] = ()
+        result = []
+        for item in deliveries:
+            runtime = self._runtimes[item.physical_stream_resource_id]
+            admission = runtime.admission
+            scope = (dict(admission.owner_journal_scopes).get(item.receiver_endpoint_id)
+                     if admission is not None else None)
+
+            def layer_identity(frame: LivePersistenceFrame | SweepLineFrame | SweepProgressFrame
+                               ) -> PaneLayerAnalyticalIdentity | None:
+                return bind_pane_layer_identity(frame, journals[item.physical_stream_resource_id],
+                    physical_stream_resource_id=item.physical_stream_resource_id, capture_id=item.capture_id,
+                    receiver_endpoint_id=item.receiver_endpoint_id, pane_id=item.pane_id,
+                    host_run_serial=item.host_run_serial, host_activation_serial=item.host_activation_serial,
+                    admitted_density_scope=scope)
+
+            spectrum = item.bundle.spectrum
+            refs = []
+            if isinstance(spectrum, LiveSpectrumFrame):
+                original = self._delivery_ledger.admit(item.pane_id, item.analytical_identity)
+                waterfall = self._delivery_ledger.admit(item.pane_id, item.analytical_identity,
+                                                       view=PaneDeliveryView.WATERFALL)
+                if waterfall is not None:
+                    refs.append(waterfall)
+            else:
+                original = None  # Native Sweep creation is NOT an FFT offer.
+                sweep = layer_identity(spectrum)
+                ticket = self._delivery_ledger.admit(item.pane_id, sweep)
+                if ticket is not None:
+                    refs.append(ticket)
+                # A progressive prefix is not a completed Waterfall row.
+                if isinstance(spectrum, SweepLineFrame):
+                    ticket = self._delivery_ledger.admit(item.pane_id, sweep, view=PaneDeliveryView.WATERFALL)
+                    if ticket is not None:
+                        refs.append(ticket)
+            density = item.bundle.persistence
+            if isinstance(density, LivePersistenceFrame):
+                ticket = self._delivery_ledger.admit(item.pane_id, layer_identity(density),
+                                                    view=PaneDeliveryView.PERSISTENCE)
+                if ticket is not None:
+                    refs.append(ticket)
+            result.append(replace(item, obligation_ref=original, layer_obligation_refs=tuple(refs)))
+        return tuple(result)
 
     @property
     def active_resource_count(self) -> int:

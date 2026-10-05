@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from uuid import uuid4
 from typing import Any, Protocol
 
 import numpy as np
@@ -20,8 +21,15 @@ from ..domain.sweep_progress import SweepProgressFrame
 from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
 from ..domain.sweep_statistics import SweepStatisticsFrame
 from ..domain.pluto_connection import PlutoUsbConnectionExpectation
+from ..domain.layer_ready import LayerReadyReceipt
 from .ad936x_identity_admission import create_identity_bound_owner
 from .completed_line_rate import CompletedLineRateObservation
+from ..domain.layer_journal import LayerJournalSnapshot, SweepLayerScope
+from .native_layer_journal import NativeLayerJournal, LAYER_EVENT_CAPACITY
+from .native_ready_bridge import NativeReadyBridge
+from .native_sweep_layer_journal import (
+    pluto_sweep_layer_capacity, preflight_sweep_layer_config, sweep_layer_receipt,
+)
 
 
 class ContinuousSweepDisplayPort(Protocol):
@@ -84,6 +92,10 @@ class NativeContinuousSweepDisplayService:
         self._latest_progress: SweepProgressFrame | None = None
         self._active_identity: tuple[str, int] | None = None
         self._statistics_cache = _SweepStatisticsCache()
+        self._native = native_module
+        self._ready_bridge = NativeReadyBridge(native_module)
+        self._layer_journal = NativeLayerJournal(native_module, density=False)
+        self._layer_receiver: str | None = None
 
     def start(self, native_config: Any) -> None:
         with self._lock:
@@ -96,6 +108,26 @@ class NativeContinuousSweepDisplayService:
                     or any(not isinstance(source, str) or not source.strip() for source in sources)
                     or len(set(sources)) != 1):
                 raise ValueError("continuous sweep requires one explicit source and epoch")
+            capacity = getattr(native_config, "layer_event_capacity", 0)
+            if (type(capacity) is not int or capacity not in (0, LAYER_EVENT_CAPACITY)
+                    or (capacity and pluto_sweep_layer_capacity(self._native) != capacity)):
+                raise ValueError("Sweep journal config requires admitted loaded API")
+            count = preflight_sweep_layer_config(native_config) if capacity else 1
+            receiver = None
+            if capacity:
+                selection = native_config.segments[0].fixed_band.receiver_selection
+                rx = self._native.PlutoReceiverSelection
+                if selection not in (rx.RX1, rx.RX2) or any(
+                        segment.fixed_band.receiver_selection != selection for segment in native_config.segments):
+                    raise ValueError("Sweep journal requires ONE exact receiver throughout plan")
+                receiver = "RX1" if selection == rx.RX1 else "RX2"
+            journal = NativeLayerJournal(self._native, capacity, density=False, sweep_segments=count)
+            if capacity:
+                self._ready_bridge.begin()
+                run = uuid4().hex
+                journal.begin(SweepLayerScope(self._ready_bridge.clock_scope_id,
+                    self._ready_bridge.host_process_id, run, sources[0], receiver, run, epoch))
+            self._layer_journal, self._layer_receiver = journal, receiver
             # A native configure/start may mutate before throwing. Retain the
             # cleanup obligation before entering either call, not on success.
             self._stop_required = True
@@ -122,6 +154,11 @@ class NativeContinuousSweepDisplayService:
             lines = tuple(self._coordinator.poll_lines()) if self._has_started else ()
             if any((item.source_id, item.epoch) != self._active_identity for item in lines):
                 raise RuntimeError("continuous sweep terminal source/epoch differs from active request")
+            poll_progress = getattr(self._coordinator, "poll_progress", None)
+            native_progress = poll_progress() if self._started and callable(poll_progress) else None
+            if self._layer_journal.enabled:
+                self._layer_journal.drain(self._read_layer_events)
+                self._ready_bridge.sample()
             # Select by producer identity, not arrival position. Keep the
             # terminal watermark distinct from progressive revisions: a late
             # terminal still has consumers even after the next preview arrived.
@@ -129,7 +166,10 @@ class NativeContinuousSweepDisplayService:
             previous = self._terminal_watermark
             if newest is not None and previous is not None and newest.line_sequence <= previous[2]:
                 newest = None
-            line = _to_domain_line(newest, statistics_cache=self._statistics_cache) if newest is not None else None
+            line = (_to_domain_line(newest, statistics_cache=self._statistics_cache,
+                receiver_id=self._layer_receiver, layer_ready=sweep_layer_receipt(newest,
+                    self._layer_journal, self._ready_bridge, self._layer_receiver, progress=False))
+                if newest is not None else None)
             self._ui_superseded += len(lines) - int(line is not None)
             terminal_watermark = self._terminal_watermark
             progress_watermark = self._progress_watermark
@@ -138,8 +178,6 @@ class NativeContinuousSweepDisplayService:
                 terminal_watermark = (line.source_id, line.epoch, line.sequence)
                 if latest_progress is not None and latest_progress.sequence <= line.sequence:
                     latest_progress = None
-            poll_progress = getattr(self._coordinator, "poll_progress", None)
-            native_progress = poll_progress() if self._started and callable(poll_progress) else None
             if (native_progress is not None
                     and (native_progress.source_id, native_progress.epoch) != self._active_identity):
                 raise RuntimeError("continuous sweep progress source/epoch differs from active request")
@@ -158,7 +196,9 @@ class NativeContinuousSweepDisplayService:
                     # Native preview is latest-only, but can still precede a
                     # terminal drained in the same poll. Reject superseded
                     # identity before touching any full-grid array/statistics.
-                    progress = _to_domain_progress(native_progress, statistics_cache=self._statistics_cache)
+                    progress = _to_domain_progress(native_progress, statistics_cache=self._statistics_cache,
+                        receiver_id=self._layer_receiver, layer_ready=sweep_layer_receipt(native_progress,
+                            self._layer_journal, self._ready_bridge, self._layer_receiver, progress=True))
                     progress_watermark = identity
                     latest_progress = progress
             if line is not None and progress is None and latest_progress is not None:
@@ -185,8 +225,21 @@ class NativeContinuousSweepDisplayService:
             # worker exists in those states. Unknown state never waives Stop.
             if getattr(state, "name", None) not in ("CREATED", "CONFIGURED"):
                 self._coordinator.stop()
+            if self._layer_journal.enabled:
+                self._ready_bridge.sample()
+            self._layer_journal.finish(self._read_layer_events)
             self._started = False
             self._stop_required = False
+
+    def layer_journal_snapshot(self) -> LayerJournalSnapshot:
+        """Cached ONLY; no clock/drain/SDK call or synthetic frame creation."""
+        with self._lock:
+            return self._layer_journal.current()
+
+    def _read_layer_events(self, maximum: int) -> object:
+        rx = self._native.PlutoReceiverSelection
+        receiver = rx.RX1 if self._layer_receiver == "RX1" else rx.RX2
+        return self._coordinator.drain_sweep_layer_ready_events(receiver, maximum)
 
     def close(self) -> None:
         with self._lock:
@@ -251,7 +304,9 @@ def _to_domain_position(native: Any) -> SweepSegmentPosition | None:
     return SweepSegmentPosition(*value)
 
 
-def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None) -> SweepProgressFrame:
+def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None,
+                        receiver_id: str | None = None,
+                        layer_ready: LayerReadyReceipt | None = None) -> SweepProgressFrame:
     return SweepProgressFrame(
         source_id=native.source_id, sequence=native.line_sequence,
         epoch=native.epoch, revision=native.revision, unit=native.unit,
@@ -263,10 +318,13 @@ def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache 
         segment_acquisition=_to_domain_acquisition(native),
         last_admitted_segment=_to_domain_position(native),
         statistics=_to_domain_statistics(native, cache=statistics_cache),
+        receiver_id=receiver_id, layer_ready=layer_ready,
     )
 
 
-def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None) -> SweepLineFrame:
+def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None,
+                    receiver_id: str | None = None,
+                    layer_ready: LayerReadyReceipt | None = None) -> SweepLineFrame:
     from ..domain.sweep_lines import SweepQualitySchema
 
     try:
@@ -304,6 +362,7 @@ def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | No
                 getattr(native, "physical_fft_bin_width_hz", 0.0)
             ),
             physical_fft_size=int(getattr(native, "physical_fft_size", 0)),
+            receiver_id=receiver_id, layer_ready=layer_ready,
         )
     except (AttributeError, TypeError, ValueError) as error:
         raise RuntimeError(f"native continuous sweep line conversion failed: {error}") from error
