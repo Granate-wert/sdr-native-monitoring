@@ -252,6 +252,11 @@ struct LiveResourceBudget {
         persistence_snapshot_bytes = checked_add(persistence_snapshot_bytes,
             sdr_core::density_layer_scalar_reservation_bytes,
             "persistence creation ref scalars");
+        if (config.layer_event_capacity != 0U) {
+            persistence_snapshot_bytes = checked_add(persistence_snapshot_bytes,
+                sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity),
+                "density creation journal and drain");
+        }
     }
     const auto persistence_bytes = checked_add(
         persistence_state_bytes,
@@ -278,6 +283,11 @@ struct LiveResourceBudget {
             (continuous_sweep_line_relay_capacity(config) + 3ULL) *
                 sizeof(std::optional<sdr_core::LayerReadyRef>) +
             sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>), "Sweep creation ref scalars");
+        if (config.layer_event_capacity != 0U) {
+            sweep_line_bytes = checked_add(sweep_line_bytes,
+                sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity),
+                "Sweep creation journal and drain");
+        }
     }
     auto total_bytes = checked_add(iq_pool_bytes, dsp_working_bytes, "live-engine memory");
     total_bytes = checked_add(total_bytes, spectrum_backlog_bytes, "live-engine memory");
@@ -344,6 +354,13 @@ void validate(const FixedBandConfig& value) {
     sdr_core::validate(value.dsp);
     sdr_core::validate(value.persistence);
     sdr_core::validate(value.recording);
+    if (value.layer_event_capacity > sdr_core::LayerReadyJournal::max_capacity) {
+        invalid("layer_event_capacity must be in [0, 4096]");
+    }
+    if (value.layer_event_capacity != 0U && !value.persistence.enabled &&
+        (!value.continuous_sweep_line || !value.continuous_sweep_line->enabled)) {
+        invalid("layer creation journals require enabled persistence or Sweep");
+    }
     if (value.sweep_statistics_sink && (!value.continuous_sweep_line ||
         !value.continuous_sweep_line->enabled)) {
         invalid("native Sweep statistics sink requires the coordinator-owned line path");
@@ -516,6 +533,8 @@ struct FixedBandChannelState {
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SweepLineFrame>> sweep_line_queue_;
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::SpectrumFrame>> spectrum_recorder_queue_;
     std::unique_ptr<sdr_core::PersistenceAccumulator> persistence_;
+    std::shared_ptr<sdr_core::LayerReadyJournal> density_layer_journal_;
+    std::shared_ptr<sdr_core::LayerReadyJournal> sweep_layer_journal_;
     std::unique_ptr<sdr_core::ContinuousSweepLineAssembler> sweep_line_assembler_;
     std::unique_ptr<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>> persistence_queue_;
     sdr_core::EngineMetricsCounters counters_{};
@@ -888,6 +907,8 @@ public:
         sweep_line_assembler_.reset();
         persistence_queue_.reset();
         persistence_.reset();
+        density_layer_journal_.reset();
+        sweep_layer_journal_.reset();
         state_.store(sdr_core::EngineState::Stopped, std::memory_order_release);
     }
 
@@ -958,6 +979,26 @@ public:
         return spectrum_queue_->abandon_with([this](const sdr_core::SpectrumFrame& frame) noexcept {
             record_owner_frame(frame, sdr_core::OwnerPresentationDisposition::Cancelled);
         });
+    }
+
+    [[nodiscard]] sdr_core::LayerReadyDrain drain_layer_ready_events(
+        ReceiverSelection receiver, const bool sweep, std::size_t max_items) {
+        // Serializes configure/disconnect with this lookup and bounded drain.
+        // Producer writes only take the journal mutex, never lifecycle/UI locks.
+        std::lock_guard lock(lifecycle_mutex_);
+        if (!configured_ || disconnect_requested_.load(std::memory_order_acquire))
+            invalid("layer journal requires a configured connected owner");
+        if (receiver != ReceiverSelection::Rx1 && receiver != ReceiverSelection::Rx2)
+            invalid("layer journal requires one exact receiver");
+        FixedBandChannelState* channel = this;
+        if (secondary_) {
+            if (receiver == ReceiverSelection::Rx2) channel = secondary_.get();
+        } else if (receiver != config_.receiver_selection) {
+            invalid("layer journal receiver is not admitted by this owner");
+        }
+        const auto& journal = sweep ? channel->sweep_layer_journal_ : channel->density_layer_journal_;
+        if (!journal) invalid("requested layer creation journal is not enabled");
+        return journal->drain(max_items);
     }
 
     [[nodiscard]] PairedFixedBandMetrics paired_metrics() const {
@@ -1428,7 +1469,17 @@ private:
                 );
         }
 
-        auto persistence = std::make_unique<sdr_core::PersistenceAccumulator>(config.persistence);
+        // Allocate all journal objects/rings before device configure/RF writes.
+        // Each chain and layer has a distinct native producer identity.
+        if (config.layer_event_capacity != 0U) {
+            if (config.persistence.enabled) channel->density_layer_journal_ =
+                std::make_shared<sdr_core::LayerReadyJournal>(config.layer_event_capacity);
+            if (config.continuous_sweep_line && config.continuous_sweep_line->enabled)
+                channel->sweep_layer_journal_ =
+                    std::make_shared<sdr_core::LayerReadyJournal>(config.layer_event_capacity);
+        }
+        auto persistence = std::make_unique<sdr_core::PersistenceAccumulator>(
+            config.persistence, channel->density_layer_journal_);
         auto persistence_queue =
             std::make_unique<sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot>>(
                 2U, sdr_core::OverflowPolicy::LatestWins);
@@ -1537,7 +1588,7 @@ private:
                             .usable_stop_hz = profile.display_stop_hz,
                         },
                     },
-                }
+                }, channel.sweep_layer_journal_
             );
         }
 
@@ -1563,6 +1614,8 @@ private:
         sweep_line_queue_ = std::move(channel->sweep_line_queue_);
         spectrum_recorder_queue_ = std::move(channel->spectrum_recorder_queue_);
         persistence_ = std::move(channel->persistence_);
+        density_layer_journal_ = std::move(channel->density_layer_journal_);
+        sweep_layer_journal_ = std::move(channel->sweep_layer_journal_);
         sweep_line_assembler_ = std::move(channel->sweep_line_assembler_);
         persistence_queue_ = std::move(channel->persistence_queue_);
         std::lock_guard metrics_lock(backend_metrics_mutex_);
@@ -2873,5 +2926,15 @@ void FixedBandEngine::set_dsp_delay_for_test(const std::uint32_t milliseconds) n
 sdr_core::AnalyticalReadyDrain FixedBandEngine::drain_analytical_ready_events(
     ReceiverSelection receiver, std::size_t max_items) {
     return impl_->drain_analytical_ready_events(receiver, max_items);
+}
+
+sdr_core::LayerReadyDrain FixedBandEngine::drain_sweep_layer_ready_events(
+    ReceiverSelection receiver, std::size_t max_items) {
+    return impl_->drain_layer_ready_events(receiver, true, max_items);
+}
+
+sdr_core::LayerReadyDrain FixedBandEngine::drain_density_layer_ready_events(
+    ReceiverSelection receiver, std::size_t max_items) {
+    return impl_->drain_layer_ready_events(receiver, false, max_items);
 }
 }  // namespace sdr_pluto

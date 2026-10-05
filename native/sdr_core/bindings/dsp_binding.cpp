@@ -227,6 +227,19 @@ void bind_dsp(py::module_& module) {
         .def_readonly("update_sequence", &LayerReadyRef::update_sequence)
         .def_readonly("source_frame_sequence", &LayerReadyRef::source_frame_sequence)
         .def_readonly("accumulation_sequence", &LayerReadyRef::accumulation_sequence);
+    py::class_<LayerReadySummary>(module, "LayerReadySummary")
+        .def_readonly("producer_instance_id", &LayerReadySummary::producer_instance_id)
+        .def_readonly("created", &LayerReadySummary::created)
+        .def_readonly("clock_regressions", &LayerReadySummary::clock_regressions)
+        .def_readonly("event_capacity", &LayerReadySummary::event_capacity)
+        .def_readonly("events_pending", &LayerReadySummary::events_pending)
+        .def_readonly("events_drained", &LayerReadySummary::events_drained)
+        .def_readonly("events_lost", &LayerReadySummary::events_lost)
+        .def_readonly("first_lost_creation_sequence", &LayerReadySummary::first_lost_creation_sequence)
+        .def_readonly("last_lost_creation_sequence", &LayerReadySummary::last_lost_creation_sequence);
+    py::class_<LayerReadyDrain>(module, "LayerReadyDrain")
+        .def_readonly("creations", &LayerReadyDrain::creations)
+        .def_readonly("summary", &LayerReadyDrain::summary);
     py::enum_<AnalyticalReadyEventKind>(module, "AnalyticalReadyEventKind")
         .value("Offered", AnalyticalReadyEventKind::Offered)
         .value("HandedOff", AnalyticalReadyEventKind::HandedOff)

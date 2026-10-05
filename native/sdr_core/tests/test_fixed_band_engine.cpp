@@ -241,6 +241,67 @@ void single_window_numerical_parity() {
 int main() {
     try {
         {
+            using Selection = sdr_pluto::ReceiverSelection;
+            sdr_pluto::FixedBandEngine owner("usb:mock");
+            auto requested = config();
+            requested.persistence.enabled = true;
+            requested.persistence.mode = sdr_core::PersistenceMode::RollingExact;
+            requested.persistence.power_bins = 16U;
+            requested.persistence.window_frames = 8U;
+            requested.continuous_sweep_line = sdr_pluto::ContinuousSweepLineConfig{
+                .enabled = true, .epoch = 19U, .display_start_hz = 2'449'500'000.,
+                .display_stop_hz = 2'450'500'000., .usable_window_hz = 1'500'000.};
+            requested.layer_event_capacity = 1U;
+            const auto applied = owner.configure(requested);
+            const auto empty = owner.drain_density_layer_ready_events(Selection::Rx1, 0U);
+            if (empty.summary.created != 0U || empty.summary.event_capacity != 1U)
+                throw std::runtime_error("configure fabricates a layer creation");
+            owner.start();
+            if (!wait_for_sweep_lines(owner, 3U)) throw std::runtime_error("layer owner line deadline");
+            owner.stop();
+            const auto density = owner.poll_persistence_snapshots(0U);
+            const auto lines = owner.poll_sweep_line_frames(0U);
+            const auto d = owner.drain_density_layer_ready_events(Selection::Rx1, 0U);
+            const auto s = owner.drain_sweep_layer_ready_events(Selection::Rx1, 0U);
+            if (density.empty() || lines.empty() || !density.back().layer_ready || !lines.back().layer_ready ||
+                d.summary.created == 0U || s.summary.created < 3U || s.summary.events_lost == 0U ||
+                d.summary.producer_instance_id == s.summary.producer_instance_id ||
+                density.back().layer_ready->producer_instance_id != d.summary.producer_instance_id ||
+                lines.back().layer_ready->producer_instance_id != s.summary.producer_instance_id ||
+                density.back().layer_ready->config_generation != applied.config_generation ||
+                lines.back().layer_ready->sweep_epoch != 19U)
+                throw std::runtime_error("actual owner layer receipts lost or aliased");
+            for (const auto* summary : {&d.summary, &s.summary}) {
+                if (summary->created != summary->events_drained + summary->events_pending + summary->events_lost)
+                    throw std::runtime_error("Stop layer creation conservation failed");
+            }
+            const auto reread = owner.drain_sweep_layer_ready_events(Selection::Rx1, 0U);
+            if (!reread.creations.empty() || reread.summary.created != s.summary.created)
+                throw std::runtime_error("drain/reread fabricates a creation");
+            bool refused = false;
+            try { static_cast<void>(owner.drain_density_layer_ready_events(Selection::Rx2, 0U)); }
+            catch (const sdr_core::ConfigurationError&) { refused = true; }
+            if (!refused) throw std::runtime_error("layer journal admits foreign receiver");
+            refused = false;
+            auto invalid_capacity = requested;
+            invalid_capacity.layer_event_capacity = 4097U;
+            try { static_cast<void>(owner.configure(invalid_capacity)); }
+            catch (const sdr_core::ConfigurationError&) { refused = true; }
+            if (!refused || owner.config_generation() != applied.config_generation)
+                throw std::runtime_error("unbounded layer config changed owner");
+            static_cast<void>(owner.configure(requested));
+            const auto rearmed = owner.drain_density_layer_ready_events(Selection::Rx1, 0U);
+            if (rearmed.summary.producer_instance_id == d.summary.producer_instance_id ||
+                rearmed.summary.created != 0U) throw std::runtime_error("reconfigure reuses layer producer");
+            requested.layer_event_capacity = 0U;
+            static_cast<void>(owner.configure(requested));
+            refused = false;
+            try { static_cast<void>(owner.drain_density_layer_ready_events(Selection::Rx1, 0U)); }
+            catch (const sdr_core::ConfigurationError&) { refused = true; }
+            if (!refused) throw std::runtime_error("disabled owner fabricates a layer journal");
+            owner.disconnect();
+        }
+        {
             sdr_pluto::FixedBandEngine owner("usb:mock");
             auto requested = config(); requested.analytical_event_capacity = 64U;
             static_cast<void>(owner.configure(requested));

@@ -625,11 +625,84 @@ void test_pair_terminal_discard() {
     }
     engine.disconnect();
 }
+
+void test_pair_layer_journals(Hooks& hooks) {
+    auto requested = paired_config();
+    requested.primary.continuous_sweep_line = sdr_pluto::ContinuousSweepLineConfig{
+        .enabled = true, .epoch = 23U, .display_start_hz = 2'440'000'000.,
+        .display_stop_hz = 2'460'000'000., .usable_window_hz = 36'000'000.};
+    requested.secondary.continuous_sweep_line = requested.primary.continuous_sweep_line;
+    // Deliberately different diagnostic capacities: NOT an RF-common setting.
+    requested.primary.layer_event_capacity = 1U;
+    requested.secondary.layer_event_capacity = 32U;
+    sdr_pluto::FixedBandEngine engine("usb:mock");
+    const auto mutations = hooks.mutations();
+    auto invalid = requested;
+    invalid.secondary.layer_event_capacity = 4097U;
+    refused([&] { static_cast<void>(engine.configure_paired(invalid)); }, "unbounded RX2 layer ring accepted");
+    // Exact existing aggregate Sweep ceiling: two actual relay reservations
+    // plus one sink. Enabling even a one-record journal must NOT get a second
+    // per-chain ceiling or allocate outside the admitted common resource.
+    auto ceiling = requested;
+    ceiling.primary.layer_event_capacity = ceiling.secondary.layer_event_capacity = 0U;
+    const std::uint64_t relay = std::max<std::uint64_t>(
+        ceiling.primary.continuous_sweep_line->output_queue_capacity,
+        ceiling.primary.device.buffer_samples / ceiling.primary.dsp.hop_size + ceiling.primary.dsp.batch_size + 2U);
+    const auto bins = static_cast<std::uint64_t>(std::floor(20'000'000. /
+        (ceiling.primary.device.sample_rate_hz / ceiling.primary.dsp.fft_size)) + 1.);
+    const auto channel_bytes = bins * 20U * (relay + 2U) + (relay + 3U) *
+        sizeof(std::optional<sdr_core::LayerReadyRef>) + sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>);
+    auto sink = std::make_shared<AnalyticalSink>();
+    sink->reservation = 128ULL * 1024U * 1024U - 2U * channel_bytes;
+    ceiling.analytical_sink = sink;
+    sdr_pluto::validate(ceiling);
+    ceiling.secondary.layer_event_capacity = 1U;
+    refused([&] { static_cast<void>(engine.configure_paired(ceiling)); },
+        "layer ring/drain escaped aggregate Sweep ceiling");
+    require(hooks.mutations() == mutations, "layer capacity refusal changed RF");
+    static_cast<void>(engine.configure_paired(requested));
+    require(hooks.contexts() == 1 && hooks.buffers() == 0, "layer journal opened second context/buffer");
+    engine.start();
+    wait_pair(engine, [](const auto& m) {
+        return m.primary.completed_sweep_lines >= 3U && m.secondary.completed_sweep_lines >= 3U;
+    });
+    require(hooks.buffers() == 1, "layer journaling split shared IIO buffer");
+    engine.stop();
+    std::uint64_t ids[4]{};
+    unsigned index = 0U;
+    for (const auto rx : {Selection::Rx1, Selection::Rx2}) {
+        const auto d = engine.drain_density_layer_ready_events(rx, 0U);
+        const auto s = engine.drain_sweep_layer_ready_events(rx, 0U);
+        const auto density = engine.poll_receiver_persistence_snapshots(rx, 0U);
+        const auto lines = engine.poll_receiver_sweep_line_frames(rx, 0U);
+        require(!density.empty() && !lines.empty() && density.back().layer_ready && lines.back().layer_ready,
+            "paired actual density/line lacks original receipt");
+        require(d.summary.created > 0 && s.summary.created >= 3U &&
+            density.back().layer_ready->producer_instance_id == d.summary.producer_instance_id &&
+            lines.back().layer_ready->producer_instance_id == s.summary.producer_instance_id,
+            "paired layer receipts do not match same channel journals");
+        for (const auto* summary : {&d.summary, &s.summary}) {
+            ids[index++] = summary->producer_instance_id;
+            require(summary->created == summary->events_drained + summary->events_pending + summary->events_lost,
+                "paired Stop layer conservation failed");
+        }
+        if (rx == Selection::Rx1) require(s.summary.events_lost > 0, "bounded layer loss disappeared");
+    }
+    for (unsigned i = 0; i < 4; ++i) for (unsigned j = i + 1; j < 4; ++j)
+        require(ids[i] != ids[j], "paired chains/layers share creation producer");
+    refused([&] { static_cast<void>(engine.drain_sweep_layer_ready_events(Selection::Both, 0U)); },
+        "BOTH aliases one layer journal");
+    refused([&] { static_cast<void>(engine.drain_density_layer_ready_events(Selection::Rx1, 4097U)); },
+        "unbounded layer drain accepted");
+    engine.disconnect();
+    require(hooks.contexts() == 0 && hooks.buffers() == 0, "layer owner cleanup leaked");
+}
 int main() {
     try {
         Hooks hooks;
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "1");
         test_pair_owner_journals(hooks);
+        test_pair_layer_journals(hooks);
         test_pair_terminal_discard();
         test_pair_consumers_and_same_owner_restart(hooks);
         test_pair_guards_before_rf(hooks);
@@ -649,7 +722,7 @@ int main() {
         test_analytical_sink_failure(false, true);
         require(hooks.contexts() == 0 && hooks.buffers() == 0, "paired ownership leaks");
         _putenv_s("SDR_MOCK_LIBIIO_TOPOLOGY_DUAL", "");
-        std::cout << "paired same-owner data plane 17 cases PASS (mock ONLY)\n";
+        std::cout << "paired same-owner data plane 18 cases PASS (mock ONLY)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

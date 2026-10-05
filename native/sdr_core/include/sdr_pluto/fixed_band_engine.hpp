@@ -88,6 +88,10 @@ struct FixedBandConfig {
     // a paired group owner/publication contract, not two calls to this engine.
     ReceiverSelection receiver_selection{ReceiverSelection::Rx1};
     std::uint32_t analytical_event_capacity{};
+    // Optional per-layer creation journals on this SAME channel owner. Zero
+    // disables clock reads/rings; each enabled layer reserves its ring and one
+    // serialized drain inside existing component/paired aggregate budgets.
+    std::uint32_t layer_event_capacity{};
 };
 
 void validate(const FixedBandConfig& value);
@@ -272,6 +276,13 @@ public:
     [[nodiscard]] FixedBandMetrics metrics() const;
     [[nodiscard]] PairedFixedBandMetrics paired_metrics() const;
     [[nodiscard]] sdr_core::AnalyticalReadyDrain drain_analytical_ready_events(
+        ReceiverSelection receiver, std::size_t max_items);
+    // Creation evidence only, NOT queue dispositions/paint. Stop/join keeps
+    // journals drainable; configure creates fresh producer identities. Sweep
+    // drain contains BOTH progress and terminal variants, not a kind filter.
+    [[nodiscard]] sdr_core::LayerReadyDrain drain_sweep_layer_ready_events(
+        ReceiverSelection receiver, std::size_t max_items);
+    [[nodiscard]] sdr_core::LayerReadyDrain drain_density_layer_ready_events(
         ReceiverSelection receiver, std::size_t max_items);
     // Explicit final release only, after Stop/join. Ordinary Stop keeps frames
     // drainable. Returns discarded frames (pairs for a paired owner), not FFTs.
