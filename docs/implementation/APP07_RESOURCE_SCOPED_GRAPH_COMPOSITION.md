@@ -6152,3 +6152,47 @@ two labelled antenna connectors are not two concurrent receiver channels.
 Visible Windows/DPI/DWM, sustained/soak, paired RF and full release remain open.
 Static/current EXE and main product source are unchanged. APP-07/M8 remains
 PARTIAL, H02 TODO, full APP-00…APP-14 goal ACTIVE.
+
+## M8-078 — reconnected RTL and current USB/Ethernet admission
+
+The current f384ec8 build/native (documentation HEAD1477f8e at test time) was
+used for serialized current physical discovery and explicit AD9363 Ethernet
+selection. This is not a relabel of earlier 075/077 hardware evidence.
+
+RTL reconnect is confirmed: MI_00 WinUSB/StatusOK, serial00000001, R820T.
+A bounded normal-tuner100MHz/2.4MSps/FFT4096 run admitted19202048 samples,
+computed9375 FFTs and returned763 polled fresh spectra in8.0050133s.
+Stop/flush/join completed and the USB handle/lease was released.
+Initialization PLL-not-locked/direct-sampling messages are retained.
+These counts are not GUI FPS/LPS, latency, continuity or HF-input qualification.
+
+Five operational catalog entries are not five physical receivers: AD9363 USB
+and its discovered network alias share the observed serial. The explicit
+genuine Ethernet route ip:192.168.1.54 selects that same logical device.
+Current Windows Ethernet2 reports1Gbps; device-side1Gbps proof remains the
+earlier077 measurement. Current capability readback caps Fs at30.72MSps.
+Unknown-serial ip:pluto.local is not admitted as another independent Pluto.
+
+The intended current2x2 is AD9364USB / HackRF / AD9363Ethernet / RTL, with
+tinySA excluded only from this physical batch; tinySA backend remains.
+The actual production identity guard refuses unknown-serial AD9364USB plus
+stable-serial AD9363Ethernet before RF. It currently has no evidence-bound
+cross-route exclusion proof for this combination. Separately, pane Stage
+carries network-discovery intent but not exact URI intent; discovery still
+prefers the AD9363 USB route. Network discovery alone cannot prove Ethernet RX.
+
+Next root backend packet: typed explicit route intent through pane Stage and
+the SAME graph pool, fresh USB/IP alias-exclusion evidence, negative/stale/
+duplicate-identity tests and native pre-RF expected-identity checks.
+No fabricated serial, USB expectation attached to an Ethernet owner, relaxed
+alias guard or silent transport fallback is permitted.
+Then qualify actual four-source RX, Stop/Restart isolation, per-view receipts,
+rotations and original screenshots. No current four-source screenshot or PASS
+was produced by this admission diagnostic.
+
+Existing targeted admission/graph-pool/user-plan tests:51passed,
+54subtests passed in1.33s. Source snapshot unchanged; no product implementation,
+static EXE, driver, firmware, network, firewall or security setting changed.
+No new subagent was used. APP-07/M8 remains PARTIAL, H02 TODO; full roadmap
+APP-00…APP-14 remains ACTIVE. Whole release/visible UI/performance/soak remain open.
+
