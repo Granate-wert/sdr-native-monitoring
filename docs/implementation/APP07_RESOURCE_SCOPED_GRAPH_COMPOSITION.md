@@ -5996,3 +5996,38 @@ remain open. No physical RX, visible Windows/DPI/DWM, latency or soak qualificat
 was performed, and the current static EXE was not replaced. Root performed this
 increment without new subagents/model calls; independent backend/release review
 remains open. APP-07/M8 is PARTIAL, H02 is TODO, and the full roadmap is unchanged.
+
+## M8-074: retuning Sweep keeps actual creation identity across the whole plan
+
+Runtime checkpoint: `9028ec65ef972f9733844d70d8c9925207ec5f10`.
+The actual Pluto coordinator now owns an optional bounded creation journal for
+the configured Sweep plan, rather than recreating it for each RF step/pass.
+Paired RX keeps independent RX1/RX2 journals through assembler resets and shared
+synchronization gaps. Actual intermediate and terminal frames retain their
+original creation references; planning/Stage does not invent measured frames.
+
+The one-window path passes a native-only journal into the SAME FixedBand DSP
+assembler, before relay coalescing. No second device open or raw-IQ Python path
+was added. Stop/disconnect retains finite evidence; explicit reconfigure creates
+fresh producer identities. Typed RX drains refuse ambiguous/unselected receivers,
+and journal overflow remains explicit. Journal ring plus serialized drain is
+charged inside the unchanged Sweep component and shared paired/owner budgets.
+The trailing capacity defaults to zero. RF settings, analytical samples,
+measurement timestamps, quality and publication cadence remain unchanged.
+
+Verification: exact diagnostic build, 47/47 native tests (55.59 s), 665 frozen
+files and 581 source inputs. One serial full V2 regression after freeze passed:
+1409 total, 1343 passed, 66 skipped, zero failures (471.949 s), exact clean
+source/native before and after. Additional packaged checks passed for all five
+coordinator scenarios, existing FixedBand owner and immutable layer admission.
+These include selected RX2, paired RX, single-window and retuning lifetimes,
+creation loss conservation and shared-budget refusal before RF configuration.
+Initial candidate failures were retained and test setup errors corrected;
+production timeout, memory, identity and RF guards were not weakened.
+
+This is native creation instrumentation, not measured UI acceleration or
+hardware/visible Windows/DPI/DWM/soak/release acceptance. HackRF density/Sweep
+journals, actual service adapters/clock-owner admission/downstream dispositions
+and all-layer UI V2 delivery/paint integration remain open. No physical RX,
+new subagent/model calls, system mutation or static EXE promotion occurred.
+APP-07/M8 remains PARTIAL, H02 remains TODO, and the full roadmap is unchanged.
