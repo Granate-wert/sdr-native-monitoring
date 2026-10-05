@@ -5837,3 +5837,51 @@ Dedicated UI implementation/review, frozen package/full regression, cached
 tinySA first-cause diagnostics and current HIL remain required. At the end of
 new HIL, provide original 2x2 screenshots of each tested configuration/rotation
 with source/native/EXE provenance; do not relabel historical galleries.
+
+## M8-069: UI V2 Spectrum delivery lifecycle
+
+Runtime checkpoint: `4ec0060b21cda8ea40415dcddd4679e79f5ae472`.
+The UI now carries the original native RTBW Spectrum delivery reference through
+worker preparation, the bounded delivery queue, pane admission, CURRENT curve
+installation and the return of the relevant Spectrum viewport paint call.
+Each stage reports the same reference; fanout remains pane deliveries, not
+additional FFTs. Unsupported/absent readiness remains unqualified.
+
+Latest requested and actually displayed sources are separate. Asynchronous
+projection is not a paint. A failed Spectrum setter before CURRENT installation
+rejects its delivery; later Waterfall/chrome failure does not invalidate an
+already accepted or committed Spectrum delivery. Replacement, queue refusal,
+cancelled preparation and untouched failed-batch tails have explicit outcomes.
+
+A successful Stop captures pending original references before queued Qt
+confirmation. It closes only those references, including already drained queue
+entries, without closing new-run deliveries. Ordinary Stop retains the last
+plot; repainting retained pixels does not create another delivery receipt.
+Terminal shutdown releases source arrays and prevents late projection callbacks
+from restoring slots. Observer failures do not change measurement behavior.
+
+Full regression exposed a terminal memory defect: a dynamically created Qt
+paint class captured scene-bound callbacks and kept a Live snapshot reachable.
+Moving callbacks to widget instance fields fixed the two unchanged memory
+tests; weakening their assertions or adding only a weak timer did not fix it.
+A regression test preserves the distinction between Stop-retained pixels and
+terminal release. The failed earlier `22204b8` run remains separate evidence.
+
+Verification at exact runtime `4ec0060`: root expanded 155 tests (154 passed,
+one skipped, 75.488 s); independent read-only UI source review; fresh diagnostic
+CPU build with 47/47 native tests (56.43 s) and 665 frozen files; one serial full
+UI V2 run with 1404 tests (1338 passed, 66 skipped, zero failures, 494.516 s);
+111 matching packaged-native/mock/UI tests (6.822 s). Source clean before/after,
+matching native SHA256 `055dc369…`, EXE SHA256 `df327e4f…`. Existing NaN warnings
+and expanded-suite Qt teardown diagnostics are retained, not suppressed.
+The earlier synthetic RTL fixture failure remains an unresolved release risk;
+this UI-only correction is not a native timing repair.
+
+These are source/mock/offscreen software proofs, not DWM/display latency,
+physical acquisition, DPI, sustained four-source operation or release approval.
+The diagnostic build is not promoted to the static current application. Requested
+agents: gpt-6-luna/high UI author and distinct gpt-6-sol/high UI reviewer; exact
+runtime variants are not attested. Root performed integration/build/verification.
+APP-07/M8 remains PARTIAL; H02 remains TODO. Next: same-owner tinySA cached
+progress/first-cause diagnostics before new hardware rotations and original 2x2
+screenshots. Sweep/density readiness, performance/soak/visible/release remain open.
