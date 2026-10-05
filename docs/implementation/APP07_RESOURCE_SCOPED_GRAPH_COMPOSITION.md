@@ -5885,3 +5885,41 @@ runtime variants are not attested. Root performed integration/build/verification
 APP-07/M8 remains PARTIAL; H02 remains TODO. Next: same-owner tinySA cached
 progress/first-cause diagnostics before new hardware rotations and original 2x2
 screenshots. Sweep/density readiness, performance/soak/visible/release remain open.
+## M8-070: same-owner tinySA acquisition diagnostics
+
+Runtime checkpoint: `b5dd2a1398ae26ebaeb1da6e23d98d8be04b02b5`.
+The existing retained tinySA acquisition now keeps bounded immutable scalar
+progress and its first fault before cleanup. Diagnostics distinguish command
+write/flush/read, readback, publication and close. The service associates these
+facts with the actual configuration generation and retains terminal diagnostics
+after Stop. Reading the cache performs no serial operation, SDK query or clock
+read and does not open another owner.
+
+Deadlines retain their originating clock domain: existing scan/zero integer
+monotonic nanoseconds and version/settings floating monotonic seconds. Existing
+loop observations are reused; missing or invalid facts remain unknown. A blocked
+flush has no response deadline until the existing flush returns. Diagnostic
+counter overflow marks partial coverage without changing acquisition behavior.
+Earlier framing faults are preserved separately from later close errors; the
+existing caller error precedence is unchanged. Cancellation is not a vendor
+fault. No commands, timeouts, RF settings, point counts, RBW, DSP, queues, native
+policy or UI graphics were changed.
+
+Verification: 14 new causal tests and 147 expanded tests (6.440 s); Ruff on six
+files and mypy on four files; exact diagnostic build with 47/47 native tests
+(54.14 s), 665 frozen files and 577 source inputs; one serial full UI V2 run
+after source freeze with 1409 tests (1343 passed, 66 skipped, zero failures,
+514.503 s); matching packaged-native/mock/UI focus 111 tests (7.159 s) and
+tinySA focus 147 tests (6.786 s). Source clean before/after and inventory
+unchanged. Native SHA256 `055dc369...` is unchanged; EXE SHA256 `40ae6b98...`.
+The diagnostic package is not promoted to the static current application.
+The later documentation commit must not relabel the runtime or build source.
+
+This establishes software diagnostics, not a fix or explanation for the earlier
+rotated tinySA stale trace, physical four-source stability, RF accuracy, visible
+Windows/DPI/DWM latency or release acceptance. Root performed this backend
+increment without new subagent/model calls; whole independent backend/release
+review remains open. APP-07/M8 is PARTIAL and H02 is TODO. Next: serialized
+physical 2x2 tests with same-owner cached first-cause observations before Stop,
+AD9364/AD9363 rotations and original screenshots. Separate Sweep/density
+readiness, fault/performance/soak/visible/release gates remain mandatory.
