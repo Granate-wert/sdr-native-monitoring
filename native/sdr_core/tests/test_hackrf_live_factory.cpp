@@ -48,12 +48,15 @@ void test_pure_translation_retains_every_bounded_field() {
     config.persistence.mode = sdr_core::PersistenceMode::RollingExact;
     config.persistence.power_bins = 32U;
     config.persistence.window_frames = 123U;
+    config.layer_event_capacity = 32U;
     const auto translated = sdr_hackrf::make_hackrf_runtime_dsp_config(config);
     expect(translated.processing.dsp.persistence.enabled &&
            translated.processing.dsp.persistence.mode == sdr_core::PersistenceMode::RollingExact &&
            translated.processing.dsp.persistence.power_bins == 32U &&
            translated.processing.dsp.persistence.window_frames == 123U,
            "factory silently replaced the native persistence profile");
+    expect(translated.processing.dsp.layer_event_capacity == 32U,
+           "factory lost density creation journal capacity");
 
     expect(translated.rx.center_frequency_hz == config.center_frequency_hz,
            "factory lost center frequency");
@@ -97,7 +100,11 @@ void test_pure_translation_retains_every_bounded_field() {
 
 void test_invalid_values_fail_before_any_official_owner_exists() {
     using Mutator = void (*)(sdr_hackrf::HackrfLiveFactoryConfig&);
-    const std::array<std::pair<const char*, Mutator>, 12U> cases{{
+    const std::array<std::pair<const char*, Mutator>, 14U> cases{{
+        {"density-disabled", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.layer_event_capacity = 1U; }},
+        {"density-journal-large", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) {
+             value.persistence.enabled = true; value.layer_event_capacity = 4097U;
+         }},
         {"group-zero", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.averaging_frames = 0U; }},
         {"group-large", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.averaging_frames = 257U; }},
         {"route", +[](sdr_hackrf::HackrfLiveFactoryConfig& value) { value.source_id = "usb:route"; }},

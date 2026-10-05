@@ -176,4 +176,7 @@ std::uint64_t HackrfAcquisitionDspSession::discard_terminal_spectrum_frames() {
 sdr_core::AnalyticalReadyDrain HackrfAcquisitionDspSession::drain_analytical_ready_events(std::size_t max_items) {
     return impl_->dsp.drain_analytical_ready_events(max_items);
 }
+sdr_core::LayerReadyDrain HackrfAcquisitionDspSession::drain_density_layer_ready_events(std::size_t max_items) {
+    return impl_->dsp.drain_density_layer_ready_events(max_items);
+}
 }  // namespace sdr_hackrf

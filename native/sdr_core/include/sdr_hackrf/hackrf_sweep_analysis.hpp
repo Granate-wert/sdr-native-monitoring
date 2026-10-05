@@ -25,6 +25,8 @@ struct HackrfSweepAnalysisConfig {
     // Optional exact analysis end inside a whole-step firmware capture plan.
     // Zero retains the original aligned-range contract.
     double analysis_stop_hz{};
+    // Optional creation evidence before runtime coalescing; default off.
+    std::uint32_t layer_event_capacity{};
 };
 
 struct HackrfSweepAnalysisMetrics {
@@ -58,6 +60,7 @@ public:
     [[nodiscard]] std::vector<sdr_core::SweepLineFrame> finish();
     [[nodiscard]] const sdr_core::SweepLineDefinition& definition() const noexcept;
     [[nodiscard]] HackrfSweepAnalysisMetrics metrics() const;
+    [[nodiscard]] sdr_core::LayerReadyDrain drain_sweep_layer_ready_events(std::size_t max_items);
 
 private:
     struct Impl;

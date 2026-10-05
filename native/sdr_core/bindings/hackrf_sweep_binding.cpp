@@ -125,6 +125,8 @@ void bind_hackrf_sweep(py::module_& module) {
     module.attr("HACKRF_SWEEP_BRIDGE_CONTRACT_VERSION") = 1;
     // Additive scalar metric projection, independent of factory/RF contract1.
     module.attr("HACKRF_SWEEP_METRICS_CONTRACT_VERSION") = 1;
+    // Additive optional journal contract; not RF/device capability evidence.
+    module.attr("HACKRF_LAYER_CREATION_CONTRACT_VERSION") = 1;
     py::class_<sdr_hackrf::HackrfSweepRuntimeAnalysisSession>(
         module, "HackrfSweepRuntimeAnalysisControl"
     )
@@ -143,6 +145,8 @@ void bind_hackrf_sweep(py::module_& module) {
                 }
             }, std::move(publication));
         })
+        .def("drain_sweep_layer_ready_events", &sdr_hackrf::HackrfSweepRuntimeAnalysisSession::drain_sweep_layer_ready_events,
+             py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("metrics", [](const sdr_hackrf::HackrfSweepRuntimeAnalysisSession& value) {
             sdr_hackrf::HackrfSweepRuntimeAnalysisMetrics metrics;
             {
@@ -172,12 +176,16 @@ void bind_hackrf_sweep(py::module_& module) {
            const std::uint16_t range_start_mhz,
            const std::uint16_t range_stop_mhz,
            const std::uint32_t lna_gain_db,
-           const std::uint32_t vga_gain_db) {
+           const std::uint32_t vga_gain_db,
+           const std::uint32_t layer_event_capacity) {
             // Fixed numerical policy is deliberately non-configurable at this
             // boundary. Session::start validates the entire plan/FFT/source
             // before the official port is initialized or opens any device.
             sdr_hackrf::HackrfSweepRuntimeAnalysisConfig config;
             auto& analysis = config.analysis;
+            if (layer_event_capacity > sdr_core::LayerReadyJournal::max_capacity) {
+                throw ConfigurationError("HackRF Sweep layer journal capacity exceeds 4096");
+            }
             if (range_start_mhz < 1U || range_stop_mhz > 6000U ||
                 range_stop_mhz <= range_start_mhz ||
                 range_stop_mhz - range_start_mhz < 20U) {
@@ -202,6 +210,7 @@ void bind_hackrf_sweep(py::module_& module) {
             analysis.acquisition.config_generation = epoch;
             analysis.acquisition_epoch = epoch;
             analysis.fft_size = fft_size;
+            analysis.layer_event_capacity = layer_event_capacity;
             analysis.window = WindowType::Hann;
             analysis.detector = DetectorType::Sample;
             analysis.unit = SpectrumUnit::DbfsBin;
@@ -216,7 +225,7 @@ void bind_hackrf_sweep(py::module_& module) {
         },
         py::arg("expected_serial_words"), py::arg("source_id"), py::arg("epoch"),
         py::arg("fft_size"), py::arg("range_start_mhz"), py::arg("range_stop_mhz"),
-        py::arg("lna_gain_db"), py::arg("vga_gain_db"));
+        py::arg("lna_gain_db"), py::arg("vga_gain_db"), py::arg("layer_event_capacity") = 0U);
 #endif
 }
 

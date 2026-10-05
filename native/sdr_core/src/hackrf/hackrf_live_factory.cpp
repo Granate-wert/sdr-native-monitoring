@@ -97,6 +97,7 @@ HackrfRuntimeDspSessionConfig make_hackrf_runtime_dsp_config(
     dsp.dsp_output_capacity = config.dsp_output_capacity;
     dsp.presentation_capacity = config.presentation_capacity;
     dsp.analytical_event_capacity = config.analytical_event_capacity;
+    dsp.layer_event_capacity = config.layer_event_capacity;
     dsp.persistence = config.persistence;
 
     // These shared validators make all native-only call paths fail closed as

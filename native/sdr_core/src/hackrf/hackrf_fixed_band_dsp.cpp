@@ -77,6 +77,10 @@ void validate_hackrf_fixed_band_dsp_config(const HackrfFixedBandDspConfig& confi
         invalid("HackRF presentation capacity is outside the bounded range");
     }
     sdr_core::validate(config.persistence);
+    if (config.layer_event_capacity > sdr_core::LayerReadyJournal::max_capacity ||
+        (config.layer_event_capacity && !config.persistence.enabled)) {
+        invalid("HackRF density journal requires enabled persistence and capacity in [0,4096]");
+    }
     if (config.persistence.power_bins < 16U || config.persistence.power_bins > 4096U ||
         config.persistence.window_frames > 1000000U) {
         invalid("HackRF persistence dimensions are outside the bounded range");
@@ -87,7 +91,8 @@ void validate_hackrf_fixed_band_dsp_config(const HackrfFixedBandDspConfig& confi
         const auto ring = config.persistence.mode == sdr_core::PersistenceMode::RollingExact
                               ? n * config.persistence.window_frames * 4U : 0U;
         const auto bytes = cells * 4U * 5U + n * 8U * 4U + ring +
-            sdr_core::density_layer_scalar_reservation_bytes;
+            sdr_core::density_layer_scalar_reservation_bytes +
+            (config.layer_event_capacity ? sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity) : 0U);
         if (bytes > 256U * 1024U * 1024U) {
             invalid("HackRF persistence exceeds the 256 MiB allocation policy");
         }
@@ -99,7 +104,9 @@ struct HackrfFixedBandDsp::Impl final {
         : config(std::move(value)),
           presentation(config.presentation_capacity, hackrf_fixed_band_presentation_overflow_policy),
           persistence_queue(2U, sdr_core::OverflowPolicy::DropOldest),
-          persistence(config.persistence) {
+          density_journal(config.layer_event_capacity
+              ? std::make_shared<sdr_core::LayerReadyJournal>(config.layer_event_capacity) : nullptr),
+          persistence(config.persistence, density_journal) {
         sdr_core::DspOptions options;
         options.dc_removal = config.dc_removal;
         options.source = config.source;
@@ -114,6 +121,7 @@ struct HackrfFixedBandDsp::Impl final {
     std::unique_ptr<sdr_core::DspBackend> dsp;
     sdr_core::BoundedQueue<sdr_core::SpectrumFrame> presentation;
     sdr_core::BoundedQueue<sdr_core::PersistenceSnapshot> persistence_queue;
+    std::shared_ptr<sdr_core::LayerReadyJournal> density_journal;
     sdr_core::PersistenceAccumulator persistence;
     mutable std::mutex mutex;
     std::uint64_t iq_blocks_processed{};
@@ -382,5 +390,9 @@ std::uint64_t HackrfFixedBandDsp::discard_presentation_frames() {
 
 sdr_core::AnalyticalReadyDrain HackrfFixedBandDsp::drain_analytical_ready_events(std::size_t max_items) {
     return impl_->dsp->drain_analytical_ready(max_items);
+}
+sdr_core::LayerReadyDrain HackrfFixedBandDsp::drain_density_layer_ready_events(std::size_t max_items) {
+    if (!impl_->density_journal) invalid("HackRF density creation journal is disabled");
+    return impl_->density_journal->drain(max_items);
 }
 }  // namespace sdr_hackrf

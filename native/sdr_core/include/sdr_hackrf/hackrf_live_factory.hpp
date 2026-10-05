@@ -36,6 +36,7 @@ struct HackrfLiveFactoryConfig {
     std::uint32_t averaging_frames{1U};
     sdr_core::PersistenceConfig persistence{};
     std::uint32_t analytical_event_capacity{};
+    std::uint32_t layer_event_capacity{};
 };
 
 // Pure configuration translation and validation. It does not create a port,

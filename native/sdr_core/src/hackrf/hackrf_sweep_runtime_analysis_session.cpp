@@ -191,6 +191,12 @@ HackrfSweepRuntimeAnalysisSession::poll_next_publication() {
     return std::monostate{};
 }
 
+sdr_core::LayerReadyDrain HackrfSweepRuntimeAnalysisSession::drain_sweep_layer_ready_events(std::size_t max_items) {
+    // The analysis object/journal lifetime is immutable for this session.
+    // Only its journal mutex is taken, never the worker's analysis/SDK locks.
+    return impl_->analysis->drain_sweep_layer_ready_events(max_items);
+}
+
 HackrfSweepRuntimeAnalysisMetrics
 HackrfSweepRuntimeAnalysisSession::metrics() const {
     HackrfSweepRuntimeAnalysisMetrics result;

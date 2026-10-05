@@ -312,6 +312,7 @@ void test_persistence_precedes_presentation_and_is_bounded() {
         config.persistence.power_bins = 16U;
         config.persistence.window_frames = 3U;
         config.persistence.snapshot_rate_hz = 15.0;
+        config.layer_event_capacity = 1U;
         sdr_hackrf::HackrfFixedBandDsp dsp(config);
         sdr_hackrf::HackrfRxIngress ingress(ingress_config(2048U));
         const auto input = constant_ci8(1024U);
@@ -366,7 +367,33 @@ void test_persistence_precedes_presentation_and_is_bounded() {
                metrics.persistence.dropped > 0U, "density queue bound/supersession missing");
         expect(dsp.poll_spectrum_frames(0U).size() == 1U,
                "density enlarged the spectrum presentation queue");
+        const auto journal = dsp.drain_density_layer_ready_events(1U);
+        expect(retained.layer_ready && latest.layer_ready && journal.creations.size() == 1U &&
+               journal.creations.front() == *retained.layer_ready &&
+               latest.layer_ready->producer_instance_id == journal.summary.producer_instance_id &&
+               latest.layer_ready->kind == sdr_core::LayerReadyKind::Density &&
+               latest.layer_ready->config_generation == 9U &&
+               latest.layer_ready->update_sequence == 12U &&
+               latest.layer_ready->source_frame_sequence == 11U &&
+               latest.layer_ready->accumulation_sequence > 0U &&
+               journal.summary.created == 12U && journal.summary.events_lost == 11U &&
+               journal.summary.events_pending == 0U && journal.summary.events_drained == 1U,
+               "density readiness was regenerated from presentation or overflow was hidden");
+        const auto drained = dsp.drain_density_layer_ready_events(0U);
+        expect(drained.creations.empty() && drained.summary.created == 12U,
+               "rereading density evidence fabricated another creation");
     }
+    auto bounded = dsp_config();
+    bounded.dsp.fft_size = 8192U;
+    bounded.persistence.enabled = true;
+    bounded.persistence.mode = sdr_core::PersistenceMode::ExponentialDecay;
+    bounded.persistence.power_bins = 1635U;
+    sdr_hackrf::validate_hackrf_fixed_band_dsp_config(bounded);
+    bounded.layer_event_capacity = 4096U;
+    bool budget_rejected = false;
+    try { sdr_hackrf::validate_hackrf_fixed_band_dsp_config(bounded); }
+    catch (const sdr_core::ConfigurationError&) { budget_rejected = true; }
+    expect(budget_rejected, "density journal bypassed the existing 256 MiB component budget");
     auto invalid = dsp_config();
     invalid.dsp.fft_size = 262144U;
     invalid.persistence.enabled = true;

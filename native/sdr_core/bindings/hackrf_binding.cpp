@@ -73,7 +73,7 @@ private:
 };
 
 [[nodiscard]] std::unique_ptr<sdr_hackrf::HackrfRuntimeDspSession>
-make_test_hackrf_runtime_dsp_control(const std::uint32_t blocks) {
+make_test_hackrf_runtime_dsp_control(const std::uint32_t blocks, const std::uint32_t layer_event_capacity) {
     if (blocks == 0U || blocks > r11l_max_fixture_blocks) {
         throw ConfigurationError("HackRF control test fixture blocks must be 1..32");
     }
@@ -94,6 +94,12 @@ make_test_hackrf_runtime_dsp_control(const std::uint32_t blocks) {
     config.processing.dsp.source.backend_id = "native.libhackrf.rx.v1";
     config.processing.dsp.dsp_output_capacity = blocks;
     config.processing.dsp.presentation_capacity = blocks;
+    config.processing.dsp.layer_event_capacity = layer_event_capacity;
+    if (layer_event_capacity) {
+        config.processing.dsp.persistence.enabled = true;
+        config.processing.dsp.persistence.mode = PersistenceMode::ExponentialDecay;
+        config.processing.dsp.persistence.power_bins = 16U;
+    }
 
     return sdr_hackrf::HackrfRuntimeDspSession::start(
         std::make_unique<R11LTestRuntime>(blocks),
@@ -260,6 +266,8 @@ void bind_hackrf(py::module_& module) {
              py::call_guard<py::gil_scoped_release>())
         .def("drain_analytical_ready_events", &sdr_hackrf::HackrfRuntimeDspSession::drain_analytical_ready_events,
              py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
+        .def("drain_density_layer_ready_events", &sdr_hackrf::HackrfRuntimeDspSession::drain_density_layer_ready_events,
+             py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
         .def("poll_persistence_snapshots",
             &sdr_hackrf::HackrfRuntimeDspSession::poll_persistence_snapshots,
             py::arg("max_items") = 0U, py::call_guard<py::gil_scoped_release>())
@@ -295,7 +303,7 @@ void bind_hackrf(py::module_& module) {
     module.def(
         "_make_test_hackrf_runtime_dsp_control",
         &make_test_hackrf_runtime_dsp_control,
-        py::arg("blocks") = 4U
+        py::arg("blocks") = 4U, py::arg("layer_event_capacity") = 0U
     );
 #endif
 

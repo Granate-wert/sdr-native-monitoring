@@ -84,7 +84,8 @@ void bind_hackrf_factory(py::module_& module) {
             std::array<std::uint32_t, 4> expected_serial_words,
             const std::uint32_t averaging_frames,
             const sdr_core::PersistenceConfig& persistence,
-            const std::uint32_t analytical_event_capacity
+            const std::uint32_t analytical_event_capacity,
+            const std::uint32_t layer_event_capacity
         ) {
             auto config = hackrf_live_factory_config(
                 center_frequency_hz,
@@ -108,6 +109,7 @@ void bind_hackrf_factory(py::module_& module) {
             config.averaging_frames = averaging_frames;
             config.persistence = persistence;
             config.analytical_event_capacity = analytical_event_capacity;
+            config.layer_event_capacity = layer_event_capacity;
             // Reject malformed values before the first device/library action.
             static_cast<void>(sdr_hackrf::make_hackrf_runtime_dsp_config(config));
             py::gil_scoped_release release;
@@ -133,7 +135,8 @@ void bind_hackrf_factory(py::module_& module) {
         py::arg("expected_serial_words"),
         py::arg("averaging_frames") = 1U,
         py::arg("persistence") = sdr_core::PersistenceConfig{},
-        py::arg("analytical_event_capacity") = 0U
+        py::arg("analytical_event_capacity") = 0U,
+        py::arg("layer_event_capacity") = 0U
     );
 }
 

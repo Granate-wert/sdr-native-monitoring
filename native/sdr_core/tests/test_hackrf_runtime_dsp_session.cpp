@@ -391,11 +391,66 @@ void test_terminal_discard_and_post_stop_drain() {
         "HackRF discarded queue refs not cancelled exactly once");
 }
 
+void test_density_creation_same_owner_stop_retention_and_preflight() {
+    auto state = std::make_shared<FakeState>();
+    auto requested = config();
+    requested.processing.dsp.persistence.enabled = true;
+    requested.processing.dsp.persistence.mode = sdr_core::PersistenceMode::ExponentialDecay;
+    requested.processing.dsp.persistence.power_bins = 16U;
+    requested.processing.dsp.persistence.snapshot_rate_hz = 30.0;
+    requested.processing.dsp.layer_event_capacity = 1U;
+    auto invalid = requested;
+    invalid.processing.dsp.layer_event_capacity = 4097U;
+    bool refused = false;
+    try {
+        static_cast<void>(sdr_hackrf::HackrfRuntimeDspSession::start(
+            std::make_unique<FakeRuntime>(state), invalid));
+    } catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused && state->calls.empty(), "density journal preflight opened HackRF");
+    auto session = sdr_hackrf::HackrfRuntimeDspSession::start(
+        std::make_unique<FakeRuntime>(state), requested);
+    const auto empty = session->drain_density_layer_ready_events(0U);
+    expect(empty.summary.created == 0U && empty.creations.empty(), "Start fabricated density");
+    for (std::uint64_t index = 0U; index < 4U; ++index) {
+        expect(state->emit(1'000'000'000LL + static_cast<std::int64_t>(index) * 100'000'000LL) == 0,
+               "fake density callback refused");
+        expect(wait_until([&] {
+            return session->metrics().processing.worker_blocks_processed == index + 1U;
+        }), "density worker did not process the admitted callback");
+    }
+    expect(session->stop(1s).complete(), "density runtime Stop did not join/close");
+    const auto frames = session->poll_persistence_snapshots(0U);
+    const auto journal = session->drain_density_layer_ready_events(0U);
+    expect(!frames.empty() && frames.back().layer_ready &&
+           frames.back().layer_ready->producer_instance_id == empty.summary.producer_instance_id &&
+           frames.back().layer_ready->config_generation == 17U &&
+           frames.back().layer_ready->source_frame_sequence == 3U &&
+           journal.summary.created == 4U && journal.summary.events_drained == 1U &&
+           journal.summary.events_lost == 3U && journal.summary.events_pending == 0U &&
+           journal.creations.size() == 1U,
+           "same stopped runtime lost original density creations or overflow accounting");
+    expect(session->drain_density_layer_ready_events(0U).creations.empty(),
+           "Stop drain replayed original density events");
+    expect(std::count(state->calls.begin(), state->calls.end(), "open") == 1 &&
+           std::count(state->calls.begin(), state->calls.end(), "start_rx") == 1 &&
+           std::count(state->calls.begin(), state->calls.end(), "close") == 1,
+           "density evidence reopened hardware");
+    auto next_state = std::make_shared<FakeState>();
+    auto next = sdr_hackrf::HackrfRuntimeDspSession::start(
+        std::make_unique<FakeRuntime>(next_state), requested);
+    const auto fresh = next->drain_density_layer_ready_events(0U);
+    expect(fresh.summary.created == 0U &&
+           fresh.summary.producer_instance_id != empty.summary.producer_instance_id,
+           "new runtime reused old density identity");
+    expect(next->stop(1s).complete(), "fresh density owner did not close");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_composed_frames_and_exact_shutdown_order();
+        test_density_creation_same_owner_stop_retention_and_preflight();
         test_terminal_discard_and_post_stop_drain();
         test_composed_stop_drains_pending_ready_blocks_before_close();
         test_quiescence_timeout_forbids_finalize_then_explicit_retry_completes();

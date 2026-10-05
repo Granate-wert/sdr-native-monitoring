@@ -24,6 +24,8 @@ constexpr std::size_t complex_samples_per_block = hackrf_sweep_ci8_bytes / 2U;
 constexpr std::size_t maximum_analysis_blocks = sdr_core::sweep_max_segments / 2U;
 
 void validate_config(const HackrfSweepAnalysisConfig& config) {
+    if (config.layer_event_capacity > sdr_core::LayerReadyJournal::max_capacity)
+        throw sdr_core::ConfigurationError("HackRF Sweep layer journal capacity exceeds 4096");
     sdr_core::validate(config.source);
     if (config.source.source_type != sdr_core::SourceType::LiveIq ||
         config.source.backend_id != "native.libhackrf.sweep.v1" ||
@@ -127,7 +129,8 @@ sdr_core::SweepLineDefinition make_definition(
     const auto reduced_bytes = bins * 128U +
         definition.segments.size() * static_cast<std::uint64_t>(config.fft_size) * 16U + config.fft_size * 8U +
         (5ULL + definition.max_inflight_lines) * sizeof(std::optional<sdr_core::LayerReadyRef>) +
-        sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>);
+        2U * sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>) +
+        (config.layer_event_capacity ? sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity) : 0U);
     if (reduced_bytes > sdr_core::sweep_max_reduced_bytes) {
         throw sdr_core::ConfigurationError("HackRF Sweep reduced spectrum backlog exceeds 128 MiB");
     }
@@ -148,7 +151,9 @@ struct HackrfSweepAnalysis::Impl final {
         : config(std::move(requested)),
           gate(config.acquisition.sequence),
           line_definition(make_definition(config, gate)),
-          assembler(line_definition) {
+          layer_journal(config.layer_event_capacity
+              ? std::make_shared<sdr_core::LayerReadyJournal>(config.layer_event_capacity) : nullptr),
+          assembler(line_definition, layer_journal) {
         sdr_core::DspOptions options;
         options.source = config.source;
         options.dc_removal = sdr_core::DcRemovalMode::Off;
@@ -229,6 +234,7 @@ struct HackrfSweepAnalysis::Impl final {
     HackrfSweepAnalysisConfig config;
     HackrfSweepSequenceGate gate;
     sdr_core::SweepLineDefinition line_definition;
+    std::shared_ptr<sdr_core::LayerReadyJournal> layer_journal;
     sdr_core::ContinuousSweepLineAssembler assembler;
     std::unique_ptr<sdr_core::DspBackend> dsp;
     std::optional<std::uint64_t> active_scan;
@@ -248,6 +254,10 @@ HackrfSweepAnalysis::HackrfSweepAnalysis(HackrfSweepAnalysisConfig config) {
 }
 
 HackrfSweepAnalysis::~HackrfSweepAnalysis() = default;
+sdr_core::LayerReadyDrain HackrfSweepAnalysis::drain_sweep_layer_ready_events(std::size_t max_items) {
+    if (!impl_->layer_journal) throw sdr_core::ConfigurationError("HackRF Sweep creation journal is disabled");
+    return impl_->layer_journal->drain(max_items);
+}
 
 std::vector<sdr_core::SweepLineFrame> HackrfSweepAnalysis::admit(
     const HackrfSweepQueuedBlock& block

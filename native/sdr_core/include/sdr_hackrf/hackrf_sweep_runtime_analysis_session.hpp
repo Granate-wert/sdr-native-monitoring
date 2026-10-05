@@ -66,6 +66,9 @@ public:
     // A single ordered drain prevents a newer preview overtaking an older
     // terminal line when both coalescing slots are populated.
     [[nodiscard]] HackrfSweepPublication poll_next_publication();
+    // Same analysis owner, independent of reduced-frame slot coalescing.
+    // Joined Stop retains this journal; draining never calls SDK or RF controls.
+    [[nodiscard]] sdr_core::LayerReadyDrain drain_sweep_layer_ready_events(std::size_t max_items);
     [[nodiscard]] HackrfSweepRuntimeAnalysisMetrics metrics() const;
     [[nodiscard]] HackrfSweepRuntimeAnalysisStopResult stop(
         std::chrono::milliseconds callback_timeout

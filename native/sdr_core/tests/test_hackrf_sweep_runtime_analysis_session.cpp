@@ -177,9 +177,13 @@ bool eventually(Predicate&& condition) {
 
 void test_progress_complete_and_owned_stop() {
     auto state = std::make_shared<FakeState>();
+    auto requested = config();
+    requested.analysis.layer_event_capacity = 128U;
     auto control = HackrfSweepRuntimeAnalysisSession::start(
-        std::make_unique<FakeRuntime>(state), config()
+        std::make_unique<FakeRuntime>(state), requested
     );
+    const auto initial = control->drain_sweep_layer_ready_events(0U);
+    expect(initial.summary.created == 0U, "Start fabricated Sweep creation evidence");
     state->emit(transfer(0U, 1U));
     expect(eventually([&] {
         return control->metrics().analysis.accepted_blocks == 1U;
@@ -193,6 +197,10 @@ void test_progress_complete_and_owned_stop() {
                progress->epoch == 7U && progress->acquired_segments.size() == 2U &&
                progress->pending_segment_indices.size() == 14U,
            "native preview lost source/epoch/partial segment provenance");
+    expect(progress->layer_ready &&
+               progress->layer_ready->kind == sdr_core::LayerReadyKind::SweepProgress &&
+               progress->layer_ready->producer_instance_id == initial.summary.producer_instance_id,
+           "Sweep progress has no original owner creation receipt");
 
     state->emit(transfer(1U, 7U), 20'000);
     expect(eventually([&] {
@@ -209,6 +217,11 @@ void test_progress_complete_and_owned_stop() {
                line->physical_fft_size == 4096U &&
                line->acquired_segments.size() == 16U,
            "terminal native line lost physical geometry or owner provenance");
+    expect(line->layer_ready &&
+               line->layer_ready->kind == sdr_core::LayerReadyKind::SweepTerminal &&
+               line->layer_ready->producer_instance_id == progress->layer_ready->producer_instance_id &&
+               line->layer_ready->creation_sequence > progress->layer_ready->creation_sequence,
+           "Sweep terminal lost the configured owner journal");
     expect(std::holds_alternative<std::monostate>(control->poll_next_publication()),
            "terminal Sweep line left a stale partial preview");
     const auto stopped = control->stop(std::chrono::seconds(1));
@@ -226,6 +239,15 @@ void test_progress_complete_and_owned_stop() {
     expect(std::none_of(state->calls.begin(), state->calls.end(), [](const auto& value) {
         return value.starts_with("FORBIDDEN");
     }), "Sweep started fixed-centre RX or enabled amp/bias");
+    const auto journal = control->drain_sweep_layer_ready_events(0U);
+    expect(journal.summary.created >= 2U && journal.summary.events_lost == 0U &&
+               journal.summary.created == journal.summary.events_drained &&
+               std::find(journal.creations.begin(), journal.creations.end(), *progress->layer_ready) != journal.creations.end() &&
+               std::find(journal.creations.begin(), journal.creations.end(), *line->layer_ready) != journal.creations.end(),
+           "Stop or publication regenerated/lost original Sweep creations");
+    const auto after = control->drain_sweep_layer_ready_events(0U);
+    expect(after.creations.empty() && after.summary.created == journal.summary.created,
+           "rereading stopped Sweep evidence created or replayed frames");
 }
 
 void test_stop_flushes_partial_line_and_clears_preview() {
@@ -312,13 +334,18 @@ void test_failed_close_retains_same_owner_for_explicit_retry() {
 }
 
 void test_invalid_geometry_refuses_before_sdk() {
-    for (const std::uint32_t case_id : {0U, 1U}) {
+    for (const std::uint32_t case_id : {0U, 1U, 2U, 3U}) {
         auto state = std::make_shared<FakeState>();
         auto invalid = config();
         if (case_id == 0U) {
             invalid.preview_rate_hz = 0U;
-        } else {
+        } else if (case_id == 1U) {
             invalid.analysis.fft_size = 512U;
+        } else if (case_id == 2U) {
+            invalid.analysis.layer_event_capacity = 4097U;
+        } else {
+            invalid.analysis.acquisition.sequence.ranges = {{100U, 3500U}};
+            invalid.analysis.layer_event_capacity = 4096U;
         }
         bool refused = false;
         try {
@@ -333,6 +360,51 @@ void test_invalid_geometry_refuses_before_sdk() {
     }
 }
 
+void test_sweep_journal_overflow_partial_stop_and_new_identity() {
+    auto state = std::make_shared<FakeState>();
+    auto requested = config();
+    requested.analysis.layer_event_capacity = 1U;
+    auto control = HackrfSweepRuntimeAnalysisSession::start(
+        std::make_unique<FakeRuntime>(state), requested);
+    const auto identity = control->drain_sweep_layer_ready_events(0U).summary.producer_instance_id;
+    state->emit(transfer(0U, 1U));
+    expect(eventually([&] { return control->metrics().progress_pending; }),
+           "overflow setup missing real Sweep preview");
+    const auto progress = progress_from(control->poll_next_publication());
+    expect(progress && progress->layer_ready, "overflow preview missing creation receipt");
+    expect(control->stop(std::chrono::seconds(1)).complete(), "partial journal Stop incomplete");
+    const auto terminal = line_from(control->poll_next_publication());
+    expect(terminal && terminal->state == sdr_core::SweepLineState::Gap && terminal->layer_ready &&
+               terminal->layer_ready->producer_instance_id == identity &&
+               terminal->layer_ready->creation_sequence > progress->layer_ready->creation_sequence,
+           "partial Stop did not create terminal evidence through the same journal");
+    const auto events = control->drain_sweep_layer_ready_events(1U);
+    expect(events.creations.size() == 1U && events.creations.front() == *progress->layer_ready &&
+               events.summary.created >= 2U && events.summary.events_lost > 0U &&
+               events.summary.created == events.summary.events_drained + events.summary.events_lost &&
+               events.summary.events_pending == 0U,
+           "full Sweep journal blocked production or hid creation loss");
+    auto next_state = std::make_shared<FakeState>();
+    auto next = HackrfSweepRuntimeAnalysisSession::start(std::make_unique<FakeRuntime>(next_state), requested);
+    const auto fresh = next->drain_sweep_layer_ready_events(0U);
+    expect(fresh.summary.created == 0U && fresh.summary.producer_instance_id != identity,
+           "new Sweep runtime reused the old producer identity");
+    expect(next->stop(std::chrono::seconds(1)).complete(), "fresh Sweep runtime did not close");
+    auto disabled = HackrfSweepRuntimeAnalysisSession::start(
+        std::make_unique<FakeRuntime>(std::make_shared<FakeState>()), config());
+    bool refused = false;
+    try { static_cast<void>(disabled->drain_sweep_layer_ready_events(0U)); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused && disabled->stop(std::chrono::seconds(1)).complete(),
+           "default-off journal fabricated empty valid evidence");
+    // Pure analysis admission establishes the baseline geometry fits the old
+    // component budget; capacity4096 above must fail BEFORE the SDK is touched.
+    auto near_budget = config().analysis;
+    near_budget.acquisition.sequence.ranges = {{100U, 3500U}};
+    sdr_hackrf::HackrfSweepAnalysis admitted(near_budget);
+    expect(admitted.metrics().accepted_blocks == 0U, "budget preflight fabricated acquisition");
+}
+
 }  // namespace
 
 int main() {
@@ -343,6 +415,7 @@ int main() {
         test_ordered_terminal_then_next_scan_preview();
         test_failed_close_retains_same_owner_for_explicit_retry();
         test_invalid_geometry_refuses_before_sdk();
+        test_sweep_journal_overflow_partial_stop_and_new_identity();
         std::cout << "HackRF Sweep runtime analysis ownership OK\n";
         return 0;
     } catch (const std::exception& error) {
