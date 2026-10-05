@@ -1,7 +1,7 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
-Current state: the final section documents paired RTBW pane preparation and
-the future four-source matrix with RTL in pane4. Earlier "not yet present"
+Current state: the final section documents optional native Sweep/density
+creation evidence; actual product-owner integration remains open. Earlier "not yet present"
 statements below describe the historical intermediate checkpoints, not the
 current source. APP-07 is still partial: tagged frozen EXEs have passed bounded
 functional cells, but no EXE has release/soak/performance qualification here.
@@ -5923,3 +5923,41 @@ review remains open. APP-07/M8 is PARTIAL and H02 is TODO. Next: serialized
 physical 2x2 tests with same-owner cached first-cause observations before Stop,
 AD9364/AD9363 rotations and original screenshots. Separate Sweep/density
 readiness, fault/performance/soak/visible/release gates remain mandatory.
+
+## M8-072: independent native Sweep and density creation foundation
+
+Runtime checkpoint: `3ba9fe3f6bc0451a41da8b92ca480b7d93c2074b`.
+The actual core Sweep assembler and persistence accumulator can optionally
+retain a separate readonly creation receipt after materializing their output.
+Sweep progress, terminal lines and density snapshots are distinct variants;
+detector-ready time, RF/acquisition time and assembled-output readiness are
+not interchangeable. The default producers have no journal or extra clock read.
+
+A bounded scalar journal shares a collision-free producer namespace with the
+detector journal. It preserves original creation IDs, explicit evidence loss,
+sticky clock regression and one serialized drain reservation. It is creation
+evidence only, not queue handoff, owner authentication, pane delivery or paint.
+Repeated progress previews retain the same receipt for an acquired revision;
+the preview's temporary terminal representation creates no terminal event.
+Density reset has a distinct accumulation identity; unknown generation stays
+unqualified. Data, quality, scales, RF timestamps and cadence remain unchanged.
+Frame metadata is charged in existing native/Python component budgets, with a
+matching conservative density scalar reservation; ceilings are not increased.
+
+Verification: candidate 47/47 native tests, 15 compiled tests and 72 neighboring
+source/mock/offscreen tests; Ruff on seven files and mypy on four source files.
+The exact matching diagnostic build passed 47/47 native tests (54.18 s), 665
+frozen files and 581 source inputs. One serial full UI V2 run after freeze passed
+1409 tests (1343 passed, 66 skipped, zero failures, 488.398 s), with exact clean
+source/native provenance before and after. Matching packaged-native focus
+passed 111 prior tests, 15 compiled tests and 72 neighbors. Initial quality/mode
+fixture errors were corrected only in fixtures; existing validation was kept.
+
+Root performed this increment without new subagent/model calls or physical RX.
+The diagnostic EXE is not promoted to the static current application. This is
+not hardware, visible Windows/DPI/DWM, latency, soak or release acceptance.
+APP-07/M8 remains PARTIAL and H02 remains TODO. Next: actual same-owner lifetime
+journals, aggregate ring/drain admission, queue and Stop dispositions, typed
+product frame adapters and clock/owner authentication, then dedicated UI layer
+delivery/paint integration and independent review. Whole independent backend
+and release review remains open; the full application roadmap is unchanged.
