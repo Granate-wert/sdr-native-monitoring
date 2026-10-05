@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+import weakref
 from collections.abc import Mapping
 
 import numpy as np
@@ -76,6 +77,13 @@ _TERMINAL_DELIVERY_STAGES = frozenset({
     PaneDeliveryStage.QUEUE_SUPERSEDED, PaneDeliveryStage.STOP_CLEARED,
     PaneDeliveryStage.UI_REJECTED, PaneDeliveryStage.PAINT_SUPERSEDED,
 })
+
+
+def _sync_projection_delivery_slots_if_alive(scene_ref: weakref.ReferenceType[SpectrumScene]) -> None:
+    """Run a settled projection sync without extending the scene lifetime."""
+    scene = scene_ref()
+    if scene is not None:
+        scene._sync_projection_delivery_slots()
 
 
 def _measurement_signature(frame: object, view: SpectrumFrameView) -> tuple[object, ...]:
@@ -255,7 +263,8 @@ class SpectrumScene(QWidget):
         if request.persistence is not None and self._projector is not None and self._projector.has_pending:
             self._request_persistence_projection()
             self.commit_projection()
-        QTimer.singleShot(0, self._sync_projection_delivery_slots)
+        QTimer.singleShot(0, lambda scene_ref=weakref.ref(self):
+                          _sync_projection_delivery_slots_if_alive(scene_ref))
 
     def _invalidate_projection(self) -> None:
         self._required_projection_dirty = True
@@ -306,6 +315,9 @@ class SpectrumScene(QWidget):
             if slot_ref != ref)
 
     def _sync_projection_delivery_slots(self, *, cancelled: bool = False) -> None:
+        if self._graphics_terminal_released:
+            self._projection_delivery_slots = ()
+            return
         projector = self._projector
         if projector is None:
             return

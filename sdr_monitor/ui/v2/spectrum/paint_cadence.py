@@ -107,14 +107,17 @@ def cadence_graphics_widget(
 ):
     """Wrap the selected pg widget implementation, including opt-in observers.
 
-    The local subclass stores only the meter and a candidate callback; it does
-    not retain a publication or its arrays. Looking up the base at construction
-    preserves injected-widget seams; no global patch, timer, signal or worker
-    is added.
+    Per-widget callbacks stay on the widget instance rather than in the
+    dynamically-created class method closure. A retained Qt paint class thus
+    cannot retain its scene or source through bound custody callbacks. Looking
+    up the base at construction preserves injected-widget seams; no global
+    patch, timer, signal or worker is added.
     """
     class CadenceGraphics(pg.GraphicsLayoutWidget):
         paint_cadence: UniquePaintCadence
         paint_candidate: Callable[[QPaintEvent], PaintKey | None]
+        custody_candidate: Callable[[QPaintEvent], object | None] | None
+        custody_returned: Callable[[object], None] | None
 
         def paintEvent(self, event):
             try:
@@ -122,16 +125,19 @@ def cadence_graphics_widget(
             except (AttributeError, RuntimeError, TypeError, ValueError):
                 key = None
             try:
-                custody = None if custody_candidate is None else custody_candidate(event)
+                custody = (None if self.custody_candidate is None
+                           else self.custody_candidate(event))
             except (AttributeError, RuntimeError, TypeError, ValueError):
                 custody = None
             super().paintEvent(event)
             if key is not None:
                 self.paint_cadence.painted(key, perf_counter_ns())
-            if custody is not None and custody_returned is not None:
-                custody_returned(custody)
+            if custody is not None and self.custody_returned is not None:
+                self.custody_returned(custody)
 
     widget = CadenceGraphics(parent)
     widget.paint_cadence = cadence
     widget.paint_candidate = paint_candidate
+    widget.custody_candidate = custody_candidate
+    widget.custody_returned = custody_returned
     return widget

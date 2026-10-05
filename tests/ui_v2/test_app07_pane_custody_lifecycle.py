@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from concurrent.futures import Future
+import gc
 import unittest
 import os
+import weakref
 from unittest.mock import patch
 
 import numpy as np
@@ -122,6 +124,42 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         self.assertIsNone(peer.latest_frame)
         first.close()
         peer.close()
+        self.app.processEvents()
+
+    def test_stop_retains_pixels_but_terminal_scene_release_drops_source_arrays(self):
+        ledger = PaneDeliveryLedger(("one",))
+        scene = SpectrumScene()
+        scene.set_delivery_stage_callback(ledger.note)
+        ref = self.ui_admitted(ledger)
+        frame = self.frame(1, -70)
+        frequencies_ref = weakref.ref(frame.frequencies_hz)
+        values_ref = weakref.ref(frame.values)
+        scene.set_frame(frame, obligation_ref=ref)
+
+        # The dynamically-created paint method may be process-lived, so it
+        # must not close over scene-bound delivery callbacks.
+        paint_method = type(scene._graphics).paintEvent
+        closure_values = (() if paint_method.__closure__ is None else
+                          tuple(cell.cell_contents for cell in paint_method.__closure__))
+        self.assertFalse(any(getattr(value, "__self__", None) is scene
+                             for value in closure_values))
+
+        scene.stop_delivery_custody((ref,))
+        self.assertIs(scene.latest_frame, frame)
+        self.assertEqual(ledger.snapshot().accounting_failures, 0)
+        self.assertIsNotNone(frequencies_ref())
+        self.assertIsNotNone(values_ref())
+
+        scene.clear_measurement()
+        scene.release_graphics_after_shutdown()
+        frame = None
+        gc.collect()
+        self.assertIsNone(scene.latest_frame)
+        self.assertEqual(scene._projection_delivery_slots, ())
+        self.assertIsNone(frequencies_ref())
+        self.assertIsNone(values_ref())
+        self.assertEqual(ledger.snapshot().accounting_failures, 0)
+        scene.close()
         self.app.processEvents()
 
     def test_hidden_latest_replacement_and_captured_stop_refs_conserve_real_ledger(self):
