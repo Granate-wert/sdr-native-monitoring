@@ -1,7 +1,7 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
 Current state: the final section documents optional native Sweep/density
-creation evidence; actual product-owner integration remains open. Earlier "not yet present"
+creation evidence and optional FixedBand owner integration; other product paths remain open. Earlier "not yet present"
 statements below describe the historical intermediate checkpoints, not the
 current source. APP-07 is still partial: tagged frozen EXEs have passed bounded
 functional cells, but no EXE has release/soak/performance qualification here.
@@ -5961,3 +5961,38 @@ journals, aggregate ring/drain admission, queue and Stop dispositions, typed
 product frame adapters and clock/owner authentication, then dedicated UI layer
 delivery/paint integration and independent review. Whole independent backend
 and release review remains open; the full application roadmap is unchanged.
+
+## M8-073: creation journals connected to the actual FixedBand owner
+
+Runtime checkpoint: `25d955406f95dff0f231696d4f4dac957d0dd663`.
+The existing single/paired Pluto FixedBand owner now supports optional lifetime
+journals for actual density snapshots and single-window Sweep lines. Each RX
+and layer has a distinct native producer identity. There remains one device,
+context, IIO buffer and acquisition/control lifecycle; no second hardware open
+or raw-IQ Python callback was added.
+
+The new trailing `layer_event_capacity` defaults to zero: no journal allocation
+or readiness clock read. Enabled layers reserve their ring plus one native
+serialized drain within the unchanged component AND paired aggregate budgets.
+Validation/allocation occurs before RF configuration. Exact RX1/RX2 drains are
+readonly and bounded; BOTH, unadmitted receivers, disabled layers and oversized
+drains refuse explicitly. Stop/join keeps evidence drainable, while configure
+creates fresh identities without starting RX. Overflow retains explicit creation
+loss counts, not an invented FFT/input-loss counter. Measurement timestamps,
+data, cadence, queues, Fs/FFT/gain settings and quality remain unchanged.
+
+Verification: the exact matching diagnostic build passed 47/47 native tests
+(54.42 s), including paired ownership/aggregate-budget tests, 665 frozen files
+and 581 source inputs. One serial full V2 regression after freeze ran 1409 tests:
+1343 passed, 66 skipped, zero failures (481.269 s), exact clean source/native
+before and after. An additional 21 creation/owner/contract tests passed against
+the packaged native module. Nine neighboring binding cases skipped in the
+candidate check were not counted as PASS.
+
+This is optional native owner integration, not complete product UI integration
+or measured acceleration. Retuning Sweep and HackRF journals, service adapters,
+owner-authenticated clocks, queue/Stop dispositions and all-layer paint evidence
+remain open. No physical RX, visible Windows/DPI/DWM, latency or soak qualification
+was performed, and the current static EXE was not replaced. Root performed this
+increment without new subagents/model calls; independent backend/release review
+remains open. APP-07/M8 is PARTIAL, H02 is TODO, and the full roadmap is unchanged.
