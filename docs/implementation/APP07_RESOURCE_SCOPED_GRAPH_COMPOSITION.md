@@ -6031,3 +6031,51 @@ journals, actual service adapters/clock-owner admission/downstream dispositions
 and all-layer UI V2 delivery/paint integration remain open. No physical RX,
 new subagent/model calls, system mutation or static EXE promotion occurred.
 APP-07/M8 remains PARTIAL, H02 remains TODO, and the full roadmap is unchanged.
+
+## APP-07 M8-075 — HackRF density/Sweep owner creation evidence
+
+Runtime source: `2ad49f57fe51f2f8ec0e21aeefdaf15d3388e014`.
+UI V2 only. This extends the native owner integrations of M8-073/M8-074,
+not their historical hardware or latency qualification.
+
+HackRF RTBW density now uses the optional creation journal on the SAME
+HackrfFixedBandDsp, reached through its acquisition and runtime sessions.
+HackRF Sweep uses the SAME analysis assembler journal through its runtime
+session. Readonly bounded drains preserve original creation references after
+joined Stop. A fresh session gets a fresh producer identity; disabled journals
+refuse explicitly rather than fabricating valid zero evidence.
+
+Both public factories accept trailing `layer_event_capacity=0`; zero remains
+disabled, so existing callers do not gain new creation-clock calls.
+`HACKRF_LAYER_CREATION_CONTRACT_VERSION=1` is additive API evidence, NOT an
+RF/device capability. Factory2, schema5, DSP1, persistence1 and Sweep1 are
+unchanged. Production service capability gating/automatic drains are next.
+
+Ring plus one serialized native drain are admitted before RF/SDK startup in
+the existing density256MiB/Sweep128MiB component limits. No budget ceiling,
+Fs/FFT/gain/cadence/quality/acquisition-time or queue policy was increased or
+reduced. These reservations are not a whole-process RSS or arbitrary retained
+Python-object bound. Full rings lose diagnostic events explicitly and do not
+wait for UI consumption; returned frames keep their original creation receipt.
+
+Exact diagnostic build passed 47/47 native tests (54.92s), 665 frozen files and
+581 source inputs. ONE serial full V2 regression after freeze ran 1409 tests:
+1343 passed, 66 skipped, zero failures/errors (468.115s), with exact source/native
+and clean tracked source before/after. Matching packaged compiled/root focus
+passed 30 tests (10.333s), including actual stopped mock-runtime density,
+factory refusals before SDK, default-off and existing creation/owner/admission
+checks. Posttest source snapshot and package inventory verified. The first
+candidate runtime test used invalid60Hz persistence snapshots; its failure was
+retained and ONLY the new fixture corrected to admitted30Hz. Guards unchanged.
+
+Девлог: для HackRF подключена исходная готовность persistence и Sweep до
+объединения кадров для UI; повторное чтение не создаёт новые события, Stop
+сохраняет диагностику, переполнение учитывается отдельно. Это улучшение
+корректности и измеримости, не измеренный процент ускорения FPS.
+
+No physical RX, visible Windows/DPI/DWM, latency percentile, soak or full release
+acceptance follows from these tests. Static/current EXE and main product code
+remain unchanged; no system changes or new agents/model calls occurred.
+Next: SAME-owner product service conversion/clock authentication/queue-Stop
+outcomes, then dedicated UI V2 per-layer delivery and review. APP07/M8 remains
+PARTIAL, H02 TODO, and the full APP00..14 goal remains unchanged.
