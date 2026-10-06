@@ -140,11 +140,19 @@ class QtTerminalOwnershipTests(unittest.TestCase):
         peer = SpectrumScene(parent=host)
         plan = capture_plot_terminal_ownership(spectrum.plot_item)
         peer_plan = capture_plot_terminal_ownership(peer.plot_item)
-        foreign_label = peer_plan.labels[0]
-        foreign_plan = replace(plan, labels=(foreign_label,))
-        spectrum._graphics_terminal_ownership = foreign_plan
-        spectrum._graphics_preflight_complete = True
         try:
+            with patch(
+                "sdr_monitor.ui.v2.spectrum.plot_terminal._drain_view_box",
+                side_effect=RuntimeError("injected structural close failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "structural close"):
+                    spectrum.release_graphics_after_shutdown()
+            plan = spectrum._graphics_terminal_ownership
+            self.assertIsNotNone(plan)
+            self.assertFalse(plan.structural_complete)
+            foreign_label = peer_plan.labels[0]
+            foreign_plan = replace(plan, labels=(foreign_label,))
+            spectrum._graphics_terminal_ownership = foreign_plan
             with self.assertRaisesRegex(RuntimeError, "foreign"):
                 spectrum.release_graphics_after_shutdown()
             self.assertFalse(spectrum._graphics_terminal_released)
