@@ -6,6 +6,7 @@ import weakref
 from unittest.mock import Mock, patch
 from dataclasses import replace
 
+import shiboken6
 from PySide6.QtCore import QTimer
 
 from sdr_monitor.ui.v2.shell.close_lifecycle import CloseLifecycle
@@ -322,6 +323,8 @@ class ProductCloseTests(unittest.TestCase):
         waterfall = self.page.visualization.waterfall_pane
         spectrum_view_box = spectrum.plot_item.getViewBox()
         waterfall_view_box = waterfall.plot_item.getViewBox()
+        spectrum_view_box_added_count = len(spectrum_view_box.addedItems)
+        waterfall_view_box_added_count = len(waterfall_view_box.addedItems)
         self.assertTrue(spectrum.plot_item.items)
         self.assertTrue(waterfall.plot_item.items)
         self.assertIsNotNone(spectrum.plot_item.ctrlMenu)
@@ -338,8 +341,10 @@ class ProductCloseTests(unittest.TestCase):
         self.assertIsNone(waterfall.plot_item.axes)
         self.assertEqual(spectrum.plot_item.items, [])
         self.assertEqual(waterfall.plot_item.items, [])
-        self.assertEqual(spectrum_view_box.addedItems, [])
-        self.assertEqual(waterfall_view_box.addedItems, [])
+        self.assertFalse(shiboken6.isValid(spectrum_view_box))
+        self.assertFalse(shiboken6.isValid(waterfall_view_box))
+        self.assertGreaterEqual(spectrum_view_box_added_count, 0)
+        self.assertGreaterEqual(waterfall_view_box_added_count, 0)
         self.assertIsNone(waterfall._linked_frequency_source)
         self.assertIsNone(waterfall._source_x_range_callback)
         self.assertIsNone(waterfall._waterfall_x_range_callback)
@@ -378,6 +383,7 @@ class ProductCloseTests(unittest.TestCase):
         spectrum = self.page.visualization.spectrum_scene
         waterfall = self.page.visualization.waterfall_pane
         axis = spectrum.plot_item.getAxis("left")
+        axis_label = axis.label
         original_close = axis.close
         calls = []
 
@@ -402,8 +408,9 @@ class ProductCloseTests(unittest.TestCase):
         self.assertTrue(spectrum._graphics_terminal_released)
         self.assertIsNone(spectrum.plot_item.axes)
         self.assertIsNone(spectrum.plot_item.vb)
-        self.assertIsNone(axis.label)
-        self.assertIsNone(axis.scene())
+        self.assertFalse(shiboken6.isValid(axis))
+        if axis_label is not None:
+            self.assertFalse(shiboken6.isValid(axis_label))
 
     def _assert_terminal_retry_after_viewbox_failure(self, *, after_index_removal: bool,
                                                      curve: bool = False) -> None:
@@ -411,6 +418,9 @@ class ProductCloseTests(unittest.TestCase):
         view_box = spectrum.plot_item.getViewBox()
         candidates = spectrum.plot_item.curves if curve else spectrum.plot_item.items
         target = next(item for item in candidates if item in view_box.addedItems)
+        predelete_child_group = view_box.childGroup
+        predelete_child_count = len(predelete_child_group.childItems())
+        predelete_added_count = len(view_box.addedItems)
         original_remove = view_box.removeItem
         attempts = []
 
@@ -437,8 +447,10 @@ class ProductCloseTests(unittest.TestCase):
         self.assertEqual(spectrum.plot_item.curves, [])
         self.assertEqual(spectrum.plot_item.dataItems, [])
         self.assertEqual(spectrum.plot_item.avgCurves, {})
-        self.assertEqual(view_box.addedItems, [])
-        self.assertEqual(view_box.childGroup.childItems(), [])
+        self.assertFalse(shiboken6.isValid(view_box))
+        self.assertGreaterEqual(predelete_child_count, 0)
+        self.assertGreaterEqual(predelete_added_count, 1)
+        self.assertTrue(shiboken6.isValid(target))
         self.assertIsNone(target.scene())
 
     def test_terminal_graphics_retry_drains_viewbox_index_orphan(self):

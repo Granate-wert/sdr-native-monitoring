@@ -299,6 +299,8 @@ class AnalyzerRfControls(QObject):
             dialog.deleteLater()
 
     def cancel(self) -> None:
+        if self._retired:
+            return
         self._close_dialog()
         for pane in self._installed:
             pane.cancel_rf_drag()

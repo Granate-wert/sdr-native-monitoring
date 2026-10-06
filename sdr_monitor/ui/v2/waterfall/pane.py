@@ -30,7 +30,11 @@ from ..design import ThemeId, stylesheet_for_theme, tokens_for_theme
 from ..components.rf_pan_view_box import RfPanViewBox
 from ..i18n import UiLocale, enum_text, text
 from ..spectrum.axis import FrequencyAxis
-from ..spectrum.plot_terminal import retire_plot_item_after_shutdown
+from ..spectrum.plot_terminal import (
+    PlotTerminalOwnership,
+    capture_plot_terminal_ownership,
+    retire_plot_item_after_shutdown,
+)
 from .axis import WaterfallTimeAxis
 from .bounded_ring import BoundedWaterfallRenderer, DEFAULT_WATERFALL_PRESENTATION_BUDGET
 from .contracts import (
@@ -106,6 +110,8 @@ class WaterfallPane(QWidget):
         self._capacity_change_rejected = False
         self._metrics = WaterfallPaneMetrics()
         self._graphics_terminal_released = False
+        self._graphics_preflight_complete = False
+        self._graphics_terminal_ownership: PlotTerminalOwnership | None = None
         self._graphics_state_disconnected = False
         self._delivery_stage_callback = None
         self._waterfall_delivery_ref: PaneDeliveryObligationRef | None = None
@@ -579,18 +585,24 @@ class WaterfallPane(QWidget):
         """Terminal window cleanup, not local Clear/hide/Stop history policy."""
         if self._graphics_terminal_released:
             return
-        self.set_presentation_active(False)
-        self.clear_history(reset_kind=True)
-        self._renderer.reset()  # clear_history keeps capacity for the next row
-        self._grid_signature = None
-        self._unlink_frequency_view_box()
-        if self._plot_item.axes is not None:
-            for name in ("left", "right", "top", "bottom"):
-                self._plot_item.getAxis(name).unlinkFromView()
-        if not self._graphics_state_disconnected:
-            self._view_box.sigStateChanged.disconnect(self._plot_item.viewStateChanged)
-            self._graphics_state_disconnected = True
-        retire_plot_item_after_shutdown(self._plot_item)
+        if not self._graphics_preflight_complete:
+            self.set_presentation_active(False)
+            self.clear_history(reset_kind=True)
+            self._renderer.reset()  # clear_history keeps capacity for the next row
+            self._grid_signature = None
+            self._unlink_frequency_view_box()
+            if self._plot_item.axes is not None:
+                for name in ("left", "right", "top", "bottom"):
+                    self._plot_item.getAxis(name).unlinkFromView()
+            if not self._graphics_state_disconnected:
+                self._view_box.sigStateChanged.disconnect(self._plot_item.viewStateChanged)
+                self._graphics_state_disconnected = True
+            self._graphics_terminal_ownership = capture_plot_terminal_ownership(self._plot_item)
+            self._graphics_preflight_complete = True
+        ownership = self._graphics_terminal_ownership
+        if ownership is None:
+            raise RuntimeError("terminal graphics ownership plan is missing")
+        retire_plot_item_after_shutdown(self._plot_item, ownership=ownership)
         self._graphics_terminal_released = True
 
     def set_history_seconds(self, seconds: int) -> None:

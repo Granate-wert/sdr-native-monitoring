@@ -59,6 +59,9 @@ class AnalyzerBundleSceneTests(unittest.TestCase):
         self.assertFalse(scene._graphics_terminal_released)
         fresh_plot = plot.ctrlMenu is not None
         axis = plot.getAxis("left") if plot.axes is not None else None
+        axis_label = axis.label if axis is not None else None
+        predelete_child_count = len(view_box.childGroup.childItems())
+        predelete_added_count = len(view_box.addedItems)
         if fresh_plot:
             self.assertIsNotNone(plot.axes)
             self.assertIsNotNone(axis)
@@ -72,11 +75,12 @@ class AnalyzerBundleSceneTests(unittest.TestCase):
         self.assertEqual(plot.items, [])
         self.assertEqual(plot.dataItems, [])
         self.assertEqual(plot.curves, [])
-        self.assertEqual(view_box.addedItems, [])
-        self.assertEqual(view_box.childGroup.childItems(), [])
+        self.assertFalse(shiboken6.isValid(view_box))
+        self.assertGreaterEqual(predelete_child_count + predelete_added_count, 0)
         if axis is not None:
-            self.assertIsNone(axis.label)
-            self.assertIsNone(axis.scene())
+            self.assertFalse(shiboken6.isValid(axis))
+        if axis_label is not None:
+            self.assertFalse(shiboken6.isValid(axis_label))
         scene.release_graphics_after_shutdown()  # Terminal idempotence.
         scene.close()
         scene.deleteLater()

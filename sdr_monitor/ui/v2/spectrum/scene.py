@@ -49,7 +49,11 @@ from .persistence_contracts import (
 from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
 from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
 from .persistence_projector import PersistenceDelivery, PersistenceWork
-from .plot_terminal import retire_plot_item_after_shutdown
+from .plot_terminal import (
+    PlotTerminalOwnership,
+    capture_plot_terminal_ownership,
+    retire_plot_item_after_shutdown,
+)
 from .paint_cadence import (
     PaintKey,
     UniquePaintCadence,
@@ -144,6 +148,8 @@ class SpectrumScene(QWidget):
         self._shortcut_popover: ContextPopover | None = None
         self._measurement_available: bool | None = None
         self._graphics_terminal_released = False
+        self._graphics_preflight_complete = False
+        self._graphics_terminal_ownership: PlotTerminalOwnership | None = None
         self._delivery_stage_callback = None
         self._latest_delivery_ref: PaneDeliveryObligationRef | None = None
         self._latest_spectrum_setter_accepted = False
@@ -759,18 +765,24 @@ class SpectrumScene(QWidget):
         """
         if self._graphics_terminal_released:
             return
-        self._persistence.on_image_uploaded = None
-        self._cancel_persistence_delivery(PaneDeliveryStage.STOP_CLEARED)
-        self._projection_timer.stop()
-        if self._plot_item.axes is not None:
-            for name in ("left", "right", "top", "bottom"):
-                self._plot_item.getAxis(name).unlinkFromView()
-        # PlotItem.close() clears autoBtn but pyqtgraph leaves this ViewBox
-        # signal connected; a late range update would call updateButtons().
-        if not self._graphics_state_disconnected:
-            self._view_box.sigStateChanged.disconnect(self._plot_item.viewStateChanged)
-            self._graphics_state_disconnected = True
-        retire_plot_item_after_shutdown(self._plot_item)
+        if not self._graphics_preflight_complete:
+            self._persistence.on_image_uploaded = None
+            self._cancel_persistence_delivery(PaneDeliveryStage.STOP_CLEARED)
+            self._projection_timer.stop()
+            if self._plot_item.axes is not None:
+                for name in ("left", "right", "top", "bottom"):
+                    self._plot_item.getAxis(name).unlinkFromView()
+            # PlotItem.close() clears autoBtn but pyqtgraph leaves this ViewBox
+            # signal connected; a late range update would call updateButtons().
+            if not self._graphics_state_disconnected:
+                self._view_box.sigStateChanged.disconnect(self._plot_item.viewStateChanged)
+                self._graphics_state_disconnected = True
+            self._graphics_terminal_ownership = capture_plot_terminal_ownership(self._plot_item)
+            self._graphics_preflight_complete = True
+        ownership = self._graphics_terminal_ownership
+        if ownership is None:
+            raise RuntimeError("terminal graphics ownership plan is missing")
+        retire_plot_item_after_shutdown(self._plot_item, ownership=ownership)
         self._graphics_terminal_released = True
 
     def _set_measurement_available(self, available: bool) -> None:
