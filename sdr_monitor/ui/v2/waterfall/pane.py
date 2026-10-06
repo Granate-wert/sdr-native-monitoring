@@ -448,6 +448,11 @@ class WaterfallPane(QWidget):
     def _admit_waterfall_paint(self, ref: PaneDeliveryObligationRef | None) -> None:
         if ref is not None and ref.view is not PaneDeliveryView.WATERFALL:
             raise ValueError("Waterfall canvas cannot claim another pane view")
+        if (ref is not None and ref.graph_instance_id == self._closed_waterfall_graph
+                and ref.sequence == self._closed_waterfall_sequence):
+            # A completed obligation stays closed across fresh line objects;
+            # only a genuinely newer sequence in this graph may be painted.
+            return
         previous = self._waterfall_delivery_ref
         if previous == ref and (self._waterfall_delivery_scheduled or self._waterfall_delivery_returned):
             return

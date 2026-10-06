@@ -176,10 +176,177 @@ class AllViewCustodyTests(unittest.TestCase):
             self.assertIs(event.paint_return, receipt)
             self.assertIsNotNone(event.host_perf_ns)
             self.assertGreaterEqual(event.host_perf_ns, receipt.sampled_after_return_ns)
+            self.assertGreaterEqual(event.host_perf_ns - receipt.sampled_after_return_ns,
+                                    1_000_000)
         scene._graphics.viewport().repaint()
         waterfall._graphics.viewport().repaint()
         self.app.processEvents()
         self.assertEqual(sum(event.stage is Stage.PAINT_RETURNED for event in ledger.snapshot().events), 3)
+
+        # A successful Stop closes the exact obligation refs, not the input
+        # object identity.  Reusing either the same objects or fresh objects
+        # carrying those terminal refs must not reattach any of the views.
+        scene.stop_delivery_custody(refs)
+        waterfall.stop_delivery_custody(refs)
+        before_late_retry = ledger.snapshot()
+        before_receipts = len(timed_receipts)
+        scene.set_frame(frame, obligation_ref=spectrum_ref)
+        waterfall.set_line(line, obligation_ref=waterfall_ref)
+        scene.set_persistence_delivery_ref(persistence_ref, density)
+        scene.set_persistence_frame(density)
+        for _ in range(3):
+            self.app.processEvents()
+            scene._graphics.viewport().repaint()
+            waterfall._graphics.viewport().repaint()
+        self.app.processEvents()
+        self.assertIsNone(scene.displayed_delivery_ref)
+        self.assertIsNone(scene._persistence_delivery_ref)
+        self.assertIsNone(waterfall._waterfall_delivery_ref)
+        self.assertEqual(len(timed_receipts), before_receipts)
+        late_retry = ledger.snapshot()
+        self.assertEqual(late_retry.duplicate_events, before_late_retry.duplicate_events)
+        self.assertEqual(late_retry.accounting_failures, before_late_retry.accounting_failures)
+
+        same_ref_new_inputs = live_frame(2)
+        same_ref_new_line = waterfall_line_from_spectrum(same_ref_new_inputs)
+        same_ref_new_density = density_frame(2)
+        scene.set_frame(same_ref_new_inputs, obligation_ref=spectrum_ref)
+        waterfall.set_line(same_ref_new_line, obligation_ref=waterfall_ref)
+        scene.set_persistence_delivery_ref(persistence_ref, same_ref_new_density)
+        scene.set_persistence_frame(same_ref_new_density)
+        for _ in range(3):
+            self.app.processEvents()
+            scene._graphics.viewport().repaint()
+            waterfall._graphics.viewport().repaint()
+        self.app.processEvents()
+        self.assertIsNone(scene.displayed_delivery_ref)
+        self.assertIsNone(scene._persistence_delivery_ref)
+        self.assertIsNone(waterfall._waterfall_delivery_ref)
+        self.assertEqual(len(timed_receipts), before_receipts)
+        late_retry = ledger.snapshot()
+        self.assertEqual(late_retry.duplicate_events, before_late_retry.duplicate_events)
+        self.assertEqual(late_retry.accounting_failures, before_late_retry.accounting_failures)
+
+        # A genuinely newer obligation remains admissible after the high-water
+        # fence; the guard must not become a blanket paint suppression switch.
+        successor_refs = (
+            ledger.admit("one", local_clock(spectrum_identity(offer=2)), view=View.SPECTRUM),
+            ledger.admit("one", local_clock(spectrum_identity(offer=2)), view=View.WATERFALL),
+            ledger.admit("one", local_clock(persistence_identity(2)), view=View.PERSISTENCE),
+        )
+        self.assertTrue(all(ref is not None for ref in successor_refs))
+        for ref in successor_refs:
+            self.assertTrue(ledger.note(ref, Stage.PREPARING))
+            self.assertTrue(ledger.note(ref, Stage.PREPARED))
+            self.assertTrue(ledger.note(ref, Stage.QUEUED))
+            self.assertTrue(ledger.note(ref, Stage.QUEUE_DRAINED))
+            self.assertTrue(ledger.note(ref, Stage.UI_ADMITTED))
+        successor_frame = live_frame(3)
+        successor_density = density_frame(3)
+        successor_line = waterfall_line_from_spectrum(successor_frame)
+        scene.set_frame(successor_frame, obligation_ref=successor_refs[0])
+        waterfall.set_line(successor_line, obligation_ref=successor_refs[1])
+        scene.set_persistence_delivery_ref(successor_refs[2], successor_density)
+        scene.set_persistence_frame(successor_density)
+        if scene._persistence._last_upload_ns is not None:
+            scene._persistence.flush_pending(
+                now_ns=scene._persistence._last_upload_ns + scene._persistence._interval_ns + 1)
+        for _ in range(5):
+            self.app.processEvents()
+            scene._graphics.viewport().repaint()
+            waterfall._graphics.viewport().repaint()
+        self.app.processEvents()
+        successor_snapshot = ledger.snapshot()
+        self.assertEqual({record.ref: record.stage for record in successor_snapshot.records
+                          if record.ref in successor_refs},
+                         {ref: Stage.PAINT_RETURNED for ref in successor_refs})
+        self.assertEqual(len(timed_receipts), before_receipts + 3)
+        self.assertEqual(successor_snapshot.duplicate_events, before_late_retry.duplicate_events)
+        self.assertEqual(successor_snapshot.accounting_failures, before_late_retry.accounting_failures)
+
+        # A later valid successor must not erase knowledge of the earlier
+        # terminal refs.  This is deliberately checked with fresh input
+        # objects after successor Stop, not only by object identity.
+        scene.stop_delivery_custody(successor_refs)
+        waterfall.stop_delivery_custody(successor_refs)
+        before_old_retry = len(timed_receipts)
+        scene.set_frame(live_frame(4), obligation_ref=spectrum_ref)
+        waterfall.set_line(waterfall_line_from_spectrum(live_frame(4)),
+                           obligation_ref=waterfall_ref)
+        scene.set_persistence_delivery_ref(persistence_ref, density_frame(4))
+        scene.set_persistence_frame(density_frame(4))
+        for _ in range(3):
+            self.app.processEvents()
+            scene._graphics.viewport().repaint()
+            waterfall._graphics.viewport().repaint()
+        self.app.processEvents()
+        self.assertIsNone(scene.displayed_delivery_ref)
+        self.assertIsNone(scene._persistence_delivery_ref)
+        self.assertIsNone(waterfall._waterfall_delivery_ref)
+        self.assertEqual(len(timed_receipts), before_old_retry)
+        all_refs = refs + tuple(successor_refs)
+        scene.stop_delivery_custody(all_refs)
+        waterfall.stop_delivery_custody(all_refs)
+        scene.release_graphics_after_shutdown()
+        waterfall.release_presentation_after_shutdown()
+        scene.close()
+        waterfall.close()
+        scene.deleteLater()
+        waterfall.deleteLater()
+        self.app.processEvents()
+
+    def test_legacy_two_argument_allview_stage_callbacks_remain_supported(self):
+        ledger = PaneDeliveryLedger(("one",))
+
+        def local_clock(identity):
+            scope = replace(identity.owner_scope, host_process_id=os.getpid())
+            ready_identity = replace(identity.ready, host_process_id=os.getpid())
+            return replace(identity, owner_scope=scope, ready=ready_identity)
+
+        spectrum_ref = ledger.admit("one", local_clock(spectrum_identity()), view=View.SPECTRUM)
+        waterfall_ref = ledger.admit("one", local_clock(spectrum_identity()), view=View.WATERFALL)
+        persistence_ref = ledger.admit("one", local_clock(persistence_identity()), view=View.PERSISTENCE)
+        refs = (spectrum_ref, waterfall_ref, persistence_ref)
+        self.assertTrue(all(ref is not None for ref in refs))
+        for ref in refs:
+            for stage in (Stage.PREPARING, Stage.PREPARED, Stage.QUEUED,
+                          Stage.QUEUE_DRAINED, Stage.UI_ADMITTED):
+                self.assertTrue(ledger.note(ref, stage))
+
+        legacy_events = []
+
+        def legacy(ref, stage):
+            legacy_events.append((ref, stage))
+            return ledger.note(ref, stage)
+
+        scene = SpectrumScene()
+        waterfall = WaterfallPane()
+        scene.set_delivery_stage_callback(legacy)
+        waterfall.set_delivery_stage_callback(legacy)
+        frame = live_frame()
+        scene.resize(740, 440)
+        waterfall.resize(740, 250)
+        scene.show()
+        waterfall.show()
+        scene.set_frame(frame, obligation_ref=spectrum_ref)
+        waterfall.set_line(waterfall_line_from_spectrum(frame), obligation_ref=waterfall_ref)
+        density = density_frame()
+        scene.set_persistence_delivery_ref(persistence_ref, density)
+        scene.set_persistence_frame(density)
+        if scene._persistence._last_upload_ns is not None:
+            scene._persistence.flush_pending(
+                now_ns=scene._persistence._last_upload_ns + scene._persistence._interval_ns + 1)
+        for _ in range(5):
+            self.app.processEvents()
+            scene._graphics.viewport().repaint()
+            waterfall._graphics.viewport().repaint()
+        self.app.processEvents()
+        self.assertEqual({record.ref: record.stage for record in ledger.snapshot().records},
+                         {ref: Stage.PAINT_RETURNED for ref in refs})
+        self.assertEqual(ledger.snapshot().accounting_failures, 0)
+        self.assertEqual({ref.view for ref, stage in legacy_events
+                          if stage is Stage.PAINT_RETURNED},
+                         {View.SPECTRUM, View.WATERFALL, View.PERSISTENCE})
         scene.stop_delivery_custody(refs)
         waterfall.stop_delivery_custody(refs)
         scene.release_graphics_after_shutdown()

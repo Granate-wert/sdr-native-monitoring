@@ -833,6 +833,10 @@ class SpectrumScene(QWidget):
 
     def set_persistence_delivery_ref(self, ref: PaneDeliveryObligationRef | None,
                                      source_frame: object | None = None) -> None:
+        if ref is not None and self._delivery_ref_is_terminal_high_water(ref):
+            # Stop terminalizes the obligation, independently of the source
+            # object.  A delayed upload must not resurrect that exact ref.
+            return
         previous = self._persistence_delivery_ref
         if previous is not None and previous != ref and not self._persistence_delivery_paint_returned:
             self._report_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
@@ -1460,6 +1464,12 @@ class SpectrumScene(QWidget):
         if graph is None and ref.view is PaneDeliveryView.SPECTRUM:
             graph, sequence = self._closed_delivery_graph, self._closed_delivery_sequence
         return ref.graph_instance_id == graph and ref.sequence <= sequence
+
+    def _delivery_ref_is_terminal_high_water(self, ref: PaneDeliveryObligationRef) -> bool:
+        graph, sequence = self._closed_delivery_by_view.get(ref.view, (None, 0))
+        if graph is None and ref.view is PaneDeliveryView.SPECTRUM:
+            graph, sequence = self._closed_delivery_graph, self._closed_delivery_sequence
+        return ref.graph_instance_id == graph and ref.sequence == sequence
 
     def delivery_requires_ui_rejection(self, ref: PaneDeliveryObligationRef) -> bool:
         if self._delivery_ref_is_closed(ref):
