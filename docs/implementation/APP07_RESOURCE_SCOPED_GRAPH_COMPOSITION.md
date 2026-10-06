@@ -6462,3 +6462,53 @@ hardware recovery. Positive paired RF, current four-source HIL, visible
 FHD/QHD/DPI, latency/FPS, stability and independent release qualification remain
 open. APP-07/M8 remains PARTIAL/H02 TODO; the full APP-00 through APP-14 objective
 is unchanged.
+
+## M8-084 prerequisite: declared host clocks and paint-return boundaries
+
+Root source `87b6dbde77c6d64ef691f295ee933334dd02ffc1` adds an optional
+measurement contract, not a new performance result or release qualification.
+
+Native-ready bounds now declare the host clock only when the adapter retains
+the builtin `perf_counter_ns` callable. Custom/injected and legacy clocks stay
+unknown. Known detector/layer bounds must belong to their receipt's process.
+No native/host clock offset, drift extrapolation, RF timestamp or sample
+continuity is inferred from these declarations.
+
+An immutable paint-return receipt retains the original graph/pane/view,
+resource, run/activation and ready identity through its existing obligation.
+It carries a sample before the selected base paint and a sample after its
+successful return. The latter is an observation AFTER return, not the exact Qt
+exit instant or DWM/photon presentation. Conservative elapsed intervals for the
+enclosed base return and the after-return sample remain separate. Negative
+lower bounds denote uncertainty and are not clipped to zero or replaced by a
+midpoint.
+
+The ledger's own timestamp still describes later bookkeeping. The optional
+paint path cannot borrow that timestamp as a paint receipt; when declared
+clocks agree, bookkeeping delay is evaluated separately. Foreign view/ref,
+clock/process or contradictory ordering cannot produce qualified timing.
+Legacy two-argument stage callbacks remain valid but supply no paint timing.
+
+Additional scalar receipt retention is charged to the existing shared 1 MiB
+host graph component. Paint callbacks reuse the admission's conservative
+reference weight instead of recursively traversing Sweep coverage. Native DSP,
+Fs/FFT/gain, capture cadence, queues and RF/epoch/control policy are unchanged.
+
+A separate explicit diagnostic watchdog uses CPython faulthandler rather than
+a Qt timer checked after `processEvents`. Its deadline writes one nonfatal
+trace; it never kills/restarts the application, stops RX, releases leases or
+declares recovery. It is restricted to a diagnostic process owning the
+process-global faulthandler facility, not automatically installed in product UI.
+
+Root prerequisite verification: 19 new tests passed (2.041s), and 141 targeted
+tests passed without skips (10.540s), including the unchanged exact 9f4 packaged
+native module and the declared CMake mock IIO. Scoped mypy covers nine source
+files; Ruff/compile checks cover eleven files. Failed setup/fixture runs are
+retained; typed density accumulation/owner/receiver guards were not weakened.
+
+Actual Qt sampling and product-board forwarding are the next dedicated UI-only
+implementation/review task. This prerequisite does not qualify physical
+latency, current four-source HIL, paired RF, visible Windows/DPI/DWM, soak or
+release. The last fully software-qualified diagnostic build remains exact
+9f4; it must not be relabelled as this source. APP-07/M8 remains PARTIAL,
+H02 TODO, and the full APP-00 through APP-14 objective remains open.
