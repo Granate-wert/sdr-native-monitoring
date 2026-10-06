@@ -24,6 +24,7 @@ class PlotTerminalOwnership:
     view_box: Any
     axes: tuple[Any, ...]
     axis_labels: tuple[tuple[Any, Any | None], ...]
+    qobject_parents: tuple[tuple[Any, Any | None], ...]
     title_label: Any | None
     layout_entries: tuple[tuple[int, int, Any], ...]
     structural_complete: bool = False
@@ -52,6 +53,7 @@ def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
                     raise RuntimeError("plot terminal layout ownership is foreign")
                 layout_entries.append((row, column, item))
     axis_labels = tuple((axis, axis.label) for axis in axes)
+    labels = tuple(label for _axis, label in axis_labels if label is not None)
     for axis in axes:
         if axis.parentLayoutItem() is not layout:
             raise RuntimeError("plot terminal axis ownership is foreign")
@@ -62,6 +64,10 @@ def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
         raise RuntimeError("plot terminal title ownership is foreign")
     return PlotTerminalOwnership(
         plot=plot, view_box=view_box, axes=axes, axis_labels=axis_labels,
+        qobject_parents=tuple(
+            (wrapper, _qobject_parent(wrapper))
+            for wrapper in (*axes, *labels, view_box)
+        ),
         title_label=title_label, layout_entries=tuple(layout_entries),
     )
 
@@ -128,6 +134,13 @@ def _validate_captured_ownership(ownership: PlotTerminalOwnership) -> None:
     expected_scene = ownership.plot.scene()
     if getattr(ownership.view_box, "name", None) is not None:
         raise RuntimeError("named terminal ViewBox ownership is unsupported")
+    for wrapper, captured_parent in ownership.qobject_parents:
+        current_parent = _qobject_parent(wrapper)
+        if captured_parent is None:
+            if current_parent is not None:
+                raise RuntimeError("owned terminal wrapper has a foreign QObject parent")
+        elif current_parent is not None and current_parent is not captured_parent:
+            raise RuntimeError("owned terminal wrapper has a foreign QObject parent")
     _validate_captured_wrapper(ownership.view_box, expected_scene, layout, ownership.plot)
     for axis, captured_label in ownership.axis_labels:
         _validate_captured_wrapper(axis, expected_scene, layout, ownership.plot)
@@ -158,6 +171,11 @@ def _validate_captured_wrapper(
         raise RuntimeError("owned terminal wrapper was adopted by a foreign graphics parent")
 
 
+def _qobject_parent(wrapper: Any) -> Any | None:
+    parent = getattr(wrapper, "parent", None)
+    return parent() if callable(parent) else None
+
+
 def _unregister_view_box(view_box: Any) -> None:
     if not isValid(view_box):
         return
@@ -176,6 +194,8 @@ def _unregister_view_box(view_box: Any) -> None:
 def _validate_detached_wrapper(wrapper: Any) -> None:
     if not isValid(wrapper):
         return
+    if _qobject_parent(wrapper) is not None:
+        raise RuntimeError("owned terminal wrapper retains a QObject parent")
     scene = getattr(wrapper, "scene", None)
     if callable(scene) and scene() is not None:
         raise RuntimeError("owned terminal wrapper remains in a graphics scene")

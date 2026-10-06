@@ -204,6 +204,26 @@ class QtTerminalOwnershipTests(unittest.TestCase):
             if shiboken6.isValid(spectrum):
                 spectrum.release_graphics_after_shutdown()
 
+    def test_simulated_qobject_parent_adoption_is_refused_before_structural_close(self):
+        host, _layout, spectrum, _waterfall = self._owned_pair()
+        plan = capture_plot_terminal_ownership(spectrum.plot_item)
+        target = plan.axis_labels[2][1]
+        self.assertIsNotNone(target)
+        foreign_parent = object()
+
+        def observed_parent(wrapper):
+            return foreign_parent if wrapper is target else None
+
+        spectrum._graphics_terminal_ownership = plan
+        spectrum._graphics_preflight_complete = True
+        with patch.object(plot_terminal, "_qobject_parent", side_effect=observed_parent):
+            with self.assertRaisesRegex(RuntimeError, "foreign QObject parent"):
+                spectrum.release_graphics_after_shutdown()
+        self.assertFalse(spectrum._graphics_terminal_released)
+        self.assertIsNotNone(spectrum.plot_item.ctrlMenu)
+        spectrum._graphics_terminal_ownership = plan
+        spectrum.release_graphics_after_shutdown()
+
     def test_viewbox_delete_witness_is_empty_and_waterfall_retry_preserves_metrics(self):
         host, _layout, spectrum, waterfall = self._owned_pair()
         plan = capture_plot_terminal_ownership(waterfall.plot_item)
