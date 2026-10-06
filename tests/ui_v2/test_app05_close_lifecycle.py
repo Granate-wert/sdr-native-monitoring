@@ -324,12 +324,14 @@ class ProductCloseTests(unittest.TestCase):
         waterfall = self.page.visualization.waterfall_pane
         spectrum_view_box = spectrum.plot_item.getViewBox()
         waterfall_view_box = waterfall.plot_item.getViewBox()
-        witnessed = []
+        witnessed = {}
         original_delete = plot_terminal._delete_wrapper
 
         def witness(wrapper):
-            if hasattr(wrapper, "addedItems") and hasattr(wrapper, "childGroup") and not witnessed:
-                witnessed.append((wrapper.addedItems == [], wrapper.childGroup.childItems() == []))
+            if wrapper is spectrum_view_box:
+                witnessed["spectrum"] = (wrapper.addedItems == [], wrapper.childGroup.childItems() == [])
+            elif wrapper is waterfall_view_box:
+                witnessed["waterfall"] = (wrapper.addedItems == [], wrapper.childGroup.childItems() == [])
             return original_delete(wrapper)
 
         self.assertTrue(spectrum.plot_item.items)
@@ -341,7 +343,7 @@ class ProductCloseTests(unittest.TestCase):
         with patch.object(plot_terminal, "_delete_wrapper", side_effect=witness):
             self.shell.close()
             self.wait(lambda: self.shell._is_closed)
-        self.assertEqual(witnessed, [(True, True)])
+        self.assertEqual(witnessed, {"spectrum": (True, True), "waterfall": (True, True)})
         self.assertTrue(spectrum._graphics_terminal_released)
         self.assertTrue(waterfall._graphics_terminal_released)
         self.assertIsNone(spectrum.plot_item.ctrlMenu)

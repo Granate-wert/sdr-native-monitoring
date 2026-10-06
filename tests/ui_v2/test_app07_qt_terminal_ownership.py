@@ -79,7 +79,9 @@ class QtTerminalOwnershipTests(unittest.TestCase):
             self.assertTrue(all(not shiboken6.isValid(axis) for axis in plan.axes))
             self.assertTrue(all(not shiboken6.isValid(label) for label in plan.labels))
             self.assertTrue(shiboken6.isValid(plan.title_label))
-            self.assertTrue(set(self._layout_entries(pane.plot_item)) <= {plan.title_label})
+            retained_layout = self._layout_entries(pane.plot_item)
+            self.assertEqual(len(retained_layout), 1)
+            self.assertEqual(retained_layout, (plan.title_label,))
             self.assertNotIn(plan.view_box, pg.ViewBox.AllViews)
 
         self.assertEqual(tuple(host_layout.itemAt(index).widget()
@@ -135,9 +137,7 @@ class QtTerminalOwnershipTests(unittest.TestCase):
 
     def test_foreign_wrapper_is_refused_before_partial_retry_can_launder_ownership(self):
         host, _layout, spectrum, _waterfall = self._owned_pair()
-        peer = SpectrumScene(parent=host)
         plan = capture_plot_terminal_ownership(spectrum.plot_item)
-        peer_plan = capture_plot_terminal_ownership(peer.plot_item)
         try:
             failure_axis = plan.axis_labels[2][0]
             with patch.object(
@@ -151,23 +151,25 @@ class QtTerminalOwnershipTests(unittest.TestCase):
             self.assertEqual(sum(axis.label is None for axis, _label in plan.axis_labels), 2)
             self.assertTrue(all(shiboken6.isValid(label)
                                for _axis, label in plan.axis_labels if label is not None))
-            foreign_label = peer_plan.labels[0]
-            third_axis, captured_label = plan.axis_labels[2]
-            third_axis.label = foreign_label
-            try:
+            cleared_label = plan.axis_labels[0][1]
+            self.assertIsNotNone(cleared_label)
+            foreign_parent = object()
+            original_qobject_parent = plot_terminal._qobject_parent
+
+            def observed_parent(wrapper):
+                if wrapper is cleared_label:
+                    return foreign_parent
+                return original_qobject_parent(wrapper)
+
+            with patch.object(plot_terminal, "_qobject_parent", side_effect=observed_parent):
                 with self.assertRaisesRegex(RuntimeError, "foreign"):
                     spectrum.release_graphics_after_shutdown()
                 self.assertFalse(spectrum._graphics_terminal_released)
-                self.assertTrue(shiboken6.isValid(foreign_label))
-                self.assertIs(foreign_label.parentItem(), peer_plan.axes[0])
-            finally:
-                third_axis.label = captured_label
+                self.assertTrue(shiboken6.isValid(cleared_label))
         finally:
             spectrum._graphics_terminal_ownership = plan
             if shiboken6.isValid(spectrum):
                 spectrum.release_graphics_after_shutdown()
-            if shiboken6.isValid(peer):
-                peer.release_graphics_after_shutdown()
             self._finish_widget(host)
 
     def test_release_is_terminal_idempotent_for_both_real_panes(self):
@@ -203,6 +205,47 @@ class QtTerminalOwnershipTests(unittest.TestCase):
                 view_box.name = None
             if shiboken6.isValid(spectrum):
                 spectrum.release_graphics_after_shutdown()
+
+    def test_named_viewbox_is_refused_on_completed_retry_before_unregister(self):
+        host, _layout, spectrum, _waterfall = self._owned_pair()
+        plan = capture_plot_terminal_ownership(spectrum.plot_item)
+        view_box = plan.view_box
+        spectrum._graphics_terminal_ownership = plan
+        spectrum._graphics_preflight_complete = True
+        try:
+            with patch.object(
+                plot_terminal, "_delete_wrapper",
+                side_effect=RuntimeError("injected completed retirement failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "completed retirement"):
+                    spectrum.release_graphics_after_shutdown()
+            self.assertTrue(plan.structural_complete)
+            self.assertFalse(spectrum._graphics_terminal_released)
+            view_box.register("m8-terminal-ownership-completed-retry")
+            with self.assertRaisesRegex(RuntimeError, "named terminal ViewBox"):
+                spectrum.release_graphics_after_shutdown()
+            self.assertIn(view_box, pg.ViewBox.AllViews)
+            self.assertFalse(spectrum._graphics_terminal_released)
+        finally:
+            if shiboken6.isValid(view_box) and view_box in pg.ViewBox.AllViews:
+                view_box.unregister()
+            if shiboken6.isValid(view_box):
+                view_box.name = None
+            if shiboken6.isValid(spectrum):
+                spectrum.release_graphics_after_shutdown()
+
+    def test_nonnull_qobject_parent_is_refused_at_capture(self):
+        host, _layout, spectrum, _waterfall = self._owned_pair()
+        foreign_parent = object()
+        real_parent = plot_terminal._qobject_parent
+
+        def observed_parent(wrapper):
+            return foreign_parent if wrapper is spectrum.view_box else real_parent(wrapper)
+
+        with patch.object(plot_terminal, "_qobject_parent", side_effect=observed_parent):
+            with self.assertRaisesRegex(RuntimeError, "non-null QObject parent"):
+                capture_plot_terminal_ownership(spectrum.plot_item)
+        spectrum.release_graphics_after_shutdown()
 
     def test_simulated_qobject_parent_adoption_is_refused_before_structural_close(self):
         host, _layout, spectrum, _waterfall = self._owned_pair()

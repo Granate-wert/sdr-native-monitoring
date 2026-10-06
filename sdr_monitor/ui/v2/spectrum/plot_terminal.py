@@ -54,6 +54,12 @@ def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
                 layout_entries.append((row, column, item))
     axis_labels = tuple((axis, axis.label) for axis in axes)
     labels = tuple(label for _axis, label in axis_labels if label is not None)
+    qobject_parents = tuple(
+        (wrapper, _qobject_parent(wrapper))
+        for wrapper in (*axes, *labels, view_box)
+    )
+    if any(parent is not None for _wrapper, parent in qobject_parents):
+        raise RuntimeError("plot terminal ownership has a non-null QObject parent")
     for axis in axes:
         if axis.parentLayoutItem() is not layout:
             raise RuntimeError("plot terminal axis ownership is foreign")
@@ -64,10 +70,7 @@ def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
         raise RuntimeError("plot terminal title ownership is foreign")
     return PlotTerminalOwnership(
         plot=plot, view_box=view_box, axes=axes, axis_labels=axis_labels,
-        qobject_parents=tuple(
-            (wrapper, _qobject_parent(wrapper))
-            for wrapper in (*axes, *labels, view_box)
-        ),
+        qobject_parents=qobject_parents,
         title_label=title_label, layout_entries=tuple(layout_entries),
     )
 
@@ -218,6 +221,8 @@ def _delete_wrapper(wrapper: Any) -> None:
 
 
 def _retire_owned_wrappers(ownership: PlotTerminalOwnership) -> None:
+    if getattr(ownership.view_box, "name", None) is not None:
+        raise RuntimeError("named terminal ViewBox ownership is unsupported")
     targets = (*ownership.labels, *ownership.axes, ownership.view_box)
     for wrapper in targets:
         _validate_detached_wrapper(wrapper)
