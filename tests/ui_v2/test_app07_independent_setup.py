@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QPointF, QTimer, Qt
+from shiboken6 import isValid as is_qobject_valid
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, QTimer, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
@@ -50,6 +51,13 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 return
             sleep(0.01)
         self.fail("pane editor did not reach the expected state")
+
+    def _retire_qobject(self, owned) -> None:
+        """Retire one parentless test widget and verify targeted deletion."""
+        if is_qobject_valid(owned):
+            owned.deleteLater()
+            QCoreApplication.sendPostedEvents(owned, QEvent.Type.DeferredDelete)
+        self.assertFalse(is_qobject_valid(owned))
 
     def test_explicit_wide_band_stage_preview_lock_locale_discard_and_mode_restore(self) -> None:
         native, ad = _ad_graph(serial="")
@@ -134,6 +142,7 @@ class IndependentPaneSetupTests(unittest.TestCase):
             set_active_locale(locale)
             editor.release_after_shutdown()
             editor.close()
+            self._retire_qobject(editor)
             for pool in pools:
                 if pool.staged_resource_ids:
                     pool.close()
@@ -269,14 +278,20 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 for pool in pools:
                     if pool.staged_resource_ids:
                         pool.close()
-            if pane_ui is not None and installed and installed[0].shutdown_complete:
-                pane_ui.release_presentation_after_shutdown()
-                pane_ui.close()
+            if pane_ui is not None:
+                if installed and installed[0].shutdown_complete:
+                    pane_ui.release_presentation_after_shutdown()
+                    pane_ui.close()
+                else:
+                    pane_ui._state_timer.stop()
+                    pane_ui.delivery.stop()
+                self._retire_qobject(pane_ui)
             if editor._prepared is not None:
                 editor.discard.click()
                 self._wait(editor.can_close)
             editor.release_after_shutdown()
             editor.close()
+            self._retire_qobject(editor)
             for graph in graphs:
                 graph.live.shutdown()
             set_active_locale(locale)
@@ -292,6 +307,7 @@ class IndependentPaneSetupTests(unittest.TestCase):
                     parent, ("pane-1", "pane-2")))
         finally:
             parent.close()
+            self._retire_qobject(parent)
 
     def test_shared_stop_real_qt_dialog_defaults_to_no_and_accepts_explicit_yes(self) -> None:
         parent = QWidget()
@@ -331,6 +347,7 @@ class IndependentPaneSetupTests(unittest.TestCase):
             self.assertEqual(observed_defaults, [QMessageBox.StandardButton.No] * 2)
         finally:
             parent.close()
+            self._retire_qobject(parent)
 
     def test_shared_hackrf_rtbw_sweep_stop_selected_needs_ack_and_releases_one_rx(self) -> None:
         hf = hackrf_fixture()
@@ -391,9 +408,14 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 prepared.handle.shutdown_after_stop()
             elif prepared is None and pool.staged_resource_ids:
                 pool.close()
-            if pane_ui is not None and prepared is not None and prepared.handle.shutdown_complete:
-                pane_ui.release_presentation_after_shutdown()
-                pane_ui.close()
+            if pane_ui is not None:
+                if prepared is not None and prepared.handle.shutdown_complete:
+                    pane_ui.release_presentation_after_shutdown()
+                    pane_ui.close()
+                else:
+                    pane_ui._state_timer.stop()
+                    pane_ui.delivery.stop()
+                self._retire_qobject(pane_ui)
             graph.live.shutdown()
 
     def test_user_three_sources_and_empty_preview_apply_without_hidden_rx(self) -> None:
@@ -552,8 +574,10 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 else:
                     pane_ui._state_timer.stop()
                     pane_ui.delivery.stop()
+                self._retire_qobject(pane_ui)
             editor.release_after_shutdown()
             editor.close()
+            self._retire_qobject(editor)
             for graph in graphs:
                 graph.live.shutdown()
 
@@ -654,9 +678,14 @@ class IndependentPaneSetupTests(unittest.TestCase):
                         for future in handle.pump.stop_all().values():
                             future.result(timeout=5)
                     handle.shutdown_after_stop()
-                if pane_ui is not None and handle.shutdown_complete:
-                    pane_ui.release_presentation_after_shutdown()
-                    pane_ui.close()
+                if pane_ui is not None:
+                    if handle.shutdown_complete:
+                        pane_ui.release_presentation_after_shutdown()
+                        pane_ui.close()
+                    else:
+                        pane_ui._state_timer.stop()
+                        pane_ui.delivery.stop()
+                    self._retire_qobject(pane_ui)
             elif pools:
                 pools[0].close()
             graph.live.shutdown()
@@ -738,11 +767,17 @@ class IndependentPaneSetupTests(unittest.TestCase):
                 for pool in pools:
                     if pool.staged_resource_ids:
                         pool.close()
-            if pane_ui is not None and installed and installed[0].shutdown_complete:
-                pane_ui.release_presentation_after_shutdown()
-                pane_ui.close()
+            if pane_ui is not None:
+                if installed and installed[0].shutdown_complete:
+                    pane_ui.release_presentation_after_shutdown()
+                    pane_ui.close()
+                else:
+                    pane_ui._state_timer.stop()
+                    pane_ui.delivery.stop()
+                self._retire_qobject(pane_ui)
             editor.release_after_shutdown()
             editor.close()
+            self._retire_qobject(editor)
             graph.live.shutdown()
 
 

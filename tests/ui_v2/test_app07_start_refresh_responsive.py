@@ -109,7 +109,7 @@ class StartRefreshResponsiveTests(unittest.TestCase):
                 attempt("stop presentation delivery", surface.delivery.stop)
             attempt("schedule presentation deletion", surface.deleteLater)
             attempt("flush deferred presentation deletion",
-                    lambda: QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete))
+                    lambda: QCoreApplication.sendPostedEvents(surface, QEvent.Type.DeferredDelete))
 
         def close_pool_if_needed() -> None:
             if pool is not None and (pool.staged_resource_ids or pool.cleanup_pending_resource_ids):
@@ -259,19 +259,19 @@ class StartRefreshResponsiveTests(unittest.TestCase):
 
     def test_cleanup_failure_does_not_mask_body_assertion(self) -> None:
         body_error = AssertionError("injected body assertion")
-        close_error = RuntimeError("injected close cleanup failure")
-        original_close = IndependentPaneSessionV2.close
-
-        def close_then_fail(surface) -> None:
-            original_close(surface)
-            raise close_error
-
-        with self.assertRaises(AssertionError) as raised, \
-             patch.object(IndependentPaneSessionV2, "close", new=close_then_fail):
+        shutdown_error = RuntimeError("injected shutdown cleanup failure")
+        with self.assertRaises(AssertionError) as raised:
             with self._owned_surface() as product:
+                original_shutdown = product.handle.shutdown_after_stop
+
+                def shutdown_then_fail() -> None:
+                    original_shutdown()
+                    raise shutdown_error
+
+                product.handle.shutdown_after_stop = shutdown_then_fail
                 raise body_error
         self.assertIs(raised.exception, body_error)
-        self.assertTrue(any("close presentation" in note and str(close_error) in note
+        self.assertTrue(any("shutdown product handle" in note and str(shutdown_error) in note
                             for note in body_error.__notes__))
         self.assertEqual(product.pool.staged_resource_ids, ())
         self.assertEqual(product.pool.cleanup_pending_resource_ids, ())
@@ -284,17 +284,16 @@ class StartRefreshResponsiveTests(unittest.TestCase):
         self.assertFalse(is_qobject_valid(product.surface))
 
     def test_normal_cleanup_failure_is_reported(self) -> None:
-        close_error = RuntimeError("injected normal close cleanup failure")
-        original_close = IndependentPaneSessionV2.close
-
-        def close_then_fail(surface) -> None:
-            original_close(surface)
-            raise close_error
-
-        with self.assertRaisesRegex(AssertionError, "owned-surface cleanup failed.*close presentation"), \
-             patch.object(IndependentPaneSessionV2, "close", new=close_then_fail):
+        shutdown_error = RuntimeError("injected normal shutdown cleanup failure")
+        with self.assertRaisesRegex(AssertionError, "owned-surface cleanup failed.*shutdown product handle"):
             with self._owned_surface() as product:
-                pass
+                original_shutdown = product.handle.shutdown_after_stop
+
+                def shutdown_then_fail() -> None:
+                    original_shutdown()
+                    raise shutdown_error
+
+                product.handle.shutdown_after_stop = shutdown_then_fail
         self.assertFalse(is_qobject_valid(product.surface))
 
 
