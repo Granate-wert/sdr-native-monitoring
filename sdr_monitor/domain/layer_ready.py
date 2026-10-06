@@ -135,6 +135,8 @@ class LayerReadyReceipt:
             if (not isinstance(bounds, ReadyHostBounds)
                     or not bounds.lower.native_ns < self.ready_native_ns < bounds.upper.native_ns):
                 raise ValueError("layer readiness must be enclosed by actual native clock probes")
+            if bounds.host_clock is not None and bounds.host_clock.process_id != self.host_process_id:
+                raise ValueError("layer ready bounds belong to another host process")
         elif self.host_bounds is not None:
             raise ValueError("unknown layer clock mapping cannot claim host bounds")
         if (self.owner_run_id is None) != (self.session_id is None):

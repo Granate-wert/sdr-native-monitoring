@@ -18,6 +18,9 @@ from ..domain.analytical_ready import (
     DetectorReadyReceipt, ReadyClockBracket, ReadyClockMapping, ReadyHostBounds,
 )
 from ..domain.identity import ConfigurationGeneration, SessionId, SourceId
+from ..domain.host_clock import HostClockKind, HostClockScope
+
+_PERF_COUNTER_NS = time.perf_counter_ns
 
 if TYPE_CHECKING:
     from ..domain.analytical_journal import OwnerJournalSnapshot
@@ -31,6 +34,8 @@ class NativeReadyBridge:
         self._host_clock = host_clock
         self._scope = uuid4().hex
         self._process_id = os.getpid()
+        self._host_clock_scope = (HostClockScope(HostClockKind.PERF_COUNTER_NS, self._process_id)
+                                  if host_clock is _PERF_COUNTER_NS else None)
         self._samples: deque[ReadyClockBracket] = deque(maxlen=self.SAMPLE_CAPACITY)
         self._failure: ReadyClockMapping | None = None
 
@@ -147,6 +152,6 @@ class NativeReadyBridge:
             upper = next((sample for sample in self._samples
                           if sample.native_ns > ref.ready_native_ns), None)
             if lower is not None and upper is not None:
-                bounds = ReadyHostBounds(lower, upper)
+                bounds = ReadyHostBounds(lower, upper, self._host_clock_scope)
                 mapping = ReadyClockMapping.BOUNDED
         return mapping, bounds

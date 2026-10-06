@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .identity import ConfigurationGeneration, SessionId, SourceId
+from .host_clock import HostClockScope
 
 
 def _integer(value: object, label: str, minimum: int, maximum: int) -> None:
@@ -36,6 +37,7 @@ class ReadyHostBounds:
 
     lower: ReadyClockBracket
     upper: ReadyClockBracket
+    host_clock: HostClockScope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.lower, ReadyClockBracket) or not isinstance(self.upper, ReadyClockBracket):
@@ -43,6 +45,8 @@ class ReadyHostBounds:
         if (self.lower.native_ns >= self.upper.native_ns
                 or self.lower.host_after_ns > self.upper.host_before_ns):
             raise ValueError("ready probes are not monotonically ordered")
+        if self.host_clock is not None and not isinstance(self.host_clock, HostClockScope):
+            raise ValueError("ready bounds host clock must be typed or unknown")
 
     @property
     def earliest_host_ns(self) -> int:
@@ -110,5 +114,8 @@ class DetectorReadyReceipt:
             if (not isinstance(self.host_bounds, ReadyHostBounds)
                     or not self.host_bounds.lower.native_ns < self.ready_native_ns < self.host_bounds.upper.native_ns):
                 raise ValueError("ready time must be strictly inside measured native probes")
+            if (self.host_bounds.host_clock is not None
+                    and self.host_bounds.host_clock.process_id != self.host_process_id):
+                raise ValueError("ready bounds belong to another host process")
         elif self.host_bounds is not None:
             raise ValueError("unknown ready mapping cannot claim host bounds")

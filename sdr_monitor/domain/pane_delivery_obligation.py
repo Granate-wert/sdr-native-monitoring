@@ -3,10 +3,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from .pane_analytical_identity import PaneAnalyticalIdentity
 from .pane_layer_identity import PaneDeliveryView, PaneLayerAnalyticalIdentity
 from .layer_ready import LayerReadyKind
+from .host_clock import HostClockScope
+
+if TYPE_CHECKING:
+    from .pane_paint_timing import PanePaintReturnReceipt
 
 
 class PaneDeliveryStage(StrEnum):
@@ -69,6 +74,9 @@ class PaneDeliveryEvent:
     ref: PaneDeliveryObligationRef
     stage: PaneDeliveryStage
     host_perf_ns: int | None
+    # Timestamp above is sampled during ledger bookkeeping, NOT Qt paint exit.
+    host_clock: HostClockScope | None = None
+    paint_return: PanePaintReturnReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +118,7 @@ class PaneDeliveryLedgerSnapshot:
     reserved_bytes: int
     retained_scalar_bytes: int
     views: tuple[PaneViewDeliveryCounters, ...] = ()
+    host_clock: HostClockScope | None = None
 
     # Native all-offers counters remain a different denominator. No lifetime
     # completeness or latency verdict is implied by this finite host window.

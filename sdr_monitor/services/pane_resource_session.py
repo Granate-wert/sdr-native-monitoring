@@ -26,6 +26,7 @@ from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView, PaneLayerAn
 from sdr_monitor.domain.pane_delivery_obligation import (
     PaneDeliveryLedgerSnapshot, PaneDeliveryObligationRef, PaneDeliveryStage,
 )
+from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 from sdr_monitor.domain.live import LiveSpectrumFrame, LivePersistenceFrame
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
@@ -492,9 +493,16 @@ class PaneResourceSession:
         return self._delivery_ledger.snapshot()
 
     def record_pane_delivery_stage(self, ref: PaneDeliveryObligationRef,
-                                   stage: PaneDeliveryStage) -> bool:
+                                   stage: PaneDeliveryStage, *,
+                                   paint_return: PanePaintReturnReceipt | None = None) -> bool:
         """Actual custody boundary reports the original ref, no hardware locks."""
-        return self._delivery_ledger.note(ref, stage)
+        return self._delivery_ledger.note(ref, stage, paint_return=paint_return)
+
+    def record_pane_paint_return(self, receipt: PanePaintReturnReceipt) -> bool:
+        """Separate optional paint observer; legacy stage callbacks stay valid."""
+        if not isinstance(receipt, PanePaintReturnReceipt):
+            return False
+        return self._delivery_ledger.note(receipt.ref, PaneDeliveryStage.PAINT_RETURNED, paint_return=receipt)
 
     def _bind_delivery_obligations(self, deliveries: tuple[PaneDelivery, ...]) -> tuple[PaneDelivery, ...]:
         # One cached read per resource/batch, including BOTH paired receivers.

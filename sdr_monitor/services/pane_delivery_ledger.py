@@ -11,12 +11,15 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import fields, is_dataclass, replace
 from hashlib import sha256
+import os
 import sys
 from threading import Lock
 from time import perf_counter_ns
 from uuid import uuid4
 
 from ..domain.pane_analytical_identity import PaneAnalyticalIdentity
+from ..domain.host_clock import HostClockKind, HostClockScope
+from ..domain.pane_paint_timing import PanePaintReturnReceipt
 from ..domain.pane_layer_identity import PaneDeliveryView, PaneLayerAnalyticalIdentity
 from ..domain.pane_delivery_obligation import (
     PaneDeliveryCounters, PaneDeliveryEvent, PaneDeliveryLedgerSnapshot,
@@ -71,6 +74,8 @@ class PaneDeliveryLedger:
         self._duplicate_events = self._accounting_failures = self._clock_failures = 0
         self._last_ns: int | None = None
         self._now_ns = now_ns
+        self._host_clock = (HostClockScope(HostClockKind.PERF_COUNTER_NS, os.getpid())
+                            if now_ns is perf_counter_ns else None)
         self._lock = Lock()
 
     def _count(self, pane: str, view: PaneDeliveryView, **increments: int) -> None:
@@ -167,18 +172,26 @@ class PaneDeliveryLedger:
             value = self._now_ns()
         except Exception:
             value = None
-        if type(value) is not int or value < 0 or self._last_ns is not None and value < self._last_ns:
+        if (type(value) is not int or not 0 <= value < (1 << 63)
+                or self._last_ns is not None and value < self._last_ns):
             self._clock_failures += 1
             return None
         self._last_ns = value
         return value
 
-    def _append_event(self, ref: PaneDeliveryObligationRef, stage: Stage) -> None:
+    def _append_event(self, ref: PaneDeliveryObligationRef, stage: Stage,
+                      paint_return: PanePaintReturnReceipt | None = None) -> None:
         self._event_sequence += 1
-        event = PaneDeliveryEvent(self._event_sequence, ref, stage, self._timestamp())
+        event = PaneDeliveryEvent(self._event_sequence, ref, stage, self._timestamp(),
+                                  self._host_clock, paint_return)
         # Ref is already charged in the record/marker. Include an additional
         # conservative ref allowance so eviction cannot hide retained identities.
         size = self._records[ref.sequence][1] + 256
+        if paint_return is not None:
+            # Reuse the admission's conservative ref weight, rather than
+            # recursively traversing up to 2048 Sweep segments on the Qt
+            # callback. Includes a separately allocated but equal receipt ref.
+            size += self._records[ref.sequence][1] + 512
         if len(self._events) == EVENT_CAPACITY:
             _, dropped = self._events.popleft()
             self._bytes -= dropped
@@ -189,10 +202,16 @@ class PaneDeliveryLedger:
         self._events.append((event, size))
         self._bytes += size
 
-    def note(self, ref: PaneDeliveryObligationRef, stage: Stage) -> bool:
+    def note(self, ref: PaneDeliveryObligationRef, stage: Stage, *,
+             paint_return: PanePaintReturnReceipt | None = None) -> bool:
         """Record only the actual boundary that owns the original reference."""
         with self._lock:
             if not isinstance(ref, PaneDeliveryObligationRef) or not isinstance(stage, Stage):
+                self._accounting_failures += 1
+                return False
+            if paint_return is not None and (stage is not Stage.PAINT_RETURNED
+                    or not isinstance(paint_return, PanePaintReturnReceipt)
+                    or paint_return.ref != ref or paint_return.host_clock.process_id != os.getpid()):
                 self._accounting_failures += 1
                 return False
             record = self._records.get(ref.sequence) if ref.graph_instance_id == self._graph_id else None
@@ -205,15 +224,16 @@ class PaneDeliveryLedger:
             if stage not in _TRANSITIONS.get(record[0].stage, ()):
                 self._accounting_failures += 1
                 return False
-            self._transition(record[0], record[1], stage)
+            self._transition(record[0], record[1], stage, paint_return)
             return True
 
-    def _transition(self, record: PaneDeliveryRecord, weight: int, stage: Stage) -> None:
+    def _transition(self, record: PaneDeliveryRecord, weight: int, stage: Stage,
+                    paint_return: PanePaintReturnReceipt | None = None) -> None:
         self._records[record.ref.sequence] = (replace(record, stage=stage), weight)
         if stage in _TERMINAL:
             self._terminal_order[record.ref.sequence] = None
             self._count(record.ref.identity.pane_id, record.ref.view, pending=-1, terminal=1)
-        self._append_event(record.ref, stage)
+        self._append_event(record.ref, stage, paint_return)
 
     def cancel_unclaimed(self, resource_id: str) -> None:
         """Routing closes: cancel ONLY ADMITTED, never UI/queue-owned refs."""
@@ -233,4 +253,4 @@ class PaneDeliveryLedger:
                 self._accounting_failures, self._clock_failures,
                 HOST_GRAPH_SCALAR_BUDGET, self._bytes,
                 tuple(PaneViewDeliveryCounters(view, counts)
-                      for (_, view), counts in self._view_counts.items()))
+                      for (_, view), counts in self._view_counts.items()), self._host_clock)
