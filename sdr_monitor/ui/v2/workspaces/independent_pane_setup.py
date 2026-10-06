@@ -19,6 +19,7 @@ from sdr_monitor.domain.device_capabilities import (
     AdapterRuntimeAvailability, CapabilityEvidenceOrigin, CapabilityField, DeviceFamily,
 )
 from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
+from sdr_monitor.domain.pluto_route_intent import PlutoOperationalRouteIntent
 from sdr_monitor.domain.pane_scheduler import (
     Ad936xPairedSweepPaneProfile, Ad936xSweepPaneProfile, CaptureMeasurementMode, HackrfRtbwPaneProfile,
     PaneCaptureProfile, RtlRtbwPaneProfile,
@@ -59,12 +60,27 @@ class _SlotRow:
         self.chain.setMinimumContentsLength(3)
         for chain in (ReceiverChainSelection.RX1, ReceiverChainSelection.RX2):
             self.chain.addItem(chain.name, chain.value)
+        self.route = DraftScrollComboBox(parent)
+        self.route.setObjectName(f"independentPaneRoute{number}V2")
+        self.route.setProperty("ui2Role", "utility-select")
+        self.route.setMinimumWidth(150)
+        self.route.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.route.setMinimumContentsLength(12)
+        self._route_source_id: str | None = None
+        self._route_intent: PlutoOperationalRouteIntent | None = None
+        self._route_unavailable = False
+        self.source_line = QWidget(parent)
+        source_line_layout = QHBoxLayout(self.source_line)
+        source_line_layout.setContentsMargins(0, 0, 0, 0)
+        source_line_layout.setSpacing(4)
+        source_line_layout.addWidget(self.source, 1)
+        source_line_layout.addWidget(self.chain)
         self.source_chain = QWidget(parent)
-        source_chain_layout = QHBoxLayout(self.source_chain)
+        source_chain_layout = QVBoxLayout(self.source_chain)
         source_chain_layout.setContentsMargins(0, 0, 0, 0)
         source_chain_layout.setSpacing(4)
-        source_chain_layout.addWidget(self.source, 1)
-        source_chain_layout.addWidget(self.chain)
+        source_chain_layout.addWidget(self.source_line)
+        source_chain_layout.addWidget(self.route)
         self.start = QDoubleSpinBox(parent)
         self.stop = QDoubleSpinBox(parent)
         for field in (self.start, self.stop):
@@ -201,6 +217,8 @@ class IndependentPaneSetupV2(QWidget):
                 grid.addWidget(widget, row_index, column)
             row.source.currentIndexChanged.connect(
                 lambda _index, target=row: self._source_user_changed(target))
+            row.route.currentIndexChanged.connect(
+                lambda _index, target=row: self._route_user_changed(target))
             row.chain.currentIndexChanged.connect(lambda _index: self._refresh_actions())
             row.mode.currentIndexChanged.connect(
                 lambda _index, target=row: self._mode_changed(target))
@@ -469,6 +487,9 @@ class IndependentPaneSetupV2(QWidget):
             refusal = next((reason for row in self._rows
                             for choice in self._choices if choice.device_id == row.source.currentData()
                             for reason in (self._rtl_unavailable_key(choice),) if reason is not None), None)
+        if refusal is None:
+            refusal = next((reason for row in self._rows
+                            for reason in (self._route_refusal_key(row),) if reason is not None), None)
         prepared = self._prepared
         self.apply.setEnabled(self._future is None and prepared is not None
                               and refusal is None and not prepared.handle.applied
@@ -688,6 +709,13 @@ class IndependentPaneSetupV2(QWidget):
         return text(self._rtl_assurance_key(choice)) if choice.family is DeviceFamily.RTL_SDR else choice.device_id
 
     def _source_user_changed(self, row: _SlotRow) -> None:
+        source_id = row.source.currentData()
+        if source_id != row._route_source_id:
+            # A deliberate source edit invalidates the old source-scoped pin;
+            # passive discovery refreshes never call this signal path.
+            row._route_source_id = source_id
+            row._route_intent = None
+            row._route_unavailable = False
         if row.source.currentData() is None:
             # Explicitly choosing Empty clears this draft's chain. A passive
             # source-list refresh uses _source_changed directly and retains it.
@@ -695,6 +723,100 @@ class IndependentPaneSetupV2(QWidget):
                 row.chain.setCurrentIndex(row.chain.findData(ReceiverChainSelection.RX1.value))
         self._source_changed(row, explicit_source_change=True)
         self._refresh_actions()
+
+    @staticmethod
+    def _route_label(route: PlutoOperationalRouteIntent) -> str:
+        prefix = "USB" if route.uri.startswith("usb:") else "IP"
+        return f"{prefix} · {route.uri}"
+
+    def _route_tip(self, route: PlutoOperationalRouteIntent | None = None) -> str:
+        if route is None:
+            return text("analyzer.pane.setup.route_help")
+        return text("analyzer.pane.setup.route_pinned_help", route=self._route_label(route))
+
+    def _route_scope_tip(self, row: _SlotRow, base: str) -> str:
+        source_id = row.source.currentData()
+        peers = tuple(candidate.number for candidate in self._rows
+                      if candidate.source.currentData() == source_id)
+        if len(peers) <= 1:
+            return base
+        return base + " " + text("analyzer.pane.setup.route_shared", panes=", ".join(map(str, peers)))
+
+    def _route_owner(self, row: _SlotRow) -> _SlotRow:
+        source_id = row.source.currentData()
+        for candidate in self._rows:
+            if candidate.source.currentData() == source_id:
+                return candidate
+        return row
+
+    def _sync_route_peers(self, row: _SlotRow) -> None:
+        source_id = row.source.currentData()
+        if source_id is None:
+            return
+        for peer in self._rows:
+            if peer is row or peer.source.currentData() != source_id:
+                continue
+            peer._route_source_id = source_id
+            peer._route_intent = row._route_intent
+            peer._route_unavailable = row._route_unavailable
+            self._refresh_route(peer)
+
+    def _route_user_changed(self, row: _SlotRow) -> None:
+        if self.blocks_single_source:
+            return
+        value = row.route.currentData()
+        row._route_intent = value if isinstance(value, PlutoOperationalRouteIntent) else None
+        choice = next((item for item in self._choices
+                       if item.device_id == row.source.currentData()), None)
+        row._route_unavailable = (row._route_intent is not None
+                                  and (choice is None or row._route_intent not in choice.operational_routes))
+        row._route_source_id = row.source.currentData()
+        owner = self._route_owner(row)
+        if owner is not row:
+            row._route_intent = owner._route_intent
+            row._route_unavailable = owner._route_unavailable
+            self._refresh_route(row)
+        else:
+            self._sync_route_peers(row)
+        self._refresh_actions()
+
+    def _refresh_route(self, row: _SlotRow) -> None:
+        source_id = row.source.currentData()
+        choice = next((item for item in self._choices if item.device_id == source_id), None)
+        requested = row._route_intent
+        is_ad = choice is not None and choice.family is DeviceFamily.AD936X
+        routes = () if choice is None else choice.operational_routes
+        available = requested is None or requested in routes
+        missing_source = source_id is not None and choice is None
+        show = is_ad or requested is not None or missing_source
+        with QSignalBlocker(row.route):
+            row.route.clear()
+            if not show:
+                row.route.hide()
+                row.route.setToolTip("")
+                row.route.setAccessibleDescription("")
+                row._route_unavailable = False
+                return
+            row.route.addItem(text("analyzer.pane.setup.route_automatic"), None)
+            for route in routes:
+                row.route.addItem(self._route_label(route), route)
+            if requested is not None and not available:
+                row.route.addItem(text("analyzer.pane.setup.route_unavailable",
+                                       route=self._route_label(requested)), requested)
+                model = row.route.model()
+                if isinstance(model, QStandardItemModel):
+                    item = model.item(row.route.count() - 1)
+                    if item is not None:
+                        item.setEnabled(False)
+            index = row.route.findData(requested) if requested is not None else 0
+            row.route.setCurrentIndex(index if index >= 0 else 0)
+            tip = self._route_scope_tip(row, self._route_tip(requested))
+            row.route.setToolTip(tip)
+            row.route.setAccessibleDescription(tip)
+            row.route.setVisible(True)
+        row._route_unavailable = requested is not None and not available
+        owner = self._route_owner(row)
+        row.route.setEnabled(not self.blocks_single_source and owner is row)
 
     @staticmethod
     def _selected_chain(row: _SlotRow) -> ReceiverChainSelection:
@@ -725,6 +847,17 @@ class IndependentPaneSetupV2(QWidget):
         choice = next((item for item in self._choices
                        if item.device_id == row.source.currentData()), None)
         return self._rx2_unavailable_key(choice) or None
+
+    def _route_refusal_key(self, row: _SlotRow) -> str | None:
+        source_id = row.source.currentData()
+        if source_id is None:
+            return None
+        choice = next((item for item in self._choices if item.device_id == source_id), None)
+        if choice is None:
+            return "analyzer.pane.setup.route_source_unavailable"
+        if row._route_intent is not None and row._route_intent not in choice.operational_routes:
+            return "analyzer.pane.setup.route_unavailable_refusal"
+        return None
 
     def _refresh_chain(self, row: _SlotRow, choice: AnalyzerSourceChoice | None) -> None:
         reason = self._rx2_unavailable_key(choice)
@@ -793,6 +926,8 @@ class IndependentPaneSetupV2(QWidget):
         self._choices = () if selection is None else selection.choices
         for row in self._rows:
             previous = row.source.currentData()
+            if row._route_source_id is None:
+                row._route_source_id = previous
             with QSignalBlocker(row.source):
                 row.source.clear()
                 row.source.addItem(text("analyzer.pane.setup.empty"), None)
@@ -809,6 +944,12 @@ class IndependentPaneSetupV2(QWidget):
                         item = model.item(index)
                         if item is not None:
                             item.setEnabled(False)
+                if previous is not None and row.source.findData(previous) < 0:
+                    row.source.addItem(text("analyzer.pane.setup.source_unavailable", source=previous), previous)
+                    missing_index = row.source.count() - 1
+                    row.source.setItemData(missing_index,
+                                           text("analyzer.pane.setup.source_unavailable_help"),
+                                           Qt.ItemDataRole.ToolTipRole)
                 index = row.source.findData(previous)
                 row.source.setCurrentIndex(max(index, 0))
             self._source_changed(row, preserve_range=True)
@@ -902,6 +1043,7 @@ class IndependentPaneSetupV2(QWidget):
                     row.band.setCurrentIndex(row.band.findData(RtbwBandPolicy.FULL_RECEIVE))
             row.sweep_window.setValue(0.0)
         self._mode_changed(row)
+        self._refresh_route(row)
         self._refresh_tinysa_row(row)
         self._refresh_tinysa_selector()
 
@@ -925,6 +1067,7 @@ class IndependentPaneSetupV2(QWidget):
                 row.stop.value() * 1_000_000,
                 sample_rate_hz=row.rate.currentData(), fft_size=row.fft.currentData(),
                 points=row.points.value(), network_discovery=network,
+                operational_route=row._route_intent,
                 measurement_mode=self._selected_mode(row), priority=row.priority.value(),
                 maximum_revisit_s=row.maximum_revisit.value() or None, tinysa=tiny,
                 sweep_window_hz=(row.sweep_window.value() * 1_000_000
@@ -1033,6 +1176,10 @@ class IndependentPaneSetupV2(QWidget):
             if chain_reason is not None:
                 self._set_error(chain_reason)
                 return
+            route_reason = self._route_refusal_key(row)
+            if route_reason is not None:
+                self._set_error(route_reason)
+                return
             choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
             reason = None if choice is None else self._rtl_unavailable_key(choice)
             if reason is not None:
@@ -1075,6 +1222,10 @@ class IndependentPaneSetupV2(QWidget):
             chain_reason = self._chain_refusal_key(row)
             if chain_reason is not None:
                 self._set_error(chain_reason)
+                return
+            route_reason = self._route_refusal_key(row)
+            if route_reason is not None:
+                self._set_error(route_reason)
                 return
             choice = next((item for item in self._choices if item.device_id == row.source.currentData()), None)
             reason = None if choice is None else self._rtl_unavailable_key(choice)
@@ -1189,6 +1340,11 @@ class IndependentPaneSetupV2(QWidget):
         self._refresh_impact_summary()
         lines = [text("analyzer.pane.setup.preview_intro")]
         sources = dict(prepared.plan.resource_sources)
+        staged_routes = {}
+        context = prepared.handle.rf_context
+        if context is not None:
+            staged_routes = {draft.source_id: draft.operational_route
+                             for draft in context.drafts if draft.source_id is not None}
         for item in prepared.preview:
             mode = (text("analyzer.pane.setup.time_sliced") if item.capture_job_count > 1 else
                     text("analyzer.pane.setup.shared") if len(item.affected_pane_ids) > 1 else
@@ -1200,6 +1356,10 @@ class IndependentPaneSetupV2(QWidget):
             label = prepared.handle.source_labels.get(source_id, source_id)
             lines.append(text("analyzer.pane.setup.preview_resource", panes=numbers, source=label,
                               mode=mode, jobs=item.capture_job_count) + conflict)
+            route = staged_routes.get(source_id)
+            lines.append(text("analyzer.pane.setup.preview_route",
+                              route=(text("analyzer.pane.setup.route_automatic")
+                                     if route is None else self._route_label(route))))
         schedule = prepared.plan.layout.schedule
         assert schedule is not None
         # A logical pair is identified by typed endpoints in the staged plan,
@@ -1441,7 +1601,9 @@ class IndependentPaneSetupV2(QWidget):
                            for reason in (self._rtl_unavailable_key(choice),) if reason is not None), None)
         chain_reason = next((reason for row in self._rows
                              for reason in (self._chain_refusal_key(row),) if reason is not None), None)
-        refusal = chain_reason or rtl_reason
+        route_reason = next((reason for row in self._rows
+                             for reason in (self._route_refusal_key(row),) if reason is not None), None)
+        refusal = chain_reason or rtl_reason or route_reason
         self.prepare.setEnabled(not blocked and refusal is None
                                 and self._prepared is None and self._retained_pool is None)
         self._refresh_apply_visibility()
@@ -1457,7 +1619,7 @@ class IndependentPaneSetupV2(QWidget):
         self.setStyleSheet(stylesheet_for_theme(theme))
         for row in self._rows:
             for field in (row.source, row.chain, row.start, row.stop, row.rate, row.fft,
-                          row.points, row.mode, row.mode_points, row.priority, row.maximum_revisit,
+                          row.route, row.points, row.mode, row.mode_points, row.priority, row.maximum_revisit,
                           row.band, row.sweep_window):
                 field.ensurePolished()
                 field.setMinimumHeight(field.minimumSizeHint().height())
@@ -1467,6 +1629,9 @@ class IndependentPaneSetupV2(QWidget):
         self.gain_heading.setText(text("analyzer.pane.setup.rtl_gain_heading"))
         for row in self._rows:
             row.chain.setAccessibleName(text("analyzer.pane.setup.chain_name", pane=row.number))
+            row.route.setAccessibleName(text("analyzer.pane.setup.route_name", pane=row.number))
+            row.route.setToolTip(self._route_tip(row._route_intent))
+            row.route.setAccessibleDescription(self._route_tip(row._route_intent))
             row.gain_label.setText(text("analyzer.pane.setup.rtl_gain_label", pane=row.number))
             row.manual_gain.setAccessibleName(text("analyzer.pane.setup.rtl_gain_name", pane=row.number))
             with QSignalBlocker(row.chain):
@@ -1529,6 +1694,7 @@ class IndependentPaneSetupV2(QWidget):
                            "analyzer.pane.setup.mode_" + CaptureMeasurementMode(value).value)
                     row.mode.setItemText(index, text(key))
             row.fft.setToolTip(text("analyzer.pane.setup.fft_help"))
+            self._refresh_route(row)
         self.description.setText(text("analyzer.pane.setup.description"))
         self.mode_help.setText(text("analyzer.pane.setup.mode_help"))
         self.scheduler_toggle.setText(text("analyzer.pane.setup.scheduler"))
