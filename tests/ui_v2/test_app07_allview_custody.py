@@ -1,8 +1,10 @@
 """Real Qt view-specific custody receipts, separate from RF/FFT evidence."""
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 import os
+from time import sleep
 import unittest
 
 import numpy as np
@@ -103,10 +105,15 @@ class AllViewCustodyTests(unittest.TestCase):
 
     def test_rtbw_queue_and_each_actual_canvas_paint_return(self):
         ledger = PaneDeliveryLedger(("one",))
-        base = spectrum_identity()
+        def local_clock(identity):
+            scope = replace(identity.owner_scope, host_process_id=os.getpid())
+            ready_identity = replace(identity.ready, host_process_id=os.getpid())
+            return replace(identity, owner_scope=scope, ready=ready_identity)
+
+        base = local_clock(spectrum_identity())
         spectrum_ref = ledger.admit("one", base, view=View.SPECTRUM)
         waterfall_ref = ledger.admit("one", base, view=View.WATERFALL)
-        persistence_ref = ledger.admit("one", persistence_identity(), view=View.PERSISTENCE)
+        persistence_ref = ledger.admit("one", local_clock(persistence_identity()), view=View.PERSISTENCE)
         refs = (spectrum_ref, waterfall_ref, persistence_ref)
         self.assertTrue(all(ref is not None for ref in refs))
         for ref in refs:
@@ -123,6 +130,16 @@ class AllViewCustodyTests(unittest.TestCase):
         waterfall = WaterfallPane()
         scene.set_delivery_stage_callback(ledger.note)
         waterfall.set_delivery_stage_callback(ledger.note)
+
+        timed_receipts = []
+
+        def timed(receipt):
+            timed_receipts.append(receipt)
+            sleep(0.001)  # Keep bookkeeping visibly after the captured sample.
+            return ledger.note(receipt.ref, Stage.PAINT_RETURNED, paint_return=receipt)
+
+        scene.set_paint_return_callback(timed)
+        waterfall.set_paint_return_callback(timed)
         frame = live_frame()
         density = density_frame()
         line = waterfall_line_from_spectrum(frame)
@@ -151,6 +168,14 @@ class AllViewCustodyTests(unittest.TestCase):
         self.assertEqual(snapshot.panes[0].pending, 0)
         self.assertEqual({item.view: item.counters.terminal for item in snapshot.views},
                          {View.SPECTRUM: 1, View.WATERFALL: 1, View.PERSISTENCE: 1})
+        self.assertEqual({receipt.ref.view for receipt in timed_receipts},
+                         {View.SPECTRUM, View.WATERFALL, View.PERSISTENCE})
+        for receipt in timed_receipts:
+            event = next(item for item in snapshot.events
+                          if item.ref == receipt.ref and item.stage is Stage.PAINT_RETURNED)
+            self.assertIs(event.paint_return, receipt)
+            self.assertIsNotNone(event.host_perf_ns)
+            self.assertGreaterEqual(event.host_perf_ns, receipt.sampled_after_return_ns)
         scene._graphics.viewport().repaint()
         waterfall._graphics.viewport().repaint()
         self.app.processEvents()

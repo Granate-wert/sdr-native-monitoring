@@ -18,6 +18,7 @@ from PySide6.QtGui import QPaintEvent
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage as Stage
+from sdr_monitor.domain.host_clock import HostClockKind, HostClockScope
 from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 from sdr_monitor.services.pane_delivery_ledger import PaneDeliveryLedger
@@ -50,9 +51,15 @@ def ref_for_current_process() -> PaneDeliveryObligationRef:
 
 def waterfall_ref_for_current_process() -> PaneDeliveryObligationRef:
     scope = owner_scope(host_process_id=os.getpid())
-    ref = PaneDeliveryLedger(("one",)).admit("one", identity(owner_scope=scope, ready=ready(scope)))
+    ref = PaneDeliveryLedger(("one",)).admit(
+        "one", identity(owner_scope=scope, ready=ready(scope)), view=PaneDeliveryView.WATERFALL)
     assert ref is not None
-    return replace(ref, view=PaneDeliveryView.WATERFALL)
+    return ref
+
+
+def paint_receipt(ref: PaneDeliveryObligationRef) -> PanePaintReturnReceipt:
+    return PanePaintReturnReceipt(
+        ref, HostClockScope(HostClockKind.PERF_COUNTER_NS, os.getpid()), 1, 2)
 
 
 class PaintReturnTimingTests(unittest.TestCase):
@@ -99,14 +106,19 @@ class PaintReturnTimingTests(unittest.TestCase):
         self.retire(scene)
 
     def test_waterfall_receipt_uses_original_ref(self):
-        ref = waterfall_ref_for_current_process()
-        events: list[tuple[str, object]] = []
+        ledger = PaneDeliveryLedger(("one",))
+        scope = owner_scope(host_process_id=os.getpid())
+        ref = ledger.admit("one", identity(owner_scope=scope, ready=ready(scope)),
+                           view=PaneDeliveryView.WATERFALL)
+        assert ref is not None
+        for stage in (Stage.PREPARING, Stage.PREPARED, Stage.QUEUED,
+                      Stage.QUEUE_DRAINED, Stage.UI_ADMITTED):
+            self.assertTrue(ledger.note(ref, stage))
         pane = WaterfallPane()
-        pane.set_delivery_stage_callback(lambda actual, stage: events.append(("legacy", stage)))
+        pane.set_delivery_stage_callback(lambda actual, stage: ledger.note(actual, stage))
 
         def timed(receipt):
-            events.append(("timed", receipt))
-            return False
+            return ledger.note(receipt.ref, Stage.PAINT_RETURNED, paint_return=receipt)
 
         pane.set_paint_return_callback(timed)
         values = np.linspace(-90.0, -40.0, 64, dtype=np.float32)
@@ -121,10 +133,12 @@ class PaintReturnTimingTests(unittest.TestCase):
         pane._graphics.viewport().repaint()
         self.app.processEvents()
 
-        receipts = [value for kind, value in events if kind == "timed"]
-        self.assertEqual(len(receipts), 1)
-        self.assertIs(cast(PanePaintReturnReceipt, receipts[0]).ref, ref)
-        self.assertEqual(sum(stage is Stage.PAINT_RETURNED for kind, stage in events if kind == "legacy"), 1)
+        events = [event for event in ledger.snapshot().events if event.ref == ref]
+        returned = [event for event in events if event.stage is Stage.PAINT_RETURNED]
+        self.assertEqual(len(returned), 1)
+        self.assertIsNotNone(returned[0].paint_return)
+        paint = cast(PanePaintReturnReceipt, returned[0].paint_return)
+        self.assertIs(paint.ref, ref)
         self.retire(pane)
 
     def test_failed_base_paint_has_no_timed_success(self):
@@ -169,6 +183,138 @@ class PaintReturnTimingTests(unittest.TestCase):
             self.assertEqual(len(meter._times), 0)
         finally:
             self.retire(widget)
+
+    def test_timed_terminal_ref_is_not_reattached_after_stop(self):
+        """Regression: typed success must enter the same local terminal fence."""
+        ledger = PaneDeliveryLedger(("one",))
+        scope = owner_scope(host_process_id=os.getpid())
+        ref = ledger.admit("one", identity(owner_scope=scope, ready=ready(scope)))
+        self.assertIsNotNone(ref)
+        assert ref is not None
+        for stage in (Stage.PREPARING, Stage.PREPARED, Stage.QUEUED,
+                      Stage.QUEUE_DRAINED, Stage.UI_ADMITTED):
+            self.assertTrue(ledger.note(ref, stage))
+        scene = SpectrumScene()
+        scene.set_delivery_stage_callback(lambda actual, stage: ledger.note(actual, stage))
+
+        def timed(receipt):
+            ledger.note(receipt.ref, Stage.PAINT_RETURNED, paint_return=receipt)
+            return True
+
+        scene.set_paint_return_callback(timed)
+        scene.resize(720, 420)
+        scene.set_frame(spectrum_frame(1), obligation_ref=ref)
+        scene.show()
+        self.app.processEvents()
+        scene._graphics.viewport().repaint()
+        self.app.processEvents()
+        scene.stop_delivery_custody((ref,))
+        scene.set_frame(spectrum_frame(2), obligation_ref=ref)
+        scene._graphics.viewport().repaint()
+        self.app.processEvents()
+        self.assertEqual(ledger.snapshot().duplicate_events, 0)
+        self.retire(scene)
+
+    def test_reentrant_spectrum_observer_cannot_mark_replacement_ref(self):
+        first = ref_for_current_process()
+        second = replace(first, sequence=first.sequence + 1)
+        scene = SpectrumScene()
+        scene._displayed_delivery_ref = first
+
+        def reentrant(_receipt):
+            scene._displayed_delivery_ref = second
+            return True
+
+        scene.set_paint_return_callback(reentrant)
+        scene._spectrum_paint_returned_timed(paint_receipt(first))
+        self.assertIs(scene.displayed_delivery_ref, second)
+        self.assertFalse(scene._displayed_delivery_paint_returned)
+        self.assertTrue(scene._delivery_ref_is_closed(first))
+        self.retire(scene)
+
+    def test_reentrant_persistence_observer_cannot_mark_replacement_ref(self):
+        from tests.ui_v2.test_app07_allview_custody import persistence_identity
+
+        source = persistence_identity()
+        scope = replace(source.owner_scope, host_process_id=os.getpid())
+        ready_identity = replace(source.ready, host_process_id=os.getpid())
+        ledger = PaneDeliveryLedger(("one",))
+        first = ledger.admit("one", replace(source, owner_scope=scope, ready=ready_identity),
+                             view=PaneDeliveryView.PERSISTENCE)
+        assert first is not None
+        second = replace(first, sequence=first.sequence + 1)
+        scene = SpectrumScene()
+        scene._persistence_delivery_ref = first
+
+        def reentrant(_receipt):
+            scene._persistence_delivery_ref = second
+            return True
+
+        scene.set_paint_return_callback(reentrant)
+        scene._spectrum_paint_returned_timed(paint_receipt(first))
+        self.assertIs(scene._persistence_delivery_ref, second)
+        self.assertFalse(scene._persistence_delivery_paint_returned)
+        self.assertFalse(scene.persistence_delivery_requires_ui_rejection(second))
+        self.assertFalse(scene.persistence_delivery_requires_ui_rejection(first))
+        self.retire(scene)
+
+    def test_reentrant_waterfall_observer_cannot_mark_replacement_ref(self):
+        first = waterfall_ref_for_current_process()
+        second = replace(first, sequence=first.sequence + 1)
+        pane = WaterfallPane()
+        pane._waterfall_delivery_ref = first
+
+        def reentrant(_receipt):
+            pane._waterfall_delivery_ref = second
+            return True
+
+        pane.set_paint_return_callback(reentrant)
+        pane._waterfall_paint_returned_timed(paint_receipt(first))
+        self.assertIs(pane._waterfall_delivery_ref, second)
+        self.assertFalse(pane._waterfall_delivery_returned)
+        self.assertFalse(pane.delivery_requires_ui_rejection(second))
+        self.assertFalse(pane.delivery_requires_ui_rejection(first))
+        self.retire(pane)
+
+    def test_real_product_handle_board_forwards_typed_receipt_to_same_ledger(self):
+        from tests.ui_v2.test_app07_start_refresh_responsive import StartRefreshResponsiveTests
+
+        owner = StartRefreshResponsiveTests("run")
+        setattr(owner, "app", self.app)
+        product = owner._surface()
+        try:
+            handle = product.handle
+            callback = product.surface.board._paint_return_callback
+            self.assertIsNotNone(callback)
+            self.assertIs(callback.__self__, handle)
+            self.assertIs(callback.__func__, handle.report_paint_return.__func__)
+            pane_id = handle.layout.slots[0].request.pane_id
+            ledger = handle.session._delivery_ledger
+            scope = owner_scope(host_process_id=os.getpid())
+            ref = ledger.admit(pane_id, identity(
+                pane=pane_id, owner_scope=scope, ready=ready(scope)))
+            self.assertIsNotNone(ref)
+            assert ref is not None
+            for stage in (Stage.PREPARING, Stage.PREPARED, Stage.QUEUED,
+                          Stage.QUEUE_DRAINED, Stage.UI_ADMITTED):
+                self.assertTrue(ledger.note(ref, stage))
+            pane = product.surface.board.pane(1)
+            product.surface.resize(900, 700)
+            product.surface.show()
+            self.app.processEvents()
+            pane.spectrum_scene.set_frame(spectrum_frame(1), obligation_ref=ref)
+            pane.spectrum_scene._graphics.viewport().repaint()
+            self.app.processEvents()
+            returned = [event for event in ledger.snapshot().events
+                        if event.ref == ref and event.stage is Stage.PAINT_RETURNED]
+            self.assertEqual(len(returned), 1)
+            self.assertIsNotNone(returned[0].paint_return)
+            self.assertEqual(ledger.snapshot().duplicate_events, 0)
+            self.assertEqual(ledger.snapshot().accounting_failures, 0)
+        finally:
+            cleanup_error = owner._dispose(product.graph, product.pool, product.handle, product.surface)
+            if cleanup_error is not None:
+                raise cleanup_error
 
 
 if __name__ == "__main__":

@@ -1533,29 +1533,31 @@ class SpectrumScene(QWidget):
     def _spectrum_paint_returned_timed(self, receipt: PanePaintReturnReceipt) -> None:
         if not isinstance(receipt, PanePaintReturnReceipt):
             return
-        ref = receipt.ref
-        if ref == self._displayed_delivery_ref and not self._displayed_delivery_paint_returned:
-            callback = self._paint_return_callback
-            handled = False
-            if callback is not None:
-                try:
-                    handled = bool(callback(receipt))
-                except Exception:
-                    handled = False
+        original_ref = receipt.ref
+        is_displayed = original_ref == self._displayed_delivery_ref
+        is_persistence = original_ref == self._persistence_delivery_ref
+        if ((not is_displayed and not is_persistence)
+                or (is_displayed and self._displayed_delivery_paint_returned)
+                or (is_persistence and self._persistence_delivery_paint_returned)):
+            return
+        callback = self._paint_return_callback
+        handled = False
+        if callback is not None:
+            try:
+                handled = bool(callback(receipt))
+            except Exception:
+                handled = False
+        self._remember_terminal_delivery_ref(original_ref)
+        if is_displayed:
+            if original_ref != self._displayed_delivery_ref:
+                return
             self._displayed_delivery_paint_returned = True
-            if not handled:
-                self._report_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
-        elif ref == self._persistence_delivery_ref and not self._persistence_delivery_paint_returned:
-            callback = self._paint_return_callback
-            handled = False
-            if callback is not None:
-                try:
-                    handled = bool(callback(receipt))
-                except Exception:
-                    handled = False
+        else:
+            if original_ref != self._persistence_delivery_ref:
+                return
             self._persistence_delivery_paint_returned = True
-            if not handled:
-                self._report_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
+        if not handled:
+            self._report_delivery(original_ref, PaneDeliveryStage.PAINT_RETURNED)
 
     def _make_marker_items(self) -> tuple[dict[str, pg.InfiniteLine], dict[str, pg.TextItem]]:
         tokens = tokens_for_theme(self._theme)

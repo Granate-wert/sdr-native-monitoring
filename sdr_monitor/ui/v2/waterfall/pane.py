@@ -470,11 +470,14 @@ class WaterfallPane(QWidget):
                 pass
         if stage in {PaneDeliveryStage.PAINT_RETURNED, PaneDeliveryStage.PAINT_SUPERSEDED,
                      PaneDeliveryStage.STOP_CLEARED, PaneDeliveryStage.UI_REJECTED}:
-            if ref.graph_instance_id != self._closed_waterfall_graph:
-                self._closed_waterfall_graph = ref.graph_instance_id
-                self._closed_waterfall_sequence = ref.sequence
-            else:
-                self._closed_waterfall_sequence = max(self._closed_waterfall_sequence, ref.sequence)
+            self._remember_waterfall_delivery_ref(ref)
+
+    def _remember_waterfall_delivery_ref(self, ref: PaneDeliveryObligationRef) -> None:
+        if ref.graph_instance_id != self._closed_waterfall_graph:
+            self._closed_waterfall_graph = ref.graph_instance_id
+            self._closed_waterfall_sequence = ref.sequence
+        else:
+            self._closed_waterfall_sequence = max(self._closed_waterfall_sequence, ref.sequence)
 
     def _waterfall_paint_candidate(self, event: QPaintEvent) -> PaneDeliveryObligationRef | None:
         ref = self._waterfall_delivery_ref
@@ -506,8 +509,8 @@ class WaterfallPane(QWidget):
     def _waterfall_paint_returned_timed(self, receipt: PanePaintReturnReceipt) -> None:
         if not isinstance(receipt, PanePaintReturnReceipt):
             return
-        ref = receipt.ref
-        if ref != self._waterfall_delivery_ref or self._waterfall_delivery_returned:
+        original_ref = receipt.ref
+        if original_ref != self._waterfall_delivery_ref or self._waterfall_delivery_returned:
             return
         callback = self._paint_return_callback
         handled = False
@@ -516,9 +519,12 @@ class WaterfallPane(QWidget):
                 handled = bool(callback(receipt))
             except Exception:
                 handled = False
+        self._remember_waterfall_delivery_ref(original_ref)
+        if original_ref != self._waterfall_delivery_ref:
+            return
         self._waterfall_delivery_returned = True
         if not handled:
-            self._report_waterfall_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
+            self._report_waterfall_delivery(original_ref, PaneDeliveryStage.PAINT_RETURNED)
 
     def set_paint_return_callback(self, callback: PaintReturnCallback | None) -> None:
         self._paint_return_callback = callback
