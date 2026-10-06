@@ -276,8 +276,9 @@ class Ad936xRateProfileTests(unittest.TestCase):
 
     def test_explicit_window_is_not_silently_ignored_by_other_families(self):
         for family in (DeviceFamily.HACKRF, DeviceFamily.TINYSA):
-            source = replace(self.source, runtime=None, binding=replace(self.source.binding,
-                family=family, snapshot=None, calibration_identity=None))
+            source = replace(self.source, operational_routes=(), runtime=None,
+                             binding=replace(self.source.binding,
+                                             family=family, snapshot=None, calibration_identity=None))
             with self.subTest(family=family), self.assertRaisesRegex(PaneUserPlanError, "only to AD936x"):
                 self.compile((self.draft(measurement_mode=CaptureMeasurementMode.SWEEP,
                                          sweep_window_hz=18e6),), source=source)

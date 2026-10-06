@@ -111,6 +111,10 @@ class _SlotRow:
         self.mode = DraftScrollComboBox(parent)
         self.mode.setProperty("ui2Role", "utility-select")
         self.mode_points = QStackedWidget(parent)
+        # The source cell may grow for the typed route and shared-pane cue;
+        # keep the numeric mode control compact instead of stretching it to
+        # the full source-cell stack height.
+        self.mode_points.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.mode_points.addWidget(self.mode)
         self.mode_points.addWidget(self.points)
         self._last_mode: CaptureMeasurementMode | None = None

@@ -19,20 +19,24 @@ from sdr_monitor.domain.device_capabilities import (
     DeviceFamily, RtlSessionRouteAssurance,
 )
 from sdr_monitor.domain.pane_scheduler import (
-    CaptureEpochCost, CaptureMeasurementMode, PaneLayoutSlot, RtlRtbwPaneProfile,
+    CaptureMeasurementMode,
 )
-from sdr_monitor.domain.receiver_topology import SweepPaneRequest
-from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ, RtlLiveRequest
+from sdr_monitor.domain.rtl_live import RTL_FFT_CHOICES, RTL_RATE_CHOICES_HZ
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale
 from sdr_monitor.ui.v2.workspaces.independent_pane_setup import IndependentPaneSetupV2
+from sdr_monitor.ui.v2_pane_rf_plan import PaneRfPlanContext
 from sdr_monitor.ui.v2_pane_user_stage import PreparedPaneUserSession
-from sdr_monitor.ui.v2_pane_user_plan import RtbwBandPolicy
+from sdr_monitor.ui.v2_pane_user_plan import (
+    PaneSlotDraft, RtbwBandPolicy, compile_user_pane_plan,
+)
 
 
 def _choice(*, runtime: AdapterRuntimeAvailability, selected_route: bool = False) -> AnalyzerSourceChoice:
     family = DeviceFamily.RTL_SDR
     adapter = "rtl.librtlsdr.rx.v1"
-    route = (RtlSessionRouteAssurance("RTL", "SDR", "00000001", 5, 1, True, "a" * 64)
+    route = (RtlSessionRouteAssurance(
+                 "RTL", "SDR", "00000001", 5, 1, True, "a" * 64,
+                 manual_gain_contract_version=1, tuner_gains_tenth_db=(-42,))
              if selected_route else None)
     binding = DeviceCapabilityBinding("rtl-source", family, adapter, rtl_session_route=route)
     observation = AdapterRuntimeSnapshot(adapter, family, runtime, "rtl-runtime")
@@ -215,33 +219,24 @@ class RtlPaneSetupTests(unittest.TestCase):
             editor.close()
 
     def test_rtl_preview_does_not_invent_filter_or_actual_readback(self) -> None:
-        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE)
+        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE, selected_route=True)
         editor = self._editor(choice, owner_ready=True)
         try:
-            request = RtlLiveRequest(100_500_000, 2_400_000,
-                                     manual_tuner_gain_tenth_db=-42)
-            profile = RtlRtbwPaneProfile(request, 1_500_000.0,
-                                         CaptureEpochCost(0.01, 0.01, 0.05, 0.005, 0.005))
-            crop = SimpleNamespace(pane_id="pane-4", start_hz=100_000_000, stop_hz=101_000_000)
-            job = SimpleNamespace(profile=profile, crops=(crop,))
-            resource_id = "pane-resource-4"
-            schedule = SimpleNamespace(resources=(SimpleNamespace(
-                physical_stream_resource_id=resource_id, jobs=(job,)),))
-            slots = tuple(PaneLayoutSlot(number) for number in range(1, 4)) + (
-                PaneLayoutSlot(4, SweepPaneRequest(
-                    "pane-4", "rtl-endpoint-4", 100_000_000, 101_000_000)),)
-            plan = SimpleNamespace(resource_sources=((resource_id, choice.device_id),),
-                                   groups=(), scheduler_intents=(),
-                                   ad_sweep_geometry=(), paired_sweep_geometry=(),
-                                   paired_sweep_requested_crops=(), hackrf_sweep_geometry=(),
-                                   hackrf_hardware_ranges=(),
-                                   layout=SimpleNamespace(slots=slots, schedule=schedule))
+            resource_id = "pane-resource-1"
+            drafts = (PaneSlotDraft(1), PaneSlotDraft(2), PaneSlotDraft(3),
+                      PaneSlotDraft(4, choice.device_id, 100_000_000, 101_000_000,
+                                    sample_rate_hz=2_400_000.0, fft_size=4096,
+                                    manual_tuner_gain_tenth_db=-42))
+            plan = compile_user_pane_plan(drafts, {choice.device_id: choice}, {choice.device_id: 17})
             resource_preview = SimpleNamespace(
                 physical_stream_resource_id=resource_id, affected_pane_ids=("pane-4",),
                 capture_job_count=1, recording_conflict=False, revisit_estimates=())
             editor._prepared = cast(PreparedPaneUserSession, SimpleNamespace(
                 plan=plan, preview=(resource_preview,),
-                handle=SimpleNamespace(source_labels={choice.device_id: choice.label}, applied=False)))
+                handle=SimpleNamespace(
+                    source_labels={choice.device_id: choice.label}, applied=False,
+                    rf_context=PaneRfPlanContext(
+                        plan, drafts, ((choice.device_id, choice, 17),)))))
             editor._refresh_preview()
             preview = editor.preview.text()
             self.assertIn("panes 4", editor.impact_summary.text())
