@@ -23,10 +23,15 @@ class PlotTerminalOwnership:
     plot: pg.PlotItem
     view_box: Any
     axes: tuple[Any, ...]
-    labels: tuple[Any, ...]
+    axis_labels: tuple[tuple[Any, Any | None], ...]
     title_label: Any | None
     layout_entries: tuple[tuple[int, int, Any], ...]
     structural_complete: bool = False
+
+    @property
+    def labels(self) -> tuple[Any, ...]:
+        """Captured labels, retaining axis pairing in ``axis_labels``."""
+        return tuple(label for _axis, label in self.axis_labels if label is not None)
 
 
 def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
@@ -35,6 +40,8 @@ def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
     axes = tuple(slot["item"] for slot in (plot.axes or {}).values())
     if view_box is None or not axes:
         raise RuntimeError("plot terminal ownership is incomplete before close")
+    if getattr(view_box, "name", None) is not None:
+        raise RuntimeError("named terminal ViewBox ownership is unsupported")
     layout = plot.layout
     layout_entries: list[tuple[int, int, Any]] = []
     for row in range(layout.rowCount()):
@@ -44,7 +51,7 @@ def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
                 if item.parentLayoutItem() is not layout:
                     raise RuntimeError("plot terminal layout ownership is foreign")
                 layout_entries.append((row, column, item))
-    labels = tuple(axis.label for axis in axes if axis.label is not None)
+    axis_labels = tuple((axis, axis.label) for axis in axes)
     for axis in axes:
         if axis.parentLayoutItem() is not layout:
             raise RuntimeError("plot terminal axis ownership is foreign")
@@ -54,7 +61,7 @@ def capture_plot_terminal_ownership(plot: pg.PlotItem) -> PlotTerminalOwnership:
     if title_label is not None and title_label.parentLayoutItem() is not layout:
         raise RuntimeError("plot terminal title ownership is foreign")
     return PlotTerminalOwnership(
-        plot=plot, view_box=view_box, axes=axes, labels=labels,
+        plot=plot, view_box=view_box, axes=axes, axis_labels=axis_labels,
         title_label=title_label, layout_entries=tuple(layout_entries),
     )
 
@@ -119,14 +126,17 @@ def _validate_captured_ownership(ownership: PlotTerminalOwnership) -> None:
     """Reject wrappers adopted by another scene/layout before any retry work."""
     layout = ownership.plot.layout
     expected_scene = ownership.plot.scene()
+    if getattr(ownership.view_box, "name", None) is not None:
+        raise RuntimeError("named terminal ViewBox ownership is unsupported")
     _validate_captured_wrapper(ownership.view_box, expected_scene, layout, ownership.plot)
-    for axis in ownership.axes:
+    for axis, captured_label in ownership.axis_labels:
         _validate_captured_wrapper(axis, expected_scene, layout, ownership.plot)
-    for axis, label in zip(
-        (axis for axis in ownership.axes if isValid(axis) and axis.label is not None),
-        ownership.labels,
-    ):
-        _validate_captured_wrapper(label, expected_scene, None, axis)
+        if isValid(axis):
+            current_label = axis.label
+            if current_label is not None and current_label is not captured_label:
+                raise RuntimeError("owned axis has a foreign current label")
+        if captured_label is not None:
+            _validate_captured_wrapper(captured_label, expected_scene, None, axis)
     if ownership.title_label is not None:
         _validate_captured_wrapper(ownership.title_label, expected_scene, layout, ownership.plot)
 
@@ -138,24 +148,29 @@ def _validate_captured_wrapper(
     if not isValid(wrapper):
         return
     scene = getattr(wrapper, "scene", None)
-    if callable(scene) and scene() not in (None, expected_scene):
+    if callable(scene) and (actual_scene := scene()) is not None and actual_scene is not expected_scene:
         raise RuntimeError("owned terminal wrapper was adopted by a foreign scene")
     parent_layout = getattr(wrapper, "parentLayoutItem", None)
-    if callable(parent_layout) and parent_layout() not in (None, expected_layout):
+    if callable(parent_layout) and (actual_layout := parent_layout()) is not None and actual_layout is not expected_layout:
         raise RuntimeError("owned terminal wrapper was adopted by a foreign layout")
     parent_item = getattr(wrapper, "parentItem", None)
-    if callable(parent_item) and parent_item() not in (None, expected_parent):
+    if callable(parent_item) and (actual_parent := parent_item()) is not None and actual_parent is not expected_parent:
         raise RuntimeError("owned terminal wrapper was adopted by a foreign graphics parent")
 
 
 def _unregister_view_box(view_box: Any) -> None:
     if not isValid(view_box):
         return
-    if view_box in pg.ViewBox.AllViews:
-        name = getattr(view_box, "name", None)
-        if name is not None and pg.ViewBox.NamedViews.get(name) is not view_box:
+    name = getattr(view_box, "name", None)
+    if name is not None:
+        if pg.ViewBox.NamedViews.get(name) is not view_box:
             raise RuntimeError("owned ViewBox has foreign named-view ownership")
-        view_box.close()
+        if view_box not in pg.ViewBox.AllViews:
+            raise RuntimeError("named ViewBox registry ownership is incomplete")
+    if view_box in pg.ViewBox.AllViews:
+        # PlotItem.clear() and structural close already drained graphics;
+        # unregister without re-entering ViewBox.clear() on a retry.
+        view_box.unregister()
 
 
 def _validate_detached_wrapper(wrapper: Any) -> None:
@@ -183,8 +198,14 @@ def _delete_wrapper(wrapper: Any) -> None:
 
 
 def _retire_owned_wrappers(ownership: PlotTerminalOwnership) -> None:
+    targets = (*ownership.labels, *ownership.axes, ownership.view_box)
+    for wrapper in targets:
+        _validate_detached_wrapper(wrapper)
     _unregister_view_box(ownership.view_box)
-    for wrapper in (*ownership.labels, *ownership.axes, ownership.view_box):
+    # Delete the ViewBox first while its emptied child collections are still
+    # directly observable; detached labels/axes then retire independently.
+    _delete_wrapper(ownership.view_box)
+    for wrapper in (*ownership.labels, *ownership.axes):
         _delete_wrapper(wrapper)
 
 
@@ -220,18 +241,24 @@ def _finish_partial_close(plot: pg.PlotItem, ownership: PlotTerminalOwnership) -
         button.setParent(None)
         plot.autoBtn = None
 
-    axes = ownership.axes
+    axes = ownership.axis_labels
     if axes:
-        for axis in axes:
-            label = axis.label if isValid(axis) else None
+        for axis, label in axes:
             if label is not None:
-                scene = label.scene()
+                if isValid(label):
+                    scene = label.scene()
+                    if scene is not None:
+                        scene.removeItem(label)
+                    if label.parentItem() is not None:
+                        label.setParentItem(None)
+                if isValid(axis) and axis.label is label:
+                    axis.label = None
+            if isValid(axis):
+                scene = axis.scene()
                 if scene is not None:
-                    scene.removeItem(label)
-                axis.label = None
-            scene = axis.scene()
-            if scene is not None:
-                scene.removeItem(axis)
+                    scene.removeItem(axis)
+                if axis.parentItem() is not None:
+                    axis.setParentItem(None)
         plot.axes = None
 
     view_box = ownership.view_box
@@ -241,4 +268,6 @@ def _finish_partial_close(plot: pg.PlotItem, ownership: PlotTerminalOwnership) -
         scene = view_box.scene()
         if scene is not None:
             scene.removeItem(view_box)
+        if isValid(view_box) and view_box.parentItem() is not None:
+            view_box.setParentItem(None)
         plot.vb = None

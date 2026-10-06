@@ -1,10 +1,8 @@
 """Terminal Qt ownership receipts for the real Spectrum and Waterfall panes."""
 from __future__ import annotations
 
-import gc
 import os
 import unittest
-from dataclasses import replace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -17,8 +15,11 @@ from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from sdr_monitor.ui.v2.spectrum.plot_terminal import (
     capture_plot_terminal_ownership,
 )
+from sdr_monitor.ui.v2.spectrum import plot_terminal
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+from sdr_monitor.ui.v2.waterfall.spectrum_view import SpectrumWaterfallView
 from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
+from sdr_monitor.ui.v2.workspaces.analyzer_rf_controls import AnalyzerRfControls
 
 
 class QtTerminalOwnershipTests(unittest.TestCase):
@@ -26,13 +27,9 @@ class QtTerminalOwnershipTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def tearDown(self):
-        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        self.app.processEvents()
-        gc.collect()
-
     def _owned_pair(self):
         host = QWidget()
+        self.addCleanup(self._finish_widget, host)
         host_layout = QVBoxLayout(host)
         spectrum = SpectrumScene(parent=host)
         waterfall = WaterfallPane(parent=host)
@@ -88,6 +85,7 @@ class QtTerminalOwnershipTests(unittest.TestCase):
         self.assertEqual(tuple(host_layout.itemAt(index).widget()
                               for index in range(host_layout.count())), host_membership)
         peer = SpectrumScene(parent=host)
+        self.addCleanup(self._finish_widget, peer)
         self.assertIn(peer.view_box, pg.ViewBox.AllViews)
         peer.release_graphics_after_shutdown()
         self.assertNotIn(peer.view_box, pg.ViewBox.AllViews)
@@ -141,23 +139,29 @@ class QtTerminalOwnershipTests(unittest.TestCase):
         plan = capture_plot_terminal_ownership(spectrum.plot_item)
         peer_plan = capture_plot_terminal_ownership(peer.plot_item)
         try:
-            with patch(
-                "sdr_monitor.ui.v2.spectrum.plot_terminal._drain_view_box",
-                side_effect=RuntimeError("injected structural close failure"),
+            failure_axis = plan.axis_labels[2][0]
+            with patch.object(
+                failure_axis, "close", side_effect=RuntimeError("injected third-axis close failure"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "structural close"):
+                with self.assertRaisesRegex(RuntimeError, "third-axis"):
                     spectrum.release_graphics_after_shutdown()
             plan = spectrum._graphics_terminal_ownership
             self.assertIsNotNone(plan)
             self.assertFalse(plan.structural_complete)
+            self.assertEqual(sum(axis.label is None for axis, _label in plan.axis_labels), 2)
+            self.assertTrue(all(shiboken6.isValid(label)
+                               for _axis, label in plan.axis_labels if label is not None))
             foreign_label = peer_plan.labels[0]
-            foreign_plan = replace(plan, labels=(foreign_label,))
-            spectrum._graphics_terminal_ownership = foreign_plan
-            with self.assertRaisesRegex(RuntimeError, "foreign"):
-                spectrum.release_graphics_after_shutdown()
-            self.assertFalse(spectrum._graphics_terminal_released)
-            self.assertTrue(shiboken6.isValid(foreign_label))
-            self.assertIs(foreign_label.parentItem(), peer_plan.axes[0])
+            third_axis, captured_label = plan.axis_labels[2]
+            third_axis.label = foreign_label
+            try:
+                with self.assertRaisesRegex(RuntimeError, "foreign"):
+                    spectrum.release_graphics_after_shutdown()
+                self.assertFalse(spectrum._graphics_terminal_released)
+                self.assertTrue(shiboken6.isValid(foreign_label))
+                self.assertIs(foreign_label.parentItem(), peer_plan.axes[0])
+            finally:
+                third_axis.label = captured_label
         finally:
             spectrum._graphics_terminal_ownership = plan
             if shiboken6.isValid(spectrum):
@@ -174,7 +178,115 @@ class QtTerminalOwnershipTests(unittest.TestCase):
         waterfall.release_presentation_after_shutdown()
         self.assertTrue(spectrum._graphics_terminal_released)
         self.assertTrue(waterfall._graphics_terminal_released)
-        self._finish_widget(host)
+
+    def test_named_viewbox_is_conservatively_refused_before_structural_close(self):
+        host, _layout, spectrum, _waterfall = self._owned_pair()
+        view_box = spectrum.view_box
+        plan = capture_plot_terminal_ownership(spectrum.plot_item)
+        with patch(
+            "sdr_monitor.ui.v2.spectrum.plot_terminal._drain_view_box",
+            side_effect=RuntimeError("injected structural close failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "structural close"):
+                spectrum.release_graphics_after_shutdown()
+        self.assertFalse(plan.structural_complete)
+        view_box.register("m8-terminal-ownership-test")
+        try:
+            with self.assertRaisesRegex(RuntimeError, "named terminal ViewBox"):
+                spectrum.release_graphics_after_shutdown()
+            self.assertFalse(spectrum._graphics_terminal_released)
+            self.assertFalse(plan.structural_complete)
+        finally:
+            if shiboken6.isValid(view_box) and view_box in pg.ViewBox.AllViews:
+                view_box.unregister()
+            if shiboken6.isValid(view_box):
+                view_box.name = None
+            if shiboken6.isValid(spectrum):
+                spectrum.release_graphics_after_shutdown()
+
+    def test_viewbox_delete_witness_is_empty_and_waterfall_retry_preserves_metrics(self):
+        host, _layout, spectrum, waterfall = self._owned_pair()
+        plan = capture_plot_terminal_ownership(waterfall.plot_item)
+        pre_retry_metrics = None
+        witnessed = []
+        original_delete = plot_terminal._delete_wrapper
+
+        def witness(wrapper):
+            if hasattr(wrapper, "addedItems") and hasattr(wrapper, "childGroup") and not witnessed:
+                self.assertEqual(wrapper.addedItems, [])
+                self.assertEqual(wrapper.childGroup.childItems(), [])
+                witnessed.append(True)
+            return original_delete(wrapper)
+
+        real_send = QCoreApplication.sendPostedEvents
+        calls = []
+
+        def fail_once(receiver, event):
+            calls.append(receiver)
+            if len(calls) == 1:
+                raise RuntimeError("injected waterfall DeferredDelete failure")
+            return real_send(receiver, event)
+
+        try:
+            with patch.object(plot_terminal, "_delete_wrapper", side_effect=witness), patch(
+                "sdr_monitor.ui.v2.spectrum.plot_terminal.QCoreApplication.sendPostedEvents",
+                side_effect=fail_once,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "DeferredDelete"):
+                    waterfall.release_presentation_after_shutdown()
+            pre_retry_metrics = waterfall.metrics
+            self.assertFalse(waterfall._graphics_terminal_released)
+            waterfall.release_presentation_after_shutdown()
+            self.assertTrue(waterfall._graphics_terminal_released)
+            self.assertEqual(waterfall.metrics, pre_retry_metrics)
+            self.assertEqual(witnessed, [True])
+            self.assertFalse(shiboken6.isValid(plan.view_box))
+        finally:
+            self._finish_widget(host)
+
+    def test_active_cancel_clears_both_real_viewboxes_and_preserves_pending(self):
+        view = SpectrumWaterfallView()
+        self.addCleanup(self._finish_widget, view)
+
+        class Controller:
+            pending = True
+
+            def __init__(self):
+                self.cancel_calls = 0
+
+            def cancel(self):
+                self.cancel_calls += 1
+
+        controller = Controller()
+        controls = AnalyzerRfControls.__new__(AnalyzerRfControls)
+        controls._retired = False
+        controls.dialog = None
+        controls._installed = [view]
+        controls.controller = controller
+        view.spectrum_scene.view_box._rf_drag = (object(), 1.0, 1.0)
+        view.waterfall_pane.view_box._rf_drag = (object(), 1.0, 1.0)
+
+        controls.cancel()
+
+        self.assertIsNone(view.spectrum_scene.view_box._rf_drag)
+        self.assertIsNone(view.waterfall_pane.view_box._rf_drag)
+        self.assertEqual(controller.cancel_calls, 1)
+        self.assertTrue(controller.pending)
+
+    def test_retired_cancel_is_safe_after_terminal_child_release_and_view_close(self):
+        view = SpectrumWaterfallView()
+        self.addCleanup(self._finish_widget, view)
+        controls = AnalyzerRfControls.__new__(AnalyzerRfControls)
+        controls._retired = True
+        controls.dialog = None
+        controls._installed = [view]
+        controls.controller = None
+        view.waterfall_pane.release_presentation_after_shutdown()
+        view.spectrum_scene.release_graphics_after_shutdown()
+
+        controls.cancel()
+        view.hide()
+        view.close()
 
 
 if __name__ == "__main__":

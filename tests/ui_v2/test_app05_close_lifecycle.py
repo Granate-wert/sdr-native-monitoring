@@ -11,6 +11,7 @@ from PySide6.QtCore import QTimer
 
 from sdr_monitor.ui.v2.shell.close_lifecycle import CloseLifecycle
 from sdr_monitor.ui.v2.shell.contracts import ClosePort
+from sdr_monitor.ui.v2.spectrum import plot_terminal
 from sdr_monitor.ui.presenters.diagnostics_presenter import DiagnosticsPresenter
 from sdr_monitor.ui.presenters.replay_presenter import ReplayPresenter
 from tests import test_app02_analyzer_workspace_product as product
@@ -323,16 +324,24 @@ class ProductCloseTests(unittest.TestCase):
         waterfall = self.page.visualization.waterfall_pane
         spectrum_view_box = spectrum.plot_item.getViewBox()
         waterfall_view_box = waterfall.plot_item.getViewBox()
-        spectrum_view_box_added_count = len(spectrum_view_box.addedItems)
-        waterfall_view_box_added_count = len(waterfall_view_box.addedItems)
+        witnessed = []
+        original_delete = plot_terminal._delete_wrapper
+
+        def witness(wrapper):
+            if hasattr(wrapper, "addedItems") and hasattr(wrapper, "childGroup") and not witnessed:
+                witnessed.append((wrapper.addedItems == [], wrapper.childGroup.childItems() == []))
+            return original_delete(wrapper)
+
         self.assertTrue(spectrum.plot_item.items)
         self.assertTrue(waterfall.plot_item.items)
         self.assertIsNotNone(spectrum.plot_item.ctrlMenu)
         self.assertIsNotNone(waterfall.plot_item.ctrlMenu)
         self.assertIsNotNone(spectrum.plot_item.getAxis("left").label)
         self.assertIsNotNone(waterfall.plot_item.getAxis("left").label)
-        self.shell.close()
-        self.wait(lambda: self.shell._is_closed)
+        with patch.object(plot_terminal, "_delete_wrapper", side_effect=witness):
+            self.shell.close()
+            self.wait(lambda: self.shell._is_closed)
+        self.assertEqual(witnessed, [(True, True)])
         self.assertTrue(spectrum._graphics_terminal_released)
         self.assertTrue(waterfall._graphics_terminal_released)
         self.assertIsNone(spectrum.plot_item.ctrlMenu)
@@ -343,8 +352,6 @@ class ProductCloseTests(unittest.TestCase):
         self.assertEqual(waterfall.plot_item.items, [])
         self.assertFalse(shiboken6.isValid(spectrum_view_box))
         self.assertFalse(shiboken6.isValid(waterfall_view_box))
-        self.assertGreaterEqual(spectrum_view_box_added_count, 0)
-        self.assertGreaterEqual(waterfall_view_box_added_count, 0)
         self.assertIsNone(waterfall._linked_frequency_source)
         self.assertIsNone(waterfall._source_x_range_callback)
         self.assertIsNone(waterfall._waterfall_x_range_callback)
@@ -418,11 +425,15 @@ class ProductCloseTests(unittest.TestCase):
         view_box = spectrum.plot_item.getViewBox()
         candidates = spectrum.plot_item.curves if curve else spectrum.plot_item.items
         target = next(item for item in candidates if item in view_box.addedItems)
-        predelete_child_group = view_box.childGroup
-        predelete_child_count = len(predelete_child_group.childItems())
-        predelete_added_count = len(view_box.addedItems)
         original_remove = view_box.removeItem
         attempts = []
+        witnessed = []
+        original_delete = plot_terminal._delete_wrapper
+
+        def witness(wrapper):
+            if hasattr(wrapper, "addedItems") and hasattr(wrapper, "childGroup") and not witnessed:
+                witnessed.append((wrapper.addedItems == [], wrapper.childGroup.childItems() == []))
+            return original_delete(wrapper)
 
         def fail_once(item):
             if item is target and not attempts:
@@ -432,15 +443,16 @@ class ProductCloseTests(unittest.TestCase):
                 raise RuntimeError("injected mid-ViewBox removal")
             original_remove(item)
 
-        with patch.object(view_box, "removeItem", side_effect=fail_once):
-            self.assertFalse(self.shell.close())
-            self.wait(lambda: attempts and not self.shell._is_closed)
-            self.assertFalse(spectrum._graphics_terminal_released)
-            self.assertNotIn(target, spectrum.plot_item.items)
-            self.assertIs(target.parentItem(), view_box.childGroup)
-            self.assertEqual(target in view_box.addedItems, not after_index_removal)
-            self.shell.close()
-            self.wait(lambda: self.shell._is_closed)
+        with patch.object(plot_terminal, "_delete_wrapper", side_effect=witness):
+            with patch.object(view_box, "removeItem", side_effect=fail_once):
+                self.assertFalse(self.shell.close())
+                self.wait(lambda: attempts and not self.shell._is_closed)
+                self.assertFalse(spectrum._graphics_terminal_released)
+                self.assertNotIn(target, spectrum.plot_item.items)
+                self.assertIs(target.parentItem(), view_box.childGroup)
+                self.assertEqual(target in view_box.addedItems, not after_index_removal)
+                self.shell.close()
+                self.wait(lambda: self.shell._is_closed)
 
         self.assertEqual(len(attempts), 1)
         self.assertTrue(spectrum._graphics_terminal_released)
@@ -448,8 +460,7 @@ class ProductCloseTests(unittest.TestCase):
         self.assertEqual(spectrum.plot_item.dataItems, [])
         self.assertEqual(spectrum.plot_item.avgCurves, {})
         self.assertFalse(shiboken6.isValid(view_box))
-        self.assertGreaterEqual(predelete_child_count, 0)
-        self.assertGreaterEqual(predelete_added_count, 1)
+        self.assertEqual(witnessed, [(True, True)])
         self.assertTrue(shiboken6.isValid(target))
         self.assertIsNone(target.scene())
 

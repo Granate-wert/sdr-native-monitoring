@@ -21,6 +21,7 @@ from sdr_monitor.services.native_continuous_sweep import (
 from sdr_monitor.ui.presenters.continuous_sweep_presenter import ContinuousSweepPresenter
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
 from sdr_monitor.ui.v2.spectrum.contracts import TraceKind
+from sdr_monitor.ui.v2.spectrum import plot_terminal
 
 
 class _ObservedScene(SpectrumScene):
@@ -60,13 +61,23 @@ class AnalyzerBundleSceneTests(unittest.TestCase):
         fresh_plot = plot.ctrlMenu is not None
         axis = plot.getAxis("left") if plot.axes is not None else None
         axis_label = axis.label if axis is not None else None
-        predelete_child_count = len(view_box.childGroup.childItems())
-        predelete_added_count = len(view_box.addedItems)
         if fresh_plot:
             self.assertIsNotNone(plot.axes)
             self.assertIsNotNone(axis)
             self.assertIsNotNone(axis.label)
-        scene.release_graphics_after_shutdown()
+        witnessed = []
+        original_delete = plot_terminal._delete_wrapper
+
+        def witness(wrapper):
+            if not witnessed:
+                self.assertEqual(view_box.addedItems, [])
+                self.assertEqual(view_box.childGroup.childItems(), [])
+                witnessed.append(True)
+            return original_delete(wrapper)
+
+        with patch.object(plot_terminal, "_delete_wrapper", side_effect=witness):
+            scene.release_graphics_after_shutdown()
+        self.assertEqual(witnessed, [True])
         self.assertTrue(scene._graphics_terminal_released)
         self.assertFalse(scene._projection_timer.isActive())
         self.assertIsNone(plot.ctrlMenu)
@@ -76,7 +87,6 @@ class AnalyzerBundleSceneTests(unittest.TestCase):
         self.assertEqual(plot.dataItems, [])
         self.assertEqual(plot.curves, [])
         self.assertFalse(shiboken6.isValid(view_box))
-        self.assertGreaterEqual(predelete_child_count + predelete_added_count, 0)
         if axis is not None:
             self.assertFalse(shiboken6.isValid(axis))
         if axis_label is not None:
