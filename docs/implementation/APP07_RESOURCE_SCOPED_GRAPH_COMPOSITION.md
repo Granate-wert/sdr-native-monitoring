@@ -6328,3 +6328,66 @@ Native SHA256:
 Unchanged native bytes do not relabel the source/build of prior 079 witnesses.
 APP-07/M8 remains PARTIAL/H02 TODO. Paired RF, current four-source HIL,
 visible Windows/DPI/DWM, performance, stability and release review remain open.
+
+## M8-081/082 — responsive close eligibility and terminal Qt ownership
+
+The UI V2 independent pane session no longer queries the synchronous Close
+eligibility state lock redundantly while Start is pending or the session is not
+stopped. The existing final close authority remains responsible for admission;
+this does not introduce a second owner, bypass a lease or change hardware state.
+Bounded contention tests cover the distinction. This is a source-level correction,
+not a demonstrated explanation of the interrupted M8-080 physical trial.
+
+Spectrum and Waterfall terminal release now retain an exact ownership plan
+before pyqtgraph close operations can clear axis/label references. Structural
+close, both ViewBox drains and exact scene/layout detachment must complete
+before any wrapper is destroyed. All surviving captured objects are checked
+for ownership before deletion; checks are repeated at each targeted deletion.
+Only the captured receiver's DeferredDelete is delivered, without a global
+Qt event drain or forced garbage collection. Partial structural/deletion failure
+retains the plan for explicit retry, including retry after the ViewBox has
+already been destroyed. Waterfall retries do not repeat history clearing.
+Retired RF controls ignore late duplicate cancel events. Ordinary Stop retains
+the last visible data; terminal release is not ordinary Stop.
+
+Named ViewBoxes are unsupported by this terminal helper and explicitly refused
+before mutation, including deletion-only retries. Simulated foreign-parent
+tests check guard behavior; they are not proof of safe arbitrary C++ reparenting.
+An actual reparent diagnostic crashed at the diagnostic mutation itself before
+the retry guard, and is retained as a failed diagnostic, not a product PASS.
+Earlier native access violations and the physical stall have no established
+causal explanation. No vendor/global registry modification is made.
+
+### Exact diagnostic software qualification
+
+Product source `9032106f91c9da5818519b5582a7cf9568f48f48` incorporates the
+independently reviewed UI changes and tests through normal commits. Expanded
+normal-plugin UI regression passed 96 tests plus 20 subtests (29.92s).
+The matching fresh diagnostic `APP07-QTOWN-20261006-9032106-R0` passed all
+47 native CTests (61.44s), with 665 frozen runtime files and 590 source entries.
+One serial complete UI V2 run after source freeze completed 1468 tests:
+1402 passed, 66 skipped, no failures/errors (488.416s). Exact source/native
+provenance and tracked-clean state before/after were verified. The observer
+recorded zero uncaught Qt callbacks and restored its hooks; a separate raw-log
+audit found zero tracebacks. Source snapshot and runtime verification passed
+again after the run. Absence of observed exceptions is not proof that no
+locally handled or silent failures exist.
+
+Diagnostic EXE SHA256:
+`4057f8796056250d90ec7ea155a51eee937efb839339f6ffb3e5d0a7dc8a71c2`.
+Native SHA256:
+`5fa7a0632922586ed7311604854edcbeb2cf3f2736ef63f241b12d2046f4188e`.
+The full V2 gate exercises current V2 sources with the matching packaged native
+module, not visible frozen Windows GUI operation. Broader mypy still reports
+17 inherited errors across five files; matching baseline diagnostics were
+verified. Helper-only mypy, scoped Ruff/compile and whitespace checks passed;
+this is not a whole-project typing PASS.
+
+No new physical RX, lease reset or current/static release promotion occurred.
+The interrupted hardware trial still lacks a normal Stop/flush/join receipt.
+The next dedicated UI V2 design task is the real editor's explicit USB/IP route
+workflow over the existing typed route contract; backend support alone is not
+a finished user-facing transport selector. Current four-source HIL, positive
+paired RF, actual per-view paint latency/FPS, visible FHD/QHD/DPI acceptance,
+stability and independent release qualification remain open. APP-07/M8 remains
+PARTIAL/H02 TODO, with the full APP-00 through APP-14 objective unchanged.
