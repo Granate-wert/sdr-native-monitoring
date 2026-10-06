@@ -649,7 +649,18 @@ class IndependentPaneSessionV2(QWidget):
         self.stop_selected.setEnabled(selected_phase is not None and selected_phase is not PanePumpPhase.STOPPED)
         self.start_all.setEnabled(bool(startable))
         self.stop_all.setEnabled(any(phase is not PanePumpPhase.STOPPED for phase in states.values()))
-        self.close_layout.setEnabled(self._close_layout is not None and self.handle.can_close())
+        # can_close() also checks retained session state under its control lock.
+        # While a Start/Stop future is pending (or any resource is not stopped),
+        # Close is necessarily unavailable, so do not make the GUI thread wait
+        # for that lock just to confirm a state that the pump snapshot already
+        # rules out. Keep the handle's final authority for the fully stopped,
+        # no-pending case, where retained cleanup can still refuse Close.
+        close_safe_to_check = (not waiting and all(
+            phase is PanePumpPhase.STOPPED for phase in states.values()))
+        self.close_layout.setEnabled(
+            self._close_layout is not None
+            and close_safe_to_check
+            and self.handle.can_close())
         self.rf_shift.setEnabled(self._rf_eligible(self.board.selected_slot))
         running = sum(phase is PanePumpPhase.RUNNING for phase in states.values())
         starting = sum(phase in {PanePumpPhase.STARTING, PanePumpPhase.STOPPING} for phase in states.values())
