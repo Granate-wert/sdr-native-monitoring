@@ -66,9 +66,15 @@ class _SlotRow:
         self.route.setMinimumWidth(150)
         self.route.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.route.setMinimumContentsLength(12)
+        self.route_scope = QLabel(parent)
+        self.route_scope.setProperty("ui2Role", "secondary")
+        self.route_scope.setWordWrap(True)
+        self.route_scope.hide()
         self._route_source_id: str | None = None
         self._route_intent: PlutoOperationalRouteIntent | None = None
         self._route_unavailable = False
+        self._retained_family: DeviceFamily | None = None
+        self._retained_network = False
         self.source_line = QWidget(parent)
         source_line_layout = QHBoxLayout(self.source_line)
         source_line_layout.setContentsMargins(0, 0, 0, 0)
@@ -81,6 +87,7 @@ class _SlotRow:
         source_chain_layout.setSpacing(4)
         source_chain_layout.addWidget(self.source_line)
         source_chain_layout.addWidget(self.route)
+        source_chain_layout.addWidget(self.route_scope)
         self.start = QDoubleSpinBox(parent)
         self.stop = QDoubleSpinBox(parent)
         for field in (self.start, self.stop):
@@ -713,9 +720,21 @@ class IndependentPaneSetupV2(QWidget):
         if source_id != row._route_source_id:
             # A deliberate source edit invalidates the old source-scoped pin;
             # passive discovery refreshes never call this signal path.
+            destination = next((candidate for candidate in self._rows
+                                if candidate is not row and candidate.source.currentData() == source_id), None)
             row._route_source_id = source_id
-            row._route_intent = None
-            row._route_unavailable = False
+            if destination is None:
+                row._route_intent = None
+                row._route_unavailable = False
+                row._retained_family = None
+                row._retained_network = False
+            else:
+                # Joining an existing source group adopts its one route intent;
+                # it never manufactures a conflicting peer draft or defaults.
+                row._route_intent = destination._route_intent
+                row._route_unavailable = destination._route_unavailable
+                row._retained_family = destination._retained_family
+                row._retained_network = destination._retained_network
         if row.source.currentData() is None:
             # Explicitly choosing Empty clears this draft's chain. A passive
             # source-list refresh uses _source_changed directly and retains it.
@@ -793,6 +812,7 @@ class IndependentPaneSetupV2(QWidget):
             row.route.clear()
             if not show:
                 row.route.hide()
+                row.route_scope.hide()
                 row.route.setToolTip("")
                 row.route.setAccessibleDescription("")
                 row._route_unavailable = False
@@ -810,10 +830,22 @@ class IndependentPaneSetupV2(QWidget):
                         item.setEnabled(False)
             index = row.route.findData(requested) if requested is not None else 0
             row.route.setCurrentIndex(index if index >= 0 else 0)
-            tip = self._route_scope_tip(row, self._route_tip(requested))
+            base_tip = self._route_tip(requested)
+            if is_ad and not routes and requested is None:
+                base_tip = text("analyzer.pane.setup.route_no_metadata_help")
+            tip = self._route_scope_tip(row, base_tip)
             row.route.setToolTip(tip)
             row.route.setAccessibleDescription(tip)
             row.route.setVisible(True)
+            peers = tuple(candidate.number for candidate in self._rows
+                          if candidate.source.currentData() == source_id)
+            if len(peers) > 1:
+                row.route_scope.setText(text("analyzer.pane.setup.route_shared",
+                                             panes=", ".join(map(str, peers))))
+                row.route_scope.setAccessibleName(row.route_scope.text())
+                row.route_scope.show()
+            else:
+                row.route_scope.hide()
         row._route_unavailable = requested is not None and not available
         owner = self._route_owner(row)
         row.route.setEnabled(not self.blocks_single_source and owner is row)
@@ -960,6 +992,13 @@ class IndependentPaneSetupV2(QWidget):
         source_id = row.source.currentData()
         choice = next((item for item in self._choices if item.device_id == source_id), None)
         family = None if choice is None else choice.family
+        missing_preserve = choice is None and source_id is not None and preserve_range
+        if choice is not None:
+            row._retained_family = family
+            row._retained_network = choice.transport_label.casefold() in {"ip", "ethernet"}
+        elif not missing_preserve:
+            row._retained_family = None
+            row._retained_network = False
         reason = None if choice is None else self._rtl_unavailable_key(choice)
         rtl_ready = choice is not None and reason is None
         # This is only the new row draft. Never carry AD/HackRF's explicit
@@ -976,45 +1015,47 @@ class IndependentPaneSetupV2(QWidget):
         self._refresh_chain(row, choice)
         self._refresh_rtl_gain(row, choice)
         previous_rate = row.rate.currentData()
-        with QSignalBlocker(row.rate):
-            row.rate.clear()
-            rates: tuple[tuple[str, float | None], ...]
-            if family is DeviceFamily.AD936X:
-                rates = ()
-            elif family is DeviceFamily.HACKRF:
-                rates = (("16 MS/s", 16_000_000.0), ("20 MS/s", 20_000_000.0))
-            elif family is DeviceFamily.RTL_SDR:
-                rates = tuple((f"{value / 1_000_000:g} MS/s", float(value))
-                              for value in sorted(RTL_RATE_CHOICES_HZ))
-            elif family is DeviceFamily.TINYSA:
-                rates = (("—", 20_000_000.0),)
-            else:
-                rates = (("—", None),)
-            for label, value in rates:
-                row.rate.addItem(label, value)
-            if family is not DeviceFamily.AD936X:
-                index = row.rate.findData(previous_rate)
-                row.rate.setCurrentIndex(index if index >= 0 else row.rate.count() - 1)
+        if not missing_preserve:
+            with QSignalBlocker(row.rate):
+                row.rate.clear()
+                rates: tuple[tuple[str, float | None], ...]
+                if family is DeviceFamily.AD936X:
+                    rates = ()
+                elif family is DeviceFamily.HACKRF:
+                    rates = (("16 MS/s", 16_000_000.0), ("20 MS/s", 20_000_000.0))
+                elif family is DeviceFamily.RTL_SDR:
+                    rates = tuple((f"{value / 1_000_000:g} MS/s", float(value))
+                                  for value in sorted(RTL_RATE_CHOICES_HZ))
+                elif family is DeviceFamily.TINYSA:
+                    rates = (("—", 20_000_000.0),)
+                else:
+                    rates = (("—", None),)
+                for label, value in rates:
+                    row.rate.addItem(label, value)
+                if family is not DeviceFamily.AD936X:
+                    index = row.rate.findData(previous_rate)
+                    row.rate.setCurrentIndex(index if index >= 0 else row.rate.count() - 1)
         previous_mode = row.mode.currentData()
-        with QSignalBlocker(row.mode):
-            row.mode.clear()
-            modes: tuple[CaptureMeasurementMode | None, ...]
-            if family is DeviceFamily.HACKRF:
-                modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
-            elif family is DeviceFamily.AD936X:
-                modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
-            elif family is DeviceFamily.RTL_SDR:
-                modes = (CaptureMeasurementMode.RTBW,)
-            elif family is DeviceFamily.TINYSA:
-                modes = (CaptureMeasurementMode.INSTRUMENT_TRACE,)
-            else:
-                modes = (None,)
-            for mode in modes:
-                label = (text("analyzer.pane.setup.mode_empty") if mode is None else
-                         text("analyzer.pane.setup.mode_" + mode.value))
-                row.mode.addItem(label, mode)
-            index = row.mode.findData(previous_mode)
-            row.mode.setCurrentIndex(max(index, 0))
+        if not missing_preserve:
+            with QSignalBlocker(row.mode):
+                row.mode.clear()
+                modes: tuple[CaptureMeasurementMode | None, ...]
+                if family is DeviceFamily.HACKRF:
+                    modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
+                elif family is DeviceFamily.AD936X:
+                    modes = (CaptureMeasurementMode.RTBW, CaptureMeasurementMode.SWEEP)
+                elif family is DeviceFamily.RTL_SDR:
+                    modes = (CaptureMeasurementMode.RTBW,)
+                elif family is DeviceFamily.TINYSA:
+                    modes = (CaptureMeasurementMode.INSTRUMENT_TRACE,)
+                else:
+                    modes = (None,)
+                for mode in modes:
+                    label = (text("analyzer.pane.setup.mode_empty") if mode is None else
+                             text("analyzer.pane.setup.mode_" + mode.value))
+                    row.mode.addItem(label, mode)
+                index = row.mode.findData(previous_mode)
+                row.mode.setCurrentIndex(max(index, 0))
         if family is DeviceFamily.AD936X and choice is not None:
             row._last_mode = None
             if explicit_source_change or not preserve_range:
@@ -1042,7 +1083,11 @@ class IndependentPaneSetupV2(QWidget):
                 with QSignalBlocker(row.band):
                     row.band.setCurrentIndex(row.band.findData(RtbwBandPolicy.FULL_RECEIVE))
             row.sweep_window.setValue(0.0)
-        self._mode_changed(row)
+        if missing_preserve:
+            for field in (row.rate, row.fft, row.points, row.mode, row.band, row.sweep_window):
+                field.setEnabled(False)
+        else:
+            self._mode_changed(row)
         self._refresh_route(row)
         self._refresh_tinysa_row(row)
         self._refresh_tinysa_selector()
@@ -1053,6 +1098,10 @@ class IndependentPaneSetupV2(QWidget):
             source_id = row.source.currentData()
             choice = next((item for item in self._choices if item.device_id == source_id), None)
             network = (choice is not None and choice.transport_label.casefold() in {"ip", "ethernet"})
+            if choice is None and row._retained_family is not None:
+                network = row._retained_network
+            retained_ad = (choice is None and row._retained_family is DeviceFamily.AD936X
+                           and row._route_source_id == source_id)
             tiny = None
             if choice is not None and choice.family is DeviceFamily.TINYSA:
                 drawer = row.tinysa_settings
@@ -1071,7 +1120,7 @@ class IndependentPaneSetupV2(QWidget):
                 measurement_mode=self._selected_mode(row), priority=row.priority.value(),
                 maximum_revisit_s=row.maximum_revisit.value() or None, tinysa=tiny,
                 sweep_window_hz=(row.sweep_window.value() * 1_000_000
-                                 if choice is not None and choice.family is DeviceFamily.AD936X
+                                 if ((choice is not None and choice.family is DeviceFamily.AD936X) or retained_ad)
                                  and self._selected_mode(row) is CaptureMeasurementMode.SWEEP
                                  and row.sweep_window.value() > 0 else None),
                 rtbw_band=(RtbwBandPolicy(row.band.currentData())
@@ -1341,10 +1390,13 @@ class IndependentPaneSetupV2(QWidget):
         lines = [text("analyzer.pane.setup.preview_intro")]
         sources = dict(prepared.plan.resource_sources)
         staged_routes = {}
+        staged_route_sources = set()
         context = prepared.handle.rf_context
         if context is not None:
             staged_routes = {draft.source_id: draft.operational_route
                              for draft in context.drafts if draft.source_id is not None}
+            staged_route_sources = {source for source, choice, _revision in context.selections
+                                    if choice.family is DeviceFamily.AD936X}
         for item in prepared.preview:
             mode = (text("analyzer.pane.setup.time_sliced") if item.capture_job_count > 1 else
                     text("analyzer.pane.setup.shared") if len(item.affected_pane_ids) > 1 else
@@ -1356,10 +1408,11 @@ class IndependentPaneSetupV2(QWidget):
             label = prepared.handle.source_labels.get(source_id, source_id)
             lines.append(text("analyzer.pane.setup.preview_resource", panes=numbers, source=label,
                               mode=mode, jobs=item.capture_job_count) + conflict)
-            route = staged_routes.get(source_id)
-            lines.append(text("analyzer.pane.setup.preview_route",
-                              route=(text("analyzer.pane.setup.route_automatic")
-                                     if route is None else self._route_label(route))))
+            if source_id in staged_route_sources:
+                route = staged_routes.get(source_id)
+                lines.append(text("analyzer.pane.setup.preview_route",
+                                  route=(text("analyzer.pane.setup.route_automatic")
+                                         if route is None else self._route_label(route))))
         schedule = prepared.plan.layout.schedule
         assert schedule is not None
         # A logical pair is identified by typed endpoints in the staged plan,
