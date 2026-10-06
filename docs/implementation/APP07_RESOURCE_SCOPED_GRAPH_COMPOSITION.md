@@ -1,7 +1,7 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
-Current state: the final section documents optional native Sweep/density
-creation evidence and optional FixedBand owner integration; other product paths remain open. Earlier "not yet present"
+Current state: the final section documents the software-qualified explicit
+USB/IP route editor; physical/performance/release paths remain open. Earlier "not yet present"
 statements below describe the historical intermediate checkpoints, not the
 current source. APP-07 is still partial: tagged frozen EXEs have passed bounded
 functional cells, but no EXE has release/soak/performance qualification here.
@@ -6391,3 +6391,74 @@ a finished user-facing transport selector. Current four-source HIL, positive
 paired RF, actual per-view paint latency/FPS, visible FHD/QHD/DPI acceptance,
 stability and independent release qualification remain open. APP-07/M8 remains
 PARTIAL/H02 TODO, with the full APP-00 through APP-14 objective unchanged.
+
+## M8-083 — explicit observed USB/IP routes in the UI V2 pane editor
+
+AD936x source choices now publish an immutable, bounded tuple of at most 32
+unique typed operational routes copied only from the same selected descriptor's
+URI and alternate URIs. Missing, malformed or oversized metadata supplies no
+route choices; there is no synthesized alias, new SDK probe or inferred serial,
+physical connector, Ethernet speed or calibration identity.
+
+The real independent-pane editor offers Automatic/default and exact observed
+USB/IP choices for AD936x only. A shared source has one route request: a newly
+joined pane adopts the destination group's retained intent, and peer controls
+show the same read-only choice with a visible wrapped affected-pane cue.
+Passive discovery refresh preserves a pinned route and the complete requested
+AD profile, including mode, Fs, FFT, range, analysis band/window, priority and
+revisit target. A disappeared route/source remains explicitly unavailable and
+blocks preparation until a deliberate user choice; refresh never silently
+replaces a pin with Automatic. Non-AD sources have no Pluto route selector.
+An unadvertised IP still uses the existing global manual-URI selection workflow,
+which publishes that exact descriptor, not a new pane URI parser.
+
+Prepared Preview reads the retained typed plan/context, not subsequently edited
+widgets. It labels requested intent, Stage-confirmed selection and Apply
+revalidation; none of those establish physical readback or link throughput.
+Stage/Apply remain inert with respect to RX Start. Hardware identity, alias
+exclusion, common-owner and stale-revision guards remain unchanged.
+
+### Regression correction and exact software qualification
+
+The first integrated source `f92ea67e40e7f3a4bec59ee854c55ec19a12fad0`
+built successfully, but its complete V2 run failed: two obsolete typed test
+fixtures, stretched mode-control geometry and two untranslated Russian phrases.
+That failed evidence is retained. The correction clears AD-only routes when a
+fixture changes family, uses a real compiled RTL plan and retained RF context,
+keeps the mode/points stack at its adaptive preferred height, and fully localizes
+the Russian copy. Existing relative height, RF refusal and localization guards
+were not weakened.
+
+Corrected product source `9f4a91752c81603a67df894a805cbf703e6ce86a` passed
+a distinct immutable UI review and root expanded regression: 154 tests plus
+1445 subtests (14.74s after normal integration). Scoped Ruff/compile checks cover
+all ten changed files. Two-product-file mypy still reports 16 errors across
+four other files, exactly matching the prior source's diagnostic lines; this
+is not whole-project typing approval.
+
+Fresh diagnostic `APP07-ROUTEUI-20261006-9F4A917-R1` passed 47/47 native CTests
+(57.20s), 590 source-input entries, 665 frozen files, startup/runtime checks and
+one serial full V2 run after freeze: 1478 total, 1412 passed, 66 skipped, no
+failures/errors (497.751s). Source/native provenance and tracked-clean state
+before/after match. The observer recorded zero uncaught Qt callbacks; a separate
+log audit found zero tracebacks. Four historical NaN warnings remain visible.
+Post-run source snapshot and runtime inventory verification passed.
+
+Diagnostic EXE SHA256:
+`e263eee2ac189aeff631e8ecc4b2d00ce5c595cd625bb04213fb3501eff20a03`.
+Native SHA256:
+`5fa7a0632922586ed7311604854edcbeb2cf3f2736ef63f241b12d2046f4188e`.
+These results qualify this software packet only. The full V2 runner uses current
+V2 sources with the matching packaged native module, not a visible frozen
+Windows hardware session. Later documentation commits do not relabel the build's
+source commit. No physical RX, lease reset, system/firewall change or static/current
+EXE promotion occurred. The interrupted M8-080 hardware trial still has no
+normal Stop/flush/join receipt or established cause.
+
+Next: actual analytical-ready-to-relevant-Spectrum/Waterfall-paint measurement
+and bounded first-cause/watchdog evidence for future physical admission, then
+the current AD9364USB/HackRF/AD9363Ethernet1G/RTL layout and rotations after
+hardware recovery. Positive paired RF, current four-source HIL, visible
+FHD/QHD/DPI, latency/FPS, stability and independent release qualification remain
+open. APP-07/M8 remains PARTIAL/H02 TODO; the full APP-00 through APP-14 objective
+is unchanged.
