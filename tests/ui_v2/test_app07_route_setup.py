@@ -285,6 +285,50 @@ class IndependentPaneRouteTests(unittest.TestCase):
             set_active_locale(previous_locale)
             graph.live.shutdown()
 
+    def test_narrow_shared_route_layout_is_scrollable_and_non_overlapping(self) -> None:
+        native, graph = _ad_graph(uri=USB, serial="app07-known")
+        previous_locale = current_locale()
+        try:
+            original = replace(graph.live.discover(local_only=True)[0],
+                               operational_routes=(Route(USB), Route(IP)))
+            editor = self._editor(AnalyzerSourceSelection(revision=1, choices=(original,)))
+            try:
+                first, second = editor._rows[:2]
+                for row in (first, second):
+                    row.source.setCurrentIndex(row.source.findData(original.device_id))
+                ip_index = next(i for i in range(first.route.count())
+                                if first.route.itemData(i) == Route(IP))
+                first.route.setCurrentIndex(ip_index)
+                editor.resize(320, 220)
+                self.app.processEvents()
+                self.assertTrue(editor.scroll_area.verticalScrollBar().maximum() > 0)
+                self.assertTrue(editor.prepare.isVisible())
+                self.assertTrue(editor.prepare.isEnabled())
+                self.assertTrue(first.route.isVisible())
+                self.assertTrue(first.route_scope.isVisible())
+                self.assertGreater(first.route.width(), 0)
+                self.assertGreater(first.route.height(), 0)
+                self.assertGreater(first.route_scope.height(), 0)
+                self.assertFalse(first.route.geometry().intersects(first.route_scope.geometry()))
+                self.assertTrue(first.route_scope.wordWrap())
+                self.assertGreaterEqual(first.route_scope.height(),
+                                        first.route_scope.fontMetrics().lineSpacing())
+                for locale, automatic in ((UiLocale.EN, "Automatic"),
+                                          (UiLocale.RU, "Автоматический")):
+                    set_active_locale(locale)
+                    editor.set_locale()
+                    self.assertTrue(first.route.isVisible())
+                    self.assertTrue(first.route.isEnabled())
+                    self.assertIn(automatic, first.route.itemText(0))
+                    self.assertTrue(first.route_scope.isVisible())
+                    self.assertGreater(first.route_scope.height(), 0)
+                    self.assertTrue(editor.prepare.isVisible())
+            finally:
+                self._close(editor)
+        finally:
+            set_active_locale(previous_locale)
+            graph.live.shutdown()
+
     def test_route_selector_is_keyboard_reachable(self) -> None:
         native, graph = _ad_graph(uri=USB, serial="app07-known")
         try:
@@ -294,9 +338,23 @@ class IndependentPaneRouteTests(unittest.TestCase):
             try:
                 row = editor._rows[0]
                 row.source.setCurrentIndex(row.source.findData(original.device_id))
-                row.route.setCurrentIndex(0)
-                row.route.setFocus()
-                QTest.keyClick(row.route, Qt.Key.Key_Down)
+                usb_index = next(i for i in range(row.route.count())
+                                 if row.route.itemData(i) == Route(USB))
+                row.route.setCurrentIndex(usb_index)
+                row.source.setFocus()
+                tab_chain = (row.source, row.chain, row.route)
+                reached_route = False
+                for _step in range(len(tab_chain)):
+                    current = self.app.focusWidget()
+                    self.assertIsNotNone(current)
+                    assert current is not None
+                    self.assertIn(current, tab_chain)
+                    QTest.keyClick(current, Qt.Key.Key_Tab)
+                    self.app.processEvents()
+                    if self.app.focusWidget() is row.route:
+                        reached_route = True
+                        break
+                self.assertTrue(reached_route)
                 self.assertEqual(row.route.currentData(), Route(USB))
                 self.assertTrue(row.route.hasFocus())
             finally:

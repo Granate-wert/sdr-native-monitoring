@@ -13,7 +13,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QStandardItemModel
-from PySide6.QtWidgets import QApplication, QComboBox
+from PySide6.QtWidgets import QApplication, QComboBox, QGridLayout
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import (
@@ -97,6 +97,26 @@ class PairedSetupTests(unittest.TestCase):
             self.assertIs(drafts[1].receiver_selection, ReceiverChainSelection.RX2)
             self.assertEqual(second.source_line.layout().count(), 2)
             self.assertEqual(second.source_chain.layout().count(), 3)
+            outer_layout = editor.scroll_contents.layout()
+            self.assertIsNotNone(outer_layout)
+            assert outer_layout is not None
+            grid_item = outer_layout.itemAt(1)
+            self.assertIsNotNone(grid_item)
+            assert grid_item is not None
+            outer_grid = grid_item.layout()
+            self.assertIsNotNone(outer_grid)
+            self.assertIsInstance(outer_grid, QGridLayout)
+            assert isinstance(outer_grid, QGridLayout)
+            self.assertEqual(outer_grid.columnCount(), 7)
+            source_index = outer_grid.indexOf(second.source_chain)
+            self.assertGreaterEqual(source_index, 0)
+            source_position = cast(tuple[int, int, int, int],
+                                   outer_grid.getItemPosition(source_index))
+            self.assertEqual(source_position[:2], (2, 1))
+            positioned_source = outer_grid.itemAtPosition(2, 1)
+            self.assertIsNotNone(positioned_source)
+            assert positioned_source is not None
+            self.assertIs(positioned_source.widget(), second.source_chain)
             with patch.object(editor, "_submit") as submit:
                 editor._begin_prepare()
                 self.assertIs(submit.call_args.args[2][1].receiver_selection,
