@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+from contextlib import contextmanager
 from threading import Event, Thread
 import os
+from shiboken6 import isValid as is_qobject_valid
 from time import monotonic, sleep
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase, PanePumpResourceState
@@ -48,81 +52,147 @@ class StartRefreshResponsiveTests(unittest.TestCase):
         closed = []
         surface = IndependentPaneSessionV2(prepared.handle,
             close_layout=lambda handle: closed.append(handle))
-        return native, graph, pool, prepared.handle, surface, closed
+        return SimpleNamespace(native=native, graph=graph, pool=pool,
+                               handle=prepared.handle, surface=surface, closed=closed)
 
-    def _dispose(self, graph, pool, handle, surface) -> None:
+    @contextmanager
+    def _owned_surface(self):
+        product = self._surface()
+        body_error = None
+        body_traceback = None
+        try:
+            yield product
+        except BaseException as error:
+            # Teardown must never replace the first assertion or fixture error.
+            body_error = error
+            body_traceback = error.__traceback__
+        finally:
+            cleanup_error = self._dispose(product.graph, product.pool, product.handle, product.surface)
+            if body_error is not None:
+                if cleanup_error is not None:
+                    body_error.add_note(f"owned-surface cleanup also failed: {cleanup_error}")
+                raise body_error.with_traceback(body_traceback)
+            if cleanup_error is not None:
+                raise cleanup_error
+
+    def _dispose(self, graph, pool, handle, surface):
+        errors = []
+
+        def attempt(label, operation) -> None:
+            try:
+                operation()
+            except BaseException as error:
+                errors.append((label, error))
+
         if handle is not None and not handle.shutdown_complete:
-            for future in handle.pump.stop_all().values():
-                future.result(timeout=5)
-            handle.shutdown_after_stop()
+            futures = {}
+            attempt("request Stop", lambda: futures.update(handle.pump.stop_all()))
+            for resource_id, future in futures.items():
+                attempt(f"join Stop for {resource_id}", lambda future=future: future.result(timeout=5))
+            # A failed Stop still must not prevent presentation and graph cleanup
+            # attempts; the first body error remains authoritative in the fixture.
+            attempt("shutdown product handle", handle.shutdown_after_stop)
+
         if surface is not None:
             if handle is not None and handle.shutdown_complete:
-                surface.release_presentation_after_shutdown()
-                surface.close()
+                attempt("release presentation", surface.release_presentation_after_shutdown)
+                attempt("close presentation", surface.close)
             else:
-                surface._state_timer.stop()
-                surface.delivery.stop()
-                surface.deleteLater()
-        if pool.staged_resource_ids:
-            pool.close()
-        graph.live.shutdown()
+                # The terminal owner boundary was not confirmed. Stop only the
+                # Qt-side producers before retiring the QObject below.
+                attempt("stop presentation timer", surface._state_timer.stop)
+                attempt("stop presentation delivery", surface.delivery.stop)
+            attempt("schedule presentation deletion", surface.deleteLater)
+            attempt("flush deferred presentation deletion",
+                    lambda: QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete))
+
+        if pool is not None and (pool.staged_resource_ids or pool.cleanup_pending_resource_ids):
+            attempt("close graph pool", pool.close)
+        if graph is not None:
+            # Keep a direct graph shutdown attempt even if pool.close reported an
+            # error, so a failed normal cleanup cannot strand the fake owner.
+            attempt("shutdown graph live owner", graph.live.shutdown)
         self.app.processEvents()
+
+        checks = (
+            ("staged resources", lambda: self.assertEqual(pool.staged_resource_ids, ())),
+            ("pending graph cleanup", lambda: self.assertEqual(pool.cleanup_pending_resource_ids, ())),
+            ("presentation QObject deletion", lambda: self.assertFalse(is_qobject_valid(surface))),
+        )
+        if handle is not None:
+            checks += (
+                ("retained claims", lambda: self.assertEqual(handle.session.retained_resource_count, 0)),
+                ("worker retirement", lambda: self.assertTrue(all(
+                    not worker._thread.is_alive() for worker in handle.pump._workers.values()))),
+                ("control work retirement", lambda: self.assertFalse(handle.pump.control_pending())),
+                ("delivery queue retirement", lambda: self.assertEqual(handle.queue.pending_count, 0)),
+                ("operation future retirement", lambda: self.assertTrue(all(
+                    future.done() for future in surface._futures))),
+            )
+        for label, check in checks:
+            attempt(f"verify {label}", check)
+
+        if not errors:
+            return None
+        details = "; ".join(f"{label}: {type(error).__name__}: {error}" for label, error in errors)
+        return AssertionError(f"owned-surface cleanup failed ({details})")
 
     def test_selected_and_all_start_return_while_session_state_lock_is_held(self) -> None:
         for command in ("selected", "all"):
             with self.subTest(command=command):
-                native, graph, pool, handle, surface, _closed = self._surface()
-                lock_acquired = Event()
-                release_lock = Event()
-                lock = handle.session._state_lock
+                with self._owned_surface() as product:
+                    handle, surface = product.handle, product.surface
+                    lock_acquired = Event()
+                    release_lock = Event()
 
-                def hold_lock_with_watchdog() -> None:
-                    with lock:
-                        lock_acquired.set()
-                        # A watchdog bounds a regression: baseline _refresh can
-                        # block in can_close(), but never hangs this test.
-                        release_lock.wait(0.35)
+                    def hold_lock_with_watchdog() -> None:
+                        with handle.session._state_lock:
+                            lock_acquired.set()
+                            # A watchdog bounds a regression: baseline _refresh can
+                            # block in can_close(), but never hangs this test.
+                            release_lock.wait(0.35)
 
-                holder = Thread(target=hold_lock_with_watchdog, daemon=True)
-                holder.start()
-                try:
-                    self.assertTrue(lock_acquired.wait(1.0))
-                    calls = []
-                    original_can_close = handle.can_close
+                    holder = Thread(target=hold_lock_with_watchdog, daemon=True)
+                    holder.start()
+                    try:
+                        self.assertTrue(lock_acquired.wait(1.0))
+                        calls = []
+                        original_can_close = handle.can_close
 
-                    def observed_can_close() -> bool:
-                        calls.append(monotonic())
-                        return original_can_close()
+                        def observed_can_close() -> bool:
+                            calls.append(monotonic())
+                            return original_can_close()
 
-                    with patch.object(handle, "can_close", side_effect=observed_can_close):
-                        started = monotonic()
-                        if command == "selected":
-                            surface._start_selected()
-                        else:
-                            surface._start_all()
-                        elapsed = monotonic() - started
-                        self.assertLess(elapsed, 0.25,
-                            "Start refresh waited on the session lock")
-                        self.assertEqual(calls, [],
-                            "close authority is unnecessary while Start is unsettled")
-                        self.assertTrue(surface._futures)
-                finally:
-                    release_lock.set()
-                    holder.join(timeout=1.0)
-                    self.assertFalse(holder.is_alive(), "lock-holder watchdog failed to release")
+                        with patch.object(handle, "can_close", side_effect=observed_can_close):
+                            started = monotonic()
+                            if command == "selected":
+                                surface.start_selected.click()
+                            else:
+                                surface.start_all.click()
+                            elapsed = monotonic() - started
+                            self.assertLess(elapsed, 0.25,
+                                "Start refresh waited on the session lock")
+                            self.assertEqual(calls, [],
+                                "close authority is unnecessary while Start is unsettled")
+                            self.assertTrue(surface._futures)
+                    finally:
+                        release_lock.set()
+                        holder.join(timeout=1.0)
+                        self.assertFalse(holder.is_alive(), "lock-holder watchdog failed to release")
 
-                try:
                     self._wait(lambda: all(future.done() for future in surface._futures))
                     for future in handle.pump.stop_all().values():
                         future.result(timeout=5)
                     self._wait(handle.can_close)
-                finally:
-                    self._dispose(graph, pool, handle, surface)
+                    surface._refresh()
+                    self.assertTrue(surface.close_layout.isEnabled())
+                    surface.close_layout.click()
+                    self.assertEqual(product.closed, [handle])
 
     def test_pending_future_or_unstopped_snapshot_skips_close_authority(self) -> None:
-        native, graph, pool, handle, surface, _closed = self._surface()
-        resource_id = handle.pump.snapshot()[0].physical_stream_resource_id
-        try:
+        with self._owned_surface() as product:
+            handle, surface = product.handle, product.surface
+            resource_id = handle.pump.snapshot()[0].physical_stream_resource_id
             pending = Future()
             surface._futures = [pending]
             calls = []
@@ -144,13 +214,11 @@ class StartRefreshResponsiveTests(unittest.TestCase):
                     surface._refresh()
                     self.assertEqual(calls, [])
                     self.assertFalse(surface.close_layout.isEnabled())
-        finally:
-            self._dispose(graph, pool, handle, surface)
 
     def test_all_stopped_preserves_can_close_as_final_authority(self) -> None:
-        native, graph, pool, handle, surface, closed = self._surface()
-        resource_id = handle.pump.snapshot()[0].physical_stream_resource_id
-        try:
+        with self._owned_surface() as product:
+            handle, surface = product.handle, product.surface
+            resource_id = handle.pump.snapshot()[0].physical_stream_resource_id
             snapshot = (PanePumpResourceState(resource_id, phase=PanePumpPhase.STOPPED),)
             for allowed in (False, True):
                 calls = []
@@ -165,9 +233,21 @@ class StartRefreshResponsiveTests(unittest.TestCase):
                     surface._refresh()
                     self.assertEqual(calls, [True])
                     self.assertEqual(surface.close_layout.isEnabled(), allowed)
-            self.assertEqual(closed, [])
-        finally:
-            self._dispose(graph, pool, handle, surface)
+            self.assertEqual(product.closed, [])
+
+    def test_fixture_retires_graph_even_when_assertion_fails(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "injected fixture failure"):
+            with self._owned_surface() as product:
+                self.fail("injected fixture failure")
+        self.assertEqual(product.pool.staged_resource_ids, ())
+        self.assertEqual(product.pool.cleanup_pending_resource_ids, ())
+        self.assertEqual(product.handle.session.retained_resource_count, 0)
+        self.assertTrue(all(not worker._thread.is_alive()
+                            for worker in product.handle.pump._workers.values()))
+        self.assertFalse(product.handle.pump.control_pending())
+        self.assertEqual(product.handle.queue.pending_count, 0)
+        self.assertTrue(all(future.done() for future in product.surface._futures))
+        self.assertFalse(is_qobject_valid(product.surface))
 
 
 if __name__ == "__main__":
