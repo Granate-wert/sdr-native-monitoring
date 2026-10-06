@@ -9,6 +9,28 @@ from typing import Protocol
 from ..domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from ..domain.device_capabilities import DeviceCapabilityBinding, DeviceCapabilityInventory, DeviceFamily
 from ..domain.live import DeviceDescriptor, LiveAdmissionRejected, LiveSnapshot
+from ..domain.pluto_route_intent import PlutoOperationalRouteIntent
+
+
+def _descriptor_operational_routes(
+    descriptor: DeviceDescriptor | None,
+) -> tuple[PlutoOperationalRouteIntent, ...]:
+    """Copy an all-valid bounded discovery set, without another SDK operation.
+
+    Legacy/synthetic descriptors may not use the explicit-route URI grammar.
+    Preserve their established automatic path but publish no selectable route
+    evidence. Never truncate an oversized observation into an apparently full
+    set, infer IP aliases from names, or treat routes as admission receipts.
+    """
+    if (descriptor is None or type(descriptor.alternate_uris) is not tuple
+            or len(descriptor.alternate_uris) > 31):
+        return ()
+    try:
+        routes = tuple(PlutoOperationalRouteIntent(uri)
+                       for uri in (descriptor.uri, *descriptor.alternate_uris))
+    except ValueError:
+        return ()
+    return tuple(dict.fromkeys(routes))
 
 
 class SourceCatalogPort(Protocol):
@@ -76,7 +98,8 @@ class AnalyzerSourceSelectionApplicationService:
             # Fixed model/transport + opaque suffix: no USB serial, COM, URI.
             label = f"{family_label} · {transport} · {binding.source_id[-8:]}"
             values.append(AnalyzerSourceChoice(binding, inventory.runtime_for_adapter(binding.adapter_id), label, transport,
-                                              None if descriptor is None else descriptor.usb_connection))
+                                              None if descriptor is None else descriptor.usb_connection,
+                                              _descriptor_operational_routes(descriptor)))
         return tuple(values)
 
     def discover(self, *, startup: bool = False, local_only: bool = False) -> tuple[AnalyzerSourceChoice, ...]:
@@ -125,7 +148,7 @@ class AnalyzerSourceSelectionApplicationService:
                                                   descriptor.capability_snapshot, descriptor.calibration_identity)
                 transport = descriptor.transport.value.upper()
                 choice = AnalyzerSourceChoice(binding, runtime, f"AD936x SDR · {transport} · {binding.source_id[-8:]}", transport,
-                                              descriptor.usb_connection)
+                                              descriptor.usb_connection, _descriptor_operational_routes(descriptor))
                 # A manual operational binding is not inserted into catalog
                 # truth or automatically joined to a USB/IP alias.
                 choices = tuple(value for value in self._state.choices if value.device_id != choice.device_id)

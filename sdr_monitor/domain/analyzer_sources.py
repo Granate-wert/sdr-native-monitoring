@@ -7,6 +7,7 @@ from itertools import islice
 
 from .device_capabilities import AdapterRuntimeSnapshot, DeviceCapabilityBinding, DeviceFamily
 from .pluto_connection import PlutoUsbConnectionExpectation
+from .pluto_route_intent import PlutoOperationalRouteIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,9 @@ class AnalyzerSourceChoice:
     transport_label: str
     # Fresh selected descriptor observation; never a stable calibration key.
     usb_connection: PlutoUsbConnectionExpectation | None = field(default=None, repr=False)
+    # Copied discovery choices only, NOT a fresh route admission/identity receipt.
+    # Empty means no bounded typed route observation is available to the editor.
+    operational_routes: tuple[PlutoOperationalRouteIntent, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, DeviceCapabilityBinding):
@@ -30,6 +34,16 @@ class AnalyzerSourceChoice:
             if self.family is not DeviceFamily.AD936X or not isinstance(self.usb_connection, PlutoUsbConnectionExpectation):
                 raise ValueError("only AD936x sources may carry typed Pluto USB observations")
             self.usb_connection.__post_init__()
+        routes = self.operational_routes
+        if (type(routes) is not tuple or len(routes) > 32
+                or any(not isinstance(route, PlutoOperationalRouteIntent) for route in routes)):
+            raise ValueError("source route choices require a bounded typed tuple")
+        if routes and self.family is not DeviceFamily.AD936X:
+            raise ValueError("only AD936x choices may carry Pluto route observations")
+        for route in routes:
+            route.__post_init__()
+        if len(set(routes)) != len(routes):
+            raise ValueError("source route choices must be unique")
         for value in (self.label, self.transport_label):
             if (not isinstance(value, str) or not value or len(value) > 160
                     or any(ord(character) < 32 for character in value)):
