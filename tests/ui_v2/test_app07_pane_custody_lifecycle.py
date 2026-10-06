@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from shiboken6 import isValid as is_qobject_valid
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage as Stage
@@ -69,6 +70,22 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def _owned_scene(self):
+        scene = SpectrumScene()
+        self.addCleanup(self._retire_scene, scene)
+        return scene
+
+    def _retire_scene(self, scene) -> None:
+        if not is_qobject_valid(scene):
+            return
+        if not scene._graphics_terminal_released:
+            scene.clear_measurement()
+            scene.release_graphics_after_shutdown()
+        scene.close()
+        scene.deleteLater()
+        QCoreApplication.sendPostedEvents(scene, QEvent.Type.DeferredDelete)
+        self.assertFalse(is_qobject_valid(scene))
+
     @staticmethod
     def ui_admitted(ledger, offer=1):
         ref = ledger.admit("one", identity(offer=offer))
@@ -103,8 +120,8 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         peer_ref = PaneDeliveryLedger(("two",)).admit("two", identity("two"))
         first_stages = []
         peer_stages = []
-        first = SpectrumScene()
-        peer = SpectrumScene()
+        first = self._owned_scene()
+        peer = self._owned_scene()
         first.set_delivery_stage_callback(lambda ref, stage: first_stages.append((ref, stage)))
         peer.set_delivery_stage_callback(lambda ref, stage: peer_stages.append((ref, stage)))
         retained = SimpleNamespace(source_id="source", epoch=1, sequence=1, unit="dBm",
@@ -128,7 +145,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
 
     def test_stop_retains_pixels_but_terminal_scene_release_drops_source_arrays(self):
         ledger = PaneDeliveryLedger(("one",))
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(ledger.note)
         ref = self.ui_admitted(ledger)
         frame = self.frame(1, -70)
@@ -165,7 +182,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
     def test_hidden_latest_replacement_and_captured_stop_refs_conserve_real_ledger(self):
         ledger = PaneDeliveryLedger(("one",))
         stages = []
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: (stages.append((ref, stage)), ledger.note(ref, stage)))
         scene.set_presentation_active(False)
         first = self.ui_admitted(ledger, 1)
@@ -191,7 +208,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         ledger = PaneDeliveryLedger(("one",))
         worker = ManualWorker()
         projector = SpectrumProjector(worker.submit)
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         scene.plot_item.getAxis("left").setWidth(80)
         scene.set_projection_port(projector)
@@ -239,7 +256,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
 
     def test_port_rejection_after_exact_commit_is_inert_and_terminal_ref_does_not_resurrect(self):
         ledger = PaneDeliveryLedger(("one",))
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         accepted = self.ui_admitted(ledger, 1)
         frame = self.frame(1, -70)
@@ -269,7 +286,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
     def test_port_reports_precommit_failure_and_scene_blocks_same_ref_retry(self):
         ledger = PaneDeliveryLedger(("one",))
         rejected = self.ui_admitted(ledger, 1)
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         prepared = SimpleNamespace(delivery=SimpleNamespace(obligation_ref=rejected),
                                    binding=SimpleNamespace(slot_number=1))
@@ -289,7 +306,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
     def test_precommit_rejection_is_terminal_and_cannot_be_reattached(self):
         ledger = PaneDeliveryLedger(("one",))
         rejected = self.ui_admitted(ledger, 1)
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         frame = self.frame(1, -70)
         with patch.object(scene, "_set_trace_view", side_effect=RuntimeError("precommit")):
@@ -306,7 +323,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
 
     def test_stop_future_uses_cached_snapshot_queued_exact_refs_and_ignores_failure(self):
         ledger = PaneDeliveryLedger(("one", "two"))
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         first = self.ui_admitted(ledger, 1)
         scene.set_frame(self.frame(1, -70), obligation_ref=first)
@@ -343,7 +360,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
 
     def test_delayed_successful_stop_cannot_detach_new_run_and_deleted_widget_is_inert(self):
         ledger = PaneDeliveryLedger(("one",))
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         old = self.ui_admitted(ledger, 1)
         scene.set_frame(self.frame(1, -70), obligation_ref=old)
@@ -377,7 +394,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         ledger = PaneDeliveryLedger(("one",))
         worker = ManualWorker()
         projector = SpectrumProjector(worker.submit)
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         scene.set_projection_port(projector)
         scene.resize(900, 500)
@@ -439,7 +456,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         ledger = PaneDeliveryLedger(("one",))
         worker = ManualWorker()
         projector = SpectrumProjector(worker.submit)
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         scene.set_projection_port(projector)
         scene.resize(900, 500)
@@ -487,7 +504,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         ledger = PaneDeliveryLedger(("one",))
         worker = ManualWorker()
         projector = SpectrumProjector(worker.submit)
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         scene.set_projection_port(projector)
         scene.resize(900, 500)
@@ -544,7 +561,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
     def test_scene_defensive_failed_replacement_restores_prior_acceptance(self):
         """Scene-level defensive invariant; the production port latches failures."""
         ledger = PaneDeliveryLedger(("one",))
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         scene.set_presentation_active(False)
         accepted_a = self.ui_admitted(ledger, 1)
@@ -576,7 +593,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         ledger = PaneDeliveryLedger(("one",))
         worker = ManualWorker()
         projector = SpectrumProjector(worker.submit)
-        scene = SpectrumScene()
+        scene = self._owned_scene()
         scene.set_delivery_stage_callback(lambda ref, stage: ledger.note(ref, stage))
         scene.set_projection_port(projector)
         scene.resize(900, 500)
