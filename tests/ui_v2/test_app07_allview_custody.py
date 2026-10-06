@@ -130,6 +130,8 @@ class AllViewCustodyTests(unittest.TestCase):
         waterfall = WaterfallPane()
         scene.set_delivery_stage_callback(ledger.note)
         waterfall.set_delivery_stage_callback(ledger.note)
+        scene.set_delivery_stage_observer(ledger.delivery_stage_if_retained)
+        waterfall.set_delivery_stage_observer(ledger.delivery_stage_if_retained)
 
         timed_receipts = []
 
@@ -505,6 +507,7 @@ class AllViewCustodyTests(unittest.TestCase):
 
         old_density = density_frame(1)
         scene.set_delivery_stage_callback(ledger.note)
+        scene.set_delivery_stage_observer(ledger.delivery_stage_if_retained)
         scene.set_persistence_delivery_ref(old_ref, old_density)
         scene.set_persistence_frame(old_density)
         scene.commit_projection()

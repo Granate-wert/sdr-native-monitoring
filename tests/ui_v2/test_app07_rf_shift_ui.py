@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import Future
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -61,6 +62,9 @@ class RfShiftUiTests(unittest.TestCase):
 
     def preview(self, product, offset=10e6):
         ui = product.ui
+        resource = ui._selected_resource()[1]
+        if self.state(product, resource).phase is PanePumpPhase.STOPPED:
+            self.wait(lambda: not product.handle.ui_stop_pending(resource))
         anchor = ui.board.rf_anchor(1)
         ui._request_rf_shift(1, offset, anchor)
         self.wait(lambda: isinstance(ui._rf_dialog, RfImpactDialog))
@@ -185,6 +189,42 @@ class RfShiftUiTests(unittest.TestCase):
             self.assertEqual(self.state(product).activation, old)
             self.assertIs(self.state(product).phase, PanePumpPhase.RUNNING)
             self.assertTrue(product.ui.error.isVisible())
+
+    def test_approved_live_rf_chain_waits_for_complete_ui_stop_acknowledgement(self):
+        with self.harness.product() as product:
+            self.start_and_publish(product)
+            old_activation = self.state(product).activation
+            count = len(product.native.engines)
+            dialog = self.preview(product)
+            delayed = Future()
+            batches = []
+            original_ack = product.handle.pump.reconcile_ui_stop_cleared
+            def hold_ack(resource, refs):
+                batches.append((resource, refs))
+                return delayed
+            with patch.object(product.handle.pump, "reconcile_ui_stop_cleared", side_effect=hold_ack), \
+                 patch.object(product.handle, "apply_rf_shift", wraps=product.handle.apply_rf_shift) as apply, \
+                 patch.object(product.handle.pump, "start_resource", wraps=product.handle.pump.start_resource) as start:
+                dialog.confirm_button.click()
+                self.wait(lambda: product.ui._rf_phase == "stop_wait" and bool(batches))
+                self.assertEqual(len(batches), 1)
+                self.assertTrue(product.handle.ui_stop_pending("pane-resource-1"))
+                self.assertIs(self.state(product).phase, PanePumpPhase.STOPPED)
+                self.assertFalse(product.ui.close_layout.isEnabled())
+                self.assertEqual(len(product.native.engines), count)
+                apply.assert_not_called()
+                start.assert_not_called()
+                resource, refs = batches[0]
+                actual = original_ack(resource, refs)
+                self.wait(actual.done)
+                delayed.set_result(actual.result())
+                self.wait(lambda: product.ui._rf_phase is None)
+                apply.assert_called_once()
+                start.assert_called_once_with("pane-resource-1")
+            self.assertFalse(product.handle.ui_stop_pending("pane-resource-1"))
+            self.assertGreater(self.state(product).activation.host_activation_serial,
+                               old_activation.host_activation_serial)
+            self.assertEqual(len(product.native.engines), count + 1)
 
     def test_recording_race_refuses_approved_rf_change_but_ordinary_stop_still_works(self):
         with self.harness.product() as product:

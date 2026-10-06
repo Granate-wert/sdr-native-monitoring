@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import time
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import pyqtgraph as pg
@@ -153,6 +153,7 @@ class SpectrumScene(QWidget):
         self._graphics_preflight_complete = False
         self._graphics_terminal_ownership: PlotTerminalOwnership | None = None
         self._delivery_stage_callback = None
+        self._delivery_stage_observer: Callable[[PaneDeliveryObligationRef], PaneDeliveryStage | None] | None = None
         self._paint_return_callback: PaintReturnCallback | None = None
         self._latest_delivery_ref: PaneDeliveryObligationRef | None = None
         self._latest_spectrum_setter_accepted = False
@@ -168,6 +169,9 @@ class SpectrumScene(QWidget):
         self._closed_delivery_graph: str | None = None
         self._closed_delivery_sequence = 0
         self._closed_delivery_by_view: dict[PaneDeliveryView, tuple[str, int]] = {}
+        self._ui_stop_detached_refs: tuple[PaneDeliveryObligationRef, ...] = ()
+        self._ui_stop_pending = False
+        self._delivery_custody_generation = 0
         self._graphics_state_disconnected = False
         self._build_ui()
         self._sweep_position = SweepPositionOverlay(self._plot_item, self._locale)
@@ -613,8 +617,15 @@ class SpectrumScene(QWidget):
         previous_prepared = self._prepared_spectrum
         previous_displayed_ref = self._displayed_delivery_ref
         previous_setter_accepted = self._latest_spectrum_setter_accepted
-        if obligation_ref is not None and self._delivery_ref_is_closed(obligation_ref):
+        admission_generation = self._delivery_custody_generation
+        if (obligation_ref is not None and not self._delivery_ref_admissible(
+                obligation_ref, self._displayed_delivery_ref,
+                self._displayed_delivery_paint_scheduled)):
             obligation_ref = None
+        if (admission_generation != self._delivery_custody_generation
+                or previous_ref is not self._latest_delivery_ref
+                or previous_displayed_ref is not self._displayed_delivery_ref):
+            return  # A reentrant Stop/replacement owns the later GUI state.
         self._latest_delivery_ref = obligation_ref
         self._latest_spectrum_setter_accepted = False
         self._latest_view = view
@@ -681,9 +692,7 @@ class SpectrumScene(QWidget):
             self._trace_views.pop(TraceKind.CURRENT, None)
         else:
             self._trace_views[TraceKind.CURRENT] = previous_view
-        if (previous_ref != ref or not previous_accepted) and not (
-                ref.graph_instance_id == self._closed_delivery_graph
-                and ref.sequence <= self._closed_delivery_sequence):
+        if (previous_ref != ref or not previous_accepted) and not self._delivery_ref_is_closed(ref):
             self._report_delivery(ref, PaneDeliveryStage.UI_REJECTED)
 
     def set_trace(self, kind: TraceKind, frame: object) -> None:
@@ -833,9 +842,11 @@ class SpectrumScene(QWidget):
 
     def set_persistence_delivery_ref(self, ref: PaneDeliveryObligationRef | None,
                                      source_frame: object | None = None) -> None:
-        if ref is not None and self._delivery_ref_is_terminal_high_water(ref):
-            # Stop terminalizes the obligation, independently of the source
-            # object.  A delayed upload must not resurrect that exact ref.
+        if (ref is not None and not self._delivery_ref_admissible(
+                ref, self._persistence_delivery_ref,
+                self._persistence_delivery_paint_scheduled)):
+            # The exact-stage observer is the product admission authority;
+            # the local high-water fence remains the standalone fallback.
             return
         previous = self._persistence_delivery_ref
         if previous is not None and previous != ref and not self._persistence_delivery_paint_returned:
@@ -1402,6 +1413,11 @@ class SpectrumScene(QWidget):
     def set_delivery_stage_callback(self, callback) -> None:
         self._delivery_stage_callback = callback
 
+    def set_delivery_stage_observer(
+        self, observer: Callable[[PaneDeliveryObligationRef], PaneDeliveryStage | None] | None,
+    ) -> None:
+        self._delivery_stage_observer = observer
+
     def set_paint_return_callback(self, callback: PaintReturnCallback | None) -> None:
         self._paint_return_callback = callback
 
@@ -1442,6 +1458,39 @@ class SpectrumScene(QWidget):
                 (source, ref) for source, ref in self._projection_delivery_slots
                 if ref not in selected)
 
+    def begin_ui_stop_detach(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        self._ui_stop_detached_refs = tuple(refs)
+
+    def set_ui_stop_pending(self, pending: bool) -> None:
+        self._delivery_custody_generation += 1
+        self._ui_stop_pending = pending
+        if not pending:
+            self._ui_stop_detached_refs = ()
+
+    def finish_ui_stop_detach(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        if self._ui_stop_detached_refs == refs:
+            self._ui_stop_detached_refs = ()
+
+    def detach_delivery_custody(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        """Detach exact product Stop refs without reporting ledger stages."""
+        self.begin_ui_stop_detach(refs)
+        for ref in refs:
+            if self._displayed_delivery_ref is ref:
+                self._displayed_delivery_ref = None
+                self._displayed_delivery_paint_scheduled = False
+                self._displayed_delivery_paint_returned = False
+            if self._persistence_delivery_ref is ref:
+                self._persistence_delivery_ref = None
+                self._persistence_delivery_source = None
+                self._persistence_delivery_paint_scheduled = False
+                self._persistence_delivery_paint_returned = False
+            if self._latest_delivery_ref is ref:
+                self._latest_delivery_ref = None
+                self._latest_spectrum_setter_accepted = False
+        self._projection_delivery_slots = tuple(
+            (source, item) for source, item in self._projection_delivery_slots
+            if not any(item is ref for ref in refs))
+
     def _report_delivery(self, ref: PaneDeliveryObligationRef | None, stage: PaneDeliveryStage) -> None:
         callback = self._delivery_stage_callback
         if ref is not None and callback is not None:
@@ -1460,10 +1509,43 @@ class SpectrumScene(QWidget):
             self._closed_delivery_graph, self._closed_delivery_sequence = ref.graph_instance_id, sequence
 
     def _delivery_ref_is_closed(self, ref: PaneDeliveryObligationRef) -> bool:
+        if self._delivery_stage_observer is not None:
+            try:
+                return self._delivery_stage_observer(ref) not in {
+                    PaneDeliveryStage.UI_ADMITTED, PaneDeliveryStage.PAINT_SCHEDULED}
+            except Exception:
+                return True
         graph, sequence = self._closed_delivery_by_view.get(ref.view, (None, 0))
         if graph is None and ref.view is PaneDeliveryView.SPECTRUM:
             graph, sequence = self._closed_delivery_graph, self._closed_delivery_sequence
         return ref.graph_instance_id == graph and ref.sequence <= sequence
+
+    def _delivery_ref_admissible(
+        self, ref: PaneDeliveryObligationRef, current_ref: PaneDeliveryObligationRef | None,
+        current_scheduled: bool,
+    ) -> bool:
+        if self._ui_stop_pending or any(ref is item for item in self._ui_stop_detached_refs):
+            return False
+        observer = self._delivery_stage_observer
+        if observer is None:
+            if current_ref is ref and current_scheduled:
+                return True
+            return not self._delivery_ref_is_closed(ref)
+        try:
+            generation = self._delivery_custody_generation
+            owned = (self._latest_delivery_ref, self._displayed_delivery_ref,
+                     self._persistence_delivery_ref)
+            stage = observer(ref)
+            if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or any(before is not after for before, after in zip(owned, (
+                        self._latest_delivery_ref, self._displayed_delivery_ref,
+                        self._persistence_delivery_ref), strict=True))):
+                return False
+            if stage is PaneDeliveryStage.UI_ADMITTED:
+                return True
+            return current_ref is ref and current_scheduled and stage is PaneDeliveryStage.PAINT_SCHEDULED
+        except Exception:
+            return False
 
     def _delivery_ref_is_terminal_high_water(self, ref: PaneDeliveryObligationRef) -> bool:
         graph, sequence = self._closed_delivery_by_view.get(ref.view, (None, 0))
@@ -1472,6 +1554,25 @@ class SpectrumScene(QWidget):
         return ref.graph_instance_id == graph and ref.sequence == sequence
 
     def delivery_requires_ui_rejection(self, ref: PaneDeliveryObligationRef) -> bool:
+        if self._ui_stop_pending:
+            return False
+        observer = self._delivery_stage_observer
+        if observer is not None:
+            if any(ref is item for item in (
+                    self._persistence_delivery_ref, self._displayed_delivery_ref,
+                    self._latest_delivery_ref)):
+                return False
+            try:
+                generation = self._delivery_custody_generation
+                stage = observer(ref)
+            except Exception:
+                return False
+            if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or stage is not PaneDeliveryStage.UI_ADMITTED):
+                return False
+            return not any(ref is item for item in (
+                self._persistence_delivery_ref, self._displayed_delivery_ref,
+                self._latest_delivery_ref, *(item for _source, item in self._projection_delivery_slots)))
         if self._delivery_ref_is_closed(ref):
             return False
         if ref == self._persistence_delivery_ref:
@@ -1494,6 +1595,21 @@ class SpectrumScene(QWidget):
         return True
 
     def persistence_delivery_requires_ui_rejection(self, ref: PaneDeliveryObligationRef) -> bool:
+        if self._ui_stop_pending:
+            return False
+        observer = self._delivery_stage_observer
+        if observer is not None:
+            if self._persistence_delivery_ref is ref:
+                return False
+            try:
+                generation = self._delivery_custody_generation
+                stage = observer(ref)
+            except Exception:
+                return False
+            if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or stage is not PaneDeliveryStage.UI_ADMITTED):
+                return False
+            return self._persistence_delivery_ref is not ref
         if self._delivery_ref_is_closed(ref):
             return False
         if ref == self._persistence_delivery_ref:
@@ -1544,8 +1660,8 @@ class SpectrumScene(QWidget):
         if not isinstance(receipt, PanePaintReturnReceipt):
             return
         original_ref = receipt.ref
-        is_displayed = original_ref == self._displayed_delivery_ref
-        is_persistence = original_ref == self._persistence_delivery_ref
+        is_displayed = original_ref is self._displayed_delivery_ref
+        is_persistence = original_ref is self._persistence_delivery_ref
         if ((not is_displayed and not is_persistence)
                 or (is_displayed and self._displayed_delivery_paint_returned)
                 or (is_persistence and self._persistence_delivery_paint_returned)):
@@ -1559,11 +1675,11 @@ class SpectrumScene(QWidget):
                 handled = False
         self._remember_terminal_delivery_ref(original_ref)
         if is_displayed:
-            if original_ref != self._displayed_delivery_ref:
+            if original_ref is not self._displayed_delivery_ref:
                 return
             self._displayed_delivery_paint_returned = True
         else:
-            if original_ref != self._persistence_delivery_ref:
+            if original_ref is not self._persistence_delivery_ref:
                 return
             self._persistence_delivery_paint_returned = True
         if not handled:

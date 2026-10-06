@@ -53,6 +53,7 @@ class IndependentPaneBoardV2(QWidget):
                  source_labels: Mapping[str, str] | None = None,
                  monotonic_clock: Callable[[], float] = monotonic,
                  stage_callback: Callable[[PaneDeliveryObligationRef, PaneDeliveryStage], object] | None = None,
+                 stage_observer: Callable[[PaneDeliveryObligationRef], PaneDeliveryStage | None] | None = None,
                  paint_return_callback: Callable[[PanePaintReturnReceipt], object] | None = None,
                  settings: QSettings | None = None,
                  parent: QWidget | None = None) -> None:
@@ -64,6 +65,7 @@ class IndependentPaneBoardV2(QWidget):
         self._preparer = preparer
         self._monotonic_clock = monotonic_clock
         self._stage_callback = stage_callback
+        self._stage_observer = stage_observer
         self._paint_return_callback = paint_return_callback
         self._installed_bindings = dict(preparer.bindings)
         self._paired_resources = preparer.paired_resource_ids
@@ -96,6 +98,7 @@ class IndependentPaneBoardV2(QWidget):
         })
         self._selected_slot = 1
         self._terminal_released = False
+        self._ui_stop_pending_resources: set[str] = set()
         projector_ids: set[int] = set()
         self.setProperty("ui2Root", True)
         self.setObjectName("independentPaneBoardV2")
@@ -159,8 +162,10 @@ class IndependentPaneBoardV2(QWidget):
                     settings_prefix=f"ui_v2/analyzer/resource_pane{slot.number}/v1",
                     parent=cell)
                 pane.spectrum_scene.set_delivery_stage_callback(self._stage_callback)
+                pane.spectrum_scene.set_delivery_stage_observer(self._stage_observer)
                 pane.spectrum_scene.set_paint_return_callback(self._paint_return_callback)
                 pane.waterfall_pane.set_delivery_stage_callback(self._stage_callback)
+                pane.waterfall_pane.set_delivery_stage_observer(self._stage_observer)
                 pane.waterfall_pane.set_paint_return_callback(self._paint_return_callback)
                 pane._delivery_stage_callback = self._stage_callback
                 pane.set_compact_grid_geometry(compact)
@@ -325,6 +330,42 @@ class IndependentPaneBoardV2(QWidget):
     def set_rf_control_available(self, provider: Callable[[int], bool] | None) -> None:
         """An inert eligibility callback; the board never holds an SDR service."""
         self._rf_control_available = provider
+
+    def set_ui_stop_pending(self, resource_id: str, pending: bool) -> None:
+        if not isinstance(resource_id, str) or not resource_id:
+            raise ValueError("UI Stop gate requires one exact resource")
+        if pending:
+            self._ui_stop_pending_resources.add(resource_id)
+        else:
+            self._ui_stop_pending_resources.discard(resource_id)
+        for binding in self._installed_bindings.values():
+            if binding.physical_stream_resource_id == resource_id:
+                pane = self._panes[binding.slot_number]
+                pane.spectrum_scene.set_ui_stop_pending(pending)
+                pane.waterfall_pane.set_ui_stop_pending(pending)
+
+    def detach_ui_stop_refs(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        """Detach exact product custody without reporting ledger stages."""
+        if not refs:
+            return
+        resource_id = refs[0].identity.physical_stream_resource_id
+        if any(ref.identity.physical_stream_resource_id != resource_id for ref in refs):
+            raise ValueError("UI Stop detachment needs one exact affected resource")
+        for binding in self._installed_bindings.values():
+            if binding.physical_stream_resource_id == resource_id:
+                pane = self._panes[binding.slot_number]
+                pane.spectrum_scene.detach_delivery_custody(refs)
+                pane.waterfall_pane.detach_delivery_custody(refs)
+
+    def finish_ui_stop_detach(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        if not refs:
+            return
+        resource_id = refs[0].identity.physical_stream_resource_id
+        for binding in self._installed_bindings.values():
+            if binding.physical_stream_resource_id == resource_id:
+                pane = self._panes[binding.slot_number]
+                pane.spectrum_scene.finish_ui_stop_detach(refs)
+                pane.waterfall_pane.finish_ui_stop_detach(refs)
 
     def rf_anchor(self, number: int) -> tuple[object, ...] | None:
         pane = self._panes.get(number)
@@ -526,6 +567,10 @@ class IndependentPaneBoardV2(QWidget):
         paired_sweep = prepared.bundle.paired_sweep
         paired = paired_capture is not None or paired_sweep is not None
         resource_id = binding.physical_stream_resource_id
+        if resource_id in self._ui_stop_pending_resources:
+            # Consume a queued Qt delivery while the off-Qt Stop handoff owns
+            # its exact refs. The later conditional ledger ack is authoritative.
+            return True
         if ((resource_id in self._paired_resources) != paired
                 or not paired and resource_id in self._paired_visual_context
                 or paired_capture is not None and binding.measurement_mode is not CaptureMeasurementMode.RTBW

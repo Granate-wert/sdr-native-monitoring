@@ -115,10 +115,14 @@ class WaterfallPane(QWidget):
         self._graphics_terminal_ownership: PlotTerminalOwnership | None = None
         self._graphics_state_disconnected = False
         self._delivery_stage_callback = None
+        self._delivery_stage_observer: Callable[[PaneDeliveryObligationRef], PaneDeliveryStage | None] | None = None
         self._paint_return_callback: PaintReturnCallback | None = None
         self._waterfall_delivery_ref: PaneDeliveryObligationRef | None = None
         self._waterfall_delivery_scheduled = False
         self._waterfall_delivery_returned = False
+        self._ui_stop_detached_refs: tuple[PaneDeliveryObligationRef, ...] = ()
+        self._ui_stop_pending = False
+        self._delivery_custody_generation = 0
         self._closed_waterfall_graph: str | None = None
         self._closed_waterfall_sequence = 0
         self._x_syncing = False
@@ -430,6 +434,11 @@ class WaterfallPane(QWidget):
     def set_delivery_stage_callback(self, callback) -> None:
         self._delivery_stage_callback = callback
 
+    def set_delivery_stage_observer(
+        self, observer: Callable[[PaneDeliveryObligationRef], PaneDeliveryStage | None] | None,
+    ) -> None:
+        self._delivery_stage_observer = observer
+
     def stop_delivery_custody(self, refs: tuple[PaneDeliveryObligationRef, ...] | None = None) -> None:
         ref = self._waterfall_delivery_ref
         if ref is not None and (refs is None or ref in refs):
@@ -439,24 +448,76 @@ class WaterfallPane(QWidget):
             self._waterfall_delivery_scheduled = False
             self._waterfall_delivery_returned = False
 
+    def begin_ui_stop_detach(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        self._ui_stop_detached_refs = tuple(refs)
+
+    def set_ui_stop_pending(self, pending: bool) -> None:
+        self._delivery_custody_generation += 1
+        self._ui_stop_pending = pending
+        if not pending:
+            self._ui_stop_detached_refs = ()
+
+    def finish_ui_stop_detach(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        if self._ui_stop_detached_refs == refs:
+            self._ui_stop_detached_refs = ()
+
+    def detach_delivery_custody(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
+        """Detach exact product Stop refs without reporting ledger stages."""
+        self.begin_ui_stop_detach(refs)
+        for ref in refs:
+            if self._waterfall_delivery_ref is ref:
+                self._waterfall_delivery_ref = None
+                self._waterfall_delivery_scheduled = False
+                self._waterfall_delivery_returned = False
+
     def delivery_requires_ui_rejection(self, ref: PaneDeliveryObligationRef) -> bool:
-        if ref == self._waterfall_delivery_ref:
+        if self._ui_stop_pending:
             return False
+        if ref is self._waterfall_delivery_ref:
+            return False
+        if self._delivery_stage_observer is not None:
+            try:
+                generation = self._delivery_custody_generation
+                stage = self._delivery_stage_observer(ref)
+            except Exception:
+                return False
+            if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or stage is not PaneDeliveryStage.UI_ADMITTED):
+                return False
+            return self._waterfall_delivery_ref is not ref
         return not (ref.graph_instance_id == self._closed_waterfall_graph
                     and ref.sequence <= self._closed_waterfall_sequence)
 
     def _admit_waterfall_paint(self, ref: PaneDeliveryObligationRef | None) -> None:
         if ref is not None and ref.view is not PaneDeliveryView.WATERFALL:
             raise ValueError("Waterfall canvas cannot claim another pane view")
-        if (ref is not None and ref.graph_instance_id == self._closed_waterfall_graph
-                and ref.sequence == self._closed_waterfall_sequence):
-            # A completed obligation stays closed across fresh line objects;
-            # only a genuinely newer sequence in this graph may be painted.
+        if self._ui_stop_pending or any(ref is item for item in self._ui_stop_detached_refs):
+            return
+        observer = self._delivery_stage_observer
+        if ref is not None and observer is not None:
+            try:
+                generation = self._delivery_custody_generation
+                current = self._waterfall_delivery_ref
+                stage = observer(ref)
+                if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                        or current is not self._waterfall_delivery_ref):
+                    return
+            except Exception:
+                return
+            if stage is not PaneDeliveryStage.UI_ADMITTED and not (
+                    ref is self._waterfall_delivery_ref
+                    and self._waterfall_delivery_scheduled
+                    and stage is PaneDeliveryStage.PAINT_SCHEDULED):
+                return
+        elif (ref is not None and ref.graph_instance_id == self._closed_waterfall_graph
+              and ref.sequence <= self._closed_waterfall_sequence):
+            # Legacy standalone panes retain their local high-water fence;
+            # composed product panes use the exact-stage observer above.
             return
         previous = self._waterfall_delivery_ref
-        if previous == ref and (self._waterfall_delivery_scheduled or self._waterfall_delivery_returned):
+        if previous is ref and (self._waterfall_delivery_scheduled or self._waterfall_delivery_returned):
             return
-        if previous is not None and previous != ref and not self._waterfall_delivery_returned:
+        if previous is not None and previous is not ref and not self._waterfall_delivery_returned:
             self._report_waterfall_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
         self._waterfall_delivery_ref = ref
         self._waterfall_delivery_scheduled = ref is not None
@@ -515,7 +576,7 @@ class WaterfallPane(QWidget):
         if not isinstance(receipt, PanePaintReturnReceipt):
             return
         original_ref = receipt.ref
-        if original_ref != self._waterfall_delivery_ref or self._waterfall_delivery_returned:
+        if original_ref is not self._waterfall_delivery_ref or self._waterfall_delivery_returned:
             return
         callback = self._paint_return_callback
         handled = False
@@ -525,7 +586,7 @@ class WaterfallPane(QWidget):
             except Exception:
                 handled = False
         self._remember_waterfall_delivery_ref(original_ref)
-        if original_ref != self._waterfall_delivery_ref:
+        if original_ref is not self._waterfall_delivery_ref:
             return
         self._waterfall_delivery_returned = True
         if not handled:

@@ -55,6 +55,7 @@ class PaneProductSessionHandle:
                 for value in labels.values())):
             raise ValueError("pane display labels require selected, bounded source facts")
         self.source_labels = labels
+        self.observe_delivery_stage = session.pane_delivery_stage_if_retained
         def report(ref: PaneDeliveryObligationRef | None, stage: PaneDeliveryStage) -> None:
             if ref is None:
                 return
@@ -72,6 +73,20 @@ class PaneProductSessionHandle:
         self._applied = False
         self._shutdown = False
         self._rf_presentation_pending = False
+        self._ui_stop_pending_resources: set[str] = set()
+
+    def set_ui_stop_pending(self, resource_id: str, pending: bool) -> None:
+        if (type(pending) is not bool or not isinstance(resource_id, str)
+                or self.layout.schedule is None or resource_id not in {
+                    item.physical_stream_resource_id for item in self.layout.schedule.resources}):
+            raise ValueError("UI Stop gate requires one exact resource")
+        if pending:
+            self._ui_stop_pending_resources.add(resource_id)
+        else:
+            self._ui_stop_pending_resources.discard(resource_id)
+
+    def ui_stop_pending(self, resource_id: str) -> bool:
+        return resource_id in self._ui_stop_pending_resources
 
     def set_rf_presentation_pending(self, pending: bool) -> None:
         """Qt preview/receipt gate only; it neither claims nor controls hardware."""
@@ -109,8 +124,8 @@ class PaneProductSessionHandle:
         return preview
 
     def can_close(self) -> bool:
-        if (self._rf_presentation_pending or self.session.retained_resource_count
-                or self.pump.control_pending()):
+        if (self._rf_presentation_pending or self._ui_stop_pending_resources
+                or self.session.retained_resource_count or self.pump.control_pending()):
             return False
         return not self.pump.activated or all(
             item.phase is PanePumpPhase.STOPPED for item in self.pump.snapshot())
@@ -154,6 +169,8 @@ class PaneProductSessionHandle:
         if (not isinstance(preview, PaneRfChangePreview)
                 or self.rf_context is not preview.proposal.expected_context or self._shutdown):
             raise PaneUserPlanError("RF impact preview is stale")
+        if self.ui_stop_pending(preview.proposal.physical_stream_resource_id):
+            raise PaneUserPlanError("RF Apply requires the complete UI Stop acknowledgement")
 
         def commit() -> None:
             # Paired Sweep Start requires an exact stopped applied profile.

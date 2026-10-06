@@ -91,8 +91,12 @@ class IndependentPaneFailureTests(unittest.TestCase):
                 for serial in ts.serials:
                     serial.close_error = False
                 if prepared is not None and not prepared.handle.shutdown_complete:
-                    for future in prepared.handle.pump.stop_all().values():
-                        future.result(timeout=5)
+                    if ui is not None:
+                        ui._stop_all()
+                        self.wait(prepared.handle.can_close)
+                    else:
+                        for future in prepared.handle.pump.stop_all().values():
+                            future.result(timeout=5)
                     prepared.handle.shutdown_after_stop()
                 else:
                     pool.close()

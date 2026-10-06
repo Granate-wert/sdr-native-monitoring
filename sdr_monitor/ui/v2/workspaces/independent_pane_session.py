@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import Future
+from dataclasses import dataclass, replace
 from math import floor, isfinite
-from typing import Any
+from typing import Any, Literal
 from weakref import ref as weak_ref
 
 from PySide6.QtCore import QTimer, Qt, Signal
@@ -41,6 +42,20 @@ from .independent_pane_board import IndependentPaneBoardV2
 from .independent_pane_delivery import IndependentPaneDeliveryPort
 from .pane_failure_text import pane_failure_text
 from .rf_shift_dialog import RfImpactDialog, RfShiftEntryDialog, pane_rf_impact_summary, pane_rf_preview_text
+
+
+@dataclass(frozen=True, slots=True)
+class _UiStopHandoff:
+    resource_id: str
+    generation: int
+    handle: PaneProductSessionHandle
+    session: object
+    refs: tuple[PaneDeliveryObligationRef, ...] = ()
+    phase: Literal["stopping", "capturing", "captured", "detached", "ack_pending", "acked", "error"] = "stopping"
+    error: str | None = None
+    stop_future: Future[Any] | None = None
+    capture_future: Future[Any] | None = None
+    ack_future: Future[Any] | None = None
 
 
 class IndependentPaneSessionV2(QWidget):
@@ -73,6 +88,8 @@ class IndependentPaneSessionV2(QWidget):
         self._rf_cancelled = False
         self._rf_fault_resource: str | None = None
         self._rf_boundaries: dict[str, PaneActivation] = {}
+        self._ui_stop_generation: dict[str, int] = {}
+        self._ui_stop_handoffs: dict[str, _UiStopHandoff] = {}
         self.stop_boundary.connect(self._on_stop_boundary, Qt.ConnectionType.QueuedConnection)
         schedule = handle.layout.schedule
         assert schedule is not None  # The applied product handle requires a nonempty plan.
@@ -129,6 +146,7 @@ class IndependentPaneSessionV2(QWidget):
         self.board = IndependentPaneBoardV2(
             handle.preparer, source_labels=handle.source_labels,
             stage_callback=handle.report_delivery_stage,
+            stage_observer=handle.observe_delivery_stage,
             paint_return_callback=handle.report_paint_return, parent=self.board_scroll)
         self.board_scroll.setWidget(self.board)
         self.board.selected_slot_changed.connect(self._refresh)
@@ -176,6 +194,8 @@ class IndependentPaneSessionV2(QWidget):
                 or self._terminal_released or selected[1] == self._rf_fault_resource):
             return
         resource_id = selected[1]
+        if self.handle.ui_stop_pending(resource_id):
+            return
         if resource_id not in self.handle.pump.startable_resource_ids():
             return
         if resource_id in self.handle.preparer.paired_resource_ids:
@@ -184,6 +204,7 @@ class IndependentPaneSessionV2(QWidget):
                 return
             if (self._terminal_released or self._rf_phase is not None
                     or resource_id == self._rf_fault_resource
+                    or self.handle.ui_stop_pending(resource_id)
                     or resource_id not in self.handle.pump.startable_resource_ids()):
                 return
         self._error_key = None
@@ -197,7 +218,8 @@ class IndependentPaneSessionV2(QWidget):
         if self._rf_phase is not None or self._terminal_released:
             return
         startable = tuple(item for item in self.handle.pump.startable_resource_ids()
-                          if item != self._rf_fault_resource)
+                          if item != self._rf_fault_resource
+                          and not self.handle.ui_stop_pending(item))
         if not startable:
             return
         impact = self._paired_start_impact(startable)
@@ -208,7 +230,8 @@ class IndependentPaneSessionV2(QWidget):
             # of resources, especially a pair that was not in its summary.
             if (self._terminal_released or self._rf_phase is not None
                     or startable != tuple(item for item in self.handle.pump.startable_resource_ids()
-                                          if item != self._rf_fault_resource)):
+                                          if item != self._rf_fault_resource
+                                          and not self.handle.ui_stop_pending(item))):
                 return
         self._error_key = None
         try:
@@ -231,22 +254,28 @@ class IndependentPaneSessionV2(QWidget):
             # approved RF change. Stop of the target outranks the chain.
             if preview is None or preview.proposal.physical_stream_resource_id == selected[1]:
                 self._cancel_rf_change()
+            if self._begin_ui_stop_handoff(selected[1]) is None:
+                return
             _, future = self.handle.pump.stop_selected(selected[0], acknowledge_shared=True)
             self._watch_stop_boundary(future, selected[1])
             self._futures.append(future)
         except (RuntimeError, ValueError):
+            self._fail_ui_stop_handoff(selected[1], "Stop request failed")
             self._error_key = "analyzer.independent.operation_failed"
         self._refresh()
 
     def _stop_all(self) -> None:
         self._cancel_rf_change()
-        try:
-            futures = self.handle.pump.stop_all()
-            for resource_id, future in futures.items():
+        resources = tuple(item.physical_stream_resource_id for item in self.handle.pump.snapshot())
+        for resource_id in resources:
+            try:
+                if self._begin_ui_stop_handoff(resource_id) is None:
+                    continue
+                future = self.handle.pump.stop_resource(resource_id)
                 self._watch_stop_boundary(future, resource_id)
-            self._futures.extend(futures.values())
-        except (RuntimeError, ValueError):
-            self._error_key = "analyzer.independent.operation_failed"
+                self._futures.append(future)
+            except (RuntimeError, ValueError):
+                self._fail_ui_stop_handoff(resource_id, "Stop request failed")
         self._refresh()
 
     def _rf_eligible(self, number: int) -> bool:
@@ -258,6 +287,8 @@ class IndependentPaneSessionV2(QWidget):
         if slot.request is None:
             return False
         resource_id = self._pane_resources[slot.request.pane_id]
+        if self.handle.ui_stop_pending(resource_id):
+            return False
         state = next(item for item in self.handle.pump.snapshot()
                      if item.physical_stream_resource_id == resource_id)
         return (resource_id != self._rf_fault_resource
@@ -320,10 +351,14 @@ class IndependentPaneSessionV2(QWidget):
             else:
                 try:
                     self._rf_phase = "stop"
+                    if self._begin_ui_stop_handoff(preview.proposal.physical_stream_resource_id) is None:
+                        raise RuntimeError("UI Stop handoff is already pending")
                     self._rf_future = self.handle.stop_for_rf_shift(preview)
                     self._watch_stop_boundary(
                         self._rf_future, preview.proposal.physical_stream_resource_id)
                 except (RuntimeError, ValueError):
+                    self._fail_ui_stop_handoff(preview.proposal.physical_stream_resource_id,
+                                               "RF Stop request failed")
                     self._error_key = "analyzer.rf.refused"
                     self._finish_rf_change()
             self._refresh()
@@ -392,6 +427,10 @@ class IndependentPaneSessionV2(QWidget):
                 self._show_rf_preview(result)
             elif phase == "stop":
                 assert preview is not None
+                resource_id = preview.proposal.physical_stream_resource_id
+                if self.handle.ui_stop_pending(resource_id):
+                    self._rf_phase = "stop_wait"
+                    return
                 self._rf_phase = "apply"
                 self._rf_future = self.handle.apply_rf_shift(preview)
             elif phase == "apply" and preview is not None and preview.resource.restart_required:
@@ -408,30 +447,158 @@ class IndependentPaneSessionV2(QWidget):
         if self._close_layout is not None and self.handle.can_close():
             self._close_layout(self.handle)
 
+    def _begin_ui_stop_handoff(self, resource_id: str) -> _UiStopHandoff | None:
+        previous = self._ui_stop_handoffs.get(resource_id)
+        if previous is not None and previous.phase != "error":
+            stopped = previous.stop_future
+            if stopped is None or not stopped.done() or stopped.exception() is None:
+                return None  # Keep an in-progress obligation; only explicit failed attempts retry.
+        generation = self._ui_stop_generation.get(resource_id, 0) + 1
+        self._ui_stop_generation[resource_id] = generation
+        token = _UiStopHandoff(resource_id, generation, self.handle, self.handle.session)
+        self._ui_stop_handoffs[resource_id] = token
+        self.handle.set_ui_stop_pending(resource_id, True)
+        self.board.set_ui_stop_pending(resource_id, True)
+        return token
+
+    def _fail_ui_stop_handoff(self, resource_id: str, error: str) -> None:
+        token = self._ui_stop_handoffs.get(resource_id)
+        if token is not None:
+            self._ui_stop_handoffs[resource_id] = replace(token, phase="error", error=error[:512])
+        self._error_key = "analyzer.independent.operation_failed"
+
     def _watch_stop_boundary(self, future: Future[Any], resource_id: str) -> None:
         owner_ref = weak_ref(self)
+        token = self._ui_stop_handoffs.get(resource_id) if hasattr(self, "_ui_stop_handoffs") else None
+        if token is not None:
+            token = replace(token, stop_future=future)
+            self._ui_stop_handoffs[resource_id] = token
+
+        def emit(payload: _UiStopHandoff) -> None:
+            owner = owner_ref()
+            if owner is not None:
+                try:
+                    owner.stop_boundary.emit(payload)
+                except RuntimeError:
+                    # A deleted QObject cannot acknowledge. The handle gate remains pending.
+                    return
 
         def completed(result: Future[Any]) -> None:
             try:
-                if result.exception() is not None:
-                    return
                 owner = owner_ref()
                 if owner is None:
                     return
-                snapshot = owner.handle.session.pane_delivery_ledger_snapshot()
-                refs = tuple(record.ref for record in snapshot.records
-                             if record.stage in {PaneDeliveryStage.QUEUE_DRAINED,
-                                                 PaneDeliveryStage.UI_ADMITTED,
-                                                 PaneDeliveryStage.PAINT_SCHEDULED}
-                             and record.ref.identity.physical_stream_resource_id == resource_id)
-                owner.stop_boundary.emit(refs)
-            except Exception:
-                # A cached-ledger read or a late deleted QObject is telemetry
-                # only; it must not perturb the already-completed Stop future.
-                return
+                # Standalone legacy tests and two-argument callback hosts do
+                # not construct a product Stop handoff. Preserve their
+                # cached-ledger boundary contract; the composed product path
+                # below always has an exact generation token.
+                if not hasattr(owner, "_ui_stop_handoffs"):
+                    if result.exception() is not None:
+                        return
+                    snapshot = owner.handle.session.pane_delivery_ledger_snapshot()
+                    refs = tuple(record.ref for record in snapshot.records
+                                 if record.stage in {PaneDeliveryStage.QUEUE_DRAINED,
+                                                     PaneDeliveryStage.UI_ADMITTED,
+                                                     PaneDeliveryStage.PAINT_SCHEDULED}
+                                 and record.ref.identity.physical_stream_resource_id == resource_id)
+                    owner.stop_boundary.emit(refs)
+                    return
+                if token is None:
+                    return
+                current = owner._ui_stop_handoffs.get(resource_id)
+                if (current is None or current.generation != token.generation
+                        or owner.handle is not token.handle or owner.handle.session is not token.session):
+                    return
+                if result.exception() is not None:
+                    emit(replace(token, phase="error", error="Stop did not reach a terminal worker state"))
+                    return
+                capture = token.handle.pump.capture_ui_stop_refs(resource_id)
+                emit(replace(token, phase="capturing", capture_future=capture))
+
+                def captured(done: Future[Any]) -> None:
+                    try:
+                        refs = tuple(done.result())
+                        if len(refs) > 256 or any(not isinstance(ref, PaneDeliveryObligationRef)
+                                or ref.identity.physical_stream_resource_id != resource_id for ref in refs):
+                            raise RuntimeError("UI Stop capture returned an invalid obligation reference")
+                        emit(replace(token, refs=refs, phase="captured", capture_future=capture))
+                    except Exception as exc:
+                        emit(replace(token, phase="error", error=str(exc)))
+                capture.add_done_callback(captured)
+            except Exception as exc:
+                if token is not None:
+                    emit(replace(token, phase="error", error=str(exc)))
         future.add_done_callback(completed)
 
     def _on_stop_boundary(self, payload: object) -> None:
+        if isinstance(payload, _UiStopHandoff):
+            current = self._ui_stop_handoffs.get(payload.resource_id)
+            if (current is None or current.generation != payload.generation
+                    or payload.handle is not self.handle or payload.session is not self.handle.session
+                    or current.handle is not payload.handle or current.session is not payload.session):
+                return
+            if payload.phase == "error":
+                self._fail_ui_stop_handoff(payload.resource_id, payload.error or "UI Stop handoff failed")
+                self._refresh()
+                return
+            if payload.phase == "capturing" and current.phase == "stopping":
+                self._ui_stop_handoffs[payload.resource_id] = payload
+                return
+            if payload.phase == "captured":
+                if current.phase not in {"stopping", "capturing"}:
+                    return
+                try:
+                    self.board.detach_ui_stop_refs(payload.refs)
+                    self._ui_stop_handoffs[payload.resource_id] = replace(payload, phase="detached")
+                    reconcile = self.handle.pump.reconcile_ui_stop_cleared(
+                        payload.resource_id, payload.refs)
+                    self._ui_stop_handoffs[payload.resource_id] = replace(
+                        payload, phase="ack_pending", ack_future=reconcile)
+                    owner_ref = weak_ref(self)
+
+                    def reconciled(done: Future[Any]) -> None:
+                        try:
+                            tuple(done.result())
+                            owner = owner_ref()
+                            if owner is not None:
+                                owner.stop_boundary.emit(replace(payload, phase="acked"))
+                        except Exception as exc:
+                            owner = owner_ref()
+                            if owner is not None:
+                                try:
+                                    owner.stop_boundary.emit(replace(payload, phase="error", error=str(exc)))
+                                except RuntimeError:
+                                    pass  # Deleted Qt owner leaves the handle gate pending.
+                    reconcile.add_done_callback(reconciled)
+                except Exception as exc:
+                    self._error_key = "analyzer.independent.operation_failed"
+                    self.stop_boundary.emit(replace(payload, phase="error", error=str(exc)))
+                return
+            if payload.phase == "acked":
+                if current.phase != "ack_pending":
+                    return
+                try:
+                    self.board.finish_ui_stop_detach(payload.refs)
+                except Exception as exc:
+                    self._fail_ui_stop_handoff(payload.resource_id, str(exc))
+                    self._refresh()
+                    return
+                self._ui_stop_handoffs.pop(payload.resource_id, None)
+                self.board.set_ui_stop_pending(payload.resource_id, False)
+                self.handle.set_ui_stop_pending(payload.resource_id, False)
+                if (self._rf_phase == "stop_wait" and self._rf_preview is not None
+                        and self._rf_preview.proposal.physical_stream_resource_id == payload.resource_id):
+                    try:
+                        self._rf_phase = "apply"
+                        self._rf_future = self.handle.apply_rf_shift(self._rf_preview)
+                    except (RuntimeError, ValueError):
+                        self._error_key = "analyzer.rf.refused"
+                        self._finish_rf_change()
+                self._refresh()
+                return
+            return
+        if hasattr(self, "_ui_stop_handoffs"):
+            return  # Untyped legacy payloads cannot detach a composed product session.
         if not isinstance(payload, tuple) or any(
                 not isinstance(ref, PaneDeliveryObligationRef) for ref in payload):
             return
@@ -645,11 +812,15 @@ class IndependentPaneSessionV2(QWidget):
         selected = self._selected_resource()
         selected_phase = None if selected is None else states[selected[1]]
         startable = (() if self._rf_phase is not None else tuple(
-            item for item in self.handle.pump.startable_resource_ids() if item != self._rf_fault_resource))
+            item for item in self.handle.pump.startable_resource_ids()
+            if item != self._rf_fault_resource and not self.handle.ui_stop_pending(item)))
         self.start_selected.setEnabled(selected is not None and selected[1] in startable)
-        self.stop_selected.setEnabled(selected_phase is not None and selected_phase is not PanePumpPhase.STOPPED)
+        self.stop_selected.setEnabled(selected_phase is not None and (
+            selected_phase is not PanePumpPhase.STOPPED
+            or selected is not None and self.handle.ui_stop_pending(selected[1])))
         self.start_all.setEnabled(bool(startable))
-        self.stop_all.setEnabled(any(phase is not PanePumpPhase.STOPPED for phase in states.values()))
+        self.stop_all.setEnabled(bool(self._ui_stop_handoffs)
+                                or any(phase is not PanePumpPhase.STOPPED for phase in states.values()))
         # can_close() also checks retained session state under its control lock.
         # While a Start/Stop future is pending (or any resource is not stopped),
         # Close is necessarily unavailable, so do not make the GUI thread wait
@@ -670,7 +841,8 @@ class IndependentPaneSessionV2(QWidget):
         summary = text("analyzer.independent.summary", running=running, starting=starting,
                        failed=failed, stopped=stopped)
         if self._rf_phase is not None:
-            summary += " · " + text("analyzer.rf.phase." + self._rf_phase)
+            summary += " · " + text("analyzer.rf.phase." + (
+                "stop" if self._rf_phase == "stop_wait" else self._rf_phase))
         if self.status.text() != summary:
             self.status.setText(summary)
         scope = text("analyzer.independent.timing.scope")
@@ -736,6 +908,7 @@ class IndependentPaneSessionV2(QWidget):
         if failures:
             detail = "\n".join(failures)
         elif (self._error_key == "analyzer.independent.operation_failed"
+                and not self._ui_stop_handoffs
                 and not waiting and any(item.first_failure is not None for item in snapshots.values())
                 and all(phase in {PanePumpPhase.RUNNING, PanePumpPhase.STOPPED} for phase in states.values())):
             # Successful explicit cleanup leaves history in the pane tooltip,
@@ -778,6 +951,8 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: {col
             return
         if not self.handle.shutdown_complete:
             raise RuntimeError("independent pane owner has not confirmed terminal shutdown")
+        if self._ui_stop_handoffs:
+            raise RuntimeError("independent pane UI Stop handoff is still pending")
         self._state_timer.stop()
         self.delivery.stop()
         for slot in self.handle.layout.slots:
