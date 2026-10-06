@@ -64,6 +64,7 @@ from .native_paired_live import pair_performance, pair_publication
 from .ad936x_identity_admission import create_identity_bound_owner, normalized_pluto_serial
 from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from ..domain.pluto_route_intent import PlutoOperationalRouteIntent
+from ..domain.pluto_usb_alias import PlutoUsbAliasWitness
 from .ad936x_capability_adapter import (
     AD936X_LIBIIO_ADAPTER_ID, Ad936xCapabilityObservationError, Ad936xLibiioCapabilityAdapter,
 )
@@ -225,6 +226,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._native_uri: str | None = None
         self._operational_route_pin: tuple[PlutoOperationalRouteIntent, str, str | None,
                                           PlutoUsbConnectionExpectation | None] | None = None
+        self._operational_usb_alias: PlutoUsbAliasWitness | None = None
         self._engine: Any | None = None
         self._poller: threading.Thread | None = None
         self._paired_request: PairedLiveRequest | None = None
@@ -473,6 +475,73 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     raise LiveAdmissionRejected("explicit operational route binding changed")
                 self._require_operational_route_pin()
 
+    def observe_operational_usb_alias(self, connection: PlutoUsbConnectionExpectation) -> PlutoUsbAliasWitness:
+        """Read stopped known IP owner's USB alias via SAME temporary observer.
+
+        No stream/configure/second acquisition owner. Failed read or release
+        revokes old evidence, with observer cleanup retained by existing rules.
+        """
+        if not isinstance(connection, PlutoUsbConnectionExpectation):
+            raise TypeError("operational USB alias requires typed observed connection")
+        with self._recording_transaction_lock:
+            self._require_route_selection_idle()
+            self._require_operational_route_pin()
+            self._operational_usb_alias = None
+            witness = self._read_operational_usb_alias(connection)
+            self._operational_usb_alias = witness
+            return witness
+
+    def _read_operational_usb_alias(self, connection: PlutoUsbConnectionExpectation) -> PlutoUsbAliasWitness:
+        pin, device = self._operational_route_pin, self._snapshot.device
+        if (pin is None or not pin[0].uri.startswith("ip:") or pin[2] is None
+                or pin[3] is not None or device is None or device.calibration_identity is None
+                or normalized_pluto_serial(connection.usb_serial) != pin[2]):
+            raise LiveAdmissionRejected("USB alias needs the SAME selected known IP identity")
+        uri = f"usb:{connection.bus}.{connection.device_address}.{connection.interface_number}"
+        observation = self._observation_owner.observe(uri, expected_serial=pin[2],
+                                                       expected_usb_connection=connection)
+        actual = PlutoUsbConnectionExpectation.from_probe(observation.probe)
+        mapped = Ad936xLibiioCapabilityAdapter.map_observation(observation, uri)
+        topology = _domain_receiver_topology(observation.topology, observation.probe, mapped.snapshot.identity_key)
+        if actual != connection or mapped.calibration_identity != device.calibration_identity or topology is None:
+            raise LiveAdmissionRejected("USB alias differs from the selected IP observation")
+        return PlutoUsbAliasWitness(pin[1], pin[0], actual, mapped.calibration_identity, mapped.snapshot, topology)
+
+    def validate_operational_usb_alias(self, witness: PlutoUsbAliasWitness) -> None:
+        """Exact retained receipt only; pure cached check on control paths."""
+        with self._recording_transaction_lock, self._lock:
+            self._require_operational_route_pin()
+            device = self._snapshot.device
+            if (not isinstance(witness, PlutoUsbAliasWitness) or self._operational_usb_alias is not witness
+                    or device is None or witness.source_id != device.device_id
+                    or witness.calibration_identity != device.calibration_identity
+                    or self._observation_owner.cleanup_pending or self._stream_release_failed):
+                raise LiveAdmissionRejected("USB alias observation is no longer admitted; prepare a new plan")
+
+    def refresh_operational_usb_alias(self, witness: PlutoUsbAliasWitness) -> None:
+        """Explicit all-resource Apply preflight, BEFORE any staged mutation."""
+        with self._recording_transaction_lock:
+            self.validate_operational_usb_alias(witness)
+            self._refresh_operational_usb_alias()
+
+    def _refresh_operational_usb_alias(self) -> None:
+        """Fresh read BEFORE stopped RF transitions, never an active RX probe.
+
+        Retain SAME receipt if all observed facts still match. Any failed or
+        changed observation revokes it; no retry/fallback/serial invention.
+        """
+        witness = self._operational_usb_alias
+        if witness is None:
+            return
+        self._require_route_selection_idle()
+        try:
+            self.validate_operational_usb_alias(witness)
+            if self._read_operational_usb_alias(witness.connection) != witness:
+                raise LiveAdmissionRejected("USB alias topology or capability changed")
+        except Exception:
+            self._operational_usb_alias = None
+            raise LiveAdmissionRejected("fresh USB/IP alias observation did not confirm; prepare a new plan") from None
+
     def _require_operational_route_pin(self) -> None:
         with self._lock:
             if self._operational_route_pin is None:
@@ -590,6 +659,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     def _apply_configuration_unlocked(self, requested: LiveConfiguration) -> LiveSnapshot:
         self._require_operational_route_pin()
+        self._refresh_operational_usb_alias()
         log_event(
             _LOGGER,
             "configuration",
@@ -754,6 +824,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     "Live session is already started",
                     kind=LiveErrorKind.INTERNAL,
                 )
+            self._refresh_operational_usb_alias()
             requested = prepared.applied.applied
             device = prepared.device
             if device is None:
@@ -1283,6 +1354,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             self._require_operational_route_pin()
             if self._snapshot.state is _error_state() or self._sweep_lease_active:
                 raise RuntimeError("explicit Stop is required before staging paired RTBW")
+            self._refresh_operational_usb_alias()
             if self._native_recording_armed is not None or self._native_recording_active is not None:
                 raise RuntimeError("stop/unarm single-receiver recording before paired RTBW")
             if not isinstance(request, PairedLiveRequest):
@@ -1362,6 +1434,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                                      or self._stream_release_failed or self._observation_owner.cleanup_pending)
                 if snapshot.state is _running_state() or owner_present:
                     raise RuntimeError("stop Live before acquiring the native sweep lease")
+                self._refresh_operational_usb_alias()
                 if recording_active or recording_armed:
                     raise RuntimeError("native RTBW recording must be stopped/unarmed before Sweep")
                 if uri is None or snapshot.device is None or snapshot.applied is None:
@@ -2595,6 +2668,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
     def _clear_selected_route(self) -> None:
         self._observation_owner.close()
         self._operational_route_pin = None
+        self._operational_usb_alias = None
         self._native_uri = None
         self._paired_request = None
         self._paired_publication = None

@@ -5,12 +5,14 @@ from collections.abc import Mapping, Set
 
 from ..domain.device_capabilities import DeviceFamily
 from ..domain.pluto_connection import PlutoUsbConnectionExpectation, normalized_pluto_serial
+from ..domain.pluto_usb_alias import PlutoUsbAliasWitness
 
 
 def validate_parallel_receiver_identity(
     source_ids: Set[str], identities: Mapping[str, str | None],
     families: Mapping[str, DeviceFamily],
     usb_connections: Mapping[str, PlutoUsbConnectionExpectation | None] | None = None,
+    usb_alias_witnesses: Mapping[str, PlutoUsbAliasWitness] | None = None,
 ) -> None:
     """Reject aliases/unresolved same-family sources without touching hardware.
 
@@ -18,6 +20,8 @@ def validate_parallel_receiver_identity(
     close. Each accepted USB owner must also confirm its expectation before RF.
     This validator cannot certify native capability, liveness or cross-process
     ownership, and cannot establish USB/IP equivalence for an unknown serial.
+    A known IP source may supply a separately owner-admitted, fresh USB alias.
+    Callers must keep its selection/revision and native witness admission alive.
     """
     if identities.keys() != source_ids or any(
         key is not None and (not isinstance(key, str) or not key.startswith("sha256:")
@@ -29,9 +33,12 @@ def validate_parallel_receiver_identity(
     if len(set(known)) != len(known):
         raise ValueError("two operational sources alias one physical receiver")
     connections = dict(usb_connections or {})
+    aliases = dict(usb_alias_witnesses or {})
+    if not aliases.keys() <= source_ids:
+        raise ValueError("USB alias witnesses have an unknown parallel source")
     if not connections.keys() <= source_ids:
         raise ValueError("USB observations have an unknown parallel source")
-    if connections or any(key is None for key in identities.values()):
+    if connections or aliases or any(key is None for key in identities.values()):
         if families.keys() != source_ids or any(not isinstance(family, DeviceFamily) for family in families.values()):
             raise ValueError("parallel receiver families must match every selected source")
     for source_id, connection in connections.items():
@@ -40,10 +47,20 @@ def validate_parallel_receiver_identity(
         if families[source_id] is not DeviceFamily.AD936X or not isinstance(connection, PlutoUsbConnectionExpectation):
             raise ValueError("parallel Pluto USB observations must be typed AD936x facts")
         connection.__post_init__()
+    for source_id, witness in aliases.items():
+        if (families[source_id] is not DeviceFamily.AD936X
+                or not isinstance(witness, PlutoUsbAliasWitness)
+                or witness.source_id != source_id or connections.get(source_id) is not None
+                or identities[source_id] != witness.calibration_identity.device_identity_key):
+            raise ValueError("USB alias witness differs from its known IP source")
+        witness.__post_init__()
+    # Separate exclusion observations, NEVER acquisition USB expectations on IP.
+    distinct_connections = dict(connections)
+    distinct_connections.update({source: witness.connection for source, witness in aliases.items()})
     sources = sorted(source_ids)
     for index, left in enumerate(sources):
         for right in sources[index + 1:]:
-            a, b = connections.get(left), connections.get(right)
+            a, b = distinct_connections.get(left), distinct_connections.get(right)
             if a is not None and b is not None:
                 if ((a.bus, a.device_address) == (b.bus, b.device_address)
                         or (normalized_pluto_serial(a.usb_serial) is not None

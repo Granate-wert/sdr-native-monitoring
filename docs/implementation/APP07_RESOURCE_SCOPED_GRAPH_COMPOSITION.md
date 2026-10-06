@@ -6254,3 +6254,39 @@ Static/current EXE, main user product work and system settings are unchanged.
 Root only this increment; historical Luna/Sol UI reviews are not backend079
 approval. APP-07/M8 remains PARTIAL/H02 TODO/full APP-00…APP-14 goal ACTIVE;
 visible/DPI/DWM, paired RF, performance/soak and whole release remain open.
+
+## M8-080 — bounded USB/IP alias exclusion (implementation contract)
+
+The explicit known IP owner may now retain a separate immutable USB alias
+witness copied by its SAME existing read-only observer after successful
+disconnect. The witness requires a known serial agreeing with the selected IP
+canonical identity, matching firmware/adapter, exact USB connection facts and
+copied USB capability/topology. It is NOT a USB acquisition expectation on the
+Ethernet engine and never gives an unknown-serial source a stable identity.
+
+For an unknown-serial USB source alongside this known IP source, Stage requires
+the known source's freshly discovered USB connection and a new stopped-owner
+observation. Both source assignment orders are supported. Duplicate canonical
+identities, USB device addresses (even different interfaces), serial aliases,
+missing evidence and unknown IP still refuse. Distinct USB-only and independent
+family cases keep their established rules. The pure validator does not itself
+prove provenance: product composition validates the SAME retained native witness
+and source-selection lifetime, not a caller boolean or reconstructed receipt.
+
+Initial Apply validates all retained selections/routes. Both AD capture owners
+retain a pure immutable peer-selection guard, without cross-owner hardware
+locks. The known IP control re-observes the USB witness before stopped Apply,
+Start, paired staging and Sweep lease acquisition. Changed readback/topology or
+failed observation/release revokes the witness; stale plans cannot restart it.
+Acquisition still uses the selected IP route and its native expected serial;
+the unknown USB owner still uses its SAME-context USB expectation before RF.
+Stop/cleanup is not conditional on witness validity and remains explicitly
+retryable after an uncertain observer release. No new acquisition context,
+IQ path, FFT/DSP/queue/quality/time policy or UI widget is introduced.
+
+This is bounded admission, not physical uniqueness against serial/firmware
+clones, an undetectable identical same-port swap, external application locks,
+link throughput or RF accuracy. A missing/disconnected known USB alias cannot
+be replaced by a display name, stored address or invented serial. Current
+physical 2x2, rotations, actual Windows screenshots, per-view performance and
+release qualification remain to be established on the matching new build.

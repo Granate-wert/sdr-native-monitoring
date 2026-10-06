@@ -13,6 +13,8 @@ import threading
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from ..domain.pluto_route_intent import PlutoOperationalRouteIntent
+from ..domain.pluto_connection import PlutoUsbConnectionExpectation
+from ..domain.pluto_usb_alias import PlutoUsbAliasWitness
 
 from ..domain import (
     CalibrationApplicability,
@@ -60,6 +62,15 @@ class PlutoOperationalRouteOwner(Protocol):
 
     def bind_operational_route(self, intent: PlutoOperationalRouteIntent, *, source_id: str) -> None: ...
     def validate_operational_route(self, intent: PlutoOperationalRouteIntent, *, source_id: str) -> None: ...
+
+
+@runtime_checkable
+class PlutoUsbAliasOwner(Protocol):
+    """Optional stopped-owner observation; no alternate acquisition opener."""
+
+    def observe_operational_usb_alias(self, connection: PlutoUsbConnectionExpectation) -> PlutoUsbAliasWitness: ...
+    def validate_operational_usb_alias(self, witness: PlutoUsbAliasWitness) -> None: ...
+    def refresh_operational_usb_alias(self, witness: PlutoUsbAliasWitness) -> None: ...
 
 
 class SweepSdrService(Protocol):

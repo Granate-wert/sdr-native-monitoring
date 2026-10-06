@@ -22,7 +22,7 @@ from .ad936x_rtbw_pane_owner import (
     Ad936xRtbwPaneOwner, _KNOWN_DETECTORS, _KNOWN_WINDOWS, _REQUIRED_READBACK, _applied_covers_job,
 )
 from .pane_resource_session import PaneCaptureAdmission
-from .pluto_pane_route_admission import PlutoPaneRouteAdmission
+from .pluto_pane_route_admission import PlutoPaneRouteAdmission, PlutoPaneSelectionAdmission
 from .owner_journal_scope import capture_owner_scopes
 
 
@@ -34,7 +34,8 @@ class Ad936xPairedPaneOwner(Ad936xRtbwPaneOwner):
                  endpoints: tuple[ReceiverEndpoint, ...],
                  expected_selection: AnalyzerSourceSelection | None = None,
                  expected_snapshot: LiveSnapshot | None = None,
-                 route_admission: PlutoPaneRouteAdmission | None = None) -> None:
+                 route_admission: PlutoPaneRouteAdmission | None = None,
+                 selection_admission: PlutoPaneSelectionAdmission | None = None) -> None:
         endpoints = tuple(endpoints)
         if (len(endpoints) != 2 or any(not isinstance(item, ReceiverEndpoint) for item in endpoints)
                 or {item.selection for item in endpoints} != {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
@@ -46,7 +47,7 @@ class Ad936xPairedPaneOwner(Ad936xRtbwPaneOwner):
         self._endpoints = (by_chain[ReceiverChainSelection.RX1], by_chain[ReceiverChainSelection.RX2])
         super().__init__(live, physical_stream_resource_id=physical_stream_resource_id,
                          source_id=source_id, receiver_endpoint_id=self._endpoints[0].endpoint_id,
-                         route_admission=route_admission)
+                         route_admission=route_admission, selection_admission=selection_admission)
         before = live.current_snapshot()
         self._expected_snapshot = before if expected_snapshot is None else expected_snapshot
         self._expected_selection = live.current_source_selection() if expected_selection is None else expected_selection

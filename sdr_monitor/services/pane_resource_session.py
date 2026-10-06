@@ -38,6 +38,7 @@ from sdr_monitor.domain.pane_scheduler import (
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverEndpoint, SpectrumTraceEndpoint
 from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 from sdr_monitor.domain.pluto_connection import PlutoUsbConnectionExpectation
+from sdr_monitor.domain.pluto_usb_alias import PlutoUsbAliasWitness
 
 from .receiver_lease_manager import ReceiverLease, ReceiverLeaseManager
 from .pane_delivery_ledger import PaneDeliveryLedger
@@ -382,6 +383,7 @@ class PaneResourceSession:
         source_identity_keys: Mapping[str, str | None] | None = None,
         source_families: Mapping[str, DeviceFamily] | None = None,
         source_usb_connections: Mapping[str, PlutoUsbConnectionExpectation | None] | None = None,
+        source_usb_aliases: Mapping[str, PlutoUsbAliasWitness] | None = None,
         owner_factories: Mapping[str, Callable[[], PaneCaptureOwner]] | None = None,
         now_s: Callable[[], float] = monotonic,
     ) -> None:
@@ -461,7 +463,7 @@ class PaneResourceSession:
         if len(runtimes) > 1:
             try:
                 validate_parallel_receiver_identity(source_ids, dict(source_identity_keys or {}),
-                    dict(source_families or {}), source_usb_connections)
+                    dict(source_families or {}), source_usb_connections, source_usb_aliases)
             except ValueError as error:
                 raise PaneResourceError(str(error)) from None
         factories = dict(owner_factories or {})

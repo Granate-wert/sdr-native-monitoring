@@ -19,7 +19,7 @@ from .ad936x_rtbw_pane_owner import Ad936xRtbwPaneOwner
 from .ad936x_identity_admission import normalized_pluto_serial
 from .native_continuous_sweep_factory import NativeContinuousSweepPlanFactory
 from .pane_resource_session import PaneCaptureAdmission
-from .pluto_pane_route_admission import PlutoPaneRouteAdmission
+from .pluto_pane_route_admission import PlutoPaneRouteAdmission, PlutoPaneSelectionAdmission
 from ..domain.layer_journal import LayerJournalSnapshot
 from .pane_layer_admission import cached_layer_journals
 
@@ -30,7 +30,8 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
     def __init__(self, live: LiveSessionApplicationService, *,
                  physical_stream_resource_id: str, source_id: str,
                  endpoints: tuple[ReceiverEndpoint, ...],
-                 route_admission: PlutoPaneRouteAdmission | None = None) -> None:
+                 route_admission: PlutoPaneRouteAdmission | None = None,
+                 selection_admission: PlutoPaneSelectionAdmission | None = None) -> None:
         if (len(endpoints) != 2 or any(not isinstance(item, ReceiverEndpoint) for item in endpoints)
                 or {item.selection for item in endpoints} != {ReceiverChainSelection.RX1, ReceiverChainSelection.RX2}
                 or len({item.endpoint_id for item in endpoints}) != 2
@@ -40,7 +41,7 @@ class Ad936xPairedSweepPaneOwner(Ad936xRtbwPaneOwner):
         self._endpoints = tuple(sorted(endpoints, key=lambda item: item.selection.name))
         super().__init__(live, physical_stream_resource_id=physical_stream_resource_id,
                          source_id=source_id, receiver_endpoint_id=self._endpoints[0].endpoint_id,
-                         route_admission=route_admission)
+                         route_admission=route_admission, selection_admission=selection_admission)
         self._factory: NativeContinuousSweepPlanFactory | None = None
         self._coordinator: Any = None
         self._last_line: tuple[int, int] | None = None

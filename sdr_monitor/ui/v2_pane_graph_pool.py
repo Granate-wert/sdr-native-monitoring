@@ -10,17 +10,21 @@ operational routes are never accepted as proof of distinct physical devices.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import DeviceFamily
+from sdr_monitor.domain.live import LiveAdmissionRejected
 from sdr_monitor.domain.pluto_route_intent import PlutoOperationalRouteIntent
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
 from sdr_monitor.services.pane_resource_session import PaneResourceSession
 from sdr_monitor.services.parallel_receiver_identity import validate_parallel_receiver_identity
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
-from sdr_monitor.services.interfaces import PlutoOperationalRouteOwner
+from sdr_monitor.services.interfaces import PlutoOperationalRouteOwner, PlutoUsbAliasOwner
 from sdr_monitor.services.pluto_pane_route_admission import PlutoPaneRouteAdmission
+from sdr_monitor.domain.pluto_connection import PlutoUsbConnectionExpectation
+from sdr_monitor.domain.pluto_usb_alias import PlutoUsbAliasWitness
 
 from .v2_application_graph import V2AnalyzerApplicationGraph, build_v2_analyzer_application_graph
 from .v2_pane_composition import compose_v2_pane_resource_session
@@ -54,6 +58,8 @@ class PaneProductGraphPool:
         self._selections: dict[str, AnalyzerSourceSelection] = {}
         self._route_intents: dict[str, PlutoOperationalRouteIntent] = {}
         self._route_admissions: dict[str, PlutoPaneRouteAdmission] = {}
+        self._usb_candidates: dict[str, PlutoUsbConnectionExpectation] = {}
+        self._usb_aliases: dict[str, PlutoUsbAliasWitness] = {}
         self._cleanup_pending: dict[str, V2AnalyzerApplicationGraph] = {}
         self._session: PaneResourceSession | None = None
         self._closed = False
@@ -151,12 +157,20 @@ class PaneProductGraphPool:
             staged_choices = {prior.selected.device_id: prior.selected
                               for prior in self._selections.values() if prior.selected is not None}
             all_choices = (*staged_choices.values(), selected)
+            admissions = dict(self._route_admissions)
+            if operational_route is not None:
+                admissions[resource_id] = route_admission
+            candidates = dict(self._usb_candidates)
+            if discovered is not None and discovered.usb_connection is not None:
+                candidates[source_id] = discovered.usb_connection
+            aliases = self._observe_required_aliases(all_choices, admissions, candidates)
             source_ids = {item.device_id for item in all_choices}
             validate_parallel_receiver_identity(
                 source_ids,
                 {item.device_id: item.binding.identity_key for item in all_choices},
                 {item.device_id: item.family for item in all_choices},
                 {item.device_id: item.usb_connection for item in all_choices},
+                aliases,
             )
         except Exception:
             self._close_unstaged(resource_id, graph)
@@ -164,10 +178,48 @@ class PaneProductGraphPool:
         self._graphs[resource_id] = graph
         self._source_ids[resource_id] = source_id
         self._selections[resource_id] = selection
+        self._route_admissions = admissions
+        self._usb_candidates = candidates
+        self._usb_aliases = aliases
         if operational_route is not None:
             self._route_intents[resource_id] = operational_route
-            self._route_admissions[resource_id] = route_admission
         return selected
+
+    def _observe_required_aliases(self, choices: tuple[AnalyzerSourceChoice, ...],
+                                 admissions: dict[str, PlutoPaneRouteAdmission],
+                                 candidates: dict[str, PlutoUsbConnectionExpectation]) -> dict[str, PlutoUsbAliasWitness]:
+        """Only explicit known IP + unknown USB needs a fresh separate witness.
+
+        Both staging orders work. Observation uses the retained known owner's
+        existing read-only observer; no invented serial or Ethernet USB lease.
+        Missing USB evidence still refuses. Not a cross-process hardware lock.
+        """
+        aliases = dict(self._usb_aliases)
+        unknown_ad = any(item.family is DeviceFamily.AD936X and item.binding.identity_key is None
+                         for item in choices)
+        if not unknown_ad:
+            return aliases
+        for item in choices:
+            if (item.family is not DeviceFamily.AD936X or item.binding.identity_key is None
+                    or item.usb_connection is not None):
+                continue
+            resource = next((key for key, admission in admissions.items()
+                             if admission.selection.selected is not None
+                             and admission.selection.selected.device_id == item.device_id), None)
+            connection = candidates.get(item.device_id)
+            if resource is None or connection is None:
+                raise PaneGraphPoolError("parallel unknown USB/known IP needs a fresh observed USB alias")
+            admission = admissions[resource]
+            admission.validate()
+            if not isinstance(admission.owner, PlutoUsbAliasOwner):
+                raise PaneGraphPoolError("known IP owner cannot admit a USB alias")
+            if item.device_id not in aliases:
+                witness = admission.owner.observe_operational_usb_alias(connection)
+                updated = replace(admission, usb_alias=witness)
+                updated.validate()
+                admissions[resource] = updated
+                aliases[item.device_id] = witness
+        return aliases
 
     def compose(self, layout: PaneLayout, groups: tuple[AcquisitionGroup, ...],
                 leases: ReceiverLeaseManager) -> PaneResourceSession | None:
@@ -200,10 +252,17 @@ class PaneProductGraphPool:
         self._session = session
         return session
 
-    def validate_explicit_routes(self) -> None:
+    def validate_explicit_routes(self, *, refresh_aliases: bool = False) -> None:
         """All pinned resources revalidated before any initial Apply write."""
+        if self._usb_aliases:
+            for resource, captured in self._selections.items():
+                if self._graphs[resource].live.current_source_selection() is not captured:
+                    raise LiveAdmissionRejected("parallel source selection changed before Apply")
         for admission in self._route_admissions.values():
             admission.validate()
+        if refresh_aliases:
+            for admission in self._route_admissions.values():
+                admission.refresh_alias()
 
     def graph_for(self, resource_id: str) -> V2AnalyzerApplicationGraph:
         try:
@@ -226,14 +285,19 @@ class PaneProductGraphPool:
                 failures.append(resource_id)
             else:
                 self._graphs.pop(resource_id, None)
-                self._source_ids.pop(resource_id, None)
+                source_id = self._source_ids.pop(resource_id, None)
                 self._selections.pop(resource_id, None)
                 self._route_intents.pop(resource_id, None)
                 self._route_admissions.pop(resource_id, None)
+                if source_id is not None:
+                    self._usb_candidates.pop(source_id, None)
+                    self._usb_aliases.pop(source_id, None)
                 self._cleanup_pending.pop(resource_id, None)
         if failures:
             raise PaneGraphPoolError("pane application graph close did not confirm for every resource")
         self._session = None
+        self._usb_candidates.clear()
+        self._usb_aliases.clear()
         self._closed = True
 
     def _close_unstaged(self, resource_id: str, graph: V2AnalyzerApplicationGraph) -> None:

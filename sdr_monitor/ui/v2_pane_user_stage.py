@@ -130,7 +130,7 @@ def apply_user_pane_session(prepared: PreparedPaneUserSession) -> None:
         raise PaneUserStageError("recording conflicts with one or more proposed receiver plans",
                                  reason=PaneUserRefusal.RECORDING_CONFLICT)
     try:
-        handle.pool.validate_explicit_routes()
+        handle.pool.validate_explicit_routes(refresh_aliases=True)
     except LiveAdmissionRejected:
         raise PaneUserStageError("explicit route selection changed before Apply",
                                  reason=PaneUserRefusal.SELECTION_CHANGED) from None

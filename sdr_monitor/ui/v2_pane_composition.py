@@ -22,7 +22,7 @@ from sdr_monitor.services.hackrf_pane_owner import HackrfPaneOwner
 from sdr_monitor.services.rtl_rtbw_pane_owner import RtlRtbwPaneOwner
 from sdr_monitor.services.pane_resource_session import PaneCaptureOwner, PaneResourceError, PaneResourceSession
 from sdr_monitor.services.parallel_receiver_identity import validate_parallel_receiver_identity
-from sdr_monitor.services.pluto_pane_route_admission import PlutoPaneRouteAdmission
+from sdr_monitor.services.pluto_pane_route_admission import PlutoPaneRouteAdmission, PlutoPaneSelectionAdmission
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from sdr_monitor.services.tinysa_trace_pane_owner import TinySaTracePaneOwner
 
@@ -106,9 +106,16 @@ def compose_v2_pane_resource_session(
         families[selected.device_id] = selected.family
         usb_connections[selected.device_id] = selected.usb_connection
     try:
-        validate_parallel_receiver_identity(set(identities), identities, families, usb_connections)
+        aliases = {admission.usb_alias.source_id: admission.usb_alias
+                   for admission in routes.values() if admission.usb_alias is not None}
+        validate_parallel_receiver_identity(set(identities), identities, families, usb_connections, aliases)
     except ValueError as error:
         raise PaneResourceError(str(error)) from None
+    selection_admission = (PlutoPaneSelectionAdmission(tuple(
+        (selections_by_resource[resource], graphs[resource].live.current_source_selection)
+        for resource in sorted(graphs))) if aliases else None)
+    if selection_admission is not None:
+        selection_admission.validate()
     for group in groups:
         resource_id = group.physical_stream_resource_id
         graph = graphs[resource_id]
@@ -125,13 +132,14 @@ def compose_v2_pane_resource_session(
             if all(isinstance(job.profile, Ad936xPairedSweepPaneProfile) for job in resource.jobs):
                 owner_factories[resource_id] = partial(Ad936xPairedSweepPaneOwner,
                     graph.live, physical_stream_resource_id=resource_id,
-                    source_id=selected.device_id, endpoints=(first, second), route_admission=routes.get(resource_id))
+                    source_id=selected.device_id, endpoints=(first, second), route_admission=routes.get(resource_id),
+                    selection_admission=selection_admission)
             elif all(job.profile.measurement_mode is CaptureMeasurementMode.RTBW for job in resource.jobs):
                 owner_factories[resource_id] = partial(Ad936xPairedPaneOwner,
                     graph.live, physical_stream_resource_id=resource_id,
                     source_id=selected.device_id, endpoints=(first, second),
                     expected_selection=selection, expected_snapshot=graph.live.current_snapshot(),
-                    route_admission=routes.get(resource_id))
+                    route_admission=routes.get(resource_id), selection_admission=selection_admission)
             else:
                 raise PaneResourceError("paired AD936x requires one coherent RTBW or typed paired Sweep mode")
         elif len(group.endpoints) != 1:
@@ -140,7 +148,7 @@ def compose_v2_pane_resource_session(
             owner_factories[resource_id] = partial(Ad936xPaneOwner,
                 graph.live, graph.sweep_router, physical_stream_resource_id=resource_id,
                 source_id=selected.device_id, receiver_endpoint_id=endpoint.endpoint_id,
-                route_admission=routes.get(resource_id))
+                route_admission=routes.get(resource_id), selection_admission=selection_admission)
         elif selected.family is DeviceFamily.HACKRF and isinstance(endpoint, ReceiverEndpoint):
             if graph.services.analyzer_hackrf is None:
                 raise PaneResourceError("selected HackRF graph has no common native RX owner")
@@ -167,6 +175,7 @@ def compose_v2_pane_resource_session(
     return PaneResourceSession(layout.schedule, groups, owners, leases,
                                source_identity_keys=identities, source_families=families,
                                source_usb_connections=usb_connections,
+                               source_usb_aliases=aliases,
                                owner_factories=owner_factories)
 
 
