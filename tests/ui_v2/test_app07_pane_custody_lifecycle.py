@@ -1,6 +1,7 @@
 """Per-scene custody clear and Stop boundaries preserve peer isolation."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from concurrent.futures import Future
 import gc
@@ -199,7 +200,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         self.app.processEvents()
 
     def test_cleanup_failure_is_reported_after_owned_scene_is_deleted(self):
-        cases = ("clear", "release", "close")
+        cases = ("clear", "release", "close", "omitted_delete")
         for failure in cases:
             with self.subTest(failure=failure):
                 scene = self._owned_scene(register_cleanup=False)
@@ -219,11 +220,16 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
                         scene, "release_graphics_after_shutdown",
                         side_effect=release_then_fail)
                     expected = "release cleanup failure"
-                else:
+                elif failure == "close":
                     failure_patch = patch.object(
                         self, "_close_scene",
                         side_effect=RuntimeError("close cleanup failure"))
                     expected = "close cleanup failure"
+                else:
+                    # Expected-negative control: without registered deletion,
+                    # the scene must still be valid immediately after cleanup.
+                    failure_patch = nullcontext()
+                    expected = None
 
                 class CleanupProbe(unittest.TestCase):
                     def runTest(probe_self):
@@ -234,13 +240,28 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
                     # Keep the injected failure active while probe.run() both
                     # registers and executes unittest's actual doCleanups.
                     with failure_patch:
-                        self._register_scene_cleanups(probe, scene)
+                        if failure == "omitted_delete":
+                            probe.addCleanup(self._close_scene, scene)
+                            probe.addCleanup(self._release_scene, scene)
+                        else:
+                            self._register_scene_cleanups(probe, scene)
                         result = unittest.TestResult()
                         probe.run(result)
+                        valid_after_probe = is_qobject_valid(scene)
+                        if failure == "omitted_delete":
+                            self.assertTrue(valid_after_probe)
+                        else:
+                            self.assertFalse(valid_after_probe)
                 finally:
                     if is_qobject_valid(scene):
                         self._delete_scene(scene)
 
+                if failure == "omitted_delete":
+                    self.assertEqual(result.testsRun, 1)
+                    self.assertEqual(result.failures, [])
+                    self.assertEqual(result.errors, [])
+                    self.assertFalse(is_qobject_valid(scene))
+                    continue
                 self.assertEqual(result.testsRun, 1)
                 self.assertEqual(result.failures, [])
                 self.assertEqual(len(result.errors), 1)
