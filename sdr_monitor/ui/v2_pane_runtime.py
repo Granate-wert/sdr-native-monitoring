@@ -28,6 +28,7 @@ from sdr_monitor.services.pane_resource_diagnostics import (
     PaneDiagnosticError, PaneFailureReason, PaneFailureStage, PaneResourceFailure, pane_failure_from_exception,
 )
 from sdr_monitor.services.pane_resource_session import PaneActivation, PaneResourceSession
+from sdr_monitor.services.pane_delivery_ledger import RECORD_CAPACITY
 
 from .v2_pane_delivery_queue import PaneFairDeliveryQueue
 from .v2_pane_presentation import PaneDeliveryPreparer
@@ -568,6 +569,39 @@ class PaneResourcePump:
 
     def stop_resource(self, resource_id: str) -> Future[None]:
         return self._worker(resource_id).request_stop()
+
+    def capture_ui_stop_refs(self, resource_id: str) -> Future[tuple[PaneDeliveryObligationRef, ...]]:
+        """Explicit off-Qt capture on the SAME stopped resource worker.
+
+        A completed Stop Future callback may execute inline on Qt. This
+        method always enqueues the ledger capture, never performs it there.
+        No owner operation, new worker or automatic acknowledgement occurs.
+        The product must gate rearm/close throughout capture->Qt clear->ack.
+        """
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("pane resource workers are retiring after terminal Stop")
+            return self._worker(resource_id)._request_plan(
+                lambda: self._session.pane_ui_stop_refs_after_stop(resource_id), require_stopped=True)
+
+    def reconcile_ui_stop_cleared(
+        self, resource_id: str, refs: tuple[PaneDeliveryObligationRef, ...],
+    ) -> Future[tuple[PaneDeliveryObligationRef, ...]]:
+        """Off-Qt exact-batch acknowledgement AFTER Qt relinquishes custody.
+
+        Only one affected resource's finite original batch may be submitted.
+        This uses the existing serial control slot; pending work retains the
+        existing Start/join gate. It does not stop, reopen or retune an SDR.
+        """
+        if (not isinstance(refs, tuple) or len(refs) > RECORD_CAPACITY
+                or any(not isinstance(ref, PaneDeliveryObligationRef)
+                       or ref.identity.physical_stream_resource_id != resource_id for ref in refs)):
+            raise ValueError("UI Stop acknowledgement requires one bounded affected-resource batch")
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("pane resource workers are retiring after terminal Stop")
+            return self._worker(resource_id)._request_plan(
+                lambda: self._session.reconcile_ui_stop_cleared(refs), require_stopped=True)
 
     def stop_selected(self, pane_id: str, *, acknowledge_shared: bool = False) -> tuple[tuple[str, ...], Future[None]]:
         impact = self._session.stop_impact(pane_id)

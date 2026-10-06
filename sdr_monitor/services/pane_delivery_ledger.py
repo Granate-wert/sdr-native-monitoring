@@ -265,6 +265,45 @@ class PaneDeliveryLedger:
                         and record.ref.identity.physical_stream_resource_id == resource_id):
                     self._transition(record, weight, Stage.ADMISSION_CANCELLED)
 
+    def retained_ui_refs(self, resource_id: str) -> tuple[PaneDeliveryObligationRef, ...]:
+        """Finite off-Qt Stop capture, including UI-declined unowned refs.
+
+        These are original tokens, not stage/absence or hardware receipts.
+        Capture alone neither clears a record nor authorizes a paint. The
+        session must first confirm this resource's completed Stop.
+        """
+        with self._lock:
+            return tuple(record.ref for record, _weight_bytes in self._records.values()
+                         if record.ref.identity.physical_stream_resource_id == resource_id
+                         and record.stage in {Stage.QUEUE_DRAINED, Stage.UI_ADMITTED, Stage.PAINT_SCHEDULED})
+
+    def reconcile_ui_stop_cleared(
+        self, refs: tuple[PaneDeliveryObligationRef, ...],
+    ) -> tuple[PaneDeliveryObligationRef, ...]:
+        """Acknowledge actual UI relinquishment of a captured Stop batch.
+
+        Call off Qt AFTER all exact captured refs have been detached from
+        pending presentation, including declined refs never attached to a
+        view. Receiver Stop alone is not that boundary. Under the existing
+        lock only still-UI-owned original tokens transition. A paint return,
+        eviction, copy, foreign graph or repeated acknowledgement is a no-op,
+        not a duplicate event/accounting failure or a guessed paint receipt.
+        There is no scan, resident batch/tombstone or new memory allowance.
+        """
+        if (not isinstance(refs, tuple) or len(refs) > RECORD_CAPACITY
+                or any(not isinstance(ref, PaneDeliveryObligationRef) for ref in refs)):
+            raise ValueError("UI Stop reconciliation requires a bounded original-reference tuple")
+        settled: list[PaneDeliveryObligationRef] = []
+        with self._lock:
+            for ref in refs:
+                retained = self._records.get(ref.sequence) if ref.graph_instance_id == self._graph_id else None
+                if (retained is None or retained[0].ref is not ref
+                        or retained[0].stage not in {Stage.QUEUE_DRAINED, Stage.UI_ADMITTED, Stage.PAINT_SCHEDULED}):
+                    continue
+                self._transition(retained[0], retained[1], Stage.STOP_CLEARED)
+                settled.append(ref)
+        return tuple(settled)
+
     def snapshot(self) -> PaneDeliveryLedgerSnapshot:
         """Cached scalars only. No clock, SDK, native drain or RF action."""
         with self._lock:

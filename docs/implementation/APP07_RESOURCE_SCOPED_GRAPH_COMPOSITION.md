@@ -6544,3 +6544,57 @@ and Ruff/compile/diff checks pass three files. A failed initial test fixture is
 retained separately. This is software prerequisite evidence, not accepted UI,
 physical latency, sustained HIL, soak, visible Windows or release qualification.
 The last fully software-qualified build remains 9f4; APP-07/M8 stays partial.
+
+## Confirmed Stop / UI relinquishment prerequisite (M8-084 R3)
+
+Receiver Stop and UI custody release are different boundaries. A successful
+receiver Stop intentionally leaves drained/UI-admitted/paint-scheduled records
+for the actual UI owner to settle. A completed-reference tuple from an earlier
+snapshot can become stale before Qt handles it; a view-local UNKNOWN slot also
+misses later declined references. Snapshot absence is not proof of completion.
+
+`PaneResourceSession.pane_ui_stop_refs_after_stop(resource_id)` now captures
+ALL retained original UI-stage references of that resource, including ones no
+view could attach. It checks cached terminal/inactive state and released lease
+under the existing control/state locks; failed Stop or rearm refuses capture.
+It neither queries hardware nor acknowledges UI clearing. The immutable tuple
+is finite (at most the existing 256 ledger records), not a negative-membership
+or physical-time receipt.
+
+AFTER Qt actually relinquishes every captured reference, the separate
+`reconcile_ui_stop_cleared(refs)` conditionally settles only exact original
+records still at QUEUE_DRAINED, UI_ADMITTED or PAINT_SCHEDULED. Already terminal,
+evicted, copied-equal, foreign or repeated tokens are no-ops without fabricated
+paint returns, duplicate terminal notes or accounting failures. Uncaptured newer
+references and independent resources are untouched. Ordinary strict `note`
+validation remains unchanged. This operation is not automatic receiver cleanup.
+
+The pump exposes `capture_ui_stop_refs` and `reconcile_ui_stop_cleared` as
+explicit tasks on its SAME existing stopped resource worker. No new worker,
+hardware command or queue allowance is added. This matters because registering
+a callback on an already-done Future runs it inline on the registering thread:
+a Stop callback alone is not an off-Qt guarantee. Pending tasks retain existing
+control Start/join guards. Product UI must additionally bind/gate the ENTIRE
+capture -> exact Qt detach -> off-Qt acknowledgement handoff, including gaps
+between tasks, failure/retry and Close. That integration is not yet qualified.
+
+Both ledger operations reuse its shared 1 MiB / 256-record / 128-event limits;
+they retain no extra batches/tombstones. Capture is finite read-only; the
+conditional acknowledgement records only genuine Stop-clear transitions and
+their bookkeeping timestamps. Neither is a per-frame paint callback. Sustained
+UNKNOWN admission can still exhaust bounded measurement capacity until Stop;
+untracked/unknown coverage must remain explicit, not interpreted as successful
+paint or a zero delay. This prerequisite does not solve that live-run condition.
+
+Twelve new tests and the 105-test targeted suite pass (3.308s), covering actual
+mock session/worker dispatch, repeated/stale batches, exact versus copied refs,
+eviction/older pending, shared panes, failed Stop/rearm, affected-resource guards
+and control-task Start/join gating. Ruff/compile checks cover four files. Scoped
+mypy for the two service files passes; adding the pump exposes nine diagnostics
+in two unchanged dependencies, reproduced exactly on the immutable 3d41 source
+baseline (not a whole-project mypy PASS). An initial shared test fixture used a
+nonexistent attribute; its failed log is retained separately.
+
+No Qt rendering integration, new EXE/full gate, physical RX, latency percentiles,
+M8-080 recovery/cause, visible Windows/DPI/DWM, soak or release is proven here.
+The last fully software-qualified build remains 9f4; APP-07/M8 remains partial.

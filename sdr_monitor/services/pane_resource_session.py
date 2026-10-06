@@ -512,6 +512,34 @@ class PaneResourceSession:
             return False
         return self._delivery_ledger.note(receipt.ref, PaneDeliveryStage.PAINT_RETURNED, paint_return=receipt)
 
+    def pane_ui_stop_refs_after_stop(self, resource_id: str) -> tuple[PaneDeliveryObligationRef, ...]:
+        """Off-Qt original UI tokens after this SAME resource confirmed Stop.
+
+        Failed/in-progress Stop or a rearmed/running resource cannot issue
+        this capture. No native read/Stop/clock: the existing control/state
+        locks only stabilize cached terminal state while the finite ledger
+        selects ALL pending UI refs, even ones no view could attach. Absence
+        is never a negative-membership receipt; newer work is not included
+        by a subsequent clear acknowledgement of these original tokens.
+        """
+        runtime = self._required_runtime(resource_id)
+        with runtime.control_lock, self._state_lock:
+            if (runtime.lease is not None or runtime.active or runtime.stop_required
+                    or runtime.current_activation is not None or not runtime.terminal):
+                raise PaneResourceError("UI Stop capture requires this resource's confirmed terminal release")
+            return self._delivery_ledger.retained_ui_refs(resource_id)
+
+    def reconcile_ui_stop_cleared(
+        self, refs: tuple[PaneDeliveryObligationRef, ...],
+    ) -> tuple[PaneDeliveryObligationRef, ...]:
+        """Off-Qt acknowledgement AFTER actual UI clears the captured refs.
+
+        Does not clear pixels, stop an owner, inspect a lease or close a
+        graph. This separate acknowledgement is deliberately NOT called by
+        stop_resource: receiver release does not prove UI relinquishment.
+        """
+        return self._delivery_ledger.reconcile_ui_stop_cleared(refs)
+
     def _bind_delivery_obligations(self, deliveries: tuple[PaneDelivery, ...]) -> tuple[PaneDelivery, ...]:
         # One cached read per resource/batch, including BOTH paired receivers.
         # Optional diagnostic failure never invalidates an admitted measurement.
