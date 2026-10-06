@@ -826,7 +826,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             UiLocale.RU: "RF-полоса независима от Fs. Пресеты адаптера не доказывают плоскую АЧХ или поддержку точного значения: применённое считывание и проверка сканирования имеют приоритет.",
             UiLocale.EN: "RF bandwidth is independent of Fs. Adapter presets do not prove a flat passband or exact support; applied readback and Sweep preflight are authoritative.",
         }),
-        "analyzer.pane.setup.preview_route": MappingProxyType({UiLocale.RU: "Маршрут: {route}", UiLocale.EN: "Route: {route}"}),
+        "analyzer.pane.setup.preview_route": MappingProxyType({UiLocale.RU: "Запрос маршрута: {route} (на Stage подтверждён; на Apply перепроверяется; физический readback и скорость канала не заявляются)", UiLocale.EN: "Route request: {route} (Stage-confirmed intent; Apply revalidates; no physical readback or link-speed claim)"}),
         "analyzer.rf_bandwidth.value": MappingProxyType({UiLocale.RU: "RF BW {value} MHz", UiLocale.EN: "RF BW {value} MHz"}),
         "analyzer.rf_bandwidth.unknown": MappingProxyType({UiLocale.RU: "RF BW неизвестна", UiLocale.EN: "RF BW unknown"}),
         "analyzer.gain": MappingProxyType({UiLocale.RU: "Усиление, dB", UiLocale.EN: "Gain, dB"}),

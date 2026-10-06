@@ -28,6 +28,7 @@ from sdr_monitor.ui.v2.workspaces.independent_pane_setup import IndependentPaneS
 from sdr_monitor.ui.v2_pane_user_plan import (
     PanePairedSelectionReceipt, PaneSlotDraft, compile_user_pane_plan,
 )
+from sdr_monitor.ui.v2_pane_rf_plan import PaneRfPlanContext
 from sdr_monitor.ui.v2_pane_user_stage import PaneUserStageError
 from tests.test_app07_paired_sweep_contract import request_fixture
 
@@ -94,7 +95,8 @@ class PairedSetupTests(unittest.TestCase):
             drafts = editor._read_drafts()
             self.assertIs(drafts[0].receiver_selection, ReceiverChainSelection.RX1)
             self.assertIs(drafts[1].receiver_selection, ReceiverChainSelection.RX2)
-            self.assertEqual(second.source_chain.layout().count(), 2)  # Still seven grid columns.
+            self.assertEqual(second.source_line.layout().count(), 2)
+            self.assertEqual(second.source_chain.layout().count(), 3)
             with patch.object(editor, "_submit") as submit:
                 editor._begin_prepare()
                 self.assertIs(submit.call_args.args[2][1].receiver_selection,
@@ -172,7 +174,10 @@ class PairedSetupTests(unittest.TestCase):
         try:
             editor._prepared = SimpleNamespace(plan=plan, preview=(preview,),
                                                handle=SimpleNamespace(applied=False,
-                                                                      source_labels={choice.device_id: choice.label}))
+                                                                      source_labels={choice.device_id: choice.label},
+                                                                      rf_context=PaneRfPlanContext(
+                                                                          plan, drafts,
+                                                                          ((choice.device_id, choice, 17),))))
             for locale, first, second, filter_text in (
                     (UiLocale.EN, "pane 1 → RX1", "pane 2 → RX2", "RF filter 10 MHz"),
                     (UiLocale.RU, "окно 1 → RX1", "окно 2 → RX2", "RF-фильтр 10 МГц")):
@@ -239,7 +244,10 @@ class PairedSetupTests(unittest.TestCase):
         try:
             editor._prepared = SimpleNamespace(plan=plan, preview=(preview,),
                                                handle=SimpleNamespace(applied=False,
-                                                                      source_labels={choice.device_id: choice.label}))
+                                                                      source_labels={choice.device_id: choice.label},
+                                                                      rf_context=PaneRfPlanContext(
+                                                                          plan, drafts,
+                                                                          ((choice.device_id, choice, 17),))))
             for locale, common, first, second, unknown, budget in (
                     (UiLocale.EN, "Common Sweep request 100…180 MHz", "Pane 1: requested display crop 100…104",
                      "Pane 2: requested display crop 170…180", "Actual LO/Fs/filter/gain",

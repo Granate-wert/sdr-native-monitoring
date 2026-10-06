@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from shiboken6 import isValid as is_qobject_valid
 
@@ -110,6 +111,8 @@ class IndependentPaneRouteTests(unittest.TestCase):
                 self.assertEqual(first._route_intent, Route(IP))
                 self.assertEqual(second._route_intent, Route(IP))
                 self.assertEqual(editor._read_drafts()[1].operational_route, Route(IP))
+                self.assertTrue(first.route_scope.isVisible())
+                self.assertFalse(second.route.isEnabled())
 
                 # The peer deliberately leaves, restoring an independent B group.
                 second.source.setCurrentIndex(second.source.findData(choice_b.device_id))
@@ -120,12 +123,16 @@ class IndependentPaneRouteTests(unittest.TestCase):
                 self.assertEqual(first._route_intent, Route(USB))
                 self.assertEqual(second._route_intent, Route(USB))
                 self.assertEqual(editor._read_drafts()[0].operational_route, Route(USB))
+                self.assertTrue(first.route_scope.isVisible())
+                self.assertFalse(second.route.isEnabled())
 
                 # Departure leaves the remaining destination group unchanged.
                 second.source.setCurrentIndex(0)
                 self.assertEqual(first._route_intent, Route(USB))
                 self.assertEqual(third._route_intent, Route(USB))
                 self.assertIsNone(second._route_intent)
+                self.assertTrue(first.route.isEnabled())
+                self.assertTrue(third.route.isVisible())
             finally:
                 self._close(editor)
         finally:
@@ -156,14 +163,26 @@ class IndependentPaneRouteTests(unittest.TestCase):
                     editor._begin_prepare()
                     stage.assert_not_called()
 
+                # Automatic is a deliberate recovery for a still-published
+                # source; it cannot turn an unpublished source into evidence.
+                row.route.setCurrentIndex(0)
+                self.assertIsNone(row._route_intent)
+                self.assertIsNone(editor._route_refusal_key(row))
+                self.assertTrue(editor.prepare.isEnabled())
+
                 restored = replace(original, operational_routes=(Route(USB), Route(IP)))
                 editor.update_sources(AnalyzerSourceSelection(revision=3, choices=(restored,)))
-                self.assertEqual(row._route_intent, Route(IP))
+                self.assertIsNone(row._route_intent)
                 self.assertFalse(row._route_unavailable)
+                row.route.setCurrentIndex(next(i for i in range(row.route.count())
+                                               if row.route.itemData(i) == Route(IP)))
 
                 editor.update_sources(AnalyzerSourceSelection(revision=4, choices=()))
                 self.assertEqual(row.source.currentData(), original.device_id)
                 self.assertEqual(row._route_intent, Route(IP))
+                self.assertIsNotNone(editor._route_refusal_key(row))
+                row.route.setCurrentIndex(0)
+                self.assertIsNone(row._route_intent)
                 self.assertIsNotNone(editor._route_refusal_key(row))
                 row.source.setCurrentIndex(0)
                 self.assertIsNone(row._route_intent)
@@ -266,9 +285,52 @@ class IndependentPaneRouteTests(unittest.TestCase):
             set_active_locale(previous_locale)
             graph.live.shutdown()
 
-    def test_preview_uses_staged_route_not_current_widget(self) -> None:
+    def test_route_selector_is_keyboard_reachable(self) -> None:
         native, graph = _ad_graph(uri=USB, serial="app07-known")
         try:
+            original = replace(graph.live.discover(local_only=True)[0],
+                               operational_routes=(Route(USB), Route(IP)))
+            editor = self._editor(AnalyzerSourceSelection(revision=1, choices=(original,)))
+            try:
+                row = editor._rows[0]
+                row.source.setCurrentIndex(row.source.findData(original.device_id))
+                row.route.setCurrentIndex(0)
+                row.route.setFocus()
+                QTest.keyClick(row.route, Qt.Key.Key_Down)
+                self.assertEqual(row.route.currentData(), Route(USB))
+                self.assertTrue(row.route.hasFocus())
+            finally:
+                self._close(editor)
+        finally:
+            graph.live.shutdown()
+
+    def test_manual_ip_selection_publishes_exact_choice_to_editor(self) -> None:
+        native, graph = _ad_graph(uri=USB, serial="app07-known")
+        try:
+            graph.live.discover(local_only=True)
+            graph.live.select_manual_uri(IP)
+            selection = graph.sources.current()
+            self.assertIsNotNone(selection)
+            assert selection is not None and selection.selected is not None
+            self.assertEqual(selection.selected.operational_routes, (Route(IP),))
+            editor = self._editor(selection)
+            try:
+                row = editor._rows[0]
+                row.source.setCurrentIndex(row.source.findData(selection.selected_id))
+                self.assertEqual(tuple(row.route.itemData(i) for i in range(row.route.count())),
+                                 (None, Route(IP)))
+                self.assertNotIn(Route(USB), tuple(row.route.itemData(i)
+                                                   for i in range(row.route.count())))
+            finally:
+                self._close(editor)
+        finally:
+            graph.live.shutdown()
+
+    def test_preview_uses_staged_route_not_current_widget(self) -> None:
+        native, graph = _ad_graph(uri=USB, serial="app07-known")
+        previous_locale = current_locale()
+        try:
+            set_active_locale(UiLocale.EN)
             original = replace(graph.live.discover(local_only=True)[0],
                                operational_routes=(Route(USB), Route(IP)))
             editor = self._editor(AnalyzerSourceSelection(revision=1, choices=(original,)))
@@ -286,7 +348,10 @@ class IndependentPaneRouteTests(unittest.TestCase):
                 editor._prepared = prepared
                 editor._refresh_preview()
                 self.assertIn("USB", editor.preview.text())
+                self.assertIn("Stage-confirmed intent", editor.preview.text())
+                self.assertIn("Apply revalidates", editor.preview.text())
                 row.route.setCurrentIndex(0)
+                editor._refresh_preview()
                 self.assertIn("USB", editor.preview.text())
             finally:
                 if prepared is not None:
@@ -294,6 +359,7 @@ class IndependentPaneRouteTests(unittest.TestCase):
                     editor._prepared = None
                 self._close(editor)
         finally:
+            set_active_locale(previous_locale)
             graph.live.shutdown()
 
 

@@ -207,6 +207,8 @@ class IndependentPaneSetupTests(unittest.TestCase):
             self.assertIn("8192", editor.preview.text())
             self.assertIn("4096", editor.preview.text())
             self.assertIn("36", editor.preview.text())
+            self.assertEqual(sum("на Stage подтверждён" in line
+                                 for line in editor.preview.text().splitlines()), 1)
             for language, ad_prefix, hf_prefix, crop_text, step_text in (
                     (UiLocale.EN, "Pane 1, AD936x Sweep plan:", "Pane 2, HackRF Sweep plan:",
                      "2 disjoint 5 MHz windows", "tuning step 20 MHz"),
