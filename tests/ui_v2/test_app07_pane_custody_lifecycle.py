@@ -73,13 +73,16 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
     def _owned_scene(self, *, register_cleanup=True):
         scene = SpectrumScene()
         if register_cleanup:
-            # LIFO gives release -> close -> targeted DeferredDelete.  Each
-            # callback remains independently reportable if an earlier one
-            # raises, while unittest still runs the later callbacks.
-            self.addCleanup(self._delete_scene, scene)
-            self.addCleanup(self._close_scene, scene)
-            self.addCleanup(self._release_scene, scene)
+            self._register_scene_cleanups(self, scene)
         return scene
+
+    def _register_scene_cleanups(self, owner, scene) -> None:
+        # LIFO gives release -> close -> targeted DeferredDelete. Each
+        # callback remains independently reportable if an earlier one raises,
+        # while unittest still runs the later callbacks.
+        owner.addCleanup(self._delete_scene, scene)
+        owner.addCleanup(self._close_scene, scene)
+        owner.addCleanup(self._release_scene, scene)
 
     def _release_scene(self, scene) -> None:
         if not is_qobject_valid(scene):
@@ -101,17 +104,6 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         scene.deleteLater()
         QCoreApplication.sendPostedEvents(scene, QEvent.Type.DeferredDelete)
         self.assertFalse(is_qobject_valid(scene))
-
-    def _run_registered_scene_cleanups(self, scene) -> None:
-        """Exercise unittest's cleanup order while retaining the first error."""
-        errors = []
-        for cleanup in (self._release_scene, self._close_scene, self._delete_scene):
-            try:
-                cleanup(scene)
-            except BaseException as exc:  # preserve cleanup errors for the assertion
-                errors.append(exc)
-        if errors:
-            raise errors[0]
 
     @staticmethod
     def ui_admitted(ledger, offer=1):
@@ -210,7 +202,7 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         cases = ("clear", "release", "close")
         for failure in cases:
             with self.subTest(failure=failure):
-                scene = self._owned_scene()
+                scene = self._owned_scene(register_cleanup=False)
                 if failure == "clear":
                     failure_patch = patch.object(
                         scene, "clear_measurement",
@@ -233,9 +225,26 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
                         side_effect=RuntimeError("close cleanup failure"))
                     expected = "close cleanup failure"
 
-                with failure_patch:
-                    with self.assertRaisesRegex(RuntimeError, expected):
-                        self._run_registered_scene_cleanups(scene)
+                class CleanupProbe(unittest.TestCase):
+                    def runTest(probe_self):
+                        return None
+
+                probe = CleanupProbe()
+                try:
+                    # Keep the injected failure active while probe.run() both
+                    # registers and executes unittest's actual doCleanups.
+                    with failure_patch:
+                        self._register_scene_cleanups(probe, scene)
+                        result = unittest.TestResult()
+                        probe.run(result)
+                finally:
+                    if is_qobject_valid(scene):
+                        self._delete_scene(scene)
+
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(result.failures, [])
+                self.assertEqual(len(result.errors), 1)
+                self.assertIn(expected, result.errors[0][1])
                 self.assertFalse(is_qobject_valid(scene))
 
     def test_hidden_latest_replacement_and_captured_stop_refs_conserve_real_ledger(self):
