@@ -6290,3 +6290,41 @@ link throughput or RF accuracy. A missing/disconnected known USB alias cannot
 be replaced by a display name, stored address or invented serial. Current
 physical 2x2, rotations, actual Windows screenshots, per-view performance and
 release qualification remain to be established on the matching new build.
+
+### M8-080 — exact software qualification and interrupted physical trial
+
+Runtime source `37d9c8e34e82763df764ef0f41c24babf642a8e3` was built as a
+fresh diagnostic `APP07-USBIP-20261006-37D9C8E-R0`, not the static/current release.
+The matching native build passed all 47 CTests (60.89s), package verification
+covered 665 frozen files and 590 source entries. One serial full V2 run after
+source freeze completed 1448 tests: 1382 passed, 66 skipped, no failures/errors
+(504.408s), exact provenance and tracked-clean state before/after. Four historical
+NaN warnings are retained. Targeted alias tests passed 142 cases/147 subtests;
+these source/mock results do not prove hardware uniqueness or physical HIL.
+
+Fresh read-only discovery identified four physical sources represented by five
+operational choices and completed normal graph shutdown. The subsequent current
+2x2 trial used AD9364USB (requested Fs61.44MS/s/RF56MHz), HackRF20MS/s,
+AD9363 explicit `ip:192.168.1.54` (Fs30.72MS/s/RF30MHz) and RTL2.4MS/s,
+FFT4096. Stage/Apply were inert. After explicit Start, no four-source freshness
+or Stop/flush/join receipt was obtained; the owned test process was interrupted.
+No screenshots, rotation, normal cleanup or simultaneous receive PASS came from
+this trial. The exact blocked operation is unknown: the diagnostic timeout was
+checked only after potentially blocking Qt events and observation callbacks.
+
+The prior-held hardware lease record is preserved pending explicit recovery.
+Process absence alone is not a hardware-cleanup receipt; no automatic lock reset
+or unchanged RX retry is permitted. UI source review identified an unnecessary
+synchronous Close eligibility state-lock query while Start is pending, but this
+is not a demonstrated cause of the physical stall. The next UI V2 packet removes
+that redundant query while retaining the original final close authority and
+requires a bounded contention regression, independent review and matched build.
+Native RF/DSP/quality/time/epoch/queue/budget policies are not weakened.
+
+M8-080 diagnostic EXE SHA256:
+`02a64f99cb2976a5ad425ed2e65e05d4384605d7d528dba0752dcf2887713ba5`.
+Native SHA256:
+`5fa7a0632922586ed7311604854edcbeb2cf3f2736ef63f241b12d2046f4188e`.
+Unchanged native bytes do not relabel the source/build of prior 079 witnesses.
+APP-07/M8 remains PARTIAL/H02 TODO. Paired RF, current four-source HIL,
+visible Windows/DPI/DWM, performance, stability and release review remain open.
