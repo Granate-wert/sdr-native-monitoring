@@ -17,6 +17,7 @@ from sdr_monitor.domain.live import LiveSessionState
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview, PaneResourceSession
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
+from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 
 from .v2.spectrum.allocation_budget import PresentationAllocationBudget
 from .v2_pane_delivery_queue import PaneFairDeliveryQueue
@@ -77,6 +78,15 @@ class PaneProductSessionHandle:
         if type(pending) is not bool or self._shutdown:
             raise RuntimeError("RF presentation gate requires an active product handle")
         self._rf_presentation_pending = pending
+
+    def report_paint_return(self, receipt: PanePaintReturnReceipt) -> bool:
+        """Forward one optional typed paint receipt without changing custody."""
+        if not isinstance(receipt, PanePaintReturnReceipt):
+            return False
+        try:
+            return bool(self.session.record_pane_paint_return(receipt))
+        except Exception:
+            return False
 
     @property
     def applied(self) -> bool:

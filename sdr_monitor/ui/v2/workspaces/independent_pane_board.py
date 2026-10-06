@@ -21,6 +21,7 @@ from sdr_monitor.domain.receiver_topology import ReceiverChainSelection
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.ui.v2_pane_presentation import PaneDeliveryPreparer, PanePresentationBinding, PreparedPaneDelivery
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
+from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import current_locale, text
@@ -52,6 +53,7 @@ class IndependentPaneBoardV2(QWidget):
                  source_labels: Mapping[str, str] | None = None,
                  monotonic_clock: Callable[[], float] = monotonic,
                  stage_callback: Callable[[PaneDeliveryObligationRef, PaneDeliveryStage], object] | None = None,
+                 paint_return_callback: Callable[[PanePaintReturnReceipt], object] | None = None,
                  settings: QSettings | None = None,
                  parent: QWidget | None = None) -> None:
         if not isinstance(preparer, PaneDeliveryPreparer):
@@ -62,6 +64,7 @@ class IndependentPaneBoardV2(QWidget):
         self._preparer = preparer
         self._monotonic_clock = monotonic_clock
         self._stage_callback = stage_callback
+        self._paint_return_callback = paint_return_callback
         self._installed_bindings = dict(preparer.bindings)
         self._paired_resources = preparer.paired_resource_ids
         self._retired_bindings: dict[str, PanePresentationBinding] = {}
@@ -156,7 +159,9 @@ class IndependentPaneBoardV2(QWidget):
                     settings_prefix=f"ui_v2/analyzer/resource_pane{slot.number}/v1",
                     parent=cell)
                 pane.spectrum_scene.set_delivery_stage_callback(self._stage_callback)
+                pane.spectrum_scene.set_paint_return_callback(self._paint_return_callback)
                 pane.waterfall_pane.set_delivery_stage_callback(self._stage_callback)
+                pane.waterfall_pane.set_paint_return_callback(self._paint_return_callback)
                 pane._delivery_stage_callback = self._stage_callback
                 pane.set_compact_grid_geometry(compact)
                 pane.set_selected(slot.number == self._selected_slot)

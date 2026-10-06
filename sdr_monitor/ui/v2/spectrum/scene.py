@@ -56,6 +56,7 @@ from .plot_terminal import (
 )
 from .paint_cadence import (
     PaintKey,
+    PaintReturnCallback,
     UniquePaintCadence,
     cadence_graphics_widget,
     spectrum_paint_key,
@@ -65,6 +66,7 @@ from .screen_dash import ScreenDashPlotDataItem
 from .sweep_coverage_overlay import SweepCoverageOverlay
 from .sweep_position import SweepPositionOverlay
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
+from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 
 _TRACE_LABEL_KEYS: Mapping[TraceKind, str] = {
@@ -151,6 +153,7 @@ class SpectrumScene(QWidget):
         self._graphics_preflight_complete = False
         self._graphics_terminal_ownership: PlotTerminalOwnership | None = None
         self._delivery_stage_callback = None
+        self._paint_return_callback: PaintReturnCallback | None = None
         self._latest_delivery_ref: PaneDeliveryObligationRef | None = None
         self._latest_spectrum_setter_accepted = False
         self._displayed_delivery_ref: PaneDeliveryObligationRef | None = None
@@ -1192,9 +1195,17 @@ class SpectrumScene(QWidget):
         self._chart_host.setProperty("ui2Role", "panel")
         host_layout = QVBoxLayout(self._chart_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
+        scene_ref = weakref.ref(self)
+
+        def timed_returned(receipt: PanePaintReturnReceipt) -> None:
+            scene = scene_ref()
+            if scene is not None:
+                scene._spectrum_paint_returned_timed(receipt)
+
         self._graphics = cadence_graphics_widget(
             self._chart_host, self.paint_cadence, self._spectrum_paint_candidate,
-            self._spectrum_custody_candidate, self._spectrum_custody_returned)
+            self._spectrum_custody_candidate, self._spectrum_custody_returned,
+            timed_returned)
         # V2 already separates the panels; use its 4 px spacing grid instead
         # of stacking pyqtgraph's default outer padding inside another frame.
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
@@ -1387,6 +1398,9 @@ class SpectrumScene(QWidget):
     def set_delivery_stage_callback(self, callback) -> None:
         self._delivery_stage_callback = callback
 
+    def set_paint_return_callback(self, callback: PaintReturnCallback | None) -> None:
+        self._paint_return_callback = callback
+
     @property
     def displayed_delivery_ref(self) -> PaneDeliveryObligationRef | None:
         return self._displayed_delivery_ref
@@ -1515,6 +1529,33 @@ class SpectrumScene(QWidget):
                 if not self._persistence_delivery_paint_returned:
                     self._persistence_delivery_paint_returned = True
                     self._report_delivery(item, PaneDeliveryStage.PAINT_RETURNED)
+
+    def _spectrum_paint_returned_timed(self, receipt: PanePaintReturnReceipt) -> None:
+        if not isinstance(receipt, PanePaintReturnReceipt):
+            return
+        ref = receipt.ref
+        if ref == self._displayed_delivery_ref and not self._displayed_delivery_paint_returned:
+            callback = self._paint_return_callback
+            handled = False
+            if callback is not None:
+                try:
+                    handled = bool(callback(receipt))
+                except Exception:
+                    handled = False
+            self._displayed_delivery_paint_returned = True
+            if not handled:
+                self._report_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
+        elif ref == self._persistence_delivery_ref and not self._persistence_delivery_paint_returned:
+            callback = self._paint_return_callback
+            handled = False
+            if callback is not None:
+                try:
+                    handled = bool(callback(receipt))
+                except Exception:
+                    handled = False
+            self._persistence_delivery_paint_returned = True
+            if not handled:
+                self._report_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
 
     def _make_marker_items(self) -> tuple[dict[str, pg.InfiniteLine], dict[str, pg.TextItem]]:
         tokens = tokens_for_theme(self._theme)

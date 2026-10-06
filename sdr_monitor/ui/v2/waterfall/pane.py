@@ -45,10 +45,11 @@ from .contracts import (
     SweepWaterfallLine,
     adapt_waterfall_line,
 )
-from ..spectrum.paint_cadence import UniquePaintCadence, cadence_graphics_widget
+from ..spectrum.paint_cadence import PaintReturnCallback, UniquePaintCadence, cadence_graphics_widget
 from sdr_monitor.ui.v2_pane_obligation_refs import (
     PaneDeliveryObligationRef, PaneDeliveryStage, PaneDeliveryView,
 )
+from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 
 _SETTINGS_PREFIX = "ui_v2/live/waterfall/v1"
 _SETTINGS_DEBOUNCE_MS = 250
@@ -114,6 +115,7 @@ class WaterfallPane(QWidget):
         self._graphics_terminal_ownership: PlotTerminalOwnership | None = None
         self._graphics_state_disconnected = False
         self._delivery_stage_callback = None
+        self._paint_return_callback: PaintReturnCallback | None = None
         self._waterfall_delivery_ref: PaneDeliveryObligationRef | None = None
         self._waterfall_delivery_scheduled = False
         self._waterfall_delivery_returned = False
@@ -501,6 +503,26 @@ class WaterfallPane(QWidget):
                 self._waterfall_delivery_returned = True
                 self._report_waterfall_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
 
+    def _waterfall_paint_returned_timed(self, receipt: PanePaintReturnReceipt) -> None:
+        if not isinstance(receipt, PanePaintReturnReceipt):
+            return
+        ref = receipt.ref
+        if ref != self._waterfall_delivery_ref or self._waterfall_delivery_returned:
+            return
+        callback = self._paint_return_callback
+        handled = False
+        if callback is not None:
+            try:
+                handled = bool(callback(receipt))
+            except Exception:
+                handled = False
+        self._waterfall_delivery_returned = True
+        if not handled:
+            self._report_waterfall_delivery(ref, PaneDeliveryStage.PAINT_RETURNED)
+
+    def set_paint_return_callback(self, callback: PaintReturnCallback | None) -> None:
+        self._paint_return_callback = callback
+
     def set_linked_frequency_available(self, available: bool) -> None:
         """Only a real linked spectrum, not a default ViewBox, supplies an axis."""
         self._linked_frequency_available = bool(available)
@@ -718,8 +740,14 @@ class WaterfallPane(QWidget):
             if pane is not None:
                 pane._waterfall_paint_returned(ref)
 
+        def timed_returned(receipt: PanePaintReturnReceipt) -> None:
+            pane = pane_ref()
+            if pane is not None:
+                pane._waterfall_paint_returned_timed(receipt)
+
         self._graphics = cadence_graphics_widget(
             self._chart_host, UniquePaintCadence(), lambda _event: None, candidate, returned,
+            timed_returned,
         )
         self._graphics.ci.layout.setContentsMargins(4, 4, 4, 4)
         self._time_axis = WaterfallTimeAxis(locale=self._locale)

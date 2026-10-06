@@ -2,12 +2,32 @@
 
 from collections.abc import Callable
 from collections import deque
+import os
 from time import perf_counter_ns
 
 import pyqtgraph as pg
 from PySide6.QtGui import QPaintEvent
 
+from sdr_monitor.domain.host_clock import HostClockKind, HostClockScope
+from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef
+from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
+
 PaintKey = tuple[tuple[object, ...], tuple[int, object, object]]
+PaintReturnCallback = Callable[[PanePaintReturnReceipt], object]
+
+
+def paint_return_receipt(ref: PaneDeliveryObligationRef, before_paint_ns: int,
+                         sampled_after_return_ns: int) -> PanePaintReturnReceipt | None:
+    """Build one builtin-host receipt without inventing a clock mapping."""
+    try:
+        return PanePaintReturnReceipt(
+            ref,
+            HostClockScope(HostClockKind.PERF_COUNTER_NS, os.getpid()),
+            before_paint_ns,
+            sampled_after_return_ns,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def spectrum_paint_key(frame: object) -> PaintKey | None:
@@ -104,6 +124,7 @@ def cadence_graphics_widget(
     paint_candidate: Callable[[QPaintEvent], PaintKey | None],
     custody_candidate: Callable[[QPaintEvent], object | None] | None = None,
     custody_returned: Callable[[object], None] | None = None,
+    paint_returned: PaintReturnCallback | None = None,
 ):
     """Wrap the selected pg widget implementation, including opt-in observers.
 
@@ -118,6 +139,7 @@ def cadence_graphics_widget(
         paint_candidate: Callable[[QPaintEvent], PaintKey | None]
         custody_candidate: Callable[[QPaintEvent], object | None] | None
         custody_returned: Callable[[object], None] | None
+        paint_returned: PaintReturnCallback | None
 
         def paintEvent(self, event):
             try:
@@ -129,9 +151,41 @@ def cadence_graphics_widget(
                            else self.custody_candidate(event))
             except (AttributeError, RuntimeError, TypeError, ValueError):
                 custody = None
+            before_paint_ns = None
+            try:
+                before_paint_ns = perf_counter_ns()
+            except Exception:
+                pass
             super().paintEvent(event)
-            if key is not None:
-                self.paint_cadence.painted(key, perf_counter_ns())
+            sampled_after_return_ns = None
+            try:
+                sampled_after_return_ns = perf_counter_ns()
+            except Exception:
+                pass
+            if (before_paint_ns is not None and sampled_after_return_ns is not None
+                    and custody is not None and self.paint_returned is not None):
+                try:
+                    receipt_value = custody
+                    if isinstance(custody, tuple):
+                        receipt_value = tuple(
+                            receipt for item in custody
+                            if isinstance(item, PaneDeliveryObligationRef)
+                            and (receipt := paint_return_receipt(
+                                item, before_paint_ns, sampled_after_return_ns)) is not None
+                        )
+                    elif isinstance(custody, PaneDeliveryObligationRef):
+                        receipt_value = paint_return_receipt(
+                            custody, before_paint_ns, sampled_after_return_ns)
+                    if isinstance(receipt_value, tuple):
+                        for receipt in receipt_value:
+                            self.paint_returned(receipt)
+                    elif isinstance(receipt_value, PanePaintReturnReceipt):
+                        self.paint_returned(receipt_value)
+                except Exception:
+                    # Paint telemetry is optional and must never break rendering.
+                    pass
+            if key is not None and sampled_after_return_ns is not None:
+                self.paint_cadence.painted(key, sampled_after_return_ns)
             if custody is not None and self.custody_returned is not None:
                 self.custody_returned(custody)
 
@@ -140,4 +194,5 @@ def cadence_graphics_widget(
     widget.paint_candidate = paint_candidate
     widget.custody_candidate = custody_candidate
     widget.custody_returned = custody_returned
+    widget.paint_returned = paint_returned
     return widget

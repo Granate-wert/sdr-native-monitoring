@@ -128,7 +128,8 @@ class IndependentPaneSessionV2(QWidget):
         self.board_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.board = IndependentPaneBoardV2(
             handle.preparer, source_labels=handle.source_labels,
-            stage_callback=handle.report_delivery_stage, parent=self.board_scroll)
+            stage_callback=handle.report_delivery_stage,
+            paint_return_callback=handle.report_paint_return, parent=self.board_scroll)
         self.board_scroll.setWidget(self.board)
         self.board.selected_slot_changed.connect(self._refresh)
         self.board.set_rf_control_available(self._rf_eligible)
