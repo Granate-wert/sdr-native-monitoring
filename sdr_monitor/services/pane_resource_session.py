@@ -492,6 +492,14 @@ class PaneResourceSession:
         """Cached graph scalars only; never hardware, native drain or clock."""
         return self._delivery_ledger.snapshot()
 
+    def pane_delivery_stage_if_retained(self, ref: PaneDeliveryObligationRef) -> PaneDeliveryStage | None:
+        """Nonwaiting original-token observation; unknown is not permission.
+
+        No resource-owner lock, native access, clock or transition. Consumers
+        must preserve normal rendering when custody evidence is unavailable.
+        """
+        return self._delivery_ledger.delivery_stage_if_retained(ref)
+
     def record_pane_delivery_stage(self, ref: PaneDeliveryObligationRef,
                                    stage: PaneDeliveryStage, *,
                                    paint_return: PanePaintReturnReceipt | None = None) -> bool:

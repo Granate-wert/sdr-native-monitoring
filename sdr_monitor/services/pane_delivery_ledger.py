@@ -202,6 +202,28 @@ class PaneDeliveryLedger:
         self._events.append((event, size))
         self._bytes += size
 
+    def delivery_stage_if_retained(self, ref: PaneDeliveryObligationRef) -> Stage | None:
+        """Read the exact original token's cached stage without waiting.
+
+        None is UNKNOWN, never approval: unsupported/foreign/copied/evicted
+        tokens and a contended ledger all have no observed stage. Identity
+        comparison deliberately uses the original object, not recursive
+        equality over up to 2048 Sweep segments. No clock, counters, allocation,
+        native drain or hardware call. This is a point-in-time observation,
+        NOT a reservation; note() remains the authoritative transition.
+        """
+        if (not isinstance(ref, PaneDeliveryObligationRef)
+                or ref.graph_instance_id != self._graph_id
+                or not self._lock.acquire(blocking=False)):
+            return None
+        try:
+            retained = self._records.get(ref.sequence)
+            if retained is None or retained[0].ref is not ref:
+                return None
+            return retained[0].stage
+        finally:
+            self._lock.release()
+
     def note(self, ref: PaneDeliveryObligationRef, stage: Stage, *,
              paint_return: PanePaintReturnReceipt | None = None) -> bool:
         """Record only the actual boundary that owns the original reference."""

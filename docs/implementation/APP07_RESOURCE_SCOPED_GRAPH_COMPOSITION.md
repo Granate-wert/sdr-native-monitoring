@@ -6512,3 +6512,35 @@ latency, current four-source HIL, paired RF, visible Windows/DPI/DWM, soak or
 release. The last fully software-qualified diagnostic build remains exact
 9f4; it must not be relabelled as this source. APP-07/M8 remains PARTIAL,
 H02 TODO, and the full APP-00 through APP-14 objective remains open.
+
+## Exact retained delivery-stage prerequisite (M8-084 follow-up)
+
+An all-view Qt/real-ledger probe found that a completed Waterfall/persistence
+reference could be reattached after Stop, despite a passing focused suite.
+A scalar last-completed sequence cannot decide this: `<=` also refuses older
+still-pending asynchronous density work; `==` forgets completed predecessors.
+The rejected UI candidates have not been integrated or used for a new EXE.
+
+`PaneDeliveryLedger.delivery_stage_if_retained` and the corresponding
+`PaneResourceSession.pane_delivery_stage_if_retained` now expose a cached
+observation from the same bounded graph ledger. Only the original retained
+reference object is observed, without recursively comparing Sweep identities.
+Copied/foreign/evicted references and lock contention return `None` (unknown),
+not approval. The read uses a nonwaiting lock acquisition, samples no clock,
+changes no counters and allocates no history/tombstones. Existing graph limits
+remain 256 records, 128 events and a shared 1 MiB scalar component.
+
+This is a point-in-time observation, not an admission reservation or a new
+control authority. Normal stage transitions remain authoritative. The future
+UI integration must explicitly wire the lookup, preserve legacy callbacks,
+distinguish pending from terminal work and reconcile unavailable custody
+without inventing a paint receipt or changing acquisition/rendered-data policy.
+
+Seven new tests cover exact-reference identity, low pending versus newer
+terminal work, terminal eviction with protected pending work, nonwaiting
+contention, inert clock/counters/storage and the actual session facade. The
+root targeted set passes 41 tests (2.824s); scoped mypy passes two source files,
+and Ruff/compile/diff checks pass three files. A failed initial test fixture is
+retained separately. This is software prerequisite evidence, not accepted UI,
+physical latency, sustained HIL, soak, visible Windows or release qualification.
+The last fully software-qualified build remains 9f4; APP-07/M8 stays partial.
