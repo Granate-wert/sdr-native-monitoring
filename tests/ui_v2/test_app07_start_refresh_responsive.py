@@ -67,7 +67,12 @@ class StartRefreshResponsiveTests(unittest.TestCase):
             body_error = error
             body_traceback = error.__traceback__
         finally:
-            cleanup_error = self._dispose(product.graph, product.pool, product.handle, product.surface)
+            try:
+                cleanup_error = self._dispose(product.graph, product.pool, product.handle, product.surface)
+            except BaseException as error:
+                # Even an unexpected test-fixture cleanup error must not mask
+                # the assertion that first failed inside the owned surface.
+                cleanup_error = error
             if body_error is not None:
                 if cleanup_error is not None:
                     body_error.add_note(f"owned-surface cleanup also failed: {cleanup_error}")
@@ -106,13 +111,16 @@ class StartRefreshResponsiveTests(unittest.TestCase):
             attempt("flush deferred presentation deletion",
                     lambda: QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete))
 
-        if pool is not None and (pool.staged_resource_ids or pool.cleanup_pending_resource_ids):
-            attempt("close graph pool", pool.close)
+        def close_pool_if_needed() -> None:
+            if pool is not None and (pool.staged_resource_ids or pool.cleanup_pending_resource_ids):
+                pool.close()
+
+        attempt("close graph pool", close_pool_if_needed)
         if graph is not None:
             # Keep a direct graph shutdown attempt even if pool.close reported an
             # error, so a failed normal cleanup cannot strand the fake owner.
             attempt("shutdown graph live owner", graph.live.shutdown)
-        self.app.processEvents()
+        attempt("process Qt events", self.app.processEvents)
 
         checks = (
             ("staged resources", lambda: self.assertEqual(pool.staged_resource_ids, ())),
@@ -247,6 +255,46 @@ class StartRefreshResponsiveTests(unittest.TestCase):
         self.assertFalse(product.handle.pump.control_pending())
         self.assertEqual(product.handle.queue.pending_count, 0)
         self.assertTrue(all(future.done() for future in product.surface._futures))
+        self.assertFalse(is_qobject_valid(product.surface))
+
+    def test_cleanup_failure_does_not_mask_body_assertion(self) -> None:
+        body_error = AssertionError("injected body assertion")
+        close_error = RuntimeError("injected close cleanup failure")
+        original_close = IndependentPaneSessionV2.close
+
+        def close_then_fail(surface) -> None:
+            original_close(surface)
+            raise close_error
+
+        with self.assertRaises(AssertionError) as raised, \
+             patch.object(IndependentPaneSessionV2, "close", new=close_then_fail):
+            with self._owned_surface() as product:
+                raise body_error
+        self.assertIs(raised.exception, body_error)
+        self.assertTrue(any("close presentation" in note and str(close_error) in note
+                            for note in body_error.__notes__))
+        self.assertEqual(product.pool.staged_resource_ids, ())
+        self.assertEqual(product.pool.cleanup_pending_resource_ids, ())
+        self.assertEqual(product.handle.session.retained_resource_count, 0)
+        self.assertTrue(all(not worker._thread.is_alive()
+                            for worker in product.handle.pump._workers.values()))
+        self.assertFalse(product.handle.pump.control_pending())
+        self.assertEqual(product.handle.queue.pending_count, 0)
+        self.assertTrue(all(future.done() for future in product.surface._futures))
+        self.assertFalse(is_qobject_valid(product.surface))
+
+    def test_normal_cleanup_failure_is_reported(self) -> None:
+        close_error = RuntimeError("injected normal close cleanup failure")
+        original_close = IndependentPaneSessionV2.close
+
+        def close_then_fail(surface) -> None:
+            original_close(surface)
+            raise close_error
+
+        with self.assertRaisesRegex(AssertionError, "owned-surface cleanup failed.*close presentation"), \
+             patch.object(IndependentPaneSessionV2, "close", new=close_then_fail):
+            with self._owned_surface() as product:
+                pass
         self.assertFalse(is_qobject_valid(product.surface))
 
 
