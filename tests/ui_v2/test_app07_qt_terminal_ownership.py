@@ -135,6 +135,77 @@ class QtTerminalOwnershipTests(unittest.TestCase):
             self._finish_widget(spectrum)
             self._finish_widget(host)
 
+    def test_second_deferred_delete_failure_retires_spectrum_viewbox_before_retry(self):
+        host, _layout, spectrum, _waterfall = self._owned_pair()
+        real_send = QCoreApplication.sendPostedEvents
+        calls = []
+
+        def fail_on_second(receiver, event):
+            calls.append(receiver)
+            if len(calls) == 2:
+                raise RuntimeError("injected second Spectrum DeferredDelete failure")
+            return real_send(receiver, event)
+
+        try:
+            with patch(
+                "sdr_monitor.ui.v2.spectrum.plot_terminal.QCoreApplication.sendPostedEvents",
+                side_effect=fail_on_second,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "second Spectrum"):
+                    spectrum.release_graphics_after_shutdown()
+            plan = spectrum._graphics_terminal_ownership
+            self.assertIsNotNone(plan)
+            self.assertTrue(plan.structural_complete)
+            self.assertFalse(spectrum._graphics_terminal_released)
+            self.assertFalse(shiboken6.isValid(plan.view_box))
+            self.assertTrue(all(shiboken6.isValid(item) for item in plan.axes + plan.labels))
+            self.assertIs(spectrum._graphics_terminal_ownership, plan)
+            spectrum.release_graphics_after_shutdown()
+            self.assertTrue(spectrum._graphics_terminal_released)
+            self.assertIs(spectrum._graphics_terminal_ownership, plan)
+            self.assertTrue(all(not shiboken6.isValid(item)
+                                for item in plan.axes + plan.labels + (plan.view_box,)))
+            self.assertGreaterEqual(len(calls), 2)
+        finally:
+            self._finish_widget(host)
+
+    def test_second_deferred_delete_failure_retires_waterfall_viewbox_before_retry(self):
+        host, _layout, _spectrum, waterfall = self._owned_pair()
+        real_send = QCoreApplication.sendPostedEvents
+        calls = []
+
+        def fail_on_second(receiver, event):
+            calls.append(receiver)
+            if len(calls) == 2:
+                raise RuntimeError("injected second Waterfall DeferredDelete failure")
+            return real_send(receiver, event)
+
+        try:
+            with patch(
+                "sdr_monitor.ui.v2.spectrum.plot_terminal.QCoreApplication.sendPostedEvents",
+                side_effect=fail_on_second,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "second Waterfall"):
+                    waterfall.release_presentation_after_shutdown()
+            plan = waterfall._graphics_terminal_ownership
+            self.assertIsNotNone(plan)
+            self.assertTrue(plan.structural_complete)
+            self.assertFalse(waterfall._graphics_terminal_released)
+            self.assertFalse(shiboken6.isValid(plan.view_box))
+            self.assertTrue(all(shiboken6.isValid(item) for item in plan.axes + plan.labels))
+            self.assertIs(waterfall._graphics_terminal_ownership, plan)
+            metrics_after_failure = waterfall.metrics
+            waterfall.release_presentation_after_shutdown()
+            self.assertTrue(waterfall._graphics_terminal_released)
+            self.assertIs(waterfall._graphics_terminal_ownership, plan)
+            self.assertTrue(all(not shiboken6.isValid(item)
+                                for item in plan.axes + plan.labels + (plan.view_box,)))
+            self.assertEqual(waterfall.metrics.local_history_clears,
+                             metrics_after_failure.local_history_clears)
+            self.assertGreaterEqual(len(calls), 2)
+        finally:
+            self._finish_widget(host)
+
     def test_foreign_wrapper_is_refused_before_partial_retry_can_launder_ownership(self):
         host, _layout, spectrum, _waterfall = self._owned_pair()
         plan = capture_plot_terminal_ownership(spectrum.plot_item)
