@@ -6699,3 +6699,30 @@ bounded input and absence of owner actions, not hardware performance. APP07-H02
 still requires actual source/layout profiles, measured coverage, Spectrum and
 Waterfall rates, current UI/render observations and latency evidence. Physical,
 visible Windows, DWM and release qualification remain separate gates.
+
+## Cached paint diagnostic observation (M8-086, source only)
+
+`capture_pane_paint_observation(reader)` reads the SAME graph's existing
+immutable scalar ledger once and derives its conditional summary from that
+exact snapshot. Both raw event/ref/clock evidence and summary are returned;
+no second native drain, SDR open, forced repaint or resource-owner lock.
+No persistent buffer is created by this API. It is a diagnostic consumer,
+not work added to acquisition or paint callbacks.
+
+The observation envelope brackets snapshot copying and summary calculation.
+Its query cost is not ready-to-paint latency and excludes executor scheduling,
+JSON serialization and log output. Only the retained built-in perf_counter_ns
+has a declared observation clock; injected clocks stay unknown. Snapshot
+clock provenance is independently retained, never overwritten. Bad clock
+samples/regression refuse the observation without mutating the ledger.
+
+Repeated snapshots overlap. Their counts/quantiles must NOT be added to form
+window FPS or lifetime percentiles. A later window audit must deduplicate
+original graph/event IDs and disclose crossing cohorts, evictions, unknowns,
+query cost and sampling/storage losses. This API supplies evidence for that
+audit; it does not itself perform or qualify such a window measurement.
+
+Private HIL wiring may execute this cached read on its existing control
+executor and emit scalar evidence. That preparation and fake-session tests
+are not a physical HIL execution, hardware recovery, performance baseline,
+visible Windows/DWM proof, matching frozen EXE or release qualification.
