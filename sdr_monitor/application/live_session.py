@@ -46,6 +46,7 @@ from ..services.owner_journal_scope import cached_owner_journals
 from ..domain.layer_journal import LayerJournalSnapshot
 from ..services.pane_layer_admission import cached_layer_journals
 from ..services.calibration_service import CalibrationService, CalibratedLiveSpectrum
+from ..services.receiver_calibration import ReceiverCalibrationRegistry
 from ..services.live_calibration_signature import (
     CalibrationFrontendContext, build_current_frame_calibration_signature,
 )
@@ -630,6 +631,26 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
         if (current.session_id != result.session_id or signature != result.signature
                 or not calibration.is_current_selection(result)):
             raise CalibrationProfileError("calibration owner or selected profile changed during preparation")
+        return result
+
+    def calibrated_receiver_spectrum(
+        self, registry: ReceiverCalibrationRegistry, endpoint: ReceiverEndpoint,
+        frontend: CalibrationFrontendContext,
+    ) -> CalibratedLiveSpectrum:
+        """Registry-bound pull; retired or rebound RX selection scopes refuse."""
+        if not isinstance(registry, ReceiverCalibrationRegistry):
+            raise CalibrationProfileError("typed receiver calibration registry required")
+        initial = self.current_snapshot()
+        if initial.device is None:
+            raise CalibrationProfileError("current admitted device required")
+        service = registry.for_device(initial.device, endpoint)
+        result = self.calibrated_current_spectrum(service, endpoint, frontend)
+        current = self.current_snapshot()
+        signature = build_current_frame_calibration_signature(current, result.raw, endpoint, frontend)
+        if (current.device is None or current.session_id != result.session_id or signature != result.signature
+                or not registry.is_current_service(current.device, endpoint, service)
+                or not service.is_current_selection(result)):
+            raise CalibrationProfileError("receiver calibration scope changed during preparation")
         return result
 
     def current_analyzer_bundle(self) -> AnalyzerFrameBundle | None:

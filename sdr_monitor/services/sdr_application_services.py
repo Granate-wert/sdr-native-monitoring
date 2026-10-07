@@ -15,6 +15,7 @@ from .native_sweep import NativeLiveSweepService
 from .profile_store import LiveProfileStore
 from .calibration_service import CalibrationService
 from .calibration_store import CalibrationProfileStore
+from .receiver_calibration import ReceiverCalibrationRegistry
 from .sweep_session import InMemorySweepService
 from .recording_session import RecordingService
 from .replay_session import ReplayService
@@ -222,6 +223,13 @@ class SdrApplicationServices:
     analyzer_rtl: RtlAnalyzerService | None = None
     analyzer_hackrf_sweep: HackrfSweepDisplayService | None = None
     analyzer_tinysa: TinySaCommonAnalyzerService | None = None
+    receiver_calibration: ReceiverCalibrationRegistry | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        # Share files, not activation. Custom protocol ports do not silently
+        # receive a fabricated default store or pretend to support RX scopes.
+        if isinstance(self.calibration, CalibrationService):
+            object.__setattr__(self, 'receiver_calibration', ReceiverCalibrationRegistry(self.calibration.store))
 
 
 def build_default_sdr_services() -> SdrApplicationServices:

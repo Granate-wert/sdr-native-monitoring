@@ -6906,3 +6906,19 @@ Callers must use a distinct selection service per endpoint and invoke the
 pull from a preparation worker; automatic V2 presenter/render wiring and the
 endpoint selection registry are still pending. The native/raw bundle remains
 unchanged and must not be relabelled as calibrated by this optional operation.
+
+`SdrApplicationServices.receiver_calibration` now assembles a bounded
+`ReceiverCalibrationRegistry` when its calibration port is a concrete
+`CalibrationService`. Custom protocol-only ports remain explicitly unsupported
+instead of receiving a fabricated store. Scope identity is admitted device/
+firmware/adapter plus logical source, physical stream resource and single RX;
+pane/endpoint captions do not determine it. Same RX bindings share selection;
+RX1/RX2 and changed identities have separate selections sharing file storage.
+Lookup performs no RF IO or activation and capacity exhaustion refuses without
+silent eviction. Explicit release/clear invalidate retained receipts.
+
+`LiveSessionApplicationService.calibrated_receiver_spectrum` obtains that scope
+from its current device, uses the same-owner analytical pull, then checks
+current scope membership too. A retired service cannot be admitted by retaining
+and reactivating an old reference. This remains explicit worker-side analytics;
+V2 profile controls/preparation/render integration are not automatic yet.
