@@ -120,4 +120,3 @@ class CapturedCalibrationLane:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-
