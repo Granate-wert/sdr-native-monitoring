@@ -6761,3 +6761,26 @@ This fixes storage publication, not paired-RX calibration integration. There
 is no changed calibration math/applicability/units or RF/GUI behavior. It is
 not proof of power-loss durability, hostile filesystem/hardlink protection,
 cross-host/network-filesystem behavior or absolute RF accuracy.
+
+### Explicit RX calibration profile contract
+
+`CalibrationSignature.receiver_chain` is one typed `ReceiverChain.RX1` or
+`RX2`, or absent/unknown. It is not BOTH, an RF connector, a device-name suffix,
+or independent tuner evidence. Profiles with explicit RX use schema3 and
+compare this field during applicability. Different/unknown current RX refuses
+such a profile; settings changes deactivate an incompatible active profile.
+
+Legacy SDR schema1 and instrument schema2 retain their original serialization
+and fingerprints; missing receiver is never silently RX1. A legacy unscoped
+profile refuses an explicitly scoped current RX, but legacy-to-legacy behavior
+is preserved. Schema3 requires a canonical rx1/rx2 field; schema1/2 cannot hide
+one. Instrument corrections may not declare a digital SDR RX. Old readers
+reject schema3 rather than reinterpret it as schema1. No automatic migration
+or existing finalized-profile rewrite occurs.
+
+This is a domain/service prerequisite. Product adapters must still construct
+exact signatures from admitted source/current configuration and typed endpoint
+and apply corrections to original analytical data with coverage/revision/unit
+provenance. Current live SDR adapters still report uncalibrated; this contract
+alone does not turn native or paired live data into calibrated dBm or prove RF
+accuracy. Native DSP/queues/Fs/FFT/recording and UI controls are unchanged.

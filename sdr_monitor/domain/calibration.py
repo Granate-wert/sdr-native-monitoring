@@ -15,6 +15,8 @@ from typing import Mapping, Sequence, SupportsFloat, SupportsIndex, cast
 
 import numpy as np
 
+from .receiver_topology import ReceiverChain
+
 
 class CalibrationProfileError(ValueError):
     pass
@@ -156,8 +158,14 @@ class CalibrationSignature:
     firmware_fingerprint: str = "unknown"
     temperature_range_c: tuple[float, float] | None = None
     instrument_context: InstrumentCalibrationContext | None = None
+    # Absent in legacy profiles: unknown, never silently RX1 or BOTH.
+    receiver_chain: ReceiverChain | None = None
 
     def __post_init__(self) -> None:
+        if self.receiver_chain is not None and not isinstance(self.receiver_chain, ReceiverChain):
+            raise CalibrationProfileError("calibration requires one typed RX chain, not BOTH or a label")
+        if self.instrument_context is not None and self.receiver_chain is not None:
+            raise CalibrationProfileError("instrument correction cannot declare a digital SDR RX chain")
         for name in (
             "device_serial",
             "backend",
@@ -208,9 +216,12 @@ class CalibrationSignature:
             object.__setattr__(self, "temperature_range_c", (low, high))
 
     def to_dict(self) -> dict[str, object]:
-        result = {name: getattr(self, name) for name in self.__dataclass_fields__ if name != "instrument_context"}
+        result = {name: getattr(self, name) for name in self.__dataclass_fields__
+                  if name not in ("instrument_context", "receiver_chain")}
         if self.instrument_context is not None:
             result["instrument_context"] = self.instrument_context.to_dict()
+        if self.receiver_chain is not None:
+            result["receiver_chain"] = self.receiver_chain.value
         return result
 
     @classmethod
@@ -223,6 +234,13 @@ class CalibrationSignature:
         if raw_instrument is not None and not isinstance(raw_instrument, Mapping):
             raise CalibrationProfileError("instrument context must be an object")
         instrument = InstrumentCalibrationContext.from_dict(raw_instrument) if isinstance(raw_instrument, Mapping) else None
+        raw_receiver = payload.get("receiver_chain")
+        if raw_receiver is not None and type(raw_receiver) is not str:
+            raise CalibrationProfileError("calibration RX chain must be a canonical string")
+        try:
+            receiver = None if raw_receiver is None else ReceiverChain(raw_receiver)
+        except (TypeError, ValueError) as error:
+            raise CalibrationProfileError("unknown calibration RX chain") from error
         def numeric(name: str) -> float | None:
             value = payload.get(name, getattr(defaults, name))
             return None if instrument is not None and value is None else _finite(value, name)
@@ -262,6 +280,7 @@ class CalibrationSignature:
             ),
             temperature_range_c=temperature,
             instrument_context=instrument,
+            receiver_chain=receiver,
         )
 
 
@@ -383,7 +402,8 @@ class CalibrationProfile:
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": "sdr-calibration-profile",
-            "schema_version": 2 if self.signature.instrument_context is not None else 1,
+            "schema_version": (3 if self.signature.receiver_chain is not None
+                               else 2 if self.signature.instrument_context is not None else 1),
             "profile_id": self.profile_id,
             "profile_version": self.profile_version,
             "finalized": self.finalized,
@@ -413,8 +433,8 @@ class CalibrationProfile:
         schema_version = payload.get("schema_version")
         if (
             payload.get("schema") != "sdr-calibration-profile"
-            or isinstance(schema_version, bool)
-            or schema_version not in (1, 2)
+            or type(schema_version) is not int
+            or schema_version not in (1, 2, 3)
         ):
             raise CalibrationProfileError("unknown calibration profile schema")
         raw_points = payload.get("points")
@@ -423,6 +443,9 @@ class CalibrationProfile:
             raise CalibrationProfileError("profile requires signature and points")
         if ((schema_version == 2) != (signature.get("instrument_context") is not None)):
             raise CalibrationProfileError("profile schema version does not match instrument/SDR semantics")
+        if ((schema_version == 3) != (signature.get("receiver_chain") is not None)
+                or schema_version != 3 and "receiver_chain" in signature):
+            raise CalibrationProfileError("profile schema version does not match explicit RX semantics")
         if schema_version == 2 and not 2 <= len(raw_points) <= 10001:
             raise CalibrationProfileError("instrument correction curve exceeds its bounded point count")
         if any(not isinstance(item, Mapping) for item in raw_points):
@@ -497,6 +520,7 @@ def check_applicability(profile: CalibrationProfile, settings: CalibrationSignat
         ("Device identity", "device_identity_key"), ("Firmware", "firmware_fingerprint"),
         ("Temperature range", "temperature_range_c"),
         ("Instrument context", "instrument_context"),
+        ("Receiver chain", "receiver_chain"),
     )
     rows = []
     for label, name in fields:
