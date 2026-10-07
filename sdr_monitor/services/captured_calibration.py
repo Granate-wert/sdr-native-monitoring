@@ -9,7 +9,9 @@ from typing import ContextManager
 from ..domain.calibration import CalibrationApplicability, CalibrationProfile, CalibrationProfileError, CalibrationSignature
 from ..domain.live import LiveSnapshot
 from ..domain.receiver_topology import ReceiverEndpoint
-from .calibration_service import CalibratedLiveSpectrum, CalibrationSelectionReceipt, CalibrationService
+from .calibration_service import (
+    CalibratedLiveSpectrum, CalibratedSpectrumInput, CalibrationSelectionReceipt, CalibrationService,
+)
 from .live_calibration_signature import CalibrationFrontendContext, build_current_frame_calibration_signature
 from .receiver_calibration import ReceiverCalibrationRegistry
 
@@ -28,6 +30,22 @@ def _context(snapshot: LiveSnapshot) -> tuple[object, ...]:
             frame.accumulation_id, frame.dropped_samples_before, frame.dropped_iq_blocks_before,
             frame.numerical_provenance,
             frame.center_frequency_hz, frame.sample_rate_hz, frame.fft_size, frame.hop_size)
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedCalibrationInput:
+    """Admitted raw-only handle; no persistence/snapshot arrays are retained."""
+
+    captured: CalibratedSpectrumInput
+    ordinal: int
+    control_revision: int
+    context: tuple[object, ...]
+    authority: object
+    service: CalibrationService
+
+    @property
+    def derived_output_bytes(self) -> int:
+        return self.captured.derived_output_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +144,14 @@ class CapturedCalibrationLane:
                 return self._registry.apply_selection(current.device, self._endpoint, preview.service,
                     preview.profile, signature, preview.selection)
 
-    def prepare(self) -> CapturedCalibratedPublication:
+    def capture(self, admit_source: Callable[[CapturedCalibrationInput], bool]) -> CapturedCalibrationInput:
+        """Admit exact exposed backing before consumer custody/correction.
+
+        Synchronous worker callback, outside application/RF and selection locks.
+        It must be admission, not accounting only. No correction follows refusal.
+        """
+        if not callable(admit_source):
+            raise CalibrationProfileError("explicit source admission callback required")
         with self._lock:
             if self._closed:
                 raise CalibrationProfileError("analytical binding is closed")
@@ -138,12 +163,51 @@ class CapturedCalibrationLane:
             service = self._registry.for_device(snapshot.device, self._endpoint)
             self._ordinal += 1
             ordinal = self._ordinal
-        # Exact immutable captured publication; no acquisition/control lock during math.
-        analytical = service.correct_current_spectrum(snapshot, self._endpoint, self._frontend)
-        result = CapturedCalibratedPublication(analytical, ordinal, revision, context, self._authority, service)
+            captured = service.capture_spectrum_input(snapshot, self._endpoint, self._frontend)
+            handle = CapturedCalibrationInput(captured, ordinal, revision, context, self._authority, service)
+        # Snapshot is source-side transient custody; only raw-only handle is admitted.
+        del snapshot
+        if admit_source(handle) is not True:
+            raise CalibrationProfileError("captured source memory admission refused")
+        if not self.is_valid_input(handle):
+            raise CalibrationProfileError("captured analytical input expired during admission")
+        return handle
+
+    def is_valid_input(self, handle: CapturedCalibrationInput) -> bool:
+        with self._lock:
+            if (self._closed or not isinstance(handle, CapturedCalibrationInput)
+                    or handle.authority is not self._authority or handle.ordinal < self._delivered):
+                return False
+            try:
+                revision, current = self._observe()
+                if current.device is None or current.spectrum is None:
+                    return False
+                signature = build_current_frame_calibration_signature(
+                    current, current.spectrum, self._endpoint, self._frontend)
+                return (revision == handle.control_revision and _context(current) == handle.context
+                        and signature == handle.captured.signature
+                        and self._registry.is_current_service(current.device, self._endpoint, handle.service)
+                        and handle.service.is_current_input(handle.captured))
+            except (CalibrationProfileError, RuntimeError):
+                return False
+
+    def correct(self, handle: CapturedCalibrationInput) -> CapturedCalibratedPublication:
+        """Caller reserves declared outputs first; this never recaptures raw."""
+        if not self.is_valid_input(handle):
+            raise CalibrationProfileError("captured analytical input expired before correction")
+        analytical = handle.service.correct_captured_input(handle.captured)
+        result = CapturedCalibratedPublication(analytical, handle.ordinal, handle.control_revision,
+                                               handle.context, handle.authority, handle.service)
         if not self.is_valid(result):
             raise CalibrationProfileError("captured analytical context expired during preparation")
         return result
+
+    def prepare(self) -> CapturedCalibratedPublication:
+        """Legacy unbudgeted analytical convenience, NOT UI admission guarantee.
+
+        Product UI must use capture(admit_sources), reserve, correct, commit.
+        """
+        return self.correct(self.capture(lambda _: True))
 
     def is_valid(self, result: CapturedCalibratedPublication) -> bool:
         """Same-context cadence advancement is allowed; controls/selection are not."""

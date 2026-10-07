@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import threading
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,24 @@ class CalibrationSelectionReceipt:
 
     owner: object
     revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class CalibratedSpectrumInput:
+    """Exact raw-only input and immutable profile; no whole snapshot retention."""
+
+    raw: LiveSpectrumFrame
+    session_id: str
+    signature: CalibrationSignature
+    profile: CalibrationProfile | None
+    selection: CalibrationSelectionReceipt
+
+    @property
+    def derived_output_bytes(self) -> int:
+        count = int(self.raw.values.size)
+        if count < 1 or count > sys.maxsize // 16:
+            raise CalibrationProfileError("correction output size is not representable")
+        return count * 16  # two owned float64 arrays, values and uncertainty
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +227,52 @@ class CalibrationService:
                     and result.profile_fingerprint == (
                         None if self._active is None else self._active.fingerprint))
 
+    def capture_spectrum_input(self, current: LiveSnapshot, endpoint: ReceiverEndpoint,
+                               frontend: CalibrationFrontendContext) -> CalibratedSpectrumInput:
+        """Source-side capture only, no correction or consumer memory admission."""
+        if not isinstance(current, LiveSnapshot) or current.spectrum is None:
+            raise CalibrationProfileError("typed current spectrum required")
+        frame = current.spectrum
+        signature = build_current_frame_calibration_signature(current, frame, endpoint, frontend)
+        if (not np.all(np.isfinite(frame.frequencies_hz)) or not np.all(np.isfinite(frame.values))
+                or frame.values.size == 0 or np.any(np.diff(frame.frequencies_hz) <= 0)):
+            raise CalibrationProfileError("finite ordered current spectrum required")
+        with self._lock:
+            result = CalibratedSpectrumInput(frame, current.session_id, signature, self._active,
+                CalibrationSelectionReceipt(self._selection_owner, self._selection_revision))
+        result.derived_output_bytes  # checked bound before output allocation
+        return result
+
+    def is_current_input(self, captured: CalibratedSpectrumInput) -> bool:
+        if not isinstance(captured, CalibratedSpectrumInput):
+            return False
+        with self._lock:
+            return (captured.selection.owner is self._selection_owner
+                    and captured.selection.revision == self._selection_revision
+                    and (None if captured.profile is None else captured.profile.fingerprint)
+                    == (None if self._active is None else self._active.fingerprint))
+
+    def correct_captured_input(self, captured: CalibratedSpectrumInput) -> CalibratedLiveSpectrum:
+        """Correct exactly captured input/profile, without observing/recapturing RX."""
+        if not self.is_current_input(captured):
+            raise CalibrationProfileError("selected profile changed before captured correction")
+        bound = captured.derived_output_bytes
+        raw, profile = captured.raw, captured.profile
+        result = apply_calibration(raw.values, raw.frequencies_hz, profile, captured.signature)
+        outputs = (result.values, result.uncertainty_db)
+        if (any(value.dtype != np.dtype('float64') or value.shape != raw.values.shape
+                or value.base is not None for value in outputs)
+                or sum(value.nbytes for value in outputs) != bound):
+            raise CalibrationProfileError("correction output exceeds declared owned-array layout")
+        if not self.is_current_input(captured):
+            raise CalibrationProfileError("selected profile changed during captured correction")
+        for value in outputs:
+            value.setflags(write=False)
+        return CalibratedLiveSpectrum(raw, captured.session_id, captured.signature, result,
+            None if profile is None else profile.profile_version,
+            None if profile is None else profile.fingerprint,
+            captured.selection.revision, captured.selection.owner)
+
     def correct_current_spectrum(
         self, current: LiveSnapshot, endpoint: ReceiverEndpoint,
         frontend: CalibrationFrontendContext,
@@ -248,4 +313,4 @@ class CalibrationService:
         return MeasurementValue(measurement_id, title, value, unit, quality, uncertainty_db, frame_sequence, config_generation, source_id, calibration_status, warning)
 
 
-__all__ = ["CalibrationService", "CalibratedLiveSpectrum", "CalibrationSelectionReceipt"]
+__all__ = ["CalibrationService", "CalibratedLiveSpectrum", "CalibrationSelectionReceipt", "CalibratedSpectrumInput"]

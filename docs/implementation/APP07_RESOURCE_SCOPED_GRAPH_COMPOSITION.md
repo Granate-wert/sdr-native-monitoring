@@ -6968,3 +6968,29 @@ Same-RX panes share selection revisions; different RX scopes do not.
 This running single-Live command boundary performs no RF IO, file write or
 Start. Stopped/no-frame selection workflow, paired/Sweep owner authority and
 V2 controls/render integration remain required work, not implicitly implemented.
+
+### Exact-source pre-admission — package 103
+
+The display path must use `lane.capture(admit_source)` before correction. It
+authenticates and captures the exact raw publication, immutable selected profile
+and selection receipt, then invokes the synchronous worker admission callback
+outside application/RF and selection locks. Refusal performs no correction and
+returns no consumer handle. The frozen handle retains raw plus immutable/scalar
+authority metadata, not the whole LiveSnapshot or persistence arrays.
+
+Use the SAME aggregate presentation budget in this order: admit the handle's
+actual exposed backing roots; reserve `handle.derived_output_bytes` against that
+handle; `lane.correct(handle)` without recapture; commit the actual result roots;
+then perform normal validity/delivery checks. Source admission is not replaced
+by `observe()` or an estimate based on visible slice length. The declared output
+layout is two owned float64 arrays (values and uncertainty), checked before/after
+correction. Incompatible/no-profile/out-of-coverage fallback has the same bound.
+
+Selection/control/context invalidation before or during correction refuses;
+ordinary same-context producer advancement does not replace the captured input.
+Caller-owned reservation scopes release on failure/cancel/refusal/Close. Existing
+`prepare()` remains an explicitly unbudgeted analytical convenience and MUST NOT
+be used as the UI source-admission guarantee. This bounds admitted exposed raw
+backing and retained outputs, not numerical scratch, opaque native allocator
+capacity, Qt storage, total RSS or transient peaks. No budget increase is made.
+UI wiring and owner-specific paired/Sweep/stopped workflows remain required.
