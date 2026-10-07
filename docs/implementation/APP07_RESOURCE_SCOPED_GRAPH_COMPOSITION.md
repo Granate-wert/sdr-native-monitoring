@@ -6867,3 +6867,20 @@ checks for finite numbers, exact Python integer types, ordered frequency
 grids, matching reference planes or applicability. JSON Schema accepts an
 integral float such as 3.0 where the domain deliberately rejects it.
 Neither validation nor a serialized profile proves physical RF accuracy.
+
+### Selected current-frame analytical correction
+
+`CalibrationService.correct_current_spectrum` joins the admitted current
+owner snapshot to an explicit RX/frontend and captures one immutable selected
+profile under the service lock. Computation runs outside the lock; selection
+changes cannot mix profile ID/version/fingerprint within that result.
+The result retains the exact raw frame and session receipt plus separate
+read-only corrected values/uncertainty. Native frame arrays, quality, coverage,
+epoch, recordings and history are not rewritten. Missing/incompatible profiles
+or any bin outside coverage retain whole-frame raw units; no implicit
+activation, expert applicability bypass or extrapolation is performed.
+Finite ordered grids are required. A completed result is a captured revision,
+not a promise that it remains selected forever: downstream publications must
+check current owner admission and selected profile revision before display.
+Automatic owner/presenter integration and paired independent profile stores
+remain pending; this service API alone does not make Live calibrated.

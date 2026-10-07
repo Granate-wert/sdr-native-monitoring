@@ -5,8 +5,11 @@ from __future__ import annotations
 import csv
 import io
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from ..domain.calibration import (
     CalibrationApplicability,
@@ -15,9 +18,30 @@ from ..domain.calibration import (
     CalibrationProfileError,
     CalibrationSignature,
     MeasurementValue,
+    CalibratedArray,
+    apply_calibration,
     preview_calibration_csv,
 )
 from .calibration_store import CalibrationProfileStore
+from ..domain.live import LiveSnapshot, LiveSpectrumFrame
+from ..domain.receiver_topology import ReceiverEndpoint
+from .live_calibration_signature import CalibrationFrontendContext, build_current_frame_calibration_signature
+
+
+@dataclass(frozen=True, slots=True)
+class CalibratedLiveSpectrum:
+    """Separate analytical values, retaining the exact raw frame and owner receipt.
+
+    Does not relabel native frames, waterfall history, recording or quality.
+    The snapshot must be fetched from the current owner by the caller.
+    """
+
+    raw: LiveSpectrumFrame
+    session_id: str
+    signature: CalibrationSignature
+    result: CalibratedArray
+    profile_version: int | None
+    profile_fingerprint: str | None
 
 
 class CalibrationService:
@@ -132,8 +156,41 @@ class CalibrationService:
         with self._lock:
             return self._active
 
+    def correct_current_spectrum(
+        self, current: LiveSnapshot, endpoint: ReceiverEndpoint,
+        frontend: CalibrationFrontendContext,
+    ) -> CalibratedLiveSpectrum:
+        """Atomically capture selected profile and correct an admitted current frame.
+
+        No implicit profile activation, expert override, extrapolation or RF IO.
+        Invalid metadata refuses; incompatible/missing profiles retain raw units.
+        Selection changes cannot split the result's ID/version/fingerprint.
+        This result is not automatic product Live/UI integration.
+        """
+        if not isinstance(current, LiveSnapshot):
+            raise CalibrationProfileError("typed current owner snapshot required")
+        frame = current.spectrum
+        if frame is None:
+            raise CalibrationProfileError("current spectrum required")
+        signature = build_current_frame_calibration_signature(current, frame, endpoint, frontend)
+        frequencies = frame.frequencies_hz
+        if (not np.all(np.isfinite(frequencies)) or not np.all(np.isfinite(frame.values))
+                or frequencies.size == 0 or np.any(np.diff(frequencies) <= 0)):
+            raise CalibrationProfileError("finite ordered current spectrum required")
+        with self._lock:
+            profile = self._active
+        # Profile objects are immutable. Heavy math runs outside the selection lock.
+        result = apply_calibration(frame.values, frequencies, profile, signature)
+        result.values.setflags(write=False)
+        result.uncertainty_db.setflags(write=False)
+        return CalibratedLiveSpectrum(
+            frame, current.session_id, signature, result,
+            None if profile is None else profile.profile_version,
+            None if profile is None else profile.fingerprint,
+        )
+
     def make_measurement(self, measurement_id: str, title: str, value: float | None, unit: str, *, quality: Any, uncertainty_db: float | None, frame_sequence: int | None, config_generation: int | None, source_id: str, calibration_status: Any, warning: str = "") -> MeasurementValue:
         return MeasurementValue(measurement_id, title, value, unit, quality, uncertainty_db, frame_sequence, config_generation, source_id, calibration_status, warning)
 
 
-__all__ = ["CalibrationService"]
+__all__ = ["CalibrationService", "CalibratedLiveSpectrum"]
