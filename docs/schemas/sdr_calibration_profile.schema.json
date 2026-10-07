@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdr-native-monitoring.local/schemas/sdr_calibration_profile.schema.json",
+  "title": "Legacy backend calibration profile (schema1 only)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "profile_id", "profile_version", "finalized", "signature", "reference_plane", "interpolation_method", "valid_start_hz", "valid_stop_hz", "created_at", "reference_equipment", "notes", "points"],
+  "properties": {
+    "schema": {"const": "sdr-calibration-profile"},
+    "schema_version": {"type": "integer", "const": 1},
+    "profile_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "profile_version": {"type": "integer", "minimum": 1},
+    "finalized": {"const": true},
+    "signature": {
+      "$ref": "sdr_monitor_calibration_profile.schema.json#/$defs/signature",
+      "not": {"anyOf": [{"required": ["receiver_chain"]}, {"required": ["instrument_context"]}]}
+    },
+    "reference_plane": {"type": "string", "minLength": 1},
+    "interpolation_method": {"const": "linear"},
+    "valid_start_hz": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "valid_stop_hz": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "created_at": {"type": "string", "minLength": 1},
+    "reference_equipment": {"type": "string"},
+    "notes": {"type": "string"},
+    "points": {"type": "array", "minItems": 2, "items": {
+      "$ref": "sdr_monitor_calibration_profile.schema.json#/$defs/point",
+      "required": ["reference_dbm", "measured_dbfs"]
+    }}
+  }
+}

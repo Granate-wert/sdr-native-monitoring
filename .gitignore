@@ -50,6 +50,11 @@ recordings/
 !/docs/implementation/APP07_HACKRF_RTBW_PANE_OWNER_CONTRACT.md
 !/docs/implementation/APP07_THREE_OWNER_TRACE_CONTRACT.md
 !/docs/implementation/APP07_RESOURCE_SCOPED_GRAPH_COMPOSITION.md
+# Public machine-readable calibration contracts only; other docs stay local.
+!/docs/schemas/
+/docs/schemas/*
+!/docs/schemas/sdr_calibration_profile.schema.json
+!/docs/schemas/sdr_monitor_calibration_profile.schema.json
 /TZ_SDR_native_monitoring/
 
 # Local logs, screenshots and acceptance output

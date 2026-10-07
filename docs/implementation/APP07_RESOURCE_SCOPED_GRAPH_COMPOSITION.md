@@ -6849,3 +6849,21 @@ calls without settings retain their existing dBFS/bin convention. Corrections
 never rewrite the original frame arrays, epoch, quality or coverage. Native
 Live absolute-unit guard is unchanged; automatic adapter/UI activation and
 scoped corrected analytical publications remain pending.
+
+### Public calibration serialization schemas
+
+`docs/schemas/sdr_calibration_profile.schema.json` describes the legacy
+schema1 serializer, including nullable undeclared range bounds.
+`docs/schemas/sdr_monitor_calibration_profile.schema.json` describes canonical
+UI V2 finalized schema1 (legacy SDR), schema2 (instrument correction), and
+schema3 (explicit single RX). These contracts are separate: a legacy payload
+with null bounds is not a canonical V2 serialization. Schema3 requires rx1/rx2;
+schema2 cannot fabricate SDR sampling/gain/FFT fields or a digital RX.
+
+Offline tests resolve both schemas through a local registry, without HTTP
+fetches. `jsonschema==4.25.1` is a development dependency, not a runtime
+hardware admission gate. Structural validation does not replace domain
+checks for finite numbers, exact Python integer types, ordered frequency
+grids, matching reference planes or applicability. JSON Schema accepts an
+integral float such as 3.0 where the domain deliberately rejects it.
+Neither validation nor a serialized profile proves physical RF accuracy.

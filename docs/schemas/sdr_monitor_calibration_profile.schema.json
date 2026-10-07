@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdr-native-monitoring.local/schemas/sdr_monitor_calibration_profile.schema.json",
+  "title": "UI V2 backend canonical finalized calibration profiles, schemas1/2/3",
+  "$comment": "Structural canonical serialization contract. Domain guards additionally enforce finite numbers, exact Python integer types, ordered points/ranges, reference-plane equality and profile applicability. Validation does not prove RF accuracy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "profile_id", "profile_version", "finalized", "signature", "reference_plane", "interpolation_method", "valid_start_hz", "valid_stop_hz", "created_at", "reference_equipment", "notes", "points"],
+  "properties": {
+    "schema": {"const": "sdr-calibration-profile"},
+    "schema_version": {"type": "integer", "enum": [1, 2, 3]},
+    "profile_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "profile_version": {"type": "integer", "minimum": 1},
+    "finalized": {"const": true},
+    "signature": {"$ref": "#/$defs/signature"},
+    "reference_plane": {"$ref": "#/$defs/text"},
+    "interpolation_method": {"const": "linear"},
+    "valid_start_hz": {"$ref": "#/$defs/positive"},
+    "valid_stop_hz": {"$ref": "#/$defs/positive"},
+    "created_at": {"$ref": "#/$defs/text"},
+    "reference_equipment": {"type": "string"},
+    "notes": {"type": "string"},
+    "points": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/point"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"schema_version": {"const": 2}}},
+      "then": {
+        "properties": {
+          "signature": {
+            "required": ["instrument_context", "device_family", "adapter_id", "device_identity_key", "firmware_fingerprint"],
+            "not": {"required": ["receiver_chain"]},
+            "properties": {
+              "backend": {"const": "instrument"}, "device_family": {"const": "tinysa"},
+              "sample_rate_hz": {"type": "null"}, "analog_bandwidth_hz": {"type": "null"},
+              "gain_mode": {"type": "null"}, "manual_gain_db": {"type": "null"},
+              "window_normalization_version": {"type": "null"}, "fft_unit_convention": {"type": "null"},
+              "temperature_range_c": {"type": "null"}
+            }
+          },
+          "points": {"maxItems": 10001, "items": {"not": {"anyOf": [{"required": ["reference_dbm"]}, {"required": ["measured_dbfs"]}]}}}
+        }
+      },
+      "else": {
+        "properties": {
+          "signature": {
+            "not": {"required": ["instrument_context"]},
+            "properties": {
+              "sample_rate_hz": {"$ref": "#/$defs/positive"}, "analog_bandwidth_hz": {"$ref": "#/$defs/positive"},
+              "gain_mode": {"$ref": "#/$defs/text"}, "manual_gain_db": {"type": "number"},
+              "window_normalization_version": {"$ref": "#/$defs/text"}, "fft_unit_convention": {"$ref": "#/$defs/text"}
+            }
+          },
+          "points": {"items": {"required": ["reference_dbm", "measured_dbfs"]}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": 3}}},
+      "then": {"properties": {"signature": {"required": ["receiver_chain", "device_family", "adapter_id", "device_identity_key", "firmware_fingerprint"]}}},
+      "else": {"properties": {"signature": {"not": {"required": ["receiver_chain"]}}}}
+    }
+  ],
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "positive": {"type": "number", "exclusiveMinimum": 0},
+    "digestOrUnknown": {"type": "string", "pattern": "^(unknown|sha256:[0-9a-f]{64})$"},
+    "signature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["device_serial", "backend", "rf_port_path", "sample_rate_hz", "analog_bandwidth_hz", "gain_mode", "manual_gain_db", "window_normalization_version", "fft_unit_convention", "frontend_chain", "temperature_range_c", "reference_plane"],
+      "properties": {
+        "device_serial": {"$ref": "#/$defs/text"}, "backend": {"$ref": "#/$defs/text"}, "rf_port_path": {"$ref": "#/$defs/text"},
+        "sample_rate_hz": {"type": ["number", "null"]}, "analog_bandwidth_hz": {"type": ["number", "null"]},
+        "gain_mode": {"type": ["string", "null"]}, "manual_gain_db": {"type": ["number", "null"]},
+        "window_normalization_version": {"type": ["string", "null"]}, "fft_unit_convention": {"type": ["string", "null"]},
+        "frontend_chain": {"$ref": "#/$defs/text"}, "reference_plane": {"$ref": "#/$defs/text"},
+        "device_family": {"$ref": "#/$defs/text"}, "adapter_id": {"$ref": "#/$defs/text"},
+        "device_identity_key": {"$ref": "#/$defs/digestOrUnknown"}, "firmware_fingerprint": {"$ref": "#/$defs/digestOrUnknown"},
+        "temperature_range_c": {"type": ["array", "null"], "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+        "receiver_chain": {"enum": ["rx1", "rx2"]}, "instrument_context": {"$ref": "#/$defs/instrument"}
+      }
+    },
+    "instrument": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model_id", "input_mode", "settings_fingerprint", "rbw_hz", "attenuation_db", "value_convention"],
+      "properties": {
+        "model_id": {"enum": ["tinysa_basic", "tinysa_ultra"]}, "input_mode": {"enum": ["low", "high"]},
+        "settings_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "rbw_hz": {"type": "number", "exclusiveMinimum": 0, "maximum": 2000000},
+        "attenuation_db": {"type": "number", "minimum": 0, "maximum": 40},
+        "value_convention": {"const": "device-reported-dBm"}
+      },
+      "if": {"properties": {"model_id": {"const": "tinysa_ultra"}}},
+      "then": {"properties": {"input_mode": {"const": "low"}}}
+    },
+    "point": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frequency_hz", "correction_db", "uncertainty_db"],
+      "properties": {
+        "frequency_hz": {"$ref": "#/$defs/positive"}, "correction_db": {"type": "number"},
+        "uncertainty_db": {"type": "number", "minimum": 0}, "reference_dbm": {"type": "number"}, "measured_dbfs": {"type": "number"}
+      }
+    }
+  }
+}
