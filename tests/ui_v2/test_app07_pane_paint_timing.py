@@ -9,9 +9,11 @@ from dataclasses import replace
 from threading import Event, get_ident
 from time import monotonic, sleep
 from types import SimpleNamespace
+from types import FunctionType
 from typing import cast
 import unittest
 from unittest.mock import patch
+from weakref import ref as weak_ref
 
 import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -515,6 +517,230 @@ class PaintReturnTimingTests(unittest.TestCase):
                 ledger.reconcile_ui_stop_cleared((first, second))
                 scene.release_graphics_after_shutdown()
                 self.retire(scene)
+
+    def test_hidden_and_inactive_waterfall_rejection_requires_exact_ledger_admission(self):
+        from tests.ui_v2.test_app07_allview_custody import live_frame
+        from sdr_monitor.ui.v2.state.analyzer_layers import waterfall_line_from_spectrum
+        from sdr_monitor.ui.v2.waterfall.contracts import SweepWaterfallLine
+        from sdr_monitor.ui.v2.waterfall.sweep_rows import SweepRowStamp, SweepRowState
+
+        for mode in ("ordinary", "sweep"):
+            for visibility in ("hidden", "inactive"):
+                for case in ("unknown", "copy", "terminal", "evicted", "foreign", "stop", "valid"):
+                    with self.subTest(mode=mode, visibility=visibility, case=case):
+                        ledger = PaneDeliveryLedger(("one",))
+                        original = self.admitted_ref(ledger, view=PaneDeliveryView.WATERFALL)
+                        submitted = original
+                        if case in {"terminal", "evicted"}:
+                            self.assertTrue(ledger.note(original, Stage.UI_REJECTED))
+                        if case == "evicted":
+                            for offer in range(2, 260):
+                                later = self.admitted_ref(ledger, offer=offer, view=PaneDeliveryView.WATERFALL)
+                                self.assertTrue(ledger.note(later, Stage.UI_REJECTED))
+                            self.assertIsNone(ledger.delivery_stage_if_retained(original))
+                        elif case == "copy":
+                            submitted = replace(original)
+                        elif case == "foreign":
+                            submitted = self.admitted_ref(PaneDeliveryLedger(("one",)),
+                                                          view=PaneDeliveryView.WATERFALL)
+                        pane = WaterfallPane()
+                        try:
+                            pane.set_delivery_stage_callback(ledger.note)
+                            pane.set_delivery_stage_observer(
+                                (lambda _ref: None) if case == "unknown" else ledger.delivery_stage_if_retained)
+                            if visibility == "hidden":
+                                pane.set_render_visible(False)
+                            else:
+                                pane.set_presentation_active(False)
+                            if case == "stop":
+                                pane.set_ui_stop_pending(True)
+                            before = ledger.snapshot()
+                            for revision in (1, 2):
+                                line = waterfall_line_from_spectrum(live_frame(revision))
+                                if mode == "ordinary":
+                                    accepted = pane.set_line(line, obligation_ref=submitted)
+                                else:
+                                    row = replace(line, timestamp_ns=0, timestamp_known=False, sequence=1)
+                                    update = SweepWaterfallLine(row, SweepRowStamp(1, revision, SweepRowState.PARTIAL))
+                                    accepted = pane.set_sweep_line(update, obligation_ref=submitted)
+                                self.assertTrue(accepted)
+                                self.assertIsNone(pane._waterfall_delivery_ref)
+                                after = ledger.snapshot()
+                                self.assertEqual((after.duplicate_events, after.accounting_failures),
+                                                 (before.duplicate_events, before.accounting_failures))
+                                if case != "valid":
+                                    self.assertEqual(after, before)
+                                else:
+                                    self.assertIs(ledger.delivery_stage_if_retained(original), Stage.UI_REJECTED)
+                                    self.assertEqual(sum(event.ref is original and event.stage is Stage.UI_REJECTED
+                                                         for event in after.events), 1)
+                            self.assertEqual(pane.metrics.hidden_uploads_suppressed, 2)
+                            self.assertEqual(pane.metrics.rows_admitted, 2 if mode == "ordinary" else 1)
+                            self.assertEqual(pane.metrics.sweep_rows_updated, 1 if mode == "sweep" else 0)
+                        finally:
+                            pane.release_presentation_after_shutdown()
+                            self.retire(pane)
+
+    def test_hidden_waterfall_rejection_rechecks_reentrant_stop_and_current_ref(self):
+        from tests.ui_v2.test_app07_allview_custody import live_frame
+        from sdr_monitor.ui.v2.state.analyzer_layers import waterfall_line_from_spectrum
+        from sdr_monitor.ui.v2.waterfall.contracts import SweepWaterfallLine
+        from sdr_monitor.ui.v2.waterfall.sweep_rows import SweepRowStamp, SweepRowState
+
+        for mode in ("ordinary", "sweep"):
+            for boundary in ("stop", "replacement"):
+                with self.subTest(mode=mode, boundary=boundary):
+                    ledger = PaneDeliveryLedger(("one",))
+                    first = self.admitted_ref(ledger, view=PaneDeliveryView.WATERFALL)
+                    second = self.admitted_ref(ledger, offer=2, view=PaneDeliveryView.WATERFALL)
+                    pane = WaterfallPane()
+                    entered = False
+
+                    def observed(ref):
+                        nonlocal entered
+                        if not entered:
+                            entered = True
+                            if boundary == "stop":
+                                pane.set_ui_stop_pending(True)
+                            else:
+                                pane._admit_waterfall_paint(second)
+                        return ledger.delivery_stage_if_retained(ref)
+
+                    try:
+                        pane.set_delivery_stage_callback(ledger.note)
+                        pane.set_delivery_stage_observer(observed)
+                        pane.set_render_visible(False)
+                        line = waterfall_line_from_spectrum(live_frame())
+                        if mode == "ordinary":
+                            self.assertTrue(pane.set_line(line, obligation_ref=first))
+                        else:
+                            row = replace(line, timestamp_ns=0, timestamp_known=False, sequence=1)
+                            self.assertTrue(pane.set_sweep_line(SweepWaterfallLine(
+                                row, SweepRowStamp(1, 1, SweepRowState.PARTIAL)), obligation_ref=first))
+                        self.assertIs(ledger.delivery_stage_if_retained(first), Stage.UI_ADMITTED)
+                        self.assertIs(pane._waterfall_delivery_ref, None if boundary == "stop" else second)
+                        snapshot = ledger.snapshot()
+                        self.assertEqual((snapshot.duplicate_events, snapshot.accounting_failures), (0, 0))
+                    finally:
+                        pane.detach_delivery_custody((first, second))
+                        ledger.reconcile_ui_stop_cleared((first, second))
+                        pane.release_presentation_after_shutdown()
+                        self.retire(pane)
+
+    def test_same_current_persistence_setter_and_upload_schedule_only_once_before_paint(self):
+        from tests.ui_v2.test_app07_allview_custody import density_frame
+
+        ledger = PaneDeliveryLedger(("one",))
+        original = self.admitted_ref(ledger, view=PaneDeliveryView.PERSISTENCE)
+        scene = SpectrumScene()
+        try:
+            scene.resize(720, 420)
+            scene.show()
+            self.app.processEvents()
+            scene.set_delivery_stage_callback(ledger.note)
+            scene.set_delivery_stage_observer(ledger.delivery_stage_if_retained)
+            density = density_frame()
+            scene.set_persistence_delivery_ref(original, density)
+            scene.set_persistence_delivery_ref(original, density)
+            scene.set_persistence_frame(density, now_ns=1_000_000_000)
+            self.assertIs(ledger.delivery_stage_if_retained(original), Stage.PAINT_SCHEDULED)
+            self.assertTrue(scene._persistence_delivery_paint_scheduled)
+            pixels = scene._persistence.image_item.image.copy()
+            before = ledger.snapshot()
+            for repetition in range(1, 4):
+                scene.set_persistence_delivery_ref(original, density)
+                scene.set_persistence_frame(density, now_ns=1_000_000_000 * (repetition + 1))
+                self.assertIs(scene._persistence_delivery_ref, original)
+                self.assertIs(scene._persistence_delivery_source, density)
+                self.assertTrue(scene._persistence_delivery_paint_scheduled)
+                self.assertFalse(scene._persistence_delivery_paint_returned)
+                self.assertEqual(ledger.snapshot(), before)
+                np.testing.assert_array_equal(scene._persistence.image_item.image, pixels)
+                np.testing.assert_array_equal(scene._persistence.latest_view.density, density.density)
+            scene._graphics.viewport().repaint()
+            self.app.processEvents()
+            self.assertIs(ledger.delivery_stage_if_retained(original), Stage.PAINT_RETURNED)
+            snapshot = ledger.snapshot()
+            self.assertEqual(sum(event.ref is original and event.stage is Stage.PAINT_SCHEDULED
+                                 for event in snapshot.events), 1)
+            self.assertEqual((snapshot.duplicate_events, snapshot.accounting_failures), (0, 0))
+        finally:
+            scene.release_graphics_after_shutdown()
+            self.retire(scene)
+
+    def test_completed_stop_callbacks_release_futures_and_keep_only_weak_scalar_identity(self):
+        from sdr_monitor.ui.v2.workspaces.independent_pane_session import _UiStopHandoff, _UiStopCallbackIdentity
+
+        with self.stop_product() as product:
+            handle, surface = product.handle, product.surface
+            resource = handle.pump.snapshot()[0].physical_stream_resource_id
+            ledger = handle.session._delivery_ledger
+            pane_id = handle.layout.slots[0].request.pane_id
+            original = self.admitted_ref(ledger, pane_id, resource)
+            surface.board.pane(1).spectrum_scene.set_frame(spectrum_frame(1), obligation_ref=original)
+            capture_futures, ack_futures = [], []
+            original_capture = handle.pump.capture_ui_stop_refs
+            original_ack = handle.pump.reconcile_ui_stop_cleared
+
+            def capture(resource_id):
+                result = original_capture(resource_id)
+                capture_futures.append(result)
+                return result
+
+            def ack(resource_id, refs):
+                result = original_ack(resource_id, refs)
+                ack_futures.append(result)
+                return result
+
+            with patch.object(handle.pump, "capture_ui_stop_refs", side_effect=capture), \
+                    patch.object(handle.pump, "reconcile_ui_stop_cleared", side_effect=ack):
+                surface._begin_ui_stop_handoff(resource)
+                stop = handle.pump.stop_resource(resource)
+                self.wait_for(stop.done)
+                self.assertIsNone(stop.exception())
+                surface._watch_stop_boundary(stop, resource)
+                self.wait_for(lambda: not handle.ui_stop_pending(resource))
+            self.assertEqual((len(capture_futures), len(ack_futures)), (1, 1))
+            futures = [stop, *capture_futures, *ack_futures]
+            self.assertTrue(all(future.done() for future in futures))
+            callbacks = [callback for future in futures for callback in future._done_callbacks]
+            seen = set()
+
+            def check_callback(callback):
+                if id(callback) in seen:
+                    return
+                seen.add(id(callback))
+                for cell in callback.__closure__ or ():
+                    value = cell.cell_contents
+                    self.assertNotIsInstance(value, (Future, _UiStopHandoff, PaneDeliveryObligationRef))
+                    self.assertIsNot(value, handle)
+                    self.assertIsNot(value, handle.session)
+                    self.assertIsNot(value, surface)
+                    if isinstance(value, _UiStopCallbackIdentity):
+                        self.assertIs(value.handle_ref(), handle)
+                        self.assertIs(value.session_ref(), handle.session)
+                    elif isinstance(value, FunctionType):
+                        check_callback(value)
+                    elif isinstance(value, tuple):
+                        self.assertFalse(any(isinstance(item, PaneDeliveryObligationRef) for item in value))
+
+            for callback in callbacks:
+                check_callback(callback)
+            self.assertTrue(callbacks)
+            self.assertEqual(surface._ui_stop_handoffs, {})
+            pane = surface.board.pane(1)
+            self.assertEqual(pane.spectrum_scene._ui_stop_detached_refs, ())
+            self.assertEqual(pane.waterfall_pane._ui_stop_detached_refs, ())
+            self.assertIsNone(pane.spectrum_scene.displayed_delivery_ref)
+            self.assertIs(ledger.delivery_stage_if_retained(original), Stage.STOP_CLEARED)
+            future_refs = [weak_ref(future) for future in futures]
+            # Keep the completed callbacks themselves resident. No forced GC,
+            # later worker command or shutdown is used to release their Futures.
+            del stop, futures
+            capture_futures.clear()
+            ack_futures.clear()
+            self.wait_for(lambda: all(reference() is None for reference in future_refs))
+            self.assertTrue(callbacks)
 
     def test_complete_stop_captures_many_unknown_unowned_refs_off_qt_and_gates_ack(self):
         with self.stop_product(peers=True) as product:

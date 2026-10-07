@@ -359,7 +359,7 @@ class WaterfallPane(QWidget):
         self._update_status()
         if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
-            if obligation_ref is not None:
+            if obligation_ref is not None and self.delivery_requires_ui_rejection(obligation_ref):
                 self._report_waterfall_delivery(obligation_ref, PaneDeliveryStage.UI_REJECTED)
             # Row admission and canvas visibility are separate outcomes. The
             # bounded history accepted this row above, but no hidden paint was
@@ -422,7 +422,7 @@ class WaterfallPane(QWidget):
         self._update_status()
         if not self._render_visible or not self._presentation_active:
             self._set_metrics(hidden_uploads_suppressed=self._metrics.hidden_uploads_suppressed + 1)
-            if obligation_ref is not None:
+            if obligation_ref is not None and self.delivery_requires_ui_rejection(obligation_ref):
                 self._report_waterfall_delivery(obligation_ref, PaneDeliveryStage.UI_REJECTED)
             # Preserve Sweep history/upsert semantics while keeping hidden
             # canvas custody explicit and independent from ring admission.
@@ -478,10 +478,12 @@ class WaterfallPane(QWidget):
         if self._delivery_stage_observer is not None:
             try:
                 generation = self._delivery_custody_generation
+                current = self._waterfall_delivery_ref
                 stage = self._delivery_stage_observer(ref)
             except Exception:
                 return False
             if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or current is not self._waterfall_delivery_ref
                     or stage is not PaneDeliveryStage.UI_ADMITTED):
                 return False
             return self._waterfall_delivery_ref is not ref

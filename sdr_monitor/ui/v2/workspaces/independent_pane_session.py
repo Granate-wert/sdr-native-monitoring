@@ -13,7 +13,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from math import floor, isfinite
 from typing import Any, Literal
-from weakref import ref as weak_ref
+from weakref import ReferenceType, ref as weak_ref
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
@@ -26,7 +26,7 @@ from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.domain.pane_scheduler import PaneControlGapReason, RtlRtbwPaneProfile
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
-from sdr_monitor.services.pane_resource_session import PaneActivation, PaneHostTiming
+from sdr_monitor.services.pane_resource_session import PaneActivation, PaneHostTiming, PaneResourceSession
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 from sdr_monitor.ui.v2_pane_runtime import PanePumpPhase
@@ -49,13 +49,33 @@ class _UiStopHandoff:
     resource_id: str
     generation: int
     handle: PaneProductSessionHandle
-    session: object
+    session: PaneResourceSession
     refs: tuple[PaneDeliveryObligationRef, ...] = ()
     phase: Literal["stopping", "capturing", "captured", "detached", "ack_pending", "acked", "error"] = "stopping"
     error: str | None = None
     stop_future: Future[Any] | None = None
     capture_future: Future[Any] | None = None
     ack_future: Future[Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _UiStopCallbackIdentity:
+    """Callbacks retain only weak ownership and local UI attempt identity."""
+
+    resource_id: str
+    generation: int
+    handle_ref: ReferenceType[PaneProductSessionHandle]
+    session_ref: ReferenceType[PaneResourceSession]
+
+    @classmethod
+    def from_handoff(cls, token: _UiStopHandoff) -> _UiStopCallbackIdentity:
+        return cls(token.resource_id, token.generation, weak_ref(token.handle), weak_ref(token.session))
+
+    def payload(self, **fields: Any) -> _UiStopHandoff | None:
+        handle, session = self.handle_ref(), self.session_ref()
+        if handle is None or session is None:
+            return None
+        return _UiStopHandoff(self.resource_id, self.generation, handle, session, **fields)
 
 
 class IndependentPaneSessionV2(QWidget):
@@ -471,12 +491,12 @@ class IndependentPaneSessionV2(QWidget):
         owner_ref = weak_ref(self)
         token = self._ui_stop_handoffs.get(resource_id) if hasattr(self, "_ui_stop_handoffs") else None
         if token is not None:
-            token = replace(token, stop_future=future)
-            self._ui_stop_handoffs[resource_id] = token
+            self._ui_stop_handoffs[resource_id] = replace(token, stop_future=future)
+        identity = None if token is None else _UiStopCallbackIdentity.from_handoff(token)
 
-        def emit(payload: _UiStopHandoff) -> None:
+        def emit(payload: _UiStopHandoff | None) -> None:
             owner = owner_ref()
-            if owner is not None:
+            if owner is not None and payload is not None:
                 try:
                     owner.stop_boundary.emit(payload)
                 except RuntimeError:
@@ -503,17 +523,18 @@ class IndependentPaneSessionV2(QWidget):
                                  and record.ref.identity.physical_stream_resource_id == resource_id)
                     owner.stop_boundary.emit(refs)
                     return
-                if token is None:
+                if identity is None:
                     return
                 current = owner._ui_stop_handoffs.get(resource_id)
-                if (current is None or current.generation != token.generation
-                        or owner.handle is not token.handle or owner.handle.session is not token.session):
+                if (current is None or current.generation != identity.generation
+                        or owner.handle is not identity.handle_ref()
+                        or owner.handle.session is not identity.session_ref()):
                     return
                 if result.exception() is not None:
-                    emit(replace(token, phase="error", error="Stop did not reach a terminal worker state"))
+                    emit(identity.payload(phase="error", error="Stop did not reach a terminal worker state"))
                     return
-                capture = token.handle.pump.capture_ui_stop_refs(resource_id)
-                emit(replace(token, phase="capturing", capture_future=capture))
+                capture = owner.handle.pump.capture_ui_stop_refs(resource_id)
+                emit(identity.payload(phase="capturing", capture_future=capture))
 
                 def captured(done: Future[Any]) -> None:
                     try:
@@ -521,13 +542,13 @@ class IndependentPaneSessionV2(QWidget):
                         if len(refs) > 256 or any(not isinstance(ref, PaneDeliveryObligationRef)
                                 or ref.identity.physical_stream_resource_id != resource_id for ref in refs):
                             raise RuntimeError("UI Stop capture returned an invalid obligation reference")
-                        emit(replace(token, refs=refs, phase="captured", capture_future=capture))
+                        emit(identity.payload(refs=refs, phase="captured", capture_future=done))
                     except Exception as exc:
-                        emit(replace(token, phase="error", error=str(exc)))
+                        emit(identity.payload(phase="error", error=str(exc)))
                 capture.add_done_callback(captured)
             except Exception as exc:
-                if token is not None:
-                    emit(replace(token, phase="error", error=str(exc)))
+                if identity is not None:
+                    emit(identity.payload(phase="error", error=str(exc)))
         future.add_done_callback(completed)
 
     def _on_stop_boundary(self, payload: object) -> None:
@@ -542,31 +563,35 @@ class IndependentPaneSessionV2(QWidget):
                 self._refresh()
                 return
             if payload.phase == "capturing" and current.phase == "stopping":
-                self._ui_stop_handoffs[payload.resource_id] = payload
+                self._ui_stop_handoffs[payload.resource_id] = replace(
+                    current, phase="capturing", capture_future=payload.capture_future)
                 return
             if payload.phase == "captured":
                 if current.phase not in {"stopping", "capturing"}:
                     return
                 try:
                     self.board.detach_ui_stop_refs(payload.refs)
-                    self._ui_stop_handoffs[payload.resource_id] = replace(payload, phase="detached")
+                    detached = replace(current, refs=payload.refs, phase="detached",
+                                       capture_future=payload.capture_future)
+                    self._ui_stop_handoffs[payload.resource_id] = detached
                     reconcile = self.handle.pump.reconcile_ui_stop_cleared(
                         payload.resource_id, payload.refs)
                     self._ui_stop_handoffs[payload.resource_id] = replace(
-                        payload, phase="ack_pending", ack_future=reconcile)
+                        detached, phase="ack_pending", ack_future=reconcile)
                     owner_ref = weak_ref(self)
+                    ack_identity = _UiStopCallbackIdentity.from_handoff(payload)
 
                     def reconciled(done: Future[Any]) -> None:
                         try:
                             tuple(done.result())
                             owner = owner_ref()
                             if owner is not None:
-                                owner.stop_boundary.emit(replace(payload, phase="acked"))
+                                owner.stop_boundary.emit(ack_identity.payload(phase="acked"))
                         except Exception as exc:
                             owner = owner_ref()
                             if owner is not None:
                                 try:
-                                    owner.stop_boundary.emit(replace(payload, phase="error", error=str(exc)))
+                                    owner.stop_boundary.emit(ack_identity.payload(phase="error", error=str(exc)))
                                 except RuntimeError:
                                     pass  # Deleted Qt owner leaves the handle gate pending.
                     reconcile.add_done_callback(reconciled)
@@ -578,7 +603,7 @@ class IndependentPaneSessionV2(QWidget):
                 if current.phase != "ack_pending":
                     return
                 try:
-                    self.board.finish_ui_stop_detach(payload.refs)
+                    self.board.finish_ui_stop_detach(current.refs)
                 except Exception as exc:
                     self._fail_ui_stop_handoff(payload.resource_id, str(exc))
                     self._refresh()

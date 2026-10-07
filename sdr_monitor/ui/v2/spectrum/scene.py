@@ -849,6 +849,12 @@ class SpectrumScene(QWidget):
             # the local high-water fence remains the standalone fallback.
             return
         previous = self._persistence_delivery_ref
+        if ref is not None and previous is ref:
+            # An exact current continuation is not a second scheduling boundary.
+            # Once scheduled, retain its original upload/source association too.
+            if not self._persistence_delivery_paint_scheduled and not self._persistence_delivery_paint_returned:
+                self._persistence_delivery_source = source_frame
+            return
         if previous is not None and previous != ref and not self._persistence_delivery_paint_returned:
             self._report_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
         self._persistence_delivery_ref = ref
