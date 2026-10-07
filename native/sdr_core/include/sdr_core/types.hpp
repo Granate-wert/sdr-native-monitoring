@@ -31,6 +31,10 @@ inline constexpr std::string_view contract_schema_name = "sdr-native-contracts";
 // BackendDiscontinuity bit; it does not change the wire schema.
 inline constexpr std::uint32_t contract_schema_version = 5;
 
+// Producer numerical semantics, not a wire/schema or RF-calibration version.
+// Bin power divides |FFT|^2 by (N*coherent_gain)^2; PSD by Fs*sum(window^2).
+inline constexpr std::string_view power_normalization_version = "power-norm-v1";
+
 enum class SourceType : std::uint8_t {
     DflFile,
     LiveIq,
@@ -306,6 +310,9 @@ struct SpectrumFrame {
     // Ephemeral host producer receipt; absent on unsupported/historical/replay
     // paths. Acquisition timestamp/wire schema remain unchanged.
     std::optional<AnalyticalReadyRef> analytical_ready;
+    // Absent for historical/unsupported/deserialized frames; never guessed.
+    // Host-only declaration: recording wire schema is not changed here.
+    std::optional<std::string> window_normalization_version;
 };
 
 struct SweepSegmentMetadata {

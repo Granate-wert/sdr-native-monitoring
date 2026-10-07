@@ -781,6 +781,7 @@ private:
         frame.detector = config_.detector;
         frame.precision_mode = config_.precision_mode;
         frame.unit = config_.unit;
+        frame.window_normalization_version = std::string(power_normalization_version);
         frame.frequencies_hz = axis_shared_;
         frame.values = std::move(values);
         frame.calibration_status = config_.calibration_status;

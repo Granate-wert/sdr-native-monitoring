@@ -169,6 +169,8 @@ std::size_t peak_bin(const sdr_core::SpectrumFrame& frame) {
 
 // Exact-bin tone must land at 0 dBFS/bin for every window (oracle semantics).
 void test_exact_bin_tone_all_windows() {
+    expect(!sdr_core::SpectrumFrame{}.window_normalization_version.has_value(),
+           "historical frame fabricated normalization semantics");
     constexpr std::uint32_t n = 1024U;
     constexpr double rate = 1'024'000.0;
     constexpr double center = 100'000'000.0;
@@ -188,6 +190,8 @@ void test_exact_bin_tone_all_windows() {
         backend->push_iq(make_cf32_block(samples, 0U, rate, center));
         const auto frames = backend->poll_spectrum(0U);
         expect(frames.size() == 1U, "expected exactly one frame");
+        expect(frames.front().window_normalization_version == "power-norm-v1",
+               "CPU tone producer omitted exact power normalization version");
         sdr_core::validate(frames.front());
         expect(
             peak_bin(frames.front()) == n / 2U + bin,
@@ -224,6 +228,8 @@ void test_parseval_psd_integration() {
     backend->push_iq(make_cf32_block(first, 0U, rate, center));
     const auto frames = backend->poll_spectrum(0U);
     expect(frames.size() == 1U, "expected one PSD frame");
+    expect(frames.front().window_normalization_version == "power-norm-v1",
+           "CPU PSD producer omitted exact power normalization version");
 
     const auto metrics = sdr_core::window_metrics(window, n, rate);
     double windowed_power = 0.0;

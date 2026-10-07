@@ -147,6 +147,8 @@ void test_exact_bin_tone_all_windows() {
         backend->push_iq(make_cf32_block(samples, 0U, rate, center));
         const auto frames = backend->poll_spectrum(0U);
         expect(frames.size() == 1U, "expected exactly one frame");
+        expect(frames.front().window_normalization_version == "power-norm-v1",
+               "CUDA producer omitted exact power normalization version");
         sdr_core::validate(frames.front());
         expect(
             peak_bin(frames.front()) == n / 2U + bin,

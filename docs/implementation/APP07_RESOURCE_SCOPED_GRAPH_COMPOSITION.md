@@ -6814,3 +6814,19 @@ this join. This packet does not change the native wire schema, claim physical
 RF accuracy, or enable calibrated Live dBm. Original arrays/coverage/time/quality
 and UI remain unchanged. Native producer declaration and actual analytical
 correction with scoped profile/processing revision remain required.
+
+### Producer power normalization declaration
+
+CPU and CUDA DSP publication declare optional host metadata `power-norm-v1`:
+bin power is |FFT|²/(N·coherent_gain)²; PSD is |FFT|²/(Fs·sum(window²)).
+The existing unit field selects the branch; the declaration is emitted with
+the numerical producer frame, not copied from a requested configuration.
+CPU exact-bin/all-window and PSD Parseval tests retain their original numerical
+tolerances and also check this declaration. CUDA source carries the equivalent
+declaration/test but CPU-only qualification is not GPU runtime evidence.
+
+Default/unsupported/deserialized frames retain unknown. This optional host
+metadata does not alter enum wire schema5, recording format, RF calibration,
+FFT math, gain, timing or queues. Rebuilt matching native bindings are required;
+old modules remain unknown. Same-acquisition signature admission and actual
+analytical calibration corrections still require implementation.
