@@ -55,6 +55,15 @@ class BackendKind(StrEnum):
     HIP = "hip"
 
 
+class ObservedGainMode(StrEnum):
+    """Device-reported gain policy, never inferred from a numeric gain."""
+
+    MANUAL = "manual"
+    SLOW_ATTACK = "slow_attack"
+    FAST_ATTACK = "fast_attack"
+    HYBRID = "hybrid"
+
+
 class LiveSessionState(StrEnum):
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
@@ -428,6 +437,11 @@ class AppliedLiveConfiguration:
     adjustments: tuple[str, ...] = ()
     # Empty means prepared/legacy-unknown, not hardware confirmation.
     readback_fields: tuple[str, ...] = ()
+    observed_gain_mode: ObservedGainMode | None = None
+
+    def __post_init__(self) -> None:
+        if self.observed_gain_mode is not None and not isinstance(self.observed_gain_mode, ObservedGainMode):
+            raise ValueError("observed_gain_mode must be a typed device readback or unknown")
 
 
 @dataclass(frozen=True, slots=True)

@@ -6784,3 +6784,14 @@ and apply corrections to original analytical data with coverage/revision/unit
 provenance. Current live SDR adapters still report uncalibrated; this contract
 alone does not turn native or paired live data into calibrated dBm or prove RF
 accuracy. Native DSP/queues/Fs/FFT/recording and UI controls are unchanged.
+
+### Observed gain policy prerequisite
+
+`AppliedLiveConfiguration.observed_gain_mode` is a typed `ObservedGainMode`
+or unknown. The native readback mapper preserves canonical MANUAL/SLOW_ATTACK/
+FAST_ATTACK/HYBRID enum names and adds `gain_mode` to the confirmed readback
+fields only for those values. Missing, unknown, numeric or bare string replies
+do not imply manual gain and do not inherit an older provisional receipt.
+Legacy/prepared receipts default to unknown. Numeric gain readback and requested
+configuration remain distinct and unchanged. This enables a later exact
+calibration signature; it does not apply calibration or establish RF accuracy.

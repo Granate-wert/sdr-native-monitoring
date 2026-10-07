@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable, cast
 from uuid import uuid4
-from ..domain.live import LiveAdmissionRejected, LiveSessionState
+from ..domain.live import LiveAdmissionRejected, LiveSessionState, ObservedGainMode
 from ..domain.ad936x_route_capabilities import Ad936xRouteCapabilities
 
 from ..activity_log import log_event
@@ -3014,8 +3014,20 @@ def _domain_applied_configuration(
         and not isinstance(getattr(native_applied, native_name, None), bool)
         and math.isfinite(getattr(native_applied, native_name))
     )
-    return AppliedLiveConfiguration(requested=requested, applied=applied,
-                                    adjustments=tuple(adjustments), readback_fields=readback_fields)
+    # Native GainMode exposes canonical enum names. Missing/unknown values
+    # must not inherit a provisional receipt or imply MANUAL from gain_db.
+    gain_mode_name = getattr(getattr(native_applied, "gain_mode", None), "name", None)
+    observed_gain_mode = (
+        ObservedGainMode[gain_mode_name]
+        if isinstance(gain_mode_name, str) and gain_mode_name in ObservedGainMode.__members__
+        else None
+    )
+    if observed_gain_mode is not None:
+        readback_fields += ("gain_mode",)
+    return AppliedLiveConfiguration(
+        requested=requested, applied=applied, adjustments=tuple(adjustments),
+        readback_fields=readback_fields, observed_gain_mode=observed_gain_mode,
+    )
 
 
 def _backend_fallback_reason(metrics: Any, applied: AppliedLiveConfiguration) -> str | None:
