@@ -42,6 +42,8 @@ class CalibratedLiveSpectrum:
     result: CalibratedArray
     profile_version: int | None
     profile_fingerprint: str | None
+    selection_revision: int
+    selection_owner: object
 
 
 class CalibrationService:
@@ -57,6 +59,8 @@ class CalibrationService:
         self._lock = threading.RLock()
         self._current = CalibrationSignature()
         self._active: CalibrationProfile | None = None
+        self._selection_revision = 0
+        self._selection_owner = object()
 
     def list_profiles(self) -> tuple[CalibrationProfile, ...]:
         with self._lock:
@@ -67,6 +71,7 @@ class CalibrationService:
             self._current = settings
             if self._active is not None and not self.compare_applicability(self._active, settings):
                 self._active = None
+                self._selection_revision += 1
             return settings
 
     def current_settings(self) -> CalibrationSignature:
@@ -146,15 +151,27 @@ class CalibrationService:
             if not result.applicable and not expert_override:
                 raise CalibrationProfileError(f"profile is incompatible: {result.reason}; explicit expert override required")
             self._active = profile
+            self._selection_revision += 1
             return result
 
     def clear_active_profile(self) -> None:
         with self._lock:
             self._active = None
+            self._selection_revision += 1
 
     def active_profile(self) -> CalibrationProfile | None:
         with self._lock:
             return self._active
+
+    def is_current_selection(self, result: CalibratedLiveSpectrum) -> bool:
+        """Reject even clear/reselect ABA with the same profile fingerprint."""
+        if not isinstance(result, CalibratedLiveSpectrum):
+            return False
+        with self._lock:
+            return (result.selection_owner is self._selection_owner
+                    and result.selection_revision == self._selection_revision
+                    and result.profile_fingerprint == (
+                        None if self._active is None else self._active.fingerprint))
 
     def correct_current_spectrum(
         self, current: LiveSnapshot, endpoint: ReceiverEndpoint,
@@ -179,6 +196,7 @@ class CalibrationService:
             raise CalibrationProfileError("finite ordered current spectrum required")
         with self._lock:
             profile = self._active
+            selection_revision = self._selection_revision
         # Profile objects are immutable. Heavy math runs outside the selection lock.
         result = apply_calibration(frame.values, frequencies, profile, signature)
         result.values.setflags(write=False)
@@ -187,6 +205,8 @@ class CalibrationService:
             frame, current.session_id, signature, result,
             None if profile is None else profile.profile_version,
             None if profile is None else profile.fingerprint,
+            selection_revision,
+            self._selection_owner,
         )
 
     def make_measurement(self, measurement_id: str, title: str, value: float | None, unit: str, *, quality: Any, uncertainty_db: float | None, frame_sequence: int | None, config_generation: int | None, source_id: str, calibration_status: Any, warning: str = "") -> MeasurementValue:

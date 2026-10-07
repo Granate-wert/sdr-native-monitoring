@@ -45,6 +45,12 @@ from ..domain.analytical_journal import OwnerJournalSnapshot
 from ..services.owner_journal_scope import cached_owner_journals
 from ..domain.layer_journal import LayerJournalSnapshot
 from ..services.pane_layer_admission import cached_layer_journals
+from ..services.calibration_service import CalibrationService, CalibratedLiveSpectrum
+from ..services.live_calibration_signature import (
+    CalibrationFrontendContext, build_current_frame_calibration_signature,
+)
+from ..domain.calibration import CalibrationProfileError
+from ..domain.receiver_topology import ReceiverEndpoint
 
 
 _Args = ParamSpec("_Args")
@@ -604,6 +610,27 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             return self._lifecycle_snapshot(self._empty_source_snapshot[1])
         self._empty_source_snapshot = None
         return self._lifecycle_snapshot(self._port.latest_snapshot())
+
+    def calibrated_current_spectrum(
+        self, calibration: CalibrationService, endpoint: ReceiverEndpoint,
+        frontend: CalibrationFrontendContext,
+    ) -> CalibratedLiveSpectrum:
+        """Read the SAME Live owner before/after off-acquisition correction.
+
+        Explicit analytical pull only; no hardware open, profile activation or
+        native frame relabel. Call from the preparation worker, not acquisition.
+        Rejection is point-in-time; consumers must discard after a later control
+        or selection change. Each endpoint must receive its own selection service.
+        """
+        if not isinstance(calibration, CalibrationService):
+            raise CalibrationProfileError("typed calibration service required")
+        result = calibration.correct_current_spectrum(self.current_snapshot(), endpoint, frontend)
+        current = self.current_snapshot()
+        signature = build_current_frame_calibration_signature(current, result.raw, endpoint, frontend)
+        if (current.session_id != result.session_id or signature != result.signature
+                or not calibration.is_current_selection(result)):
+            raise CalibrationProfileError("calibration owner or selected profile changed during preparation")
+        return result
 
     def current_analyzer_bundle(self) -> AnalyzerFrameBundle | None:
         """Validated shared reduced contract, never a UI-specific frame format."""

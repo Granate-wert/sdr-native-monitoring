@@ -6892,3 +6892,17 @@ extrapolation remains explicit and the default out-of-range refusal is
 whole-frame. Scalar `evaluate` remains available as the equivalence oracle.
 This reduces host analytical overhead only; it does not change FFT, sampling,
 transport, renderer cadence, quality or acquisition continuity guarantees.
+
+`LiveSessionApplicationService.calibrated_current_spectrum` now performs an
+explicit analytical pull through its existing `current_snapshot` routing,
+not a second hardware opener. After correction it re-reads that same owner
+and checks the original frame, signature, session and current selection.
+Each selection service has an opaque receipt owner and monotonic revision;
+clear/reselect of the same fingerprint (ABA), deactivation, or a receipt from
+another selection service refuses. Profile computation does not hold the
+selection lock or acquisition control authority. This is point-in-time
+admission, not a guarantee against future Stop/retune/selection changes.
+Callers must use a distinct selection service per endpoint and invoke the
+pull from a preparation worker; automatic V2 presenter/render wiring and the
+endpoint selection registry are still pending. The native/raw bundle remains
+unchanged and must not be relabelled as calibrated by this optional operation.
