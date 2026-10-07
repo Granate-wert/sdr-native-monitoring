@@ -20,6 +20,7 @@ from sdr_monitor.domain import (
 )
 from sdr_monitor.ui.v2.view_models.calibration_view_model import CalibrationProfileViewModel
 from sdr_monitor.ui.v2.workspaces import CalibrationProfilesWorkspaceV2, calibration_profiles_workspace_definition
+from tests.ui_v2.ui_test_isolation import own_locale
 
 
 class FakeSignal:
@@ -78,6 +79,7 @@ class CalibrationProfilesWorkspaceV2Tests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self) -> None:
+        own_locale(self)
         self.presenter = FakeCalibrationPresenter()
         self.model = CalibrationProfileViewModel(self.presenter)
         self.workspace = CalibrationProfilesWorkspaceV2(self.model)
