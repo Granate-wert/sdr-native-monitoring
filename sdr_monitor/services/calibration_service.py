@@ -29,6 +29,14 @@ from .live_calibration_signature import CalibrationFrontendContext, build_curren
 
 
 @dataclass(frozen=True, slots=True)
+class CalibrationSelectionReceipt:
+    """Optimistic selection authority; repeated equal profiles still have revisions."""
+
+    owner: object
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class CalibratedLiveSpectrum:
     """Separate analytical values, retaining the exact raw frame and owner receipt.
 
@@ -159,6 +167,33 @@ class CalibrationService:
             self._active = None
             self._selection_revision += 1
 
+    def selection_receipt(self) -> CalibrationSelectionReceipt:
+        with self._lock:
+            return CalibrationSelectionReceipt(self._selection_owner, self._selection_revision)
+
+    def apply_checked_selection(self, profile: CalibrationProfile | None,
+                                settings: CalibrationSignature,
+                                expected: CalibrationSelectionReceipt) -> CalibrationApplicability | None:
+        """Explicit normal-mode command; check revision/applicability before mutation.
+
+        The owner supplies actual admitted settings, never the profile's desired
+        settings. No expert override or profile activation during preview.
+        """
+        if not isinstance(settings, CalibrationSignature) or not isinstance(expected, CalibrationSelectionReceipt):
+            raise CalibrationProfileError("typed settings and selection receipt required")
+        if profile is not None and not isinstance(profile, CalibrationProfile):
+            raise CalibrationProfileError("typed profile or explicit clear required")
+        with self._lock:
+            if expected.owner is not self._selection_owner or expected.revision != self._selection_revision:
+                raise CalibrationProfileError("selected profile changed since preview")
+            result = None if profile is None else self.applicability(profile, settings)
+            if result is not None and not result.applicable:
+                raise CalibrationProfileError(f"profile is incompatible: {result.reason}")
+            self._current = settings
+            self._active = profile
+            self._selection_revision += 1
+            return result
+
     def active_profile(self) -> CalibrationProfile | None:
         with self._lock:
             return self._active
@@ -213,4 +248,4 @@ class CalibrationService:
         return MeasurementValue(measurement_id, title, value, unit, quality, uncertainty_db, frame_sequence, config_generation, source_id, calibration_status, warning)
 
 
-__all__ = ["CalibrationService", "CalibratedLiveSpectrum"]
+__all__ = ["CalibrationService", "CalibratedLiveSpectrum", "CalibrationSelectionReceipt"]

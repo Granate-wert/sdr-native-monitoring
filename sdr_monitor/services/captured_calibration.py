@@ -4,11 +4,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
+from typing import ContextManager
 
-from ..domain.calibration import CalibrationProfileError
+from ..domain.calibration import CalibrationApplicability, CalibrationProfile, CalibrationProfileError, CalibrationSignature
 from ..domain.live import LiveSnapshot
 from ..domain.receiver_topology import ReceiverEndpoint
-from .calibration_service import CalibratedLiveSpectrum, CalibrationService
+from .calibration_service import CalibratedLiveSpectrum, CalibrationSelectionReceipt, CalibrationService
 from .live_calibration_signature import CalibrationFrontendContext, build_current_frame_calibration_signature
 from .receiver_calibration import ReceiverCalibrationRegistry
 
@@ -45,23 +46,40 @@ class CapturedCalibratedPublication:
     service: CalibrationService
 
 
+@dataclass(frozen=True, slots=True)
+class CalibrationCommandPreview:
+    """Inert proposal tied to actual settings, binding and selection revision."""
+
+    profile: CalibrationProfile | None
+    signature: CalibrationSignature
+    applicability: CalibrationApplicability | None
+    control_revision: int
+    context: tuple[object, ...]
+    authority: object
+    service: CalibrationService
+    selection: CalibrationSelectionReceipt
+
+
 class CapturedCalibrationLane:
     """One explicitly bound endpoint/frontend; replace/close on binding changes.
 
     Observe must be the owning application's atomic cached snapshot/revision
     boundary. It must not query hardware. Consumers charge retained arrays to
     their existing budget and schedule one active/one latest pending operation.
-    This class neither schedules work nor changes profile selection.
+    This class does not schedule work. Selection changes require explicit
+    preview/application under the owning application's control guard.
     """
 
     def __init__(self, observe: Callable[[], tuple[int, LiveSnapshot]],
                  registry: ReceiverCalibrationRegistry, endpoint: ReceiverEndpoint,
-                 frontend: CalibrationFrontendContext) -> None:
+                 frontend: CalibrationFrontendContext, *,
+                 selection_guard: Callable[[], ContextManager[None]] | None = None) -> None:
         if not isinstance(registry, ReceiverCalibrationRegistry):
             raise CalibrationProfileError("typed receiver registry required")
         if not isinstance(endpoint, ReceiverEndpoint) or not isinstance(frontend, CalibrationFrontendContext):
             raise CalibrationProfileError("typed endpoint/frontend binding required")
         self._observe = observe
+        self._selection_guard = selection_guard
         self._registry = registry
         self._endpoint = endpoint
         self._frontend = frontend
@@ -70,6 +88,43 @@ class CapturedCalibrationLane:
         self._ordinal = 0
         self._delivered = 0
         self._closed = False
+
+    def preview_selection(self, profile: CalibrationProfile | None) -> CalibrationCommandPreview:
+        """Compare using actual current facts; never selects or changes settings."""
+        if profile is not None and not isinstance(profile, CalibrationProfile):
+            raise CalibrationProfileError("typed profile or explicit clear required")
+        with self._lock:
+            if self._closed:
+                raise CalibrationProfileError("analytical binding is closed")
+            revision, snapshot = self._observe()
+            if snapshot.device is None or snapshot.spectrum is None:
+                raise CalibrationProfileError("current admitted device/frame required")
+            signature = build_current_frame_calibration_signature(
+                snapshot, snapshot.spectrum, self._endpoint, self._frontend)
+            context = _context(snapshot)
+            service = self._registry.for_device(snapshot.device, self._endpoint)
+            selection = service.selection_receipt()
+            applicability = None if profile is None else service.applicability(profile, signature)
+            return CalibrationCommandPreview(profile, signature, applicability, revision,
+                                             context, self._authority, service, selection)
+
+    def apply_selection(self, preview: CalibrationCommandPreview) -> CalibrationApplicability | None:
+        """Explicit Select/Clear, no RF mutation or expert applicability bypass."""
+        with self._lock:
+            if (self._closed or not isinstance(preview, CalibrationCommandPreview)
+                    or preview.authority is not self._authority or self._selection_guard is None):
+                raise CalibrationProfileError("current owner-bound selection preview required")
+            with self._selection_guard():
+                revision, current = self._observe()
+                if current.device is None or current.spectrum is None:
+                    raise CalibrationProfileError("current admitted device/frame required")
+                signature = build_current_frame_calibration_signature(
+                    current, current.spectrum, self._endpoint, self._frontend)
+                if (revision != preview.control_revision or _context(current) != preview.context
+                        or signature != preview.signature):
+                    raise CalibrationProfileError("acquisition changed since calibration preview")
+                return self._registry.apply_selection(current.device, self._endpoint, preview.service,
+                    preview.profile, signature, preview.selection)
 
     def prepare(self) -> CapturedCalibratedPublication:
         with self._lock:

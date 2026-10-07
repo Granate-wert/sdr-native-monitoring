@@ -6948,3 +6948,23 @@ physical/paint transaction. Pane-owned graph and Sweep explicitly refuse this
 single-owner boundary; they require their own captured publication authority.
 Those integrations, UI commands/preparation/render wiring and matched GUI
 qualification remain required; this prerequisite is not APP-07/APP-08 closure.
+
+### Explicit calibration commands — package 102
+
+Captured Live lanes expose inert `preview_selection(profile)` and explicit
+`apply_selection(preview)`; `None` is an explicit Clear proposal. Comparison
+uses the current admitted frame/applied/frontend signature, never the desired
+signature copied from the profile. Preview does not mutate current settings or
+activate profiles. Incompatible application refuses before selection mutation;
+normal application has no expert override.
+
+The short application control guard keeps Stop/retune commands from crossing
+selection admission. Registry membership plus service selection owner/revision
+are checked atomically under the registry/service lock order. Retired scope,
+selection ABA, repeated application, foreign binding or acquisition-context
+change refuses. Ordinary same-context sequence advancement remains allowed.
+Same-RX panes share selection revisions; different RX scopes do not.
+
+This running single-Live command boundary performs no RF IO, file write or
+Start. Stopped/no-frame selection workflow, paired/Sweep owner authority and
+V2 controls/render integration remain required work, not implicitly implemented.

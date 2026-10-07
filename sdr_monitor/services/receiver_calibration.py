@@ -2,11 +2,11 @@
 from dataclasses import dataclass
 from threading import RLock
 
-from ..domain.calibration import CalibrationProfileError
+from ..domain.calibration import CalibrationApplicability, CalibrationProfile, CalibrationProfileError, CalibrationSignature
 from ..domain.device_capabilities import DeviceCalibrationIdentity, DeviceFamily
 from ..domain.live import DeviceDescriptor
 from ..domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint
-from .calibration_service import CalibrationService
+from .calibration_service import CalibrationSelectionReceipt, CalibrationService
 from .calibration_store import CalibrationProfileStore
 
 
@@ -69,6 +69,17 @@ class ReceiverCalibrationRegistry:
         key = _scope(device, endpoint)
         with self._lock:
             return self._services.get(key) is service
+
+    def apply_selection(self, device: DeviceDescriptor, endpoint: ReceiverEndpoint,
+                        service: CalibrationService, profile: CalibrationProfile | None,
+                        settings: CalibrationSignature, expected: CalibrationSelectionReceipt
+                        ) -> CalibrationApplicability | None:
+        """Scope membership and selection CAS under one registry transaction."""
+        key = _scope(device, endpoint)
+        with self._lock:
+            if self._services.get(key) is not service:
+                raise CalibrationProfileError('receiver calibration scope was retired')
+            return service.apply_checked_selection(profile, settings, expected)
 
     def release(self, device: DeviceDescriptor, endpoint: ReceiverEndpoint) -> None:
         key = _scope(device, endpoint)

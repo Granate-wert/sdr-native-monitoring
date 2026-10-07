@@ -629,6 +629,17 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
         finally:
             self._pane_application_lock.release()
 
+    @contextmanager
+    def _analytical_selection_transaction(self) -> Iterator[None]:
+        """Short cached selection transaction; no SDK/RF work in this scope."""
+        if not self._pane_application_lock.acquire(blocking=False):
+            raise CalibrationProfileError("receiver control is pending")
+        try:
+            self._observe_analytical_context()
+            yield
+        finally:
+            self._pane_application_lock.release()
+
     def captured_calibration_lane(
         self, registry: ReceiverCalibrationRegistry, endpoint: ReceiverEndpoint,
         frontend: CalibrationFrontendContext,
@@ -638,7 +649,8 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
         Single Live owner boundary only. Paired graph/Sweep authority and V2
         preparation/render integration remain separate required work.
         """
-        return CapturedCalibrationLane(self._observe_analytical_context, registry, endpoint, frontend)
+        return CapturedCalibrationLane(self._observe_analytical_context, registry, endpoint, frontend,
+                                       selection_guard=self._analytical_selection_transaction)
 
     def calibrated_current_spectrum(
         self, calibration: CalibrationService, endpoint: ReceiverEndpoint,
