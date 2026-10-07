@@ -37,6 +37,7 @@ from sdr_monitor.ui.v2.waterfall.contracts import WaterfallLineFrame
 from sdr_monitor.ui.v2.waterfall.pane import WaterfallPane
 from tests.test_app07_pane_analytical_identity import owner_scope, ready
 from tests.test_app07_pane_delivery_obligations import identity
+from tests.ui_v2.ui_test_isolation import PrivateUiSettings, flush_deferred_widgets
 
 
 def spectrum_frame(sequence: int) -> SimpleNamespace:
@@ -75,8 +76,12 @@ class PaintReturnTimingTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = cast(QApplication, QApplication.instance() or QApplication([]))
 
+    def setUp(self):
+        self._private_settings = PrivateUiSettings(("waterfall-pane",))
+        self.addCleanup(self._private_settings.close)
+
     def tearDown(self):
-        self.app.processEvents()
+        flush_deferred_widgets()
 
     def retire(self, widget):
         widget.close()

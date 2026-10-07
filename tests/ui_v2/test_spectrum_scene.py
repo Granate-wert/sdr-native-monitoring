@@ -33,6 +33,8 @@ from sdr_monitor.ui.v2.spectrum.persistence_contracts import (
     map_density_for_display,
 )
 from sdr_monitor.ui.v2.spectrum.scene import SpectrumScene
+from sdr_monitor.ui.v2.i18n import UiLocale
+from tests.ui_v2.ui_test_isolation import flush_deferred_widgets, own_locale
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +79,9 @@ class PeakPreservingEnvelopeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self) -> None:
+        own_locale(self)
+
     def test_bin_centred_and_half_bin_tones_survive_downsampling(self) -> None:
         values = np.full(8192, -108.0, dtype=np.float64)
         values[2048] = -21.0
@@ -106,7 +111,7 @@ class PeakPreservingEnvelopeTests(unittest.TestCase):
         view = adapt_spectrum_frame(frame)
         self.assertIs(view.source_frame, frame)
         self.assertEqual(view.unit_label, "dBFS/bin")
-        self.assertEqual(FrequencyAxis(orientation="bottom").tickStrings([2_400_000_000.0], 1.0, 1.0), ["2.400000000 ГГц"])
+        self.assertEqual(FrequencyAxis(orientation="bottom", locale=UiLocale.RU).tickStrings([2_400_000_000.0], 1.0, 1.0), ["2.400000000 ГГц"])
 
 
 class PersistenceMappingTests(unittest.TestCase):
@@ -152,13 +157,14 @@ class SpectrumSceneTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self) -> None:
+        own_locale(self)
         self._scenes: list[SpectrumScene] = []
 
     def tearDown(self) -> None:
         for scene in self._scenes:
             scene.close()
             scene.deleteLater()
-        self.app.processEvents()
+        flush_deferred_widgets()
 
     def test_single_plot_item_viewbox_unit_and_bounded_current_envelope(self) -> None:
         values = np.full(8192, -108.0, dtype=np.float64)
@@ -367,7 +373,7 @@ class SpectrumSceneTests(unittest.TestCase):
             self.assertGreater(target.stat().st_size, 1024)
 
     def _scene(self) -> SpectrumScene:
-        scene = SpectrumScene()
+        scene = SpectrumScene(locale=UiLocale.RU)
         self._scenes.append(scene)
         return scene
 

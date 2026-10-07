@@ -7,7 +7,8 @@ import unittest
 import numpy as np
 
 from sdr_monitor.domain import BackendKind, CalibrationQuality, LiveSessionState
-from sdr_monitor.ui.v2.i18n import text
+from sdr_monitor.ui.v2.i18n import UiLocale, set_active_locale, text
+from tests.ui_v2.ui_test_isolation import own_locale
 from sdr_monitor.ui.v2.state.app_state import AppViewState, UiPresentationPreferences, UiWorkspace
 from sdr_monitor.ui.v2.state.live_view_state import (
     CalibrationPresentation,
@@ -108,6 +109,26 @@ def make_snapshot(
 
 
 class LiveViewStateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        own_locale(self)
+
+    def test_strict_independently_expected_en_ru_presentation(self) -> None:
+        expected = {
+            UiLocale.EN: ("Device ready", "Receiving", "Calibrated", "1.5 s", "Stop"),
+            UiLocale.RU: ("Устройство готово", "Приём", "Калибровано", "1.5 с", "Остановить"),
+        }
+        for locale, labels in expected.items():
+            with self.subTest(locale=locale):
+                set_active_locale(locale)
+                snapshot = make_snapshot(LiveSessionState.RUNNING, calibrated=CalibrationQuality.CALIBRATED,
+                                         unit="dBm", spectrum=self._spectrum())
+                state = build_live_view_state(snapshot, now_ns=2_500_000_000)
+                self.assertEqual((state.connection_label, state.acquisition_label, state.calibration_label,
+                                  state.data_age_label, state.primary_action_label), labels)
+                self.assertIs(state.primary_action, LiveAction.STOP)
+                self.assertEqual(state.unit_label, "dBm")
+                self.assertIs(state.spectrum, snapshot.spectrum)
+
     def test_required_state_matrix_is_explicit_and_headless(self) -> None:
         spectrum = self._spectrum()
         cases = (
