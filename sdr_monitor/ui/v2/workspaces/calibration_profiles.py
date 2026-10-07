@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -20,11 +21,13 @@ from PySide6.QtWidgets import (
 from sdr_monitor.domain import CalibrationApplicability, CalibrationProfile
 
 from ..components import ErrorBanner, SectionHeader, StatusChipV2
-from ..design import StatusTone, ThemeId, stylesheet_for_theme
+from ..design import StatusTone, ThemeId, stylesheet_for_theme, tokens_for_theme
 from ..design.icons import V2IconId
 from ..i18n import text
 from ..shell.contracts import WorkspaceDefinition
 from ..view_models.calibration_view_model import CalibrationProfileViewModel, CalibrationProfileViewState
+from ..view_models.live_calibration_view_model import LiveCalibrationState, LiveCalibrationViewModel
+from sdr_monitor.services.live_calibration_signature import CalibrationFrontendContext
 
 
 class CalibrationCorrectionPlot(QWidget):
@@ -85,23 +88,36 @@ class CalibrationCorrectionPlot(QWidget):
 class CalibrationProfilesWorkspaceV2(QWidget):
     """Read-only browser; activation/import/finalization are deliberately unavailable."""
 
-    def __init__(self, view_model: CalibrationProfileViewModel, *, theme: ThemeId = ThemeId.DARK, parent: QWidget | None = None) -> None:
+    def __init__(self, view_model: CalibrationProfileViewModel, *,
+                 live_calibration: LiveCalibrationViewModel | None = None,
+                 theme: ThemeId = ThemeId.DARK, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._view_model = view_model
         self._theme = theme
         self._selection_sync = False
+        self._live_calibration = live_calibration
+        self._live_unsubscribe = None
         self._build_ui()
         self.set_theme(theme)
         self._unsubscribe = view_model.subscribe(self._render_state)
+        if live_calibration is not None:
+            self._live_unsubscribe = live_calibration.subscribe(self._render_live)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override.
         self._unsubscribe()
+        if self._live_unsubscribe is not None:
+            self._live_unsubscribe()
+            self._live_unsubscribe = None
+        if self._live_calibration is not None:
+            self._live_calibration.close_binding()
         super().closeEvent(event)
 
     def set_theme(self, theme: ThemeId) -> None:
         self._theme = theme
         self.setStyleSheet(stylesheet_for_theme(theme))
         self._state_chip.set_theme(theme)
+        for field in getattr(self, "_frontend_fields", ()):
+            field.setStyleSheet(f"color: {tokens_for_theme(theme).colors.primary_text};")
 
     def _build_ui(self) -> None:
         self.setProperty("ui2Root", True)
@@ -127,6 +143,8 @@ class CalibrationProfilesWorkspaceV2(QWidget):
         command_row.addWidget(self._state_chip)
         command_row.addStretch(1)
         layout.addWidget(command)
+        if self._live_calibration is not None:
+            self._build_live_commands(layout)
         self._error_banner = ErrorBanner(text("calibration.error.title"), "", parent=self)
         self._error_banner.setVisible(False)
         layout.addWidget(self._error_banner)
@@ -169,6 +187,101 @@ class CalibrationProfilesWorkspaceV2(QWidget):
         content.addWidget(applicability_card, 2)
         layout.addLayout(content, 1)
 
+    def _build_live_commands(self, layout: QVBoxLayout) -> None:
+        assert self._live_calibration is not None
+        card = _card(text("live_calibration.title"), self)
+        rows = card.layout()
+        assert isinstance(rows, QVBoxLayout)
+        frontend = QHBoxLayout()
+        self._frontend_fields = []
+        binding = self._live_calibration.state.binding
+        values = (("", "", "") if binding is None else
+                  (binding.frontend.rf_port_path, binding.frontend.frontend_chain, binding.frontend.reference_plane))
+        for key, value in zip(("port", "chain", "plane"), values):
+            field = QLineEdit(card)
+            field.setProperty("ui2Role", "command-field")
+            field.setText(value)
+            field.setMaxLength(128)
+            field.setPlaceholderText(text("live_calibration." + key))
+            field.setAccessibleName(text("live_calibration." + key))
+            field.setToolTip(text("live_calibration.frontend_help"))
+            field.textEdited.connect(self._frontend_edited)
+            self._frontend_fields.append(field)
+            frontend.addWidget(field)
+        rows.addLayout(frontend)
+        commands = QHBoxLayout()
+        self._bind = QPushButton(text("live_calibration.bind"), card)
+        self._preview = QPushButton(text("live_calibration.preview"), card)
+        self._select = QPushButton(text("live_calibration.select"), card)
+        self._clear = QPushButton(text("live_calibration.clear"), card)
+        self._bind.clicked.connect(self._bind_live)
+        self._preview.clicked.connect(self._preview_live)
+        self._select.clicked.connect(self._live_calibration.select)
+        self._clear.clicked.connect(self._live_calibration.clear)
+        for button in (self._bind, self._preview, self._select, self._clear):
+            button.setProperty("ui2Role", "primary-action")
+            button.setAccessibleName(button.text())
+            button.setToolTip(text("live_calibration.boundary"))
+            commands.addWidget(button)
+        rows.addLayout(commands)
+        self._live_status = QLabel(card)
+        self._live_status.setProperty("ui2Role", "secondary")
+        self._live_status.setWordWrap(True)
+        self._live_status.setTextFormat(Qt.TextFormat.PlainText)
+        self._live_status.setAccessibleName(text("live_calibration.title"))
+        rows.addWidget(self._live_status)
+        boundary = _secondary(text("live_calibration.boundary"), card)
+        boundary.setWordWrap(True)
+        rows.addWidget(boundary)
+        layout.addWidget(card)
+
+    def _frontend_edited(self, *_args) -> None:
+        if self._live_calibration is not None:
+            self._live_calibration.frontend_edited()
+
+    def _bind_live(self) -> None:
+        assert self._live_calibration is not None
+        try:
+            frontend = CalibrationFrontendContext(*(field.text().strip() for field in self._frontend_fields))
+        except ValueError as error:
+            self._live_status.setText(text("live_calibration.refused", detail=str(error)))
+            return
+        self._live_calibration.bind(frontend)
+
+    def _preview_live(self) -> None:
+        assert self._live_calibration is not None
+        profile = self._view_model.state.selected
+        if profile is not None:
+            self._live_calibration.preview(profile)
+
+    def _render_live(self, state: LiveCalibrationState) -> None:
+        if self._live_calibration is None:
+            return
+        self._bind.setEnabled(state.available and not state.busy)
+        bound = state.binding is not None and not state.busy
+        self._preview.setEnabled(bound and self._view_model.state.selected is not None)
+        self._select.setEnabled(bound and state.preview is not None and state.preview.profile is not None
+                                and state.preview.profile == self._view_model.state.selected
+                                and state.preview.applicability is not None and state.preview.applicability.applicable)
+        self._clear.setEnabled(bound)
+        binding = state.binding
+        lines = [text("live_calibration.phase." + state.phase)]
+        if binding is not None:
+            lines.append(text("live_calibration.bound", rx=binding.endpoint.selection.value.upper(),
+                              source=binding.endpoint.source_id, port=binding.frontend.rf_port_path,
+                              chain=binding.frontend.frontend_chain, plane=binding.frontend.reference_plane))
+        if state.preview is not None:
+            preview = state.preview
+            profile = preview.profile
+            lines.append(text("live_calibration.preview_detail", profile="—" if profile is None else profile.profile_id,
+                              version="—" if profile is None else profile.profile_version,
+                              result="—" if preview.applicability is None else preview.applicability.reason))
+        if state.acknowledged is not None:
+            lines.append(text("live_calibration.ack." + state.acknowledged))
+        if state.error:
+            lines.append(text("live_calibration.refused", detail=state.error))
+        self._live_status.setText("\n".join(lines))
+
     def _select_item(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if self._selection_sync:
             return
@@ -180,6 +293,8 @@ class CalibrationProfilesWorkspaceV2(QWidget):
         self._render_profiles(state)
         self._render_profile(state.selected)
         self._render_applicability(state.applicability)
+        if self._live_calibration is not None:
+            self._render_live(self._live_calibration.state)
         if state.error:
             self._error_banner.set_content(text("calibration.error.title"), state.error)
             self._error_banner.set_action("", enabled=False)
@@ -253,6 +368,7 @@ class CalibrationProfilesWorkspaceV2(QWidget):
 def calibration_profiles_workspace_definition(
     view_model: CalibrationProfileViewModel,
     *,
+    live_calibration: LiveCalibrationViewModel | None = None,
     theme: ThemeId = ThemeId.DARK,
 ) -> WorkspaceDefinition:
     return WorkspaceDefinition(
@@ -260,7 +376,7 @@ def calibration_profiles_workspace_definition(
         label=text("calibration.workspace.label"),
         description=text("calibration.workspace.description"),
         icon=V2IconId.INFO,
-        workspace_factory=lambda: CalibrationProfilesWorkspaceV2(view_model, theme=theme),
+        workspace_factory=lambda: CalibrationProfilesWorkspaceV2(view_model, live_calibration=live_calibration, theme=theme),
         inspector_factory=lambda: _inspector(view_model, theme),
         label_key="calibration.workspace.label",
         description_key="calibration.workspace.description",

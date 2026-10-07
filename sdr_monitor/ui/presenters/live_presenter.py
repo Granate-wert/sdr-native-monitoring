@@ -63,6 +63,8 @@ class LivePresenter(QObject):
     prepared_snapshot_ready = Signal(object)
     preparation_active_changed = Signal(bool)
     rf_command_ready = Signal(object)
+    control_accepted = Signal()
+    calibration_worker_available = Signal()
     _prepared_control_ready = Signal(object)
     _prepared_render_done = Signal(object)
     _prepared_command_done = Signal(object)
@@ -349,6 +351,17 @@ Future callback. There is no new executor or unbounded display-task loophole.
             raise RuntimeError("Live presentation worker is closing")
         return self._executor.submit(operation)
 
+    @property
+    def calibration_worker_ready(self) -> bool:
+        """Optional analytics cannot queue ahead of accepted controls/render work."""
+        return (not self._closed and not self._closing and not self._pending_commands
+                and self._preparation_future is None and not self._projection_in_flight)
+
+    def submit_calibration_task(self, operation: Callable[[], Any]) -> Future:
+        if not self.calibration_worker_ready:
+            raise RuntimeError("Live worker has higher-priority work")
+        return self._executor.submit(operation)
+
     def submit_persistence_task(self, operation: Callable[[], Any]) -> Future:
         """Submit optional density preparation outside control/spectrum work."""
         if self._closing or self._closed:
@@ -367,11 +380,13 @@ Future callback. There is no new executor or unbounded display-task loophole.
         self._projection_in_flight = bool(active)
         if not active and not self._closed and not self._closing:
             self._dispatch_preparation()
+            self.calibration_worker_available.emit()
 
     def prepare_shutdown(self) -> None:
         """GUI quiesce only; finish_shutdown owns potentially blocking cleanup."""
         if self._closed:
             return
+        self.control_accepted.emit()
         self._closing = True
         self._pending_preparation = None
         if not self._shutdown_presentation_complete:
@@ -435,6 +450,7 @@ Future callback. There is no new executor or unbounded display-task loophole.
     def _submit(self, operation: Callable[[], Any], on_success: Callable[[Any], None], *, force_gui: bool = False) -> None:
         if self._closed or self._closing:
             return
+        self.control_accepted.emit()
         if self.prepares_snapshots or force_gui:
             # Invalidate at command acceptance, not only after a slow Stop/Apply
             # finishes. At most the one already-running preparation precedes it.
@@ -629,6 +645,7 @@ Future callback. There is no new executor or unbounded display-task loophole.
             if not self._closing and not self._closed:
                 self.busy_changed.emit(self._pending_commands > 0)
                 self._dispatch_preparation()
+                self.calibration_worker_available.emit()
 
     @Slot(object)
     def _finish_preparation(self, future: Future[_PreparedDelivery]) -> None:
@@ -643,6 +660,7 @@ Future callback. There is no new executor or unbounded display-task loophole.
             self.preparation_active_changed.emit(False)
         if not self._closed and not self._closing:
             self._dispatch_preparation()
+            self.calibration_worker_available.emit()
 
     @Slot(object)
     def _deliver_prepared(self, delivery: _PreparedDelivery) -> None:

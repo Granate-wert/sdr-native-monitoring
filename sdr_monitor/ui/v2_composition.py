@@ -85,6 +85,19 @@ def build_v2_shell(services=None):
     )
     live_presenter = LivePresenter(live_application, snapshot_preparer=LiveSnapshotPreparer(allocation_budget),
                                    snapshot_admitter=source_admission.live)
+    from ..services.calibration_service import CalibrationService
+    from ..services.calibration_store import CalibrationProfileStore
+    from ..services.receiver_calibration import ReceiverCalibrationRegistry
+    from ..ui.presenters.live_calibration_presenter import LiveCalibrationPresenter
+    calibration_service = services.calibration
+    registry = None
+    if isinstance(calibration_service, CalibrationService) and isinstance(calibration_service.store, CalibrationProfileStore):
+        existing = getattr(services, "receiver_calibration", None)
+        if existing is None:
+            registry = ReceiverCalibrationRegistry(calibration_service.store)
+        elif isinstance(existing, ReceiverCalibrationRegistry) and existing.store is calibration_service.store:
+            registry = existing
+    live_calibration = LiveCalibrationPresenter(live_application, registry, live_presenter, allocation_budget)
     composition = compose_v2_live_product(
         live_presenter,
         projection_submit=live_presenter.submit_display_task,
@@ -94,6 +107,7 @@ def build_v2_shell(services=None):
         hackrf_sweep_composed=getattr(services, "analyzer_hackrf_sweep", None) is not None,
         sweep_presenter=SweepPresenter(SweepControlApplicationService(services.sweep, analyzer=analyzer)),
         calibration_presenter=CalibrationPresenter(CalibrationControlApplicationService(services.calibration)),
+        live_calibration_presenter=live_calibration,
         diagnostics_presenter_factory=lambda: DiagnosticsPresenter(DiagnosticsControlApplicationService(services.diagnostics)),
         replay_presenter_factory=make_replay_presenter,
         # Real common instrument graphs cannot expose a second serial owner.

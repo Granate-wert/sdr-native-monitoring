@@ -16,13 +16,14 @@ from .shell.placeholders import default_workspace_definitions
 from .spectrum.allocation_budget import PresentationAllocationBudget
 from .spectrum.projection import SpectrumProjection, SpectrumProjector
 from .state.live_view_state import LiveAction
-from .view_models.analyzer_view_model import AnalyzerViewModel, AnalyzerViewState, SweepPresentationPort
+from .view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState, SweepPresentationPort
 from .view_models.calibration_view_model import CalibrationProfilePresenterPort, CalibrationProfileViewModel
 from .view_models.diagnostics_view_model import (
     DeferredDiagnosticsViewModel,
     DiagnosticsPresenterFactory,
 )
 from .view_models.live_view_model import LivePresenterPort, LiveViewModel
+from .view_models.live_calibration_view_model import LiveCalibrationPresenterPort, LiveCalibrationViewModel
 from .view_models.replay_view_model import DeferredReplayViewModel, ReplayPresenterFactory
 from .view_models.sweep_view_model import SweepPresenterPort, SweepViewModel
 from .view_models.tinysa_view_model import (
@@ -126,6 +127,7 @@ class V2LiveProductComposition:
         allocation_budget: PresentationAllocationBudget | None = None,
         async_shutdown: bool = False,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
+        live_calibration_presenter: LiveCalibrationPresenterPort | None = None,
         diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
         replay_presenter_factory: ReplayPresenterFactory | None = None,
         tinysa_activation_presenter_factory: TinySaSourceActivationPresenterFactory | None = None,
@@ -145,6 +147,11 @@ class V2LiveProductComposition:
         self._projection_activity: dict[SpectrumProjector, bool] = {}
         self._projection_activity_slots: dict[SpectrumProjector, Callable[[bool], None]] = {}
         self._calibration_presenter = calibration_presenter
+        self.live_calibration_view_model = (None if live_calibration_presenter is None else
+                                            LiveCalibrationViewModel(live_calibration_presenter))
+        self._calibration_projector = (None if live_calibration_presenter is None or projection_submit is None else
+                                      SpectrumProjector(projection_submit, allocation_budget=self.allocation_budget))
+        self._calibration_mode: AnalyzerMode | None = None
         self.view_model = LiveViewModel(presenter, now_ns=now_ns)
         self.analyzer_view_model = (
             AnalyzerViewModel(self.view_model, analyzer_presenter,
@@ -180,6 +187,8 @@ class V2LiveProductComposition:
             self._sweep_preparation_signal.connect(self.spectrum_projector.set_preparation_in_flight)
         if self.spectrum_projector is not None:
             self._connect_projection_activity(self.spectrum_projector)
+        if self._calibration_projector is not None:
+            self._connect_projection_activity(self._calibration_projector)
         self.sweep_view_model = None if sweep_presenter is None else SweepViewModel(sweep_presenter)
         self.calibration_view_model = (
             None if calibration_presenter is None else CalibrationProfileViewModel(calibration_presenter)
@@ -212,7 +221,8 @@ class V2LiveProductComposition:
         calibration_definition = (
             None
             if self.calibration_view_model is None
-            else calibration_profiles_workspace_definition(self.calibration_view_model)
+            else calibration_profiles_workspace_definition(self.calibration_view_model,
+                                                            live_calibration=self.live_calibration_view_model)
         )
         diagnostics_definition = (
             None
@@ -273,6 +283,7 @@ class V2LiveProductComposition:
                         widget.install_independent_pane_session(owner._pane_handle)
             workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector,
                 self.calibration_view_model, shared_projector_factory=shared_projector_factory,
+                live_calibration=self.live_calibration_view_model, calibration_projector=self._calibration_projector,
                 on_created=remember_analyzer_workspace),) + tuple(
                 item for item in workspaces if item.workspace_id not in {"home", "live", "sweep"}
             )
@@ -293,6 +304,10 @@ class V2LiveProductComposition:
         )
 
     def _on_projection_control(self, state: AnalyzerViewState) -> None:
+        if self._calibration_mode is not None and self._calibration_mode != state.mode:
+            if self.live_calibration_view_model is not None:
+                self.live_calibration_view_model.close_binding()
+        self._calibration_mode = state.mode
         for projector in self._pane_projectors:
             projector.set_suspended(state.live.busy or state.starting or state.stopping)
 
@@ -392,6 +407,8 @@ class V2LiveProductComposition:
         widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
         if widget is not None:
             widget.install_independent_pane_session(handle)
+        if self.live_calibration_view_model is not None:
+            self.live_calibration_view_model.close_binding()
         self._pane_handle = handle
 
     def uninstall_independent_pane_session(self) -> None:
@@ -413,6 +430,8 @@ class V2LiveProductComposition:
     def request_shutdown(self) -> CloseState:
         assert self.close_lifecycle is not None
         self.cancel_pending_rf_control()
+        if self.live_calibration_view_model is not None:
+            self.live_calibration_view_model.close_binding()
         if self.close_lifecycle.state.phase == "idle" and not self.can_close():
             return CloseState("failed", "Stop must acknowledge before application close")
         state = self.close_lifecycle.request()
@@ -456,6 +475,8 @@ class V2LiveProductComposition:
                 getattr(presenter, "release_presentation_after_shutdown")()
         for projector in self._pane_projectors:
             projector.release_presentation_after_shutdown()
+        if self._calibration_projector is not None:
+            self._calibration_projector.release_presentation_after_shutdown()
         self.view_model.release_presentation_after_shutdown()
         if self.analyzer_view_model is not None:
             self.analyzer_view_model.release_presentation_after_shutdown()
@@ -464,6 +485,10 @@ class V2LiveProductComposition:
     def _prepare_async_shutdown(self) -> tuple[tuple[str, Callable[[], None]], ...]:
         """GUI-only phase; no device operations, waits or deferred factories."""
         tasks: list[tuple[str, Callable[[], None]]] = []
+        if self.live_calibration_view_model is not None:
+            self.live_calibration_view_model.dispose()
+        if self._calibration_projector is not None:
+            self._calibration_projector.dispose()
         if self._pane_handle is not None:
             tasks.append(("independent-pane-resources", self._pane_handle.shutdown_after_stop))
         for name, presenter in (("sweep-reservation", self._sweep_presenter),
@@ -519,6 +544,10 @@ class V2LiveProductComposition:
         # Disconnect presentation callbacks once; these methods own no work
         # and repeating a successful disconnect is not a lifecycle retry.
         if not self._presentation_disposed:
+            if self.live_calibration_view_model is not None:
+                attempt(self.live_calibration_view_model.dispose)
+            if self._calibration_projector is not None:
+                attempt(self._calibration_projector.dispose)
             if self._unsubscribe_projection is not None:
                 attempt(self._unsubscribe_projection)
             attempt(self._disconnect_projection_delivery)
@@ -572,6 +601,7 @@ def compose_v2_live_product(
     allocation_budget: PresentationAllocationBudget | None = None,
     async_shutdown: bool = False,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
+    live_calibration_presenter: LiveCalibrationPresenterPort | None = None,
     diagnostics_presenter_factory: DiagnosticsPresenterFactory | None = None,
     replay_presenter_factory: ReplayPresenterFactory | None = None,
     tinysa_activation_presenter_factory: TinySaSourceActivationPresenterFactory | None = None,
@@ -590,6 +620,7 @@ def compose_v2_live_product(
         allocation_budget=allocation_budget,
         async_shutdown=async_shutdown,
         calibration_presenter=calibration_presenter,
+        live_calibration_presenter=live_calibration_presenter,
         diagnostics_presenter_factory=diagnostics_presenter_factory,
         replay_presenter_factory=replay_presenter_factory,
         tinysa_activation_presenter_factory=tinysa_activation_presenter_factory,

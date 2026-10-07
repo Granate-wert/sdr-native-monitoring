@@ -29,6 +29,7 @@ from ..design.icons import V2IconId
 from ..i18n import current_locale, text
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum.projection import SpectrumProjector
+from ..spectrum.calibrated_current import CalibratedCurrentPlot
 from ..state.analyzer_readouts import (
     analyzer_periods,
     analyzer_quality_detail,
@@ -41,6 +42,7 @@ from ..state.configuration_readouts import configuration_prefix, rf_bandwidth_su
 from ..state.live_view_state import LiveAction
 from ..view_models.analyzer_view_model import AnalyzerMode, AnalyzerViewModel, AnalyzerViewState
 from ..view_models.calibration_view_model import CalibrationProfileViewModel
+from ..view_models.live_calibration_view_model import LiveCalibrationViewModel
 from .analyzer_configuration import AnalyzerConfigurationDrawer
 from .analyzer_display_controls import AnalyzerDisplayControls
 from .analyzer_frequency_bar import AnalyzerFrequencyBar
@@ -68,6 +70,8 @@ class AnalyzerWorkspaceV2(QWidget):
     def __init__(self, model: AnalyzerViewModel, *, projector: SpectrumProjector | None = None,
                  calibration_profiles: CalibrationProfileViewModel | None = None,
                  shared_projector_factory: Callable[[], SpectrumProjector] | None = None,
+                 live_calibration: LiveCalibrationViewModel | None = None,
+                 calibration_projector: SpectrumProjector | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.model = model
@@ -197,6 +201,10 @@ class AnalyzerWorkspaceV2(QWidget):
         self._acquisition_shortcut.setAutoRepeat(False)
         self._acquisition_shortcut.activated.connect(self._execute_keyboard_primary)
         layout.addWidget(self._pane_host, 1)
+        self.calibrated_current = (None if live_calibration is None or calibration_projector is None else
+                                   CalibratedCurrentPlot(live_calibration, calibration_projector, self))
+        if self.calibrated_current is not None:
+            layout.addWidget(self.calibrated_current, 1)
         self.display_controls = AnalyzerDisplayControls(
             self.visualization.spectrum_scene.take_display_controls(),
             self.visualization.waterfall_pane.take_display_controls(), parent=self,
@@ -539,6 +547,9 @@ class AnalyzerWorkspaceV2(QWidget):
     def set_locale(self) -> None:
         """Translate controls in place; preserve canvas, source and local range."""
         self._rf_controls.set_locale()
+        if self.calibrated_current is not None:
+            self.calibrated_current.scene.set_locale(current_locale())
+            self.calibrated_current._render(self.calibrated_current._model.state)
         self._last_source_selection = None  # Reformat this scalar readout in the new locale.
         self.setAccessibleName(text("analyzer.title"))
         self.source.setAccessibleName(text("live.device_selector.name"))
@@ -629,6 +640,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self.drawer.dispose()
         self.tinysa_bar.settings_drawer.release_profiles()
         self._rf_controls.dispose()
+        if self.calibrated_current is not None:
+            self.calibrated_current.release()
         super().closeEvent(event)
 
     def hideEvent(self, event) -> None:
@@ -640,6 +653,8 @@ class AnalyzerWorkspaceV2(QWidget):
         """Explicit parent-shell terminal hook; never used for Stop/hide."""
         if self._terminal_released:
             return
+        if self.calibrated_current is not None:
+            self.calibrated_current.release()
         if self._independent_session is not None:
             self._independent_session.release_presentation_after_shutdown()
         if self._independent_setup is not None:
@@ -1024,10 +1039,13 @@ def analyzer_workspace_definition(model: AnalyzerViewModel,
                                   projector: SpectrumProjector | None = None,
                                   calibration_profiles: CalibrationProfileViewModel | None = None,
                                   *, shared_projector_factory: Callable[[], SpectrumProjector] | None = None,
+                                  live_calibration: LiveCalibrationViewModel | None = None,
+                                  calibration_projector: SpectrumProjector | None = None,
                                   on_created: Callable[[AnalyzerWorkspaceV2], None] | None = None) -> WorkspaceDefinition:
     def make_workspace() -> AnalyzerWorkspaceV2:
         widget = AnalyzerWorkspaceV2(model, projector=projector,
             calibration_profiles=calibration_profiles,
+            live_calibration=live_calibration, calibration_projector=calibration_projector,
             shared_projector_factory=shared_projector_factory)
         if on_created is not None:
             on_created(widget)
