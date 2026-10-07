@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from threading import Event, get_ident
 from typing import cast
+from weakref import ref as weak_ref
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +26,85 @@ def advance(ledger, ref, end=Stage.UI_ADMITTED):
 
 
 class UiStopReconciliationTests(unittest.TestCase):
+    def test_idle_serial_worker_releases_completed_operation_future_and_result_without_gc(self):
+        class Payload:
+            pass
+
+        _layout, session, _leases, _owners, _queue, pump = pump_fixtures.PaneResourcePumpTests.make_plan(1)
+        session.apply()
+        pump.activate()
+        worker = pump._workers["device-1"]
+        idle, operation_entered = Event(), Event()
+        original_wait = worker._condition.wait
+
+        def observed_wait(timeout=None):
+            if operation_entered.is_set():
+                idle.set()  # Finite idle boundary AFTER the completed plan callback.
+            return original_wait(timeout)
+
+        try:
+            pump.stop_resource("device-1").result(timeout=3)
+            payload = Payload()
+            def operation(item=payload):
+                operation_entered.set()
+                return item
+            operation_ref, payload_ref = weak_ref(operation), weak_ref(payload)
+            with patch.object(worker._condition, "wait", side_effect=observed_wait):
+                future = worker._request_plan(operation, require_stopped=True)
+                future_ref = weak_ref(future)
+                self.assertIs(future.result(timeout=3), payload)
+                del operation, payload, future
+                self.assertTrue(idle.wait(3))
+                # No later command/Stop/join, sleep, collection or Qt event is
+                # needed to release the worker's last temporary result/batch.
+                self.assertIsNone(operation_ref())
+                self.assertIsNone(future_ref())
+                self.assertIsNone(payload_ref())
+        finally:
+            for future in pump.stop_all().values():
+                future.result(timeout=3)
+            pump.join_after_stop(3)
+
+    def test_idle_serial_worker_releases_failed_operation_and_future_without_gc(self):
+        class Payload:
+            pass
+
+        _layout, session, _leases, _owners, _queue, pump = pump_fixtures.PaneResourcePumpTests.make_plan(1)
+        session.apply()
+        pump.activate()
+        worker = pump._workers["device-1"]
+        idle, operation_entered = Event(), Event()
+        original_wait = worker._condition.wait
+
+        def observed_wait(timeout=None):
+            if operation_entered.is_set():
+                idle.set()
+            return original_wait(timeout)
+
+        try:
+            pump.stop_resource("device-1").result(timeout=3)
+            payload = Payload()
+
+            def operation(item=payload):
+                operation_entered.set()
+                raise RuntimeError("test-only scalar operation refused")
+
+            operation_ref, payload_ref = weak_ref(operation), weak_ref(payload)
+            with patch.object(worker._condition, "wait", side_effect=observed_wait):
+                future = worker._request_plan(operation, require_stopped=True)
+                future_ref = weak_ref(future)
+                with self.assertRaisesRegex(RuntimeError, "pane RF plan command was refused"):
+                    future.result(timeout=3)
+                del operation, payload, future
+                self.assertTrue(idle.wait(3))
+                self.assertIsNone(operation_ref())
+                self.assertIsNone(future_ref())
+                self.assertIsNone(payload_ref())
+        finally:
+            for future in pump.stop_all().values():
+                future.result(timeout=3)
+            pump.join_after_stop(3)
+
     def assert_conserved(self, ledger):
         snapshot = ledger.snapshot()
         self.assertLessEqual(len(snapshot.records), RECORD_CAPACITY)

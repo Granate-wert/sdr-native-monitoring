@@ -6598,3 +6598,22 @@ nonexistent attribute; its failed log is retained separately.
 No Qt rendering integration, new EXE/full gate, physical RX, latency percentiles,
 M8-080 recovery/cause, visible Windows/DPI/DWM, soak or release is proven here.
 The last fully software-qualified build remains 9f4; APP-07/M8 remains partial.
+
+## Idle serial worker temporary release (M8-084 follow-up)
+
+The stopped resource worker must not retain its last completed scalar operation,
+Future or result merely because its next command has not arrived. Plan execution
+now uses a short-lived helper frame; the idle loop deletes its operation/Future
+locals after completion. The same worker, control slot, error mapping and
+active-plan-before-completion ordering are preserved. Caller-owned Futures,
+callbacks and exception tracebacks remain caller-owned; this is not a general
+cyclic-GC or whole-process memory-leak repair.
+
+Two weak-reference regressions reproduce the old retention on success and
+failure, then verify release at the existing worker's next idle boundary without
+forced GC, a later command, Qt processing or another thread. The targeted suite
+passes 107 tests (3.349s). Ruff/compile/diff pass; scoped typing still reports
+nine unchanged dependency diagnostics, byte-identical to the immutable baseline
+(not whole-project mypy PASS). Separate UI callback-cycle, hidden Waterfall
+admission and repeated persistence scheduling repairs remain unqualified.
+No new EXE, physical RX, latency, soak or release acceptance follows.

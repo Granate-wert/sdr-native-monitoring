@@ -274,6 +274,20 @@ class _ResourceWorker:
             except Exception:
                 pass  # State still owns the same immutable cause and receiver.
 
+    def _execute_plan(self, operation: Callable[[], Any], future: Future[Any]) -> None:
+        """Complete one scalar task without retaining its batch in the idle loop."""
+        try:
+            result = operation()
+        except Exception as error:
+            with self._condition:
+                self._active_plan = False
+            future.set_exception(error if isinstance(error, (PaneUserPlanError, PaneDiagnosticError))
+                                 else RuntimeError("pane RF plan command was refused"))
+        else:
+            with self._condition:
+                self._active_plan = False
+            future.set_result(result)
+
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -315,17 +329,12 @@ class _ResourceWorker:
                     self._condition.wait()
                     continue
             if command == "plan":
-                try:
-                    result = operation()
-                except Exception as error:
-                    with self._condition:
-                        self._active_plan = False
-                    future_plan.set_exception(error if isinstance(error, (PaneUserPlanError, PaneDiagnosticError))
-                                              else RuntimeError("pane RF plan command was refused"))
-                else:
-                    with self._condition:
-                        self._active_plan = False
-                    future_plan.set_result(result)
+                self._execute_plan(operation, future_plan)
+                # The operation may close over a bounded Stop capture batch,
+                # and its Future/result belongs to callers, not to a stopped
+                # worker's indefinite wait. Do not rely on a later command or
+                # cyclic GC to release these two loop-local references.
+                del operation, future_plan
             elif command == "start":
                 failure_stage = PaneFailureStage.REARM if rearm else PaneFailureStage.START
                 try:
