@@ -26,6 +26,51 @@ def advance(ledger, ref, end=Stage.UI_ADMITTED):
 
 
 class UiStopReconciliationTests(unittest.TestCase):
+    def test_idle_serial_worker_releases_successful_stop_future_without_gc(self):
+        self._assert_idle_stop_future_release(fail=False)
+
+    def test_idle_serial_worker_releases_failed_stop_future_without_gc(self):
+        self._assert_idle_stop_future_release(fail=True)
+
+    def _assert_idle_stop_future_release(self, *, fail):
+        _layout, session, _leases, _owners, _queue, pump = pump_fixtures.PaneResourcePumpTests.make_plan(1)
+        session.apply()
+        pump.activate()
+        worker = pump._workers["device-1"]
+        idle, stop_entered = Event(), Event()
+        original_wait = worker._condition.wait
+        original_stop = session.stop_resource
+
+        def observed_wait(timeout=None):
+            if stop_entered.is_set():
+                idle.set()
+            return original_wait(timeout)
+
+        def observed_stop(resource_id):
+            stop_entered.set()
+            if fail:
+                raise RuntimeError("test-only Stop failure")
+            return original_stop(resource_id)
+
+        try:
+            with patch.object(worker._condition, "wait", side_effect=observed_wait), \
+                    patch.object(session, "stop_resource", side_effect=observed_stop):
+                future = pump.stop_resource("device-1")
+                future_ref = weak_ref(future)
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, "pane receiver Stop did not confirm"):
+                        future.result(timeout=3)
+                else:
+                    self.assertIsNone(future.result(timeout=3))
+                del future
+                self.assertTrue(idle.wait(3))
+                self.assertIsNone(worker._active_stop)
+                self.assertIsNone(future_ref())
+        finally:
+            for future in pump.stop_all().values():
+                future.result(timeout=3)
+            pump.join_after_stop(3)
+
     def test_idle_serial_worker_releases_completed_operation_future_and_result_without_gc(self):
         class Payload:
             pass

@@ -372,6 +372,10 @@ class _ResourceWorker:
                                               activation=None, planned_slot_overrun=False, error=None)
                         self._active_stop = None
                     future_stop.set_result(None)
+                # Completion callbacks belong to their callers. The idle
+                # worker no longer needs the completed Stop Future once its
+                # active-stop slot has been cleared on either outcome.
+                del future_stop
             else:
                 try:
                     self._poll_and_advance()

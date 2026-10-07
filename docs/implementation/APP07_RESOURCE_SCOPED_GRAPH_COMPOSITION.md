@@ -6617,3 +6617,12 @@ nine unchanged dependency diagnostics, byte-identical to the immutable baseline
 (not whole-project mypy PASS). Separate UI callback-cycle, hidden Waterfall
 admission and repeated persistence scheduling repairs remain unqualified.
 No new EXE, physical RX, latency, soak or release acceptance follows.
+
+The subsequent UI residency regression exposed a separate completed Stop
+Future retained in the same idle loop. Both successful and failed Stop clear
+their active-stop slot before completion, then now delete that loop-local
+Future as well. Two new regression-first tests fail on the previous source
+and pass after this repair without GC or another command. Five targeted
+backend modules pass 83 tests (0.564s); an initial incorrect module name is
+preserved as a test-launch failure. No control/failure/retry policy is changed,
+and the separate UI callback-cycle repair still needs its matching Qt proof.
