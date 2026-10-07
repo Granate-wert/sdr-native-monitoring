@@ -39,6 +39,7 @@ def native_spectrum_provenance(frame: Any) -> SpectrumProvenance:
         nominal_rbw_hz=number("nominal_rbw_hz"), averaging_frames=None if averaging == 0 else averaging,
         calibration_status=enum("calibration_status"), calibration_profile_id=profile or None,
         estimated_uncertainty_db=number("estimated_uncertainty_db", unavailable_nan=True),
+        window_normalization_version=getattr(frame, "window_normalization_version", None),
     )
 
 

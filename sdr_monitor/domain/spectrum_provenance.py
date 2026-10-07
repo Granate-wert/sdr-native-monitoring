@@ -22,13 +22,15 @@ class SpectrumProvenance:
     calibration_status: str | None = None
     calibration_profile_id: str | None = None
     estimated_uncertainty_db: float | None = None
+    window_normalization_version: str | None = None
 
     def __post_init__(self) -> None:
         for name, allowed in _ENUM_VALUES.items():
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or value not in allowed):
                 raise ValueError(f"unsupported {name}")
-        for name in ("window", "detector", "precision_mode", "calibration_status", "calibration_profile_id"):
+        for name in ("window", "detector", "precision_mode", "calibration_status", "calibration_profile_id",
+                     "window_normalization_version"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 128):
                 raise ValueError(f"{name} must be bounded non-empty text or unknown")

@@ -6795,3 +6795,22 @@ do not imply manual gain and do not inherit an older provisional receipt.
 Legacy/prepared receipts default to unknown. Numeric gain readback and requested
 configuration remain distinct and unchanged. This enables a later exact
 calibration signature; it does not apply calibration or establish RF accuracy.
+
+### Exact live calibration signature join
+
+`build_live_calibration_signature` joins one typed endpoint with the exact
+device capability/calibration identity, complete applied RF/gain readbacks and
+producer-reported normalization semantics. It rejects BOTH, source/resource/
+topology mismatch, unknown identity/backend/normalization, non-digital input
+units and AGC. Operator frontend/reference context is explicit, not inferred
+from a digital RX or a display label. No hardware call, profile activation or
+correction is performed by this pure helper. Its caller still must establish
+the same admitted acquisition/epoch association before using the signature.
+
+Spectrum provenance has an optional normalization-version field; the native
+mapper reads it only if actually reported, never from configuration or a host
+default. Existing producers do not report it yet and therefore cannot pass
+this join. This packet does not change the native wire schema, claim physical
+RF accuracy, or enable calibrated Live dBm. Original arrays/coverage/time/quality
+and UI remain unchanged. Native producer declaration and actual analytical
+correction with scoped profile/processing revision remain required.
