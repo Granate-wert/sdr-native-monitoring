@@ -6884,3 +6884,11 @@ not a promise that it remains selected forever: downstream publications must
 check current owner admission and selected profile revision before display.
 Automatic owner/presenter integration and paired independent profile stores
 remain pending; this service API alone does not make Live calibrated.
+
+The SDR array correction builds each profile grid once per call and uses
+vectorized search/interpolation rather than invoking scalar `evaluate` for
+every FFT bin. Exact nodes retain stored values; linear end-segment
+extrapolation remains explicit and the default out-of-range refusal is
+whole-frame. Scalar `evaluate` remains available as the equivalence oracle.
+This reduces host analytical overhead only; it does not change FFT, sampling,
+transport, renderer cadence, quality or acquisition continuity guarantees.

@@ -570,11 +570,29 @@ def apply_calibration(values: Sequence[float] | np.ndarray, frequencies_hz: Sequ
     applicability = check_applicability(profile, settings)
     if not applicability.applicable:
         return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), raw_unit, CalibrationStatus.INVALID, profile.profile_id)
-    samples = tuple(profile.evaluate(float(item), allow_extrapolation=allow_extrapolation) for item in frequencies)
-    if any(item.status is CalibrationStatus.INVALID for item in samples):
+    if not np.all(np.isfinite(frequencies)):
+        raise CalibrationProfileError("frequency_hz must be finite")
+    # Build the immutable curve once per array, not once per FFT bin.
+    grid = np.asarray([point.frequency_hz for point in profile.points], dtype=np.float64)
+    corrections = np.asarray([point.correction_db for point in profile.points], dtype=np.float64)
+    uncertainties = np.asarray([point.uncertainty_db for point in profile.points], dtype=np.float64)
+    outside = (frequencies < grid[0]) | (frequencies > grid[-1])
+    if np.any(outside) and not allow_extrapolation:
         return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), raw_unit, CalibrationStatus.INVALID, profile.profile_id)
-    status = CalibrationStatus.EXTRAPOLATED if any(item.status is CalibrationStatus.EXTRAPOLATED for item in samples) else CalibrationStatus.INTERPOLATED if any(item.status is CalibrationStatus.INTERPOLATED for item in samples) else CalibrationStatus.CALIBRATED
-    return CalibratedArray(raw + np.asarray([item.correction_db for item in samples]), np.asarray([item.uncertainty_db for item in samples]), corrected_unit, status, profile.profile_id)
+    insertion = np.searchsorted(grid, frequencies, side="left")
+    exact_index = np.minimum(insertion, grid.size - 1)
+    exact = grid[exact_index] == frequencies
+    right = np.clip(insertion, 1, grid.size - 1)
+    left = right - 1
+    fraction = (frequencies - grid[left]) / (grid[right] - grid[left])
+    correction = corrections[left] + fraction * (corrections[right] - corrections[left])
+    uncertainty = uncertainties[left] + fraction * (uncertainties[right] - uncertainties[left])
+    # Scalar evaluate returns stored values on exact nodes, without lerp rounding.
+    correction[exact] = corrections[exact_index[exact]]
+    uncertainty[exact] = uncertainties[exact_index[exact]]
+    status = (CalibrationStatus.EXTRAPOLATED if np.any(outside) else
+              CalibrationStatus.INTERPOLATED if not np.all(exact) else CalibrationStatus.CALIBRATED)
+    return CalibratedArray(raw + correction, uncertainty, corrected_unit, status, profile.profile_id)
 
 
 @dataclass(frozen=True, slots=True)
