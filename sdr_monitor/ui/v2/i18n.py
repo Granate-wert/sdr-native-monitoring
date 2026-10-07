@@ -929,8 +929,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         ),
         "calibration.applicability.boundary": MappingProxyType(
             {
-                UiLocale.RU: "Температура / прошивка / статус dBm приёма не опубликованы текущим контрактом. Профиль не помечается активным; импорт/завершение/переопределение недоступны.",
-                UiLocale.EN: "Temperature / firmware / Live dBm status is not published by the current contract. The profile is not marked active; import/finalize/override are unavailable.",
+                UiLocale.RU: "Просматриваемый профиль не помечается активным. Явный Select/Clear требует привязки работающего одиночного Live; фактически отображённая коррекция и её единицы показаны в отдельном CURRENT Analyzer. Температура/прошивка, импорт/завершение/переопределение недоступны. RF-точность не подтверждена.",
+                UiLocale.EN: "The inspected profile is not marked active. Explicit Select/Clear requires a running single Live binding; actually displayed correction and its units appear in separate Analyzer CURRENT. Temperature/firmware and import/finalize/override are unavailable. RF accuracy is unverified.",
             }
         ),
         "calibration.applicability.headers": MappingProxyType(
@@ -949,13 +949,13 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Ошибка калибровки", UiLocale.EN: "Calibration error"}
         ),
         "calibration.header.detail": MappingProxyType(
-            {UiLocale.RU: "Только неизменяемый профиль и применимость. Активация не допущена текущим контрактом.", UiLocale.EN: "Immutable profile/applicability only. Activation is not admitted by the current contract."}
+            {UiLocale.RU: "Просмотр профиля и применимости инертен. Явные действия Live требуют отдельной привязки; подтверждённый CURRENT показан в Analyzer.", UiLocale.EN: "Profile and applicability inspection is inert. Explicit Live actions require a separate binding; accepted CURRENT appears in Analyzer."}
         ),
         "calibration.header.title": MappingProxyType(
             {UiLocale.RU: "Калибровочные профили", UiLocale.EN: "Calibration profiles"}
         ),
         "calibration.inspector.boundary": MappingProxyType(
-            {UiLocale.RU: "Активный профиль и статус dBm не публикуются; интерфейс их не выводит.", UiLocale.EN: "Active profile and dBm status are not published; the UI does not display them."}
+            {UiLocale.RU: "Просмотр/Refresh не активируют профиль. Select/Clear относится только к явно привязанному Live RX; подтверждение команды не доказывает отображение. Профиль и единицы валидного отображённого CURRENT показаны отдельно в Analyzer; RF-точность не подтверждена.", UiLocale.EN: "Inspection/Refresh never activate a profile. Select/Clear applies only to the explicitly bound Live RX; command acknowledgement is not display evidence. Valid displayed CURRENT profile and units appear separately in Analyzer; RF accuracy is unverified."}
         ),
         "calibration.inspector.context": MappingProxyType(
             {UiLocale.RU: "Контекст", UiLocale.EN: "Context"}
@@ -968,8 +968,8 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         ),
         "calibration.inspector.summary": MappingProxyType(
             {
-                UiLocale.RU: "Профилей: {profiles}\nВыбран: {selected}\nЗанято: {busy}",
-                UiLocale.EN: "Profiles: {profiles}\nSelected: {selected}\nBusy: {busy}",
+                UiLocale.RU: "Профилей: {profiles}\nПросматривается: {selected}\nЗанято: {busy}",
+                UiLocale.EN: "Profiles: {profiles}\nInspected: {selected}\nBusy: {busy}",
             }
         ),
         "calibration.no": MappingProxyType({UiLocale.RU: "нет", UiLocale.EN: "no"}),
@@ -1014,7 +1014,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Выберите профиль", UiLocale.EN: "Select a profile"}
         ),
         "calibration.state.selected": MappingProxyType(
-            {UiLocale.RU: "Профиль выбран; активный статус/dBm не подтверждены", UiLocale.EN: "Profile selected; active/dBm are unverified"}
+            {UiLocale.RU: "Профиль просматривается; это не активация Live", UiLocale.EN: "Profile inspected; this is not Live activation"}
         ),
         "calibration.status.mismatch": MappingProxyType(
             {UiLocale.RU: "Несовпадение", UiLocale.EN: "Mismatch"}

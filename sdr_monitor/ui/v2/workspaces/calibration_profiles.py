@@ -194,10 +194,12 @@ class CalibrationProfilesWorkspaceV2(QWidget):
         assert isinstance(rows, QVBoxLayout)
         frontend = QHBoxLayout()
         self._frontend_fields = []
+        self._frontend_labels = []
         binding = self._live_calibration.state.binding
         values = (("", "", "") if binding is None else
                   (binding.frontend.rf_port_path, binding.frontend.frontend_chain, binding.frontend.reference_plane))
         for key, value in zip(("port", "chain", "plane"), values):
+            column = QVBoxLayout()
             field = QLineEdit(card)
             field.setProperty("ui2Role", "command-field")
             field.setText(value)
@@ -206,8 +208,15 @@ class CalibrationProfilesWorkspaceV2(QWidget):
             field.setAccessibleName(text("live_calibration." + key))
             field.setToolTip(text("live_calibration.frontend_help"))
             field.textEdited.connect(self._frontend_edited)
+            label = _secondary(text("live_calibration." + key), card)
+            label.setBuddy(field)
+            self._frontend_labels.append(label)
             self._frontend_fields.append(field)
-            frontend.addWidget(field)
+            column.addWidget(label)
+            column.addWidget(field)
+            frontend.addLayout(column)
+        for previous, following in zip(self._frontend_fields, self._frontend_fields[1:]):
+            QWidget.setTabOrder(previous, following)
         rows.addLayout(frontend)
         commands = QHBoxLayout()
         self._bind = QPushButton(text("live_calibration.bind"), card)
@@ -218,6 +227,7 @@ class CalibrationProfilesWorkspaceV2(QWidget):
         self._preview.clicked.connect(self._preview_live)
         self._select.clicked.connect(self._live_calibration.select)
         self._clear.clicked.connect(self._live_calibration.clear)
+        QWidget.setTabOrder(self._frontend_fields[-1], self._bind)
         for button in (self._bind, self._preview, self._select, self._clear):
             button.setProperty("ui2Role", "primary-action")
             button.setAccessibleName(button.text())
@@ -400,7 +410,9 @@ def _inspector(view_model: CalibrationProfileViewModel, theme: ThemeId) -> QWidg
     detail = _secondary(text("calibration.inspector.not_loaded"), inspector)
     detail.setWordWrap(True)
     layout.addWidget(detail)
-    layout.addWidget(_secondary(text("calibration.inspector.boundary"), inspector))
+    boundary = _secondary(text("calibration.inspector.boundary"), inspector)
+    boundary.setWordWrap(True)
+    layout.addWidget(boundary)
     layout.addStretch(1)
 
     def render(state: CalibrationProfileViewState) -> None:

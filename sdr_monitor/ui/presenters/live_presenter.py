@@ -65,6 +65,7 @@ class LivePresenter(QObject):
     rf_command_ready = Signal(object)
     control_accepted = Signal()
     calibration_worker_available = Signal()
+    calibration_slot_released = Signal(object)
     _prepared_control_ready = Signal(object)
     _prepared_render_done = Signal(object)
     _prepared_command_done = Signal(object)
@@ -99,12 +100,18 @@ class LivePresenter(QObject):
         self._active_preparation_snapshot: LiveSnapshot | None = None
         self._pending_preparation: tuple[LiveSnapshot, int, bool] | None = None
         self._projection_in_flight = False
+        self._calibration_pending = False
+        self._calibration_in_flight = False
+        self._calibration_turn = True
+        self._calibration_serial = 0
+        self._worker_handoff_active = False
         self._preparation_superseded = 0
         self._preparation_stale = 0
         self._pending_commands = 0
         self._prepared_control_ready.connect(self._deliver_prepared, Qt.ConnectionType.QueuedConnection)
         self._prepared_render_done.connect(self._finish_preparation, Qt.ConnectionType.QueuedConnection)
         self._prepared_command_done.connect(self._finish_prepared_command, Qt.ConnectionType.QueuedConnection)
+        self.calibration_slot_released.connect(self.release_calibration_slot, Qt.ConnectionType.QueuedConnection)
         # GUI-rate coalescing intentionally has no service reference.  This
         # keeps acquisition/control ownership in the presenter and makes the
         # display clock independently testable and bounded to one snapshot.
@@ -355,12 +362,40 @@ Future callback. There is no new executor or unbounded display-task loophole.
     def calibration_worker_ready(self) -> bool:
         """Optional analytics cannot queue ahead of accepted controls/render work."""
         return (not self._closed and not self._closing and not self._pending_commands
-                and self._preparation_future is None and not self._projection_in_flight)
+                and self._preparation_future is None and not self._projection_in_flight
+                and not self._calibration_in_flight
+                and (self._calibration_turn or self._pending_preparation is None))
+
+    @property
+    def calibration_slot_serial(self) -> int:
+        return self._calibration_serial
+
+    def set_calibration_pending(self, pending: bool) -> None:
+        """Scalar notification only; the analytics presenter owns its ONE request."""
+        self._calibration_pending = bool(pending)
+        if pending:
+            self._dispatch_preparation()
 
     def submit_calibration_task(self, operation: Callable[[], Any]) -> Future:
         if not self.calibration_worker_ready:
             raise RuntimeError("Live worker has higher-priority work")
-        return self._executor.submit(operation)
+        self._calibration_in_flight = True
+        self._calibration_pending = False
+        self._calibration_turn = False  # One raw turn is owed when raw is pending.
+        self._calibration_serial += 1
+        try:
+            return self._executor.submit(operation)
+        except Exception:
+            self._calibration_in_flight = False
+            raise
+
+    @Slot(object)
+    def release_calibration_slot(self, serial: int) -> None:
+        """GUI acknowledgement, or queued terminal disposal, of this exact slot."""
+        if serial != self._calibration_serial or not self._calibration_in_flight:
+            return
+        self._calibration_in_flight = False
+        self._dispatch_preparation()
 
     def submit_persistence_task(self, operation: Callable[[], Any]) -> Future:
         """Submit optional density preparation outside control/spectrum work."""
@@ -380,7 +415,6 @@ Future callback. There is no new executor or unbounded display-task loophole.
         self._projection_in_flight = bool(active)
         if not active and not self._closed and not self._closing:
             self._dispatch_preparation()
-            self.calibration_worker_available.emit()
 
     def prepare_shutdown(self) -> None:
         """GUI quiesce only; finish_shutdown owns potentially blocking cleanup."""
@@ -556,6 +590,28 @@ Future callback. There is no new executor or unbounded display-task loophole.
         self._dispatch_preparation()
 
     def _dispatch_preparation(self) -> None:
+        """Bounded alternating handoff at raw/projection/calibration releases.
+
+        Controls always precede either display lane. With both lanes pending,
+        at most one raw preparation bypasses an explicit calibration command OR
+        optional CURRENT, and at most one calibration job bypasses pending raw.
+        Calibration remains occupied through GUI acknowledgement, not Future
+        completion. Existing projection backpressure remains authoritative.
+        """
+        if (self._closing or self._closed or self._pending_commands or self._preparation_future is not None
+                or self._calibration_in_flight or self._worker_handoff_active):
+            return
+        self._worker_handoff_active = True
+        try:
+            if self._calibration_pending and self.calibration_worker_ready:
+                self.calibration_worker_available.emit()
+                if self._calibration_in_flight:
+                    return
+            self._dispatch_raw_preparation()
+        finally:
+            self._worker_handoff_active = False
+
+    def _dispatch_raw_preparation(self) -> None:
         if self._pending_commands or self._preparation_future is not None or self._pending_preparation is None:
             return
         snapshot, revision, render = self._pending_preparation
@@ -577,6 +633,7 @@ Future callback. There is no new executor or unbounded display-task loophole.
                 snapshot = replacement
         future = self._executor.submit(self._prepare, snapshot, revision, render)
         self._preparation_future = future
+        self._calibration_turn = True
         self._active_preparation_snapshot = snapshot
         self.preparation_active_changed.emit(True)
         # Keep the slot occupied until GUI acknowledgement, even after work
@@ -645,7 +702,6 @@ Future callback. There is no new executor or unbounded display-task loophole.
             if not self._closing and not self._closed:
                 self.busy_changed.emit(self._pending_commands > 0)
                 self._dispatch_preparation()
-                self.calibration_worker_available.emit()
 
     @Slot(object)
     def _finish_preparation(self, future: Future[_PreparedDelivery]) -> None:
@@ -660,7 +716,6 @@ Future callback. There is no new executor or unbounded display-task loophole.
             self.preparation_active_changed.emit(False)
         if not self._closed and not self._closing:
             self._dispatch_preparation()
-            self.calibration_worker_available.emit()
 
     @Slot(object)
     def _deliver_prepared(self, delivery: _PreparedDelivery) -> None:

@@ -106,7 +106,7 @@ class CalibrationProfilesWorkspaceV2Tests(unittest.TestCase):
         self.assertEqual(self.presenter.compared, [profile])
         self.assertIs(self.workspace._plot._profile, profile)
         self.assertIn("reference source", self.workspace._profile_detail.text())
-        self.assertIn("активный статус/dBm", self.workspace._state_chip.text)
+        self.assertEqual(self.workspace._state_chip.text, "Профиль просматривается; это не активация Live")
         self.assertTrue(all("Актив" not in button.text() for button in self.workspace.findChildren(type(self.workspace._refresh_button))))
 
     def test_only_matching_immutable_applicability_is_rendered(self) -> None:

@@ -89,6 +89,7 @@ class LiveCalibrationPresenter(QObject):
         self._lane: CapturedCalibrationLane | None = None
         self._active: Future | None = None
         self._active_request: _Request | None = None
+        self._active_worker_serial = 0
         self._cancel = Event()
         self._pending: _Request | None = None
         self._closed = False
@@ -105,6 +106,8 @@ class LiveCalibrationPresenter(QObject):
         """GUI acceptance boundary; no waiting and no shared selection Clear."""
         self._generation += 1
         self._pending = None
+        if self.worker is not None:
+            self.worker.set_calibration_pending(False)
         self._cancel.set()
         future = self._active
         if future is not None and future.done() and not future.cancelled():
@@ -120,6 +123,7 @@ class LiveCalibrationPresenter(QObject):
     def _detach_current(self) -> None:
         self._generation += 1
         self._pending = None
+        self.worker.set_calibration_pending(False)
         self._cancel.set()
         self._set(current=None, displayed=None, error=None)
 
@@ -158,6 +162,7 @@ class LiveCalibrationPresenter(QObject):
         self._pending = request  # Array-free request ONLY; capture at dispatch.
         if request.phase != "current":
             self._set(busy=True, phase=request.phase, error=None)
+        self.worker.set_calibration_pending(True)
         self._dispatch()
 
     @Slot()
@@ -168,6 +173,7 @@ class LiveCalibrationPresenter(QObject):
             return  # Existing control/preparation/projection has priority.
         request = self._pending
         self._pending = None
+        self.worker.set_calibration_pending(False)
         if request.generation != self._generation:
             return
         self._cancel = Event()
@@ -183,7 +189,10 @@ class LiveCalibrationPresenter(QObject):
             self._set(busy=False, phase="refused", error=str(error))
             return
         self._active, self._active_request = future, request
+        self._active_worker_serial = self.worker.calibration_slot_serial
         presenter_ref = ref(self)
+        worker_ref = ref(self.worker)
+        worker_serial = self._active_worker_serial
         generation = request.generation
 
         def complete(done: Future) -> None:
@@ -194,6 +203,9 @@ class LiveCalibrationPresenter(QObject):
                 completion = done.result() if not done.cancelled() else None
                 if isinstance(completion, _Completion) and completion.lane is not None:
                     completion.lane.close()
+                worker = worker_ref()
+                if worker is not None:
+                    worker.calibration_slot_released.emit(worker_serial)
         future.add_done_callback(complete)
 
     @Slot(object)
@@ -202,6 +214,7 @@ class LiveCalibrationPresenter(QObject):
         if future is None or self._active_request is None or self._active_request.generation != generation:
             return
         request = self._active_request
+        worker_serial = self._active_worker_serial
         result = None if future.cancelled() else future.result()  # completed, never GUI wait
         try:
             if self._closed or request.generation != self._generation:
@@ -231,6 +244,8 @@ class LiveCalibrationPresenter(QObject):
             # until ALL publication/command acknowledgement callbacks return.
             if self._active is future:
                 self._active = self._active_request = None
+                if self.worker is not None:
+                    self.worker.release_calibration_slot(worker_serial)
         self._dispatch()
 
     def is_valid(self, current: PreparedCalibratedCurrent) -> bool:
@@ -256,5 +271,7 @@ class LiveCalibrationPresenter(QObject):
         self.worker.control_accepted.disconnect(self.invalidate)
         self.worker.calibration_worker_available.disconnect(self._dispatch)
         self.worker.render_ready.disconnect(self.request_current)
+        if self._active is not None and self._active.done():
+            self.worker.release_calibration_slot(self._active_worker_serial)
         self._active = self._active_request = None
         self.owner = self.registry = self.worker = None

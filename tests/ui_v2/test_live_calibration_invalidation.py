@@ -10,6 +10,55 @@ from tests.ui_v2.test_live_calibration_composition import CalibrationComposition
 
 
 class LiveCalibrationInvalidationTests(CalibrationCompositionFixture):
+    def test_stop_during_active_correction_wins_before_raw_and_new_pending_bind(self):
+        self.bind()
+        lane = self.presenter._lane
+        started, release, stopping, stop_release = Event(), Event(), Event(), Event()
+        original_correct = lane.correct
+        original_stop = self.port.stop_and_wait
+        order = []
+        def held(handle):
+            started.set()
+            if not release.wait(3):
+                raise RuntimeError("correction hold timed out")
+            order.append("correction")
+            return original_correct(handle)
+        def stop(*args, **kwargs):
+            order.append("stop")
+            stopping.set()
+            if not stop_release.wait(3):
+                raise RuntimeError("stop hold timed out")
+            return original_stop(*args, **kwargs)
+        with patch.object(lane, "correct", side_effect=held), \
+             patch.object(self.port, "stop_and_wait", side_effect=stop):
+            try:
+                self.presenter.request_current()
+                self.assertTrue(started.wait(1))
+                old = self.model.state.current
+                self.worker._offer_preparation(self.port.current, self.worker._control_revision)
+                self.presenter.request_current()
+                self.worker.stop()
+                self.assertIsNone(self.presenter._pending)
+                self.assertIsNone(self.model.state.binding)
+                self.assertIsNone(self.model.state.current)
+                self.assertFalse(self.model.is_valid(old))
+                self.model.bind(self.frontend)
+                self.assertEqual(self.presenter._pending.phase, "bind")
+                self.assertFalse(hasattr(self.presenter._pending, "captured"))
+                self.assertIsNone(self.worker._preparation_future)
+                release.set()
+                self.assertTrue(stopping.wait(1))
+                self.assertIsNone(self.worker._preparation_future)
+                self.assertEqual(order, ["correction", "stop"])
+                stop_release.set()
+                self.wait(lambda: not self.worker._pending_commands and not self.model.state.busy)
+                self.assertIsNotNone(self.model.state.error)  # Stopped owner cannot bind.
+                self.assertIsNone(self.model.state.binding)
+                self.assertIsNone(self.model.state.current)
+            finally:
+                release.set()
+                stop_release.set()
+
     def test_stop_acceptance_and_frontend_edit_detach_before_worker_ack(self):
         self.bind()
         self.select_profile()

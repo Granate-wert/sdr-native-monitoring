@@ -33,11 +33,16 @@ class _CurrentScene(SpectrumScene):
                 and super()._projection_current(request))
 
     def _accept_projection(self, result: SpectrumProjection, *, required_only: bool = False) -> None:
-        if not self._projection_current(result.request):
+        view = dict(result.request.traces).get(TraceKind.CURRENT)
+        if view is None or not self.valid(view.source_frame):
             return  # No invalid-result retry loop or historical rollback.
+        # Authority and geometry have different lifetimes. Still-valid CURRENT
+        # must retain the base renderer's bounded stale-viewport retry.
+        admitted_geometry = self._projection_current(result.request)
         super()._accept_projection(result, required_only=required_only)
         model = self._calibration_model()
-        if model is not None and self._current is not None and self.displayed_frame is self._current.frame:
+        if (admitted_geometry and model is not None and self._current is not None
+                and self.displayed_frame is self._current.frame):
             model.displayed(self._current)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override.
