@@ -31,6 +31,18 @@ class _Pump:
         return future
 
 
+class _StartHandle:
+    """Resource-scoped Start facts matching the product's explicit UI Stop gate."""
+
+    def __init__(self, pump: _Pump, paired: frozenset[str], bindings: dict[str, SimpleNamespace]) -> None:
+        self.pump = pump
+        self.preparer = SimpleNamespace(paired_resource_ids=paired, bindings=bindings)
+        self.ui_stop_pending_resources: set[str] = set()
+
+    def ui_stop_pending(self, resource_id: str) -> bool:
+        return resource_id in self.ui_stop_pending_resources
+
+
 class PairedSessionStartTests(unittest.TestCase):
     app: QApplication
 
@@ -50,8 +62,7 @@ class PairedSessionStartTests(unittest.TestCase):
             "pane-2": SimpleNamespace(slot_number=2, physical_stream_resource_id="paired"),
             "pane-3": SimpleNamespace(slot_number=3, physical_stream_resource_id="peer"),
         }
-        surface.handle = SimpleNamespace(pump=pump, preparer=SimpleNamespace(
-            paired_resource_ids=paired, bindings=bindings))
+        surface.handle = _StartHandle(pump, paired, bindings)
         surface._futures = []
         surface._rf_phase = None
         surface._rf_fault_resource = None
@@ -129,6 +140,49 @@ class PairedSessionStartTests(unittest.TestCase):
         self.assertEqual(question.call_args.args[-1], QMessageBox.StandardButton.Cancel)
         self.assertIn("1, 2", question.call_args.args[2])
         surface.deleteLater()
+
+    def test_pending_ui_stop_blocks_selected_pair_and_start_all_keeps_independent_scope(self) -> None:
+        for command in ("selected", "all", "all_stopped"):
+            with self.subTest(command=command):
+                surface, pump = self._surface()
+                surface.handle.ui_stop_pending_resources.add("paired")
+                if command == "all_stopped":
+                    surface.handle.ui_stop_pending_resources.add("peer")
+                surface._confirm_paired_start = lambda _impact: self.fail("pending Stop pair must not prompt")
+                if command == "selected":
+                    surface._start_selected()
+                else:
+                    surface._start_all()
+                self.assertEqual(pump.started, ["peer"] if command == "all" else [])
+                self.assertTrue(surface.handle.ui_stop_pending("paired"))
+                if command != "all":
+                    self.assertEqual(surface._error_key, "retained")
+                surface.deleteLater()
+
+    def test_modal_pending_ui_stop_cannot_authorize_changed_start_set(self) -> None:
+        for command in ("selected", "all"):
+            for pending in ("paired", "peer"):
+                with self.subTest(command=command, pending=pending):
+                    surface, pump = self._surface()
+                    impacts: list[tuple[int, ...]] = []
+
+                    def confirm(impact: tuple[int, ...]) -> bool:
+                        impacts.append(impact)
+                        surface.handle.ui_stop_pending_resources.add(pending)
+                        return True
+
+                    surface._confirm_paired_start = confirm
+                    if command == "selected":
+                        surface._start_selected()
+                    else:
+                        surface._start_all()
+                    self.assertEqual(impacts, [(1, 2)])
+                    expected = ["paired"] if command == "selected" and pending == "peer" else []
+                    self.assertEqual(pump.started, expected)
+                    self.assertTrue(surface.handle.ui_stop_pending(pending))
+                    if not expected:
+                        self.assertEqual(surface._error_key, "retained")
+                    surface.deleteLater()
 
 
 if __name__ == "__main__":

@@ -47,9 +47,8 @@ from .contracts import (
 )
 from ..spectrum.paint_cadence import PaintReturnCallback, UniquePaintCadence, cadence_graphics_widget
 from sdr_monitor.ui.v2_pane_obligation_refs import (
-    PaneDeliveryObligationRef, PaneDeliveryStage, PaneDeliveryView,
+    PaneDeliveryObligationRef, PaneDeliveryStage, PaneDeliveryView, PanePaintReturnReceipt,
 )
-from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 
 _SETTINGS_PREFIX = "ui_v2/live/waterfall/v1"
 _SETTINGS_DEBOUNCE_MS = 250

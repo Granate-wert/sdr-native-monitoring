@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
+from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
 
 
 def delivery_obligation_refs(delivery: object) -> tuple[PaneDeliveryObligationRef, ...]:
@@ -64,6 +65,6 @@ def report_delivery_refs(
 
 
 __all__ = [
-    "PaneDeliveryObligationRef", "PaneDeliveryStage", "PaneDeliveryView",
+    "PaneDeliveryObligationRef", "PaneDeliveryStage", "PaneDeliveryView", "PanePaintReturnReceipt",
     "delivery_obligation_refs", "refs_by_view", "report_delivery_refs",
 ]

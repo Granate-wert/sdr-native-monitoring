@@ -1,5 +1,6 @@
 """Actual V2 three-family composition, finite first-cause UI, fake serial."""
 
+from concurrent.futures import Future
 import unittest
 from unittest.mock import patch
 
@@ -85,7 +86,9 @@ class PaneFailureUiTests(unittest.TestCase):
             self.assertIn("[stop/operation_failed]", product.ui.error.text())
             control.stop_fail = False
             product.ui.stop_selected.click()
-            self.fixture.wait(lambda: self.fixture.phases(product)[1] is PanePumpPhase.STOPPED)
+            resource = product.handle.pump.snapshot()[1].physical_stream_resource_id
+            self.fixture.wait(lambda: self.fixture.phases(product)[1] is PanePumpPhase.STOPPED
+                              and not product.handle.ui_stop_pending(resource))
             product.ui._refresh()
             self.assertEqual(product.ui.error.text(), "")
             self.assertIn("[owner_poll/operation_failed]", product.ui.board._timing_labels[2].toolTip())
@@ -94,6 +97,66 @@ class PaneFailureUiTests(unittest.TestCase):
             self.assertIsNone(product.handle.pump.snapshot()[1].first_failure)
             product.ui._refresh()
             self.assertNotIn("[owner_poll/operation_failed]", product.ui.board._timing_labels[2].toolTip())
+
+    def test_successful_worker_stop_does_not_clear_banner_or_rearm_before_ui_ack(self):
+        with self.fixture.product() as product:
+            product.ui.start_all.click()
+            self.fixture.wait(lambda: all(phase is PanePumpPhase.RUNNING for phase in self.fixture.phases(product)))
+            control = product.hf.factory.controls[0]
+            control.drain_latest_spectrum_frame = lambda: (_ for _ in ()).throw(RuntimeError("PRIVATE wire"))
+            self.fixture.wait(lambda: self.fixture.phases(product)[1] is PanePumpPhase.STOP_REQUIRED)
+            first = product.handle.pump.snapshot()[1].first_failure
+            self.assertEqual(first.stage, PaneFailureStage.OWNER_POLL)
+            product.ui.board.select_slot(2)
+            control.stop_fail = True
+            product.ui.stop_selected.click()
+            self.fixture.wait(lambda: product.handle.pump.snapshot()[1].cleanup_failure is not None)
+            resource = product.handle.pump.snapshot()[1].physical_stream_resource_id
+            self.fixture.wait(lambda: product.ui._ui_stop_handoffs[resource].phase == "error")
+            self.assertIs(product.handle.pump.snapshot()[1].first_failure, first)
+            self.assertIn("[owner_poll/operation_failed]", product.ui.error.text())
+            self.assertIn("[stop/operation_failed]", product.ui.error.text())
+            control.stop_fail = False
+            original_ack = product.handle.pump.reconcile_ui_stop_cleared
+            actual = []
+            held = Future()
+
+            def delayed_ack(resource_id, refs):
+                actual.append(original_ack(resource_id, refs))
+                return held
+
+            try:
+                with patch.object(product.handle.pump, "reconcile_ui_stop_cleared", side_effect=delayed_ack):
+                    product.ui.stop_selected.click()
+                    self.fixture.wait(lambda: self.fixture.phases(product)[1] is PanePumpPhase.STOPPED
+                                      and bool(actual) and actual[0].done())
+                    product.ui._refresh()
+                    self.assertTrue(product.handle.ui_stop_pending(resource))
+                    self.assertFalse(product.ui.start_selected.isEnabled())
+                    self.assertNotEqual(product.ui.error.text(), "")
+                    self.assertIs(product.handle.pump.snapshot()[1].first_failure, first)
+                    self.assertIn("[owner_poll/operation_failed]", product.ui.board._timing_labels[2].toolTip())
+                    with patch.object(product.handle.pump, "start_resource") as start:
+                        product.ui._start_selected()
+                        start.assert_not_called()
+                    held.set_result(actual[0].result())
+                    self.fixture.wait(lambda: not product.handle.ui_stop_pending(resource))
+                    product.ui._refresh()
+                    self.assertEqual(product.ui.error.text(), "")
+                    self.assertIs(product.handle.pump.snapshot()[1].first_failure, first)
+                    self.assertIn("[owner_poll/operation_failed]", product.ui.board._timing_labels[2].toolTip())
+            finally:
+                if not held.done():
+                    self.fixture.wait(lambda: bool(actual) and actual[0].done())
+                    held.set_result(actual[0].result())
+
+    def test_ui_receipt_boundary_exposes_the_original_immutable_type(self):
+        from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt as DomainReceipt
+        from sdr_monitor.ui.v2_pane_obligation_refs import PanePaintReturnReceipt as UiReceipt
+        from sdr_monitor.ui.v2.waterfall.pane import PanePaintReturnReceipt as CanvasReceipt
+
+        self.assertIs(UiReceipt, DomainReceipt)
+        self.assertIs(CanvasReceipt, DomainReceipt)
 
     def test_real_fake_serial_framing_cause_reaches_pane_without_extra_io_or_neighbor_stop(self):
         def bad_serial(ts):
