@@ -6626,3 +6626,76 @@ and pass after this repair without GC or another command. Five targeted
 backend modules pass 83 tests (0.564s); an initial incorrect module name is
 preserved as a test-launch failure. No control/failure/retry policy is changed,
 and the separate UI callback-cycle repair still needs its matching Qt proof.
+
+## Subsequent exact UI qualification (M8-084 R6)
+
+The earlier pending statements are historical. Integrated source1323ff0 has
+passed the matched diagnostic native build (47 CTest) and original full UI V2
+gate:1511total/1445PASS/66skip/0fail-error,538.102s, exact provenance, zero
+observed uncaught Qt callbacks and raw tracebacks. Strict audit and665-file
+post-verification pass. Original52a gate failures remain preserved. Separate
+UI-only author/reviewer approval is not independent backend/release approval.
+This software evidence is not physical RX, latency/DWM/DPI/soak or promotion
+of the static current EXE. APP-07 remains partial.
+
+## Finite ready-to-paint statistics (M8-085, source only)
+
+The diagnostic API `PaneResourceSession.pane_paint_timing_summary()` reads one
+immutable snapshot of the existing graph ledger. It does not poll an SDR,
+drain native outputs, take a new clock sample, trigger a paint, acquire an
+owner lock or change measurement/rendering state. Call it from diagnostics,
+not an acquisition loop or Qt paint callback.
+
+## Population and identity
+
+Statistics cover only **retained unique PAINT_RETURNED events**, not all
+native FFTs, all admitted frames, a lifetime history or RF capture coverage.
+Groups keep graph, typed owner/source/session/configuration/epoch, resource,
+capture, endpoint, pane, host run/activation, native producer, view and layer
+kind separate. Different panes displaying one native offer remain different
+presentation obligations, not additional FFTs or independent RF streams.
+
+Each group reports paint-return count, timed-return count and all timing-state
+counts. Missing receipts, unknown/foreign clock mappings and invalid order are
+not silently dropped from the denominator. No valid samples means quantiles
+are `None`, never zero. Snapshot pane/view counters are cumulative graph
+counters; do not reinterpret them as group/window counters.
+
+## Quantiles and uncertainty
+
+For n eligible intervals, nearest rank for percentage p is ceil(p*n/100).
+Sort lower endpoints and upper endpoints independently; their rank values
+bound the corresponding order statistic of every possible point assignment
+inside the measured intervals. p50/p95/p99 retain integer nanoseconds and
+signed lower bounds. No midpoint, interpolation or clipping is applied.
+
+Two boundaries remain distinct:
+
+- ready to base Qt paint return, bounded by before-paint/after-return samples;
+- ready to the sampled time after return, not the exact return instant.
+
+Ledger bookkeeping time is never substituted for either boundary. Overlapping
+ready/paint intervals retain signed uncertainty; negative bounds are not a
+measured negative latency. These statistics do **not** measure DWM/photon
+presentation, RF latency, scan period, duty, loss, detection probability or FPS.
+
+## Retention and limits
+
+The existing 128-event/256-record, four-pane/12-view scalar snapshot limits
+remain unchanged. Mutable or oversized snapshots and duplicate/foreign events
+are explicitly refused rather than repaired or deduplicated. Graph eviction,
+event-drop, duplicate, accounting and clock-failure counters accompany the
+result. `lifetime_complete` is always false: even a zero-eviction snapshot alone
+cannot prove all-offers/lifetime coverage or a performance SLA.
+
+Sorting is diagnostic finite-window work outside the ledger lock, not added
+per-FFT or per-paint work. Producer queues, native budgets, clock mappings,
+Fs/FFT/gain/cadence/quality/time and Stop semantics are unchanged.
+
+## Acceptance boundary
+
+Synthetic/domain/actual cached-session tests prove calculation, separation,
+bounded input and absence of owner actions, not hardware performance. APP07-H02
+still requires actual source/layout profiles, measured coverage, Spectrum and
+Waterfall rates, current UI/render observations and latency evidence. Physical,
+visible Windows, DWM and release qualification remain separate gates.

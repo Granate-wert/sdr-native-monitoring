@@ -27,6 +27,7 @@ from sdr_monitor.domain.pane_delivery_obligation import (
     PaneDeliveryLedgerSnapshot, PaneDeliveryObligationRef, PaneDeliveryStage,
 )
 from sdr_monitor.domain.pane_paint_timing import PanePaintReturnReceipt
+from sdr_monitor.domain.pane_paint_statistics import PanePaintSnapshotSummary, summarize_pane_paint_snapshot
 from sdr_monitor.domain.live import LiveSpectrumFrame, LivePersistenceFrame
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
@@ -491,6 +492,15 @@ class PaneResourceSession:
     def pane_delivery_ledger_snapshot(self) -> PaneDeliveryLedgerSnapshot:
         """Cached graph scalars only; never hardware, native drain or clock."""
         return self._delivery_ledger.snapshot()
+
+    def pane_paint_timing_summary(self) -> PanePaintSnapshotSummary:
+        """Diagnostic finite-window intervals; no owner/SDK/render operations.
+
+        Capture the existing ledger once, then calculate outside its lock.
+        This is not called by acquisition or Qt paint and does not assert
+        lifetime completeness, hardware latency, FPS or compositor visibility.
+        """
+        return summarize_pane_paint_snapshot(self.pane_delivery_ledger_snapshot())
 
     def pane_delivery_stage_if_retained(self, ref: PaneDeliveryObligationRef) -> PaneDeliveryStage | None:
         """Nonwaiting original-token observation; unknown is not permission.
