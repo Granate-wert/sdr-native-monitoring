@@ -692,8 +692,39 @@ class SpectrumScene(QWidget):
             self._trace_views.pop(TraceKind.CURRENT, None)
         else:
             self._trace_views[TraceKind.CURRENT] = previous_view
-        if (previous_ref != ref or not previous_accepted) and not self._delivery_ref_is_closed(ref):
-            self._report_delivery(ref, PaneDeliveryStage.UI_REJECTED)
+        if previous_ref == ref and previous_accepted:
+            return
+        if self._ui_stop_pending or any(ref is item for item in self._ui_stop_detached_refs):
+            return
+        observer = self._delivery_stage_observer
+        if observer is not None:
+            generation = self._delivery_custody_generation
+            owned = (self._latest_delivery_ref, self._displayed_delivery_ref,
+                     self._persistence_delivery_ref)
+            restored_view = self._latest_view
+            projection_slots = self._projection_delivery_slots
+            try:
+                stage = observer(ref)
+            except Exception:
+                return
+            if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or any(ref is item for item in self._ui_stop_detached_refs)
+                    or stage is not PaneDeliveryStage.UI_ADMITTED
+                    or self._latest_view is not restored_view
+                    or self._projection_delivery_slots is not projection_slots
+                    or any(before is not after for before, after in zip(owned, (
+                        self._latest_delivery_ref, self._displayed_delivery_ref,
+                        self._persistence_delivery_ref), strict=True))):
+                return  # A reentrant Stop/replacement owns the later state.
+        else:
+            # Standalone callers retain their local terminal fence; no product
+            # rejection authority is inferred from a closed/not-closed lookup.
+            graph, sequence = self._closed_delivery_by_view.get(ref.view, (None, 0))
+            if graph is None and ref.view is PaneDeliveryView.SPECTRUM:
+                graph, sequence = self._closed_delivery_graph, self._closed_delivery_sequence
+            if ref.graph_instance_id == graph and ref.sequence <= sequence:
+                return
+        self._report_delivery(ref, PaneDeliveryStage.UI_REJECTED)
 
     def set_trace(self, kind: TraceKind, frame: object) -> None:
         """Render a supplied analytical trace without retaining its full frame."""

@@ -668,6 +668,124 @@ class PaintReturnTimingTests(unittest.TestCase):
             scene.release_graphics_after_shutdown()
             self.retire(scene)
 
+    def test_failed_spectrum_setter_second_lookup_reentrant_stop_or_replacement_never_rejects(self):
+        for boundary in ("stop", "replacement"):
+            with self.subTest(boundary=boundary):
+                ledger = PaneDeliveryLedger(("one",))
+                original = self.admitted_ref(ledger)
+                newer = self.admitted_ref(ledger, offer=2)
+                scene = SpectrumScene()
+                failed_frame = spectrum_frame(1)
+                newer_frame = spectrum_frame(2)
+                lookups = 0
+                set_trace_view = scene._set_trace_view
+
+                def observed(ref):
+                    nonlocal lookups
+                    lookups += 1
+                    if lookups == 2:
+                        if boundary == "stop":
+                            scene.set_ui_stop_pending(True)
+                        else:
+                            scene.set_frame(newer_frame, obligation_ref=newer)
+                    return ledger.delivery_stage_if_retained(ref)
+
+                def fail_original(kind, view):
+                    if view.source_frame is failed_frame:
+                        raise RuntimeError("precommit failed setter")
+                    return set_trace_view(kind, view)
+
+                try:
+                    scene.set_delivery_stage_callback(ledger.note)
+                    scene.set_delivery_stage_observer(observed)
+                    before = ledger.snapshot()
+                    with patch.object(scene, "_set_trace_view", side_effect=fail_original):
+                        with self.assertRaisesRegex(RuntimeError, "precommit failed setter"):
+                            scene.set_frame(failed_frame, obligation_ref=original)
+                    self.assertGreaterEqual(lookups, 2)
+                    self.assertIs(ledger.delivery_stage_if_retained(original), Stage.UI_ADMITTED)
+                    after = ledger.snapshot()
+                    self.assertEqual((after.duplicate_events, after.accounting_failures),
+                                     (before.duplicate_events, before.accounting_failures))
+                    if boundary == "stop":
+                        self.assertTrue(scene._ui_stop_pending)
+                        self.assertEqual(after, before)
+                        self.assertIsNone(scene.displayed_delivery_ref)
+                    else:
+                        self.assertIs(scene._latest_delivery_ref, newer)
+                        self.assertIs(scene.displayed_delivery_ref, newer)
+                        self.assertIs(scene._latest_view.source_frame, newer_frame)
+                        self.assertIs(ledger.delivery_stage_if_retained(newer), Stage.PAINT_SCHEDULED)
+                        self.assertEqual(after.events[len(before.events):], tuple(
+                            event for event in after.events[len(before.events):]
+                            if event.ref is newer and event.stage is Stage.PAINT_SCHEDULED))
+                finally:
+                    scene.detach_delivery_custody((original, newer))
+                    ledger.reconcile_ui_stop_cleared((original, newer))
+                    scene.finish_ui_stop_detach((original, newer))
+                    scene.release_graphics_after_shutdown()
+                    self.retire(scene)
+
+    def test_failed_spectrum_setter_rejection_requires_original_ui_admitted_and_preserves_legacy(self):
+        for case in ("unknown", "copy", "terminal", "evicted", "foreign", "eligible", "legacy"):
+            with self.subTest(case=case):
+                ledger = PaneDeliveryLedger(("one",))
+                original = self.admitted_ref(ledger)
+                submitted = original
+                if case in {"terminal", "evicted"}:
+                    self.assertTrue(ledger.note(original, Stage.UI_REJECTED))
+                if case == "evicted":
+                    for offer in range(2, 260):
+                        later = self.admitted_ref(ledger, offer=offer)
+                        self.assertTrue(ledger.note(later, Stage.UI_REJECTED))
+                    self.assertIsNone(ledger.delivery_stage_if_retained(original))
+                elif case == "copy":
+                    submitted = replace(original)
+                elif case == "foreign":
+                    submitted = self.admitted_ref(PaneDeliveryLedger(("one",)))
+                scene = SpectrumScene()
+                lookups = 0
+
+                def observed(ref):
+                    nonlocal lookups
+                    lookups += 1
+                    # UNKNOWN arises specifically at the second, failure-path
+                    # lookup. Copy/foreign/terminal/evicted use the real original
+                    # point lookup at every entrance, never equality lookup.
+                    if case == "unknown" and lookups == 2:
+                        return None
+                    return ledger.delivery_stage_if_retained(ref)
+
+                try:
+                    scene.set_delivery_stage_callback(ledger.note)
+                    if case != "legacy":
+                        scene.set_delivery_stage_observer(observed)
+                    before = ledger.snapshot()
+                    with patch.object(scene, "_set_trace_view", side_effect=RuntimeError("precommit failed setter")):
+                        with self.assertRaisesRegex(RuntimeError, "precommit failed setter"):
+                            scene.set_frame(spectrum_frame(1), obligation_ref=submitted)
+                    after = ledger.snapshot()
+                    if case in {"unknown", "eligible"}:
+                        self.assertEqual(lookups, 2)
+                    if case in {"eligible", "legacy"}:
+                        self.assertIs(ledger.delivery_stage_if_retained(original), Stage.UI_REJECTED)
+                        self.assertEqual(sum(event.ref is original and event.stage is Stage.UI_REJECTED
+                                             for event in after.events), 1)
+                        # The failed publication cannot reacquire typed custody.
+                        scene.set_frame(spectrum_frame(2), obligation_ref=original)
+                        self.assertIsNone(scene._latest_delivery_ref)
+                    else:
+                        self.assertEqual(after, before)
+                    snapshot = ledger.snapshot()
+                    self.assertEqual((snapshot.duplicate_events, snapshot.accounting_failures),
+                                     (before.duplicate_events, before.accounting_failures))
+                finally:
+                    scene.detach_delivery_custody((original,))
+                    ledger.reconcile_ui_stop_cleared((original,))
+                    scene.finish_ui_stop_detach((original,))
+                    scene.release_graphics_after_shutdown()
+                    self.retire(scene)
+
     def test_completed_stop_callbacks_release_futures_and_keep_only_weak_scalar_identity(self):
         from sdr_monitor.ui.v2.workspaces.independent_pane_session import _UiStopHandoff, _UiStopCallbackIdentity
 
