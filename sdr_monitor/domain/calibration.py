@@ -555,20 +555,26 @@ def apply_calibration(values: Sequence[float] | np.ndarray, frequencies_hz: Sequ
     if (profile is not None and profile.signature.instrument_context is not None
             or settings is not None and settings.instrument_context is not None):
         raise CalibrationProfileError("instrument dBm requires the separate external-correction operation")
+    # Settings describe the input, never a rejected profile. Legacy callers
+    # without settings retain their historical bin-power convention.
+    raw_unit = settings.fft_unit_convention if settings is not None else "dBFS/bin"
+    if raw_unit not in {"dBFS/bin", "dBFS/Hz"}:
+        raise CalibrationProfileError("calibration requires a raw digital power convention")
+    corrected_unit = "dBm/Hz" if raw_unit == "dBFS/Hz" else "dBm/bin"
     raw = np.asarray(values, dtype=np.float64).reshape(-1)
     frequencies = np.asarray(frequencies_hz, dtype=np.float64).reshape(-1)
     if raw.size != frequencies.size or raw.size == 0:
         raise CalibrationProfileError("values and frequencies must have equal non-zero length")
     if profile is None:
-        return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), "dBFS/bin", CalibrationStatus.UNCALIBRATED, None)
+        return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), raw_unit, CalibrationStatus.UNCALIBRATED, None)
     applicability = check_applicability(profile, settings)
     if not applicability.applicable:
-        return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), "dBFS/bin", CalibrationStatus.INVALID, profile.profile_id)
+        return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), raw_unit, CalibrationStatus.INVALID, profile.profile_id)
     samples = tuple(profile.evaluate(float(item), allow_extrapolation=allow_extrapolation) for item in frequencies)
     if any(item.status is CalibrationStatus.INVALID for item in samples):
-        return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), "dBFS/bin", CalibrationStatus.INVALID, profile.profile_id)
+        return CalibratedArray(raw.copy(), np.full(raw.size, np.nan), raw_unit, CalibrationStatus.INVALID, profile.profile_id)
     status = CalibrationStatus.EXTRAPOLATED if any(item.status is CalibrationStatus.EXTRAPOLATED for item in samples) else CalibrationStatus.INTERPOLATED if any(item.status is CalibrationStatus.INTERPOLATED for item in samples) else CalibrationStatus.CALIBRATED
-    return CalibratedArray(raw + np.asarray([item.correction_db for item in samples]), np.asarray([item.uncertainty_db for item in samples]), "dBm/bin", status, profile.profile_id)
+    return CalibratedArray(raw + np.asarray([item.correction_db for item in samples]), np.asarray([item.uncertainty_db for item in samples]), corrected_unit, status, profile.profile_id)
 
 
 @dataclass(frozen=True, slots=True)

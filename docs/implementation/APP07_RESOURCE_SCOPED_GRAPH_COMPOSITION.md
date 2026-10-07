@@ -6830,3 +6830,22 @@ metadata does not alter enum wire schema5, recording format, RF calibration,
 FFT math, gain, timing or queues. Rebuilt matching native bindings are required;
 old modules remain unknown. Same-acquisition signature admission and actual
 analytical calibration corrections still require implementation.
+
+### Current-frame calibration admission and units
+
+`build_current_frame_calibration_signature` requires the original spectrum
+object in a current running owner snapshot, explicit RX, session/source,
+generation/epoch/host clock, applied geometry and canonical producer DSP
+semantics. Clones, retained stopped frames, changed epochs/generations/RX,
+retunes and backend discontinuity refuse. Logical endpoint/device identity
+and actual paired producer source ID remain separate. Caller must obtain the
+current snapshot from its owner; a retained old snapshot is not proof of
+current admission. This helper performs no hardware IO or profile activation.
+
+Calibration math preserves the input convention: dBFS/bin -> dBm/bin,
+dBFS/Hz -> dBm/Hz. Missing/incompatible/out-of-range profiles retain the raw
+input unit and values; unsupported/absolute input conventions refuse. Legacy
+calls without settings retain their existing dBFS/bin convention. Corrections
+never rewrite the original frame arrays, epoch, quality or coverage. Native
+Live absolute-unit guard is unchanged; automatic adapter/UI activation and
+scoped corrected analytical publications remain pending.
