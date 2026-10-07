@@ -7,7 +7,7 @@ from threading import RLock
 from typing import ContextManager
 
 from ..domain.calibration import CalibrationApplicability, CalibrationProfile, CalibrationProfileError, CalibrationSignature
-from ..domain.live import LiveSnapshot
+from ..domain.live import LiveSessionState, LiveSnapshot
 from ..domain.receiver_topology import ReceiverEndpoint
 from .calibration_service import (
     CalibratedLiveSpectrum, CalibratedSpectrumInput, CalibrationSelectionReceipt, CalibrationService,
@@ -18,7 +18,9 @@ from .receiver_calibration import ReceiverCalibrationRegistry
 
 def _context(snapshot: LiveSnapshot) -> tuple[object, ...]:
     frame = snapshot.spectrum
-    if frame is None or snapshot.stop_required:
+    # stop_required also denotes a healthy dispatched Start that must later
+    # be joined. The owning observer validates that lifecycle distinction.
+    if frame is None or snapshot.state is not LiveSessionState.RUNNING or snapshot.error is not None:
         raise CalibrationProfileError("running analytical context required")
     return (snapshot.device, snapshot.applied, snapshot.session_id,
             snapshot.active_source_id, snapshot.receiver_id, snapshot.acquisition_epoch,

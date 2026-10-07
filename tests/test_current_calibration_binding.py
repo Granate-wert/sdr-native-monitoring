@@ -5,7 +5,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from sdr_monitor.application.analyzer_session import AnalyzerMode
+from sdr_monitor.application.analyzer_session import AnalyzerMode, AnalyzerPhase, AnalyzerSessionApplicationService
 from sdr_monitor.application.live_session import LiveSessionApplicationService
 from sdr_monitor.domain.calibration import CalibrationProfileError
 from sdr_monitor.domain.live import LiveSessionState
@@ -93,6 +93,32 @@ class CurrentCalibrationBindingTests(unittest.TestCase):
             self.owner.current_calibration_binding(self.frontend)
         self.owner._pane_control_claim = None
         self.owner._analyzer = SimpleNamespace(state=SimpleNamespace(mode=AnalyzerMode.SWEEP))
+        with self.assertRaises(CalibrationProfileError):
+            self.owner.current_calibration_binding(self.frontend)
+
+    def test_actual_running_analyzer_cleanup_flag_allows_capture_but_rf_failure_refuses(self):
+        self.port.is_running = lambda: False
+        self.port.start = lambda: self.port.current
+        analyzer = AnalyzerSessionApplicationService(self.port, SimpleNamespace())
+        self.owner = LiveSessionApplicationService(self.port, analyzer=analyzer)
+        analyzer.start()
+        self.assertTrue(self.owner.current_snapshot().stop_required)
+        binding = self.owner.current_calibration_binding(self.frontend)
+        lane = self.owner.captured_bound_calibration_lane(self.registry, binding)
+        publication = lane.correct(lane.capture(lambda _: True))
+        self.assertTrue(lane.is_valid(publication))
+        for phase in (AnalyzerPhase.STARTING, AnalyzerPhase.STOPPING, AnalyzerPhase.ERROR):
+            analyzer._state = replace(analyzer._state, phase=phase)
+            with self.subTest(phase=phase):
+                self.assertFalse(lane.is_valid(publication))
+                with self.assertRaises(CalibrationProfileError):
+                    self.owner.current_calibration_binding(self.frontend)
+        analyzer._state = replace(analyzer._state, phase=AnalyzerPhase.RUNNING)
+        analyzer._idle_control_active = True
+        self.assertFalse(lane.is_valid(publication))
+        analyzer._idle_control_active = False
+        self.owner._rf_receipt_failed = True
+        self.assertFalse(lane.is_valid(publication))
         with self.assertRaises(CalibrationProfileError):
             self.owner.current_calibration_binding(self.frontend)
 

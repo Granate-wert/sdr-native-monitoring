@@ -128,6 +128,31 @@ def run_native_case(path: str, case: str) -> None:
             center_hz=2_450_000_000., sample_rate_hz=61_440_000.,
             analog_bandwidth_hz=56_000_000., gain_db=20., fft_size=4096, backend=BackendKind.CPU))
         assert selected.error is None and selected.device is not None
+        if case == "calibration-binding":
+            from sdr_monitor.services.calibration_store import CalibrationProfileStore
+            from sdr_monitor.services.live_calibration_signature import CalibrationFrontendContext
+            from sdr_monitor.services.receiver_calibration import ReceiverCalibrationRegistry
+            # Actual ordinary graph lifecycle, not a RUNNING snapshot with an
+            # IDLE Analyzer fixture. Start and terminal Stop remain explicit.
+            started = app.start()
+            assert started.error is None and started.stop_required
+            deadline = time.monotonic() + 10
+            while app.current_snapshot().spectrum is None:
+                assert time.monotonic() < deadline
+                time.sleep(.005)
+            with tempfile.TemporaryDirectory() as folder:
+                frontend = CalibrationFrontendContext("declared-test-port", "mock-reference", "test-plane")
+                registry = ReceiverCalibrationRegistry(CalibrationProfileStore(Path(folder)))
+                binding = app.current_calibration_binding(frontend)
+                lane = app.captured_bound_calibration_lane(registry, binding)
+                assert app.current_snapshot().stop_required
+                captured = lane.capture(lambda _: True)  # Test only, not UI allocation proof.
+                publication = lane.correct(captured)
+                assert publication.analytical.raw is captured.captured.raw
+                assert lane.is_valid(publication) and lane.admit_delivery(publication)
+                assert app.stop().error is None
+                assert not lane.is_valid(publication)
+                lane.close()
         source = selected.device.device_id
         endpoints = (ReceiverEndpoint("caller:rx1", source, "physical", ReceiverChainSelection.RX1),
                      ReceiverEndpoint("caller:rx2", source, "physical", ReceiverChainSelection.RX2))
@@ -156,6 +181,47 @@ def run_native_case(path: str, case: str) -> None:
         # Preserve the first MOCK owner cause before the public fixed refusal
         # redacts it; this is test-only instrumentation, never a product retry.
         owner = session._runtimes["physical"].owner
+        calibration_epochs: set[int] = set()
+        if case == "calibration-binding":
+            from sdr_monitor.domain.calibration import CalibrationProfileError
+            from sdr_monitor.services.calibration_store import CalibrationProfileStore
+            from sdr_monitor.services.current_calibration_binding import current_calibration_binding
+            from sdr_monitor.services.live_calibration_signature import CalibrationFrontendContext
+            from sdr_monitor.services.receiver_calibration import ReceiverCalibrationRegistry
+            settings_directory = tempfile.TemporaryDirectory()
+            registry = ReceiverCalibrationRegistry(CalibrationProfileStore(Path(settings_directory.name)))
+            frontend = CalibrationFrontendContext("declared-test-port", "mock-reference", "test-plane")
+            original_pair_poll = app.poll_paired_publications
+
+            def calibration_poll():
+                publications = original_pair_poll()
+                for pair in publications:
+                    services = []
+                    for snapshot in (pair.primary, pair.secondary):
+                        binding = current_calibration_binding(snapshot, frontend, 0, app)
+                        assert binding.endpoint.endpoint_id == snapshot.spectrum.source_id
+                        assert binding.signature.receiver_chain == snapshot.receiver_id.lower()
+                        assert snapshot.device.capability_binding.source_id == snapshot.device.device_id
+                        assert snapshot.device.capability_snapshot.device_id != snapshot.device.device_id
+                        scoped = registry.for_device(snapshot.device, binding.endpoint)
+                        try:
+                            corrected = scoped.correct_current_spectrum(snapshot, binding.endpoint, frontend)
+                        except Exception:
+                            traceback.print_exc()  # Preserve actual mock consumer cause before session redaction.
+                            raise
+                        assert corrected.raw is snapshot.spectrum and corrected.result.unit == snapshot.unit
+                        services.append(scoped)
+                        calibration_epochs.add(binding.acquisition_epoch)
+                    assert services[0] is not services[1]
+                    try:
+                        app.current_calibration_binding(frontend)
+                    except CalibrationProfileError:
+                        pass
+                    else:
+                        raise AssertionError("ordinary analytics borrowed paired pane authority")
+                return publications
+
+            app.poll_paired_publications = calibration_poll
         original_poll = owner.poll_bundles
         def diagnostic_poll():
             try:
@@ -300,6 +366,8 @@ def run_native_case(path: str, case: str) -> None:
             assert board.pane(2).waterfall_pane.history_rows == 1
             assert not board.apply_prepared(fresh_prepared[0])
             assert not board.apply_prepared(fresh_prepared[1])
+        if case == "calibration-binding":
+            assert len(calibration_epochs) >= 2
         assert session.stop_all() == ()
     finally:
         if session is not None:
@@ -349,3 +417,6 @@ class NativePairedPaneTests(unittest.TestCase):
 
     def test_empty_serial_route_guard_cannot_admit_a_paired_resource(self):
         self.run_case("empty-serial")
+
+    def test_actual_pair_calibration_identity_binding_and_registry_on_rearm(self):
+        self.run_case("calibration-binding")

@@ -234,9 +234,10 @@ class CalibrationService:
             raise CalibrationProfileError("typed current spectrum required")
         frame = current.spectrum
         signature = build_current_frame_calibration_signature(current, frame, endpoint, frontend)
-        if (not np.all(np.isfinite(frame.frequencies_hz)) or not np.all(np.isfinite(frame.values))
+        if (not np.all(np.isfinite(frame.frequencies_hz))
+                or np.any(np.isnan(frame.values) | np.isposinf(frame.values))
                 or frame.values.size == 0 or np.any(np.diff(frame.frequencies_hz) <= 0)):
-            raise CalibrationProfileError("finite ordered current spectrum required")
+            raise CalibrationProfileError("ordered frequencies and valid log-power spectrum required")
         with self._lock:
             result = CalibratedSpectrumInput(frame, current.session_id, signature, self._active,
                 CalibrationSelectionReceipt(self._selection_owner, self._selection_revision))
@@ -291,9 +292,10 @@ class CalibrationService:
             raise CalibrationProfileError("current spectrum required")
         signature = build_current_frame_calibration_signature(current, frame, endpoint, frontend)
         frequencies = frame.frequencies_hz
-        if (not np.all(np.isfinite(frequencies)) or not np.all(np.isfinite(frame.values))
+        if (not np.all(np.isfinite(frequencies))
+                or np.any(np.isnan(frame.values) | np.isposinf(frame.values))
                 or frequencies.size == 0 or np.any(np.diff(frequencies) <= 0)):
-            raise CalibrationProfileError("finite ordered current spectrum required")
+            raise CalibrationProfileError("ordered frequencies and valid log-power spectrum required")
         with self._lock:
             profile = self._active
             selection_revision = self._selection_revision

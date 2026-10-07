@@ -107,7 +107,8 @@ def run_case(path: str, case: str) -> None:
                 refuses(lambda: app.stage_paired_rtbw(stale))
             refuses(lambda: replace(device, serial=None))  # USB/domain guard is earlier than paired admission
             for broken_device in (replace(device, serial=None, usb_connection=None), replace(device, identity_key=None),
-                                  replace(device, capability_snapshot=None, calibration_identity=None)):
+                                  replace(device, capability_snapshot=None, calibration_identity=None,
+                                          capability_binding=None)):
                 broken = replace(selected, device=broken_device)
                 refuses(lambda: request.validate_snapshot(broken))
             refuses(lambda: replace(request, secondary_source_id=request.primary_source_id))

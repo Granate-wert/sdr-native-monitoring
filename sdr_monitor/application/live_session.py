@@ -627,7 +627,19 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
                 raise CalibrationProfileError("pane-owned analytics requires its own graph authority")
             if self._analyzer is not None and self._analyzer.state.mode is not AnalyzerMode.RTBW:
                 raise CalibrationProfileError("Sweep analytics requires its own publication authority")
-            return self._analytical_control_revision, self.current_snapshot()
+            current = self.current_snapshot()
+            if (self._rf_receipt_failed or current.error is not None
+                    or bool(self._sources and self._sources.current().release_pending)):
+                raise CalibrationProfileError("receiver lifecycle requires release")
+            if self._analyzer is not None and (
+                    self._analyzer.state.phase in (AnalyzerPhase.STARTING, AnalyzerPhase.STOPPING, AnalyzerPhase.ERROR)
+                    or self._analyzer.control_busy):
+                raise CalibrationProfileError("receiver control is pending")
+            if current.stop_required and (self._analyzer is None
+                    or self._analyzer.state.phase is not AnalyzerPhase.RUNNING
+                    or current.state is not LiveSessionState.RUNNING):
+                raise CalibrationProfileError("receiver lifecycle requires release")
+            return self._analytical_control_revision, current
         finally:
             self._pane_application_lock.release()
 

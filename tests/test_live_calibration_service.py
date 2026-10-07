@@ -65,11 +65,26 @@ class LiveCalibrationServiceTests(unittest.TestCase):
 
     def test_nonfinite_or_unordered_arrays_refuse(self):
         for changes in (dict(values=np.array([0., np.nan, 1.])),
+                        dict(values=np.array([0., np.inf, 1.])),
                         dict(frequencies_hz=np.array([100., 100., 200.])),
                         dict(frequencies_hz=np.array([200., 150., 100.]))):
             frame = replace(self.fixture.frame, **changes)
             with self.assertRaises(CalibrationProfileError):
                 self.correct(replace(self.fixture.current, spectrum=frame))
+
+    def test_native_zero_power_negative_infinity_is_preserved_in_pull_and_capture(self):
+        frame = replace(self.fixture.frame, values=np.array([-np.inf, -20., -10.]))
+        current = replace(self.fixture.current, spectrum=frame)
+        self.service.select_active_profile(self.profile)
+        pulled = self.correct(current)
+        captured = self.service.capture_spectrum_input(current, self.fixture.facts.endpoint,
+                                                       self.fixture.facts.frontend)
+        corrected = self.service.correct_captured_input(captured)
+        for value in (pulled, corrected):
+            self.assertIs(value.raw, frame)
+            self.assertTrue(np.isneginf(value.result.values[0]))
+            self.assertEqual(value.result.unit, 'dBm/bin')
+            self.assertTrue(np.all(np.isfinite(value.result.uncertainty_db)))
 
     def test_selection_change_during_math_does_not_mix_revisions(self):
         from sdr_monitor.services import calibration_service as module

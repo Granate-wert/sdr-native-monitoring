@@ -32,7 +32,7 @@ from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .presentation_omission import PresentationOmission
-from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilitySnapshot, DeviceFamily
+from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilityBinding, DeviceCapabilitySnapshot, DeviceFamily
 from .ad936x_route_capabilities import Ad936xRouteCapabilities
 from .analyzer_sources import AnalyzerSourceChoice
 from .pluto_connection import PlutoUsbConnectionExpectation, normalized_pluto_serial
@@ -330,8 +330,19 @@ class DeviceDescriptor:
     # Bounded observed USB connection, NOT a stable device/calibration key.
     # Native owners must confirm it again on their own fresh context before RF.
     usb_connection: PlutoUsbConnectionExpectation | None = field(default=None, repr=False)
+    # SAME owned observation joins operational source to canonical catalog ID.
+    # Neither ID is rewritten; absent receipts cannot authorize different IDs.
+    capability_binding: DeviceCapabilityBinding | None = None
 
     def __post_init__(self) -> None:
+        binding = self.capability_binding
+        if binding is not None:
+            if (not isinstance(binding, DeviceCapabilityBinding)
+                    or binding.source_id != self.device_id
+                    or binding.snapshot is None or binding.calibration_identity is None
+                    or binding.snapshot != self.capability_snapshot
+                    or binding.calibration_identity != self.calibration_identity):
+                raise ValueError("device requires its exact admitted source/capability binding")
         connection = self.usb_connection
         if connection is not None:
             if (not isinstance(connection, PlutoUsbConnectionExpectation)

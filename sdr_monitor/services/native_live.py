@@ -596,6 +596,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     capabilities=fresh.capabilities,
                     capability_snapshot=fresh.capability_snapshot,
                     calibration_identity=fresh.calibration_identity,
+                    capability_binding=(None if fresh.capability_binding is None else replace(
+                        fresh.capability_binding, source_id=selected.device_id)),
                     route_rf_capabilities=fresh.route_rf_capabilities,
                     serial=fresh.serial,
                     identity_key=fresh.identity_key,
@@ -1077,6 +1079,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 error_kind=None,
                 session_id=self._session_id,
                 active_source_id=as_source_id(device.device_id),
+                receiver_id=_observed_single_receiver(self._native, applied),
                 acquisition_epoch=int(self._generation),
                 clock_domain="unix_ns",
                 active_config_generation=(
@@ -2333,6 +2336,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     def _convert_spectrum(self, frame: Any, publication_context: LiveSnapshot,
                           source_id: str | None = None, *, receiver_id: str | None = None) -> LiveSpectrumFrame:
+        receiver_id = publication_context.receiver_id if receiver_id is None else receiver_id
         fallback_source = source_id or publication_context.device.device_id if publication_context.device is not None else "native-live"
         source_id, generation, timestamp_quality, loss_reasons = _native_frame_metadata(
             self._native, frame, fallback_source
@@ -2490,6 +2494,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 performance=self._snapshot.performance,
                 session_id=self._snapshot.session_id,
                 active_source_id=self._snapshot.active_source_id,
+                receiver_id=spectrum.receiver_id,
                 acquisition_epoch=self._snapshot.acquisition_epoch,
                 clock_domain=self._snapshot.clock_domain,
                 active_config_generation=self._snapshot.active_config_generation,
@@ -2522,6 +2527,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 performance=self._snapshot.performance,
                 session_id=self._snapshot.session_id,
                 active_source_id=self._snapshot.active_source_id,
+                receiver_id=self._snapshot.receiver_id,
                 acquisition_epoch=self._snapshot.acquisition_epoch,
                 clock_domain=self._snapshot.clock_domain,
                 active_config_generation=self._snapshot.active_config_generation,
@@ -2644,6 +2650,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             calibration_identity=calibration_identity,
             route_rf_capabilities=route_rf_capabilities,
             usb_connection=usb_connection,
+            capability_binding=(DeviceCapabilityBinding(
+                f"pluto:{identity_key}", DeviceFamily.AD936X, AD936X_LIBIIO_ADAPTER_ID,
+                capability_snapshot, calibration_identity,
+            ) if capability_snapshot is not None and calibration_identity is not None else None),
         )
 
     def _fail(
@@ -2971,6 +2981,19 @@ def _native_persistence_mode(native_module: Any, mode: str) -> Any:
     return getattr(enum_type, "EXPONENTIAL_DECAY")
 
 
+def _observed_single_receiver(native: Any, applied: Any) -> str | None:
+    """Actual applied native enum only; old/unknown/BOTH stays unassigned."""
+    selection_type = getattr(native, "PlutoReceiverSelection", None)
+    observed = getattr(applied, "receiver_selection", None)
+    if selection_type is None or observed is None:
+        return None
+    for name in ("RX1", "RX2"):
+        value = getattr(selection_type, name, None)
+        if value is not None and type(observed) is type(value) and observed == value:
+            return name
+    return None
+
+
 def _domain_applied_configuration(
     provisional: AppliedLiveConfiguration,
     *,
@@ -3259,6 +3282,11 @@ def _merge_device_group(group: list[DeviceDescriptor]) -> DeviceDescriptor:
         serial=preferred.serial,
         capability_snapshot=snapshot,
         calibration_identity=calibration_identity,
+        capability_binding=(DeviceCapabilityBinding(
+            f"pluto:{identity}", DeviceFamily.AD936X, AD936X_LIBIIO_ADAPTER_ID,
+            snapshot, calibration_identity,
+        ) if preferred.capability_binding is not None and snapshot is not None
+              and calibration_identity is not None else None),
     )
 
 

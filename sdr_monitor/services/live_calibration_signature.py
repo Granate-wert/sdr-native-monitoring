@@ -3,13 +3,13 @@
 from dataclasses import dataclass
 
 from ..domain.calibration import CalibrationProfileError, CalibrationSignature
-from ..domain.device_capabilities import DeviceFamily
 from ..domain.live import (
     AppliedLiveConfiguration, BackendKind, DeviceDescriptor, LiveSessionState,
     LiveSnapshot, LiveSpectrumFrame, ObservedGainMode,
 )
 from ..domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint
 from ..domain.spectrum_provenance import SpectrumProvenance
+from .calibration_device_binding import confirmed_calibration_device_binding
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,13 +50,10 @@ def build_live_calibration_signature(
         raise CalibrationProfileError("typed applied readback and numerical provenance required")
     if not isinstance(frontend, CalibrationFrontendContext):
         raise CalibrationProfileError("explicit typed frontend context required")
-    identity = device.calibration_identity
-    snapshot = device.capability_snapshot
-    if identity is None or snapshot is None or identity.family in (
-        DeviceFamily.UNKNOWN, DeviceFamily.TINYSA, DeviceFamily.GENERIC_INSTRUMENT,
-    ):
-        raise CalibrationProfileError("admitted SDR calibration identity required")
-    if (snapshot.device_id != device.device_id or endpoint.source_id != device.device_id
+    binding = confirmed_calibration_device_binding(device)
+    identity = binding.calibration_identity
+    assert identity is not None
+    if (endpoint.source_id != binding.source_id
             or endpoint.selection is ReceiverChainSelection.BOTH):
         raise CalibrationProfileError("calibration requires one RX of this exact source")
     topology = device.capabilities.receiver_topology

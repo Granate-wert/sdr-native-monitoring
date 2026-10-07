@@ -7028,3 +7028,34 @@ guard refuses. Their authoritative binding must be implemented and qualified
 before claiming native AD936x calibration usability. Synthetic calibration
 tests and this clock fix do not establish a working paired calibration adapter,
 physical reference accuracy, visible UI acceptance or release qualification.
+
+### Admitted native calibration boundary — package 107
+
+`DeviceDescriptor.capability_binding` retains the existing typed
+`DeviceCapabilityBinding` from the SAME owned AD936x observation. Its operational
+source, canonical snapshot and calibration identity must match the descriptor
+exactly. Refresh and verified route merging carry a new coherent receipt; a
+conflicting/unverified merge cannot retain it. Operational and canonical IDs
+are not renamed. Calibration signature and receiver registry validate this
+receipt. Legacy descriptors with equal IDs still require consistent canonical
+identity; unequal IDs without the explicit receipt refuse. Foreign source,
+snapshot, firmware or resource do not borrow an existing RX selection.
+
+Ordinary native Live now retains the actual applied `PlutoReceiverSelection`
+enum in its snapshot and spectrum bridge. Unknown/old readback and BOTH are not
+silently assigned RX1. This metadata is not proof of a physical RF input path.
+
+Healthy RUNNING Analyzer sessions retain `stop_required`: dispatched acquisition
+must still be stopped/joined later. Captured analytics admits that case only
+through the SAME ordinary RTBW owner, with no pending control, lifecycle error,
+failed RF receipt or source release. Transitional/error phases and ambiguous
+cleanup-required legacy observations refuse; Stop still invalidates consumers.
+The flag itself is neither cleared nor redefined by calibration.
+
+Native zero linear power is `-inf` in log power. Current/captured correction
+preserves it without flooring or inventing a sample; NaN/+inf power and unordered
+or nonfinite frequencies refuse. Existing uncertainty/status/raw-unit fallback
+and two-array output budget remain unchanged. Native/mock regression uses
+ordinary Live binding/capture/delivery/Stop and per-RX paired publication joins
+across rearm. It does not implement paired calibration consumer authority or
+qualify physical RF, UI, sustained performance, an EXE or a release.

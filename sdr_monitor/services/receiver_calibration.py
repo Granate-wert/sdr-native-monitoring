@@ -3,11 +3,12 @@ from dataclasses import dataclass
 from threading import RLock
 
 from ..domain.calibration import CalibrationApplicability, CalibrationProfile, CalibrationProfileError, CalibrationSignature
-from ..domain.device_capabilities import DeviceCalibrationIdentity, DeviceFamily
+from ..domain.device_capabilities import DeviceCalibrationIdentity
 from ..domain.live import DeviceDescriptor
 from ..domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint
 from .calibration_service import CalibrationSelectionReceipt, CalibrationService
 from .calibration_store import CalibrationProfileStore
+from .calibration_device_binding import confirmed_calibration_device_binding
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,12 +22,10 @@ class _ReceiverScope:
 def _scope(device: DeviceDescriptor, endpoint: ReceiverEndpoint) -> _ReceiverScope:
     if not isinstance(device, DeviceDescriptor) or not isinstance(endpoint, ReceiverEndpoint):
         raise CalibrationProfileError('typed device/receiver required')
-    identity, snapshot, topology = device.calibration_identity, device.capability_snapshot, device.capabilities.receiver_topology
-    if (identity is None or snapshot is None or topology is None
-            or identity.family in (DeviceFamily.UNKNOWN, DeviceFamily.TINYSA, DeviceFamily.GENERIC_INSTRUMENT)
-            or snapshot.device_id != device.device_id or endpoint.source_id != device.device_id
-            or identity.device_identity_key != snapshot.identity_key or identity.family is not snapshot.family
-            or identity.adapter_id != snapshot.adapter_id
+    binding = confirmed_calibration_device_binding(device)
+    identity, topology = binding.calibration_identity, device.capabilities.receiver_topology
+    assert identity is not None
+    if (topology is None or endpoint.source_id != binding.source_id
             or endpoint.selection is ReceiverChainSelection.BOTH
             or endpoint.physical_stream_resource_id != topology.physical_stream_resource_id
             or not topology.supports_selection(endpoint.selection)):
