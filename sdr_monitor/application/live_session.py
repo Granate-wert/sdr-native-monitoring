@@ -47,6 +47,7 @@ from ..domain.layer_journal import LayerJournalSnapshot
 from ..services.pane_layer_admission import cached_layer_journals
 from ..services.calibration_service import CalibrationService, CalibratedLiveSpectrum
 from ..services.receiver_calibration import ReceiverCalibrationRegistry
+from ..services.captured_calibration import CapturedCalibrationLane
 from ..services.live_calibration_signature import (
     CalibrationFrontendContext, build_current_frame_calibration_signature,
 )
@@ -70,6 +71,7 @@ def _pane_exclusive_command(method: Callable[Concatenate[LiveSessionApplicationS
             claim = self._pane_control_claim
             if claim is not None and getattr(self._pane_control_thread, "claim", None) is not claim:
                 raise RuntimeError("Receiver is reserved by a pane capture; use its explicit Stop")
+            self._analytical_control_revision += 1
             return method(self, *args, **kwargs)
         finally:
             self._pane_application_lock.release()
@@ -139,6 +141,7 @@ class LiveSessionApplicationService:
         self._rf_receipt: AnalyzerRfApplyReceipt | None = None
         self._rf_receipt_acknowledged = False
         self._rf_receipt_failed = False
+        self._analytical_control_revision = 0
 
     @property
     def analyzer_state(self) -> AnalyzerSessionState | None:
@@ -425,6 +428,7 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
                 prior = getattr(self._pane_control_thread, "claim", None)
                 self._pane_control_thread.claim = claim
                 try:
+                    self._analytical_control_revision += 1
                     yield
                 finally:
                     self._pane_control_thread.claim = prior
@@ -611,6 +615,30 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             return self._lifecycle_snapshot(self._empty_source_snapshot[1])
         self._empty_source_snapshot = None
         return self._lifecycle_snapshot(self._port.latest_snapshot())
+
+    def _observe_analytical_context(self) -> tuple[int, LiveSnapshot]:
+        """Cached SAME owner observation; never wait on a running control job."""
+        if not self._pane_application_lock.acquire(blocking=False):
+            raise CalibrationProfileError("receiver control is pending")
+        try:
+            if self._pane_control_claim is not None:
+                raise CalibrationProfileError("pane-owned analytics requires its own graph authority")
+            if self._analyzer is not None and self._analyzer.state.mode is not AnalyzerMode.RTBW:
+                raise CalibrationProfileError("Sweep analytics requires its own publication authority")
+            return self._analytical_control_revision, self.current_snapshot()
+        finally:
+            self._pane_application_lock.release()
+
+    def captured_calibration_lane(
+        self, registry: ReceiverCalibrationRegistry, endpoint: ReceiverEndpoint,
+        frontend: CalibrationFrontendContext,
+    ) -> CapturedCalibrationLane:
+        """Inert explicit binding to this owner; no profile activation or RX.
+
+        Single Live owner boundary only. Paired graph/Sweep authority and V2
+        preparation/render integration remain separate required work.
+        """
+        return CapturedCalibrationLane(self._observe_analytical_context, registry, endpoint, frontend)
 
     def calibrated_current_spectrum(
         self, calibration: CalibrationService, endpoint: ReceiverEndpoint,

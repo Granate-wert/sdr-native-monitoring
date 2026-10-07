@@ -6922,3 +6922,29 @@ from its current device, uses the same-owner analytical pull, then checks
 current scope membership too. A retired service cannot be admitted by retaining
 and reactivating an old reference. This remains explicit worker-side analytics;
 V2 profile controls/preparation/render integration are not automatic yet.
+
+### Captured Live calibration publication — package 101
+
+`LiveSessionApplicationService.captured_calibration_lane` creates an inert,
+explicit single-Live-owner endpoint/frontend binding. Its preparation authenticates
+the exact cached running snapshot, computes outside the application control lock,
+and returns a distinct analytical publication retaining the original raw frame.
+Ordinary same-context sequence advancement is allowed at completion/delivery;
+the existing strict-current calibration APIs retain their original semantics.
+
+Application control dispatch and pane control transactions invalidate captured
+receipts via a monotonic host-only revision, even if later metadata returns to
+the same values. Current cached state, applied configuration, identity/resource,
+RX/producer/session/epoch/normalization, observed gaps and registry membership/
+selection revision are rechecked. Control contention refuses without waiting on
+RF work. Close or a different frontend binding invalidates lane authority.
+Delivery ordinals prevent a delayed older result rolling back an admitted successor.
+This does not modify native quality, clocks, DSP, acquisition or raw histories.
+
+No internal frame queue/cache is introduced; the consumer remains responsible
+for bounded active/pending work and charging raw/corrected/uncertainty retention
+to its existing aggregate budget. Validation is point-in-time, not an atomic
+physical/paint transaction. Pane-owned graph and Sweep explicitly refuse this
+single-owner boundary; they require their own captured publication authority.
+Those integrations, UI commands/preparation/render wiring and matched GUI
+qualification remain required; this prerequisite is not APP-07/APP-08 closure.
