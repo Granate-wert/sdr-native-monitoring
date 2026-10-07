@@ -6746,3 +6746,18 @@ This is bounded offline diagnostic work with no persistent product observer,
 SDK/Qt call or acquisition/render queue expansion. `lifetime_complete` remains
 false. Neither zero counters nor inside-only quantiles prove complete coverage,
 actual FPS, DWM presentation,50ms performance or physical release acceptance.
+
+### Calibration immutable-publication prerequisite
+
+Independent calibration services may share one profile store. Finalized
+profile/version publication must not overwrite another writer's winner after
+an outdated absence check. Each writer now owns an exclusive same-directory
+temporary file; publishing uses a no-replace hard link. An identical winner is
+idempotent; a different winner is explicitly refused. Unsupported filesystems
+fail closed, never fall back to replacement. Only the caller-owned temporary
+file is cleaned during normal success/refusal/failure.
+
+This fixes storage publication, not paired-RX calibration integration. There
+is no changed calibration math/applicability/units or RF/GUI behavior. It is
+not proof of power-loss durability, hostile filesystem/hardlink protection,
+cross-host/network-filesystem behavior or absolute RF accuracy.
