@@ -6726,3 +6726,23 @@ Private HIL wiring may execute this cached read on its existing control
 executor and emit scalar evidence. That preparation and fake-session tests
 are not a physical HIL execution, hardware recovery, performance baseline,
 visible Windows/DWM proof, matching frozen EXE or release qualification.
+
+### M8 offline observation-window audit
+
+`audit_pane_paint_window` accepts at most64 original typed observations of one
+graph and one declared host clock. Observation envelopes must be ordered and
+bracket an explicit half-open host window. It deduplicates identical graph/event
+IDs; changed evidence, changed obligation identity, late admission, regressed
+coverage counters, mismatched summaries and future stamps are refused.
+
+Before-paint/after-return enclosures are classified as before, inside, crossing
+either/both boundaries, after or unknown. Only wholly inside usable enclosures
+enter conditional interval quantiles, calculated from original events, never
+summed snapshot quantiles. Admission cohorts refer to ledger stamps, not exact
+native admission. Missing event IDs are unobserved IDs, not inferred paints or
+RF loss. Counter deltas cover observation envelopes, not exact window edges.
+
+This is bounded offline diagnostic work with no persistent product observer,
+SDK/Qt call or acquisition/render queue expansion. `lifetime_complete` remains
+false. Neither zero counters nor inside-only quantiles prove complete coverage,
+actual FPS, DWM presentation,50ms performance or physical release acceptance.

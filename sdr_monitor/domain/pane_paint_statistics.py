@@ -108,6 +108,24 @@ def _quantiles(intervals: list[tuple[int, int]]) -> PaintIntervalQuantiles | Non
     return PaintIntervalQuantiles(ranked(50), ranked(95), ranked(99))
 
 
+def _summarize_groups(groups: dict[PanePaintStatisticsScope, list[PaneDeliveryEvent]]) -> tuple[PanePaintStatistics, ...]:
+    """Shared calculation kernel AFTER snapshot/window consumer validation."""
+    results: list[PanePaintStatistics] = []
+    for scope, events in groups.items():
+        counts = {state: 0 for state in PaintTimingState}
+        base: list[tuple[int, int]] = []
+        after: list[tuple[int, int]] = []
+        for event in events:
+            timing = evaluate_ready_to_paint(event)
+            counts[timing.state] += 1
+            if timing.base_return_elapsed_ns is not None and timing.after_return_sample_elapsed_ns is not None:
+                base.append(timing.base_return_elapsed_ns)
+                after.append(timing.after_return_sample_elapsed_ns)
+        results.append(PanePaintStatistics(scope, len(events), len(base),
+            tuple((state, count) for state, count in counts.items() if count), _quantiles(base), _quantiles(after)))
+    return tuple(results)
+
+
 def summarize_pane_paint_snapshot(snapshot: PaneDeliveryLedgerSnapshot) -> PanePaintSnapshotSummary:
     """Summarize an already captured immutable ledger without side effects.
 
@@ -145,19 +163,5 @@ def summarize_pane_paint_snapshot(snapshot: PaneDeliveryLedgerSnapshot) -> PaneP
         paint_ids.add(event.ref.sequence)
         groups.setdefault(_scope(event.ref), []).append(event)
 
-    results: list[PanePaintStatistics] = []
-    for scope, events in groups.items():
-        counts = {state: 0 for state in PaintTimingState}
-        base: list[tuple[int, int]] = []
-        after: list[tuple[int, int]] = []
-        for event in events:
-            timing = evaluate_ready_to_paint(event)
-            counts[timing.state] += 1
-            if timing.base_return_elapsed_ns is not None and timing.after_return_sample_elapsed_ns is not None:
-                base.append(timing.base_return_elapsed_ns)
-                after.append(timing.after_return_sample_elapsed_ns)
-        results.append(PanePaintStatistics(scope, len(events), len(base),
-            tuple((state, count) for state, count in counts.items() if count), _quantiles(base), _quantiles(after)))
-
-    return PanePaintSnapshotSummary(snapshot.graph_instance_id, tuple(results), PaintSnapshotCoverage(
+    return PanePaintSnapshotSummary(snapshot.graph_instance_id, _summarize_groups(groups), PaintSnapshotCoverage(
         snapshot.supported, len(snapshot.events), len(snapshot.records), *counters, snapshot.panes, snapshot.views))
