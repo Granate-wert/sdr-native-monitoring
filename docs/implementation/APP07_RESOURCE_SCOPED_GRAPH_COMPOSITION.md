@@ -6994,3 +6994,21 @@ be used as the UI source-admission guarantee. This bounds admitted exposed raw
 backing and retained outputs, not numerical scratch, opaque native allocator
 capacity, Qt storage, total RSS or transient peaks. No budget increase is made.
 UI wiring and owner-specific paired/Sweep/stopped workflows remain required.
+
+### Typed CURRENT calibration binding — package 104
+
+The ordinary Live application exposes an array-free `current_calibration_binding(frontend)`
+receipt from its SAME cached observation. Logical device and physical resource
+come from admitted topology; endpoint ID is the actual producer, and RX selection
+uses only exact canonical RX1/RX2 metadata. Label, URI suffix and serial never
+select a channel. Actual readback/normalization/signature guards still apply.
+
+`captured_bound_calibration_lane(registry, binding)` accepts only the SAME owner
+receipt and verifies it before returning the lane and on every observation.
+Session/epoch/generation/control revision, producer, applied configuration and
+signature changes refuse instead of silently rebinding. Same-context ordinary
+frame advancement remains allowed. No spectrum/persistence arrays are retained
+in the binding; no hardware query/open/Start/RF change/profile selection occurs.
+Pane-owned or Sweep observations refuse and require their distinct authorities.
+This running single-RX binding does not implement stopped/paired/Sweep calibration
+or imply physical RF-path accuracy. UI must explicitly replace/close old bindings.

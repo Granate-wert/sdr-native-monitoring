@@ -48,6 +48,7 @@ from ..services.pane_layer_admission import cached_layer_journals
 from ..services.calibration_service import CalibrationService, CalibratedLiveSpectrum
 from ..services.receiver_calibration import ReceiverCalibrationRegistry
 from ..services.captured_calibration import CapturedCalibrationLane
+from ..services.current_calibration_binding import CurrentCalibrationBinding, current_calibration_binding
 from ..services.live_calibration_signature import (
     CalibrationFrontendContext, build_current_frame_calibration_signature,
 )
@@ -142,6 +143,7 @@ class LiveSessionApplicationService:
         self._rf_receipt_acknowledged = False
         self._rf_receipt_failed = False
         self._analytical_control_revision = 0
+        self._calibration_binding_authority = object()
 
     @property
     def analyzer_state(self) -> AnalyzerSessionState | None:
@@ -639,6 +641,31 @@ AD Sweep does not reapply unrelated RF/DSP fields or fabricate a Live owner.
             yield
         finally:
             self._pane_application_lock.release()
+
+    def current_calibration_binding(self, frontend: CalibrationFrontendContext) -> CurrentCalibrationBinding:
+        """Array-free receipt from SAME cached ordinary RTBW owner; no RF operation."""
+        revision, current = self._observe_analytical_context()
+        return current_calibration_binding(current, frontend, revision, self._calibration_binding_authority)
+
+    def captured_bound_calibration_lane(
+        self, registry: ReceiverCalibrationRegistry, binding: CurrentCalibrationBinding,
+    ) -> CapturedCalibrationLane:
+        """Pin the explicit current binding; never silently rebind an old lane."""
+        if (not isinstance(binding, CurrentCalibrationBinding)
+                or binding.authority is not self._calibration_binding_authority):
+            raise CalibrationProfileError("binding from this exact Live owner required")
+
+        def observe() -> tuple[int, LiveSnapshot]:
+            revision, current = self._observe_analytical_context()
+            actual = current_calibration_binding(current, binding.frontend, revision,
+                                                 self._calibration_binding_authority)
+            if actual != binding:
+                raise CalibrationProfileError("current receiver calibration binding changed")
+            return revision, current
+
+        observe()  # Refuse stale bindings before returning a consumer lane.
+        return CapturedCalibrationLane(observe, registry, binding.endpoint, binding.frontend,
+                                       selection_guard=self._analytical_selection_transaction)
 
     def captured_calibration_lane(
         self, registry: ReceiverCalibrationRegistry, endpoint: ReceiverEndpoint,
