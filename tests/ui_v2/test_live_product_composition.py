@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-import tempfile
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QPushButton
 
@@ -27,6 +26,7 @@ from sdr_monitor.ui.v2.design import ThemeId, stylesheet_for_theme
 from sdr_monitor.ui.v2.i18n import UiLocale, text
 from sdr_monitor.ui.v2.product_live import compose_v2_live_product
 from sdr_monitor.ui.v2.shell import AppShellV2
+from tests.ui_v2.ui_test_isolation import PrivateUiSettings, flush_deferred_widgets, own_locale
 from sdr_monitor.ui.v2.workspaces import (
     CalibrationProfilesWorkspaceV2,
     DiagnosticsWorkspaceV2,
@@ -191,15 +191,14 @@ class LiveProductCompositionTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self) -> None:
-        self._settings_directory = tempfile.TemporaryDirectory()
+        own_locale(self)
+        self._private_settings = PrivateUiSettings(("spectrum-view", "waterfall-pane"))
+        self.addCleanup(self._private_settings.close)
         self.presenter = FakePresenter()
         self.composition = compose_v2_live_product(self.presenter, now_ns=lambda: 1)
         self.shell = AppShellV2(
             context=self.composition.context,
-            settings=QSettings(
-                os.path.join(self._settings_directory.name, "ui2.ini"),
-                QSettings.Format.IniFormat,
-            ),
+            settings=self._private_settings.settings("shell-main"),
         )
         self.shell.show()
         self.app.processEvents()
@@ -208,8 +207,7 @@ class LiveProductCompositionTests(unittest.TestCase):
         if self.shell.isVisible():
             self.shell.close()
         self.shell.deleteLater()
-        self.app.processEvents()
-        self._settings_directory.cleanup()
+        flush_deferred_widgets()
 
     def test_live_replaces_only_the_v2_placeholder_and_stays_lazy(self) -> None:
         self.assertEqual(self.shell.active_workspace_id, "home")
@@ -321,7 +319,7 @@ class LiveProductCompositionTests(unittest.TestCase):
     def test_optional_sweep_replaces_its_placeholder_and_home_navigation_stays_inert(self) -> None:
         sweep = FakeSweepPresenter()
         composition = compose_v2_live_product(self.presenter, sweep_presenter=sweep, now_ns=lambda: 1)
-        shell = AppShellV2(context=composition.context)
+        shell = AppShellV2(context=composition.context, settings=self._private_settings.settings("shell-sweep"))
         try:
             shell.show()
             self.app.processEvents()
@@ -351,7 +349,7 @@ class LiveProductCompositionTests(unittest.TestCase):
     def test_optional_calibration_replaces_its_placeholder_without_profile_io(self) -> None:
         calibration = FakeCalibrationPresenter()
         composition = compose_v2_live_product(self.presenter, calibration_presenter=calibration, now_ns=lambda: 1)
-        shell = AppShellV2(context=composition.context)
+        shell = AppShellV2(context=composition.context, settings=self._private_settings.settings("shell-calibration"))
         try:
             shell.show()
             self.app.processEvents()
@@ -391,7 +389,7 @@ class LiveProductCompositionTests(unittest.TestCase):
             diagnostics_presenter_factory=factory,
             now_ns=lambda: 1,
         )
-        shell = AppShellV2(context=composition.context)
+        shell = AppShellV2(context=composition.context, settings=self._private_settings.settings("shell-diagnostics"))
         try:
             shell.show()
             self.app.processEvents()
@@ -451,7 +449,8 @@ class LiveProductCompositionTests(unittest.TestCase):
             calibration_presenter=calibration,
             now_ns=lambda: 1,
         )
-        shell = AppShellV2(context=composition.context, theme=ThemeId.LIGHT)
+        shell = AppShellV2(context=composition.context, theme=ThemeId.LIGHT,
+                           settings=self._private_settings.settings("shell-theme"))
         try:
             shell.show()
             self.app.processEvents()
@@ -473,7 +472,7 @@ class LiveProductCompositionTests(unittest.TestCase):
     def test_sweep_semantic_controls_have_explicit_accessible_names(self) -> None:
         sweep = FakeSweepPresenter()
         composition = compose_v2_live_product(self.presenter, sweep_presenter=sweep, now_ns=lambda: 1)
-        shell = AppShellV2(context=composition.context)
+        shell = AppShellV2(context=composition.context, settings=self._private_settings.settings("shell-semantic"))
         try:
             shell.show()
             shell.select_workspace("sweep")
