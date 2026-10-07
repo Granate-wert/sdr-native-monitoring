@@ -7012,3 +7012,19 @@ in the binding; no hardware query/open/Start/RF change/profile selection occurs.
 Pane-owned or Sweep observations refuse and require their distinct authorities.
 This running single-RX binding does not implement stopped/paired/Sweep calibration
 or imply physical RF-path accuracy. UI must explicitly replace/close old bindings.
+
+### Observed calibration clock domains — package 106
+
+Strict current-frame admission accepts the two explicitly supported producer
+clock domains `host_steady_ns` and `unix_ns`, only when the SAME current snapshot
+and original frame agree. Unknown domains and mixed domains still refuse.
+Admission does not convert, relabel or compare timestamps between clock domains;
+the captured context retains the actual domain for subsequent invalidation.
+
+A native/mock paired-publication probe exposed the previous steady-only refusal.
+After fixing that refusal, the actual AD936x operational descriptor ID and
+canonical capability snapshot ID still differ and the calibration identity
+guard refuses. Their authoritative binding must be implemented and qualified
+before claiming native AD936x calibration usability. Synthetic calibration
+tests and this clock fix do not establish a working paired calibration adapter,
+physical reference accuracy, visible UI acceptance or release qualification.

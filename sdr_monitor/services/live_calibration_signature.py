@@ -118,7 +118,8 @@ def build_current_frame_calibration_signature(
             or frame.config_generation != current.active_config_generation
             or type(current.acquisition_epoch) is not int or current.acquisition_epoch < 0
             or frame.acquisition_epoch != current.acquisition_epoch
-            or current.clock_domain != "host_steady_ns" or frame.clock_domain != current.clock_domain
+            or current.clock_domain not in {"host_steady_ns", "unix_ns"}
+            or frame.clock_domain != current.clock_domain
             or frame.unit != current.unit or frame.numerical_provenance is None):
         raise CalibrationProfileError("frame source/generation/epoch/clock/unit is not current")
     actual = current.applied.applied

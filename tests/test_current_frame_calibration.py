@@ -64,6 +64,20 @@ class CurrentFrameCalibrationTests(unittest.TestCase):
         with self.assertRaises(CalibrationProfileError):
             self.signature(endpoint=replace(self.facts.endpoint, selection=ReceiverChainSelection.BOTH))
 
+    def test_observed_unix_clock_keeps_original_time_and_unknown_or_mixed_refuses(self):
+        frame = replace(self.frame, clock_domain="unix_ns")
+        current = replace(self.current, spectrum=frame, clock_domain="unix_ns")
+        self.assertEqual(self.signature(current=current, frame=frame), self.signature())
+        self.assertEqual(frame.timestamp_ns, self.frame.timestamp_ns)
+        self.assertEqual(frame.clock_domain, "unix_ns")
+        for domain in (None, "unknown", "device_ticks", "", "UNIX_NS"):
+            with self.subTest(domain=domain), self.assertRaises(CalibrationProfileError):
+                bad_frame = replace(self.frame, clock_domain=domain)
+                self.signature(current=replace(self.current, spectrum=bad_frame, clock_domain=domain),
+                               frame=bad_frame)
+        with self.assertRaises(CalibrationProfileError):
+            self.signature(current=replace(current, clock_domain="host_steady_ns"), frame=frame)
+
     def test_frame_retune_wrong_fft_or_backend_transition_refuse(self):
         for changes in (dict(center_frequency_hz=self.frame.center_frequency_hz+1),
                         dict(sample_rate_hz=self.frame.sample_rate_hz+1), dict(fft_size=2048),
