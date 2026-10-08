@@ -26,6 +26,7 @@ from sdr_monitor.ui.v2.product_live import compose_v2_live_product
 from sdr_monitor.ui.v2.view_models.analyzer_view_model import AnalyzerMode
 from sdr_monitor.ui.v2_composition import build_v2_shell
 from tests.test_app01_product_analyzer import _AtomicFakeLive, _FakeAnalyzerDisplay
+from tests.ui_v2.ui_test_isolation import own_locale
 
 
 class AnalyzerWorkspaceProductTests(unittest.TestCase):
@@ -34,6 +35,7 @@ class AnalyzerWorkspaceProductTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        own_locale(self)
         self._qt_errors = []
         # Mock can survive unpatch in a cyclic graph. Retain the error sink,
         # not the whole fixture/product/source graph, until normal GC runs.

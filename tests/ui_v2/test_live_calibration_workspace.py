@@ -18,6 +18,65 @@ from tests.ui_v2.test_live_calibration_composition import CalibrationComposition
 
 
 class LiveCalibrationWorkspaceTests(CalibrationCompositionFixture):
+    def test_current_scene_is_lazy_until_bound_and_visible_and_reused_after_hide(self):
+        widget = self.composition._analyzer_workspace_ref()
+        plot = widget.calibrated_current
+        self.assertIsNone(plot.scene)
+        self.shell.select_workspace("analyzer")
+        self.shell.show()
+        self.app.processEvents()
+        self.assertIsNone(plot.scene)  # Visibility alone never admits calibration.
+        self.shell.select_workspace("calibration")
+        self.bind()
+        self.select_profile()
+        self.assertIsNone(plot.scene)  # Bound but hidden: no graphics allocation.
+        self.assertIsNone(self.model.state.displayed)
+        for locale in UiLocale:
+            set_active_locale(locale)
+            widget.set_locale()
+            self.assertIsNone(plot.scene)
+        self.shell.select_workspace("analyzer")
+        self.wait(lambda: self.model.state.displayed is self.model.state.current)
+        scene = plot.scene
+        self.assertIsNotNone(scene)
+        self.assertIs(scene.displayed_frame, self.model.state.current.frame)
+        current = self.model.state.current
+        request = ProjectionRequest(scene._projection_owner, scene._projection_generation,
+                                    scene._viewport(), tuple(scene._trace_views.items()),
+                                    prepared=current.spectrum)
+        delayed = project_spectrum(request)
+        self.shell.select_workspace("calibration")
+        self.app.processEvents()
+        self.assertIsNone(scene.latest_frame)
+        self.assertIsNone(self.model.state.displayed)
+        with patch.object(scene, "_request_projection", wraps=scene._request_projection) as retry:
+            scene._accept_projection(delayed)
+            retry.assert_not_called()
+        self.assertIsNone(scene.displayed_frame)
+        self.assertIsNone(self.model.state.displayed)  # Hidden late delivery cannot acknowledge display.
+        self.shell.select_workspace("analyzer")
+        self.wait(lambda: self.model.state.displayed is self.model.state.current)
+        self.assertIs(plot.scene, scene)
+        self.model.close_binding()
+        self.assertIsNone(scene.latest_frame)
+        self.assertIsNone(scene.displayed_frame)
+        plot.release()
+        plot.release()
+        self.assertEqual(self.port.actions, [])
+
+    def test_uncreated_current_scene_release_is_idempotent_and_does_not_construct(self):
+        plot = self.composition._analyzer_workspace_ref().calibrated_current
+        self.assertIsNone(plot.scene)
+        self.assertIsNone(self.composition._calibration_projector._future)
+        plot.release()
+        plot.release()
+        self.shell.select_workspace("analyzer")
+        self.shell.show()
+        self.app.processEvents()
+        self.assertIsNone(plot.scene)
+        self.assertIsNone(self.model.state.binding)
+        self.assertEqual(self.port.actions, [])
+
     def test_strict_en_ru_eight_states_and_persistent_frontend_roles_fhd_qhd(self):
         from sdr_monitor.ui.v2.workspaces.calibration_profiles import CalibrationProfilesWorkspaceV2, _inspector
         from sdr_monitor.ui.v2.design import ThemeId
@@ -232,6 +291,7 @@ class LiveCalibrationWorkspaceTests(CalibrationCompositionFixture):
         self.assertEqual(self.port.actions, [])
 
     def test_actual_separate_current_axis_and_late_projection_repaint_validity(self):
+        self.shell.select_workspace("analyzer")
         self.shell.resize(1920, 1080)
         self.shell.show()
         self.app.processEvents()

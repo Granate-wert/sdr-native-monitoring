@@ -201,7 +201,9 @@ class PairedUserPlanTests(unittest.TestCase):
             CapabilityRange(2_460e6, 2_490e6, "Hz")))
         source = replace(self.source, binding=replace(self.source.binding, snapshot=capability))
         snapshot = replace(self.snapshot, device=replace(self.snapshot.device,
-                                                           capability_snapshot=capability))
+            capability_snapshot=capability, capability_binding=source.binding))
+        self.assertIs(snapshot.device.capability_binding, source.binding)
+        self.assertIs(snapshot.device.capability_snapshot, source.binding.snapshot)
         receipt = PanePairedSelectionReceipt(source, self.revision, snapshot)
         drafts = (replace(self.drafts[0], start_hz=2_400e6, stop_hz=2_410e6,
                           measurement_mode=CaptureMeasurementMode.SWEEP),

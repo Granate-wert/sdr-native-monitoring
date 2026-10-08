@@ -548,8 +548,7 @@ class AnalyzerWorkspaceV2(QWidget):
         """Translate controls in place; preserve canvas, source and local range."""
         self._rf_controls.set_locale()
         if self.calibrated_current is not None:
-            self.calibrated_current.scene.set_locale(current_locale())
-            self.calibrated_current._render(self.calibrated_current._model.state)
+            self.calibrated_current.set_locale()
         self._last_source_selection = None  # Reformat this scalar readout in the new locale.
         self.setAccessibleName(text("analyzer.title"))
         self.source.setAccessibleName(text("live.device_selector.name"))

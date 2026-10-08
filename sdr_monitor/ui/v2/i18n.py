@@ -23,37 +23,37 @@ _ACTIVE_LOCALE: ContextVar[UiLocale] = ContextVar("ui_v2_active_locale", default
 
 _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
     {
-        "live_calibration.title": MappingProxyType({UiLocale.RU: "Калибровка текущего Live · явная привязка", UiLocale.EN: "Current Live calibration · explicit binding"}),
+        "live_calibration.title": MappingProxyType({UiLocale.RU: "Калибровка текущего приёма · явная привязка", UiLocale.EN: "Current Live calibration · explicit binding"}),
         "live_calibration.port": MappingProxyType({UiLocale.RU: "RF-порт / путь", UiLocale.EN: "RF port / path"}),
         "live_calibration.chain": MappingProxyType({UiLocale.RU: "Внешний RF-тракт", UiLocale.EN: "External RF frontend"}),
         "live_calibration.plane": MappingProxyType({UiLocale.RU: "Опорная плоскость", UiLocale.EN: "Reference plane"}),
         "live_calibration.frontend_help": MappingProxyType({UiLocale.RU: "Явно объявленная оператором RF-цепь. Цифровой RX не определяет разъём или опорную плоскость. Изменение требует новой привязки.", UiLocale.EN: "Operator-declared RF chain. Digital RX does not determine a connector or reference plane. Edits require explicit rebind."}),
-        "live_calibration.bind": MappingProxyType({UiLocale.RU: "Привязать текущий Live", UiLocale.EN: "Bind current Live"}),
+        "live_calibration.bind": MappingProxyType({UiLocale.RU: "Привязать текущий приём", UiLocale.EN: "Bind current Live"}),
         "live_calibration.preview": MappingProxyType({UiLocale.RU: "Проверить выбранный профиль", UiLocale.EN: "Preview inspected profile"}),
         "live_calibration.select": MappingProxyType({UiLocale.RU: "Выбрать для этого RX", UiLocale.EN: "Select for this RX"}),
         "live_calibration.clear": MappingProxyType({UiLocale.RU: "Снять выбор этого RX", UiLocale.EN: "Clear this RX selection"}),
-        "live_calibration.boundary": MappingProxyType({UiLocale.RU: "Просмотр и Refresh не активируют профиль. Только работающий обычный одиночный Live RTBW; Stop/no-frame, pane, paired и Sweep пока недоступны. Без запуска или изменения RF. Коррекция CURRENT показана отдельно в Analyzer; исходные dBFS, Waterfall, holds и записи не меняются. RF-точность не подтверждена.", UiLocale.EN: "Inspection and Refresh never activate a profile. Running ordinary single Live RTBW only; stopped/no-frame, pane, paired and Sweep are not yet available. No Start or RF change. Corrected CURRENT appears separately in Analyzer; raw dBFS, Waterfall, holds and recordings stay unchanged. RF accuracy is unverified."}),
+        "live_calibration.boundary": MappingProxyType({UiLocale.RU: "Просмотр и обновление не активируют профиль. Только работающий обычный одиночный приём RTBW; остановленный приём, отсутствие кадра, отдельные окна, парный приём и развёртка пока недоступны. Без запуска или изменения RF. Коррекция CURRENT показана отдельно в анализаторе; исходные dBFS, водопад, удерживаемые трассы и записи не меняются. RF-точность не подтверждена.", UiLocale.EN: "Inspection and Refresh never activate a profile. Running ordinary single Live RTBW only; stopped/no-frame, pane, paired and Sweep are not yet available. No Start or RF change. Corrected CURRENT appears separately in Analyzer; raw dBFS, Waterfall, holds and recordings stay unchanged. RF accuracy is unverified."}),
         "live_calibration.bound": MappingProxyType({UiLocale.RU: "Последняя явная привязка: цифровой {rx} · источник {source} · RF-порт {port} · тракт {chain} · плоскость {plane}", UiLocale.EN: "Last explicit binding: digital {rx} · source {source} · RF port {port} · frontend {chain} · plane {plane}"}),
         "live_calibration.preview_detail": MappingProxyType({UiLocale.RU: "Инертная проверка {profile} v{version}: {result}", UiLocale.EN: "Inert preview {profile} v{version}: {result}"}),
         "live_calibration.refused": MappingProxyType({UiLocale.RU: "Отклонено; исходный спектр не меняется. Диагностика: {detail}", UiLocale.EN: "Refused; raw spectrum unchanged. Diagnostic: {detail}"}),
-        "live_calibration.ack.select": MappingProxyType({UiLocale.RU: "Команда Select подтверждена. Это ещё не подтверждение отображённого скорректированного кадра.", UiLocale.EN: "Select acknowledged. This is not yet evidence of a displayed corrected frame."}),
-        "live_calibration.ack.clear": MappingProxyType({UiLocale.RU: "Команда Clear подтверждена (результат None). Исходные единицы сохранены.", UiLocale.EN: "Clear acknowledged (None result). Raw units are preserved."}),
+        "live_calibration.ack.select": MappingProxyType({UiLocale.RU: "Команда выбора подтверждена. Это ещё не подтверждение отображённого скорректированного кадра.", UiLocale.EN: "Select acknowledged. This is not yet evidence of a displayed corrected frame."}),
+        "live_calibration.ack.clear": MappingProxyType({UiLocale.RU: "Команда снятия выбора подтверждена (результат None). Исходные единицы сохранены.", UiLocale.EN: "Clear acknowledged (None result). Raw units are preserved."}),
         "live_calibration.phase.unavailable": MappingProxyType({UiLocale.RU: "Калибровка недоступна: нет подтверждённого хранилища этого графа.", UiLocale.EN: "Calibration unavailable: no admitted store in this graph."}),
-        "live_calibration.phase.unbound": MappingProxyType({UiLocale.RU: "Не привязано / привязка устарела. Укажите RF-тракт и явно привяжите текущий Live.", UiLocale.EN: "Unbound / stale binding. Declare frontend and explicitly bind current Live."}),
-        "live_calibration.phase.bound": MappingProxyType({UiLocale.RU: "Привязано к текущему Live; отдельный CURRENT обновляется с частотой интерфейса.", UiLocale.EN: "Bound to current Live; separate CURRENT updates at presentation cadence."}),
-        "live_calibration.phase.bind": MappingProxyType({UiLocale.RU: "Привязка: ожидание существующего Live worker…", UiLocale.EN: "Binding: waiting for existing Live worker…"}),
-        "live_calibration.phase.preview": MappingProxyType({UiLocale.RU: "Инертная проверка на Live worker…", UiLocale.EN: "Inert preview on Live worker…"}),
-        "live_calibration.phase.select": MappingProxyType({UiLocale.RU: "Явный Select на Live worker…", UiLocale.EN: "Explicit Select on Live worker…"}),
-        "live_calibration.phase.clear": MappingProxyType({UiLocale.RU: "Явный Clear на Live worker…", UiLocale.EN: "Explicit Clear on Live worker…"}),
-        "live_calibration.phase.refused": MappingProxyType({UiLocale.RU: "Коррекция отклонена; исходный Live сохранён.", UiLocale.EN: "Correction refused; raw Live preserved."}),
-        "live_calibration.current": MappingProxyType({UiLocale.RU: "Отдельный CURRENT · коррекция Live", UiLocale.EN: "Separate CURRENT · Live correction"}),
+        "live_calibration.phase.unbound": MappingProxyType({UiLocale.RU: "Не привязано / привязка устарела. Укажите RF-тракт и явно привяжите текущий приём.", UiLocale.EN: "Unbound / stale binding. Declare frontend and explicitly bind current Live."}),
+        "live_calibration.phase.bound": MappingProxyType({UiLocale.RU: "Привязано к текущему приёму; отдельный CURRENT обновляется с частотой интерфейса.", UiLocale.EN: "Bound to current Live; separate CURRENT updates at presentation cadence."}),
+        "live_calibration.phase.bind": MappingProxyType({UiLocale.RU: "Привязка: ожидание существующего рабочего потока приёма…", UiLocale.EN: "Binding: waiting for existing Live worker…"}),
+        "live_calibration.phase.preview": MappingProxyType({UiLocale.RU: "Инертная проверка в рабочем потоке приёма…", UiLocale.EN: "Inert preview on Live worker…"}),
+        "live_calibration.phase.select": MappingProxyType({UiLocale.RU: "Явный выбор в рабочем потоке приёма…", UiLocale.EN: "Explicit Select on Live worker…"}),
+        "live_calibration.phase.clear": MappingProxyType({UiLocale.RU: "Явное снятие выбора в рабочем потоке приёма…", UiLocale.EN: "Explicit Clear on Live worker…"}),
+        "live_calibration.phase.refused": MappingProxyType({UiLocale.RU: "Коррекция отклонена; исходный приём сохранён.", UiLocale.EN: "Correction refused; raw Live preserved."}),
+        "live_calibration.current": MappingProxyType({UiLocale.RU: "Отдельный CURRENT · коррекция текущего приёма", UiLocale.EN: "Separate CURRENT · Live correction"}),
         "live_calibration.status.calibrated": MappingProxyType({UiLocale.RU: "опорные точки", UiLocale.EN: "reference points"}),
         "live_calibration.status.interpolated": MappingProxyType({UiLocale.RU: "интерполяция", UiLocale.EN: "interpolated"}),
         "live_calibration.status.extrapolated": MappingProxyType({UiLocale.RU: "экстраполяция", UiLocale.EN: "extrapolated"}),
         "live_calibration.status.uncalibrated": MappingProxyType({UiLocale.RU: "исходные единицы · без профиля / вне покрытия", UiLocale.EN: "raw units · no profile / outside coverage"}),
         "live_calibration.status.invalid_for_settings": MappingProxyType({UiLocale.RU: "исходные единицы · несовместимый профиль", UiLocale.EN: "raw units · incompatible profile"}),
         "live_calibration.current_pending": MappingProxyType({UiLocale.RU: "Отдельный CURRENT: нет валидного отображённого результата. Исходный спектр выше не изменён.", UiLocale.EN: "Separate CURRENT: no valid displayed result. Raw spectrum above is unchanged."}),
-        "live_calibration.current_detail": MappingProxyType({UiLocale.RU: "Отдельный CURRENT · профиль {profile} v{version} · {status} · {unit} · fingerprint {fingerprint} · RF-точность не подтверждена", UiLocale.EN: "Separate CURRENT · profile {profile} v{version} · {status} · {unit} · fingerprint {fingerprint} · RF accuracy unverified"}),
+        "live_calibration.current_detail": MappingProxyType({UiLocale.RU: "Отдельный CURRENT · профиль {profile} v{version} · {status} · {unit} · отпечаток {fingerprint} · RF-точность не подтверждена", UiLocale.EN: "Separate CURRENT · profile {profile} v{version} · {status} · {unit} · fingerprint {fingerprint} · RF accuracy unverified"}),
         "analyzer.rf.shift": MappingProxyType({UiLocale.RU: "Сдвиг RF", UiLocale.EN: "RF shift"}),
         "analyzer.rf.disarm": MappingProxyType({UiLocale.RU: "Снять RF-подготовку", UiLocale.EN: "Disarm RF plan"}),
         "analyzer.rf.disarm_help": MappingProxyType({UiLocale.RU: "Явный «Стоп»: снять подготовку нового запуска без запуска RX. Применённые настройки не откатываются автоматически.", UiLocale.EN: "Explicit Stop: disarm the next Start without starting RX. Applied settings are not automatically rolled back."}),
@@ -929,7 +929,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         ),
         "calibration.applicability.boundary": MappingProxyType(
             {
-                UiLocale.RU: "Просматриваемый профиль не помечается активным. Явный Select/Clear требует привязки работающего одиночного Live; фактически отображённая коррекция и её единицы показаны в отдельном CURRENT Analyzer. Температура/прошивка, импорт/завершение/переопределение недоступны. RF-точность не подтверждена.",
+                UiLocale.RU: "Просматриваемый профиль не помечается активным. Явный выбор или снятие выбора требует привязки работающего одиночного приёма; фактически отображённая коррекция и её единицы показаны в отдельном CURRENT анализатора. Температура/прошивка, импорт/завершение/переопределение недоступны. RF-точность не подтверждена.",
                 UiLocale.EN: "The inspected profile is not marked active. Explicit Select/Clear requires a running single Live binding; actually displayed correction and its units appear in separate Analyzer CURRENT. Temperature/firmware and import/finalize/override are unavailable. RF accuracy is unverified.",
             }
         ),
@@ -949,13 +949,13 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Ошибка калибровки", UiLocale.EN: "Calibration error"}
         ),
         "calibration.header.detail": MappingProxyType(
-            {UiLocale.RU: "Просмотр профиля и применимости инертен. Явные действия Live требуют отдельной привязки; подтверждённый CURRENT показан в Analyzer.", UiLocale.EN: "Profile and applicability inspection is inert. Explicit Live actions require a separate binding; accepted CURRENT appears in Analyzer."}
+            {UiLocale.RU: "Просмотр профиля и применимости инертен. Явные действия для текущего приёма требуют отдельной привязки; подтверждённый CURRENT показан в анализаторе.", UiLocale.EN: "Profile and applicability inspection is inert. Explicit Live actions require a separate binding; accepted CURRENT appears in Analyzer."}
         ),
         "calibration.header.title": MappingProxyType(
             {UiLocale.RU: "Калибровочные профили", UiLocale.EN: "Calibration profiles"}
         ),
         "calibration.inspector.boundary": MappingProxyType(
-            {UiLocale.RU: "Просмотр/Refresh не активируют профиль. Select/Clear относится только к явно привязанному Live RX; подтверждение команды не доказывает отображение. Профиль и единицы валидного отображённого CURRENT показаны отдельно в Analyzer; RF-точность не подтверждена.", UiLocale.EN: "Inspection/Refresh never activate a profile. Select/Clear applies only to the explicitly bound Live RX; command acknowledgement is not display evidence. Valid displayed CURRENT profile and units appear separately in Analyzer; RF accuracy is unverified."}
+            {UiLocale.RU: "Просмотр и обновление не активируют профиль. Выбор и снятие выбора относятся только к явно привязанному текущему RX; подтверждение команды не доказывает отображение. Профиль и единицы валидного отображённого CURRENT показаны отдельно в анализаторе; RF-точность не подтверждена.", UiLocale.EN: "Inspection/Refresh never activate a profile. Select/Clear applies only to the explicitly bound Live RX; command acknowledgement is not display evidence. Valid displayed CURRENT profile and units appear separately in Analyzer; RF accuracy is unverified."}
         ),
         "calibration.inspector.context": MappingProxyType(
             {UiLocale.RU: "Контекст", UiLocale.EN: "Context"}
@@ -1014,7 +1014,7 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
             {UiLocale.RU: "Выберите профиль", UiLocale.EN: "Select a profile"}
         ),
         "calibration.state.selected": MappingProxyType(
-            {UiLocale.RU: "Профиль просматривается; это не активация Live", UiLocale.EN: "Profile inspected; this is not Live activation"}
+            {UiLocale.RU: "Профиль просматривается; это не активация приёма", UiLocale.EN: "Profile inspected; this is not Live activation"}
         ),
         "calibration.status.mismatch": MappingProxyType(
             {UiLocale.RU: "Несовпадение", UiLocale.EN: "Mismatch"}
