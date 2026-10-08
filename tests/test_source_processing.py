@@ -178,7 +178,7 @@ class SourceProcessingTests(unittest.TestCase):
         self.assertTrue(np.shares_memory(converted.values, frame.values))
         self.assertEqual(converted.native_quality_flags, frame.quality_flags)
 
-    def test_processed_density_and_raw_calibration_remain_explicitly_unqualified(self):
+    def test_processed_density_without_contract_and_raw_calibration_refuse(self):
         from sdr_monitor.domain.calibration import CalibrationProfileError
         from sdr_monitor.domain.receiver_topology import ReceiverChainSelection, ReceiverEndpoint
         from sdr_monitor.services.hackrf_analyzer import HackrfAnalyzerService
@@ -188,7 +188,8 @@ class SourceProcessingTests(unittest.TestCase):
         native = SimpleNamespace(hackrf_processing_factory_contract=lambda: factory_contract("hackrf"))
         service = HackrfAnalyzerService(native, object(), lambda: None, object(), object())
         with patch("sdr_monitor.services.hackrf_analyzer.owner_journal_capacity", return_value=4096), \
-                self.assertRaisesRegex(LiveAdmissionRejected, "density context"):
+                self.assertRaisesRegex(LiveAdmissionRejected,
+                    "processed density requires exact metadata and SAME layer journal contracts"):
             service._admit(hf_request(processing_policy=BLOCK, persistence_enabled=True,
                 persistence_mode="rolling-exact"))
         frame, current, provenance, ready, journal = composition()

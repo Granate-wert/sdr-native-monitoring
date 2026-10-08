@@ -25,6 +25,10 @@ LAYER_BATCH_CAPACITY = 32
 LAYER_HOST_EVENT_CAPACITY = 32
 HOST_LAYER_RESERVATION = 262_144  # carved out of existing 1 MiB per-chain host diagnostics
 LAYER_RECEIPT_RESERVATION = 4096
+DENSITY_CONTEXT_CACHE_RESERVATION = 4096
+# Includes the original readiness receipt and its density-specific HOST context.
+# Carved out of HOST_LAYER_RESERVATION; no larger host/native budget.
+DENSITY_RECEIPT_WINDOW_RESERVATION = 8192
 LAYER_RECEIPT_WINDOW = 16  # current/converting + bounded presentation references; external retention excluded
 
 
@@ -69,8 +73,9 @@ class NativeLayerJournal:
             raise ValueError("layer owner variant must be explicit")
         self._native, self._capacity = native, capacity
         self._density = density
-        self._receipt_budget = (LAYER_RECEIPT_RESERVATION if density else
+        self._receipt_budget = (DENSITY_RECEIPT_WINDOW_RESERVATION if density else
                                LAYER_RECEIPT_RESERVATION + 256 * sweep_segments)
+        self._processing_cache_budget = DENSITY_CONTEXT_CACHE_RESERVATION if density else 0
         self._host_budget = HOST_LAYER_RESERVATION if density else sweep_layer_host_reservation(sweep_segments)
         self._lock = threading.RLock()
         self._snapshot = LayerJournalSnapshot()
@@ -121,12 +126,14 @@ class NativeLayerJournal:
         if not isinstance(scope, OwnerJournalScope):
             raise ValueError("layer owner scope must be immutable")
         if (_scalar_bytes(LayerJournalSnapshot(scope=scope)) + LAYER_BATCH_CAPACITY * 1024
-                + LAYER_RECEIPT_WINDOW * LAYER_RECEIPT_RESERVATION > HOST_LAYER_RESERVATION):
+                + LAYER_RECEIPT_WINDOW * DENSITY_RECEIPT_WINDOW_RESERVATION
+                + DENSITY_CONTEXT_CACHE_RESERVATION > HOST_LAYER_RESERVATION):
             raise ValueError("layer owner scope exceeds existing host reservation")
 
     def _preflight_scope(self, scope: OwnerJournalScope | SweepLayerScope) -> None:
         if (_scalar_bytes(LayerJournalSnapshot(scope=scope)) + LAYER_BATCH_CAPACITY * 1024
-                + LAYER_RECEIPT_WINDOW * self._receipt_budget > self._host_budget):
+                + LAYER_RECEIPT_WINDOW * self._receipt_budget
+                + self._processing_cache_budget > self._host_budget):
             raise ValueError("layer owner scope exceeds admitted host reservation")
 
     def _event(self, raw: Any) -> LayerCreationEvent:
@@ -199,7 +206,8 @@ class NativeLayerJournal:
                 # Old/new snapshot + intermediate tuples + one raw native batch.
                 if (_scalar_bytes(old) + _scalar_bytes(candidate) + _scalar_bytes(retained)
                         + LAYER_BATCH_CAPACITY * 1024
-                        + LAYER_RECEIPT_WINDOW * self._receipt_budget > self._host_budget):
+                        + LAYER_RECEIPT_WINDOW * self._receipt_budget
+                        + self._processing_cache_budget > self._host_budget):
                     raise ValueError("layer retention exceeds existing host scalar reservation")
                 self._snapshot, self._last_event, self._missing = candidate, last, missing
             except Exception:  # noqa: BLE001 - diagnostic failure cannot change RF/acquisition.

@@ -19,6 +19,7 @@ from ..domain.processing_policy import (
 )
 from ..domain.receiver_topology import ReceiverChain, ReceiverChainSelection
 from ..domain.spectrum_provenance import SpectrumProvenance
+from .density_processing import admit_density_processing
 
 _AD_WINDOWS = {"rectangular": "RECTANGULAR", "hann": "HANN", "hanning": "HANN",
     "blackman-harris": "BLACKMAN_HARRIS_4TERM", "blackmanharris": "BLACKMAN_HARRIS_4TERM",
@@ -63,6 +64,7 @@ def admit_ad_processing(native: Any, configuration: LiveConfiguration) -> bool:
                        ("DetectorType", ad_detector_enum_name(configuration.detector, strict=True))):
         if getattr(getattr(native, kind, None), name, None) is None:
             raise LiveAdmissionRejected("AD processed DSP enum unavailable; silent substitution refused")
+    admit_density_processing(native, policy, enabled=configuration.persistence_enabled)
     return policy.dc_mode is HostDcMode.BLOCK_MEAN
 
 

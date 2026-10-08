@@ -80,6 +80,7 @@ from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_pre
 from ..domain.layer_journal import LayerJournalSnapshot
 from ..domain.layer_ready import DensityLayerIdentity
 from .native_layer_journal import HOST_LAYER_RESERVATION, NativeLayerJournal, layer_journal_capacity
+from .density_processing import DensityProcessingJoin
 from .source_capability_admission import (
     admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
 )
@@ -216,6 +217,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         self._processing_policy = SdrProcessingPolicyV1()
         self._processing_revision = 1
         self._processing_join = LiveProcessingJoin()
+        self._density_processing_join = DensityProcessingJoin()
         self._ready_bridge = NativeReadyBridge(native_module)
         self._owner_journals = (NativeOwnerJournal(native_module), NativeOwnerJournal(native_module))
         self._density_journals = (NativeLayerJournal(native_module), NativeLayerJournal(native_module))
@@ -703,6 +705,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 self._processing_revision += 1
                 self._processing_policy = requested.processing_policy
                 self._processing_join.clear()
+                self._density_processing_join.clear()
             applied = snapshot.applied.applied
             log_event(
                 _LOGGER,
@@ -2477,7 +2480,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         except ValueError:
             pass  # Valid legacy density may not have a qualified creation identity.
         journal = self._density_journals[1 if receiver_id == "RX2" else 0]
-        return replace(density, layer_ready=journal.receipt(original_ref, identity, self._ready_bridge))
+        density = replace(density, layer_ready=journal.receipt(original_ref, identity, self._ready_bridge))
+        paired = self._paired_request
+        processing = self._density_processing_join.receipt("ad936x", value, density, publication_context,
+            journal.current(), revision=self._processing_revision,
+            paired_sources=(paired.primary_source_id, paired.secondary_source_id) if paired is not None else None)
+        return replace(density, processing_context=processing)
 
     def _publish_frame(self, frame: Any, *, expected_engine: Any = None) -> bool:
         with self._lock:

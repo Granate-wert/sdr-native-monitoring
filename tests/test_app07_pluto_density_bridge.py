@@ -119,6 +119,7 @@ from sdr_monitor.domain import BackendKind, LiveConfiguration
 from sdr_monitor.domain.paired_live import PairedLiveRequest
 from sdr_monitor.domain.layer_journal import LayerJournalState
 from sdr_monitor.domain.analytical_ready import ReadyClockMapping
+from sdr_monitor.domain.processing_policy import DC_REMOVED_MASK, HostDcMode, SdrProcessingPolicyV1
 from sdr_monitor.services.native_live import NativeLiveSessionService
 
 path, case = Path(sys.argv[1]).resolve(strict=True), sys.argv[2]
@@ -184,6 +185,9 @@ with native_test_dll_directory(str(path)):
             persistence_power_bins=16)
         if case == "disabled":
             profile = replace(profile, persistence_enabled=False, persistence_mode="disabled")
+        processed = case.endswith("processed")
+        if processed:
+            profile = replace(profile, processing_policy=SdrProcessingPolicyV1(HostDcMode.BLOCK_MEAN))
         selected = app.apply_configuration(profile)
         assert selected.error is None and selected.applied is not None
         paired = case.startswith("paired")
@@ -255,6 +259,16 @@ with native_test_dll_directory(str(path)):
                 assert ref.identity.native_accumulation_sequence == frame.native_accumulation_sequence
                 assert ref.producer_instance_id == journal.counters.producer_instance_id
                 assert ref.ready_native_ns in [e.ready_native_ns for e in journal.events]
+                if processed:
+                    receipt = frame.processing_context
+                    assert receipt is not None and receipt.layer_ready is ref
+                    assert receipt.family == "ad936x"
+                    assert receipt.layer_ready.producer_instance_id != snap.spectrum.detector_ready.producer_instance_id
+                    assert receipt.numerical_provenance.processing_recipe.dc_mode is HostDcMode.BLOCK_MEAN
+                    assert frame.native_quality_flags & DC_REMOVED_MASK
+                    if paired:
+                        assert receipt.resource_id == snapshots[1 - index].persistence.processing_context.resource_id
+                        assert receipt.layer_ready.producer_instance_id != snapshots[1 - index].persistence.layer_ready.producer_instance_id
                 if previous is not None:
                     assert ref.owner_run_id != previous[index].scope.owner_run_id
                     assert ref.producer_instance_id != previous[index].counters.producer_instance_id
@@ -276,6 +290,14 @@ with native_test_dll_directory(str(path)):
                 for index, snap in enumerate(snapshots):
                     receiver = ("RX1", "RX2")[index]
                     raw = controls[-1].raw[receiver]
+                    if processed:
+                        try:
+                            service._convert_persistence(raw, snap, receiver_id=receiver)
+                        except ValueError as error:
+                            assert "ACTIVE SAME" in str(error), str(error)
+                        else:
+                            raise AssertionError("FINAL density journal authorized a new processed publication")
+                        continue
                     converted = service._convert_persistence(raw, snap, receiver_id=receiver)
                     assert converted.timestamp_ns == raw.timestamp_ns
                     assert converted.native_quality_flags == int(raw.quality_flags)
@@ -336,6 +358,12 @@ class CompiledPlutoDensityServiceTests(unittest.TestCase):
 
     def test_actual_paired_owner_typed_distinct_creation_streams(self):
         self.run_case("paired")
+
+    def test_processed_single_density_original_active_owner_and_terminal_refusal(self):
+        self.run_case("processed")
+
+    def test_processed_paired_density_independent_producers_shared_resource_rearm(self):
+        self.run_case("paired-processed")
 
     def test_disabled_density_has_no_drain_or_fabricated_counter(self):
         self.run_case("disabled")

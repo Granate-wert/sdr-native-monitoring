@@ -440,8 +440,10 @@ with native_test_dll_directory(str(path)):
         try:
             binding = replace(fixture.provider.value.binding_for_source("source-hackrf"), source_id=source)
             choice = AnalyzerSourceChoice(binding, fixture.provider.runtime, "mock", "mock")
-            request = HackrfLiveRequest(100e6, 20e6, 15_000_000, 16, 20,
-                fft_size=256, hop_size=256, source_id=source, configuration_generation=1,
+            # Exact historical test-hook defaults: 10MS/s,8MHz,rectangular.
+            # Do not label its actual native metadata as a different profile.
+            request = HackrfLiveRequest(100e6, 10e6, 8_000_000, 16, 20,
+                fft_size=256, hop_size=256, window="rectangular", source_id=source, configuration_generation=1,
                 persistence_enabled=True, persistence_mode="exponential-decay", persistence_power_bins=16)
             context = LiveSnapshot(1, 0, LiveSessionState.RUNNING, hackrf_request=request,
                 source_choice=choice, selection_revision=1, session_id=session,

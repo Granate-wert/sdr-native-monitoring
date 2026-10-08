@@ -42,6 +42,7 @@ from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalSc
 from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
 from .source_capability_admission import admit_source_request
 from .source_processing import SourceProcessingJoin, admit_source_processing
+from .density_processing import DensityProcessingJoin, admit_density_processing
 
 
 class AnalyzerExclusionPort(Protocol):
@@ -58,6 +59,7 @@ class HackrfAnalyzerService:
                  coordinator: HackrfProductLiveCoordinator) -> None:
         self._native, self._exclusion, self._inventory = native, exclusion, inventory
         self._processing_join = SourceProcessingJoin()
+        self._density_processing_join = DensityProcessingJoin()
         self._ready_bridge = NativeReadyBridge(native)
         self._layer_journal = NativeLayerJournal(native, layer_journal_capacity(native, hackrf=True))
         self._journal = NativeOwnerJournal(native, owner_journal_capacity(native),
@@ -135,8 +137,8 @@ class HackrfAnalyzerService:
         if admit_source_processing(self._native, "hackrf", request.processing_policy, backend=request.backend):
             if not owner_journal_capacity(self._native):
                 raise LiveAdmissionRejected("HackRF processing requires SAME native owner journal")
-            if request.persistence_enabled:
-                raise LiveAdmissionRejected("processed HackRF density context is not yet qualified")
+            admit_density_processing(self._native, request.processing_policy,
+                enabled=request.persistence_enabled, hackrf=True)
         bridge = getattr(self._native, "HACKRF_UI_BRIDGE_CONTRACT_VERSION", None)
         control_type = getattr(self._native, "HackrfRuntimeDspControl", None)
         if (type(bridge) is not int or bridge != 1
@@ -230,6 +232,7 @@ class HackrfAnalyzerService:
                     return self._error("HackRF identity preflight refused; explicit Stop required")
                 self._ready_bridge.begin()
                 self._processing_join.clear()
+                self._density_processing_join.clear()
                 scope = OwnerJournalScope(self._ready_bridge.clock_scope_id,
                     self._ready_bridge.host_process_id, uuid4().hex, str(request.source_id), None,
                     str(self._snapshot.session_id), request.configuration_generation, self._epoch)
@@ -362,6 +365,12 @@ class HackrfAnalyzerService:
             # Its pre-existing profile/quality guards below remain authoritative.
             pass
         density = replace(density, layer_ready=self._layer_journal.receipt(original_ref, identity, self._ready_bridge))
+        join = getattr(self, "_density_processing_join", None)
+        if join is not None:
+            density = replace(density, processing_context=join.receipt("hackrf", value, density, context,
+                self._layer_journal.current(), revision=context.hackrf_request.configuration_generation))
+        elif not context.hackrf_request.processing_policy.is_off:
+            raise ValueError("processed density converter lacks the admitted owner join")
         # Validate before caching, including disabled/profile/grid/source guards.
         replace(context, persistence=density)
         return density

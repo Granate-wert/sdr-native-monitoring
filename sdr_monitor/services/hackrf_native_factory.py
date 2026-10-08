@@ -15,6 +15,7 @@ from typing import cast
 
 from .hackrf_capability_adapter import HACKRF_LIBHACKRF_ADAPTER_ID
 from .source_processing import admit_source_processing
+from .density_processing import admit_density_processing
 from .native_owner_journal import EVENT_CAPACITY, owner_journal_capacity
 from .native_layer_journal import LAYER_EVENT_CAPACITY, layer_journal_capacity
 from .hackrf_activation_preflight import (
@@ -116,6 +117,8 @@ class HackrfNativeRuntimeFactory:
             request = plan.request
             extras: dict[str, object] = {}
             if admit_source_processing(native_module, "hackrf", request.processing_policy, backend=request.backend):
+                admit_density_processing(native_module, request.processing_policy,
+                    enabled=request.persistence_enabled, hackrf=True)
                 extras["dc_removal_block_mean"] = True
             if self._analytical_event_capacity:
                 if owner_journal_capacity(native_module) != self._analytical_event_capacity:

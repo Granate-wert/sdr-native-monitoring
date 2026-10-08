@@ -34,6 +34,7 @@ from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .processing_policy import AppliedProcessingContextV1, SdrProcessingPolicyV1
 from .source_processing import AppliedSourceProcessingContextV2
+from .density_processing import DensityProcessingContextV1
 from .presentation_omission import PresentationOmission
 from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilityBinding, DeviceCapabilitySnapshot, DeviceFamily
 from .ad936x_route_capabilities import Ad936xRouteCapabilities
@@ -705,8 +706,16 @@ class LivePersistenceFrame:
     layer_ready: LayerReadyReceipt | None = None
     # Actual native contributing FFT only. Does not grant policy/owner admission.
     numerical_provenance: SpectrumProvenance | None = None
+    processing_context: DensityProcessingContextV1 | None = None
 
     def __post_init__(self) -> None:
+        if self.processing_context is not None:
+            context = self.processing_context
+            if (type(context) is not DensityProcessingContextV1
+                    or context.layer_ready != self.layer_ready
+                    or context.numerical_provenance != self.numerical_provenance
+                    or context.native_quality_flags != self.native_quality_flags):
+                raise ValueError("density processing context differs from original readiness/numerical frame")
         if self.numerical_provenance is not None:
             if type(self.numerical_provenance) is not SpectrumProvenance:
                 raise ValueError("typed native density numerical provenance required or unknown")
@@ -873,6 +882,16 @@ class LiveSnapshot:
             if self.persistence is not None:
                 density = self.persistence
                 provenance = density.numerical_provenance
+                if not request.processing_policy.is_off and (
+                        density.processing_context is None or density.processing_context.family != "hackrf"
+                        or density.processing_context.resource_id != str(self.source_choice.device_id)
+                        or density.processing_context.center.value_hz != request.center_frequency_hz
+                        or density.processing_context.sample_rate.value_hz != request.sample_rate_hz
+                        or density.processing_context.analog_bandwidth.value_hz != request.baseband_filter_hz
+                        or density.processing_context.fft_size != request.fft_size
+                        or density.processing_context.hop_size != request.hop_size
+                        or density.processing_context.processing_revision != request.configuration_generation):
+                    raise ValueError("processed HackRF density requires its exact density owner context")
                 if provenance is not None and (
                         provenance.window != request.window or provenance.detector != request.detector
                         or provenance.averaging_frames != request.averaging_frames
@@ -904,6 +923,23 @@ class LiveSnapshot:
                     raise ValueError("HackRF persistence grid differs from its source spectrum")
         if self.persistence is not None and self.applied is not None:
             provenance = self.persistence.numerical_provenance
+            if not self.applied.applied.processing_policy.is_off:
+                context = self.persistence.processing_context
+                actual = self.applied.applied
+                topology = self.device.capabilities.receiver_topology if self.device is not None else None
+                if (context is None or context.family != "ad936x" or topology is None
+                        or context.resource_id != topology.physical_stream_resource_id
+                        or context.center.value_hz != actual.center_hz
+                        or context.sample_rate.value_hz != actual.sample_rate_hz
+                        or context.analog_bandwidth.value_hz != actual.analog_bandwidth_hz
+                        or context.fft_size != actual.fft_size
+                        or context.hop_size != max(1, int(round(actual.fft_size * (1.0 - actual.overlap_ratio))))
+                        or self.persistence.source_id != self.active_source_id
+                        or self.persistence.config_generation != self.active_config_generation
+                        or self.persistence.acquisition_epoch != self.acquisition_epoch
+                        or self.persistence.accumulation_id != self.session_id
+                        or self.persistence.receiver_id != self.receiver_id):
+                    raise ValueError("processed AD density requires its exact density owner context")
             if (provenance is not None and provenance.processing_recipe is not None
                     and provenance.processing_recipe.policy != self.applied.applied.processing_policy):
                 raise ValueError("AD density numerical recipe differs from admitted processing policy")

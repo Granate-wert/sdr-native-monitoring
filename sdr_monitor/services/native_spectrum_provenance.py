@@ -38,7 +38,10 @@ class _DensityMetadataView:
 
 def native_persistence_provenance(value: Any, *, native_quality_flags: int) -> SpectrumProvenance | None:
     """Contributing FFT observation ONLY, not authenticated density owner authority."""
-    metadata = getattr(value, "processing_metadata", None)
+    try:
+        metadata = getattr(value, "processing_metadata", None)
+    except Exception:  # noqa: BLE001 - optional legacy observation stays UNKNOWN.
+        return None
     if metadata is None:
         return None  # Legacy/unsupported absence stays UNKNOWN, not inferred OFF.
     result = native_spectrum_provenance(_DensityMetadataView(metadata, native_quality_flags))

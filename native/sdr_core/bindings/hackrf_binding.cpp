@@ -73,7 +73,17 @@ private:
 };
 
 [[nodiscard]] std::unique_ptr<sdr_hackrf::HackrfRuntimeDspSession>
-make_test_hackrf_runtime_dsp_control(const std::uint32_t blocks, const std::uint32_t layer_event_capacity) {
+make_test_hackrf_runtime_dsp_control(
+    const std::uint32_t blocks,
+    const std::uint32_t layer_event_capacity,
+    const bool dc_removal_block_mean,
+    const std::uint32_t analytical_event_capacity,
+    const std::uint64_t configuration_generation,
+    const std::string& source_id,
+    const double center_frequency_hz,
+    const double sample_rate_hz,
+    const std::uint32_t baseband_filter_hz
+) {
     if (blocks == 0U || blocks > r11l_max_fixture_blocks) {
         throw ConfigurationError("HackRF control test fixture blocks must be 1..32");
     }
@@ -81,7 +91,10 @@ make_test_hackrf_runtime_dsp_control(const std::uint32_t blocks, const std::uint
     sdr_hackrf::HackrfRuntimeDspSessionConfig config;
     config.rx.slot_count = blocks;
     config.rx.ready_capacity = blocks;
-    config.rx.config_generation = 1U;
+    config.rx.config_generation = configuration_generation;
+    config.rx.center_frequency_hz = center_frequency_hz;
+    config.rx.sample_rate_hz = sample_rate_hz;
+    config.rx.baseband_filter_hz = baseband_filter_hz;
     config.processing.dsp.dsp.fft_size = 256U;
     config.processing.dsp.dsp.hop_size = 256U;
     config.processing.dsp.dsp.window = WindowType::Rectangular;
@@ -89,12 +102,14 @@ make_test_hackrf_runtime_dsp_control(const std::uint32_t blocks, const std::uint
     config.processing.dsp.dsp.unit = SpectrumUnit::DbfsBin;
     config.processing.dsp.dsp.precision_mode = PrecisionMode::ReferenceF64;
     config.processing.dsp.source.source_type = SourceType::LiveIq;
-    config.processing.dsp.source.source_id = "hackrf-r11l-test-fixture";
+    config.processing.dsp.source.source_id = source_id;
     config.processing.dsp.source.display_name = "HackRF R11-L test fixture";
     config.processing.dsp.source.backend_id = "native.libhackrf.rx.v1";
     config.processing.dsp.dsp_output_capacity = blocks;
     config.processing.dsp.presentation_capacity = blocks;
     config.processing.dsp.layer_event_capacity = layer_event_capacity;
+    config.processing.dsp.analytical_event_capacity = analytical_event_capacity;
+    config.processing.dsp.dc_removal = dc_removal_block_mean ? DcRemovalMode::BlockMean : DcRemovalMode::Off;
     if (layer_event_capacity) {
         config.processing.dsp.persistence.enabled = true;
         config.processing.dsp.persistence.mode = PersistenceMode::ExponentialDecay;
@@ -303,7 +318,14 @@ void bind_hackrf(py::module_& module) {
     module.def(
         "_make_test_hackrf_runtime_dsp_control",
         &make_test_hackrf_runtime_dsp_control,
-        py::arg("blocks") = 4U, py::arg("layer_event_capacity") = 0U
+        py::arg("blocks") = 4U, py::arg("layer_event_capacity") = 0U,
+        py::kw_only(), py::arg("dc_removal_block_mean").noconvert() = false,
+        py::arg("analytical_event_capacity") = 0U,
+        py::arg("configuration_generation") = 1U,
+        py::arg("source_id") = "hackrf-r11l-test-fixture",
+        py::arg("center_frequency_hz") = 100'000'000.0,
+        py::arg("sample_rate_hz") = 10'000'000.0,
+        py::arg("baseband_filter_hz") = 8'000'000U
     );
 #endif
 
