@@ -73,7 +73,7 @@ from ..domain.device_capabilities import (
     AdapterRuntimeAvailability, AdapterRuntimeSnapshot, DeviceCapabilityBinding,
     DeviceCapabilityInventory, DeviceFamily, build_device_capability_inventory,
 )
-from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
+from .native_spectrum_provenance import native_persistence_provenance, native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
@@ -2465,6 +2465,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             accumulation_id=publication_context.session_id,
             native_accumulation_sequence=accumulation,
             native_quality_flags=int(getattr(value, "quality_flags", 0)),
+            numerical_provenance=native_persistence_provenance(value,
+                native_quality_flags=int(getattr(value, "quality_flags", 0))),
         )
         identity: DensityLayerIdentity | None = None
         try:

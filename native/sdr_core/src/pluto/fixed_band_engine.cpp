@@ -164,6 +164,10 @@ struct LiveResourceBudget {
     std::uint64_t iq{}, dsp{}, spectrum{}, persistence{}, sweep{}, total{};
 };
 [[nodiscard]] LiveResourceBudget validate_resource_budget(const FixedBandConfig& config) {
+    if (config.persistence.enabled && config.dsp.calibration_profile_id.size() >
+            sdr_core::persistence_metadata_string_max_bytes) {
+        throw sdr_core::ConfigurationError("persistence calibration metadata exceeds bounded string policy");
+    }
     const auto retained_iq_blocks = checked_add(
         static_cast<std::uint64_t>(config.acquisition_queue_capacity) + 3U,
         recorder_enabled(config)
@@ -253,6 +257,9 @@ struct LiveResourceBudget {
         persistence_snapshot_bytes = checked_add(persistence_snapshot_bytes,
             sdr_core::density_layer_scalar_reservation_bytes,
             "persistence creation ref scalars");
+        persistence_snapshot_bytes = checked_add(persistence_snapshot_bytes,
+            sdr_core::persistence_processing_reserved_bytes,
+            "persistence processing metadata and accumulator signature");
         if (config.layer_event_capacity != 0U) {
             persistence_snapshot_bytes = checked_add(persistence_snapshot_bytes,
                 sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity),

@@ -393,7 +393,38 @@ void bind_pluto(py::module_& module) {
         .def_readonly("output_blocks_dropped", &sdr_pluto::StreamMetrics::output_blocks_dropped)
         .def_readonly("estimated_dropped_samples", &sdr_pluto::StreamMetrics::estimated_dropped_samples);
 
+    using DensityMetadata = sdr_core::PersistenceProcessingMetadataV1;
+    py::class_<DensityMetadata>(module, "PersistenceProcessingMetadataV1")
+        .def_readonly("dsp_processing_recipe", &DensityMetadata::dsp_processing_recipe)
+        .def_readonly("center_frequency_hz", &DensityMetadata::center_frequency_hz)
+        .def_readonly("sample_rate_hz", &DensityMetadata::sample_rate_hz)
+        .def_readonly("analog_bandwidth_hz", &DensityMetadata::analog_bandwidth_hz)
+        .def_readonly("fft_bin_width_hz", &DensityMetadata::fft_bin_width_hz)
+        .def_readonly("enbw_hz", &DensityMetadata::enbw_hz)
+        .def_readonly("nominal_rbw_hz", &DensityMetadata::nominal_rbw_hz)
+        .def_readonly("fft_size", &DensityMetadata::fft_size)
+        .def_readonly("hop_size", &DensityMetadata::hop_size)
+        .def_readonly("window", &DensityMetadata::window)
+        .def_readonly("detector", &DensityMetadata::detector)
+        .def_readonly("precision_mode", &DensityMetadata::precision_mode)
+        .def_readonly("averaging_frames", &DensityMetadata::averaging_frames)
+        .def_readonly("calibration_status", &DensityMetadata::calibration_status)
+        .def_readonly("calibration_profile_id", &DensityMetadata::calibration_profile_id)
+        .def_readonly("estimated_uncertainty_db", &DensityMetadata::estimated_uncertainty_db)
+        .def_readonly("window_normalization_version", &DensityMetadata::window_normalization_version);
+    module.def("persistence_processing_contract", [] {
+        py::dict result;
+        result["schema_version"] = sdr_core::persistence_processing_metadata_version;
+        result["scope"] = "native_contributing_density_metadata_only";
+        result["full_owner_context"] = false;
+        result["recipe_change_resets"] = true;
+        result["string_max_bytes"] = sdr_core::persistence_metadata_string_max_bytes;
+        result["reserved_bytes"] = sdr_core::persistence_processing_reserved_bytes;
+        return result;
+    });
     py::class_<sdr_core::PersistenceSnapshot>(module, "PersistenceSnapshot")
+        .def_readonly("processing_metadata", &sdr_core::PersistenceSnapshot::processing_metadata)
+        .def_readonly("first_sample_index", &sdr_core::PersistenceSnapshot::first_sample_index)
         .def_readonly("layer_ready", &sdr_core::PersistenceSnapshot::layer_ready)
         .def_property_readonly("source_id", [](const sdr_core::PersistenceSnapshot& value) {
             return value.source.source_id;

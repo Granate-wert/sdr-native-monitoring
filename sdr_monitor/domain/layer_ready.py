@@ -14,6 +14,9 @@ from .analytical_ready import ReadyClockMapping, ReadyHostBounds
 _U64 = (1 << 64) - 1
 MAX_LAYER_SEGMENTS = 2048
 DENSITY_LAYER_SCALAR_RESERVATION_BYTES = 1024
+# Same native conservative charge: accumulator plus five bounded contributing
+# metadata signatures, including two <=256-byte strings per slot. Not RSS.
+DENSITY_PROCESSING_METADATA_RESERVATION_BYTES = 8192
 
 
 def _number(value: object, minimum: int = 0, maximum: int = _U64) -> None:

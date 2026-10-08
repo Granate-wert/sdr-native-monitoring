@@ -4,11 +4,42 @@
 #include "sdr_core/types.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace sdr_core {
+
+inline constexpr std::uint32_t persistence_processing_metadata_version = 1U;
+inline constexpr std::size_t persistence_metadata_string_max_bytes = 256U;
+
+// Actual contributing numerical signature, not a hardware readback or an
+// admitted owner receipt. UNKNOWN recipe/normalization remain absent. Strings
+// are bounded; copied only on identity change or snapshot, not every FFT.
+struct PersistenceProcessingMetadataV1 {
+    std::optional<DspProcessingRecipeV1> dsp_processing_recipe;
+    double center_frequency_hz{};
+    double sample_rate_hz{};
+    double analog_bandwidth_hz{};
+    double fft_bin_width_hz{};
+    double enbw_hz{};
+    double nominal_rbw_hz{};
+    std::uint32_t fft_size{};
+    std::uint32_t hop_size{};
+    WindowType window{WindowType::Hann};
+    DetectorType detector{DetectorType::Sample};
+    PrecisionMode precision_mode{PrecisionMode::AccurateF32F64Accum};
+    std::uint32_t averaging_frames{};
+    CalibrationStatus calibration_status{CalibrationStatus::Uncalibrated};
+    std::string calibration_profile_id;
+    double estimated_uncertainty_db{std::numeric_limits<double>::quiet_NaN()};
+    std::optional<std::string> window_normalization_version;
+
+    [[nodiscard]] static PersistenceProcessingMetadataV1 from_frame(const SpectrumFrame& frame);
+    [[nodiscard]] bool matches(const SpectrumFrame& frame) const noexcept;
+};
 
 struct PersistenceSnapshot {
     SourceDescriptor source;
@@ -35,7 +66,19 @@ struct PersistenceSnapshot {
     // Latest contributing detector frame, not an aggregate RF-duty assertion.
     QualityFlag quality_flags{QualityFlag::None};
     std::optional<LayerReadyRef> layer_ready;
+    // Native contributing-frame evidence only; never reconstructed from a
+    // request, quality bit, or the lossy latest spectrum queue.
+    std::optional<PersistenceProcessingMetadataV1> processing_metadata;
+    std::uint64_t first_sample_index{};
 };
+
+// One accumulator signature plus five retained/in-construction snapshot slots.
+// Covers inline padding and maximum string payloads; NOT an RSS assertion.
+inline constexpr std::uint64_t persistence_processing_reserved_bytes = 8192U;
+static_assert(6U * (
+    sizeof(std::optional<PersistenceProcessingMetadataV1>) +
+    alignof(PersistenceSnapshot) + 2U * persistence_metadata_string_max_bytes +
+    sizeof(std::uint64_t)) <= persistence_processing_reserved_bytes);
 
 struct PersistenceProfilingTiming {
     bool available{};
@@ -69,6 +112,7 @@ private:
     std::shared_ptr<LayerReadyJournal> layer_ready_;
     std::uint64_t accumulation_sequence_{};
     std::optional<SourceDescriptor> source_;
+    std::optional<PersistenceProcessingMetadataV1> processing_metadata_;
     std::uint64_t config_generation_{};
     SpectrumUnit unit_{SpectrumUnit::DbfsBin};
     SharedArray<double> frequencies_;

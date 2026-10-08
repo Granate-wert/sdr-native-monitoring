@@ -1,8 +1,10 @@
 #include "sdr_core/persistence.hpp"
+#include "sdr_core/errors.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -35,7 +37,7 @@ void require(const bool condition, const char* message) {
 
 }  // namespace
 
-int main() {
+int run_tests() {
     sdr_core::PersistenceConfig config{
         .enabled = true,
         .mode = sdr_core::PersistenceMode::RollingExact,
@@ -47,6 +49,108 @@ int main() {
         .snapshot_rate_hz = 30.0,
     };
     sdr_core::PersistenceAccumulator accumulator(config);
+
+    // Actual accumulator, same source/config/grid: recipe changes must not
+    // mix power populations. UNKNOWN is not silently equivalent to OFF.
+    for (const auto mode : {sdr_core::PersistenceMode::RollingExact,
+                           sdr_core::PersistenceMode::ExponentialDecay}) {
+        auto recipe_config = config;
+        recipe_config.mode = mode;
+        const auto off = sdr_core::DspProcessingRecipeV1::from_dc_mode(
+            sdr_core::DcRemovalMode::Off);
+        const auto mean = sdr_core::DspProcessingRecipeV1::from_dc_mode(
+            sdr_core::DcRemovalMode::BlockMean);
+        const std::optional<sdr_core::DspProcessingRecipeV1> recipes[] = {
+            off, mean, std::nullopt, off, std::nullopt, mean};
+        auto journal = std::make_shared<sdr_core::LayerReadyJournal>(16U);
+        sdr_core::PersistenceAccumulator isolated(recipe_config, journal);
+        std::uint64_t previous_accumulation = 0U;
+        for (std::size_t index = 0; index < std::size(recipes); ++index) {
+            auto input = frame(1 + static_cast<std::int64_t>(index) * 34'000'000LL,
+                index + 1U, index % 2U == 0U ? -80.0F : -20.0F);
+            input.config_generation = 7U;
+            input.dsp_processing_recipe = recipes[index];
+            input.first_sample_index = index * 4096U;
+            input.window_normalization_version = "power-norm-v1";
+            const auto snapshot = isolated.update(input);
+            require(snapshot && snapshot->processed_frames == 1U,
+                "same-generation recipe transition mixed persistence populations");
+            require(snapshot->layer_ready &&
+                snapshot->layer_ready->accumulation_sequence > previous_accumulation,
+                "recipe transition reused density accumulation identity");
+            previous_accumulation = snapshot->layer_ready->accumulation_sequence;
+            require((*snapshot->density)[index % 2U == 0U ? 6U : 0U] == 0.0F,
+                "recipe transition retained previous power row");
+            require(snapshot->processing_metadata &&
+                snapshot->processing_metadata->matches(input) &&
+                snapshot->processing_metadata->dsp_processing_recipe.has_value() == recipes[index].has_value() &&
+                snapshot->first_sample_index == input.first_sample_index,
+                "density metadata was not transported from actual contributing frame");
+        }
+    }
+
+    // Every numerical identity transition resets even under unchanged RF/grid
+    // generation. Stable unknown uncertainty (NaN) does not reset each FFT.
+    for (int field = 0; field < 18; ++field) {
+        sdr_core::PersistenceAccumulator isolated(config);
+        auto before = frame(1, 1, -80.0F);
+        const auto retained = isolated.update(before);
+        auto after = frame(34'000'001LL, 2, -20.0F);
+        switch (field) {
+        case 0: after.center_frequency_hz = 1.; break;
+        case 1: after.sample_rate_hz = 1.; break;
+        case 2: after.analog_bandwidth_hz = 1.; break;
+        case 3: after.fft_bin_width_hz = 1.; break;
+        case 4: after.enbw_hz = 1.; break;
+        case 5: after.nominal_rbw_hz = 1.; break;
+        case 6: after.fft_size = 512U; break;
+        case 7: after.hop_size = 256U; break;
+        case 8: after.window = sdr_core::WindowType::Rectangular; break;
+        case 9: after.detector = sdr_core::DetectorType::Peak; break;
+        case 10: after.averaging_frames = 2U; break;
+        case 11: after.window_normalization_version = "power-norm-v1"; break;
+        case 12: after.calibration_profile_id = "different"; break;
+        case 13: after.estimated_uncertainty_db = 1.; break;
+        case 14: after.source.backend_id = "different"; break;
+        case 15: after.precision_mode = sdr_core::PrecisionMode::ReferenceF64; break;
+        case 16: after.window_normalization_version = ""; break;
+        default: break;  // identical signature, UNKNOWN NaN preserved
+        }
+        const auto snapshot = isolated.update(after);
+        require(snapshot && snapshot->processed_frames == (field == 17 ? 2U : 1U),
+            "persistence numerical identity reset/stable-UNKNOWN parity incorrect");
+        require(snapshot->processing_metadata && snapshot->processing_metadata->matches(after),
+            "density numerical contributing signature missing");
+        require(retained && retained->processing_metadata && retained->processing_metadata->matches(before),
+            "later processing transition mutated retained snapshot metadata");
+    }
+    {
+        auto journal = std::make_shared<sdr_core::LayerReadyJournal>(8U);
+        sdr_core::PersistenceAccumulator bounded(config, journal);
+        auto input = frame(1, 1, -80.0F);
+        input.config_generation = 7U;
+        input.window_normalization_version = std::string(sdr_core::persistence_metadata_string_max_bytes, 'x');
+        input.calibration_profile_id = *input.window_normalization_version;
+        const auto first_bounded = bounded.update(input);
+        require(first_bounded && first_bounded->processing_metadata,
+            "maximum bounded metadata refused");
+        const auto created = journal->summary().created;
+        for (int field = 0; field < 2; ++field) {
+            auto bad = input;
+            if (field == 0) bad.window_normalization_version->push_back('x');
+            else bad.calibration_profile_id.push_back('x');
+            bool refused = false;
+            try { static_cast<void>(bounded.update(bad)); }
+            catch (const sdr_core::ConfigurationError&) { refused = true; }
+            require(refused && bounded.processed_frames() == 1U && journal->summary().created == created,
+                "oversize metadata mutated density/history/creation identity before refusal");
+        }
+        input.timestamp_ns = 34'000'001LL;
+        const auto same = bounded.update(input);
+        require(same && same->processed_frames == 2U && same->layer_ready &&
+            first_bounded->layer_ready->accumulation_sequence == same->layer_ready->accumulation_sequence,
+            "metadata refusal corrupted accepted accumulator");
+    }
 
     {
         auto journal = std::make_shared<sdr_core::LayerReadyJournal>(8U);
@@ -271,4 +375,12 @@ int main() {
                 "optimized mapping differs from floor/clamp reference");
     }
     return 0;
+}
+
+int main() {
+    try { return run_tests(); }
+    catch (const std::exception& error) {
+        std::cerr << "persistence regression: " << error.what() << '\n';
+        return 1;
+    }
 }

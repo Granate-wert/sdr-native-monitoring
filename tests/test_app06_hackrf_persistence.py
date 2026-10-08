@@ -44,7 +44,7 @@ class HackrfPersistenceContractTests(unittest.TestCase):
 
     def test_budget_matches_native_policy_and_never_silently_clamps(self):
         profile = density_request()
-        self.assertEqual(profile.persistence_allocation_bytes, profile.fft_size * (256 * 4 * 5 + 8 * 4) + 1024)
+        self.assertEqual(profile.persistence_allocation_bytes, profile.fft_size * (256 * 4 * 5 + 8 * 4) + 1024 + 8192)
         exact = replace(profile, persistence_mode="rolling-exact", persistence_window_frames=123)
         self.assertEqual(exact.persistence_allocation_bytes - profile.persistence_allocation_bytes, 123 * profile.fft_size * 4)
         with self.assertRaisesRegex(ValueError, "256 MiB"):

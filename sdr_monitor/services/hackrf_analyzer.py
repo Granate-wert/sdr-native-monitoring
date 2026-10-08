@@ -35,7 +35,7 @@ from .hackrf_activation_preflight import HackrfActivationPreflightService, Hackr
 from .hackrf_live_admission import admit_hackrf_live
 from .hackrf_product_live import HackrfNativeFactoryPort, HackrfProductLiveCoordinator, HackrfProductLiveState
 from .native_live import _native_frame_metadata, _native_quality_mask, _native_spectrum_unit
-from .native_spectrum_provenance import native_spectrum_provenance, validate_absolute_unit
+from .native_spectrum_provenance import native_persistence_provenance, native_spectrum_provenance, validate_absolute_unit
 from .native_ready_bridge import NativeReadyBridge
 from .native_layer_journal import HOST_LAYER_RESERVATION, NativeLayerJournal, layer_journal_capacity
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
@@ -349,7 +349,9 @@ class HackrfAnalyzerService:
                 if _native_quality_mask(self._native, value, "TIMESTAMP_ESTIMATED") else TimestampQuality.UNKNOWN,
             acquisition_epoch=context.acquisition_epoch, clock_domain=context.clock_domain,
             accumulation_id=str(context.session_id), native_quality_flags=int(value.quality_flags),
-            native_accumulation_sequence=accumulation)
+            native_accumulation_sequence=accumulation,
+            numerical_provenance=native_persistence_provenance(value,
+                native_quality_flags=int(value.quality_flags)))
         identity: DensityLayerIdentity | None = None
         try:
             identity = DensityLayerIdentity(density.source_id, density.config_generation, density.update_sequence,

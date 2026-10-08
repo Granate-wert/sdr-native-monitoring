@@ -222,6 +222,15 @@ void test_pair_consumers_and_same_owner_restart(Hooks& hooks) {
         const auto snapshots = engine.poll_receiver_persistence_snapshots(receiver, 0);
         require(!snapshots.empty() && snapshots.back().config_generation == first.config_generation,
             "per-chain persistence source/epoch");
+        const auto& density = snapshots.back();
+        require(density.processing_metadata && density.processing_metadata->dsp_processing_recipe &&
+            density.processing_metadata->dsp_processing_recipe->dc_removal() ==
+                ((receiver == Selection::Rx1 ? p.primary.dc_removal_block_mean :
+                    p.secondary.dc_removal_block_mean) ? sdr_core::DcRemovalMode::BlockMean :
+                    sdr_core::DcRemovalMode::Off) &&
+            density.processing_metadata->sample_rate_hz == p.primary.device.sample_rate_hz &&
+            density.processing_metadata->fft_size == p.primary.dsp.fft_size,
+            "paired density lost per-chain actual recipe/numerical signature");
     }
     p.primary.recorder_enabled = p.secondary.recorder_enabled = false;
     p.primary.device.center_frequency_hz += 1'000'000.;

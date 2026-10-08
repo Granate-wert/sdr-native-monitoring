@@ -15,6 +15,23 @@ namespace {
 #endif
 constexpr std::uint32_t invalid_bin = std::numeric_limits<std::uint32_t>::max();
 constexpr double decay_rebase_threshold = 1.0e-6;
+[[nodiscard]] bool same_number(const double left, const double right) noexcept {
+    return left == right || (std::isnan(left) && std::isnan(right));
+}
+
+[[nodiscard]] bool same_recipe(const std::optional<DspProcessingRecipeV1>& left,
+    const std::optional<DspProcessingRecipeV1>& right) noexcept {
+    return left.has_value() == right.has_value() &&
+        (!left || left->dc_removal() == right->dc_removal());
+}
+
+void validate_metadata(const SpectrumFrame& frame) {
+    if (frame.calibration_profile_id.size() > persistence_metadata_string_max_bytes ||
+        (frame.window_normalization_version &&
+            frame.window_normalization_version->size() > persistence_metadata_string_max_bytes)) {
+        throw ConfigurationError("persistence processing metadata exceeds bounded string policy");
+    }
+}
 #if SDR_CORE_PROFILING_ENABLED
 [[nodiscard]] std::uint64_t elapsed_ns(
     const std::chrono::steady_clock::time_point start
@@ -32,6 +49,45 @@ constexpr double decay_rebase_threshold = 1.0e-6;
     return right > maximum - left ? maximum : left + right;
 }
 #endif
+}
+
+PersistenceProcessingMetadataV1 PersistenceProcessingMetadataV1::from_frame(
+    const SpectrumFrame& frame) {
+    validate_metadata(frame);
+    return {
+        .dsp_processing_recipe = frame.dsp_processing_recipe,
+        .center_frequency_hz = frame.center_frequency_hz,
+        .sample_rate_hz = frame.sample_rate_hz,
+        .analog_bandwidth_hz = frame.analog_bandwidth_hz,
+        .fft_bin_width_hz = frame.fft_bin_width_hz,
+        .enbw_hz = frame.enbw_hz,
+        .nominal_rbw_hz = frame.nominal_rbw_hz,
+        .fft_size = frame.fft_size,
+        .hop_size = frame.hop_size,
+        .window = frame.window,
+        .detector = frame.detector,
+        .precision_mode = frame.precision_mode,
+        .averaging_frames = frame.averaging_frames,
+        .calibration_status = frame.calibration_status,
+        .calibration_profile_id = frame.calibration_profile_id,
+        .estimated_uncertainty_db = frame.estimated_uncertainty_db,
+        .window_normalization_version = frame.window_normalization_version,
+    };
+}
+
+bool PersistenceProcessingMetadataV1::matches(const SpectrumFrame& frame) const noexcept {
+    return same_recipe(dsp_processing_recipe, frame.dsp_processing_recipe) &&
+        same_number(center_frequency_hz, frame.center_frequency_hz) &&
+        same_number(sample_rate_hz, frame.sample_rate_hz) &&
+        same_number(analog_bandwidth_hz, frame.analog_bandwidth_hz) &&
+        same_number(fft_bin_width_hz, frame.fft_bin_width_hz) &&
+        same_number(enbw_hz, frame.enbw_hz) && same_number(nominal_rbw_hz, frame.nominal_rbw_hz) &&
+        fft_size == frame.fft_size && hop_size == frame.hop_size &&
+        window == frame.window && detector == frame.detector && precision_mode == frame.precision_mode &&
+        averaging_frames == frame.averaging_frames && calibration_status == frame.calibration_status &&
+        calibration_profile_id == frame.calibration_profile_id &&
+        same_number(estimated_uncertainty_db, frame.estimated_uncertainty_db) &&
+        window_normalization_version == frame.window_normalization_version;
 }
 
 PersistenceAccumulator::PersistenceAccumulator(PersistenceConfig config,
@@ -54,6 +110,7 @@ void PersistenceAccumulator::reset() {
         ++accumulation_sequence_;
     }
     source_.reset();
+    processing_metadata_.reset();
     frequencies_.reset();
     frequency_bins_ = 0U;
     density_.clear();
@@ -109,19 +166,27 @@ std::optional<PersistenceSnapshot> PersistenceAccumulator::update(
     if (bins == 0U || frame.frequencies_hz->size() != bins) {
         return std::nullopt;
     }
+    // Refuse before reset/allocation: malformed metadata cannot erase valid
+    // accumulated history or consume a new layer creation identity.
+    validate_metadata(frame);
 #if SDR_CORE_PROFILING_ENABLED
     const auto histogram_started = std::chrono::steady_clock::now();
 #endif
     const bool changed_identity = source_.has_value() && (
         source_->source_id != frame.source.source_id ||
         source_->source_type != frame.source.source_type ||
+        source_->backend_id != frame.source.backend_id ||
         config_generation_ != frame.config_generation || unit_ != frame.unit ||
+        !processing_metadata_ || !processing_metadata_->matches(frame) ||
         !frequencies_ || *frequencies_ != *frame.frequencies_hz
     );
     if (changed_identity) {
         reset();
     }
     source_ = frame.source;
+    if (!processing_metadata_) {
+        processing_metadata_ = PersistenceProcessingMetadataV1::from_frame(frame);
+    }
     config_generation_ = frame.config_generation;
     unit_ = frame.unit;
     frequencies_ = frame.frequencies_hz;
@@ -299,6 +364,8 @@ PersistenceSnapshot PersistenceAccumulator::make_snapshot(
     result.frequencies_hz = frame.frequencies_hz;
     result.density = std::move(density);
     result.quality_flags = frame.quality_flags;
+    result.processing_metadata = processing_metadata_;
+    result.first_sample_index = frame.first_sample_index;
     return result;
 }
 

@@ -92,6 +92,7 @@ void validate_hackrf_fixed_band_dsp_config(const HackrfFixedBandDspConfig& confi
                               ? n * config.persistence.window_frames * 4U : 0U;
         const auto bytes = cells * 4U * 5U + n * 8U * 4U + ring +
             sdr_core::density_layer_scalar_reservation_bytes +
+            sdr_core::persistence_processing_reserved_bytes +
             (config.layer_event_capacity ? sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity) : 0U);
         if (bytes > 256U * 1024U * 1024U) {
             invalid("HackRF persistence exceeds the 256 MiB allocation policy");

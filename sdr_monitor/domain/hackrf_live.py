@@ -9,7 +9,7 @@ from numbers import Real
 from .identity import SourceId, as_source_id
 from .live import BackendKind
 from .processing_policy import SdrProcessingPolicyV1
-from .layer_ready import DENSITY_LAYER_SCALAR_RESERVATION_BYTES
+from .layer_ready import DENSITY_LAYER_SCALAR_RESERVATION_BYTES, DENSITY_PROCESSING_METADATA_RESERVATION_BYTES
 
 _HACKRF_FILTER_BANDWIDTHS_HZ = frozenset(
     (
@@ -223,7 +223,8 @@ class HackrfLiveRequest:
             return 0
         cells = self.fft_size * self.persistence_power_bins
         ring = self.fft_size * self.persistence_window_frames * 4 if self.persistence_mode == "rolling-exact" else 0
-        return cells * 4 * 5 + self.fft_size * 8 * 4 + ring + DENSITY_LAYER_SCALAR_RESERVATION_BYTES
+        return (cells * 4 * 5 + self.fft_size * 8 * 4 + ring
+                + DENSITY_LAYER_SCALAR_RESERVATION_BYTES + DENSITY_PROCESSING_METADATA_RESERVATION_BYTES)
 
     @property
     def resolved_dsp_output_capacity(self) -> int:

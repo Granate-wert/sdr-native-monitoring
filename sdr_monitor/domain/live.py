@@ -10,7 +10,8 @@ import numpy as np
 
 from .analytical_ready import DetectorReadyReceipt
 from .layer_ready import (
-    DENSITY_LAYER_SCALAR_RESERVATION_BYTES, DensityLayerIdentity, LayerReadyKind, LayerReadyReceipt,
+    DENSITY_LAYER_SCALAR_RESERVATION_BYTES, DENSITY_PROCESSING_METADATA_RESERVATION_BYTES,
+    DensityLayerIdentity, LayerReadyKind, LayerReadyReceipt,
 )
 from .identity import (
     ConfigurationGeneration,
@@ -186,6 +187,7 @@ class LiveResourceBudget:
                 cells * 4 * (_NATIVE_PERSISTENCE_SNAPSHOT_CAPACITY + 2)
                 + configuration.fft_size * 8 * (_NATIVE_PERSISTENCE_SNAPSHOT_CAPACITY + 2)
                 + DENSITY_LAYER_SCALAR_RESERVATION_BYTES
+                + DENSITY_PROCESSING_METADATA_RESERVATION_BYTES
             )
         total_bytes = (
             iq_pool_bytes
@@ -701,8 +703,19 @@ class LivePersistenceFrame:
     # Native reset identity is distinct from the application's session ID.
     native_accumulation_sequence: int | None = None
     layer_ready: LayerReadyReceipt | None = None
+    # Actual native contributing FFT only. Does not grant policy/owner admission.
+    numerical_provenance: SpectrumProvenance | None = None
 
     def __post_init__(self) -> None:
+        if self.numerical_provenance is not None:
+            if type(self.numerical_provenance) is not SpectrumProvenance:
+                raise ValueError("typed native density numerical provenance required or unknown")
+            if type(self.native_quality_flags) is not int or not 0 <= self.native_quality_flags < (1 << 32):
+                raise ValueError("density provenance requires exact cumulative native quality flags")
+            recipe = self.numerical_provenance.processing_recipe
+            if (recipe is not None and recipe.whole_frame_modified and
+                    not self.native_quality_flags & (1 << 9)):
+                raise ValueError("density BlockMean provenance requires cumulative native DC_REMOVED")
         frequencies = np.asarray(self.frequencies_hz, dtype=np.float64).reshape(-1)
         density = np.asarray(self.density, dtype=np.float32).reshape(self.power_bins, self.frequency_bins)
         if frequencies.size != self.frequency_bins or density.size == 0:
@@ -859,6 +872,16 @@ class LiveSnapshot:
                     raise ValueError("HackRF numerical metadata does not match its exact staged DSP profile")
             if self.persistence is not None:
                 density = self.persistence
+                provenance = density.numerical_provenance
+                if provenance is not None and (
+                        provenance.window != request.window or provenance.detector != request.detector
+                        or provenance.averaging_frames != request.averaging_frames
+                        or provenance.precision_mode != "reference_f64"
+                        or provenance.calibration_status != "uncalibrated"
+                        or provenance.window_normalization_version != "power-norm-v1"
+                        or provenance.processing_recipe is None
+                        or provenance.processing_recipe.policy != request.processing_policy):
+                    raise ValueError("HackRF density numerical metadata differs from the staged processing profile")
                 if (not request.persistence_enabled or not self.hackrf_persistence_available
                         or density.source_id != request.source_id or self.active_source_id != request.source_id
                         or density.config_generation != request.configuration_generation
@@ -879,6 +902,11 @@ class LiveSnapshot:
                     raise ValueError("HackRF persistence does not belong to its exact source/profile/epoch/unit")
                 if self.spectrum is not None and not np.array_equal(density.frequencies_hz, self.spectrum.frequencies_hz):
                     raise ValueError("HackRF persistence grid differs from its source spectrum")
+        if self.persistence is not None and self.applied is not None:
+            provenance = self.persistence.numerical_provenance
+            if (provenance is not None and provenance.processing_recipe is not None
+                    and provenance.processing_recipe.policy != self.applied.applied.processing_policy):
+                raise ValueError("AD density numerical recipe differs from admitted processing policy")
         if self.presentation_omission is not None and not isinstance(self.presentation_omission, PresentationOmission):
             raise TypeError("invalid Live presentation omission")
         if self.presentation_omission is not None and (self.spectrum is not None or self.persistence is not None):

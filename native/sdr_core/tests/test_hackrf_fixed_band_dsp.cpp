@@ -302,6 +302,52 @@ void test_real_transfer_sized_burst_capacity_keeps_analysis_loss_free() {
     }
 }
 
+void test_processed_density_uses_actual_analytical_fft() {
+    for (const auto removal : {sdr_core::DcRemovalMode::Off, sdr_core::DcRemovalMode::BlockMean}) {
+        auto config = dsp_config(1U);
+        config.dc_removal = removal;
+        config.persistence.enabled = true;
+        config.persistence.mode = sdr_core::PersistenceMode::RollingExact;
+        config.persistence.power_bins = 16U;
+        config.persistence.window_frames = 3U;
+        config.layer_event_capacity = 4U;
+        sdr_hackrf::HackrfFixedBandDsp dsp(config);
+        sdr_hackrf::HackrfRxIngress ingress(ingress_config(2048U));
+        push_one(ingress, dsp, constant_ci8(1024U), 1'000'000'000LL);
+        const auto densities = dsp.poll_persistence_snapshots(0U);
+        const auto spectra = dsp.poll_spectrum_frames(0U);
+        expect(!densities.empty() && spectra.size() == 1U, "native processed analytical density missing");
+        const auto& density = densities.back();
+        const auto& spectrum = spectra.back();
+        expect(density.processing_metadata && density.processing_metadata->matches(spectrum) &&
+            density.processing_metadata->dsp_processing_recipe &&
+            density.processing_metadata->dsp_processing_recipe->dc_removal() == removal &&
+            density.first_sample_index == density.source_frame_sequence * config.dsp.hop_size,
+            "native HackRF density did not retain actual processed contributing FFT signature");
+        double hits = 0.;
+        for (const auto value : *density.density) hits += value;
+        expect(removal == sdr_core::DcRemovalMode::Off ? hits > 0. : hits == 0.,
+            "BlockMean constant-IQ density was not computed from processed analytical values");
+        expect(sdr_core::has_flag(density.quality_flags, sdr_core::QualityFlag::DcRemoved) ==
+            (removal == sdr_core::DcRemovalMode::BlockMean), "processed density quality differs from recipe");
+    }
+}
+
+void test_density_metadata_budget_boundary_before_allocation() {
+    auto config = dsp_config(1U);
+    config.persistence.enabled = true;
+    config.persistence.mode = sdr_core::PersistenceMode::RollingExact;
+    config.persistence.power_bins = 16U;
+    // N=256, scalar=1024 and processing=8192: exact 256 MiB boundary.
+    config.persistence.window_frames = 262047U;
+    sdr_hackrf::validate_hackrf_fixed_band_dsp_config(config);
+    ++config.persistence.window_frames;
+    bool refused = false;
+    try { sdr_hackrf::validate_hackrf_fixed_band_dsp_config(config); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused, "metadata bytes omitted from pre-allocation persistence cap");
+}
+
 void test_persistence_precedes_presentation_and_is_bounded() {
     for (const auto mode : {sdr_core::PersistenceMode::RollingExact,
                             sdr_core::PersistenceMode::ExponentialDecay}) {
@@ -504,6 +550,8 @@ int main() {
         test_cpu_fft_drop_remains_analytical_and_sets_frame_quality();
         test_real_transfer_sized_burst_capacity_keeps_analysis_loss_free();
         test_persistence_precedes_presentation_and_is_bounded();
+        test_processed_density_uses_actual_analytical_fft();
+        test_density_metadata_budget_boundary_before_allocation();
         test_detector_group_sequence_retains_native_output_identity_across_polls();
         test_latest_drain_preserves_identity_and_separate_coalescing();
         std::cout << "R11-I HackRF fixed-band CPU DSP OK\n";

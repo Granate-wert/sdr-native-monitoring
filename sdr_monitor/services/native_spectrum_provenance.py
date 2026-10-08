@@ -21,6 +21,32 @@ _EXPECTED_RECIPE_FIELDS = {
 }
 
 
+class _DensityMetadataView:
+    """Borrow actual bounded native metadata; no latest-spectrum/request join."""
+
+    __slots__ = ("_metadata", "quality_flags")
+
+    def __init__(self, metadata: Any, quality_flags: int) -> None:
+        if type(quality_flags) is not int or not 0 <= quality_flags < (1 << 32):
+            raise ValueError("density metadata requires exact native quality flags")
+        self._metadata = metadata
+        self.quality_flags = quality_flags
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._metadata, name)
+
+
+def native_persistence_provenance(value: Any, *, native_quality_flags: int) -> SpectrumProvenance | None:
+    """Contributing FFT observation ONLY, not authenticated density owner authority."""
+    metadata = getattr(value, "processing_metadata", None)
+    if metadata is None:
+        return None  # Legacy/unsupported absence stays UNKNOWN, not inferred OFF.
+    result = native_spectrum_provenance(_DensityMetadataView(metadata, native_quality_flags))
+    token = str(getattr(value.unit, "name", value.unit))
+    validate_absolute_unit("dBm" if token.lower().startswith("dbm") else token, result)
+    return result
+
+
 def _processing_recipe(frame: Any) -> DspProcessingRecipeObservationV1 | None:
     recipe = getattr(frame, "dsp_processing_recipe", None)
     if recipe is None:
