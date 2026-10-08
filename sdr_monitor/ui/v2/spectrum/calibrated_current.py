@@ -67,29 +67,47 @@ class CalibratedCurrentPlot(QWidget):
         self._released = False
         self.setAccessibleName(text("live_calibration.current"))
         self.setMinimumHeight(220)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
         self.status = QLabel(self)
         self.status.setProperty("ui2Role", "secondary")
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
-        layout.addWidget(self.status)
-        self.scene = _CurrentScene(model, self)
-        self.scene.set_projection_port(projector)
-        self.scene.set_presentation_active(False)
-        # CURRENT is the only source; no analytical hold controls are exposed.
-        self.scene.take_display_controls().hide()
-        layout.addWidget(self.scene, 1)
+        self._layout.addWidget(self.status)
+        # Unbound and hidden workspaces own no second graphics scene. Keep the
+        # SAME projection port; only its visible, explicitly bound view is lazy.
+        self.scene: _CurrentScene | None = None
         self._unsubscribe = model.subscribe(self._render)
+
+    def _visible_scene(self) -> _CurrentScene:
+        if self.scene is None:
+            self.scene = _CurrentScene(self._model, self)
+            self.scene.set_projection_port(self._projector)
+            self.scene.take_display_controls().hide()
+            self._layout.addWidget(self.scene, 1)
+        self.scene.set_presentation_active(True)
+        return self.scene
+
+    def _clear_scene(self) -> None:
+        if self.scene is not None:
+            self.scene.set_presentation_active(False)
+            self.scene._current = None
+            self.scene.clear_measurement()
+
+    def set_locale(self) -> None:
+        self.setAccessibleName(text("live_calibration.current"))
+        if self.scene is not None:
+            self.scene.set_locale(current_locale())
+        self._render(self._model.state)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override.
         if not self._released:
-            self.scene.set_presentation_active(True)
+            self._render(self._model.state)
         super().showEvent(event)
 
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt override.
         if not self._released:
-            self.scene.set_presentation_active(False)
+            self._clear_scene()
             self._model.display_invalidated()
         super().hideEvent(event)
 
@@ -100,17 +118,19 @@ class CalibratedCurrentPlot(QWidget):
         # raw Analyzer layout stays intact; no producer-rate visibility jitter.
         self.setVisible(state.binding is not None)
         current = state.current
-        if current is None or not self._model.is_valid(current):
-            self.scene._current = None
-            self.scene.clear_measurement()
-        elif self.scene.latest_frame is not current.frame:
+        if (state.binding is None or not self.isVisible()
+                or current is None or not self._model.is_valid(current)):
+            self._clear_scene()
+        else:
+            scene = self._visible_scene()
             # admit_delivery occurred once at queued GUI acknowledgement;
             # repeated viewport/paint checks use is_valid ONLY.
-            if self.scene.displayed_frame is not None and not self.scene.valid(self.scene.displayed_frame):
-                self.scene.clear_measurement()
-            self.scene._current = current
-            self.scene.set_frame(current.frame, prepared=current.spectrum)
-            self.scene.commit_projection()
+            if scene.latest_frame is not current.frame:
+                if scene.displayed_frame is not None and not scene.valid(scene.displayed_frame):
+                    scene.clear_measurement()
+                scene._current = current
+                scene.set_frame(current.frame, prepared=current.spectrum)
+                scene.commit_projection()
         displayed = state.displayed
         if displayed is None or not self._model.is_valid(displayed):
             caption = text("live_calibration.current_pending")
@@ -128,10 +148,10 @@ class CalibratedCurrentPlot(QWidget):
         self._released = True
         self._unsubscribe()
         self._model.close_binding()
-        self.scene._current = None
-        self.scene.clear_measurement()
+        self._clear_scene()
         self._projector.dispose()
-        self.scene.release_graphics_after_shutdown()
+        if self.scene is not None:
+            self.scene.release_graphics_after_shutdown()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override.
         self.release()

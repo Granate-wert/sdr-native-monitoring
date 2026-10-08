@@ -31,6 +31,29 @@ class UiTestIsolationTests(unittest.TestCase):
         widget.deleteLater()
         flush_deferred_widgets()
 
+    def test_actual_borrowed_product_fixture_restores_en_ru_without_hidden_start(self):
+        from tests.test_app02_analyzer_workspace_product import AnalyzerWorkspaceProductTests
+        for incoming in UiLocale:
+            with self.subTest(incoming=incoming):
+                set_active_locale(incoming)
+                fixture = AnalyzerWorkspaceProductTests("runTest")
+                fixture.app = self.app
+                fixture.setUp()
+                settings_path = Path(fixture._settings.fileName())
+                try:
+                    self.assertIs(current_locale(), UiLocale.RU)
+                    self.assertTrue(settings_path.is_relative_to(Path(fixture._temporary_settings.name)))
+                    self.assertEqual(fixture.events, [])
+                    self.assertFalse(fixture.live.is_running())
+                finally:
+                    fixture.tearDown()
+                    fixture.doCleanups()  # Same borrowed lifecycle as all four callers.
+                self.assertTrue(fixture.shell._is_closed)
+                self.assertEqual(fixture._qt_errors, [])
+                self.assertEqual(fixture.events, ["rtbw-stop"])  # True terminal owner cleanup, never Start.
+                self.assertFalse(settings_path.exists())
+                self.assertIs(current_locale(), incoming)
+
     def test_locale_restores_incoming_en_ru_after_success_failure_and_failed_setup(self):
         for incoming in UiLocale:
             for outcome in ("success", "failure", "setup-failure"):

@@ -8,9 +8,13 @@ import unittest
 from sdr_monitor.ui.v2.design import ThemeId
 from sdr_monitor.ui.v2.i18n import _CATALOG, UiLocale, catalog_keys, enum_text, resolve_locale, text
 from sdr_monitor.ui.v2.shell.appearance_popover import theme_label
+from tests.ui_v2.ui_test_isolation import own_locale
 
 
 class UiV2I18nTests(unittest.TestCase):
+    def setUp(self):
+        own_locale(self)
+
     _FORBIDDEN_RU_PROSE = re.compile(
         r"\b(?:active|apply|assurance|backend|bounded|bundle|busy|claims?|compose|"
         r"continuity|contract|correction|direct|discover|dwell|endpoint|eta|finalize|"
