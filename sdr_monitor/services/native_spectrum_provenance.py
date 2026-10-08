@@ -4,6 +4,41 @@ from math import isnan
 from typing import Any
 
 from ..domain.spectrum_provenance import SpectrumProvenance
+from ..domain.processing_policy import DC_REMOVED_MASK, DspProcessingRecipeObservationV1, HostDcMode
+
+
+# Two immutable stage observations, not an owner capability declaration. No
+# per-publication JSON parsing, hashing, DSP or allocation of recipe payloads.
+_CPU_RECIPES = {mode.value: DspProcessingRecipeObservationV1(mode) for mode in HostDcMode}
+_MISSING_RECIPE_FIELD = object()
+_EXPECTED_RECIPE_FIELDS = {
+    mode: (("schema_version", observed.schema_version), ("scope", observed.scope),
+           ("spur_mode", "off"), ("canonical_policy_json", observed.canonical_policy_json),
+           ("policy_digest", observed.policy_digest),
+           ("whole_frame_modified", observed.whole_frame_modified),
+           ("comparison_applied", False), ("hardware_dc_tracking", None))
+    for mode, observed in _CPU_RECIPES.items()
+}
+
+
+def _processing_recipe(frame: Any) -> DspProcessingRecipeObservationV1 | None:
+    recipe = getattr(frame, "dsp_processing_recipe", None)
+    if recipe is None:
+        return None  # Legacy quality bits cannot invent algorithm provenance.
+    mode = getattr(recipe, "dc_mode", None)
+    expected = _CPU_RECIPES.get(mode) if type(mode) is str else None
+    if expected is None:
+        raise ValueError("unsupported native DSP recipe")
+    for name, value in _EXPECTED_RECIPE_FIELDS[expected.dc_mode.value]:
+        actual = getattr(recipe, name, _MISSING_RECIPE_FIELD)
+        if type(actual) is not type(value) or actual != value:
+            raise ValueError(f"invalid native DSP recipe {name}")
+    flags = getattr(frame, "quality_flags", None)
+    if type(flags) is not int or not 0 <= flags < (1 << 32):
+        raise ValueError("native DSP recipe requires exact quality flags")
+    if expected.dc_mode is HostDcMode.BLOCK_MEAN and not flags & DC_REMOVED_MASK:
+        raise ValueError("native BlockMean recipe lacks DC_REMOVED")
+    return expected
 
 
 def native_spectrum_provenance(frame: Any) -> SpectrumProvenance:
@@ -40,6 +75,7 @@ def native_spectrum_provenance(frame: Any) -> SpectrumProvenance:
         calibration_status=enum("calibration_status"), calibration_profile_id=profile or None,
         estimated_uncertainty_db=number("estimated_uncertainty_db", unavailable_nan=True),
         window_normalization_version=getattr(frame, "window_normalization_version", None),
+        processing_recipe=_processing_recipe(frame),
     )
 
 

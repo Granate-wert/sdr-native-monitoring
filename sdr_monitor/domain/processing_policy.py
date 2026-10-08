@@ -8,7 +8,7 @@ Native wiring/support, profile algorithms and RF validity remain separate gates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import hashlib
 import json
@@ -159,6 +159,46 @@ class SdrProcessingPolicyV1:
 
 
 @dataclass(frozen=True, slots=True)
+class DspProcessingRecipeObservationV1:
+    """Observed DSP stage only; no owner, RX, epoch or revision authority.
+
+    Only the two qualified CPU recipes are representable here. Creating an
+    observation does not admit a request or prove hardware DC tracking. Shared
+    mapper instances cache canonical text/digest once, not for every frame.
+    """
+
+    dc_mode: HostDcMode
+    policy: SdrProcessingPolicyV1 = field(init=False)
+    canonical_policy_json: str = field(init=False)
+    policy_digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.dc_mode) is not HostDcMode:
+            raise ValueError("typed observed DC algorithm required")
+        policy = SdrProcessingPolicyV1(dc_mode=self.dc_mode)
+        payload = policy.canonical_bytes()
+        object.__setattr__(self, "policy", policy)
+        object.__setattr__(self, "canonical_policy_json", payload.decode("ascii"))
+        object.__setattr__(self, "policy_digest", "sha256:" + hashlib.sha256(payload).hexdigest())
+
+    @property
+    def schema_version(self) -> int:
+        return PROCESSING_CONTRACT_VERSION
+
+    @property
+    def scope(self) -> str:
+        return "dsp_recipe_only"
+
+    @property
+    def whole_frame_modified(self) -> bool:
+        return self.dc_mode is HostDcMode.BLOCK_MEAN
+
+    @property
+    def hardware_dc_tracking(self) -> None:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
 class NativeProcessingSupport:
     """Pure capability declaration, not a probe or proof of applied processing."""
 
@@ -288,8 +328,10 @@ class AppliedProcessingContextV1:
             raise ValueError("native filtering requires explicit whole-frame modification")
         if self.spur_mode is HostSpurMode.PROFILE_NOTCH and not self.zones:
             raise ValueError("profile notch requires declared affected RF intervals")
-        if bool(self.native_quality_flags & DC_REMOVED_MASK) != (self.dc_mode is HostDcMode.BLOCK_MEAN):
-            raise ValueError("DC_REMOVED inconsistent with actual DC algorithm")
+        # Quality bits are cumulative: an OFF stage may inherit DcRemoved.
+        # Never erase ingress evidence or infer the current recipe from a bit.
+        if self.dc_mode is HostDcMode.BLOCK_MEAN and not self.native_quality_flags & DC_REMOVED_MASK:
+            raise ValueError("DC_REMOVED missing for actual BlockMean algorithm")
 
 
 def validate_processing_receipt(policy: SdrProcessingPolicyV1, expected_key: ProcessingFrameKey,

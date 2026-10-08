@@ -247,6 +247,20 @@ class ProcessingPolicyTests(unittest.TestCase):
             replace(receipt(SdrProcessingPolicyV1(spur_mode=HostSpurMode.PROFILE_NOTCH,
                                                 spur_profile=profile())), zones=())
 
+    def test_off_receipt_preserves_ingress_dc_bit_without_inventing_current_filter(self):
+        policy = SdrProcessingPolicyV1()
+        inherited = receipt(policy).native_quality_flags | DC_REMOVED_MASK | (1 << 2)
+        current = replace(receipt(policy), native_quality_flags=inherited)
+        validate_processing_receipt(policy, key(), 7, current)
+        self.assertEqual(current.native_quality_flags, inherited)
+        self.assertIs(current.dc_mode, HostDcMode.OFF)
+        self.assertFalse(current.whole_frame_modified)
+        self.assertIsNone(current.hardware_dc_tracking)
+        with self.assertRaises(ValueError):
+            validate_processing_receipt(SdrProcessingPolicyV1(HostDcMode.BLOCK_MEAN), key(), 7, current)
+        with self.assertRaises(ValueError):
+            validate_processing_receipt(policy, replace(key(), acquisition_epoch=6), 7, current)
+
     def test_legacy_flags_cannot_fabricate_recipe_or_hardware_readback(self):
         self.assertIsNone(LegacyProcessingObservation(None).dc_removed_reported)
         self.assertFalse(LegacyProcessingObservation(0).dc_removed_reported)

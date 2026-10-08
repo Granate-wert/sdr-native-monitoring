@@ -31,7 +31,10 @@ class SpectrumProvenanceTests(unittest.TestCase):
         self.assertEqual(len(frames), 1)
         frame = frames[0]
         self.assertEqual(frame.averaging_frames, 4)
-        service = NativeLiveSessionService(_FakeNative())
+        # The compiled producer carries ready-clock evidence; use its SAME
+        # clock protocol rather than the old fake module with no such ABI.
+        # Service construction/pure conversion does not discover/start hardware.
+        service = NativeLiveSessionService(native)
         self.assertTrue(service._publish_frame(frame))
         spectrum = service.latest_snapshot().spectrum
         metadata = spectrum.numerical_provenance

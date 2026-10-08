@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from math import isfinite
 
+from .processing_policy import DspProcessingRecipeObservationV1
+
 _ENUM_VALUES = {
     "window": {"rectangular", "hann", "blackman_harris_4term", "flat_top", "nuttall", "kaiser"},
     "detector": {"sample", "peak", "negative_peak", "rms", "average_power"},
@@ -23,8 +25,11 @@ class SpectrumProvenance:
     calibration_profile_id: str | None = None
     estimated_uncertainty_db: float | None = None
     window_normalization_version: str | None = None
+    processing_recipe: DspProcessingRecipeObservationV1 | None = None
 
     def __post_init__(self) -> None:
+        if self.processing_recipe is not None and type(self.processing_recipe) is not DspProcessingRecipeObservationV1:
+            raise ValueError("typed immutable DSP recipe observation required or unknown")
         for name, allowed in _ENUM_VALUES.items():
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or value not in allowed):
