@@ -60,6 +60,7 @@ void validate_config(const HackrfSweepAnalysisConfig& config) {
     dsp.averaging_frames = 1U;
     dsp.calibration_status = sdr_core::CalibrationStatus::Uncalibrated;
     sdr_core::validate(dsp);
+    static_cast<void>(sdr_core::DspProcessingRecipeV1::from_dc_mode(config.dc_removal));
 }
 
 std::uint32_t segment_index(const std::size_t plan_index,
@@ -127,6 +128,8 @@ sdr_core::SweepLineDefinition make_definition(
     const auto bins = static_cast<std::uint64_t>(std::ceil(
         (definition.stop_frequency_hz - definition.start_frequency_hz) / bin_hz - 1e-12));
     const auto reduced_bytes = bins * 128U +
+        definition.segments.size() * (5ULL + definition.max_inflight_lines) *
+            sdr_core::sweep_processing_record_reserved_bytes +
         definition.segments.size() * static_cast<std::uint64_t>(config.fft_size) * 16U + config.fft_size * 8U +
         // Two DSP output/drain slots, constructing/returned frame and crop copies.
         6U * sdr_core::dsp_processing_recipe_slot_reserved_bytes +
@@ -158,7 +161,7 @@ struct HackrfSweepAnalysis::Impl final {
           assembler(line_definition, layer_journal) {
         sdr_core::DspOptions options;
         options.source = config.source;
-        options.dc_removal = sdr_core::DcRemovalMode::Off;
+        options.dc_removal = config.dc_removal;
         options.output_capacity = 2U;
         dsp = sdr_core::make_cpu_dsp_backend(std::move(options));
         sdr_core::DspConfig dsp_config;

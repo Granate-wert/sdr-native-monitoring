@@ -18,7 +18,8 @@ import numpy as np
 from ..domain import SweepLineFrame, SweepLineGapReason, SweepLineState
 from ..domain.analyzer_display import ContinuousSweepDisplayMetrics, ContinuousSweepDisplaySnapshot
 from ..domain.sweep_progress import SweepProgressFrame
-from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition
+from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, SweepSegmentProcessing
+from .native_spectrum_provenance import native_contributing_provenance
 from ..domain.sweep_statistics import SweepStatisticsFrame
 from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from ..domain.layer_ready import LayerReadyReceipt
@@ -292,7 +293,22 @@ def _to_domain_acquisition(native: Any) -> tuple[SweepSegmentAcquisition, ...] |
         frame_sequence=item.frame_sequence, first_sample_index=item.first_sample_index,
         timestamp_ns=item.timestamp_ns, sample_rate_hz=item.sample_rate_hz,
         fft_size=item.fft_size, quality_flags=item.quality_flags,
+        processing_metadata=_to_domain_processing(item, native.unit),
     ) for item in records)
+
+
+def _to_domain_processing(item: Any, unit: Any) -> SweepSegmentProcessing | None:
+    try:
+        metadata = getattr(item, "processing_metadata", None)
+    except Exception:  # noqa: BLE001 - unsupported legacy metadata stays UNKNOWN.
+        return None
+    if metadata is None:
+        return None
+    return SweepSegmentProcessing(
+        metadata.center_frequency_hz, metadata.sample_rate_hz, metadata.analog_bandwidth_hz,
+        metadata.fft_size, metadata.hop_size,
+        native_contributing_provenance(metadata, native_quality_flags=item.quality_flags, unit=unit),
+    )
 
 
 def _to_domain_position(native: Any) -> SweepSegmentPosition | None:

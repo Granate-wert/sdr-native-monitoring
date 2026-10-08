@@ -127,5 +127,8 @@ def estimate_analyzer_reduced(
     return AnalyzerReducedEstimate(
         mode, output_bins, output_bins * 20 * retained_outputs,
         output_bins * 28,
-        segment_count * physical_fft_size * 16 + physical_fft_size * 8,
+        segment_count * physical_fft_size * 16 + physical_fft_size * 8
+        # Native fixed-window/coordinator metadata: every output plus staging.
+        # SAME 1024-byte record reservation; limits and retention are unchanged.
+        + segment_count * (retained_outputs + 1) * 1024,
     )

@@ -12,35 +12,6 @@
 
 namespace sdr_core {
 
-inline constexpr std::uint32_t persistence_processing_metadata_version = 1U;
-inline constexpr std::size_t persistence_metadata_string_max_bytes = 256U;
-
-// Actual contributing numerical signature, not a hardware readback or an
-// admitted owner receipt. UNKNOWN recipe/normalization remain absent. Strings
-// are bounded; copied only on identity change or snapshot, not every FFT.
-struct PersistenceProcessingMetadataV1 {
-    std::optional<DspProcessingRecipeV1> dsp_processing_recipe;
-    double center_frequency_hz{};
-    double sample_rate_hz{};
-    double analog_bandwidth_hz{};
-    double fft_bin_width_hz{};
-    double enbw_hz{};
-    double nominal_rbw_hz{};
-    std::uint32_t fft_size{};
-    std::uint32_t hop_size{};
-    WindowType window{WindowType::Hann};
-    DetectorType detector{DetectorType::Sample};
-    PrecisionMode precision_mode{PrecisionMode::AccurateF32F64Accum};
-    std::uint32_t averaging_frames{};
-    CalibrationStatus calibration_status{CalibrationStatus::Uncalibrated};
-    std::string calibration_profile_id;
-    double estimated_uncertainty_db{std::numeric_limits<double>::quiet_NaN()};
-    std::optional<std::string> window_normalization_version;
-
-    [[nodiscard]] static PersistenceProcessingMetadataV1 from_frame(const SpectrumFrame& frame);
-    [[nodiscard]] bool matches(const SpectrumFrame& frame) const noexcept;
-};
-
 struct PersistenceSnapshot {
     SourceDescriptor source;
     std::uint64_t config_generation{};

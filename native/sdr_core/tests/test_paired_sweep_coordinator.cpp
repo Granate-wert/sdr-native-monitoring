@@ -163,10 +163,14 @@ void gain_readback_validation() {
     refused([&] { sdr_pluto::validate_paired_sweep_gain_readback(applied, requested); });
     std::cout << "pure paired actual gain validation/order/mode/finite/manual exact/quantization/AGC PASS\n";
 }
-void completed(Hooks& hooks, bool single) {
+void completed(Hooks& hooks, bool single, bool processed = false) {
     const int contexts = hooks.created_contexts(), lo = hooks.lo();
     sdr_pluto::ContinuousSweepCoordinator owner("usb:mock");
     auto profile = config(single);
+    if (processed) {
+        for (auto* chain : {&profile.primary, &profile.secondary})
+            for (auto& segment : chain->segments) segment.fixed_band.dc_removal_block_mean = true;
+    }
     owner.configure_paired(profile);
     refused([&] { static_cast<void>(owner.poll_lines(0)); });
     owner.start(); wait_lines(owner, single ? 8 : 3);
@@ -215,6 +219,17 @@ void completed(Hooks& hooks, bool single) {
         require(differs, "RX2 is duplicated RX1 data");
         for (std::size_t k = 0; k < pair.steps.size(); ++k) {
             const auto& step = pair.steps[k];
+            for (const auto* record : {&pair.primary.acquired_segments[k], &pair.secondary.acquired_segments[k]}) {
+                require(record->processing_metadata && record->processing_metadata->dsp_processing_recipe &&
+                    record->processing_metadata->center_frequency_hz == step.center_frequency_hz &&
+                    record->processing_metadata->sample_rate_hz == step.sample_rate_hz &&
+                    record->processing_metadata->analog_bandwidth_hz == step.analog_bandwidth_hz &&
+                    record->processing_metadata->fft_size == step.fft_size &&
+                    record->processing_metadata->dsp_processing_recipe->dc_removal() == (processed
+                        ? sdr_core::DcRemovalMode::BlockMean : sdr_core::DcRemovalMode::Off) &&
+                    (!processed || sdr_core::has_flag(record->quality_flags, sdr_core::QualityFlag::DcRemoved)),
+                    "paired actual contributing FFT metadata/recipe differs from common step receipt");
+            }
             require(step.receiver_gains[0].receiver == sdr_pluto::ReceiverSelection::Rx1 &&
                 step.receiver_gains[1].receiver == sdr_pluto::ReceiverSelection::Rx2 &&
                 step.receiver_gains[0].gain_mode == sdr_core::GainMode::Manual &&
@@ -613,7 +628,7 @@ void layer_journal_owner(Hooks& hooks) {
 }
 
 int main() {
-    try { gain_readback_validation(); Hooks hooks; validation(hooks); completed(hooks, false); completed(hooks, true); gain_readback_retuning(hooks); cancellation(hooks); progress_and_failure(hooks); start_race_and_one_sided_failure(hooks);
+    try { gain_readback_validation(); Hooks hooks; validation(hooks); completed(hooks, false); completed(hooks, true); completed(hooks, false, true); gain_readback_retuning(hooks); cancellation(hooks); progress_and_failure(hooks); start_race_and_one_sided_failure(hooks);
         layer_journal_owner(hooks); statistics_validation(hooks); statistics_pressure(hooks, false, false); statistics_pressure(hooks, true, false);
         statistics_pressure(hooks, true, true); statistics_prefix(hooks); statistics_shared_gap(hooks); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

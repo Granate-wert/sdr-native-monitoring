@@ -325,6 +325,8 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
     const auto bins = static_cast<std::uint64_t>(value.analysis_bins_per_usable_window
         ? std::ceil(ratio - 1e-12) : std::floor(ratio) + 1.0);
     const auto reduced_bytes = bins * (20U * (value.output_queue_capacity + 3U) + 28U) +
+        value.segments.size() * (value.output_queue_capacity + 3ULL + definition.max_inflight_lines) *
+            sdr_core::sweep_processing_record_reserved_bytes +
         value.segments.size() * static_cast<std::uint64_t>(first.dsp.fft_size) * 16U + first.dsp.fft_size * 8U +
         (value.output_queue_capacity + 3ULL + definition.max_inflight_lines) *
             sizeof(std::optional<sdr_core::LayerReadyRef>) + sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>) +
@@ -352,6 +354,8 @@ std::uint64_t paired_sweep_payload_bytes(const PairedContinuousSweepCoordinatorC
     // previews and constructing snapshots. Shared pointers may save memory,
     // but admission does not assume sharing. Scalar step vectors included.
     auto bytes = 2ULL * (bins * (20ULL * slots + 28ULL) +
+        config.primary.segments.size() * (slots + definition.max_inflight_lines) *
+            sdr_core::sweep_processing_record_reserved_bytes +
         config.primary.segments.size() * config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
         config.primary.segments.front().fixed_band.dsp.fft_size * 16ULL +
         config.primary.segments.size() * (slots * sizeof(PairedSweepStepReceipt) + 512ULL) +

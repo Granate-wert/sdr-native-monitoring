@@ -96,6 +96,74 @@ namespace {
 
 int main() {
     try {
+        // A panorama cannot mix known OFF, processed BlockMean and UNKNOWN
+        // contributions. Rejected segments must not mutate a visible prefix.
+        for (const auto mode : {sdr_core::DcRemovalMode::Off, sdr_core::DcRemovalMode::BlockMean}) {
+            auto journal = std::make_shared<sdr_core::LayerReadyJournal>(8U);
+            sdr_core::ContinuousSweepLineAssembler processing(definition(), journal);
+            auto first = segment(0U, 11U);
+            first.spectrum.dsp_processing_recipe = sdr_core::DspProcessingRecipeV1::from_dc_mode(mode);
+            if (mode == sdr_core::DcRemovalMode::BlockMean)
+                first.spectrum.quality_flags = first.spectrum.quality_flags | sdr_core::QualityFlag::DcRemoved;
+            static_cast<void>(processing.admit(50U, 100, first));
+            const auto before = processing.preview(50U);
+            for (const auto mismatch : {0, 1}) {
+                auto second = segment(1U, 12U);
+                if (mismatch == 0) {
+                    const auto other = mode == sdr_core::DcRemovalMode::Off
+                        ? sdr_core::DcRemovalMode::BlockMean : sdr_core::DcRemovalMode::Off;
+                    second.spectrum.dsp_processing_recipe = sdr_core::DspProcessingRecipeV1::from_dc_mode(other);
+                    if (other == sdr_core::DcRemovalMode::BlockMean)
+                        second.spectrum.quality_flags = second.spectrum.quality_flags | sdr_core::QualityFlag::DcRemoved;
+                }
+                if (!rejects([&] { static_cast<void>(processing.admit(50U, 999, second)); })) {
+                    std::cerr << "Sweep admitted incompatible or UNKNOWN DSP recipe" << std::endl;
+                    return 100;
+                }
+                const auto after = processing.preview(50U);
+                if (!before || !after || before->revision != after->revision ||
+                    before->layer_ready != after->layer_ready ||
+                    before->pending_segment_indices != after->pending_segment_indices ||
+                    *before->quality_flags_per_bin != *after->quality_flags_per_bin ||
+                    (*before->values)[0] != (*after->values)[0] ||
+                    processing.metrics().completed_lines != 0U || journal->summary().created != 1U)
+                    return 101;
+            }
+            auto matching = segment(1U, 12U);
+            matching.spectrum.dsp_processing_recipe = first.spectrum.dsp_processing_recipe;
+            matching.spectrum.quality_flags = first.spectrum.quality_flags;
+            const auto complete = processing.admit(50U, 101, matching);
+            if (complete.size() != 1U || complete[0].completed_ns != 101 ||
+                complete[0].state != sdr_core::SweepLineState::Complete) return 102;
+            if (!before->segment_acquisition[0].processing_metadata ||
+                !before->segment_acquisition[0].processing_metadata->matches(first.spectrum) ||
+                complete[0].acquired_segments.size() != 2U ||
+                !complete[0].acquired_segments[1].processing_metadata ||
+                !complete[0].acquired_segments[1].processing_metadata->matches(matching.spectrum) ||
+                complete[0].acquired_segments[0].processing_metadata->center_frequency_hz != 102.0 ||
+                complete[0].acquired_segments[1].processing_metadata->center_frequency_hz != 106.0)
+                return 103;
+            // A partial Stop keeps only the actual contributing segment.
+            static_cast<void>(processing.admit(51U, 102, first));
+            const auto cancelled = processing.flush(sdr_core::SweepLineGapReason::Cancellation);
+            if (cancelled.size() != 1U || cancelled[0].acquired_segments.size() != 1U ||
+                !cancelled[0].acquired_segments[0].processing_metadata->matches(first.spectrum)) return 104;
+        }
+        {
+            sdr_core::ContinuousSweepLineAssembler bounded(definition());
+            auto oversized = segment(0U, 11U);
+            oversized.spectrum.calibration_profile_id.assign(257U, 'x');
+            if (!rejects([&] { static_cast<void>(bounded.admit(60U, 1, oversized)); }) ||
+                bounded.metrics().pending_lines != 0U) return 105;
+            static_cast<void>(bounded.admit(60U, 1, segment(0U, 11U)));
+            auto unknown_to_known = segment(1U, 12U);
+            unknown_to_known.spectrum.dsp_processing_recipe =
+                sdr_core::DspProcessingRecipeV1::from_dc_mode(sdr_core::DcRemovalMode::Off);
+            if (!rejects([&] { static_cast<void>(bounded.admit(60U, 2, unknown_to_known)); })) return 106;
+            auto normalization = segment(1U, 12U);
+            normalization.spectrum.window_normalization_version = "different-normalization";
+            if (!rejects([&] { static_cast<void>(bounded.admit(60U, 2, normalization)); })) return 107;
+        }
         {
             auto journal = std::make_shared<sdr_core::LayerReadyJournal>(8U);
             sdr_core::ContinuousSweepLineAssembler measured(definition(), journal);

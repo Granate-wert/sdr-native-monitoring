@@ -21,14 +21,14 @@ _EXPECTED_RECIPE_FIELDS = {
 }
 
 
-class _DensityMetadataView:
+class _ContributingMetadataView:
     """Borrow actual bounded native metadata; no latest-spectrum/request join."""
 
     __slots__ = ("_metadata", "quality_flags")
 
     def __init__(self, metadata: Any, quality_flags: int) -> None:
         if type(quality_flags) is not int or not 0 <= quality_flags < (1 << 32):
-            raise ValueError("density metadata requires exact native quality flags")
+            raise ValueError("contributing metadata requires exact native quality flags")
         self._metadata = metadata
         self.quality_flags = quality_flags
 
@@ -44,8 +44,13 @@ def native_persistence_provenance(value: Any, *, native_quality_flags: int) -> S
         return None
     if metadata is None:
         return None  # Legacy/unsupported absence stays UNKNOWN, not inferred OFF.
-    result = native_spectrum_provenance(_DensityMetadataView(metadata, native_quality_flags))
-    token = str(getattr(value.unit, "name", value.unit))
+    return native_contributing_provenance(metadata, native_quality_flags=native_quality_flags, unit=value.unit)
+
+
+def native_contributing_provenance(metadata: Any, *, native_quality_flags: int, unit: Any) -> SpectrumProvenance:
+    """SAME numerical signature for density/Sweep; no layer ownership inferred."""
+    result = native_spectrum_provenance(_ContributingMetadataView(metadata, native_quality_flags))
+    token = str(getattr(unit, "name", unit))
     validate_absolute_unit("dBm" if token.lower().startswith("dbm") else token, result)
     return result
 

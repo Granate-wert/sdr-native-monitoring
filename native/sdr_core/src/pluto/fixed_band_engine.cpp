@@ -289,6 +289,9 @@ struct LiveResourceBudget {
         );
         sweep_line_bytes = checked_add(sweep_line_bytes,
             (continuous_sweep_line_relay_capacity(config) + 3ULL) *
+                sdr_core::sweep_processing_record_reserved_bytes, "Sweep contributing FFT metadata");
+        sweep_line_bytes = checked_add(sweep_line_bytes,
+            (continuous_sweep_line_relay_capacity(config) + 3ULL) *
                 sizeof(std::optional<sdr_core::LayerReadyRef>) +
             sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>), "Sweep creation ref scalars");
         if (config.layer_event_capacity != 0U) {

@@ -22,6 +22,19 @@ constexpr std::uint32_t max_target_bins = 2'000'000U;
     return left.source_id == right.source_id && left.source_type == right.source_type;
 }
 
+[[nodiscard]] bool compatible_processing(const SpectrumFrame& left, const SpectrumFrame& right) noexcept {
+    const auto& a = left.dsp_processing_recipe;
+    const auto& b = right.dsp_processing_recipe;
+    // UNKNOWN is compatible only with UNKNOWN; a quality bit is not a recipe.
+    return a.has_value() == b.has_value() && (!a || a->dc_removal() == b->dc_removal()) &&
+        left.window_normalization_version == right.window_normalization_version &&
+        left.sample_rate_hz == right.sample_rate_hz && left.fft_size == right.fft_size &&
+        left.hop_size == right.hop_size && left.fft_bin_width_hz == right.fft_bin_width_hz &&
+        left.enbw_hz == right.enbw_hz && left.nominal_rbw_hz == right.nominal_rbw_hz &&
+        left.window == right.window && left.detector == right.detector &&
+        left.precision_mode == right.precision_mode && left.averaging_frames == right.averaging_frames;
+}
+
 [[nodiscard]] float db_from_power(const double power) noexcept {
     return power > 0.0
         ? static_cast<float>(10.0 * std::log10(power))
@@ -128,6 +141,10 @@ std::vector<SweepLineFrame> ContinuousSweepLineAssembler::admit(
         throw ConfigurationError("sweep-line completion timestamp must be non-negative");
     }
     validate(segment);
+    if (segment.spectrum.calibration_profile_id.size() > persistence_metadata_string_max_bytes ||
+        (segment.spectrum.window_normalization_version &&
+         segment.spectrum.window_normalization_version->size() > persistence_metadata_string_max_bytes))
+        throw ConfigurationError("Sweep processing metadata exceeds bounded string policy");
     const auto expected = std::find_if(
         definition_.segments.begin(), definition_.segments.end(),
         [&segment](const SweepLineSegmentDefinition& item) {
@@ -169,6 +186,10 @@ std::vector<SweepLineFrame> ContinuousSweepLineAssembler::admit(
         if (pending->second.segments.contains(segment.segment_index)) {
             throw ConfigurationError("sweep-line segment was admitted more than once");
         }
+        // Before storing/accumulating or invalidating the cached preview.
+        // RF centers and generations differ legitimately between steps.
+        if (!compatible_processing(pending->second.segments.begin()->second.spectrum, segment.spectrum))
+            throw ConfigurationError("Sweep segment DSP recipe/normalization differs within one line");
     }
     auto& staging = pending->second;
     const auto target_begin = static_cast<std::size_t>(std::lower_bound(
@@ -310,6 +331,7 @@ SweepLineFrame ContinuousSweepLineAssembler::finalise(
             .sample_rate_hz = frame.sample_rate_hz,
             .fft_size = frame.fft_size,
             .quality_flags = frame.quality_flags,
+            .processing_metadata = PersistenceProcessingMetadataV1::from_frame(frame),
         });
     }
 

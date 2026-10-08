@@ -660,7 +660,8 @@ void test_pair_layer_journals(Hooks& hooks) {
     const auto bins = static_cast<std::uint64_t>(std::floor(20'000'000. /
         (ceiling.primary.device.sample_rate_hz / ceiling.primary.dsp.fft_size)) + 1.);
     const auto channel_bytes = bins * 20U * (relay + 2U) + (relay + 3U) *
-        sizeof(std::optional<sdr_core::LayerReadyRef>) + sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>);
+        (sizeof(std::optional<sdr_core::LayerReadyRef>) + sdr_core::sweep_processing_record_reserved_bytes) +
+        sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>);
     auto sink = std::make_shared<AnalyticalSink>();
     sink->reservation = 128ULL * 1024U * 1024U - 2U * channel_bytes;
     ceiling.analytical_sink = sink;

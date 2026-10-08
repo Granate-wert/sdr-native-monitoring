@@ -498,9 +498,21 @@ void bind_pluto(py::module_& module) {
         .def_readonly("timestamp_ns", &sdr_core::SweepSegmentAcquisition::timestamp_ns)
         .def_readonly("sample_rate_hz", &sdr_core::SweepSegmentAcquisition::sample_rate_hz)
         .def_readonly("fft_size", &sdr_core::SweepSegmentAcquisition::fft_size)
+        .def_readonly("processing_metadata", &sdr_core::SweepSegmentAcquisition::processing_metadata)
         .def_property_readonly("quality_flags", [](const sdr_core::SweepSegmentAcquisition& value) {
             return static_cast<std::uint32_t>(value.quality_flags);
         });
+
+    module.def("sweep_processing_metadata_contract", [] {
+        py::dict result;
+        result["schema_version"] = sdr_core::persistence_processing_metadata_version;
+        result["scope"] = "native_contributing_sweep_metadata_only";
+        result["full_owner_context"] = false;
+        result["mixed_processing_line_refused"] = true;
+        result["string_max_bytes"] = sdr_core::persistence_metadata_string_max_bytes;
+        result["segment_record_reserved_bytes"] = sdr_core::sweep_processing_record_reserved_bytes;
+        return result;
+    });
 
     py::class_<sdr_core::SweepProgressFrame>(module, "SweepProgressFrame")
         .def_readonly("layer_ready", &sdr_core::SweepProgressFrame::layer_ready)

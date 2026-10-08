@@ -320,6 +320,38 @@ struct SpectrumFrame {
     std::optional<DspProcessingRecipeV1> dsp_processing_recipe;
 };
 
+// Shared contributing FFT numerical metadata. The historical persistence type
+// name is retained for ABI/source callers; Sweep uses the SAME signature, not
+// a density owner receipt or panorama-center/readback inference.
+inline constexpr std::uint32_t persistence_processing_metadata_version = 1U;
+inline constexpr std::size_t persistence_metadata_string_max_bytes = 256U;
+
+// Actual contributing numerical signature, not a hardware readback or an
+// admitted owner receipt. UNKNOWN recipe/normalization remain absent. Strings
+// are bounded; copied only on identity change or snapshot, not every FFT.
+struct PersistenceProcessingMetadataV1 {
+    std::optional<DspProcessingRecipeV1> dsp_processing_recipe;
+    double center_frequency_hz{};
+    double sample_rate_hz{};
+    double analog_bandwidth_hz{};
+    double fft_bin_width_hz{};
+    double enbw_hz{};
+    double nominal_rbw_hz{};
+    std::uint32_t fft_size{};
+    std::uint32_t hop_size{};
+    WindowType window{WindowType::Hann};
+    DetectorType detector{DetectorType::Sample};
+    PrecisionMode precision_mode{PrecisionMode::AccurateF32F64Accum};
+    std::uint32_t averaging_frames{};
+    CalibrationStatus calibration_status{CalibrationStatus::Uncalibrated};
+    std::string calibration_profile_id;
+    double estimated_uncertainty_db{std::numeric_limits<double>::quiet_NaN()};
+    std::optional<std::string> window_normalization_version;
+
+    [[nodiscard]] static PersistenceProcessingMetadataV1 from_frame(const SpectrumFrame& frame);
+    [[nodiscard]] bool matches(const SpectrumFrame& frame) const noexcept;
+};
+
 // Charge both the inline value and potential containing-frame padding in owners
 // whose payload budgets do not already count sizeof(SpectrumFrame). Not RSS.
 inline constexpr std::uint64_t dsp_processing_recipe_slot_reserved_bytes =
@@ -408,7 +440,17 @@ struct SweepSegmentAcquisition {
     double sample_rate_hz{};
     std::uint32_t fft_size{};
     QualityFlag quality_flags{QualityFlag::None};
+    // Native contributing FFT only; old/manual records remain UNKNOWN. The
+    // center is this real RF window, never the stitched panorama center.
+    std::optional<PersistenceProcessingMetadataV1> processing_metadata;
 };
+
+// Conservative per retained segment record, including bounded string payloads
+// and containing-vector alignment. Owners count every retained output/prefix;
+// this does not increase the established 128 MiB reduced component budget.
+inline constexpr std::uint64_t sweep_processing_record_reserved_bytes = 1024U;
+static_assert(sizeof(SweepSegmentAcquisition) + alignof(SweepSegmentAcquisition) +
+    2U * persistence_metadata_string_max_bytes <= sweep_processing_record_reserved_bytes);
 
 struct SweepStatisticsSnapshot;
 

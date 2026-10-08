@@ -27,6 +27,9 @@ struct HackrfSweepAnalysisConfig {
     double analysis_stop_hz{};
     // Optional creation evidence before runtime coalescing; default off.
     std::uint32_t layer_event_capacity{};
+    // Actual native per-tune FFT stage. Default OFF preserves legacy policy;
+    // product admission still requires its own SAME Sweep owner context.
+    sdr_core::DcRemovalMode dc_removal{sdr_core::DcRemovalMode::Off};
 };
 
 struct HackrfSweepAnalysisMetrics {

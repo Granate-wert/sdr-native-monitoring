@@ -3,6 +3,7 @@
 #include "sdr_core/errors.hpp"
 
 #include <cmath>
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -342,11 +343,66 @@ void test_iq_payload_dsp_fft_metrics_are_distinct_and_non_consuming() {
     }
 }
 
+void test_actual_block_mean_per_tune_metadata() {
+    auto processed_config = config();
+    processed_config.dc_removal = sdr_core::DcRemovalMode::BlockMean;
+    sdr_hackrf::HackrfSweepAnalysis processed(processed_config);
+    sdr_hackrf::HackrfSweepAnalysis off(config());
+    auto offset = block(0U, 1U, 1U);
+    // Real CI8 payload: same ±5 MHz tones plus constant complex DC. DC lies
+    // outside the official two crops, so this is NOT a visible-DC suppression
+    // or RF-flatness assertion. It checks actual CPU recipe and tone fidelity.
+    for (std::size_t i = 0; i < offset.interleaved_ci8.size(); i += 2U) {
+        const auto value = static_cast<std::int8_t>(offset.interleaved_ci8[i]);
+        offset.interleaved_ci8[i] = static_cast<std::uint8_t>(value + 20);
+        offset.interleaved_ci8[i + 1U] = 10U;
+    }
+    static_cast<void>(processed.admit(offset));
+    static_cast<void>(off.admit(offset));
+    const auto on_prefix = processed.preview();
+    const auto off_prefix = off.preview();
+    expect(on_prefix && off_prefix && on_prefix->revision == off_prefix->revision,
+           "processed Sweep lost progressive prefix");
+    for (const auto& acquired : on_prefix->segment_acquisition) {
+        expect(acquired.processing_metadata && acquired.processing_metadata->dsp_processing_recipe &&
+                   acquired.processing_metadata->dsp_processing_recipe->dc_removal() ==
+                       sdr_core::DcRemovalMode::BlockMean &&
+                   acquired.processing_metadata->sample_rate_hz == 20'000'000.0 &&
+                   acquired.processing_metadata->center_frequency_hz == 2'407'500'000.0 &&
+                   acquired.processing_metadata->analog_bandwidth_hz == 15'000'000.0 &&
+                   acquired.processing_metadata->fft_size == 4096U &&
+                   acquired.processing_metadata->averaging_frames == 1U &&
+                   sdr_core::has_flag(acquired.quality_flags, sdr_core::QualityFlag::DcRemoved),
+               "actual per-tune BlockMean FFT metadata/quality lost");
+    }
+    expect(off_prefix->segment_acquisition[0].processing_metadata->dsp_processing_recipe->dc_removal() ==
+               sdr_core::DcRemovalMode::Off,
+           "default OFF recipe changed");
+    const auto peak = [](const auto& values) {
+        float result = -std::numeric_limits<float>::infinity();
+        for (const auto value : *values) if (std::isfinite(value)) result = std::max(result, value);
+        return result;
+    };
+    expect(std::abs(peak(on_prefix->values) - peak(off_prefix->values)) < 1e-4F,
+           "BlockMean changed measured crop tone power");
+    const auto stopped = processed.finish();
+    expect(stopped.size() == 1U && stopped[0].acquired_segments.size() == 2U &&
+               stopped[0].acquired_segments[0].processing_metadata->dsp_processing_recipe->dc_removal() ==
+                   sdr_core::DcRemovalMode::BlockMean && processed.metrics().dsp.fft_frames_computed == 1U,
+           "terminal partial flush lost contributing recipe or double counted crops");
+    processed_config.dc_removal = static_cast<sdr_core::DcRemovalMode>(255U);
+    bool refused = false;
+    try { sdr_hackrf::HackrfSweepAnalysis invalid(processed_config); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused, "unknown native Sweep DC mode admitted");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_two_disjoint_subbands_and_progressive_line();
+        test_actual_block_mean_per_tune_metadata();
         test_gap_flush_and_next_scan_without_stale_repair();
         test_incomplete_finish_and_fail_closed_admission();
         test_extended_full_range_and_partial_final_crop();

@@ -334,7 +334,7 @@ void test_failed_close_retains_same_owner_for_explicit_retry() {
 }
 
 void test_invalid_geometry_refuses_before_sdk() {
-    for (const std::uint32_t case_id : {0U, 1U, 2U, 3U}) {
+    for (const std::uint32_t case_id : {0U, 1U, 2U, 3U, 4U}) {
         auto state = std::make_shared<FakeState>();
         auto invalid = config();
         if (case_id == 0U) {
@@ -343,9 +343,14 @@ void test_invalid_geometry_refuses_before_sdk() {
             invalid.analysis.fft_size = 512U;
         } else if (case_id == 2U) {
             invalid.analysis.layer_event_capacity = 4097U;
-        } else {
-            invalid.analysis.acquisition.sequence.ranges = {{100U, 3500U}};
+        } else if (case_id == 3U) {
+            invalid.analysis.acquisition.sequence.ranges = {{100U, 3400U}};
             invalid.analysis.layer_event_capacity = 4096U;
+        } else {
+            // The former near-ceiling range now also includes every retained
+            // contributing metadata record. Preserve it as a before-SDK
+            // refusal case; do not increase 128 MiB or change Fs/FFT to fit.
+            invalid.analysis.acquisition.sequence.ranges = {{100U, 3500U}};
         }
         bool refused = false;
         try {
@@ -364,6 +369,7 @@ void test_sweep_journal_overflow_partial_stop_and_new_identity() {
     auto state = std::make_shared<FakeState>();
     auto requested = config();
     requested.analysis.layer_event_capacity = 1U;
+    requested.analysis.dc_removal = sdr_core::DcRemovalMode::BlockMean;
     auto control = HackrfSweepRuntimeAnalysisSession::start(
         std::make_unique<FakeRuntime>(state), requested);
     const auto identity = control->drain_sweep_layer_ready_events(0U).summary.producer_instance_id;
@@ -372,12 +378,20 @@ void test_sweep_journal_overflow_partial_stop_and_new_identity() {
            "overflow setup missing real Sweep preview");
     const auto progress = progress_from(control->poll_next_publication());
     expect(progress && progress->layer_ready, "overflow preview missing creation receipt");
+    expect(progress->segment_acquisition.size() == 2U &&
+               progress->segment_acquisition[0].processing_metadata->dsp_processing_recipe->dc_removal() ==
+                   sdr_core::DcRemovalMode::BlockMean &&
+               sdr_core::has_flag(progress->segment_acquisition[0].quality_flags, sdr_core::QualityFlag::DcRemoved),
+           "SAME native Sweep owner did not deliver processed contributing FFT");
     expect(control->stop(std::chrono::seconds(1)).complete(), "partial journal Stop incomplete");
     const auto terminal = line_from(control->poll_next_publication());
     expect(terminal && terminal->state == sdr_core::SweepLineState::Gap && terminal->layer_ready &&
                terminal->layer_ready->producer_instance_id == identity &&
                terminal->layer_ready->creation_sequence > progress->layer_ready->creation_sequence,
            "partial Stop did not create terminal evidence through the same journal");
+    expect(terminal->acquired_segments[0].processing_metadata->dsp_processing_recipe->dc_removal() ==
+               sdr_core::DcRemovalMode::BlockMean,
+           "SAME Stop flush discarded processed metadata");
     const auto events = control->drain_sweep_layer_ready_events(1U);
     expect(events.creations.size() == 1U && events.creations.front() == *progress->layer_ready &&
                events.summary.created >= 2U && events.summary.events_lost > 0U &&
@@ -400,7 +414,9 @@ void test_sweep_journal_overflow_partial_stop_and_new_identity() {
     // Pure analysis admission establishes the baseline geometry fits the old
     // component budget; capacity4096 above must fail BEFORE the SDK is touched.
     auto near_budget = config().analysis;
-    near_budget.acquisition.sequence.ranges = {{100U, 3500U}};
+    // New near-ceiling geometry at unchanged Fs/FFT, including six metadata
+    // slots per crop; the old 3400 MHz span is explicitly refused above.
+    near_budget.acquisition.sequence.ranges = {{100U, 3400U}};
     sdr_hackrf::HackrfSweepAnalysis admitted(near_budget);
     expect(admitted.metrics().accepted_blocks == 0U, "budget preflight fabricated acquisition");
 }

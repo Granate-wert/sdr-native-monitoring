@@ -2,6 +2,7 @@
 from dataclasses import FrozenInstanceError, replace
 import importlib.util
 import os
+import sys
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -99,9 +100,15 @@ class CompiledSweepConverterTests(unittest.TestCase):
         scope = native_test_dll_directory(str(path))
         scope.__enter__()
         cls.addClassCleanup(scope.__exit__, None, None, None)
-        spec = importlib.util.spec_from_file_location("_sdr_native", path)
-        cls.native = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.native)
+        # One pybind module per process. Re-importing the same file under a
+        # second name registers SourceType twice, before any converter test.
+        # Reuse ONLY the exact explicitly selected path, never a legacy SDK.
+        cls.native = sys.modules.get("sdr_monitor._sdr_native")
+        if cls.native is None:
+            spec = importlib.util.spec_from_file_location("sdr_monitor._sdr_native", path)
+            cls.native = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cls.native)
+            sys.modules[spec.name] = cls.native
         assert Path(cls.native.__file__).resolve() == path
 
     def test_actual_native_creation_ref_through_progress_and_both_terminal_converters(self):

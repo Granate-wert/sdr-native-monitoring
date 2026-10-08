@@ -106,7 +106,7 @@ class AnalyzerResourceTests(unittest.TestCase):
                                             physical_fft_size=4096, segment_count=8)
         self.assertEqual(estimate.output_bytes, 10000 * 20 * 7)
         self.assertEqual(estimate.assembly_bytes, 10000 * 28)
-        self.assertEqual(estimate.retained_segment_bytes, 8 * 4096 * 16 + 4096 * 8)
+        self.assertEqual(estimate.retained_segment_bytes, 8 * 4096 * 16 + 4096 * 8 + 8 * (7 + 1) * 1024)
         self.assertEqual(estimate.total_bytes, sum((estimate.output_bytes,
                          estimate.assembly_bytes, estimate.retained_segment_bytes)))
 

@@ -2,6 +2,29 @@
 from dataclasses import dataclass
 from collections.abc import Iterable
 import math
+from .spectrum_provenance import SpectrumProvenance
+from .processing_policy import DC_REMOVED_MASK, HostDcMode
+
+
+@dataclass(frozen=True, slots=True)
+class SweepSegmentProcessing:
+    """Actual contributing FFT window; not a hardware readback or owner receipt."""
+    center_frequency_hz: float
+    sample_rate_hz: float
+    analog_bandwidth_hz: float
+    fft_size: int
+    hop_size: int
+    numerical_provenance: SpectrumProvenance
+
+    def __post_init__(self) -> None:
+        for value in (self.center_frequency_hz, self.sample_rate_hz, self.analog_bandwidth_hz):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError("Sweep FFT window requires finite positive geometry")
+        if (type(self.fft_size) is not int or not 1 <= self.fft_size <= 262144
+                or type(self.hop_size) is not int or not 1 <= self.hop_size <= self.fft_size):
+            raise ValueError("Sweep FFT/hop geometry is invalid")
+        if type(self.numerical_provenance) is not SpectrumProvenance:
+            raise TypeError("Sweep requires typed contributing FFT provenance")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +62,7 @@ class SweepSegmentAcquisition:
     sample_rate_hz: float
     fft_size: int
     quality_flags: int
+    processing_metadata: SweepSegmentProcessing | None = None
 
     def __post_init__(self) -> None:
         for value in (self.segment_index, self.config_generation, self.frame_sequence,
@@ -48,6 +72,15 @@ class SweepSegmentAcquisition:
         if (not math.isfinite(self.sample_rate_hz) or self.sample_rate_hz <= 0
                 or self.fft_size == 0 or self.quality_flags > 0xFFFFFFFF):
             raise ValueError("invalid acquisition rate, FFT size or quality mask")
+        if self.processing_metadata is not None:
+            metadata = self.processing_metadata
+            if type(metadata) is not SweepSegmentProcessing:
+                raise TypeError("Sweep requires typed immutable processing metadata")
+            if metadata.sample_rate_hz != self.sample_rate_hz or metadata.fft_size != self.fft_size:
+                raise ValueError("Sweep processing metadata differs from contributing acquisition")
+            recipe = metadata.numerical_provenance.processing_recipe
+            if recipe is not None and recipe.dc_mode is HostDcMode.BLOCK_MEAN and not self.quality_flags & DC_REMOVED_MASK:
+                raise ValueError("Sweep BlockMean lacks contributing DC_REMOVED")
 
 
 def validate_acquisition(
