@@ -12,6 +12,7 @@ import threading
 import time
 from uuid import uuid4
 from typing import Any, Protocol
+from collections.abc import Callable
 
 import numpy as np
 
@@ -21,6 +22,7 @@ from ..domain.sweep_progress import SweepProgressFrame
 from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, SweepSegmentProcessing
 from .native_spectrum_provenance import native_contributing_provenance
 from ..domain.sweep_statistics import SweepStatisticsFrame
+from ..domain.sweep_processing import HackrfSweepProcessingContextV1
 from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from ..domain.layer_ready import LayerReadyReceipt
 from .ad936x_identity_admission import create_identity_bound_owner
@@ -322,7 +324,10 @@ def _to_domain_position(native: Any) -> SweepSegmentPosition | None:
 
 def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None,
                         receiver_id: str | None = None,
-                        layer_ready: LayerReadyReceipt | None = None) -> SweepProgressFrame:
+                        layer_ready: LayerReadyReceipt | None = None,
+                        processing_join: Callable[..., HackrfSweepProcessingContextV1 | None] | None = None) -> SweepProgressFrame:
+    acquisition = _to_domain_acquisition(native)
+    context = processing_join(native, acquisition, layer_ready) if processing_join is not None else None
     return SweepProgressFrame(
         source_id=native.source_id, sequence=native.line_sequence,
         epoch=native.epoch, revision=native.revision, unit=native.unit,
@@ -331,19 +336,22 @@ def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache 
         source_segment_indices=native.source_segment_indices,
         acquired_segment_generations=tuple(native.acquired_segment_generations),
         pending_segment_indices=tuple(native.pending_segment_indices),
-        segment_acquisition=_to_domain_acquisition(native),
+        segment_acquisition=acquisition,
         last_admitted_segment=_to_domain_position(native),
         statistics=_to_domain_statistics(native, cache=statistics_cache),
-        receiver_id=receiver_id, layer_ready=layer_ready,
+        receiver_id=receiver_id, layer_ready=layer_ready, processing_context=context,
     )
 
 
 def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None,
                     receiver_id: str | None = None,
-                    layer_ready: LayerReadyReceipt | None = None) -> SweepLineFrame:
+                    layer_ready: LayerReadyReceipt | None = None,
+                    processing_join: Callable[..., HackrfSweepProcessingContextV1 | None] | None = None) -> SweepLineFrame:
     from ..domain.sweep_lines import SweepQualitySchema
 
     try:
+        acquisition = _to_domain_acquisition(native)
+        context = processing_join(native, acquisition, layer_ready) if processing_join is not None else None
         state = SweepLineState(str(native.state))
         reasons = tuple(SweepLineGapReason(str(value)) for value in native.gap_reasons)
         quality = np.asarray(native.quality_flags_per_bin)
@@ -359,7 +367,7 @@ def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | No
             values_db=native.values,
             quality_flags=quality,
             quality_schema=SweepQualitySchema.NATIVE_V5,
-            segment_acquisition=_to_domain_acquisition(native),
+            segment_acquisition=acquisition,
             last_admitted_segment=_to_domain_position(native),
             statistics=_to_domain_statistics(native, cache=statistics_cache),
             source_segment_indices=native.source_segment_indices,
@@ -378,7 +386,7 @@ def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | No
                 getattr(native, "physical_fft_bin_width_hz", 0.0)
             ),
             physical_fft_size=int(getattr(native, "physical_fft_size", 0)),
-            receiver_id=receiver_id, layer_ready=layer_ready,
+            receiver_id=receiver_id, layer_ready=layer_ready, processing_context=context,
         )
     except (AttributeError, TypeError, ValueError) as error:
         raise RuntimeError(f"native continuous sweep line conversion failed: {error}") from error

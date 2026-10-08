@@ -34,6 +34,9 @@ from .readonly_observation_owner import RetainedReadOnlyObserver
 from .source_capability_admission import admit_source_request
 from .source_capability_providers import _qualified_hackrf_sdk_directory
 from .sweep_geometry_contract import require_extended_sweep_geometry
+from .sweep_processing import (
+    admit_hackrf_sweep_processing, hackrf_sweep_processing_receipt, hackrf_sweep_processing_reserved_bytes,
+)
 
 
 class HackrfSweepDisplayService:
@@ -58,6 +61,7 @@ class HackrfSweepDisplayService:
         self._last_snapshot = ContinuousSweepDisplaySnapshot(None, ContinuousSweepDisplayMetrics())
         self._ready_bridge = NativeReadyBridge(native)
         self._layer_journal = NativeLayerJournal(native, density=False)
+        self._processing_qualified = False
 
     def bind_selection(self, selection: AnalyzerSourceSelection) -> None:
         with self._lock:
@@ -101,6 +105,7 @@ class HackrfSweepDisplayService:
             raise LiveAdmissionRejected("HackRF optional Sweep contract changed") from None
         if contract != 1:
             raise LiveAdmissionRejected("HackRF optional Sweep contract is unavailable")
+        processing_qualified = admit_hackrf_sweep_processing(self._native, request.processing_policy)
         if request.requires_extended_geometry:
             try:
                 require_extended_sweep_geometry(self._native)
@@ -112,7 +117,8 @@ class HackrfSweepDisplayService:
             raise LiveAdmissionRejected("HackRF Sweep request is not admitted")
         if layer_journal_capacity(self._native, hackrf=True):
             geometry = request.geometry
-            if (geometry.reduced.total_bytes + sweep_layer_reserved_bytes(geometry.segment_count)
+            processing_bytes = hackrf_sweep_processing_reserved_bytes(request) if processing_qualified else 0
+            if (geometry.reduced.total_bytes + sweep_layer_reserved_bytes(geometry.segment_count) + processing_bytes
                     > DEFAULT_LIVE_RESOURCE_BUDGET.max_spectrum_backlog_bytes):
                 raise LiveAdmissionRejected("HackRF Sweep layer retention exceeds existing reduced budget")
 
@@ -121,6 +127,7 @@ class HackrfSweepDisplayService:
             if self._closed or self._claimed or self._stop_required:
                 raise RuntimeError("HackRF Sweep requires an open, idle owner")
             self._preflight(request, selection)
+            processing_qualified = admit_hackrf_sweep_processing(self._native, request.processing_policy)
             binding = request.source.binding
             assert binding.calibration_identity is not None  # Established by the same pure preflight.
             # Capture the immutable current selection only after all retained
@@ -152,6 +159,7 @@ class HackrfSweepDisplayService:
             self._token = token
             self._claimed = self._stop_required = True
             self._request = request
+            self._processing_qualified = processing_qualified
             # The previous stopped control may still be retained for a final
             # terminal poll. It can NEVER serve as cleanup authority for this
             # new claim if the new factory fails before returning a handle.
@@ -159,6 +167,8 @@ class HackrfSweepDisplayService:
             self._layer_journal = journal
             try:
                 extras = {"layer_event_capacity": capacity} if capacity else {}
+                if not request.processing_policy.is_off:
+                    extras["dc_removal_block_mean"] = True
                 control = self._native.create_hackrf_sweep_runtime_control(
                     observed.serial_words, str(request.source.device_id), request.epoch,
                     request.fft_size, request.start_hz // 1_000_000,
@@ -207,7 +217,8 @@ class HackrfSweepDisplayService:
                                    for pair in acquired):
                                 raise ValueError("Sweep progress generation mismatch")
                             progress = _to_domain_progress(item, layer_ready=sweep_layer_receipt(
-                                item, self._layer_journal, self._ready_bridge, None, progress=True))
+                                item, self._layer_journal, self._ready_bridge, None, progress=True),
+                                processing_join=self._processing_receipt if self._processing_qualified else None)
                             self._last_progress = (seq, rev)
                     elif hasattr(item, "completed_ns") or hasattr(item, "completed_at_ns"):
                         seq = getattr(item, "line_sequence", getattr(item, "sequence", None))
@@ -219,7 +230,8 @@ class HackrfSweepDisplayService:
                                    for pair in generations):
                                 raise ValueError("Sweep terminal generation mismatch")
                             line = _to_domain_line(item, layer_ready=sweep_layer_receipt(
-                                item, self._layer_journal, self._ready_bridge, None, progress=False))
+                                item, self._layer_journal, self._ready_bridge, None, progress=False),
+                                processing_join=self._processing_receipt if self._processing_qualified else None)
                             self._last_line = seq
                     else:
                         raise ValueError("unknown Sweep publication type")
@@ -293,6 +305,10 @@ class HackrfSweepDisplayService:
         """Cached scalar evidence even after close; never probe, drain or Start."""
         with self._lock:
             return self._layer_journal.current()
+
+    def _processing_receipt(self, raw: Any, acquisition: Any, ready: Any):
+        assert self._request is not None
+        return hackrf_sweep_processing_receipt(raw, acquisition, ready, self._layer_journal.current(), self._request)
 
     def _read_layer_events(self, maximum: int) -> object:
         control = self._control

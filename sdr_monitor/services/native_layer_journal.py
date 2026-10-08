@@ -74,7 +74,7 @@ class NativeLayerJournal:
         self._native, self._capacity = native, capacity
         self._density = density
         self._receipt_budget = (DENSITY_RECEIPT_WINDOW_RESERVATION if density else
-                               LAYER_RECEIPT_RESERVATION + 256 * sweep_segments)
+                               2 * LAYER_RECEIPT_RESERVATION + 256 * sweep_segments)
         self._processing_cache_budget = DENSITY_CONTEXT_CACHE_RESERVATION if density else 0
         self._host_budget = HOST_LAYER_RESERVATION if density else sweep_layer_host_reservation(sweep_segments)
         self._lock = threading.RLock()

@@ -5,6 +5,7 @@ import numpy as np
 from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, validate_acquisition, validate_position
 from .sweep_statistics import SweepStatisticsFrame
 from .layer_ready import LayerReadyReceipt, validate_sweep_layer_receipt
+from .sweep_processing import HackrfSweepProcessingContextV1
 
 
 _VALIDATION_BATCH = 65_536
@@ -63,6 +64,7 @@ class SweepProgressFrame:
     last_admitted_segment: SweepSegmentPosition | None = None
     receiver_id: str | None = None
     layer_ready: LayerReadyReceipt | None = None
+    processing_context: HackrfSweepProcessingContextV1 | None = None
 
     def __post_init__(self) -> None:
         if self.receiver_id not in (None, "RX1", "RX2"):
@@ -101,6 +103,11 @@ class SweepProgressFrame:
         object.__setattr__(self, "pending_segment_indices", pending)
         object.__setattr__(self, "segment_acquisition",
                            validate_acquisition(self.segment_acquisition, generation_pairs))
+        if self.processing_context is not None:
+            if type(self.processing_context) is not HackrfSweepProcessingContextV1:
+                raise TypeError("Sweep processing context must be typed")
+            self.processing_context.validate(self.layer_ready, self.segment_acquisition,
+                self.frequencies_hz, self.values_db, self.quality_flags, self.unit)
         if self.statistics is not None:
             if not isinstance(self.statistics, SweepStatisticsFrame):
                 raise TypeError("Sweep requires an explicit statistics contract")

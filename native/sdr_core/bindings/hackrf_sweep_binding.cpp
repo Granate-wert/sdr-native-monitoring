@@ -11,10 +11,12 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <pybind11/stl.h>
 
@@ -25,6 +27,49 @@ namespace {
 
 constexpr std::uint64_t sweep_min_stop_timeout_ms = 1U;
 constexpr std::uint64_t sweep_max_stop_timeout_ms = 5'000U;
+
+#if defined(SDR_CORE_ENABLE_TEST_HOOKS)
+// Explicit in-process SDK substitute. No vendor handles or USB, and manual
+// callback injection so the ORIGINAL service must observe progressive output
+// before the fixture supplies the remaining headers.
+struct SweepTestState {
+    std::mutex mutex;
+    sdr_hackrf::HackrfRxBytesCallback callback{};
+    void* context{};
+    bool running{};
+};
+
+class SweepTestPort final : public sdr_hackrf::HackrfSweepRuntimePort {
+public:
+    explicit SweepTestPort(std::shared_ptr<SweepTestState> state) : state_(std::move(state)) {}
+    int initialize_library() noexcept override { return 0; }
+    int open_exactly_one_hackrf_one() noexcept override { return 0; }
+    std::uint32_t transfer_buffer_size() const noexcept override { return 262'144U; }
+    int read_usb_api_version(std::uint16_t& version) noexcept override { version = 0x0109U; return 0; }
+    int set_sample_rate(double) noexcept override { return 0; }
+    int set_baseband_filter(std::uint32_t) noexcept override { return 0; }
+    int set_center_frequency(std::uint64_t) noexcept override { return -1; }
+    int set_rf_amplifier(bool value) noexcept override { return value ? -1 : 0; }
+    int set_bias_tee(bool value) noexcept override { return value ? -1 : 0; }
+    int set_lna_gain(std::uint32_t) noexcept override { return 0; }
+    int set_vga_gain(std::uint32_t) noexcept override { return 0; }
+    int initialize_sweep(const sdr_hackrf::HackrfSweepSequencePlan&) noexcept override { return 0; }
+    int start_rx(sdr_hackrf::HackrfRxBytesCallback, void*) noexcept override { return -1; }
+    int start_rx_sweep(sdr_hackrf::HackrfRxBytesCallback callback, void* context) noexcept override {
+        const std::lock_guard lock(state_->mutex);
+        state_->callback = callback; state_->context = context; state_->running = true; return 0;
+    }
+    int stop_rx() noexcept override {
+        const std::lock_guard lock(state_->mutex);
+        state_->running = false;
+        return 0;
+    }
+    int close_device() noexcept override { return 0; }
+    int exit_library() noexcept override { return 0; }
+private:
+    std::shared_ptr<SweepTestState> state_;
+};
+#endif
 
 [[nodiscard]] std::chrono::milliseconds sweep_stop_timeout(const std::uint64_t value) {
     if (value < sweep_min_stop_timeout_ms || value > sweep_max_stop_timeout_ms) {
@@ -166,8 +211,69 @@ void bind_hackrf_sweep(py::module_& module) {
             return sweep_stop_result(stopped);
         }, py::arg("timeout_ms"));
 
+#if defined(SDR_CORE_ENABLE_TEST_HOOKS)
+    module.def("_make_test_hackrf_sweep_runtime_control", [](std::string source_id,
+            std::uint64_t epoch, std::uint32_t fft_size, std::uint16_t range_start_mhz,
+            std::uint16_t range_stop_mhz, bool dc_removal_block_mean) {
+        if (range_stop_mhz <= range_start_mhz || range_stop_mhz - range_start_mhz > 80U) {
+            throw ConfigurationError("MOCK Sweep fixture requires a bounded <=80MHz range");
+        }
+        sdr_hackrf::HackrfSweepRuntimeAnalysisConfig config;
+        auto& a = config.analysis;
+        const auto steps = (range_stop_mhz - range_start_mhz + 19U) / 20U;
+        a.acquisition.sequence.ranges = {{range_start_mhz,
+            static_cast<std::uint16_t>(range_start_mhz + steps * 20U)}};
+        a.acquisition.config_generation = a.acquisition_epoch = epoch;
+        a.source.source_type = SourceType::LiveIq;
+        a.source.source_id = std::move(source_id);
+        a.source.display_name = "MOCK Sweep processing owner";
+        a.source.backend_id = "native.libhackrf.sweep.v1";
+        a.analysis_stop_hz = static_cast<double>(range_stop_mhz) * 1'000'000.0;
+        a.fft_size = fft_size;
+        a.window = WindowType::Hann; a.detector = DetectorType::Sample;
+        a.unit = SpectrumUnit::DbfsBin;
+        a.layer_event_capacity = 64U;
+        a.dc_removal = dc_removal_block_mean ? DcRemovalMode::BlockMean : DcRemovalMode::Off;
+        auto state = std::make_shared<SweepTestState>();
+        std::unique_ptr<sdr_hackrf::HackrfSweepRuntimeAnalysisSession> owner;
+        {
+            py::gil_scoped_release release;
+            owner = sdr_hackrf::HackrfSweepRuntimeAnalysisSession::start(
+                std::make_unique<SweepTestPort>(state), std::move(config));
+        }
+        auto emit = py::cpp_function([state, range_start_mhz, steps](std::uint32_t first, std::uint32_t count) {
+            const std::lock_guard lock(state->mutex);
+            if (!state->running || !count || first + static_cast<std::uint64_t>(count) > steps * 2U) {
+                throw ConfigurationError("MOCK Sweep injection requires active bounded plan headers");
+            }
+            std::vector<std::uint8_t> bytes(static_cast<std::size_t>(count) * sdr_hackrf::hackrf_sweep_block_bytes);
+            for (std::uint32_t n = 0U; n < count; ++n) {
+                const auto index = first + n;
+                const auto base = static_cast<std::size_t>(n) * sdr_hackrf::hackrf_sweep_block_bytes;
+                const std::uint64_t frequency = static_cast<std::uint64_t>(range_start_mhz) * 1'000'000ULL
+                    + (index / 2U) * 20'000'000ULL + (index % 2U) * 5'000'000ULL;
+                bytes[base] = bytes[base + 1U] = 0x7fU;
+                for (std::size_t b = 0U; b < 8U; ++b) bytes[base + 2U + b] = static_cast<std::uint8_t>(frequency >> (8U * b));
+                for (std::size_t sample = 0U; sample < sdr_hackrf::hackrf_sweep_ci8_bytes / 2U; ++sample) {
+                    // Deterministic CI8 tone plus complex DC; all DSP is native.
+                    const int tone = sample % 4U == 0U ? 50 : sample % 4U == 2U ? -50 : 0;
+                    bytes[base + 10U + 2U * sample] = static_cast<std::uint8_t>(tone + 20);
+                    bytes[base + 11U + 2U * sample] = 10U;
+                }
+            }
+            if (state->callback(bytes, 10'000 + first, state->context) != 0) {
+                throw DeviceError("MOCK Sweep callback refused bounded transfer");
+            }
+        });
+        return py::make_tuple(py::cast(std::move(owner)), emit);
+    }, py::arg("source_id"), py::arg("epoch"), py::arg("fft_size"),
+       py::arg("range_start_mhz"), py::arg("range_stop_mhz"),
+       py::arg("dc_removal_block_mean").noconvert() = false);
+#endif
+
 #if defined(SDR_CORE_HACKRF_OFFICIAL_COMPILED)
     module.attr("HACKRF_SWEEP_FACTORY_CONTRACT_VERSION") = 1;
+    module.attr("HACKRF_SWEEP_PROCESSING_FACTORY_CONTRACT_VERSION") = 1;
     module.def("create_hackrf_sweep_runtime_control",
         [](std::array<std::uint32_t, 4> expected_serial_words,
            std::string source_id,
@@ -177,9 +283,11 @@ void bind_hackrf_sweep(py::module_& module) {
            const std::uint16_t range_stop_mhz,
            const std::uint32_t lna_gain_db,
            const std::uint32_t vga_gain_db,
-           const std::uint32_t layer_event_capacity) {
-            // Fixed numerical policy is deliberately non-configurable at this
-            // boundary. Session::start validates the entire plan/FFT/source
+           const std::uint32_t layer_event_capacity,
+           const bool dc_removal_block_mean) {
+            // Numerical geometry stays pinned; the sole additive policy is
+            // explicit default-OFF native BlockMean. Session::start validates
+            // the entire plan/FFT/source
             // before the official port is initialized or opens any device.
             sdr_hackrf::HackrfSweepRuntimeAnalysisConfig config;
             auto& analysis = config.analysis;
@@ -210,6 +318,7 @@ void bind_hackrf_sweep(py::module_& module) {
             analysis.acquisition.config_generation = epoch;
             analysis.acquisition_epoch = epoch;
             analysis.fft_size = fft_size;
+            analysis.dc_removal = dc_removal_block_mean ? DcRemovalMode::BlockMean : DcRemovalMode::Off;
             analysis.layer_event_capacity = layer_event_capacity;
             analysis.window = WindowType::Hann;
             analysis.detector = DetectorType::Sample;
@@ -225,7 +334,8 @@ void bind_hackrf_sweep(py::module_& module) {
         },
         py::arg("expected_serial_words"), py::arg("source_id"), py::arg("epoch"),
         py::arg("fft_size"), py::arg("range_start_mhz"), py::arg("range_stop_mhz"),
-        py::arg("lna_gain_db"), py::arg("vga_gain_db"), py::arg("layer_event_capacity") = 0U);
+        py::arg("lna_gain_db"), py::arg("vga_gain_db"), py::arg("layer_event_capacity") = 0U,
+        py::kw_only(), py::arg("dc_removal_block_mean").noconvert() = false);
 #endif
 }
 

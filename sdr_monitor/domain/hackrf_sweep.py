@@ -6,6 +6,7 @@ from math import ceil
 from .analyzer_sources import AnalyzerSourceChoice
 from .analyzer_resources import AnalyzerGeometryPreflight, estimate_analyzer_reduced
 from .live import DEFAULT_LIVE_RESOURCE_BUDGET
+from .processing_policy import SdrProcessingPolicyV1, HostSpurMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,8 +20,13 @@ class HackrfSweepRequest:
     vga_gain: int
     preview_rate_hz: int
     epoch: int = 0
+    processing_policy: SdrProcessingPolicyV1 = SdrProcessingPolicyV1()
 
     def __post_init__(self) -> None:
+        if (type(self.processing_policy) is not SdrProcessingPolicyV1
+                or self.processing_policy.spur_mode is not HostSpurMode.OFF
+                or self.processing_policy.compare_raw):
+            raise ValueError("HackRF Sweep supports typed OFF/BlockMean only; spur/comparison unqualified")
         if not isinstance(self.source, AnalyzerSourceChoice):
             raise TypeError("HackRF Sweep requires the exact selected source choice")
         for name, value in (("selection revision", self.selection_revision), ("epoch", self.epoch)):
