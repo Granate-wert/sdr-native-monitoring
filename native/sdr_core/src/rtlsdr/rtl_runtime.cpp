@@ -103,6 +103,8 @@ void validate_rtl_profile(const RtlProfile& profile) {
     if (profile.dsp_output_capacity < minimum_outputs || profile.dsp_output_capacity > 256U) {
         throw sdr_core::ConfigurationError("RTL analytical burst queue is too small or unbounded");
     }
+    static_assert(sizeof(sdr_core::SpectrumFrame) <= 1024U,
+                  "RTL inline frame metadata exceeds its existing reservation");
     const auto frame_bytes = static_cast<std::uint64_t>(profile.fft_size) * 12U + 1024U;
     // Queue-payload estimate counts the CPU DSP output queue and worker drain
     // separately; it is not a whole-process RSS or FFT scratch-space proof.

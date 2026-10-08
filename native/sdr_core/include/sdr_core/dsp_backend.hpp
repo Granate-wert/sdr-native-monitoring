@@ -47,13 +47,8 @@ private:
     std::vector<float> coefficients_f32_;
 };
 
-// DC removal mode for the CPU DSP stage (master doc §9.2). P05 keeps it a
-// backend option outside the canonical DspConfig wire contract; promoting it
-// into the wire schema is a later-package decision.
-enum class DcRemovalMode : std::uint8_t {
-    Off,
-    BlockMean,
-};
+// DcRemovalMode remains a backend option outside canonical DspConfig/wire5.
+// Its unchanged enum declaration now lives in dsp_processing.hpp via types.hpp.
 
 struct DspOptions {
     DcRemovalMode dc_removal{DcRemovalMode::Off};

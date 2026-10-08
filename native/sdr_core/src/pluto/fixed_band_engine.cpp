@@ -196,7 +196,8 @@ struct LiveResourceBudget {
                                  (native_spectrum_recording_enabled(config)
                                       ? config.recording.queue_capacity : 0U),
                              "analytical receipt slots"),
-                         sizeof(std::optional<sdr_core::AnalyticalReadyRef>),
+                         sizeof(std::optional<sdr_core::AnalyticalReadyRef>) +
+                             sdr_core::dsp_processing_recipe_slot_reserved_bytes,
                          "analytical receipt backlog"), "spectrum backlog");
     if (native_spectrum_recording_enabled(config)) {
         spectrum_backlog_bytes = checked_add(
@@ -494,9 +495,12 @@ void validate(const PairedFixedBandConfig& value) {
     };
     // Reserve paired final snapshots, a constructing pair and terminal pair.
     // Include the bridge input/scratch reservation and one common IIO scan.
-    const auto pair_snapshots = checked_multiply(
+    const auto pair_snapshots = checked_add(checked_multiply(
         checked_multiply(p.dsp.fft_size, 32U, "paired snapshots"),
-        value.output_queue_capacity + 2U, "paired snapshots");
+        value.output_queue_capacity + 2U, "paired snapshots"),
+        checked_multiply(2U * sdr_core::dsp_processing_recipe_slot_reserved_bytes,
+                         value.output_queue_capacity + 2U, "paired recipe slots"),
+        "paired snapshots");
     const auto scratch = checked_multiply(p.device.buffer_samples, 24U, "paired input scratch");
     const auto sink_bytes = value.analytical_sink ? value.analytical_sink->payload_bytes() : 0U;
     const auto iq = sum(sum(a.iq, b.iq), scratch);

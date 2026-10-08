@@ -754,6 +754,10 @@ void test_dc_removal_independent_oracle_matrix() {
                             expect_oracle(frames.front(), oracle, "DC matrix cell=" + std::to_string(cells));
                             expect(sdr_core::has_flag(frames.front().quality_flags, sdr_core::QualityFlag::DcRemoved) == dc,
                                    "DC quality flag must match actual selected mode");
+                            expect(frames.front().dsp_processing_recipe.has_value() &&
+                                   frames.front().dsp_processing_recipe->dc_removal() == options.dc_removal &&
+                                   frames.front().dsp_processing_recipe->whole_frame_modified() == dc,
+                                   "actual CPU recipe must accompany each analytical frame");
                             expect(*input.block.samples == unchanged_raw, "DC DSP overwrote raw IQ tap");
                             ++cells;
                         }
@@ -899,6 +903,14 @@ void test_dc_removal_paired_independent_means() {
     };
     const auto expected_a = expected(a);
     const auto expected_b = expected(b);
+    const auto reservation = sdr_core::dual_rx_dsp_resource_budget(config);
+    const auto slots = static_cast<std::uint64_t>(reservation.analytical_output_capacity) +
+                       config.output_queue_capacity + 1U;
+    expect(reservation.spectrum_backlog_bytes == slots *
+           (32U * n + 2U * sizeof(std::optional<sdr_core::AnalyticalReadyRef>) +
+            2U * sdr_core::dsp_processing_recipe_slot_reserved_bytes) +
+           2U * sdr_core::analytical_ready_reserved_bytes(config.analytical_event_capacity),
+           "paired backlog omitted inline recipe/padding storage");
     sdr_core::DualRxDspPublisher publisher;
     publisher.configure(config);
     std::size_t deliveries = 0U;
@@ -906,6 +918,10 @@ void test_dc_removal_paired_independent_means() {
                                         const sdr_core::DspBackendMetrics&, const sdr_core::DspBackendMetrics&) {
         expect_oracle(pair.primary, expected_a, "paired RX1 before coalescing");
         expect_oracle(pair.secondary, expected_b, "paired RX2 before coalescing");
+        expect(pair.primary.dsp_processing_recipe.has_value() && pair.secondary.dsp_processing_recipe.has_value() &&
+               pair.primary.dsp_processing_recipe->dc_removal() == sdr_core::DcRemovalMode::BlockMean &&
+               pair.secondary.dsp_processing_recipe->dc_removal() == sdr_core::DcRemovalMode::BlockMean,
+               "paired recipe missing before analytical consumers/coalescing");
         expect(pair.primary.source.source_id == "oracle-rx1" && pair.secondary.source.source_id == "oracle-rx2",
                "DC oracle lost per-chain source identity");
         ++deliveries;
@@ -961,6 +977,48 @@ void test_dc_off_default_parity() {
                "default vs explicit OFF parity");
         expect(!sdr_core::has_flag(a[k].quality_flags, sdr_core::QualityFlag::DcRemoved), "default is not OFF");
     }
+}
+
+void test_processing_recipe_input_and_historical_unknown() {
+    expect(!sdr_core::SpectrumFrame{}.dsp_processing_recipe, "historical frame guessed a processing recipe");
+    const auto off = sdr_core::DspProcessingRecipeV1::from_dc_mode(sdr_core::DcRemovalMode::Off);
+    const auto dc = sdr_core::DspProcessingRecipeV1::from_dc_mode(sdr_core::DcRemovalMode::BlockMean);
+    expect(off.dc_algorithm() == "off" && !off.whole_frame_modified() &&
+           dc.dc_algorithm() == "block_mean_v1" && dc.whole_frame_modified(), "native recipe modes");
+    expect(sdr_core::DspProcessingRecipeV1::from_canonical_policy(off.canonical_policy()).policy_digest() ==
+           off.policy_digest(), "native OFF canonical roundtrip");
+    expect(sdr_core::DspProcessingRecipeV1::from_canonical_policy(dc.canonical_policy()).policy_digest() ==
+           dc.policy_digest(), "native DC canonical roundtrip");
+    for (const auto bytes : {std::string{}, std::string("{}"), std::string(off.canonical_policy()) + " ",
+                             std::string(16'385U, 'x'), std::string(1U, '\0')}) {
+        bool refused = false;
+        try { static_cast<void>(sdr_core::DspProcessingRecipeV1::from_canonical_policy(bytes)); }
+        catch (const sdr_core::ConfigurationError&) { refused = true; }
+        expect(refused, "unsupported/noncanonical recipe accepted");
+    }
+    sdr_core::DspOptions invalid;
+    invalid.dc_removal = static_cast<sdr_core::DcRemovalMode>(255U);
+    bool refused = false;
+    try { static_cast<void>(sdr_core::make_cpu_dsp_backend(invalid)); }
+    catch (const sdr_core::ConfigurationError&) { refused = true; }
+    expect(refused, "unknown native DC enum silently fell back to OFF");
+
+    // An ingress quality bit can describe a prior stage. It must survive, but
+    // cannot relabel the actual OFF stage as a newly applied BlockMean recipe.
+    auto backend = sdr_core::make_cpu_dsp_backend({});
+    backend->configure(make_config(256U, 256U, sdr_core::WindowType::Rectangular));
+    auto input = make_cf32_block(tone(256U, 256'000.0, 20'000.0, 0.25),
+                                0U, 256'000.0, 100'000'000.0);
+    input.flags = sdr_core::QualityFlag::DcRemoved | sdr_core::QualityFlag::IqDropped;
+    backend->push_iq(input);
+    const auto output = backend->poll_spectrum(0U);
+    expect(output.size() == 1U && output.front().dsp_processing_recipe &&
+           output.front().dsp_processing_recipe->dc_removal() == sdr_core::DcRemovalMode::Off &&
+           !output.front().dsp_processing_recipe->whole_frame_modified(),
+           "ingress quality fabricated a processing recipe");
+    expect(sdr_core::has_flag(output.front().quality_flags, sdr_core::QualityFlag::DcRemoved) &&
+           sdr_core::has_flag(output.front().quality_flags, sdr_core::QualityFlag::IqDropped),
+           "native recipe attachment lost existing input quality flags");
 }
 
 void test_precision_modes() {
@@ -1465,6 +1523,7 @@ int main() {
         test_dc_removal_large_fft_selected_bins_and_parseval();
         test_dc_removal_paired_independent_means();
         test_dc_off_default_parity();
+        test_processing_recipe_input_and_historical_unknown();
         test_precision_modes();
         test_engine_continuous_dsp();
         test_gap_rebases_without_stale_stitching();

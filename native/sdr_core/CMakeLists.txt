@@ -47,6 +47,7 @@ add_library(sdr_core STATIC
     src/core/api.cpp
     src/core/buffer_pool.cpp
     src/core/contracts.cpp
+    src/core/dsp_processing.cpp
     src/core/persistence.cpp
     src/core/recording_reprocess.cpp
     src/core/recording_writer.cpp

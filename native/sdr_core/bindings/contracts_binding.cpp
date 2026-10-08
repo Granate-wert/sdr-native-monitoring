@@ -728,6 +728,44 @@ void bind_contracts(py::module_& module) {
         })
         .def_readonly("config_generation", &IqBlock::config_generation);
 
+    // No Python constructor/setters: only a real native producer supplies this
+    // numerical-stage provenance. It is deliberately not an owner admission.
+    py::class_<DspProcessingRecipeV1>(module, "DspProcessingRecipeV1")
+        .def_property_readonly("schema_version", [](const DspProcessingRecipeV1&) {
+            return dsp_processing_recipe_version;
+        })
+        .def_property_readonly("scope", [](const DspProcessingRecipeV1&) { return "dsp_recipe_only"; })
+        .def_property_readonly("dc_mode", [](const DspProcessingRecipeV1& value) {
+            return std::string(value.dc_algorithm());
+        })
+        .def_property_readonly("spur_mode", [](const DspProcessingRecipeV1&) { return "off"; })
+        .def_property_readonly("policy_digest", [](const DspProcessingRecipeV1& value) {
+            return std::string(value.policy_digest());
+        })
+        .def_property_readonly("canonical_policy_json", [](const DspProcessingRecipeV1& value) {
+            return std::string(value.canonical_policy());
+        })
+        .def_property_readonly("whole_frame_modified", &DspProcessingRecipeV1::whole_frame_modified)
+        .def_property_readonly("comparison_applied", [](const DspProcessingRecipeV1&) { return false; })
+        .def_property_readonly("hardware_dc_tracking", [](const DspProcessingRecipeV1&) { return py::none(); });
+
+    module.def("dsp_processing_contract", []() {
+        py::dict result;
+        result["schema_version"] = dsp_processing_recipe_version;
+        result["policy_schema_version"] = 1U;
+        result["scope"] = "dsp_recipe_only";
+        result["full_owner_context"] = false;
+        result["producer_backends"] = py::make_tuple("cpu-pocketfft");
+        result["dc_modes"] = py::make_tuple("off", "block_mean_v1");
+        result["spur_modes"] = py::make_tuple("off");
+        result["comparison"] = false;
+        result["canonical_input_required"] = true;
+        result["max_policy_bytes"] = processing_policy_max_bytes;
+        result["inline_recipe_bytes"] = sizeof(DspProcessingRecipeV1);
+        result["frame_slot_reserved_bytes"] = dsp_processing_recipe_slot_reserved_bytes;
+        return result;
+    });
+
     py::class_<SpectrumFrame>(module, "SpectrumFrame")
         .def_readonly("source", &SpectrumFrame::source)
         .def_readonly("frame_sequence", &SpectrumFrame::frame_sequence)
@@ -746,6 +784,7 @@ void bind_contracts(py::module_& module) {
         .def_readonly("averaging_frames", &SpectrumFrame::averaging_frames)
         .def_readonly("analytical_ready", &SpectrumFrame::analytical_ready)
         .def_readonly("window_normalization_version", &SpectrumFrame::window_normalization_version)
+        .def_readonly("dsp_processing_recipe", &SpectrumFrame::dsp_processing_recipe)
         .def_readonly("detector", &SpectrumFrame::detector)
         .def_readonly("precision_mode", &SpectrumFrame::precision_mode)
         .def_readonly("unit", &SpectrumFrame::unit)

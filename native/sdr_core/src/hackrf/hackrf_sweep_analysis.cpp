@@ -128,6 +128,8 @@ sdr_core::SweepLineDefinition make_definition(
         (definition.stop_frequency_hz - definition.start_frequency_hz) / bin_hz - 1e-12));
     const auto reduced_bytes = bins * 128U +
         definition.segments.size() * static_cast<std::uint64_t>(config.fft_size) * 16U + config.fft_size * 8U +
+        // Two DSP output/drain slots, constructing/returned frame and crop copies.
+        6U * sdr_core::dsp_processing_recipe_slot_reserved_bytes +
         (5ULL + definition.max_inflight_lines) * sizeof(std::optional<sdr_core::LayerReadyRef>) +
         2U * sizeof(std::shared_ptr<sdr_core::LayerReadyJournal>) +
         (config.layer_event_capacity ? sdr_core::LayerReadyJournal::reserved_bytes(config.layer_event_capacity) : 0U);

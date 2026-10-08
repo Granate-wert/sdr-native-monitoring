@@ -107,6 +107,7 @@ public:
         if (options_.output_capacity == 0U) {
             throw ConfigurationError("DSP output capacity must be positive");
         }
+        static_cast<void>(DspProcessingRecipeV1::from_dc_mode(options_.dc_removal));
         options_.source = effective_source(options_.source);
     }
 
@@ -782,6 +783,7 @@ private:
         frame.precision_mode = config_.precision_mode;
         frame.unit = config_.unit;
         frame.window_normalization_version = std::string(power_normalization_version);
+        frame.dsp_processing_recipe = DspProcessingRecipeV1::from_dc_mode(options_.dc_removal);
         frame.frequencies_hz = axis_shared_;
         frame.values = std::move(values);
         frame.calibration_status = config_.calibration_status;

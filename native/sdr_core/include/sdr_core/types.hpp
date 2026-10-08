@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sdr_core/analytical_ready.hpp"
+#include "sdr_core/dsp_processing.hpp"
 #include "sdr_core/layer_ready.hpp"
 
 #include <cstddef>
@@ -313,7 +314,16 @@ struct SpectrumFrame {
     // Absent for historical/unsupported/deserialized frames; never guessed.
     // Host-only declaration: recording wire schema is not changed here.
     std::optional<std::string> window_normalization_version;
+    // Actual CPU stage recipe, not a complete owner/RX/epoch receipt. Historical
+    // files/test constructors/unsupported producers remain absent (UNKNOWN).
+    // Wire5 and recording payloads are unchanged; no replay recipe is guessed.
+    std::optional<DspProcessingRecipeV1> dsp_processing_recipe;
 };
+
+// Charge both the inline value and potential containing-frame padding in owners
+// whose payload budgets do not already count sizeof(SpectrumFrame). Not RSS.
+inline constexpr std::uint64_t dsp_processing_recipe_slot_reserved_bytes =
+    sizeof(std::optional<DspProcessingRecipeV1>) + alignof(SpectrumFrame);
 
 struct SweepSegmentMetadata {
     std::uint32_t segment_index{};

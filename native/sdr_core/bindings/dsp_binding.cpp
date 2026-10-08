@@ -299,6 +299,23 @@ void bind_dsp(py::module_& module) {
         .def_readonly("events", &AnalyticalReadyDrain::events)
         .def_readonly("summary", &AnalyticalReadyDrain::summary);
 
+    // Versioned, exact canonical recipe admission at the NUMERICAL DSP layer.
+    // No hardware owner or RF operation; product admission remains separate.
+    module.def("make_cpu_dsp_backend_for_policy_v1", [](const py::object& payload) {
+        if (!PyBytes_CheckExact(payload.ptr())) {
+            throw ConfigurationError("native recipe1 requires exact canonical bytes");
+        }
+        const auto size = PyBytes_GET_SIZE(payload.ptr());
+        if (size <= 0 || static_cast<std::size_t>(size) > processing_policy_max_bytes) {
+            throw ConfigurationError("native processing policy exceeds input bound");
+        }
+        const auto recipe = DspProcessingRecipeV1::from_canonical_policy(
+            std::string_view(PyBytes_AS_STRING(payload.ptr()), static_cast<std::size_t>(size)));
+        CpuDspOptions options;
+        options.dc_removal = recipe.dc_removal();
+        return std::shared_ptr<DspBackend>(make_cpu_dsp_backend(std::move(options)));
+    }, py::arg("canonical_policy"));
+
     // Bound under the CPU implementation name through the replaceable
     // DspBackend interface (P05 §7).
     py::class_<DspBackend, std::shared_ptr<DspBackend>>(module, "CpuDspBackend")

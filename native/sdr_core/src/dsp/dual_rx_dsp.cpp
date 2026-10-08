@@ -154,6 +154,9 @@ DualRxDspResourceBudget dual_rx_dsp_resource_budget(const DualRxDspConfig& value
     result.spectrum_backlog_bytes = checked_add(result.spectrum_backlog_bytes,
         checked_multiply(2U * sizeof(std::optional<AnalyticalReadyRef>),
             checked_add(capacity, static_cast<std::uint64_t>(value.output_queue_capacity) + 1U)));
+    result.spectrum_backlog_bytes = checked_add(result.spectrum_backlog_bytes,
+        checked_multiply(2U * dsp_processing_recipe_slot_reserved_bytes,
+            checked_add(capacity, static_cast<std::uint64_t>(value.output_queue_capacity) + 1U)));
     result.total_bytes = checked_add(
         checked_add(result.input_payload_bytes, result.dsp_working_bytes),
         result.spectrum_backlog_bytes
