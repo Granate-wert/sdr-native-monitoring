@@ -392,6 +392,22 @@ void layer_owner_test() {
 }  // namespace
 
 int main() {
+    // Host contexts stay inside the existing component/whole-engine ceilings.
+    // Pure validation: no physical owner, RF mutation or allocator bypass.
+    auto host_reserved = coordinator_config();
+    host_reserved.product_publication_reserved_bytes = 4096U;
+    sdr_pluto::validate(host_reserved);
+    host_reserved.product_publication_reserved_bytes = 128ULL * 1024U * 1024U;
+    bool host_rejected = false;
+    try { sdr_pluto::validate(host_reserved); }
+    catch (const sdr_core::ConfigurationError&) { host_rejected = true; }
+    if (!host_rejected) return 97;
+    host_reserved = coordinator_config();
+    host_reserved.segments.front().fixed_band.sweep_product_reserved_bytes = 1U;
+    host_rejected = false;
+    try { sdr_pluto::validate(host_reserved); }
+    catch (const sdr_core::ConfigurationError&) { host_rejected = true; }
+    if (!host_rejected) return 98;
     try {
         layer_owner_test();
         extended_geometry_test();

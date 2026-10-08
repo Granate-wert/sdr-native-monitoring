@@ -59,6 +59,9 @@ class NativeSweepSource:
     live_configuration: LiveConfiguration
     expected_serial: str | None = field(default=None, repr=False)
     expected_usb_connection: PlutoUsbConnectionExpectation | None = field(default=None, repr=False)
+    owner_device_id: str | None = None
+    owner_session_id: str | None = None
+    owner_processing_revision: int | None = None
 
     def __post_init__(self) -> None:
         if not self.context_uri.strip() or not self.source_id.strip():

@@ -33,6 +33,11 @@ from .native_sweep_layer_journal import pluto_sweep_layer_capacity, sweep_layer_
 from .native_layer_journal import NativeLayerJournal, sweep_layer_host_reservation
 from .native_ready_bridge import NativeReadyBridge
 from ..domain.layer_journal import LayerJournalSnapshot, SweepLayerScope
+from ..domain.sweep_processing import AdSweepProcessingPlanV1
+from .sweep_processing import (
+    make_ad_sweep_processing_plan, ad_sweep_processing_reserved_bytes,
+    ad_sweep_processing_receipt, validate_ad_sweep_processing_config,
+)
 
 
 class NativeContinuousSweepPlanFactory:
@@ -47,6 +52,7 @@ class NativeContinuousSweepPlanFactory:
         self._lease = lease
         self._closed = False
         self._capability_evidence_sha256 = capability_evidence_sha256
+        self._processing_plan: AdSweepProcessingPlanV1 | None = None
 
     @classmethod
     def from_native_live(
@@ -55,8 +61,9 @@ class NativeContinuousSweepPlanFactory:
         *,
         capability_evidence_sha256: str | None = None,
     ) -> "NativeContinuousSweepPlanFactory":
+        acquire = getattr(live_service, "acquire_native_continuous_sweep_lease", None)
         return cls(
-            live_service.acquire_native_sweep_lease(),
+            acquire() if callable(acquire) else live_service.acquire_native_sweep_lease(),
             capability_evidence_sha256=capability_evidence_sha256,
         )
 
@@ -82,8 +89,11 @@ class NativeContinuousSweepPlanFactory:
         result = self.preflight_native_profile(
             self._lease.native_module, self._lease.source.live_configuration, request)
         if self._lease.paired_request is None and pluto_sweep_layer_capacity(self._lease.native_module):
+            plan = make_ad_sweep_processing_plan(self._lease.native_module, self._lease.source,
+                request, result, source_id=f"continuous-sweep:{self._lease.source.source_id}", receiver_id="RX1")
             reduced = replace(result.reduced, output_bytes=result.reduced.output_bytes
-                              + sweep_layer_reserved_bytes(result.segment_count))
+                              + sweep_layer_reserved_bytes(result.segment_count)
+                              + (ad_sweep_processing_reserved_bytes(plan) if plan is not None else 0))
             if reduced.total_bytes > DEFAULT_LIVE_RESOURCE_BUDGET.max_spectrum_backlog_bytes:
                 raise ValueError("Sweep layer retention exceeds existing reduced memory budget")
             result = replace(result, reduced=reduced)
@@ -207,15 +217,24 @@ class NativeContinuousSweepPlanFactory:
             raise RuntimeError("paired Sweep cannot use a single-producer plan")
         preflight = self.preflight(request)
         source = self._lease.source
-        return self._build_native_plan(self._lease.native_module, source, request, preflight,
+        plan = make_ad_sweep_processing_plan(self._lease.native_module, source, request, preflight,
+            source_id=f"continuous-sweep:{source.source_id}", receiver_id="RX1")
+        reserved = (ad_sweep_processing_reserved_bytes(plan)
+                    + sweep_layer_host_reservation(preflight.segment_count)) if plan is not None else 0
+        config = self._build_native_plan(self._lease.native_module, source, request, preflight,
                                        source_id=f"continuous-sweep:{source.source_id}",
-                                       layer_event_capacity=pluto_sweep_layer_capacity(self._lease.native_module))
+                                       layer_event_capacity=pluto_sweep_layer_capacity(self._lease.native_module),
+                                       product_reserved_bytes=reserved)
+        if plan is not None:
+            validate_ad_sweep_processing_config(plan, config)
+        self._processing_plan = plan
+        return config
 
     @staticmethod
     def _build_native_plan(native: Any, source: NativeSweepSource,
                            request: ContinuousSweepPlanRequest, preflight: AnalyzerGeometryPreflight,
                            *, source_id: str, receiver_selection: Any = None,
-                           layer_event_capacity: int = 0) -> Any:
+                           layer_event_capacity: int = 0, product_reserved_bytes: int = 0) -> Any:
         if (type(layer_event_capacity) is not int or layer_event_capacity not in (0, 64)
                 or (layer_event_capacity and pluto_sweep_layer_capacity(native) != layer_event_capacity)):
             raise ValueError("Sweep layer creation API/capacity was not admitted")
@@ -244,6 +263,8 @@ class NativeContinuousSweepPlanFactory:
                 )
             )
         statistics_arguments: dict[str, Any] = {}
+        if product_reserved_bytes:
+            statistics_arguments["product_publication_reserved_bytes"] = product_reserved_bytes
         if layer_event_capacity:
             statistics_arguments["layer_event_capacity"] = layer_event_capacity
         if request.statistics is not None:
@@ -287,6 +308,7 @@ class NativeContinuousSweepPlanFactory:
             raise ValueError("paired Sweep profile differs from admitted Live profile")
         preflight = NativeContinuousSweepPlanFactory.preflight_native_profile(
             native, source.live_configuration, request.sweep)
+        processing_plans = NativeContinuousSweepPlanFactory._paired_processing_plans(native, source, request, preflight)
         rx = native.PlutoReceiverSelection
         layer_capacity = pluto_sweep_layer_capacity(native)
         plans = [NativeContinuousSweepPlanFactory._build_native_plan(native, source, request.sweep,
@@ -316,6 +338,8 @@ class NativeContinuousSweepPlanFactory:
             # Native already counts both rings/drain storage; do not count the
             # single-plan native margin again or allocate two full budgets.
             reserved += 2 * sweep_layer_host_reservation(preflight.segment_count)
+        reserved += sum(ad_sweep_processing_reserved_bytes(p, paired=True)
+                        for p in processing_plans if p is not None)
         if request.sweep.statistics is not None:
             # Density validation takes boolean/fancy-index copies and float
             # products/allclose scratch over CELLS, not measurement bins.
@@ -327,6 +351,14 @@ class NativeContinuousSweepPlanFactory:
             reserved += 2 * 64 * cells
         return native.PairedContinuousSweepCoordinatorConfig(
             request.resource_id, *plans, product_publication_reserved_bytes=reserved)
+
+    @staticmethod
+    def _paired_processing_plans(native: Any, source: NativeSweepSource,
+                                 request: PairedSweepRequest, preflight: AnalyzerGeometryPreflight):
+        return tuple(make_ad_sweep_processing_plan(native, source, request.sweep, preflight,
+            source_id=producer, receiver_id=receiver, paired_request=request)
+            for producer, receiver in ((request.pair.primary_source_id, "RX1"),
+                                       (request.pair.secondary_source_id, "RX2")))
 
     def build_paired(self) -> Any:
         with self.control_transaction():
@@ -342,11 +374,14 @@ class NativeContinuousSweepPlanFactory:
     def create_display_service(self) -> NativeContinuousSweepDisplayService:
         if self._lease.paired_request is not None:
             raise RuntimeError("paired Sweep requires the paired reduced display bridge")
+        if not self._lease.source.live_configuration.processing_policy.is_off and self._processing_plan is None:
+            raise RuntimeError("processed AD Sweep requires its admitted built plan before owner construction")
         return self._construct_owner(
             lambda: NativeContinuousSweepDisplayService(
                 self._lease.native_module, self._lease.source.context_uri,
                 expected_serial=self._lease.source.expected_serial,
                 expected_usb_connection=self._lease.source.expected_usb_connection,
+                processing_plan=self._processing_plan,
             ),
             lambda owner: owner.close(),
         )
@@ -362,6 +397,18 @@ class NativeContinuousSweepPlanFactory:
         self._require_open()
         if timeout_ms <= 0:
             raise ValueError("continuous sweep coordinator timeout must be positive")
+        processing_plans = None
+        request = self._lease.paired_request
+        if request is not None:
+            processing_plans = self._paired_processing_plans(self._lease.native_module, self._lease.source,
+                request, self.preflight_native_profile(self._lease.native_module,
+                    self._lease.source.live_configuration, request.sweep))
+            for plan, config in zip(processing_plans,
+                    (self._lease.paired_configuration.primary, self._lease.paired_configuration.secondary)):
+                if plan is not None:
+                    validate_ad_sweep_processing_config(plan, config)
+        elif not self._lease.source.live_configuration.processing_policy.is_off and self._processing_plan is None:
+            raise RuntimeError("processed AD Sweep requires its admitted built plan before owner construction")
         paired_owner: list[_AdmittedPairedSweepCoordinator] = []
 
         def cleanup(owner: Any) -> None:
@@ -380,7 +427,7 @@ class NativeContinuousSweepPlanFactory:
             cleanup,
         )
         if self._lease.paired_request is not None:
-            wrapper = _AdmittedPairedSweepCoordinator(self, owner, self._lease.paired_configuration)
+            wrapper = _AdmittedPairedSweepCoordinator(self, owner, self._lease.paired_configuration, processing_plans)
             paired_owner.append(wrapper)
             return wrapper
         return owner
@@ -456,7 +503,7 @@ class _AdmittedPairedSweepCoordinator:
     owner-issued here; actual pane/CaptureJob delivery remains separate.
     """
 
-    def __init__(self, factory: NativeContinuousSweepPlanFactory, owner: Any, configuration: Any):
+    def __init__(self, factory: NativeContinuousSweepPlanFactory, owner: Any, configuration: Any, processing_plans):
         self._factory, self._owner, self._configuration = factory, owner, configuration
         self._operation_lock = threading.RLock()
         self._run: PairedSweepRunIdentity | None = None
@@ -468,6 +515,7 @@ class _AdmittedPairedSweepCoordinator:
         self._layer_journals = tuple(NativeLayerJournal(factory._lease.native_module, density=False)
                                      for _ in range(2))
         self._layer_capacity = 0
+        self._processing_plans = processing_plans
 
     def configure(self, configuration: Any) -> None:
         raise RuntimeError("paired Sweep owner cannot configure a single-producer plan")
@@ -503,6 +551,8 @@ class _AdmittedPairedSweepCoordinator:
                     (capacities[0] and pluto_sweep_layer_capacity(native) != capacities[0])):
                 raise ValueError("paired Sweep layer journals require admitted common capacity")
             capacity = capacities[0]
+            if any(p is not None for p in self._processing_plans) and capacity != 64:
+                raise ValueError("AD paired processing requires SAME admitted native journals")
             count = len(self._configuration.primary.segments)
             journals = tuple(NativeLayerJournal(native, capacity, density=False, sweep_segments=count)
                              for _ in range(2))
@@ -608,6 +658,12 @@ class _AdmittedPairedSweepCoordinator:
         return sweep_layer_receipt(frame, self._layer_journals[0 if receiver == "RX1" else 1],
                                    self._ready_bridge, receiver, progress=progress)
 
+    def _processing_receipt(self, raw: Any, records: Any, ready: Any, receiver: str):
+        index = 0 if receiver == "RX1" else 1
+        plan = self._processing_plans[index]
+        return (ad_sweep_processing_receipt(raw, records, ready, self._layer_journals[index].current(), plan)
+                if plan is not None else None)
+
     def _retire_run(self) -> None:
         if self._run is not None:
             self._retired_run = self._run
@@ -633,15 +689,18 @@ class _AdmittedPairedSweepCoordinator:
                 self._check_epoch(value.primary.epoch)
                 if value.steps:
                     terminals.append(observed_paired_publication(value, run,
-                        layer_receipt=self._layer_receipt if self._layer_capacity else None))
+                        layer_receipt=self._layer_receipt if self._layer_capacity else None,
+                        processing_join=self._processing_receipt))
                 else:
                     if value.resource_id != run.request.resource_id:
                         raise ValueError("unobserved terminal differs from retired resource")
                     terminals.append(PairedSweepUnobservedTerminal(run,
                         _to_domain_line(value.primary, receiver_id="RX1" if self._layer_capacity else None,
-                            layer_ready=self._layer_receipt(value.primary, "RX1", False) if self._layer_capacity else None),
+                            layer_ready=self._layer_receipt(value.primary, "RX1", False) if self._layer_capacity else None,
+                            processing_join=lambda raw, records, ready: self._processing_receipt(raw, records, ready, "RX1")),
                         _to_domain_line(value.secondary, receiver_id="RX2" if self._layer_capacity else None,
-                            layer_ready=self._layer_receipt(value.secondary, "RX2", False) if self._layer_capacity else None)))
+                            layer_ready=self._layer_receipt(value.secondary, "RX2", False) if self._layer_capacity else None,
+                            processing_join=lambda raw, records, ready: self._processing_receipt(raw, records, ready, "RX2"))))
             archive = PairedSweepTerminalArchive(run, tuple(terminals))
             if terminals:
                 self._observed_sweep_epoch = self._last_sweep_epoch = terminals[0].primary.epoch
@@ -668,7 +727,8 @@ class _AdmittedPairedSweepCoordinator:
         epoch = value.primary.epoch
         self._check_epoch(epoch)
         publication = observed_paired_publication(value, run, progress=progress,
-            layer_receipt=self._layer_receipt if self._layer_capacity else None)
+            layer_receipt=self._layer_receipt if self._layer_capacity else None,
+            processing_join=self._processing_receipt)
         self._observed_sweep_epoch = self._last_sweep_epoch = epoch
         return publication
 

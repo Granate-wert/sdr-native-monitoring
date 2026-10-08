@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from ..domain.identity import TimestampQuality
 from ..domain.layer_ready import LayerReadyReceipt
+from ..domain.sweep_processing import SweepProcessingContextV1
 from ..domain.paired_sweep import (
     PairedSweepRunIdentity, PairedSweepStepIdentity, PairedSweepStepObservation,
     PairedSweepStepPair, PairedSweepGainMode, PairedSweepGainReadback,
@@ -21,7 +22,8 @@ from .native_continuous_sweep import _to_domain_line, _to_domain_progress
 
 def observed_paired_publication(native: Any, run: PairedSweepRunIdentity,
                                 *, progress: bool = False,
-                                layer_receipt: Callable[[Any, str, bool], LayerReadyReceipt | None] | None = None
+                                layer_receipt: Callable[[Any, str, bool], LayerReadyReceipt | None] | None = None,
+                                processing_join: Callable[..., SweepProcessingContextV1 | None] | None = None
                                 ) -> PairedSweepPublication:
     """Conversion alone does not authorize a run or hardware."""
     request = run.request
@@ -100,5 +102,9 @@ def observed_paired_publication(native: Any, run: PairedSweepRunIdentity,
     left = layer_receipt(a, "RX1", progress)
     right = layer_receipt(b, "RX2", progress)
     return PairedSweepPublication(run, tuple(pairs),
-        convert(a, receiver_id="RX1", layer_ready=left),
-        convert(b, receiver_id="RX2", layer_ready=right))
+        convert(a, receiver_id="RX1", layer_ready=left,
+            processing_join=(lambda raw, records, ready: processing_join(raw, records, ready, "RX1"))
+                            if processing_join is not None else None),
+        convert(b, receiver_id="RX2", layer_ready=right,
+            processing_join=(lambda raw, records, ready: processing_join(raw, records, ready, "RX2"))
+                            if processing_join is not None else None))

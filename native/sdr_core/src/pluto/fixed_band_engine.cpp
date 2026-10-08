@@ -310,6 +310,8 @@ struct LiveResourceBudget {
     total_bytes = checked_add(total_bytes, spectrum_backlog_bytes, "live-engine memory");
     total_bytes = checked_add(total_bytes, persistence_bytes, "live-engine memory");
     total_bytes = checked_add(total_bytes, sweep_line_bytes, "live-engine memory");
+    total_bytes = checked_add(total_bytes, config.sweep_product_reserved_bytes,
+                              "coordinator HOST Sweep observations");
     if (config.sweep_statistics_sink) {
         total_bytes = checked_add(total_bytes, config.sweep_statistics_sink->payload_bytes(),
                                   "native Sweep statistics");

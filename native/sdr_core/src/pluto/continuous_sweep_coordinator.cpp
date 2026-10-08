@@ -334,6 +334,15 @@ void validate(const ContinuousSweepCoordinatorConfig& value) {
     if (reduced_bytes > sdr_core::sweep_max_reduced_bytes) {
         invalid("continuous sweep reduced spectrum backlog exceeds 128 MiB");
     }
+    if (value.product_publication_reserved_bytes > sdr_core::sweep_max_reduced_bytes - reduced_bytes)
+        invalid("continuous Sweep product observations exceed SAME 128MiB reduced budget");
+    for (const auto& segment : value.segments) {
+        auto fixed = segment.fixed_band;
+        if (fixed.sweep_product_reserved_bytes != 0U)
+            invalid("Sweep product reservation belongs to coordinator, not a caller fixed-band segment");
+        fixed.sweep_product_reserved_bytes = value.product_publication_reserved_bytes;
+        validate(fixed); // SAME whole-engine ceiling BEFORE owner allocation/RF.
+    }
     if (value.statistics && (!std::isfinite(value.statistics_snapshot_rate_hz) ||
         value.statistics_snapshot_rate_hz < 1.0 || value.statistics_snapshot_rate_hz > 60.0)) {
         invalid("Sweep statistics snapshot rate must be in [1, 60] Hz");
@@ -670,6 +679,8 @@ void validate(const PairedContinuousSweepCoordinatorConfig& value) {
     validate(value.primary); validate(value.secondary);
     const auto& p = value.primary;
     const auto& q = value.secondary;
+    if (p.product_publication_reserved_bytes || q.product_publication_reserved_bytes)
+        invalid("paired Sweep reserves HOST observations once on the shared group");
     if (value.resource_id.empty() || value.resource_id.find('\0') != std::string::npos)
         invalid("paired Sweep requires explicit resource identity");
     if (p.epoch != q.epoch || p.display_start_hz != q.display_start_hz ||
@@ -1213,7 +1224,8 @@ private:
         return std::nullopt;
     }
 
-    void apply_segment(const FixedBandConfig& config) {
+    void apply_segment(FixedBandConfig config) {
+        config.sweep_product_reserved_bytes = config_.product_publication_reserved_bytes;
         const auto current = engine_.state();
         if (current == sdr_core::EngineState::Running) {
             const auto started = StageTimingCounters::Clock::now();
@@ -1239,6 +1251,7 @@ private:
 
     [[nodiscard]] FixedBandConfig single_window_fixed_config() const {
         FixedBandConfig result = config_.segments.front().fixed_band;
+        result.sweep_product_reserved_bytes = config_.product_publication_reserved_bytes;
         // This is an internal coordinator-owned line path, not a second
         // public producer.  It converts each native post-DSP SpectrumFrame
         // into the already bounded reduced line while the RF configuration is

@@ -79,6 +79,7 @@ void bind_pluto(py::module_& module) {
     module.attr("PLUTO_PAIRED_SWEEP_STATISTICS_PROTOCOL_VERSION") = 1;
     module.attr("PLUTO_PAIRED_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION") = 1;
     module.attr("PLUTO_PAIRED_SWEEP_GAIN_RECEIPT_PROTOCOL_VERSION") = 1;
+    module.attr("PLUTO_SWEEP_PRODUCT_RESERVATION_PROTOCOL_VERSION") = 1;
     py::class_<sdr_core::DualRxChannelDspConfig>(module, "DualRxChannelDspConfig")
         .def(py::init([](
             const sdr_core::SourceDescriptor& source,
@@ -1031,7 +1032,8 @@ void bind_pluto(py::module_& module) {
             const double line_snapshot_rate_hz,
             const std::optional<SweepStatisticsConfig>& statistics,
             const double statistics_snapshot_rate_hz,
-            const std::uint32_t layer_event_capacity
+            const std::uint32_t layer_event_capacity,
+            const std::uint64_t product_publication_reserved_bytes
         ) {
             sdr_pluto::ContinuousSweepCoordinatorConfig result{
                 .epoch = epoch,
@@ -1046,6 +1048,7 @@ void bind_pluto(py::module_& module) {
                 .statistics = statistics,
                 .statistics_snapshot_rate_hz = statistics_snapshot_rate_hz,
                 .layer_event_capacity = layer_event_capacity,
+                .product_publication_reserved_bytes = product_publication_reserved_bytes,
             };
             sdr_pluto::validate(result);
             return result;
@@ -1059,7 +1062,9 @@ void bind_pluto(py::module_& module) {
             py::arg("line_snapshot_rate_hz") = 0.0,
             py::arg("statistics") = py::none(),
             py::arg("statistics_snapshot_rate_hz") = 15.0,
-            py::arg("layer_event_capacity") = 0U)
+            py::arg("layer_event_capacity") = 0U,
+            py::kw_only(), py::arg("product_publication_reserved_bytes") = 0U)
+        .def_readonly("product_publication_reserved_bytes", &sdr_pluto::ContinuousSweepCoordinatorConfig::product_publication_reserved_bytes)
         .def_readonly("layer_event_capacity", &sdr_pluto::ContinuousSweepCoordinatorConfig::layer_event_capacity)
         .def_readonly("statistics", &sdr_pluto::ContinuousSweepCoordinatorConfig::statistics)
         .def_readonly("statistics_snapshot_rate_hz", &sdr_pluto::ContinuousSweepCoordinatorConfig::statistics_snapshot_rate_hz)

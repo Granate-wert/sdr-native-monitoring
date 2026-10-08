@@ -64,8 +64,14 @@ def run_layer_case(graph, intent, case, hooks, native):
                                        expected_serial=intent.selected_snapshot.device.serial)
             with patch.object(native, "LAYER_CREATION_CONTRACT_VERSION", 0):
                 before = NativeContinuousSweepPlanFactory.build_paired_native_config(native, source, intent)
+            segments = len(config.primary.segments)
+            bins = factory.preflight(intent.sweep).reduced.output_bins
+            slots = 2 * intent.sweep.output_queue_capacity + 5
+            # BOTH original host journals plus BOTH new processing contexts and
+            # bounded grid-validation scratch share ONE unchanged native ceiling.
+            contexts = 2 * (slots * (16384 + 4096 * segments) + 16384 + 16 * min(65536, bins))
             assert config.product_publication_reserved_bytes - before.product_publication_reserved_bytes == (
-                2 * sweep_layer_host_reservation(len(config.primary.segments)))
+                2 * sweep_layer_host_reservation(segments) + contexts)
         assert config.primary.layer_event_capacity == config.secondary.layer_event_capacity == (0 if disabled else 64)
         owner = factory.create_coordinator()
         raw = owner._owner

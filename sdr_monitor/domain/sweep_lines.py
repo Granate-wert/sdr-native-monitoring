@@ -18,7 +18,7 @@ from .sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, va
 from .sweep_statistics import SweepStatisticsFrame
 from .tinysa_analyzer import TinySaSweepProvenance
 from .layer_ready import LayerReadyReceipt, validate_sweep_layer_receipt
-from .sweep_processing import HackrfSweepProcessingContextV1
+from .sweep_processing import HackrfSweepProcessingContextV1, AdSweepProcessingContextV1, SweepProcessingContextV1
 
 
 _VALIDATION_BATCH = 65_536
@@ -129,7 +129,7 @@ class SweepLineFrame:
     instrument: TinySaSweepProvenance | None = None
     receiver_id: str | None = None
     layer_ready: LayerReadyReceipt | None = None
-    processing_context: HackrfSweepProcessingContextV1 | None = None
+    processing_context: SweepProcessingContextV1 | None = None
 
     def __post_init__(self) -> None:
         if self.receiver_id not in (None, "RX1", "RX2"):
@@ -150,9 +150,17 @@ class SweepLineFrame:
                   if pair[0] not in self.missing_segment_indices),
         ))
         if self.processing_context is not None:
-            if type(self.processing_context) is not HackrfSweepProcessingContextV1 or self.instrument is not None:
+            if type(self.processing_context) not in (HackrfSweepProcessingContextV1, AdSweepProcessingContextV1) or self.instrument is not None:
                 raise TypeError("SDR Sweep processing context must be typed")
-            if (self.physical_fft_size != self.processing_context.fft_size
+            if isinstance(self.processing_context, AdSweepProcessingContextV1):
+                plan = self.processing_context.plan
+                declared = bool(plan.request.analysis_bins_per_usable_window)
+                if (self.physical_fft_size != (plan.fft_size if declared else 0)
+                        or self.physical_fft_bin_width_hz != (plan.sample_rate_hz / plan.fft_size if declared else 0.)
+                        or self.analysis_window_hz != (plan.request.usable_window_hz if declared else 0.)
+                        or self.analysis_bins_per_usable_window != plan.request.analysis_bins_per_usable_window):
+                    raise ValueError("AD Sweep physical FFT declaration differs from owner context")
+            elif (self.physical_fft_size != self.processing_context.fft_size
                     or self.physical_fft_bin_width_hz != 20_000_000. / self.processing_context.fft_size
                     or self.analysis_window_hz != 5_000_000.
                     or self.analysis_bins_per_usable_window != self.processing_context.fft_size // 4):

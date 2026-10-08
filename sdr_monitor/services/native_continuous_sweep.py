@@ -22,7 +22,10 @@ from ..domain.sweep_progress import SweepProgressFrame
 from ..domain.sweep_acquisition import SweepSegmentAcquisition, SweepSegmentPosition, SweepSegmentProcessing
 from .native_spectrum_provenance import native_contributing_provenance
 from ..domain.sweep_statistics import SweepStatisticsFrame
-from ..domain.sweep_processing import HackrfSweepProcessingContextV1
+from ..domain.sweep_processing import AdSweepProcessingPlanV1, SweepProcessingContextV1
+from .sweep_processing import (
+    ad_sweep_processing_receipt, validate_ad_sweep_processing_config, ad_sweep_processing_reserved_bytes,
+)
 from ..domain.pluto_connection import PlutoUsbConnectionExpectation
 from ..domain.layer_ready import LayerReadyReceipt
 from .ad936x_identity_admission import create_identity_bound_owner
@@ -71,7 +74,8 @@ class NativeContinuousSweepDisplayService:
 
     def __init__(self, native_module: Any, context_uri: str, *, timeout_ms: int = 3000,
                  expected_serial: str | None = None,
-                 expected_usb_connection: PlutoUsbConnectionExpectation | None = None) -> None:
+                 expected_usb_connection: PlutoUsbConnectionExpectation | None = None,
+                 processing_plan: AdSweepProcessingPlanV1 | None = None) -> None:
         if not context_uri.strip() or timeout_ms <= 0:
             raise ValueError("continuous sweep context URI and timeout must be positive")
         coordinator_type = getattr(native_module, "NativeContinuousSweepCoordinator", None)
@@ -99,12 +103,22 @@ class NativeContinuousSweepDisplayService:
         self._ready_bridge = NativeReadyBridge(native_module)
         self._layer_journal = NativeLayerJournal(native_module, density=False)
         self._layer_receiver: str | None = None
+        self._processing_plan = processing_plan
 
     def start(self, native_config: Any) -> None:
         with self._lock:
             self._require_open()
             if self._started or self._stop_required:
                 raise RuntimeError("continuous sweep display service is already running")
+            if self._processing_plan is not None:
+                validate_ad_sweep_processing_config(self._processing_plan, native_config)
+                from .native_layer_journal import sweep_layer_host_reservation
+                reserve = (ad_sweep_processing_reserved_bytes(self._processing_plan)
+                           + sweep_layer_host_reservation(len(native_config.segments)))
+                if native_config.product_publication_reserved_bytes < reserve:
+                    raise ValueError("AD Sweep native config lacks SAME HOST processing reservation")
+            elif any(getattr(segment.fixed_band, "dc_removal_block_mean", False) for segment in native_config.segments):
+                raise ValueError("processed AD Sweep requires actual selected processing plan")
             epoch = native_config.epoch
             sources = tuple(segment.fixed_band.device.source_id for segment in native_config.segments)
             if (type(epoch) is not int or epoch < 0 or not sources
@@ -129,7 +143,8 @@ class NativeContinuousSweepDisplayService:
                 self._ready_bridge.begin()
                 run = uuid4().hex
                 journal.begin(SweepLayerScope(self._ready_bridge.clock_scope_id,
-                    self._ready_bridge.host_process_id, run, sources[0], receiver, run, epoch))
+                    self._ready_bridge.host_process_id, run, sources[0], receiver,
+                    self._processing_plan.session_id if self._processing_plan is not None else run, epoch))
             self._layer_journal, self._layer_receiver = journal, receiver
             # A native configure/start may mutate before throwing. Retain the
             # cleanup obligation before entering either call, not on success.
@@ -171,7 +186,8 @@ class NativeContinuousSweepDisplayService:
                 newest = None
             line = (_to_domain_line(newest, statistics_cache=self._statistics_cache,
                 receiver_id=self._layer_receiver, layer_ready=sweep_layer_receipt(newest,
-                    self._layer_journal, self._ready_bridge, self._layer_receiver, progress=False))
+                    self._layer_journal, self._ready_bridge, self._layer_receiver, progress=False),
+                processing_join=self._processing_receipt)
                 if newest is not None else None)
             self._ui_superseded += len(lines) - int(line is not None)
             terminal_watermark = self._terminal_watermark
@@ -201,7 +217,8 @@ class NativeContinuousSweepDisplayService:
                     # identity before touching any full-grid array/statistics.
                     progress = _to_domain_progress(native_progress, statistics_cache=self._statistics_cache,
                         receiver_id=self._layer_receiver, layer_ready=sweep_layer_receipt(native_progress,
-                            self._layer_journal, self._ready_bridge, self._layer_receiver, progress=True))
+                            self._layer_journal, self._ready_bridge, self._layer_receiver, progress=True),
+                        processing_join=self._processing_receipt)
                     progress_watermark = identity
                     latest_progress = progress
             if line is not None and progress is None and latest_progress is not None:
@@ -238,6 +255,10 @@ class NativeContinuousSweepDisplayService:
         """Cached ONLY; no clock/drain/SDK call or synthetic frame creation."""
         with self._lock:
             return self._layer_journal.current()
+
+    def _processing_receipt(self, raw: Any, records: Any, ready: Any):
+        return (ad_sweep_processing_receipt(raw, records, ready, self._layer_journal.current(), self._processing_plan)
+                if self._processing_plan is not None else None)
 
     def _read_layer_events(self, maximum: int) -> object:
         rx = self._native.PlutoReceiverSelection
@@ -325,7 +346,7 @@ def _to_domain_position(native: Any) -> SweepSegmentPosition | None:
 def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None,
                         receiver_id: str | None = None,
                         layer_ready: LayerReadyReceipt | None = None,
-                        processing_join: Callable[..., HackrfSweepProcessingContextV1 | None] | None = None) -> SweepProgressFrame:
+                        processing_join: Callable[..., SweepProcessingContextV1 | None] | None = None) -> SweepProgressFrame:
     acquisition = _to_domain_acquisition(native)
     context = processing_join(native, acquisition, layer_ready) if processing_join is not None else None
     return SweepProgressFrame(
@@ -346,7 +367,7 @@ def _to_domain_progress(native: Any, *, statistics_cache: _SweepStatisticsCache 
 def _to_domain_line(native: Any, *, statistics_cache: _SweepStatisticsCache | None = None,
                     receiver_id: str | None = None,
                     layer_ready: LayerReadyReceipt | None = None,
-                    processing_join: Callable[..., HackrfSweepProcessingContextV1 | None] | None = None) -> SweepLineFrame:
+                    processing_join: Callable[..., SweepProcessingContextV1 | None] | None = None) -> SweepLineFrame:
     from ..domain.sweep_lines import SweepQualitySchema
 
     try:

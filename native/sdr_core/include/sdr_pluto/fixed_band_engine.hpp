@@ -66,6 +66,8 @@ struct FixedBandConfig {
     // Native-only coordinator sink, intentionally not a Python callback/field.
     // Consumed by the DSP owner before the bounded single-window relay.
     std::shared_ptr<sdr_core::SweepStatisticsPublisher> sweep_statistics_sink;
+    // Native coordinator-owned HOST reservation; never a callback or IQ path.
+    std::uint64_t sweep_product_reserved_bytes{};
     // P08 compute backend selection. AUTO uses CUDA only after self-test and
     // above the measured workload crossover; see ADR-022.
     sdr_core::ComputeBackendKind backend{sdr_core::ComputeBackendKind::Auto};

@@ -1,6 +1,6 @@
-"""HackRF Sweep HOST owner context, not RF readback or detector authority."""
+"""Original AD/HackRF Sweep owner context; per-family RF authority stays explicit."""
 from dataclasses import dataclass
-from math import isclose
+from math import isclose, isfinite, ceil, floor
 
 import numpy as np
 
@@ -8,6 +8,8 @@ from .layer_ready import LayerReadyKind, LayerReadyReceipt, SweepLayerIdentity
 from .processing_policy import SdrProcessingPolicyV1, HostSpurMode, HostDcMode, DC_REMOVED_MASK, _text, _uint
 from .source_processing import RfValueAuthority
 from .sweep_acquisition import SweepSegmentAcquisition
+from .continuous_sweep_request import ContinuousSweepPlanRequest
+from .continuous_sweep_geometry import sweep_segment_count, sweep_step_geometry
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,3 +86,113 @@ class HackrfSweepProcessingContextV1:
                     or p.nominal_rbw_hz != p.enbw_hz
                     or p.window_normalization_version != "power-norm-v1" or p.calibration_status != "uncalibrated"):
                 raise ValueError("Sweep contributing FFT/recipe differs from admitted owner")
+
+
+@dataclass(frozen=True, slots=True)
+class AdSweepProcessingPlanV1:
+    """Frozen selected owner/expected profile; only contributing records prove RF readback."""
+    resource_id: str
+    session_id: str
+    revision: int
+    revision_kind: str
+    source_id: str
+    receiver_id: str
+    request: ContinuousSweepPlanRequest
+    policy: SdrProcessingPolicyV1
+    sample_rate_hz: float
+    analog_bandwidth_hz: float
+    fft_size: int
+    hop_size: int
+    averaging_frames: int
+    window: str
+    detector: str
+
+    def __post_init__(self) -> None:
+        for name in ("resource_id", "session_id", "source_id"):
+            _text(getattr(self, name), name, 4096)
+        _uint(self.revision, "owner revision", minimum=1)
+        if self.revision_kind not in ("native_processing", "application_selection") or self.receiver_id not in ("RX1", "RX2"):
+            raise ValueError("AD Sweep requires exact revision authority and receiver")
+        if (type(self.request) is not ContinuousSweepPlanRequest or type(self.policy) is not SdrProcessingPolicyV1
+                or self.policy.spur_mode is not HostSpurMode.OFF or self.policy.compare_raw):
+            raise ValueError("AD Sweep plan policy or geometry is unqualified")
+        sweep_segment_count(self.request)
+        for value in (self.sample_rate_hz, self.analog_bandwidth_hz):
+            if type(value) is not float or not isfinite(value) or value <= 0:
+                raise ValueError("AD Sweep requires a positive selected RF profile")
+        if (type(self.fft_size) is not int or not 256 <= self.fft_size <= 262144 or self.fft_size & (self.fft_size - 1)
+                or type(self.hop_size) is not int or not 1 <= self.hop_size <= self.fft_size
+                or type(self.averaging_frames) is not int or self.averaging_frames < 1
+                or type(self.window) is not str or not self.window or type(self.detector) is not str or not self.detector):
+            raise ValueError("AD Sweep numerical profile is invalid")
+        _text(self.window, "native window", 256)
+        _text(self.detector, "native detector", 256)
+
+    @property
+    def spacing_hz(self) -> float:
+        return (self.request.usable_window_hz / self.request.analysis_bins_per_usable_window
+                if self.request.analysis_bins_per_usable_window else self.sample_rate_hz / self.fft_size)
+
+    @property
+    def output_bins(self) -> int:
+        ratio = (self.request.stop_hz - self.request.start_hz) / self.spacing_hz
+        return ceil(ratio - 1e-12) if self.request.analysis_bins_per_usable_window else floor(ratio) + 1
+
+
+@dataclass(frozen=True, slots=True)
+class AdSweepProcessingContextV1:
+    plan: AdSweepProcessingPlanV1
+    layer_ready: LayerReadyReceipt
+    rf_authority: RfValueAuthority = RfValueAuthority.READBACK
+
+    def __post_init__(self) -> None:
+        ready, plan = self.layer_ready, self.plan
+        if (type(plan) is not AdSweepProcessingPlanV1 or type(ready) is not LayerReadyReceipt
+                or ready.kind not in (LayerReadyKind.SWEEP_PROGRESS, LayerReadyKind.SWEEP_TERMINAL)
+                or type(ready.identity) is not SweepLayerIdentity or ready.owner_run_id is None
+                or ready.session_id != plan.session_id or ready.identity.source_id != plan.source_id
+                or ready.identity.receiver_id != plan.receiver_id or ready.identity.epoch < plan.request.epoch
+                or self.rf_authority is not (RfValueAuthority.READBACK if ready.identity.acquired_segment_generations
+                                            else RfValueAuthority.UNKNOWN)):
+            raise ValueError("AD Sweep requires original selected SAME owner/native creation")
+
+    def validate(self, ready: LayerReadyReceipt | None, records: tuple[SweepSegmentAcquisition, ...] | None,
+                 frequencies: np.ndarray, values: np.ndarray, flags: np.ndarray, unit: str) -> None:
+        plan, key = self.plan, self.layer_ready.identity
+        assert isinstance(key, SweepLayerIdentity)
+        if ready != self.layer_ready or records is None or unit != "dBFS/bin":
+            raise ValueError("AD Sweep context differs from original receipt/acquisition/unit")
+        expected = key.acquired_segment_generations
+        if (tuple((r.segment_index, r.config_generation) for r in records) != expected
+                or sorted([i for i, _ in expected] + list(key.pending_segment_indices)) != list(range(sweep_segment_count(plan.request)))):
+            raise ValueError("AD Sweep context lacks exact contributing plan coverage")
+        if frequencies.size != plan.output_bins:
+            raise ValueError("AD Sweep output grid length differs from admitted plan")
+        for offset in range(0, frequencies.size, 65536):
+            actual = frequencies[offset:offset + 65536]
+            grid = plan.request.start_hz + plan.spacing_hz * np.arange(offset, offset + actual.size)
+            if not np.array_equal(actual, grid):
+                raise ValueError("AD Sweep output grid differs from admitted plan")
+            known = ~np.isnan(values[offset:offset + 65536])
+            modified = (flags[offset:offset + 65536] & DC_REMOVED_MASK) != 0
+            if np.any(known & (modified != (plan.policy.dc_mode is HostDcMode.BLOCK_MEAN))):
+                raise ValueError("AD Sweep measured-bin DC quality differs from admitted policy")
+        for record in records:
+            metadata = record.processing_metadata
+            p = None if metadata is None else metadata.numerical_provenance
+            geometry = sweep_step_geometry(plan.request, record.segment_index)
+            if (metadata is None or p is None or p.processing_recipe is None
+                    or metadata.center_frequency_hz != geometry.center_hz
+                    or metadata.sample_rate_hz != plan.sample_rate_hz or record.sample_rate_hz != plan.sample_rate_hz
+                    or metadata.analog_bandwidth_hz != plan.analog_bandwidth_hz
+                    or metadata.fft_size != plan.fft_size or record.fft_size != plan.fft_size
+                    or metadata.hop_size != plan.hop_size or p.processing_recipe.policy != plan.policy
+                    or p.window != plan.window or p.detector != plan.detector
+                    or p.averaging_frames != plan.averaging_frames or p.precision_mode != "accurate_f32_f64_accum"
+                    or p.fft_bin_width_hz != plan.sample_rate_hz / plan.fft_size
+                    or p.enbw_hz is None or p.nominal_rbw_hz != p.enbw_hz
+                    or p.window_normalization_version != "power-norm-v1" or p.calibration_status != "uncalibrated"):
+                raise ValueError("AD Sweep contributing RF/FFT/recipe differs from SAME admitted owner")
+
+
+SweepProcessingContextV1 = HackrfSweepProcessingContextV1 | AdSweepProcessingContextV1

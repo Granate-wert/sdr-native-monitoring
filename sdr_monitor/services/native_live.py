@@ -1441,7 +1441,12 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
 
     # ---- R10-B exclusive native Sweep lease -----------------------------
 
-    def acquire_native_sweep_lease(self, *, paired_request: PairedSweepRequest | None = None) -> Any:
+    def acquire_native_continuous_sweep_lease(self) -> Any:
+        """Admitted coordinator route; legacy sequential Sweep remains OFF-only."""
+        return self.acquire_native_sweep_lease(continuous_processing=True)
+
+    def acquire_native_sweep_lease(self, *, paired_request: PairedSweepRequest | None = None,
+                                   continuous_processing: bool = False) -> Any:
         """Lease the selected stopped CPU route for one NativeSweepService.
 
         The caller receives no engine, raw I/Q or mutable Live state.  It can
@@ -1451,6 +1456,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         """
 
         from .native_sweep import NativeSweepLease, NativeSweepSource
+
+        if type(continuous_processing) is not bool:
+            raise TypeError("continuous Sweep processing route must be explicit")
 
         with self._recording_transaction_lock:
             with self._sweep_lease_lock:
@@ -1467,7 +1475,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                                      or self._external_analyzer_owner is not None
                                      or self._stream_release_failed or self._observation_owner.cleanup_pending)
                 if snapshot.applied is not None and not snapshot.applied.applied.processing_policy.is_off:
-                    raise LiveAdmissionRejected("Processed Sweep assembly context is not yet qualified")
+                    if not continuous_processing and paired_request is None:
+                        raise LiveAdmissionRejected("Processed Sweep assembly context is not yet qualified for legacy sequential adapter")
+                    from .sweep_processing import admit_ad_sweep_processing
+                    admit_ad_sweep_processing(self._native, snapshot.applied.applied)
                 if snapshot.state is _running_state() or owner_present:
                     raise RuntimeError("stop Live before acquiring the native sweep lease")
                 self._refresh_operational_usb_alias()
@@ -1509,6 +1520,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     snapshot.applied.applied,
                     expected_serial=normalized_pluto_serial(snapshot.device.serial),
                     expected_usb_connection=snapshot.device.usb_connection,
+                    owner_device_id=snapshot.device.device_id,
+                    owner_session_id=str(snapshot.session_id),
+                    owner_processing_revision=self._processing_revision,
                 )
                 paired_configuration = None
                 if paired_request is not None:

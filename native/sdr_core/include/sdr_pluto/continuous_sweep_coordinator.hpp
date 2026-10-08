@@ -50,6 +50,9 @@ struct ContinuousSweepCoordinatorConfig {
     double statistics_snapshot_rate_hz{15.0};
     // Optional creation evidence owned for this plan, not for each retune.
     std::uint32_t layer_event_capacity{};
+    // Downstream HOST observations/processing contexts, SAME component/owner
+    // budget. Zero preserves legacy and paired per-chain configuration.
+    std::uint64_t product_publication_reserved_bytes{};
 };
 
 void validate(const ContinuousSweepCoordinatorConfig& value);
