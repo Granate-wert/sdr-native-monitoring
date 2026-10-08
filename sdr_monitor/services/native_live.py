@@ -84,6 +84,11 @@ from .source_capability_admission import (
     admit_ad936x_route_request, admit_source_request, live_configuration_numbers_valid,
 )
 from ..domain.continuous_sweep_request import ContinuousSweepPlanRequest
+from ..domain.processing_policy import SdrProcessingPolicyV1
+from .live_processing import (
+    LiveProcessingJoin, ad_detector_enum_name, ad_window_enum_name,
+    admit_ad_processing, require_ad_processing_topology,
+)
 
 # P07 defaults mirrored from the legacy adapter contract.
 _FFT_SIZE = 4096
@@ -208,6 +213,9 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             allow_nonstandard_evidence_buffer_geometry=allow_nonstandard_evidence_buffer_geometry,
         )
         self._native = native_module
+        self._processing_policy = SdrProcessingPolicyV1()
+        self._processing_revision = 1
+        self._processing_join = LiveProcessingJoin()
         self._ready_bridge = NativeReadyBridge(native_module)
         self._owner_journals = (NativeOwnerJournal(native_module), NativeOwnerJournal(native_module))
         self._density_journals = (NativeLayerJournal(native_module), NativeLayerJournal(native_module))
@@ -660,6 +668,15 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             return self._apply_configuration_unlocked(requested)
 
     def _apply_configuration_unlocked(self, requested: LiveConfiguration) -> LiveSnapshot:
+        changed = requested.processing_policy != self._processing_policy
+        if changed and (self._engine is not None or self._poller is not None or self.is_running()):
+            raise LiveAdmissionRejected("Stop AD before changing its shared processing policy")
+        if changed and self._processing_revision >= (1 << 64) - 1:
+            raise LiveAdmissionRejected("AD processing revision exhausted")
+        if admit_ad_processing(self._native, requested):
+            require_ad_processing_topology(self._snapshot)
+            if self._native_recording_armed is not None or self._native_recording_active is not None:
+                raise LiveAdmissionRejected("Unarm/Stop recording before processed Live; processing file schema unqualified")
         self._require_operational_route_pin()
         self._refresh_operational_usb_alias()
         log_event(
@@ -682,6 +699,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         )
         snapshot = super().apply_configuration(requested)
         if snapshot.applied is not None:
+            if changed and snapshot.error is None:
+                self._processing_revision += 1
+                self._processing_policy = requested.processing_policy
+                self._processing_join.clear()
             applied = snapshot.applied.applied
             log_event(
                 _LOGGER,
@@ -754,6 +775,13 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         if snapshot.applied is None:
             return None  # Existing missing-profile refusal owns this case.
         configuration = snapshot.applied.applied
+        try:
+            if admit_ad_processing(self._native, configuration):
+                require_ad_processing_topology(snapshot)
+                if self._native_recording_armed is not None or self._native_recording_active is not None:
+                    return "Processed Live recording schema is not qualified"
+        except LiveAdmissionRejected as error:
+            return str(error)
         if not live_configuration_numbers_valid(configuration):
             return "Live configuration numbers are invalid"
         device = snapshot.device
@@ -1435,6 +1463,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                     owner_present = (self._engine is not None or self._poller is not None
                                      or self._external_analyzer_owner is not None
                                      or self._stream_release_failed or self._observation_owner.cleanup_pending)
+                if snapshot.applied is not None and not snapshot.applied.applied.processing_policy.is_off:
+                    raise LiveAdmissionRejected("Processed Sweep assembly context is not yet qualified")
                 if snapshot.state is _running_state() or owner_present:
                     raise RuntimeError("stop Live before acquiring the native sweep lease")
                 self._refresh_operational_usb_alias()
@@ -1596,6 +1626,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         """
 
         with self._recording_transaction_lock:
+            self._require_processing_recording_schema()
             self._require_no_external_analyzer_owner()
             self._require_single_receiver_control()
             self._require_no_native_sweep_lease()
@@ -1631,6 +1662,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         """
 
         with self._recording_transaction_lock:
+            self._require_processing_recording_schema()
             self._require_no_external_analyzer_owner()
             self._require_single_receiver_control()
             self._require_no_native_sweep_lease()
@@ -1662,6 +1694,10 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             if snapshot.error is not None:
                 raise RuntimeError(f"native recording start failed: {snapshot.error}")
             return self.native_recording_health()
+
+    def _require_processing_recording_schema(self) -> None:
+        if self._snapshot.applied is not None and not self._snapshot.applied.applied.processing_policy.is_off:
+            raise LiveAdmissionRejected("Processed Live recording schema is not yet qualified")
 
     def stop_native_recording(self) -> RecordingHealth:
         """Finalize the active native capture by explicitly stopping Live.
@@ -2348,6 +2384,16 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
         provenance = native_spectrum_provenance(frame)
         unit = _native_spectrum_unit(frame.unit)
         validate_absolute_unit(unit, provenance)
+        ready = self._ready_bridge.convert(frame, source_id=source_id,
+            config_generation=generation, receiver_id=receiver_id,
+            acquisition_epoch=publication_context.acquisition_epoch,
+            session_id=publication_context.session_id,
+            owner_journal=self._owner_journals[1 if receiver_id == "RX2" else 0].current())
+        paired = self._paired_request
+        processing = self._processing_join.receipt(frame, publication_context, provenance,
+            unit, str(source_id), receiver_id, self._processing_revision,
+            detector_ready=ready,
+            paired_sources=(paired.primary_source_id, paired.secondary_source_id) if paired is not None else None)
         return LiveSpectrumFrame(
             sequence=as_frame_sequence(frame.frame_sequence),
             timestamp_ns=as_timestamp_ns(frame.timestamp_ns),
@@ -2373,11 +2419,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             clock_domain=publication_context.clock_domain,
             numerical_provenance=provenance,
             receiver_id=receiver_id,
-            detector_ready=self._ready_bridge.convert(frame, source_id=source_id,
-                config_generation=generation, receiver_id=receiver_id,
-                acquisition_epoch=publication_context.acquisition_epoch,
-                session_id=publication_context.session_id,
-                owner_journal=self._owner_journals[1 if receiver_id == "RX2" else 0].current()),
+            processing_context=processing,
+            detector_ready=ready,
         )
 
     def _convert_persistence(self, value: Any, publication_context: LiveSnapshot,
@@ -2768,6 +2811,9 @@ def _native_fixed_band_config(
     only when the caller did not choose a bandwidth explicitly.
     """
     standard_geometry = _is_standard_device_buffer_samples(device_buffer_samples)
+    dc_removal = admit_ad_processing(native_module, live)
+    if dc_removal and recording_options is not None:
+        raise LiveAdmissionRejected("Processed Live recording schema is not yet qualified")
     d5_geometry = (
         allow_r10d5_evidence_buffer_geometry and device_buffer_samples == 308_224
     )
@@ -2839,7 +2885,7 @@ def _native_fixed_band_config(
         _EVENT_QUEUE_CAPACITY,
         effective_snapshot_rate_hz,
         _DISCARD_BLOCKS_AFTER_START if discard_blocks_after_start is None else int(discard_blocks_after_start),
-        False,
+        dc_removal,
         persistence,
     )
     receiver_arguments = {} if receiver_selection is None else {"receiver_selection": receiver_selection}
@@ -3069,35 +3115,13 @@ def _backend_fallback_reason(metrics: Any, applied: AppliedLiveConfiguration) ->
 
 def _native_window(native_module: Any, window: str) -> Any:
     """Map a domain window name to the native WindowType enum."""
-    name = (window or "hann").strip().casefold().replace("_", "-").replace(" ", "-")
-    mapping = {
-        "rectangular": "RECTANGULAR",
-        "hann": "HANN",
-        "hanning": "HANN",
-        "blackman-harris": "BLACKMAN_HARRIS_4TERM",
-        "blackmanharris": "BLACKMAN_HARRIS_4TERM",
-        "flattop": "FLAT_TOP",
-        "flat-top": "FLAT_TOP",
-        "nuttall": "NUTTALL",
-        "kaiser": "KAISER",
-    }
-    enum_name = mapping.get(name, "HANN")
+    enum_name = ad_window_enum_name(window)
     return getattr(native_module.WindowType, enum_name, native_module.WindowType.HANN)
 
 
 def _native_detector(native_module: Any, detector: str) -> Any:
     """Map a domain detector name to the native DetectorType enum."""
-    name = (detector or "sample").strip().casefold().replace("_", "-")
-    mapping = {
-        "sample": "SAMPLE",
-        "peak": "PEAK",
-        "positive-peak": "PEAK",
-        "negative-peak": "NEGATIVE_PEAK",
-        "rms": "RMS",
-        "average": "AVERAGE_POWER",
-        "average-power": "AVERAGE_POWER",
-    }
-    enum_name = mapping.get(name, "SAMPLE")
+    enum_name = ad_detector_enum_name(detector)
     return getattr(native_module.DetectorType, enum_name, native_module.DetectorType.SAMPLE)
 
 

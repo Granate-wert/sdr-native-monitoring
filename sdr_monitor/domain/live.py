@@ -31,6 +31,7 @@ from .identity import (
 from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
+from .processing_policy import AppliedProcessingContextV1, SdrProcessingPolicyV1
 from .presentation_omission import PresentationOmission
 from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilityBinding, DeviceCapabilitySnapshot, DeviceFamily
 from .ad936x_route_capabilities import Ad936xRouteCapabilities
@@ -408,8 +409,11 @@ class LiveConfiguration:
     persistence_half_life_s: float = 1.0
     persistence_snapshot_rate_hz: float = 30.0
     profile_id: str | None = None
+    processing_policy: SdrProcessingPolicyV1 = field(default_factory=SdrProcessingPolicyV1)
 
     def __post_init__(self) -> None:
+        if type(self.processing_policy) is not SdrProcessingPolicyV1:
+            raise ValueError("Live requires an immutable typed SDR processing policy")
         if self.center_hz <= 0 or self.sample_rate_hz <= 0:
             raise ValueError("center and sample rate must be positive")
         if self.analog_bandwidth_hz is not None and self.analog_bandwidth_hz <= 0:
@@ -582,8 +586,28 @@ class LiveSpectrumFrame:
     accumulation_id: str | None = None
     numerical_provenance: SpectrumProvenance | None = None
     detector_ready: DetectorReadyReceipt | None = None
+    processing_context: AppliedProcessingContextV1 | None = None
 
     def __post_init__(self) -> None:
+        if self.processing_context is not None:
+            receipt = self.processing_context
+            if (type(receipt) is not AppliedProcessingContextV1
+                    or self.detector_ready is None or self.detector_ready.owner_run_id is None
+                    or receipt.frame_key.source_id != self.source_id
+                    or receipt.frame_key.config_generation != self.config_generation
+                    or receipt.frame_key.acquisition_epoch != self.acquisition_epoch
+                    or receipt.frame_key.receiver.name != self.receiver_id
+                    or receipt.frame_key.unit != self.unit
+                    or receipt.frame_key.actual_lo_hz != self.center_frequency_hz
+                    or receipt.frame_key.sample_rate_hz != self.sample_rate_hz
+                    or receipt.native_quality_flags != self.native_quality_flags
+                    or self.numerical_provenance is None
+                    or self.numerical_provenance.processing_recipe is None
+                    or receipt.policy_digest != self.numerical_provenance.processing_recipe.policy_digest
+                    or receipt.dc_mode is not self.numerical_provenance.processing_recipe.dc_mode
+                    or receipt.whole_frame_modified != self.numerical_provenance.processing_recipe.whole_frame_modified
+                    or receipt.frame_key.normalization_version != self.numerical_provenance.window_normalization_version):
+                raise ValueError("processing context differs from its original spectrum frame")
         if self.detector_ready is not None:
             ref = self.detector_ready
             if (not isinstance(ref, DetectorReadyReceipt)

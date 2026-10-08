@@ -50,6 +50,8 @@ def build_live_calibration_signature(
         raise CalibrationProfileError("typed applied readback and numerical provenance required")
     if not isinstance(frontend, CalibrationFrontendContext):
         raise CalibrationProfileError("explicit typed frontend context required")
+    if provenance.processing_recipe is not None and provenance.processing_recipe.whole_frame_modified:
+        raise CalibrationProfileError("calibration signature does not qualify non-OFF host processing")
     binding = confirmed_calibration_device_binding(device)
     identity = binding.calibration_identity
     assert identity is not None
