@@ -44,6 +44,8 @@ struct RtlProfile {
     // Absent = existing automatic default. Integer tenths of dB, exact table entry.
     std::optional<int> manual_tuner_gain_tenth_db;
     std::uint32_t analytical_event_capacity{};
+    // CPU block-mean removal only, not tuner/ADC DC tracking or a notch.
+    bool dc_removal_block_mean{};
 };
 
 void validate_rtl_profile(const RtlProfile& profile);

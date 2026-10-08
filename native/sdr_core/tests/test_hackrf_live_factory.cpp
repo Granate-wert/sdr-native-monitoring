@@ -189,6 +189,60 @@ void test_factory_profile_reaches_canonical_ci8_detector_not_display_average() {
     }
 }
 
+void test_factory_dc_option_reaches_same_ci8_cpu_recipe() {
+    std::array<float, 2U> dc{}, tone{};
+    std::array<sdr_core::QualityFlag, 2U> quality{};
+    for (std::size_t selected = 0U; selected < 2U; ++selected) {
+        auto config = valid_config();
+        config.fft_size = config.hop_size = 256U;
+        config.window = sdr_core::WindowType::Rectangular;
+        config.dc_removal_block_mean = selected != 0U;
+        const auto translated = sdr_hackrf::make_hackrf_runtime_dsp_config(config);
+        const auto expected = selected ? sdr_core::DcRemovalMode::BlockMean : sdr_core::DcRemovalMode::Off;
+        expect(translated.processing.dsp.dc_removal == expected, "factory ignored DC stage option");
+        sdr_hackrf::HackrfFixedBandDsp dsp(translated.processing.dsp);
+        sdr_hackrf::HackrfRxIngress ingress({
+            .slot_count = 4U, .slot_bytes = 512U, .ready_capacity = 3U,
+            .center_frequency_hz = config.center_frequency_hz,
+            .sample_rate_hz = config.sample_rate_hz,
+            .config_generation = config.configuration_generation,
+        });
+        std::vector<std::uint8_t> bytes(512U, 0U);
+        for (std::size_t index = 0U; index < 256U; ++index) {
+            const std::int8_t value = static_cast<std::int8_t>(64 +
+                (index % 4U == 0U ? 16 : index % 4U == 2U ? -16 : 0));
+            std::memcpy(bytes.data() + index * 2U, &value, 1U);
+        }
+        expect(ingress.admit_callback(bytes, 1000) == sdr_hackrf::HackrfRxAdmissionResult::Admitted,
+               "synthetic DC+tone input refused");
+        sdr_hackrf::HackrfRxLease lease;
+        expect(ingress.try_pop(lease), "synthetic DC input lease absent");
+        dsp.push(std::move(lease));
+        const auto frames = dsp.poll_spectrum_frames();
+        expect(frames.size() == 1U, "factory DC changed publication count");
+        const auto& frame = frames.front();
+        sdr_core::validate(frame);
+        expect(frame.dsp_processing_recipe && frame.dsp_processing_recipe->dc_removal() == expected &&
+               frame.dsp_processing_recipe->whole_frame_modified() == (selected != 0U),
+               "native DC recipe does not describe actual operation");
+        expect(frame.fft_size == 256U && frame.hop_size == 256U &&
+               frame.sample_rate_hz == config.sample_rate_hz &&
+               frame.config_generation == config.configuration_generation,
+               "DC option modified RF/FFT/provenance");
+        dc[selected] = (*frame.values)[128U];
+        tone[selected] = (*frame.values)[192U];
+        quality[selected] = frame.quality_flags;
+        expect(dsp.metrics().dsp.fft_frames_computed == 1U && dsp.metrics().dsp.fft_frames_dropped == 0U,
+               "DC option changed analytical accounting");
+    }
+    expect(std::abs(dc[0] - 20.0 * std::log10(0.5)) < 0.0001 && dc[1] < -250.0,
+           "factory BlockMean did not remove injected DC");
+    expect(std::abs(tone[0] - 20.0 * std::log10(0.0625)) < 0.0001 &&
+           std::abs(tone[1] - tone[0]) < 0.0001, "DC removal changed non-DC tone normalization");
+    expect(quality[1] == (quality[0] | sdr_core::QualityFlag::DcRemoved),
+           "DC operation lost or invented unrelated quality flags");
+}
+
 }  // namespace
 
 int main() {
@@ -196,6 +250,7 @@ int main() {
         test_pure_translation_retains_every_bounded_field();
         test_invalid_values_fail_before_any_official_owner_exists();
         test_factory_profile_reaches_canonical_ci8_detector_not_display_average();
+        test_factory_dc_option_reaches_same_ci8_cpu_recipe();
         std::cout << "HackRF Live factory tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -86,7 +86,8 @@ HackrfRuntimeDspSessionConfig make_hackrf_runtime_dsp_config(
     dsp.dsp.averaging_frames = config.averaging_frames;
     dsp.dsp.calibration_status = sdr_core::CalibrationStatus::Uncalibrated;
     dsp.dsp.calibration_profile_id.clear();
-    dsp.dc_removal = sdr_core::DcRemovalMode::Off;
+    dsp.dc_removal = config.dc_removal_block_mean
+        ? sdr_core::DcRemovalMode::BlockMean : sdr_core::DcRemovalMode::Off;
     dsp.source.source_type = sdr_core::SourceType::LiveIq;
     dsp.source.source_id = config.source_id;
     dsp.source.display_name = "HackRF Live";

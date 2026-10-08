@@ -37,6 +37,8 @@ struct HackrfLiveFactoryConfig {
     sdr_core::PersistenceConfig persistence{};
     std::uint32_t analytical_event_capacity{};
     std::uint32_t layer_event_capacity{};
+    // Additive CPU stage option. RF hardware DC tracking is not controlled here.
+    bool dc_removal_block_mean{};
 };
 
 // Pure configuration translation and validation. It does not create a port,

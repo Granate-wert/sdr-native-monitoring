@@ -136,7 +136,8 @@ struct RtlRuntimeSession::Impl final {
             free_indices.push_back(index);
         }
         sdr_core::DspOptions options;
-        options.dc_removal = sdr_core::DcRemovalMode::Off;
+        options.dc_removal = profile.dc_removal_block_mean
+            ? sdr_core::DcRemovalMode::BlockMean : sdr_core::DcRemovalMode::Off;
         options.output_capacity = profile.dsp_output_capacity;
         options.analytical_event_capacity = profile.analytical_event_capacity;
         options.source.source_type = sdr_core::SourceType::LiveIq;

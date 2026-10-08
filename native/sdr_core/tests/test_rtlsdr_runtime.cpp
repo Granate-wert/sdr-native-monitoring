@@ -10,8 +10,10 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdlib>
 #include <memory>
+#include <numbers>
 #include <string>
 #include <thread>
 
@@ -237,6 +239,66 @@ void check_callback_dsp_and_stop(const bool delayed, const bool malformed,
     assert(observed->cancels.load() >= 1);
 }
 
+// Independent scalar DFT of the injected CU8 fixture. Do not use native FFT,
+// window helpers or recipe metadata as the numerical oracle. BlockMean is
+// applied BEFORE symmetric Hann, so the weighted DC need not be exactly zero.
+std::array<double, 2U> fixture_hann_dft_db(const bool block_mean) {
+    constexpr std::size_t size = 4096U;
+    constexpr long double amplitude = 127.0L / 128.0L;
+    constexpr long double mean = amplitude / 8.0L;
+    constexpr long double two_pi = 2.0L * std::numbers::pi_v<long double>;
+    std::array<std::complex<long double>, 2U> bins{};
+    long double sum_window{};
+    for (std::size_t index = 0U; index < size; ++index) {
+        const auto window = 0.5L - 0.5L * std::cos(two_pi * index / (size - 1U));
+        const auto sample = (index % 8U == 0U ? amplitude : 0.0L) - (block_mean ? mean : 0.0L);
+        sum_window += window;
+        bins[0U] += sample * window;
+        const auto phase = -two_pi * 512.0L * index / size;
+        bins[1U] += sample * window * std::complex<long double>(std::cos(phase), std::sin(phase));
+    }
+    return {static_cast<double>(20.0L * std::log10(std::abs(bins[0U]) / sum_window)),
+            static_cast<double>(20.0L * std::log10(std::abs(bins[1U]) / sum_window))};
+}
+
+void check_block_mean_reaches_same_cu8_runtime() {
+    std::array<float, 2U> dc{}, tone{};
+    std::array<sdr_core::QualityFlag, 2U> quality{};
+    for (std::size_t selected = 0U; selected < 2U; ++selected) {
+        auto observed = std::make_shared<Observed>();
+        auto request = profile();
+        request.dc_removal_block_mean = selected != 0U;
+        auto session = sdr_rtlsdr::RtlRuntimeSession::start(std::make_unique<MockRtlPort>(observed), request);
+        for (int trial = 0; trial < 200 && session->metrics().dsp.fft_frames_computed != 7U; ++trial)
+            std::this_thread::sleep_for(2ms);
+        const auto metrics = session->metrics();
+        assert(metrics.samples_admitted == 16'384U && metrics.blocks_admitted == 1U);
+        assert(metrics.dsp.fft_frames_computed == 7U && metrics.dsp.fft_frames_dropped == 0U);
+        const auto latest = session->drain_latest_spectrum_frame();
+        assert(latest.frame);
+        const auto& frame = *latest.frame;
+        const auto expected = selected ? sdr_core::DcRemovalMode::BlockMean : sdr_core::DcRemovalMode::Off;
+        assert(frame.dsp_processing_recipe && frame.dsp_processing_recipe->dc_removal() == expected);
+        assert(frame.dsp_processing_recipe->whole_frame_modified() == (selected != 0U));
+        assert(frame.fft_size == request.fft_size && frame.hop_size == request.hop_size);
+        assert(frame.config_generation == request.configuration_generation &&
+               frame.center_frequency_hz == request.center_hz && frame.sample_rate_hz == request.sample_rate_hz);
+        dc[selected] = (*frame.values)[2048U];
+        tone[selected] = (*frame.values)[2560U];
+        quality[selected] = frame.quality_flags;
+        assert(session->stop(2000ms).complete() && !session->cleanup_required());
+        assert(observed->opens.load() == 1 && observed->closes.load() == 1);
+    }
+    for (std::size_t selected = 0U; selected < 2U; ++selected) {
+        const auto expected = fixture_hann_dft_db(selected != 0U);
+        assert(std::abs(dc[selected] - expected[0U]) < 0.0001);
+        assert(std::abs(tone[selected] - expected[1U]) < 0.0001);
+    }
+    assert(std::abs(tone[1] - tone[0]) < 0.0001);
+    assert(quality[1] == (quality[0] | sdr_core::QualityFlag::DcRemoved));
+    assert(!sdr_rtlsdr::rtl_process_quarantined());
+}
+
 void check_odd_callback_fails_closed() {
     auto observed = std::make_shared<Observed>();
     auto session = sdr_rtlsdr::RtlRuntimeSession::start(
@@ -460,6 +522,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     check_inert_validation();
+    check_block_mean_reaches_same_cu8_runtime();
     check_terminal_discard_and_post_stop_drain();
     check_manual_gain_refusal_before_rx();
     check_pre_rx_failure_releases_owner(Fault::Open);

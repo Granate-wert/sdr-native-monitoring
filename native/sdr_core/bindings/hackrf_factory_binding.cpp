@@ -61,6 +61,17 @@ void bind_hackrf_factory(py::module_& module) {
     // remains unchanged. Old modules must never silently ignore these values.
     module.attr("HACKRF_DSP_PROFILE_CONTRACT_VERSION") = 1;
     module.attr("HACKRF_PERSISTENCE_CONTRACT_VERSION") = 1;
+    module.def("hackrf_processing_factory_contract", [] {
+        py::dict result;
+        result["schema_version"] = 1;
+        result["family"] = "hackrf";
+        result["scope"] = "native_rtbw_factory_only";
+        result["dc_modes"] = py::make_tuple("off", "block_mean_v1");
+        result["argument"] = "dc_removal_block_mean";
+        result["default_off"] = true;
+        result["full_owner_context"] = false;
+        return result;
+    });
     module.def(
         "create_hackrf_runtime_dsp_control",
         [](
@@ -85,7 +96,8 @@ void bind_hackrf_factory(py::module_& module) {
             const std::uint32_t averaging_frames,
             const sdr_core::PersistenceConfig& persistence,
             const std::uint32_t analytical_event_capacity,
-            const std::uint32_t layer_event_capacity
+            const std::uint32_t layer_event_capacity,
+            const bool dc_removal_block_mean
         ) {
             auto config = hackrf_live_factory_config(
                 center_frequency_hz,
@@ -110,6 +122,7 @@ void bind_hackrf_factory(py::module_& module) {
             config.persistence = persistence;
             config.analytical_event_capacity = analytical_event_capacity;
             config.layer_event_capacity = layer_event_capacity;
+            config.dc_removal_block_mean = dc_removal_block_mean;
             // Reject malformed values before the first device/library action.
             static_cast<void>(sdr_hackrf::make_hackrf_runtime_dsp_config(config));
             py::gil_scoped_release release;
@@ -136,7 +149,8 @@ void bind_hackrf_factory(py::module_& module) {
         py::arg("averaging_frames") = 1U,
         py::arg("persistence") = sdr_core::PersistenceConfig{},
         py::arg("analytical_event_capacity") = 0U,
-        py::arg("layer_event_capacity") = 0U
+        py::arg("layer_event_capacity") = 0U,
+        py::arg("dc_removal_block_mean").noconvert() = false
     );
 }
 
