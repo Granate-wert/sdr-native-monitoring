@@ -1,4 +1,5 @@
 #include "sdr_core/dsp_backend.hpp"
+#include "sdr_core/dual_rx_dsp.hpp"
 #include "sdr_core/engine.hpp"
 #include "sdr_core/errors.hpp"
 #include "sdr_core/window.hpp"
@@ -561,6 +562,407 @@ void test_dc_removal_block_mean() {
     expect(peak_bin(frames.front()) == n / 2U + 40U, "tone bin must survive DC removal");
 }
 
+// Independent DCSP oracle: direct DFT, independent symmetric windows and
+// long-double arithmetic. Do not reuse the producer's FFT/window/unpack code.
+// Inputs below are the ACTUAL quantized samples sent to the backend, not the
+// original pre-quantization waveform. Compare power, since dB error at zero is
+// undefined. PSD is converted to power per bin using the actual Fs/N.
+using OracleComplex = std::complex<long double>;
+constexpr long double oracle_pi = 3.14159265358979323846264338327950288L;
+
+long double oracle_window(const sdr_core::WindowType window, const std::size_t k,
+                          const std::size_t n) {
+    const long double phase = 2.0L * oracle_pi * k / (n - 1U);
+    switch (window) {
+    case sdr_core::WindowType::Rectangular: return 1.0L;
+    case sdr_core::WindowType::Hann: return (1.0L - std::cos(phase)) / 2.0L;
+    case sdr_core::WindowType::BlackmanHarris4Term:
+        return 0.35875L - 0.48829L * std::cos(phase) +
+               0.14128L * std::cos(2.0L * phase) - 0.01168L * std::cos(3.0L * phase);
+    case sdr_core::WindowType::FlatTop:
+        return 0.21557895L - 0.41663158L * std::cos(phase) +
+               0.277263158L * std::cos(2.0L * phase) -
+               0.083578947L * std::cos(3.0L * phase) + 0.006947368L * std::cos(4.0L * phase);
+    case sdr_core::WindowType::Nuttall:
+        return 0.355768L - 0.487396L * std::cos(phase) +
+               0.144232L * std::cos(2.0L * phase) - 0.012604L * std::cos(3.0L * phase);
+    case sdr_core::WindowType::Kaiser: {
+        const long double position = 2.0L * k / (n - 1U) - 1.0L;
+        // Library Bessel implementation, not the producer's power series.
+        return std::cyl_bessel_i(0.0L, 8.6L * std::sqrt(std::max(0.0L, 1.0L - position * position))) /
+               std::cyl_bessel_i(0.0L, 8.6L);
+    }
+    }
+    throw std::runtime_error("unknown oracle window");
+}
+
+std::vector<double> oracle_power(const std::vector<std::complex<double>>& samples,
+                                const sdr_core::WindowType window,
+                                const bool block_mean, const sdr_core::SpectrumUnit unit,
+                                const std::vector<std::size_t>& selected = {}) {
+    const auto n = samples.size();
+    OracleComplex mean{};
+    if (block_mean) {
+        for (const auto value : samples) { mean += OracleComplex(value.real(), value.imag()); }
+        mean /= static_cast<long double>(n);
+    }
+    std::vector<OracleComplex> staged(n);
+    long double sum_w = 0.0L;
+    long double sum_w2 = 0.0L;
+    for (std::size_t k = 0; k < n; ++k) {
+        const auto coefficient = oracle_window(window, k, n);
+        staged[k] = (OracleComplex(samples[k].real(), samples[k].imag()) - mean) * coefficient;
+        sum_w += coefficient;
+        sum_w2 += coefficient * coefficient;
+    }
+    const long double denominator = unit == sdr_core::SpectrumUnit::DbfsHz
+        ? static_cast<long double>(n) * sum_w2 : sum_w * sum_w;
+    // PSD * (Fs/N) cancels Fs; this normalized linear power is the comparison
+    // domain for both units. The producer still receives the requested Fs.
+    std::vector<double> result(n);
+    for (std::size_t bin = 0; bin < n; ++bin) {
+        if (!selected.empty() && std::find(selected.begin(), selected.end(), bin) == selected.end()) { continue; }
+        const auto frequency = static_cast<std::int64_t>(bin) - static_cast<std::int64_t>(n / 2U);
+        OracleComplex value{};
+        for (std::size_t k = 0; k < n; ++k) {
+            const long double phase = -2.0L * oracle_pi * frequency * k / n;
+            value += staged[k] * OracleComplex(std::cos(phase), std::sin(phase));
+        }
+        result[bin] = static_cast<double>(std::norm(value) / denominator);
+    }
+    return result;
+}
+
+void expect_oracle(const sdr_core::SpectrumFrame& frame, const std::vector<double>& expected,
+                   const std::string& cell, const std::vector<std::size_t>& selected = {}) {
+    expect(frame.values && frame.values->size() == expected.size(), cell + " grid size");
+    // Frozen before any producer change. Includes float32 dB serialization,
+    // float32 window/mean/FFT and quantized input (already decoded in oracle).
+    // Absolute floor is in normalized POWER, not an ignored-bin/dB mask.
+    const bool reference = frame.precision_mode == sdr_core::PrecisionMode::ReferenceF64;
+    const double relative = reference ? 5e-6 : 2e-5;
+    const double absolute = reference ? 2e-14 : 1e-11;
+    for (std::size_t k = 0; k < expected.size(); ++k) {
+        if (!selected.empty() && std::find(selected.begin(), selected.end(), k) == selected.end()) { continue; }
+        const double db = (*frame.values)[k];
+        expect(!std::isnan(db) && db != std::numeric_limits<double>::infinity(), cell + " nonfinite");
+        double power = std::pow(10.0, db / 10.0);
+        if (frame.unit == sdr_core::SpectrumUnit::DbfsHz) { power *= frame.sample_rate_hz / frame.fft_size; }
+        expect_close(power, expected[k], absolute + relative * expected[k],
+                     cell + " bin=" + std::to_string(k));
+    }
+}
+
+std::vector<std::complex<double>> dc_fixture(const std::uint32_t n, const unsigned fixture) {
+    std::vector<std::complex<double>> result(n);
+    std::uint32_t seed = 0x6d2b79f5U;
+    for (std::uint32_t k = 0; k < n; ++k) {
+        const auto sinusoid = [n, k](const double bin, const double amplitude) {
+            const double phase = two_pi * bin * k / n;
+            return amplitude * std::complex<double>(std::cos(phase), std::sin(phase));
+        };
+        seed = 1664525U * seed + 1013904223U;
+        const double re = static_cast<double>((seed >> 8U) & 0xffffU) / 65535.0 - 0.5;
+        seed = 1664525U * seed + 1013904223U;
+        const double im = static_cast<double>((seed >> 8U) & 0xffffU) / 65535.0 - 0.5;
+        switch (fixture) {
+        case 0U: result[k] = {0.25, -0.125}; break; // Genuine RF at LO is ALSO removed.
+        case 1U:
+            result[k] = std::complex<double>(0.2, 0.1) + sinusoid(31.0, 0.15) +
+                        sinusoid(0.75, 0.025) + 0.025 * std::complex<double>(re, im);
+            break;
+        case 2U:
+            result[k] = sinusoid(-0.45, 0.3) + sinusoid(20.25, 0.12) + sinusoid(22.9, 0.012);
+            break; // No injected DC: finite-block mean of genuine near-DC tone is nonzero.
+        case 3U:
+            result[k] = 0.08 * std::complex<double>(re, im);
+            if (k >= n / 7U && k < n / 3U) { result[k] += sinusoid(0.35, 0.35); }
+            break; // Short near-DC burst + broadband across center.
+        default: throw std::runtime_error("unknown DC fixture");
+        }
+    }
+    return result;
+}
+
+struct OracleInput {
+    sdr_core::IqBlock block;
+    std::vector<std::complex<double>> decoded;
+};
+
+OracleInput quantized_input(const std::vector<std::complex<double>>& samples,
+                            const sdr_core::SampleFormat format, const double rate,
+                            const std::uint64_t first = 0U) {
+    OracleInput result;
+    result.decoded.reserve(samples.size());
+    if (format == sdr_core::SampleFormat::ComplexFloat32Le) {
+        for (const auto value : samples) {
+            result.decoded.emplace_back(static_cast<float>(value.real()), static_cast<float>(value.imag()));
+        }
+        result.block = make_cf32_block(result.decoded, first, rate, 100'000'000.0);
+    } else if (format == sdr_core::SampleFormat::ComplexInt8Interleaved) {
+        std::vector<std::pair<std::int8_t, std::int8_t>> integer;
+        for (const auto value : samples) {
+            const auto re = static_cast<std::int8_t>(std::lround(value.real() * 128.0));
+            const auto im = static_cast<std::int8_t>(std::lround(value.imag() * 128.0));
+            integer.emplace_back(re, im);
+            result.decoded.emplace_back(re / 128.0, im / 128.0);
+        }
+        result.block = make_ci8_block(integer, first, rate, 100'000'000.0);
+    } else {
+        const double scale = format == sdr_core::SampleFormat::ComplexInt12InInt16Le ? 2048.0 : 32768.0;
+        std::vector<std::pair<std::int16_t, std::int16_t>> integer;
+        for (const auto value : samples) {
+            const auto re = static_cast<std::int16_t>(std::lround(value.real() * scale));
+            const auto im = static_cast<std::int16_t>(std::lround(value.imag() * scale));
+            integer.emplace_back(re, im);
+            result.decoded.emplace_back(re / scale, im / scale);
+        }
+        result.block = make_ci16_block(integer, first, rate, 100'000'000.0, format);
+    }
+    return result;
+}
+
+void test_dc_removal_independent_oracle_matrix() {
+    const sdr_core::WindowType windows[] = {sdr_core::WindowType::Rectangular, sdr_core::WindowType::Hann,
+        sdr_core::WindowType::BlackmanHarris4Term, sdr_core::WindowType::FlatTop,
+        sdr_core::WindowType::Nuttall, sdr_core::WindowType::Kaiser};
+    const sdr_core::SampleFormat formats[] = {sdr_core::SampleFormat::ComplexInt8Interleaved,
+        sdr_core::SampleFormat::ComplexInt12InInt16Le, sdr_core::SampleFormat::ComplexInt16Le,
+        sdr_core::SampleFormat::ComplexFloat32Le};
+    const sdr_core::PrecisionMode precisions[] = {sdr_core::PrecisionMode::ReferenceF64,
+        sdr_core::PrecisionMode::AccurateF32F64Accum, sdr_core::PrecisionMode::FastF32};
+    const sdr_core::SpectrumUnit units[] = {sdr_core::SpectrumUnit::DbfsBin, sdr_core::SpectrumUnit::DbfsHz};
+    std::size_t cells = 0U;
+    constexpr std::uint32_t n = 256U;
+    constexpr double rate = 61'440'000.0; // Clock/grid test only, NOT physical throughput.
+    for (const auto format : formats) {
+        for (unsigned fixture = 0U; fixture < 4U; ++fixture) {
+            const auto input = quantized_input(dc_fixture(n, fixture), format, rate);
+            const auto unchanged_raw = *input.block.samples;
+            for (const auto window : windows) {
+                for (const auto unit : units) {
+                    for (const bool dc : {false, true}) {
+                        const auto oracle = oracle_power(input.decoded, window, dc, unit);
+                        for (const auto precision : precisions) {
+                            sdr_core::DspOptions options;
+                            options.dc_removal = dc ? sdr_core::DcRemovalMode::BlockMean : sdr_core::DcRemovalMode::Off;
+                            auto backend = sdr_core::make_cpu_dsp_backend(options);
+                            backend->configure(make_config(n, n, window, sdr_core::DetectorType::Sample, unit, precision));
+                            backend->push_iq(input.block);
+                            const auto frames = backend->poll_spectrum(0U);
+                            expect(frames.size() == 1U, "DC oracle expected one frame");
+                            expect_oracle(frames.front(), oracle, "DC matrix cell=" + std::to_string(cells));
+                            expect(sdr_core::has_flag(frames.front().quality_flags, sdr_core::QualityFlag::DcRemoved) == dc,
+                                   "DC quality flag must match actual selected mode");
+                            expect(*input.block.samples == unchanged_raw, "DC DSP overwrote raw IQ tap");
+                            ++cells;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    expect(cells == 1152U, "incomplete DC oracle matrix");
+    std::cout << "DC oracle matrix: " << cells << " full spectra checked\n";
+}
+
+void test_dc_removal_overlap_group_flush_and_reset() {
+    constexpr std::uint32_t n = 1024U;
+    constexpr std::uint32_t hop = 333U; // Non-divisor, not only half-hop.
+    constexpr double rate = 20'000'000.0;
+    const auto waveform = dc_fixture(n, 3U);
+    std::vector<std::complex<double>> stream = waveform;
+    stream.insert(stream.end(), waveform.begin(), waveform.end());
+    const auto input = quantized_input(stream, sdr_core::SampleFormat::ComplexFloat32Le, rate);
+    auto config = make_config(n, hop, sdr_core::WindowType::Hann, sdr_core::DetectorType::AveragePower,
+                              sdr_core::SpectrumUnit::DbfsBin, sdr_core::PrecisionMode::AccurateF32F64Accum, 3U);
+    config.batch_size = 4U;
+    sdr_core::DspOptions options;
+    options.dc_removal = sdr_core::DcRemovalMode::BlockMean;
+    auto backend = sdr_core::make_cpu_dsp_backend(options);
+    backend->configure(config);
+    backend->push_iq(input.block); // Four transforms: one group of 3 + an incomplete group.
+    const auto frames = backend->poll_spectrum(0U);
+    expect(frames.size() == 1U, "incomplete detector group must not manufacture an average");
+    std::vector<double> average(n, 0.0);
+    for (std::size_t start : {0U, 333U, 666U}) {
+        const std::vector<std::complex<double>> window(input.decoded.begin() + start,
+                                                       input.decoded.begin() + start + n);
+        const auto power = oracle_power(window, config.window, true, config.unit);
+        for (std::size_t k = 0; k < n; ++k) { average[k] += power[k] / 3.0; }
+    }
+    expect_oracle(frames.front(), average, "overlap/linear detector group");
+    backend->reset(); // Cancel the fourth transform's incomplete average.
+    expect(backend->poll_spectrum(0U).empty(), "reset leaked old DC detector state");
+
+    config.detector = sdr_core::DetectorType::Sample;
+    config.averaging_frames = 1U;
+    backend->configure(config);
+    const auto short_input = quantized_input(waveform, sdr_core::SampleFormat::ComplexFloat32Le, rate, 5000U);
+    backend->push_iq(short_input.block);
+    expect(backend->poll_spectrum(0U, false).empty(), "batch=4 must remain staged until explicit flush");
+    const auto flushed = backend->poll_spectrum(0U, true);
+    expect(flushed.size() == 1U && flushed.front().first_sample_index == 5000U, "partial FFT batch flush");
+    expect_oracle(flushed.front(), oracle_power(short_input.decoded, config.window, true, config.unit),
+                  "partial batch after reset");
+
+    auto retuned = short_input.block;
+    retuned.first_sample_index = 9000U;
+    retuned.source_sequence = 9U;
+    retuned.config_generation = 2U;
+    retuned.center_frequency_hz = 101'000'000.0;
+    retuned.sample_rate_hz = 16'000'000.0;
+    retuned.flags = sdr_core::QualityFlag::IqDropped;
+    backend->push_iq(retuned);
+    const auto fresh = backend->poll_spectrum(0U, true);
+    expect(fresh.size() == 1U && fresh.front().first_sample_index == 9000U &&
+           fresh.front().config_generation == 2U && fresh.front().center_frequency_hz == 101'000'000.0 &&
+           fresh.front().sample_rate_hz == 16'000'000.0, "gap/retune used stale DC grid/history");
+    expect(sdr_core::has_flag(fresh.front().quality_flags, sdr_core::QualityFlag::IqDropped),
+           "DC processing hid an input gap");
+    expect_oracle(fresh.front(), oracle_power(short_input.decoded, config.window, true, config.unit),
+                  "gap/retune fresh transform");
+}
+
+void test_dc_removal_large_fft_selected_bins_and_parseval() {
+    std::size_t cells = 0U;
+    for (const std::uint32_t n : {1024U, 4096U, 16384U}) {
+        const std::vector<std::size_t> bins = {n / 2U - 2U, n / 2U - 1U, n / 2U,
+                                               n / 2U + 1U, n / 2U + 2U, n / 2U + 31U, n / 4U};
+        for (const auto format : {sdr_core::SampleFormat::ComplexInt8Interleaved,
+                                  sdr_core::SampleFormat::ComplexInt12InInt16Le}) {
+            const auto input = quantized_input(dc_fixture(n, 1U), format, 61'440'000.0);
+            for (const auto window : {sdr_core::WindowType::Hann, sdr_core::WindowType::FlatTop}) {
+                const auto expected = oracle_power(input.decoded, window, true, sdr_core::SpectrumUnit::DbfsBin, bins);
+                OracleComplex mean{};
+                for (const auto sample : input.decoded) { mean += OracleComplex(sample.real(), sample.imag()); }
+                mean /= static_cast<long double>(n);
+                long double energy = 0.0L;
+                long double sum_w = 0.0L;
+                for (std::uint32_t k = 0; k < n; ++k) {
+                    const auto w = oracle_window(window, k, n);
+                    energy += std::norm((OracleComplex(input.decoded[k].real(), input.decoded[k].imag()) - mean) * w);
+                    sum_w += w;
+                }
+                const double integrated = static_cast<double>(n * energy / (sum_w * sum_w));
+                for (const auto precision : {sdr_core::PrecisionMode::ReferenceF64,
+                                             sdr_core::PrecisionMode::AccurateF32F64Accum,
+                                             sdr_core::PrecisionMode::FastF32}) {
+                    sdr_core::DspOptions options;
+                    options.dc_removal = sdr_core::DcRemovalMode::BlockMean;
+                    auto backend = sdr_core::make_cpu_dsp_backend(options);
+                    backend->configure(make_config(n, n, window, sdr_core::DetectorType::Sample,
+                                                    sdr_core::SpectrumUnit::DbfsBin, precision));
+                    backend->push_iq(input.block);
+                    const auto frames = backend->poll_spectrum(0U);
+                    expect(frames.size() == 1U, "large FFT DC frame count");
+                    expect_oracle(frames.front(), expected, "large FFT=" + std::to_string(n), bins);
+                    double actual = 0.0;
+                    for (const auto db : *frames.front().values) { actual += std::pow(10.0, db / 10.0); }
+                    expect_close(actual, integrated, 1e-11 + 2e-5 * integrated, "large FFT DC Parseval");
+                    ++cells;
+                }
+            }
+        }
+    }
+    expect(cells == 36U, "incomplete large FFT DC cells");
+    std::cout << "DC large FFT: " << cells << " selected-bin/Parseval spectra checked (not full-bin oracle)\n";
+}
+
+void test_dc_removal_paired_independent_means() {
+    constexpr std::uint32_t n = 256U;
+    auto dsp = make_config(n, n, sdr_core::WindowType::Hann, sdr_core::DetectorType::AveragePower,
+                           sdr_core::SpectrumUnit::DbfsBin, sdr_core::PrecisionMode::ReferenceF64, 2U);
+    dsp.batch_size = 3U;
+    sdr_core::DualRxDspConfig config;
+    config.primary.dsp = dsp;
+    config.secondary.dsp = dsp;
+    config.primary.source = {.source_type = sdr_core::SourceType::LiveIq, .source_id = "oracle-rx1",
+        .display_name = "oracle RX1", .uri = "mock:dc-oracle", .backend_id = "oracle",
+        .schema_version = sdr_core::contract_schema_version};
+    config.secondary.source = config.primary.source;
+    config.secondary.source.source_id = "oracle-rx2";
+    config.secondary.source.display_name = "oracle RX2";
+    config.dc_removal_block_mean = true; // Existing common policy; do not add independent policy support.
+    config.max_input_samples_per_push = 3U * n;
+    const auto a = quantized_input(dc_fixture(3U * n, 1U), sdr_core::SampleFormat::ComplexFloat32Le, 30'720'000.0);
+    const auto b = quantized_input(dc_fixture(3U * n, 3U), sdr_core::SampleFormat::ComplexFloat32Le, 30'720'000.0);
+    const auto expected = [&](const OracleInput& input) {
+        std::vector<double> average(n);
+        for (std::size_t start : {0U, 256U}) {
+            const std::vector<std::complex<double>> samples(input.decoded.begin() + start,
+                                                           input.decoded.begin() + start + n);
+            const auto power = oracle_power(samples, dsp.window, true, dsp.unit);
+            for (std::size_t k = 0; k < n; ++k) { average[k] += power[k] / 2.0; }
+        }
+        return average;
+    };
+    const auto expected_a = expected(a);
+    const auto expected_b = expected(b);
+    sdr_core::DualRxDspPublisher publisher;
+    publisher.configure(config);
+    std::size_t deliveries = 0U;
+    publisher.set_analytical_consumer([&](sdr_core::DualRxSpectrumFrame& pair,
+                                        const sdr_core::DspBackendMetrics&, const sdr_core::DspBackendMetrics&) {
+        expect_oracle(pair.primary, expected_a, "paired RX1 before coalescing");
+        expect_oracle(pair.secondary, expected_b, "paired RX2 before coalescing");
+        expect(pair.primary.source.source_id == "oracle-rx1" && pair.secondary.source.source_id == "oracle-rx2",
+               "DC oracle lost per-chain source identity");
+        ++deliveries;
+        return true;
+    });
+    publisher.push(a.block, b.block);
+    publisher.flush();
+    auto pairs = publisher.poll_spectrum_frames(0U);
+    // Existing detector receipt is anchored to the LAST transform in its
+    // averaging group (emit_frame(meta_batch_[frame])), not the first one.
+    expect(pairs.size() == 1U && deliveries == 1U && pairs.front().first_sample_index == n,
+           "paired DC partial group output/last-transform anchor");
+    expect(sdr_core::has_flag(pairs.front().primary.quality_flags, sdr_core::QualityFlag::DcRemoved) &&
+           sdr_core::has_flag(pairs.front().secondary.quality_flags, sdr_core::QualityFlag::DcRemoved),
+           "both paired DC chains must report processing");
+    const auto epoch = pairs.front().synchronization_epoch;
+    publisher.mark_shared_gap();
+    auto next_a = a.block;
+    auto next_b = b.block;
+    next_a.first_sample_index = next_b.first_sample_index = 9000U;
+    next_a.source_sequence = next_b.source_sequence = 9U;
+    next_a.config_generation = next_b.config_generation = 2U;
+    publisher.push(next_a, next_b);
+    publisher.flush();
+    pairs = publisher.poll_spectrum_frames(0U);
+    expect(pairs.size() == 1U && deliveries == 2U && pairs.front().synchronization_epoch > epoch &&
+           pairs.front().config_generation == 2U && pairs.front().first_sample_index == 9000U + n,
+           "paired DC reset mixed old epoch/partial detector group");
+    expect(publisher.metrics().primary.fft_frames_dropped == 0U &&
+           publisher.metrics().secondary.fft_frames_dropped == 0U, "paired DC oracle dropped analytical frames");
+}
+
+void test_dc_off_default_parity() {
+    auto config = make_config(256U, 128U, sdr_core::WindowType::FlatTop);
+    config.batch_size = 2U;
+    auto defaults = sdr_core::make_cpu_dsp_backend({});
+    sdr_core::DspOptions off_options;
+    off_options.dc_removal = sdr_core::DcRemovalMode::Off;
+    auto explicit_off = sdr_core::make_cpu_dsp_backend(off_options);
+    defaults->configure(config);
+    explicit_off->configure(config);
+    const auto input = quantized_input(dc_fixture(1024U, 1U), sdr_core::SampleFormat::ComplexFloat32Le,
+                                        30'720'000.0);
+    defaults->push_iq(input.block);
+    explicit_off->push_iq(input.block);
+    const auto a = defaults->poll_spectrum(0U);
+    const auto b = explicit_off->poll_spectrum(0U);
+    expect(a.size() == 7U && a.size() == b.size(), "OFF parity frame count");
+    for (std::size_t k = 0; k < a.size(); ++k) {
+        expect(*a[k].values == *b[k].values && *a[k].frequencies_hz == *b[k].frequencies_hz &&
+               a[k].quality_flags == b[k].quality_flags && a[k].first_sample_index == b[k].first_sample_index &&
+               a[k].dropped_fft_frames_before == b[k].dropped_fft_frames_before,
+               "default vs explicit OFF parity");
+        expect(!sdr_core::has_flag(a[k].quality_flags, sdr_core::QualityFlag::DcRemoved), "default is not OFF");
+    }
+}
+
 void test_precision_modes() {
     constexpr std::uint32_t n = 1024U;
     constexpr double rate = 1'024'000.0;
@@ -1058,6 +1460,11 @@ int main() {
         test_stage_timing_contract();
         test_ci16_unpack_and_clipping_flag();
         test_dc_removal_block_mean();
+        test_dc_removal_independent_oracle_matrix();
+        test_dc_removal_overlap_group_flush_and_reset();
+        test_dc_removal_large_fft_selected_bins_and_parseval();
+        test_dc_removal_paired_independent_means();
+        test_dc_off_default_parity();
         test_precision_modes();
         test_engine_continuous_dsp();
         test_gap_rebases_without_stale_stitching();
