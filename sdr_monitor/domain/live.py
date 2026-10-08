@@ -32,6 +32,7 @@ from .receiver_topology import ReceiverTopologySnapshot
 from .analyzer_resources import estimate_analyzer_reduced
 from .spectrum_provenance import SpectrumProvenance
 from .processing_policy import AppliedProcessingContextV1, SdrProcessingPolicyV1
+from .source_processing import AppliedSourceProcessingContextV2
 from .presentation_omission import PresentationOmission
 from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilityBinding, DeviceCapabilitySnapshot, DeviceFamily
 from .ad936x_route_capabilities import Ad936xRouteCapabilities
@@ -586,10 +587,29 @@ class LiveSpectrumFrame:
     accumulation_id: str | None = None
     numerical_provenance: SpectrumProvenance | None = None
     detector_ready: DetectorReadyReceipt | None = None
-    processing_context: AppliedProcessingContextV1 | None = None
+    processing_context: AppliedProcessingContextV1 | AppliedSourceProcessingContextV2 | None = None
 
     def __post_init__(self) -> None:
-        if self.processing_context is not None:
+        if type(self.processing_context) is AppliedSourceProcessingContextV2:
+            receipt_v2 = self.processing_context
+            key = receipt_v2.frame_key
+            ready = self.detector_ready
+            provenance = self.numerical_provenance
+            if (ready is None or ready.owner_run_id != key.owner_run_id
+                    or ready.producer_instance_id != key.producer_instance_id
+                    or ready.session_id != key.session_id or self.receiver_id is not None
+                    or key.source_id != self.source_id or key.config_generation != self.config_generation
+                    or key.acquisition_epoch != self.acquisition_epoch or key.unit != self.unit
+                    or key.center.value_hz != self.center_frequency_hz
+                    or key.sample_rate.value_hz != self.sample_rate_hz
+                    or receipt_v2.native_quality_flags != self.native_quality_flags
+                    or provenance is None or provenance.processing_recipe is None
+                    or receipt_v2.policy_digest != provenance.processing_recipe.policy_digest
+                    or receipt_v2.dc_mode is not provenance.processing_recipe.dc_mode
+                    or receipt_v2.whole_frame_modified != provenance.processing_recipe.whole_frame_modified
+                    or key.normalization_version != provenance.window_normalization_version):
+                raise ValueError("single-stream processing context differs from its original spectrum frame")
+        elif self.processing_context is not None:
             receipt = self.processing_context
             if (type(receipt) is not AppliedProcessingContextV1
                     or self.detector_ready is None or self.detector_ready.owner_run_id is None

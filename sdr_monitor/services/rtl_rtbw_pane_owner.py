@@ -102,6 +102,8 @@ class RtlRtbwPaneOwner:
                 or type(started.acquisition_epoch) is not int or started.acquisition_epoch <= 0
                 or applied is None or applied.center_frequency_hz != requested.center_frequency_hz
                 or applied.sample_rate_hz != requested.sample_rate_hz
+                or replace(applied, configuration_generation=1)
+                   != replace(requested, configuration_generation=1)
                 or started.active_config_generation != applied.configuration_generation
                 or started.unit != profile.unit):
             raise RuntimeError("RTL pane Start lacks exact native readback/epoch receipt")

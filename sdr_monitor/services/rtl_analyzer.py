@@ -32,6 +32,7 @@ from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalSc
 from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
 from .rtl_capability_provider import RtlControlPort, RtlRuntimeProvision
 from .source_capability_admission import admit_source_request
+from .source_processing import SourceProcessingJoin, admit_source_processing
 
 
 class RtlExclusionPort(Protocol):
@@ -45,6 +46,7 @@ class RtlAnalyzerService:
                  provision_for: Callable[[DeviceCapabilityBinding, AdapterRuntimeSnapshot],
                                          RtlRuntimeProvision]) -> None:
         self._native, self._exclusion = native, exclusion
+        self._processing_join = SourceProcessingJoin()
         self._ready_bridge = NativeReadyBridge(native)
         self._journal = NativeOwnerJournal(native)
         self._inventory, self._provision_for = inventory, provision_for
@@ -133,6 +135,9 @@ class RtlAnalyzerService:
             raise LiveAdmissionRejected(f"RTL RTBW refused: {admitted.reason.value if admitted.reason else 'unknown'}")
         assert choice.runtime is not None
         provision = self._provision_for(choice.binding, choice.runtime)
+        if admit_source_processing(provision.native, "rtl_sdr", request.processing_policy, backend=request.backend):
+            if not owner_journal_capacity(provision.native):
+                raise LiveAdmissionRejected("RTL processing requires SAME native owner journal")
         if request.manual_tuner_gain_tenth_db is not None:
             version = getattr(provision.native, "RTLSDR_TUNER_GAIN_CONTRACT_VERSION", None)
             if (provision.manual_gain_contract_version != 1 or type(version) is not int or version != 1):
@@ -206,10 +211,13 @@ class RtlAnalyzerService:
                 # catalog/default module used for general capability gates.
                 self._ready_bridge = NativeReadyBridge(native)
                 self._ready_bridge.begin()
+                self._processing_join.clear()
                 self._journal.prepare(native=native, capacity=owner_journal_capacity(native))
                 selected = native.RtlSessionRoute(route.manufacturer, route.product, route.serial,
                     route.tuner_type, route.observation_revision)
                 gain_arguments: dict[str, object] = {}
+                if admit_source_processing(native, "rtl_sdr", request.processing_policy, backend=request.backend):
+                    gain_arguments["dc_removal_block_mean"] = True
                 if owner_journal_capacity(native):
                     gain_arguments["analytical_event_capacity"] = owner_journal_capacity(native)
                 if request.manual_tuner_gain_tenth_db is not None:
@@ -338,6 +346,12 @@ class RtlAnalyzerService:
             reasons.append(LossReason.ACQUISITION_QUEUE)
         if frame.dropped_fft_frames_before or _native_quality_mask(self._native, frame, "FFT_DROPPED"):
             reasons.append(LossReason.DSP)
+        ready = self._ready_bridge.convert(frame, source_id=request.source_id,
+            config_generation=ConfigurationGeneration(request.configuration_generation),
+            receiver_id=None, acquisition_epoch=current.acquisition_epoch,
+            session_id=current.session_id, owner_journal=self._journal.current())
+        processing = self._processing_join.receipt("rtl_sdr", frame, current, provenance, unit,
+            ready, self._journal.current())
         return LiveSpectrumFrame(sequence=frame.frame_sequence, timestamp_ns=frame.timestamp_ns,
             center_frequency_hz=frame.center_frequency_hz, sample_rate_hz=frame.sample_rate_hz,
             fft_size=frame.fft_size, hop_size=frame.hop_size,
@@ -351,10 +365,7 @@ class RtlAnalyzerService:
             dropped_fft_frames_before=frame.dropped_fft_frames_before,
             native_quality_flags=int(frame.quality_flags), acquisition_epoch=current.acquisition_epoch,
             clock_domain=current.clock_domain, numerical_provenance=provenance,
-            detector_ready=self._ready_bridge.convert(frame, source_id=request.source_id,
-                config_generation=ConfigurationGeneration(request.configuration_generation),
-                receiver_id=None, acquisition_epoch=current.acquisition_epoch,
-                session_id=current.session_id, owner_journal=self._journal.current()))
+            detector_ready=ready, processing_context=processing)
 
     def _poll(self) -> None:
         last_metrics = time.monotonic()

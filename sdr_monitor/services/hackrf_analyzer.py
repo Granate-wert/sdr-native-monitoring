@@ -41,6 +41,7 @@ from .native_layer_journal import HOST_LAYER_RESERVATION, NativeLayerJournal, la
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
 from .source_capability_admission import admit_source_request
+from .source_processing import SourceProcessingJoin, admit_source_processing
 
 
 class AnalyzerExclusionPort(Protocol):
@@ -56,6 +57,7 @@ class HackrfAnalyzerService:
                  preflight: HackrfActivationPreflightService,
                  coordinator: HackrfProductLiveCoordinator) -> None:
         self._native, self._exclusion, self._inventory = native, exclusion, inventory
+        self._processing_join = SourceProcessingJoin()
         self._ready_bridge = NativeReadyBridge(native)
         self._layer_journal = NativeLayerJournal(native, layer_journal_capacity(native, hackrf=True))
         self._journal = NativeOwnerJournal(native, owner_journal_capacity(native),
@@ -130,6 +132,11 @@ class HackrfAnalyzerService:
         return self._generation
 
     def _admit(self, request: HackrfLiveRequest) -> None:
+        if admit_source_processing(self._native, "hackrf", request.processing_policy, backend=request.backend):
+            if not owner_journal_capacity(self._native):
+                raise LiveAdmissionRejected("HackRF processing requires SAME native owner journal")
+            if request.persistence_enabled:
+                raise LiveAdmissionRejected("processed HackRF density context is not yet qualified")
         bridge = getattr(self._native, "HACKRF_UI_BRIDGE_CONTRACT_VERSION", None)
         control_type = getattr(self._native, "HackrfRuntimeDspControl", None)
         if (type(bridge) is not int or bridge != 1
@@ -222,6 +229,7 @@ class HackrfAnalyzerService:
                 if verified.permit is None:
                     return self._error("HackRF identity preflight refused; explicit Stop required")
                 self._ready_bridge.begin()
+                self._processing_join.clear()
                 scope = OwnerJournalScope(self._ready_bridge.clock_scope_id,
                     self._ready_bridge.host_process_id, uuid4().hex, str(request.source_id), None,
                     str(self._snapshot.session_id), request.configuration_generation, self._epoch)
@@ -294,6 +302,12 @@ class HackrfAnalyzerService:
         provenance = native_spectrum_provenance(frame)
         unit = _native_spectrum_unit(frame.unit)
         validate_absolute_unit(unit, provenance)
+        ready = self._ready_bridge.convert(frame, source_id=source,
+            config_generation=generation, receiver_id=None,
+            acquisition_epoch=context.acquisition_epoch, session_id=context.session_id,
+            owner_journal=self._journal.current())
+        processing = self._processing_join.receipt("hackrf", frame, context, provenance, unit,
+            ready, self._journal.current())
         return LiveSpectrumFrame(sequence=frame.frame_sequence, timestamp_ns=frame.timestamp_ns,
             center_frequency_hz=frame.center_frequency_hz, sample_rate_hz=frame.sample_rate_hz,
             fft_size=frame.fft_size, hop_size=frame.hop_size,
@@ -304,10 +318,7 @@ class HackrfAnalyzerService:
             dropped_fft_frames_before=frame.dropped_fft_frames_before,
             native_quality_flags=int(frame.quality_flags), acquisition_epoch=context.acquisition_epoch,
             clock_domain=context.clock_domain, numerical_provenance=provenance,
-            detector_ready=self._ready_bridge.convert(frame, source_id=source,
-                config_generation=generation, receiver_id=None,
-                acquisition_epoch=context.acquisition_epoch, session_id=context.session_id,
-                owner_journal=self._journal.current()))
+            detector_ready=ready, processing_context=processing)
 
     def _convert_persistence(self, value: Any, context: LiveSnapshot) -> LivePersistenceFrame:
         request = context.hackrf_request

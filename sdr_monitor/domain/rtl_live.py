@@ -8,10 +8,11 @@ ask a subsequently identified tuner to do. Native readback is still required.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .identity import SourceId, as_source_id
 from .live import BackendKind
+from .processing_policy import SdrProcessingPolicyV1
 
 
 RTL_RATE_CHOICES_HZ = frozenset((2_048_000, 2_400_000))
@@ -42,8 +43,11 @@ class RtlLiveRequest:
     source_id: SourceId = SourceId("native.rtl_sdr.live")
     # Exact selected-tuner table entry, not a continuous gain range/RF readback.
     manual_tuner_gain_tenth_db: int | None = None
+    processing_policy: SdrProcessingPolicyV1 = field(default_factory=SdrProcessingPolicyV1)
 
     def __post_init__(self) -> None:
+        if type(self.processing_policy) is not SdrProcessingPolicyV1:
+            raise ValueError("RTL requires an immutable typed processing policy")
         gain = self.manual_tuner_gain_tenth_db
         if gain is not None and (type(gain) is not int or not -1000 <= gain <= 1000):
             raise ValueError("RTL manual gain must be a bounded integer in tenths of dB")

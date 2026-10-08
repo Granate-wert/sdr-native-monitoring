@@ -8,6 +8,7 @@ from numbers import Real
 
 from .identity import SourceId, as_source_id
 from .live import BackendKind
+from .processing_policy import SdrProcessingPolicyV1
 from .layer_ready import DENSITY_LAYER_SCALAR_RESERVATION_BYTES
 
 _HACKRF_FILTER_BANDWIDTHS_HZ = frozenset(
@@ -116,8 +117,11 @@ class HackrfLiveRequest:
     persistence_window_frames: int = 500
     persistence_half_life_s: float = 1.0
     persistence_snapshot_rate_hz: float = 15.0
+    processing_policy: SdrProcessingPolicyV1 = field(default_factory=SdrProcessingPolicyV1)
 
     def __post_init__(self) -> None:
+        if type(self.processing_policy) is not SdrProcessingPolicyV1:
+            raise ValueError("HackRF requires an immutable typed processing policy")
         object.__setattr__(self, "center_frequency_hz", _finite_positive(self.center_frequency_hz, "center_frequency_hz"))
         object.__setattr__(self, "sample_rate_hz", _finite_positive(self.sample_rate_hz, "sample_rate_hz"))
         if (
