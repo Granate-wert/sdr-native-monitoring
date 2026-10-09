@@ -1,5 +1,43 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
+## Runtime099 checkpoint (2026-10-09, software qualified / HIL partial)
+
+Exact source9d1bf96 and new diagnostic tag APP07-PY31316-20261009-9D1BF96-R0
+use workspace-only official standard-GIL CPython3.13.16, a fresh no-system-site
+venv and82 pinned baseline versions (Qt6.11.1/NumPy2.2.2/PyInstaller6.22.3).
+Actual native include/import-library and frozen Python DLL hashes were checked.
+48 native CTest cases passed; the full exact serial V2 suite passed1557 total,
+1491 passed,66 skipped,0 failures/errors. Three pre-existing dependency metadata
+omissions remain. This is not static promotion or attribution of the old crash.
+
+ONE changed original-Qt source HIL used Empty1/HackRF2 Fs20 MS/s/AD9363Ethernet3
+Fs30.72 MS/s/RTL4 Fs2.4 MS/s, all FFT4096. All three delivered fresh bundles;
+AD frameRX1 matched admittedRX1 with zero rejected publications. Selected
+Stop/Start for each produced new epochs while independent peers advanced
+without identity/epoch/history reset. Host Ethernet read1Gbps, not sustained
+transport throughput. Four-source AD identity admission remains separate/open.
+
+The whole HIL FAILED and cleaned up normally. Private raster capture indexed
+an occupied caption for Empty1 (KeyError before PNG). Its wait helper accepted
+an HF restart approximately333.389s after its marker despite a150s deadline.
+Neither bounded responsiveness nor a physical screenshot was qualified.
+One sampled waterfall paint stack is not proof of the delay's cause.
+
+Private helper100 now uses the actual Empty label and refuses late success;
+all source/profile/frame/peer guards remain. Nineteen offline tests passed,
+including actualQt MOCK board geometry/non-null raster and delayed-callback
+rejection. Dedicated gpt-6.1-sol/high UI-only read-only review approved narrowly.
+The complete PNG/SAME-identity serialization path is source-reviewed, not
+execution-covered by that raster test. No physical100 rerun occurred.
+Callback preemption and a hard return-time bound are not promised.
+
+Next: bounded phase diagnostics for the unexplained UI delay, then a changed
+pinned HIL attempt with original guards. Do not retry unchanged097 or relabel
+old1a/bf/fa results as9d. APP07/M7-M8 remain PARTIAL; physical faults,
+four-source/performance/visible EXE/DPI/DWM/soak/release acceptance remain open.
+The regression section at the end is historical096 evidence, not an assertion
+that the already implemented typed Start-readback repair is still missing.
+
 ## SAME-owner Start receiver admission repair (2026-10-09)
 
 The current AD single-RX adapter now binds the actual native Start receipt's
