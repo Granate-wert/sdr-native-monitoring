@@ -303,15 +303,21 @@ def run_native_case(path: str, case: str) -> None:
         assert session.accept_frame(first, "caller:rx1", right) == ()
         # Operational route ID and a forged producer ID cannot borrow RX1.
         for source_id in (source, "foreign"):
-            try:
-                forged_frame = replace(left.spectrum, source_id=source_id)
-            except ValueError as error:
-                assert "detector-ready receipt differs" in str(error), error
-                continue  # ORIGINAL ready source guard rejects before graph admission.
-            # Isolate the route guard: an actual density still carrying the
-            # original source would rightly refuse even earlier in the bundle.
-            forged = replace(left, spectrum=forged_frame, identity=None, persistence=None, waterfall_line=None)
-            assert session.accept_frame(first, "caller:rx1", forged) == ()
+            # Current processed frames reject source forgery at the ORIGINAL
+            # processing context first. Independently isolate the existing
+            # detector-ready guard too; never weaken either product check or
+            # accept an arbitrary ValueError as a successful negative test.
+            contexts = ((left.spectrum.processing_context, None)
+                        if left.spectrum.processing_context is not None else (None,))
+            for context in contexts:
+                try:
+                    replace(left.spectrum, source_id=source_id, processing_context=context)
+                except ValueError as error:
+                    expected = ("processing context differs from its original spectrum frame"
+                                if context is not None else "detector-ready receipt differs from its spectrum frame")
+                    assert str(error) == expected, error
+                else:
+                    raise AssertionError("original source-bound provenance must reject producer forgery")
         metrics = app.paired_performance()
         deadline = time.monotonic() + 2
         while metrics is None:
