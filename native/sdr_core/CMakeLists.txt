@@ -57,6 +57,7 @@ add_library(sdr_core STATIC
     src/core/engine.cpp
     src/core/synthetic_source.cpp
     src/dsp/cpu_dsp_backend.cpp
+    src/dsp/spur_candidates.cpp
     src/dsp/dual_rx_dsp.cpp
     src/dsp/dsp_backend_selector.cpp
     src/dsp/fft_provider.cpp
@@ -654,6 +655,12 @@ if(SDR_CORE_BUILD_TESTS)
     sdr_core_apply_sanitizers(sdr_core_cpu_dsp_backend_test)
     add_test(NAME sdr_core.cpu_dsp_backend COMMAND sdr_core_cpu_dsp_backend_test)
     set_tests_properties(sdr_core.cpu_dsp_backend PROPERTIES TIMEOUT 300)
+    add_executable(sdr_core_spur_candidates_test tests/test_spur_candidates.cpp)
+    target_link_libraries(sdr_core_spur_candidates_test PRIVATE sdr_core::sdr_core)
+    sdr_core_apply_platform_defaults(sdr_core_spur_candidates_test)
+    sdr_core_apply_sanitizers(sdr_core_spur_candidates_test)
+    add_test(NAME sdr_core.spur_candidates COMMAND sdr_core_spur_candidates_test)
+    set_tests_properties(sdr_core.spur_candidates PROPERTIES TIMEOUT 120)
     add_executable(sdr_core_dual_rx_dsp_test tests/test_dual_rx_dsp.cpp)
     target_link_libraries(sdr_core_dual_rx_dsp_test PRIVATE sdr_core::sdr_core)
     sdr_core_apply_platform_defaults(sdr_core_dual_rx_dsp_test)
@@ -910,6 +917,7 @@ if(SDR_CORE_BUILD_TESTS)
             sdr_core_transport_stress_test
             sdr_core_window_test
             sdr_core_cpu_dsp_backend_test
+            sdr_core_spur_candidates_test
             sdr_core_analytical_ready_test
             sdr_core_dual_rx_dsp_test
             sdr_core_dsp_bench

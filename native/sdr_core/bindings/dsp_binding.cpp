@@ -6,7 +6,9 @@
 #include "sdr_core/events.hpp"
 #include "sdr_core/recording_reprocess.hpp"
 #include "sdr_core/recording_path.hpp"
+#include "sdr_core/spur_candidates.hpp"
 
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -301,6 +303,85 @@ void bind_dsp(py::module_& module) {
 
     // Versioned, exact canonical recipe admission at the NUMERICAL DSP layer.
     // No hardware owner or RF operation; product admission remains separate.
+    module.def("spur_candidate_numerical_contract", [] {
+        py::dict result;
+        result["schema_version"] = 1;
+        result["scope"] = "reduced_fft_numerical_diagnostics_only";
+        result["full_owner_context"] = false;
+        result["processing_mode_admission"] = false;
+        result["spectrum_modified"] = false;
+        result["calibrated_probability"] = false;
+        result["max_observations"] = spur_candidate_max_observations;
+        result["max_zones"] = spur_candidate_max_zones;
+        result["max_bin_visits"] = spur_candidate_max_bin_visits;
+        result["native_report_bytes"] = sizeof(SpurCandidateReportV1);
+        return result;
+    });
+    module.def("evaluate_spur_candidates_v1", [](const py::object& input,
+        const py::object& regions, const py::object& minimum_peak, const py::object& minimum_contrast,
+        const py::object& maximum_span) {
+        // Bounds and exact builtins BEFORE conversions/iteration/allocation.
+        // No generic iterable, raw IQ, caller-controlled ndarray copy or second
+        // hardware/DSP owner. Python keeps original immutable frames alive here.
+        if (!PyTuple_CheckExact(input.ptr()) || !PyTuple_CheckExact(regions.ptr()) ||
+            py::len(input) < 1 || py::len(input) > spur_candidate_max_observations ||
+            py::len(regions) < 1 || py::len(regions) > spur_candidate_max_zones ||
+            !PyFloat_CheckExact(minimum_peak.ptr()) || !PyFloat_CheckExact(minimum_contrast.ptr()) ||
+            !PyLong_CheckExact(maximum_span.ptr())) {
+            throw ConfigurationError("bounded exact tuples and typed diagnostic limits required");
+        }
+        const auto frames = py::reinterpret_borrow<py::tuple>(input);
+        const auto zones = py::reinterpret_borrow<py::tuple>(regions);
+        std::array<const SpectrumFrame*, spur_candidate_max_observations> pointers{};
+        std::array<SpurCandidateZoneV1, spur_candidate_max_zones> native_zones{};
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            pointers[i] = &frames[i].cast<const SpectrumFrame&>();
+        }
+        for (std::size_t i = 0; i < zones.size(); ++i) {
+            if (!PyTuple_CheckExact(zones[i].ptr()) || py::len(zones[i]) != 3) {
+                throw ConfigurationError("exact coordinate/start/stop zone tuples required");
+            }
+            const auto region = py::reinterpret_borrow<py::tuple>(zones[i]);
+            if (!PyUnicode_CheckExact(region[0].ptr()) || PyUnicode_GET_LENGTH(region[0].ptr()) > 8 ||
+                !PyFloat_CheckExact(region[1].ptr()) ||
+                !PyFloat_CheckExact(region[2].ptr())) {
+                throw ConfigurationError("typed coordinate/float diagnostic region required");
+            }
+            const auto coordinate = region[0].cast<std::string>();
+            if (coordinate != "baseband" && coordinate != "rf") {
+                throw ConfigurationError("unknown spur diagnostic coordinate");
+            }
+            native_zones[i] = {coordinate == "baseband" ? SpurZoneCoordinate::Baseband : SpurZoneCoordinate::Rf,
+                region[1].cast<double>(), region[2].cast<double>()};
+        }
+        const SpurCandidateLimitsV1 limits{minimum_peak.cast<double>(), minimum_contrast.cast<double>(),
+            maximum_span.cast<std::int64_t>()};
+        SpurCandidateReportV1 report;
+        {
+            py::gil_scoped_release release;
+            report = evaluate_spur_candidates_v1({pointers.data(), frames.size()},
+                {native_zones.data(), zones.size()}, limits);
+        }
+        py::tuple outputs(report.zone_count);
+        for (std::size_t i = 0; i < report.zone_count; ++i) {
+            const auto& value = report.zones[i];
+            py::dict result;
+            result["evidence"] = std::string(to_wire(value.evidence));
+            result["observations"] = value.observations;
+            result["complete_fft_observations"] = value.complete_fft_observations;
+            result["qualifying_peaks"] = value.qualifying_peaks;
+            result["first_peak_rf_hz"] = std::isfinite(value.first_peak_rf_hz) ? py::cast(value.first_peak_rf_hz) : py::none();
+            result["first_peak_offset_hz"] = std::isfinite(value.first_peak_offset_hz) ? py::cast(value.first_peak_offset_hz) : py::none();
+            result["strongest_peak_dbfs"] = std::isfinite(value.strongest_peak_dbfs) ? py::cast(value.strongest_peak_dbfs) : py::none();
+            outputs[i] = std::move(result);
+        }
+        py::dict result;
+        result["schema_version"] = 1; result["zones"] = std::move(outputs);
+        result["bin_visits"] = report.bin_visits;
+        return result;
+    }, py::arg("observations"), py::arg("zones"), py::arg("minimum_peak_dbfs") = -60.0,
+       py::arg("minimum_contrast_db") = 6.0, py::arg("maximum_observation_span_ns") = 100'000'000);
+
     module.def("make_cpu_dsp_backend_for_policy_v1", [](const py::object& payload) {
         if (!PyBytes_CheckExact(payload.ptr())) {
             throw ConfigurationError("native recipe1 requires exact canonical bytes");
