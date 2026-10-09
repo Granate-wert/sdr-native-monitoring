@@ -64,7 +64,7 @@ def main() -> None:
     by_resource = dict(zip(("pane-resource-1", "pane-resource-2"), triples))
     pool = PaneProductGraphPool(lambda resource: by_resource[resource][2])
     handle = surface = None
-    feed_stop, release, entered = Event(), Event(), Event()
+    feed_stop, release, entered, phase_armed = Event(), Event(), Event(), Event()
     feeders = []
     supervisor = None
     body_error = None
@@ -115,6 +115,10 @@ def main() -> None:
         fixture._wait(lambda: all(pane.last_bundle is not None for pane in panes))
         main_thread = get_ident()
         blocked = {}
+        callback_errors = []
+        # Construction is inert. The one watchdog is armed only inside the
+        # target Qt callback after its entry marker has been recorded.
+        watchdog = QtStallWatchdog(sys.stderr, .08)
 
         def counts():
             values = []
@@ -128,14 +132,14 @@ def main() -> None:
 
         def observe_block():
             try:
-                if not entered.wait(3):
-                    raise AssertionError("Qt callback never entered")
+                if not phase_armed.wait(3):
+                    raise AssertionError("watchdog phase was not armed inside Qt callback")
                 deadline = monotonic() + 3
                 pending_samples = []
                 while monotonic() < deadline:
                     pending_samples.append(handle.queue.pending_count)
                     produced, prepared_now = counts(), prepared_counts()
-                    if (monotonic() - blocked["started"] >= .25
+                    if (monotonic() - blocked["watchdog_armed_at"] >= .25
                             and all(a >= b + 3 for a, b in zip(produced, blocked["produced"]))
                             and all(a >= b + 3 for a, b in zip(prepared_now, blocked["prepared"]))):
                         blocked.update(produced_after=produced, prepared_after=prepared_now,
@@ -156,22 +160,45 @@ def main() -> None:
                            sequences=tuple(pane.last_bundle.spectrum.sequence for pane in panes),
                            delivered_before=handle.queue.metrics().delivered,
                            superseded_before=handle.queue.metrics().latest_superseded,
-                           thread=get_ident())
+                           thread=get_ident(), callback_entered=True)
             stage["value"] = "blocked"
             entered.set()
-            blocked["release_received"] = release.wait(5)
-            blocked["elapsed"] = monotonic() - blocked["started"]
-            stage["value"] = "resumed"
+            try:
+                # Arm and rearm the same instance only after entering the
+                # callback, so its phase dump must observe this blocked stack.
+                watchdog.arm()
+                watchdog.rearm_phase("qt_blocked_two_producer_delivery")
+                blocked.update(watchdog_phase_armed=True, watchdog_armed_at=monotonic())
+                phase_armed.set()
+                blocked["release_received"] = release.wait(5)
+                blocked["elapsed"] = monotonic() - blocked["watchdog_armed_at"]
+            except BaseException as error:
+                callback_errors.append(error)
+                release.set()
+            finally:
+                try:
+                    watchdog.close()
+                    blocked["watchdog_closed_before_callback_return"] = True
+                except BaseException as error:
+                    callback_errors.append(error)
+                    blocked["watchdog_closed_before_callback_return"] = False
+                stage["value"] = "resumed"
 
         supervisor = Thread(target=observe_block, name="g04-nonqt-supervisor")
         supervisor.start()
-        with QtStallWatchdog(sys.stderr, .08) as watchdog:
-            watchdog.rearm_phase("qt_blocked_two_producer_delivery")
+        try:
             QTimer.singleShot(0, blocked_callback)
             fixture.app.processEvents()
+        finally:
+            # Close is idempotent and also covers a callback that never starts.
+            watchdog.close()
         supervisor.join(4)
         fixture.assertFalse(supervisor.is_alive())
         fixture.assertEqual(observation_errors, [])
+        fixture.assertEqual(callback_errors, [])
+        fixture.assertTrue(blocked["callback_entered"])
+        fixture.assertTrue(blocked["watchdog_phase_armed"])
+        fixture.assertTrue(blocked["watchdog_closed_before_callback_return"])
         fixture.assertTrue(blocked["release_received"])
         fixture.assertEqual(blocked["thread"], main_thread)
         fixture.assertGreaterEqual(blocked["elapsed"], .25)
@@ -223,6 +250,8 @@ def main() -> None:
                   "producer_deltas": [a-b for a,b in zip(blocked["produced_after"], blocked["produced"])],
                   "prepared_deltas": [a-b for a,b in zip(blocked["prepared_after"], blocked["prepared"])],
                   "superseded_delta": blocked["superseded_after"]-blocked["superseded_before"],
+                  "watchdog_armed_inside_callback": blocked["watchdog_phase_armed"],
+                  "watchdog_closed_before_callback_return": blocked["watchdog_closed_before_callback_return"],
                   "selected_stop_peer_continued": True}
     except BaseException as error:
         body_error = error

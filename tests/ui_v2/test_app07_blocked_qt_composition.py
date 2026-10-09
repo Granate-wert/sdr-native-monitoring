@@ -22,6 +22,8 @@ class BlockedQtCompositionTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         result = json.loads(rows[0])
         self.assertTrue(result["cleanup_confirmed"] and result["selected_stop_peer_continued"])
+        self.assertTrue(result["watchdog_armed_inside_callback"])
+        self.assertTrue(result["watchdog_closed_before_callback_return"])
         self.assertLessEqual(result["pending_max"], 2)
         self.assertTrue(all(delta >= 3 for delta in result["producer_deltas"] + result["prepared_deltas"]))
         self.assertGreater(result["superseded_delta"], 0)
