@@ -364,7 +364,7 @@ class WaterfallPane(QWidget):
             # bounded history accepted this row above, but no hidden paint was
             # scheduled or claimed.
             return True
-        self._upload_tiles()
+        self._upload_tiles(axis_already_updated=True)
         self._admit_waterfall_paint(obligation_ref)
         return True
 
@@ -426,7 +426,7 @@ class WaterfallPane(QWidget):
             # Preserve Sweep history/upsert semantics while keeping hidden
             # canvas custody explicit and independent from ring admission.
             return True
-        self._upload_tiles()
+        self._upload_tiles(axis_already_updated=True)
         self._admit_waterfall_paint(obligation_ref)
         return True
 
@@ -981,7 +981,7 @@ class WaterfallPane(QWidget):
         self._synchronize_x_range(source, [signature.first_edge_hz, signature.last_edge_hz])
         self._synchronize_x_range(self._view_box, [signature.first_edge_hz, signature.last_edge_hz])
 
-    def _upload_tiles(self) -> None:
+    def _upload_tiles(self, *, axis_already_updated: bool = False) -> None:
         if not self._render_visible or not self._presentation_active:
             return
         signature = self._grid_signature
@@ -1033,7 +1033,8 @@ class WaterfallPane(QWidget):
             image.clear()
             image.setVisible(False)
         self._plot_item.setYRange(0.0, float(capacity_rows), padding=0.0)
-        self._update_time_axis()
+        if not axis_already_updated:
+            self._update_time_axis()
         self._set_metrics(image_uploads=self._metrics.image_uploads + uploads)
 
     def _hide_tiles(self) -> None:
