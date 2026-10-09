@@ -25,6 +25,20 @@ hardware witness are separate gates. APP-07/M7/M8 remain PARTIAL; the separate
 four-source independent-AD identity admission dependency is not bypassed.
 Historical 095 hardware results and 096 red evidence below remain historical.
 
+Qualification checkpoint: diagnostic package source1a671c4 passed 48 native
+CTest cases and frozen inventory checks. The full V2 run at test-only descendant
+bf07ec2 finished with 1490 passes, 66 skips and one failure: a G04 subprocess
+access violation while the Python 3.13.1 asynchronous watchdog printed stacks.
+That failed run remains failed; isolated success does not replace it.
+The G04 test-only phase correction arms the same watchdog inside the actual
+blocked callback, preserves the 80ms deadline/250ms block and all original
+queue/progress/Stop assertions, and closes before callback return.
+The old-interpreter crash persisted after this phase correction. An isolated
+local Python3.13.11 experiment passed 21 related tests and the archived original
+G04 test. This is diagnostic evidence, not a qualified runtime migration or
+proof of the previous crash's cause. No hardware rerun, static EXE promotion,
+firewall mutation, full-regression PASS or mandatory APP07 acceptance follows.
+
 Current state: the final section documents the software-qualified explicit
 USB/IP route editor; physical/performance/release paths remain open. Earlier "not yet present"
 statements below describe the historical intermediate checkpoints, not the
