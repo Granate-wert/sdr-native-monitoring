@@ -7083,3 +7083,18 @@ different requested rates, or a host Gigabit link do not replace those witnesses
 Do not repeatedly retry an unchanged refused Stage, relabel an isolated baseline
 as a 2x2 result, or treat an operator reconnect as the interrupted process's
 Stop/flush/join receipt. Keep the unresolved admission condition explicit.
+
+Raw context attributes must distinguish absent from explicitly empty values;
+the existing fallback serial string does not establish that distinction.
+Observing different raw serial presence, firmware, kernel or board labels is
+not by itself a qualified cross-transport physical exclusion witness. Do not
+invent a stable identity from those diagnostic fields or weaken the existing
+parallel-source guard to make a particular test pass.
+
+The current supported USB-alias path needs a freshly discovered, SAME-serial
+USB candidate for the selected known IP owner. Such a connection can supply
+read-only alias evidence while acquisition stays on the explicitly admitted
+Ethernet route. Its absence is an unresolved current admission condition, not
+proof that Ethernet reception is broken or a permanent USB requirement for
+Ethernet deployment. A different admission mechanism needs its own reviewed
+contract and negative/changed-path qualification before use.
