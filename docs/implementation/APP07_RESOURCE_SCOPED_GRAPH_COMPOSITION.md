@@ -7098,3 +7098,26 @@ Ethernet route. Its absence is an unresolved current admission condition, not
 proof that Ethernet reception is broken or a permanent USB requirement for
 Ethernet deployment. A different admission mechanism needs its own reviewed
 contract and negative/changed-path qualification before use.
+
+## Current typed single-RX delivery regression (2026-10-09, unresolved)
+
+A three-source original UI V2 diagnostic (Empty1/HackRF2/AD9363 Ethernet3/RTL4)
+at source6186a4c/nativef8 did not qualify lifecycle: the initial frame predicate
+timed out, followed by normal Stop/terminal drain/join/close. Its final cached
+observation showed fresh HackRF/RTL deliveries but zero AD pane preparations,
+while the AD owner remained RUNNING with a spectrum. This is not four-source,
+paint/performance/soak acceptance or proof of a network failure.
+
+An original-composition mock reproduces a concrete integration defect: current
+native AppliedConfig reports typed RX1 and the converter retains RX1, while
+Ad936xRtbwPaneOwner still declares legacy-unknown None. PaneResourceSession's
+exact receiver guard then rejects that bundle. This is consistent with the
+hardware boundary, not proof of its exclusive cause or the older interrupted
+test's cause. The product repair is not implemented in this documentation step.
+
+The repair must bind receiver admission to the SAME owned Start-readback,
+preserving selected endpoint validation and source/session/epoch/config/profile
+guards. Do not erase RX1, turn None into a wildcard, authorize identity from the
+first incoming frame, or open a second owner. Qualify current/legacy/refusal and
+rearm paths before a changed-path physical test; no unchanged RX retry. The
+separate independent-AD identity dependency and APP-07 partial status remain.
