@@ -1,5 +1,30 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
+## SAME-owner Start receiver admission repair (2026-10-09)
+
+The current AD single-RX adapter now binds the actual native Start receipt's
+`RX1` to an immutable `PaneCaptureAdmission.endpoint_receiver_ids` mapping.
+Inert Stage still reports an unknown receiver; it does not infer hardware state
+from the planned RX1 endpoint. The capture mapping must agree with the typed
+endpoint, any known staged producer identity and the same analytical owner
+scope. Frame admission compares against that confirmed capture binding.
+
+An absent mapping retains the exact legacy expectation, including `None`;
+unknown is not a wildcard and incoming frames never authorize themselves.
+Actual RX2/noncanonical readback refuses on this RX1-only adapter; a partial
+Start keeps the existing lease until explicit Stop. Rearm obtains fresh Start
+readback. Source/session/epoch/generation/Fs/FFT/hop/crop/recording checks remain.
+No native/DSP/queue/cadence changes, paired/Sweep redesign or second opener.
+
+The original-composition regression first failed with zero pane deliveries,
+then passed with one RX1 delivery and zero rejects. Nine new positive/negative
+tests plus related owner/session/identity/rearm tests passed (68 tests).
+These are source/mock tests, not proof of physical RF or visible UI operation.
+Candidate packaging, matching full V2 qualification and the changed-path
+hardware witness are separate gates. APP-07/M7/M8 remain PARTIAL; the separate
+four-source independent-AD identity admission dependency is not bypassed.
+Historical 095 hardware results and 096 red evidence below remain historical.
+
 Current state: the final section documents the software-qualified explicit
 USB/IP route editor; physical/performance/release paths remain open. Earlier "not yet present"
 statements below describe the historical intermediate checkpoints, not the

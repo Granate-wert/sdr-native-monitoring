@@ -127,7 +127,8 @@ class Ad936xRtbwPaneOwner:
     def receiver_identity(self, endpoint_id: str) -> str | None:
         if endpoint_id != self._endpoint_id:
             raise ValueError("foreign RX endpoint")
-        # The current AD936x Live bundle has no proven producer RX ID.
+        # Inert Stage has no applied native RX proof. Capture admission binds
+        # the SAME owner's actual Start readback without guessing here.
         return None
 
     def start_capture(self, job: CaptureJob) -> PaneCaptureAdmission:
@@ -165,6 +166,8 @@ class Ad936xRtbwPaneOwner:
         if (started.error is not None or started.state is not LiveSessionState.RUNNING
                 or started.device is None or started.device.device_id != self._source_id
                 or started.active_source_id != self._source_id
+                or (started.receiver_id is not None and (
+                    type(started.receiver_id) is not str or started.receiver_id != "RX1"))
                 or type(started.acquisition_epoch) is not int or started.acquisition_epoch < 0
                 or applied is None or not _REQUIRED_READBACK <= set(applied.readback_fields)
                 or not _applied_covers_job(requested, applied.applied, job)
@@ -179,6 +182,8 @@ class Ad936xRtbwPaneOwner:
             fft_size=applied.applied.fft_size,
             hop_size=profile.hop_size,
             owner_journal_scopes=capture_owner_scopes(self._live, ((self._endpoint_id, self._source_id),)),
+            endpoint_receiver_ids=(((self._endpoint_id, started.receiver_id),)
+                                   if started.receiver_id is not None else ()),
         )
 
     def stop_capture_and_wait(self) -> None:

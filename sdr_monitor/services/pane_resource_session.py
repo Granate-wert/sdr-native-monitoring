@@ -84,6 +84,9 @@ class PaneCaptureAdmission:
     endpoint_source_ids: tuple[tuple[str, str], ...] = ()
     paired_sweep_run: PairedSweepRunIdentity | None = None
     owner_journal_scopes: tuple[tuple[str, OwnerJournalScope], ...] = ()
+    # Optional SAME-owner Start readback; never inferred from a received frame.
+    # Empty retains the exact inert/legacy expectation, including unknown None.
+    endpoint_receiver_ids: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not all(isinstance(value, str) and value for value in (self.capture_id, self.source_id, self.unit)):
@@ -105,6 +108,15 @@ class PaneCaptureAdmission:
                 or (self.mode is not CaptureMeasurementMode.RTBW and self.paired_sweep_run is None)):
             raise ValueError("endpoint producer bindings require exact ordered RTBW endpoint/source identities")
         object.__setattr__(self, "endpoint_source_ids", bindings)
+        receivers = self.endpoint_receiver_ids
+        if (type(receivers) is not tuple or len(receivers) > 2
+                or receivers and (self.mode is not CaptureMeasurementMode.RTBW
+                    or tuple(item[0] for item in receivers if isinstance(item, tuple) and len(item) == 2) != endpoints)
+                or any(not isinstance(item, tuple) or len(item) != 2
+                       or type(item[0]) is not str or type(item[1]) is not str
+                       or item[1] not in {"RX1", "RX2"} for item in receivers)
+                or len({item[1] for item in receivers}) != len(receivers)):
+            raise ValueError("capture receiver readback requires exact ordered immutable RTBW endpoint/RX bindings")
         scopes = self.owner_journal_scopes
         if (type(scopes) is not tuple or len(scopes) > 2
                 or scopes and (self.mode is not CaptureMeasurementMode.RTBW
@@ -116,7 +128,8 @@ class PaneCaptureAdmission:
             if (scope.source_id != self.producer_source_id(endpoint_id)
                     or scope.session_id != self.session_id
                     or scope.configuration_generation != self.config_generation
-                    or scope.acquisition_epoch != self.acquisition_epoch):
+                    or scope.acquisition_epoch != self.acquisition_epoch
+                    or (receivers and scope.receiver_id != self.producer_receiver_id(endpoint_id, None))):
                 raise ValueError("owner scope differs from capture admission")
         if len({(scope.clock_scope_id, scope.host_process_id, scope.owner_run_id)
                 for _, scope in scopes}) > 1:
@@ -168,6 +181,15 @@ class PaneCaptureAdmission:
         if endpoint_id not in self.receiver_endpoint_ids:
             raise ValueError("producer source requires an admitted endpoint")
         return dict(self.endpoint_source_ids).get(endpoint_id, self.source_id)
+
+    def producer_receiver_id(self, endpoint_id: str, staged_receiver: str | int | None) -> str | int | None:
+        """Resolve capture readback, otherwise the exact staged expectation."""
+        if endpoint_id not in self.receiver_endpoint_ids:
+            raise ValueError("producer receiver requires an admitted endpoint")
+        for bound_endpoint, receiver in self.endpoint_receiver_ids:
+            if bound_endpoint == endpoint_id:
+                return receiver
+        return staged_receiver
 
 
 class PaneCaptureOwner(Protocol):
@@ -1003,7 +1025,8 @@ class PaneResourceSession:
                         or bundle.rtbw.hop_size != admission.hop_size))
                     or type(identity.acquisition_epoch) is not int
                     or identity.acquisition_epoch != admission.acquisition_epoch
-                    or identity.receiver_id != self._expected_receivers[endpoint_id]):
+                    or identity.receiver_id != admission.producer_receiver_id(
+                        endpoint_id, self._expected_receivers[endpoint_id])):
                 runtime.rejected_publications += 1
                 return ()
             epoch = identity.acquisition_epoch
@@ -1367,8 +1390,7 @@ class PaneResourceSession:
         ended_s = self._clock_sample_s()
         return None if started_s is None or ended_s is None or ended_s < started_s else ended_s - started_s
 
-    @staticmethod
-    def _validate_admission(runtime: _Runtime, job: CaptureJob,
+    def _validate_admission(self, runtime: _Runtime, job: CaptureJob,
                             admission: PaneCaptureAdmission) -> None:
         if (not isinstance(admission, PaneCaptureAdmission)
                 or admission.capture_id != job.capture_id
@@ -1394,6 +1416,12 @@ class PaneResourceSession:
                          or admission.hop_size != job.profile.hop_size))):
             raise PaneResourceError("owner admission differs from the scheduled capture")
         by_endpoint = {endpoint.endpoint_id: endpoint for endpoint in runtime.group.endpoints}
+        for endpoint_id, receiver in admission.endpoint_receiver_ids:
+            endpoint = by_endpoint[endpoint_id]
+            staged = self._expected_receivers[endpoint_id]
+            if (not isinstance(endpoint, ReceiverEndpoint) or endpoint.selection.name != receiver
+                    or (staged is not None and (type(staged) is not type(receiver) or staged != receiver))):
+                raise PaneResourceError("owner Start receiver readback differs from the typed/staged receiver endpoint")
         for endpoint_id, scope in admission.owner_journal_scopes:
             endpoint = by_endpoint[endpoint_id]
             if (scope.receiver_id is not None and (
