@@ -20,6 +20,7 @@ std::atomic<bool> reading{};
 std::atomic<bool> cancelled{};
 std::atomic<int> owned_descriptor_reads{};
 std::atomic<int> open_calls{}, close_calls{}, read_calls{}, manual_calls{}, gain_calls{};
+std::atomic<int> completed_callbacks{};
 
 void strings(char* manufacturer, char* product, char* serial) {
     std::memcpy(manufacturer, "Mock", sizeof("Mock"));
@@ -44,6 +45,11 @@ __declspec(dllexport) int __cdecl mock_rtl_counter(int field) {
     default: return -1;
     }
 }
+// Synthetic test synchronization only: published AFTER both callbacks return.
+// The observer need not contend with the runtime's input slot mutex.
+__declspec(dllexport) int __cdecl mock_rtl_completed_callbacks() {
+    return completed_callbacks.load(std::memory_order_acquire);
+}
 __declspec(dllexport) std::uint32_t __cdecl rtlsdr_get_device_count() {
     return scenario.load() == 1 && opened.load() ? 2U : 1U;
 }
@@ -63,6 +69,7 @@ __declspec(dllexport) int __cdecl rtlsdr_open(void** device, std::uint32_t index
     owned_descriptor_reads.store(0);
     opened.store(true);
     cancelled.store(false);
+    completed_callbacks.store(0, std::memory_order_release);
     *device = &selected;
     return 0;
 }
@@ -160,6 +167,7 @@ __declspec(dllexport) int __cdecl rtlsdr_read_async(
     }
     callback(samples, 16'384U, context);  // valid short then full transfer
     callback(samples, 32'768U, context);
+    completed_callbacks.store(2, std::memory_order_release);
     for (int trial = 0; trial < 5000 && !cancelled.load(); ++trial) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
