@@ -7059,3 +7059,27 @@ and two-array output budget remain unchanged. Native/mock regression uses
 ordinary Live binding/capture/delivery/Stop and per-RX paired publication joins
 across rearm. It does not implement paired calibration consumer authority or
 qualify physical RF, UI, sustained performance, an EXE or a release.
+
+### M7/M8 measurement and admission boundaries
+
+An isolated native RX baseline may establish host-delivered sample and computed
+FFT counter deltas for one admitted resource. It does not qualify four-source
+composition, independent peer continuity, pane delivery, Qt paint, DWM, or soak.
+Keep nominal ADC Fs, host-delivered samples/s, computed FFT/s, published frames/s,
+Sweep LPS, and actual paint-return observations separate. Zero observed native
+queue/FFT drops does not establish lossless RF capture without a hardware loss
+counter. Report counter-read envelopes and unknown cache freshness explicitly.
+
+Keep requested and actual RF settings separate. A benchmark must report an
+observed LO quantization difference, declare its narrow tolerance before RX,
+and validate frame metadata against the actual readback. This is not permission
+to lower Fs/filter/FFT or change the product's RF admission contract silently.
+Diagnostic serialization must preserve the complete summary in its own namespace
+so the observer's scope cannot collide with the surrounding experiment's scope.
+
+An unknown-serial USB AD936x and a known IP AD936x remain subject to the original
+typed parallel-identity and fresh USB-alias guards. OS device names, board labels,
+different requested rates, or a host Gigabit link do not replace those witnesses.
+Do not repeatedly retry an unchanged refused Stage, relabel an isolated baseline
+as a 2x2 result, or treat an operator reconnect as the interrupted process's
+Stop/flush/join receipt. Keep the unresolved admission condition explicit.
