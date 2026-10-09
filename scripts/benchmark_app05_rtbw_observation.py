@@ -1470,9 +1470,9 @@ def main(argv=None):
     def dispatch_stop(service):
         return control["stop"]() if "stop" in control else original_stop_method(service)
 
-    def upload(pane):
+    def upload(pane, *, axis_already_updated: bool = False):
         before = pane.metrics.image_uploads
-        original_upload(pane)
+        original_upload(pane, axis_already_updated=axis_already_updated)
         upload_tokens[id(pane)] = uploaded_key(pane, before, upload_tokens.get(id(pane)))
         if pane.metrics.image_uploads > before:
             token = upload_tokens.get(id(pane))
