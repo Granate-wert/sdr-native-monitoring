@@ -189,7 +189,16 @@ class Ad936xRtbwPaneOwner:
             raise RuntimeError("AD936x pane Stop did not confirm application/native release")
 
     def poll_bundles(self) -> tuple[tuple[str, AnalyzerFrameBundle], ...]:
+        # The frame port deliberately returns nothing outside RUNNING. A dead
+        # producer's cached ERROR therefore cannot be discovered by iterating
+        # that port alone. Observe lifecycle without polling/reopening hardware.
+        current = self._live.current_snapshot()
+        if current.error is not None or current.state is not LiveSessionState.RUNNING:
+            raise RuntimeError("AD936x Live producer is no longer running")
         snapshots = self._live.poll_published_snapshots()
+        current = self._live.current_snapshot()
+        if current.error is not None or current.state is not LiveSessionState.RUNNING:
+            raise RuntimeError("AD936x Live producer is no longer running")
         if len(snapshots) > 64:
             raise RuntimeError("AD936x pane publication batch exceeded its bound")
         delivered: list[tuple[str, AnalyzerFrameBundle]] = []
