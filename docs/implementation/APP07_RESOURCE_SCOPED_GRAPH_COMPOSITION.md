@@ -1,5 +1,46 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
+## UI phase101/102 checkpoint (2026-10-09, diagnostic progress / HIL FAIL)
+
+Actual source995e806 docs-only over qualified build9d1bf96,
+Python3.13.16/Qt6.11.1/native6d. No product/native/UI implementation changes.
+Private100 original-frame/Empty caption/full PNG path now has original Qt MOCK
+coverage. Private101 finite off-Qt phase observer passed15 offline cases;
+private102 timer-driven readiness wait passed13 cases. Independent dedicated
+UI read-only review repaired kwargs forwarding, first-cause finalization and
+cached-failure-before-deadline ordering. Original oracle/source/profile/receiver/
+epoch/peer guards,150/90s deadlines and normal owner cleanup remain unchanged.
+
+ONE physical101 failed the initial wait: one processEvents span160.589s.
+All three native owners and source-Qt pane histories had fresh data at refusal.
+ONE changed102 also failed: readiness checks ran32 times and reached ready
+before the deadline, but event-loop exec returned after202.3709769s. Its final
+return fence correctly refused late success. This is not a claim one paint
+callback consumed that entire time; one sampled axis-paint stack is not causal
+profiling. The private wait change did NOT resolve the physical delay.
+No unchanged101/102 retry and no deadline relaxation are admitted.
+
+Both runs used Empty1/HackRF2 USB20MSps/AD9363 pane3 Ethernet30.72MSps/
+RTL pane4 USB2.4MSps, FFT4096/hop2048. Ethernet link was read-only verified1Gbps.
+They reached initial Start only, not selected lifecycle cycles or complete PNG.
+Older097 scoped Stop/Start evidence must not be relabeled as101/102.
+Both normal Stop/terminal flush/join/graph close paths completed with no retained
+owners/workers, released lease and joined observer. Frozen665/source620 inventory
+remained unchanged. Static EXE and user MAIN work were not replaced.
+
+Next finite task is original UI V2 paint/layout profiling with three reduced
+MOCK producers, not another generic wait oracle or RF reset. Inspect duplicate
+waterfall time-axis updates, paint-time axis width/layout invalidation and
+repeated all-pane timing-label reservation; these are candidates, not proven
+causes. Measure callback entry/return and readiness/quit/exec-return separately
+before an evidence-backed dedicated UI change, distinct review and matching
+qualification. MOCK profiling cannot substitute physical performance evidence.
+
+Independent AD9364 USB vs AD9363 Ethernet ownership/admission remains separate.
+APP07/M7/M8 stay PARTIAL; mandatory G/H requirements are not promoted.
+M9–12 and APP08–14 remain open; full APP00–14 goal stays active.
+No TX/amp/bias/firmware/driver/network/firewall/security/system changes.
+
 ## Runtime099 checkpoint (2026-10-09, software qualified / HIL partial)
 
 Exact source9d1bf96 and new diagnostic tag APP07-PY31316-20261009-9D1BF96-R0
