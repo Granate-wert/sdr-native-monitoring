@@ -25,6 +25,7 @@ class PaneUserRefusal(str, Enum):
     REVISIT_INFEASIBLE = "revisit_infeasible"
     NETWORK_INTENT_CONFLICT = "network_intent_conflict"
     STAGE_NOT_CONFIRMED = "stage_not_confirmed"
+    PARALLEL_IDENTITY_UNCONFIRMED = "parallel_identity_unconfirmed"
     CLEANUP_REQUIRED = "cleanup_required"
     PLAN_ALREADY_APPLIED_OR_CLOSED = "plan_already_applied_or_closed"
     RECORDING_CONFLICT = "recording_conflict"

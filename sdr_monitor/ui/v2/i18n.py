@@ -572,6 +572,9 @@ _CATALOG: Mapping[str, TranslationEntry] = MappingProxyType(
         "analyzer.pane.setup.refusal.stage_not_confirmed": MappingProxyType({
             UiLocale.RU: "Свежая проверка источника или плана не подтвердилась. Повторите выбор; RX не запущен.",
             UiLocale.EN: "Fresh source or plan check did not confirm. Select again; RX was not started."}),
+        "analyzer.pane.setup.refusal.parallel_identity_unconfirmed": MappingProxyType({
+            UiLocale.RU: "Не подтверждено, что выбранные приёмники AD936x независимы. Подготовка отклонена; RF/RX не запускались. Маршруты USB и IP могут вести к одному устройству.",
+            UiLocale.EN: "The selected AD936x receivers are not confirmed to be independent. Stage was refused; RF/RX did not start. The USB and IP routes may refer to the same device."}),
         "analyzer.pane.setup.refusal.cleanup_required": MappingProxyType({
             UiLocale.RU: "Освобождение подготовительного владельца не подтвердилось. Сначала выполните явную «Отменить подготовку»; Старт запрещён.",
             UiLocale.EN: "Staged-owner cleanup did not confirm. Use explicit Discard Stage first; Start is barred."}),

@@ -19,7 +19,7 @@ from sdr_monitor.domain.pluto_route_intent import PlutoOperationalRouteIntent
 from sdr_monitor.services.pane_resource_session import PaneResourcePreview
 from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 
-from .v2_pane_graph_pool import PaneProductGraphPool
+from .v2_pane_graph_pool import PaneGraphPoolError, PaneProductGraphPool
 from .v2_pane_product_session import PaneProductSessionHandle
 from .v2_pane_rf_plan import PaneRfPlanContext
 from .v2_pane_user_plan import PanePairedSelectionReceipt, PaneSlotDraft, PaneUserPlan, PaneUserPlanError, compile_user_pane_plan
@@ -106,6 +106,9 @@ def prepare_user_pane_session(
         if isinstance(error, (PaneUserPlanError, PaneUserStageError)):
             reason = error.reason
             violations = error.revisit_violations
+        elif isinstance(error, PaneGraphPoolError):
+            reason = error.reason
+            violations = ()
         else:
             reason = PaneUserRefusal.STAGE_NOT_CONFIRMED
             violations = ()

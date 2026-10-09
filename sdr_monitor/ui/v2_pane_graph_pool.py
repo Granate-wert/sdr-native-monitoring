@@ -15,6 +15,7 @@ from dataclasses import replace
 from sdr_monitor.domain.analyzer_sources import AnalyzerSourceChoice, AnalyzerSourceSelection
 from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.live import LiveAdmissionRejected
+from sdr_monitor.domain.pane_user_refusal import PaneUserRefusal
 from sdr_monitor.domain.pluto_route_intent import PlutoOperationalRouteIntent
 from sdr_monitor.domain.pane_scheduler import PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup
@@ -32,6 +33,13 @@ from .v2_pane_composition import compose_v2_pane_resource_session
 
 class PaneGraphPoolError(RuntimeError):
     """Fixed product refusal; source/backend exception text is not exposed."""
+
+    def __init__(self, message: str, *,
+                 reason: PaneUserRefusal = PaneUserRefusal.STAGE_NOT_CONFIRMED) -> None:
+        if not isinstance(reason, PaneUserRefusal):
+            raise TypeError("pane graph refusal requires a typed reason")
+        super().__init__(message)
+        self.reason = reason
 
 
 def _default_graph_factory(_resource_id: str) -> V2AnalyzerApplicationGraph:
@@ -172,9 +180,10 @@ class PaneProductGraphPool:
                 {item.device_id: item.usb_connection for item in all_choices},
                 aliases,
             )
-        except Exception:
+        except Exception as error:
             self._close_unstaged(resource_id, graph)
-            raise PaneGraphPoolError("pane source discovery or selection did not confirm") from None
+            reason = error.reason if isinstance(error, PaneGraphPoolError) else PaneUserRefusal.STAGE_NOT_CONFIRMED
+            raise PaneGraphPoolError("pane source discovery or selection did not confirm", reason=reason) from None
         self._graphs[resource_id] = graph
         self._source_ids[resource_id] = source_id
         self._selections[resource_id] = selection
@@ -208,7 +217,8 @@ class PaneProductGraphPool:
                              and admission.selection.selected.device_id == item.device_id), None)
             connection = candidates.get(item.device_id)
             if resource is None or connection is None:
-                raise PaneGraphPoolError("parallel unknown USB/known IP needs a fresh observed USB alias")
+                raise PaneGraphPoolError("parallel unknown USB/known IP needs a fresh observed USB alias",
+                                        reason=PaneUserRefusal.PARALLEL_IDENTITY_UNCONFIRMED)
             admission = admissions[resource]
             admission.validate()
             if not isinstance(admission.owner, PlutoUsbAliasOwner):
