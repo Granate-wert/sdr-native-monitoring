@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from itertools import islice
 import sys
 import threading
@@ -15,7 +15,8 @@ from typing import Any
 
 from ..domain.analytical_journal import (
     AdapterDispositionCounters, AdapterPacketDisposition, JournalCounters, JournalEvent,
-    JournalEventKind, JournalState, NativePresentationCounters, OwnerJournalScope, OwnerJournalSnapshot,
+    JournalEventKind, JournalState, NativePresentationCounters, OwnerIdCoverage, OwnerIdCoverageState,
+    OwnerJournalScope, OwnerJournalSnapshot,
 )
 from .owner_event_audit import OwnerEventAudit
 
@@ -76,6 +77,40 @@ def _scalar_bytes(value: object) -> int:
     return total
 
 
+@dataclass(frozen=True, slots=True)
+class _JournalSizeCharge:
+    # Scalar-only metadata, no extra snapshot/event roots. None means use the
+    # original oracle (e.g. a subclass), NOT a zero byte charge.
+    events_bytes: int | None
+    history_bytes: tuple[int | None, ...] = ()
+    audit_bytes: int | None = None
+    audit_revision: int = -1
+
+
+def _immutable_scalar_graph(value: object) -> bool:
+    """Exact admitted frozen types only; never cache arbitrary subclasses."""
+    kind = type(value)
+    if kind in (int, bool, str, type(None), JournalState, JournalEventKind, OwnerIdCoverageState):
+        return True
+    if kind is tuple and isinstance(value, tuple):
+        return all(_immutable_scalar_graph(item) for item in value)
+    if is_dataclass(value) and not isinstance(value, type) and kind in (
+            OwnerJournalSnapshot, OwnerJournalScope, JournalCounters, JournalEvent,
+            AdapterDispositionCounters, NativePresentationCounters, OwnerIdCoverage):
+        return all(_immutable_scalar_graph(getattr(value, item.name)) for item in fields(value))
+    return False
+
+
+def _snapshot_bytes(value: OwnerJournalSnapshot, events_bytes: int | None) -> int:
+    if type(value) is not OwnerJournalSnapshot or events_bytes is None:
+        return _scalar_bytes(value)
+    # Every occurrence is still charged. Counters, adapter, scope and coverage
+    # are measured afresh, including integer width and Unicode string changes.
+    return sys.getsizeof(value) + sum(
+        events_bytes if item.name == "events" else _scalar_bytes(getattr(value, item.name))
+        for item in fields(value))
+
+
 class NativeOwnerJournal:
     def __init__(self, native: object, capacity: int = 0, *, reserved_host_bytes: int = 0) -> None:
         if type(capacity) is not int or capacity not in (0, EVENT_CAPACITY):
@@ -89,10 +124,42 @@ class NativeOwnerJournal:
         self._lock = threading.RLock()
         self._snapshot = OwnerJournalSnapshot()
         self._history: deque[OwnerJournalSnapshot] = deque(maxlen=TERMINAL_HISTORY_CAPACITY)
+        self._size_charge = _JournalSizeCharge(_scalar_bytes(self._snapshot.events))
         self._last_event = self._missing_events = 0
         self._failed = False
         self._history_evictions = 0
         self._id_audit = OwnerEventAudit()
+
+    def _charge_for(self, value: OwnerJournalSnapshot) -> _JournalSizeCharge:
+        events_bytes = self._size_charge.events_bytes
+        if value.events is not self._snapshot.events:
+            events_bytes = (_scalar_bytes(value.events)
+                if _immutable_scalar_graph(value.events) else None)
+        audit_bytes = self._size_charge.audit_bytes
+        revision = self._id_audit.payload_revision
+        if revision != self._size_charge.audit_revision or audit_bytes is None:
+            audit_bytes = self._id_audit.scalar_payload_bytes
+        return _JournalSizeCharge(events_bytes, self._size_charge.history_bytes, audit_bytes, revision)
+
+    def _replace_snapshot(self, value: OwnerJournalSnapshot) -> None:
+        # Called only under SAME owner lock. Cache follows every commit, error,
+        # prepare and terminal transition, not just the successful drain path.
+        self._size_charge = self._charge_for(value)
+        self._snapshot = value
+
+    def _budget_bytes(self, candidate: OwnerJournalSnapshot, charge: _JournalSizeCharge) -> int:
+        history = sum(_scalar_bytes(item) if size is None else size
+            for item, size in zip(self._history, charge.history_bytes, strict=True))
+        # Original payload accounting is unchanged; metadata is ADDITIONAL.
+        # Conservatively charge the whole owner dict (including the new key),
+        # both old/candidate scalar metadata and their duplicate tuple entries.
+        metadata = (_scalar_bytes(self._size_charge) + _scalar_bytes(charge)
+            + sys.getsizeof(self.__dict__) + _scalar_bytes("_size_charge"))
+        return (_snapshot_bytes(candidate, charge.events_bytes)
+            + _snapshot_bytes(self._snapshot, self._size_charge.events_bytes) + history
+            + (charge.audit_bytes if charge.audit_bytes is not None
+               else _scalar_bytes(self._id_audit.scalar_payload)) + self._id_audit.index_storage_bytes
+            + BATCH_CAPACITY * 512 + metadata)
 
     @property
     def enabled(self) -> bool:
@@ -152,20 +219,21 @@ class NativeOwnerJournal:
                         last_offer_sequence=ref.offer_sequence, last_ready_native_ns=ref.ready_native_ns,
                         **{name: getattr(old, name) + 1})
                 candidate = replace(value, adapter=updated)
-                if (_scalar_bytes(candidate) + _scalar_bytes(value)
-                        + sum(_scalar_bytes(item) for item in self._history)
-                        + _scalar_bytes(self._id_audit.scalar_payload)
-                        + self._id_audit.index_storage_bytes
-                        + BATCH_CAPACITY * 512 > self._host_budget):
+                charge = self._charge_for(candidate)
+                if self._budget_bytes(candidate, charge) > self._host_budget:
                     raise ValueError("adapter accounting exceeds existing host scalar reservation")
-                self._snapshot = candidate
+                self._size_charge, self._snapshot = charge, candidate
             except Exception:  # noqa: BLE001 - evidence failure is NOT a hardware failure.
-                self._snapshot = replace(value, adapter=replace(old, binding_failures=old.binding_failures + 1))
+                self._replace_snapshot(replace(value, adapter=replace(old, binding_failures=old.binding_failures + 1)))
 
     def _archive(self) -> None:
+        size = (_snapshot_bytes(self._snapshot, self._size_charge.events_bytes)
+            if _immutable_scalar_graph(self._snapshot) else None)
         if len(self._history) == TERMINAL_HISTORY_CAPACITY:
             self._history_evictions += 1
         self._history.append(self._snapshot)
+        self._size_charge = replace(self._size_charge,
+            history_bytes=(self._size_charge.history_bytes + (size,))[-TERMINAL_HISTORY_CAPACITY:])
 
     def prepare(self, *, native: object | None = None, capacity: int | None = None,
                 reserved_host_bytes: int | None = None) -> None:
@@ -188,12 +256,12 @@ class NativeOwnerJournal:
                 # Snapshot's 1MiB remains the TOTAL per-chain host reservation,
                 # including the layer slice, not another independent journal pool.
                 self._host_budget = HOST_SCALAR_BUDGET - reserved_host_bytes
-            self._snapshot = OwnerJournalSnapshot(
+            self._id_audit = OwnerEventAudit()
+            self._replace_snapshot(OwnerJournalSnapshot(
                 state=JournalState.ACTIVE if self.enabled else JournalState.UNSUPPORTED,
-                terminal_windows_evicted=self._history_evictions)
+                terminal_windows_evicted=self._history_evictions))
             self._last_event = self._missing_events = 0
             self._failed = False
-            self._id_audit = OwnerEventAudit()
 
     def begin(self, scope: OwnerJournalScope, *, capacity: int | None = None) -> None:
         with self._lock:
@@ -206,12 +274,12 @@ class NativeOwnerJournal:
                     raise ValueError("previous owner journal has no confirmed native Stop")
                 self._archive()
             self._capacity = selected
-            self._snapshot = OwnerJournalSnapshot(scope=scope,
+            self._id_audit = OwnerEventAudit()
+            self._replace_snapshot(OwnerJournalSnapshot(scope=scope,
                 state=JournalState.ACTIVE if self.enabled else JournalState.UNSUPPORTED,
-                terminal_windows_evicted=self._history_evictions)
+                terminal_windows_evicted=self._history_evictions))
             self._last_event = self._missing_events = 0
             self._failed = False
-            self._id_audit = OwnerEventAudit()
 
     def _convert(self, batch: Any) -> tuple[JournalCounters, tuple[JournalEvent, ...], int, NativePresentationCounters | None]:
         raw = batch.summary
@@ -314,22 +382,20 @@ class NativeOwnerJournal:
                     owner_id_coverage=self._id_audit.snapshot(counters, presentation, host_evictions=evicted))
                 # Includes old/new host snapshots and retained terminal windows;
                 # allow bounded raw proxy payload while converting one native batch.
-                if (_scalar_bytes(candidate) + _scalar_bytes(self._snapshot)
-                        + sum(_scalar_bytes(item) for item in self._history)
-                        + _scalar_bytes(self._id_audit.scalar_payload) + self._id_audit.index_storage_bytes
-                        + BATCH_CAPACITY * 512 > self._host_budget):
+                charge = self._charge_for(candidate)
+                if self._budget_bytes(candidate, charge) > self._host_budget:
                     raise ValueError("owner journal exceeds host scalar reservation")
-                self._snapshot = candidate
+                self._size_charge, self._snapshot = charge, candidate
                 self._missing_events = missing
                 if events:
                     self._last_event = events[-1].event_sequence
             except Exception:  # noqa: BLE001 - telemetry failure must not alter RF/lifecycle or claim coverage.
                 self._failed = True
-                self._snapshot = replace(self._snapshot, state=JournalState.INCOMPLETE,
+                self._replace_snapshot(replace(self._snapshot, state=JournalState.INCOMPLETE,
                     drain_failures=self._snapshot.drain_failures + 1,
                     owner_id_coverage=self._id_audit.snapshot(
                         self._snapshot.counters, self._snapshot.native_presentation,
-                        evidence_failed=True))
+                        evidence_failed=True)))
 
     def finish(self, reader: Callable[[int], object], *, before_capture: Callable[[], object] | None = None) -> None:
         """After confirmed native Stop/join, BEFORE control release. No SDK calls."""
@@ -352,8 +418,8 @@ class NativeOwnerJournal:
             if (self.enabled and not self._failed and not release_failed and value.counters is not None
                     and value.counters.events_pending == 0 and value.counters.outstanding == 0):
                 state = JournalState.FINAL
-            self._snapshot = replace(value, state=state, native_stop_confirmed=True,
+            self._replace_snapshot(replace(value, state=state, native_stop_confirmed=True,
                 native_presentation_release_failed=release_failed,
                 owner_id_coverage=self._id_audit.snapshot(value.counters, value.native_presentation,
                     stopped=True, host_evictions=value.host_window_events_evicted,
-                    evidence_failed=self._failed or release_failed))
+                    evidence_failed=self._failed or release_failed)))

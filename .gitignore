@@ -50,6 +50,7 @@ recordings/
 !/docs/implementation/APP07_HACKRF_RTBW_PANE_OWNER_CONTRACT.md
 !/docs/implementation/APP07_THREE_OWNER_TRACE_CONTRACT.md
 !/docs/implementation/APP07_RESOURCE_SCOPED_GRAPH_COMPOSITION.md
+!/docs/implementation/APP07_OWNER_JOURNAL_OPTIMIZATION.md
 # Explicit public machine-readable contracts only; other docs stay local.
 !/docs/schemas/
 /docs/schemas/*
