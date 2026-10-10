@@ -157,11 +157,90 @@ class WaterfallPaneTests(unittest.TestCase):
     def test_default_upload_keeps_axis_sync_for_configuration_paths(self) -> None:
         pane = self._pane()
         pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000))
-        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis:
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
             pane.set_direction(WaterfallDirection.NEWEST_AT_BOTTOM)
-        # Direction change updates the axis, then default upload synchronizes it
-        # again because this is not the just-admitted-row fast path.
-        self.assertEqual(update_axis.call_count, 2)
+        update_axis.assert_called_once_with()
+        upload.assert_called_once_with(axis_already_updated=True)
+
+    def test_activation_reuses_its_axis_sync_for_visible_history(self) -> None:
+        pane = self._pane()
+        pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000))
+        pane.set_presentation_active(False)
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
+            pane.set_presentation_active(True)
+        update_axis.assert_called_once_with()
+        upload.assert_called_once_with(axis_already_updated=True)
+
+    def test_successful_history_configuration_reuses_axis_sync(self) -> None:
+        pane = self._pane()
+        line = _line(-90.0, timestamp_ns=1_000_000_000)
+        pane.set_line(line)
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
+            pane.set_history_seconds(pane.config.history_seconds + 1)
+        update_axis.assert_called_once_with()
+        upload.assert_called_once_with(axis_already_updated=True)
+        self.assertEqual(pane.history_rows, 1)
+        self.assertEqual(pane._renderer.timestamps_ns().tolist(), [line.timestamp_ns])
+
+    def test_successful_sweep_history_configuration_preserves_unknown_time_and_stamp(self) -> None:
+        from sdr_monitor.ui.v2.state.analyzer_layers import waterfall_line_from_sweep
+        from tests.ui_v2.test_app04_progressive_waterfall import progress
+
+        pane = self._pane()
+        sweep = waterfall_line_from_sweep(progress())
+        self.assertTrue(pane.set_sweep_line(sweep))
+        stamps_before = pane._renderer.sweep_stamps()
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
+            pane.set_history_seconds(pane.config.history_seconds + 1)
+        update_axis.assert_called_once_with()
+        upload.assert_called_once_with(axis_already_updated=True)
+        self.assertFalse(pane.grid_signature.timestamp_known)
+        self.assertEqual(pane._time_axis._timestamps_ns.size, 0)
+        self.assertEqual(pane._renderer.sweep_stamps(), stamps_before)
+
+    def test_refused_history_configuration_does_not_sync_or_upload(self) -> None:
+        pane = self._pane()
+        pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000, columns=2048))
+        pane.set_render_visible(False)
+        config_before = pane.config
+        timestamps_before = pane._renderer.timestamps_ns().copy()
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
+            pane.set_history_seconds(1000)
+        update_axis.assert_not_called()
+        upload.assert_not_called()
+        self.assertEqual(pane.config, config_before)
+        np.testing.assert_array_equal(pane._renderer.timestamps_ns(), timestamps_before)
+
+    def test_inactive_and_hidden_rows_keep_admission_sync_without_upload(self) -> None:
+        pane = self._pane()
+        pane.set_presentation_active(False)
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
+            self.assertTrue(pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000)))
+        update_axis.assert_called_once_with()
+        upload.assert_not_called()
+        self.assertEqual(pane.history_rows, 1)
+
+    def test_direct_upload_and_show_keep_default_axis_sync(self) -> None:
+        pane = self._pane()
+        pane.set_line(_line(-90.0, timestamp_ns=1_000_000_000))
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
+            pane._upload_tiles()
+        update_axis.assert_called_once_with()
+        upload.assert_called_once_with()
+
+        pane.set_render_visible(False)
+        with patch.object(pane, "_update_time_axis", wraps=pane._update_time_axis) as update_axis, \
+             patch.object(pane, "_upload_tiles", wraps=pane._upload_tiles) as upload:
+            pane.set_render_visible(True)
+        update_axis.assert_called_once_with()
+        upload.assert_called_once_with()
 
     def test_grid_change_clears_history_and_never_stretches_old_rows(self) -> None:
         pane = self._pane()

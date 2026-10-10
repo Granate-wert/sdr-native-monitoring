@@ -640,7 +640,7 @@ class WaterfallPane(QWidget):
             self._waterfall_delivery_returned = False
         if active:
             self._update_time_axis()
-            self._upload_tiles()
+            self._upload_tiles(axis_already_updated=True)
 
     def set_frozen(self, frozen: bool) -> None:
         """Freeze only local row admission; no backend pause/stop command exists here."""
@@ -775,7 +775,7 @@ class WaterfallPane(QWidget):
         self._sync_controls()
         self._update_time_axis()
         if self._render_visible:
-            self._upload_tiles()
+            self._upload_tiles(axis_already_updated=True)
         self._schedule_settings_write()
 
     def flush_settings(self) -> None:
@@ -957,7 +957,7 @@ class WaterfallPane(QWidget):
         self._update_time_axis()
         self._update_status()
         if self._render_visible:
-            self._upload_tiles()
+            self._upload_tiles(axis_already_updated=True)
         self._schedule_settings_write()
 
     def _synchronize_x_range(self, target: pg.ViewBox, interval: list[float]) -> None:
