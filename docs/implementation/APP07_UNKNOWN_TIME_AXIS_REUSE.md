@@ -294,3 +294,35 @@ measured, rather than assuming the same benefit in sustained operation.
 Next: changed THREE hardware profile with bounded low-overhead observation
 and terminal phase receipts, then tinySA-inclusive FOUR rotations, visible
 2×2/DPI, stability/soak and release. No unchanged retry or timeout extension.
+
+Changed hardware follow-up M78-117 used the SAME source34f/package116/native,
+not a newer runtime. One three-source offscreen run completed with actual
+process exit0 and normal Stop/owner join/graphics release/hook restoration.
+HackRF20MS/s, AD9363 genuineEthernet30.72MS/s/RF30MHz and RTL2.4MS/s retained
+FFT4096. Requested10s observation returned10.4528884s within unchanged10.5s
+ceiling; initial fresh-bundle readiness took23.6775844s. No timeout was extended.
+
+During that interval all three panels accepted13 new bundles each (about1.244/s).
+The26 UNKNOWN-time growth-eligible HackRF/RTL setters retained their real
+cached pictures and generated no new axis specs. AD9363's13 setters used
+KNOWN-time axes and generated13 specs; this optimization does not cover them.
+Across readiness/live, all57 eligible setters retained their pictures, with
+no observer error, overflow or continuity violation. Independent read-only UI
+review checked all442 raw timing samples and the counter/schema partitions.
+
+The valid measurement window is NOT responsive-UI qualification: the16ms
+heartbeat's maximum lateness was610.0299ms and live checker gaps reached
+727.6361ms. AD axis paint total398.4014ms contains nested spec221.3792ms;
+these wall times cannot be summed/subtracted for exclusive CPU/GIL attribution.
+The bounded presentation queue held3 pending packets at both interval edges;
+414 offers produced39 deliveries and375 latest-wins supersessions. This is
+presentation coalescing, not an analytical FFT-drop measurement or exhaustive
+queue-depth proof. Family-native counters and RF-time coverage remain separate.
+
+Historical113 access violation was not reproduced in this changed run, but its
+cause remains unknown: source, observer and terminal cleanup changed together.
+No AV fix, whole Qt-delay repair, visible Windows/DWM/50ms, four-source, soak
+or release acceptance follows. Raw evidence SHA256
+`17fdd475a133e791716342b4d449b978c1c36bbeadcd37831ea505adba9945aa`.
+APP-07 remains PARTIAL. Next is whole-UI callback/scheduling localisation and
+tinySA-inclusive four-source rotations through actual typed resource bindings.
