@@ -53,6 +53,7 @@ recordings/
 !/docs/implementation/APP07_OWNER_JOURNAL_OPTIMIZATION.md
 !/docs/implementation/APP07_WATERFALL_CONTROL_AXIS_REUSE.md
 !/docs/implementation/APP07_FAIR_GUI_DELIVERY.md
+!/docs/implementation/APP07_UNKNOWN_TIME_AXIS_REUSE.md
 # Explicit public machine-readable contracts only; other docs stay local.
 !/docs/schemas/
 /docs/schemas/*
