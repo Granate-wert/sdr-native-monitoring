@@ -154,3 +154,41 @@ Four-pane rotations with each Pluto variant, HackRF, tinySA and RTL remain
 required. Slow instrument scanning must be distinguished from GUI delays.
 APP-07/M7–M8 remains PARTIAL; physical responsiveness, visible/DPI, soak and
 release acceptance are not closed by these software/component results.
+
+## M78-115 follow-up: attribution and growth-equivalence limits
+
+A finite root-owned fixture exercised actual typed reduced-publication
+preparation and journal draining with HackRF20MS/s, AD9363 30.72MS/s and
+RTL2.4MS/s profile metadata, FFT4096/hop2048. Five fresh processes completed
+normally;19,200 raw call durations and1,800 nearest-rank quantiles were
+independently recalculated. One process used a single shared preparer/layout/
+256MiB ledger for three independent resources; the other four did not.
+This is not a raw-I/Q/DSP-rate simulator, Qt FPS or hardware qualification.
+
+Short-interval Windows thread CPU readings were too coarse for CPU p95/p99.
+Cycle counters were retained without estimating CPU frequency or GIL percent.
+A finite5ms/1ms/1ms/5ms Python switch-interval diagnostic produced inconsistent
+effects; the application's global setting was not changed. Shared-fixture
+fresh-prepare p95 varied4.28–7.61ms and journal-drain p95 stayed below0.70ms.
+These are observations across different finite cases, not a matched gain or
+an explanation of the physical Qt delay. Fresh-waterfall substep attribution
+and selective native fusion remain measurement-dependent work.
+
+An actual PyQtGraph-axis oracle captured normalized draw specs, pen/font/
+context and geometry. Sampled positive unknown-time histories with1,2,4,17,
+60,299 and300 rows matched exactly; empty state0 differed. Thus unnecessary
+growth invalidation is a cache candidate, not yet a qualified product change.
+
+The complete oracle FAILED its known-gap control within the fixed three
+normal paint/event passes. A wider gap label coincided with axis-gutter
+expansion57.6→71.6px, picture invalidation and regeneration. Legitimate layout
+expansion is plausible; exact invalidator causality is unknown. Subsequent
+Sweep/epoch/conversion controls were not reached. Independent read-only UI
+review confirmed only the partial evidence and failed overall result. Neither
+the pass cap nor observation timeout was increased to manufacture a PASS.
+
+No product code, build or hardware RX changed in this follow-up. Physical113
+responsiveness still fails and its post-cleanup access violation is unresolved.
+Next work separates positive unknown-time growth from full semantic/layout
+controls before admitting a cache patch. tinySA-inclusive four-pane rotations,
+visible/DPI, soak and release qualification remain open; APP-07 is PARTIAL.
