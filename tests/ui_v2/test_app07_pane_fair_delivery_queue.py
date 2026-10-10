@@ -32,6 +32,62 @@ def packet(pane_id: str, frame, *, serial: int = 1) -> PreparedPaneDelivery:
 
 
 class PaneFairDeliveryQueueTests(unittest.TestCase):
+    def test_exclusion_keeps_packet_metrics_and_cursor_until_real_take(self) -> None:
+        events = []
+        queue = PaneFairDeliveryQueue(("one", "two"),
+                                      stage_callback=lambda ref, stage: events.append((ref, stage)))
+        first = packet("one", progress(1))
+        second = packet("two", progress(1))
+        queue.offer(first)
+        queue.offer(second)
+        before = queue.metrics()
+        events_before = list(events)
+        self.assertEqual(queue.drain(excluded_panes=("one", "two")), ())
+        self.assertEqual(queue.pending_count, 2)
+        self.assertEqual(queue.metrics(), before)
+        self.assertEqual(events, events_before)
+        self.assertEqual(queue._next_index, 0)
+        self.assertEqual(queue.drain(max_items=1, excluded_panes=("one",)), (second,))
+        self.assertEqual(queue.pending_count, 1)
+        self.assertEqual(queue.drain(max_items=1), (first,))
+
+    def test_incremental_turn_excludes_terminal_pane_until_next_turn(self) -> None:
+        queue = PaneFairDeliveryQueue(("one", "two"))
+        line = packet("one", terminal(1))
+        preview = packet("one", progress(2))
+        second = packet("two", progress(1))
+        for item in (line, preview, second):
+            queue.offer(item)
+        self.assertEqual(queue.drain(max_items=1), (line,))
+        self.assertEqual(queue.drain(max_items=1, excluded_panes=("one",)), (second,))
+        self.assertEqual(queue.drain(max_items=1, excluded_panes=("one", "two")), ())
+        self.assertEqual(queue.pending_count, 1)
+        self.assertEqual(queue.drain(max_items=1), (preview,))
+
+    def test_invalid_exclusions_refuse_before_any_custody_change(self) -> None:
+        queue = PaneFairDeliveryQueue(("one", "two"))
+        first = packet("one", progress(1))
+        queue.offer(first)
+        before = queue.metrics()
+        for invalid in (["one"], "one", ("missing",), ("one", "one"), (None,), ([],)):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "excluded panes"):
+                    queue.drain(excluded_panes=invalid)
+                self.assertEqual(queue.pending_count, 1)
+                self.assertEqual(queue.metrics(), before)
+                self.assertEqual(queue._next_index, 0)
+        self.assertEqual(queue.drain(), (first,))
+
+    def test_busy_first_pane_cannot_displace_next_round_robin_service(self) -> None:
+        queue = PaneFairDeliveryQueue(("one", "two", "three"))
+        for pane in queue.pane_ids:
+            queue.offer(packet(pane, progress(1)))
+        self.assertEqual(queue.drain(max_items=1)[0].delivery.pane_id, "one")
+        queue.offer(packet("one", progress(2)))
+        self.assertEqual(queue.drain(max_items=1)[0].delivery.pane_id, "two")
+        self.assertEqual(queue.drain(max_items=1)[0].delivery.pane_id, "three")
+        self.assertEqual(queue.drain(max_items=1)[0].delivery.pane_id, "one")
+
     def test_terminal_pass_survives_newer_progress_in_same_bounded_pane(self) -> None:
         queue = PaneFairDeliveryQueue(("one",))
         line = packet("one", terminal(1))

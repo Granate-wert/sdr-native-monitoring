@@ -116,10 +116,20 @@ class PaneFairDeliveryQueue:
             self._stage_locked(packet, PaneDeliveryStage.QUEUED)
             return True
 
-    def drain(self, *, max_items: int = 4) -> tuple[PreparedPaneDelivery, ...]:
-        """Take at most one packet per pane, rotating first service each tick."""
+    def drain(self, *, max_items: int = 4,
+              excluded_panes: tuple[str, ...] = ()) -> tuple[PreparedPaneDelivery, ...]:
+        """Take fairly without removing packets of panes already served this turn.
+
+        Exclusion does not acknowledge, supersede or reorder a queued packet.
+        The default preserves the original multi-pane drain behavior.
+        """
         if type(max_items) is not int or not 1 <= max_items <= 4:
             raise ValueError("pane UI batch must be between one and four")
+        if (type(excluded_panes) is not tuple
+                or any(not isinstance(pane, str) or pane not in self._pending
+                       for pane in excluded_panes)
+                or len(set(excluded_panes)) != len(excluded_panes)):
+            raise ValueError("excluded panes must be distinct known pane identities in a tuple")
         with self._lock:
             result: list[PreparedPaneDelivery] = []
             count = len(self._order)
@@ -127,6 +137,8 @@ class PaneFairDeliveryQueue:
             for offset in range(count):
                 index = (cursor + offset) % count
                 pane_id = self._order[index]
+                if pane_id in excluded_panes:
+                    continue
                 pending = self._pending[pane_id]
                 packet = pending.terminal if pending.terminal is not None else pending.latest
                 if packet is None:

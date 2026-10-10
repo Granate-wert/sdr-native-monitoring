@@ -56,6 +56,9 @@ class _DeliveryPortHarness(QObject):
         self._board = board
         self._queue = queue
         self._failed_panes = set()
+        self._turn_budget_ns = 8_000_000
+        self._turn_active = False
+        self._lifecycle_generation = 0
 
     def _report(self, packet, stage):
         callback = getattr(self._board, "_stage_callback", None)
@@ -503,11 +506,12 @@ class PaneCustodyLifecycleTests(unittest.TestCase):
         class DrainBarrier:
             pane_ids = queue.pane_ids
 
-            def drain(_self, *, max_items):
-                batch = queue.drain(max_items=max_items)
+            def drain(_self, *, max_items, excluded_panes=()):
+                batch = queue.drain(max_items=max_items, excluded_panes=excluded_panes)
                 # Worker Stop succeeds after queue drain but before this Qt
                 # turn can call board.apply_prepared.
-                stop_future.set_result(None)
+                if batch:
+                    stop_future.set_result(None)
                 return batch
 
             def clear(_self, pane_id):

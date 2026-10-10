@@ -8,6 +8,8 @@ FFT/output rate; supersession counters must not be called ADC or RF loss.
 
 from __future__ import annotations
 
+from time import perf_counter_ns
+
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from sdr_monitor.ui.v2_pane_delivery_queue import PaneFairDeliveryQueue
@@ -25,7 +27,8 @@ class IndependentPaneDeliveryPort(QObject):
     render_failed = Signal(str, str)
 
     def __init__(self, board: IndependentPaneBoardV2, queue: PaneFairDeliveryQueue, *,
-                 interval_ms: int = 16, parent: QObject | None = None) -> None:
+                 interval_ms: int = 16, turn_budget_ms: int = 8,
+                 parent: QObject | None = None) -> None:
         if not isinstance(board, IndependentPaneBoardV2) or not isinstance(queue, PaneFairDeliveryQueue):
             raise TypeError("pane delivery needs an independent board and fair queue")
         expected = tuple(slot.request.pane_id for slot in board._preparer.layout.slots
@@ -34,12 +37,17 @@ class IndependentPaneDeliveryPort(QObject):
             raise ValueError("pane queue order differs from the occupied board slots")
         if type(interval_ms) is not int or not 8 <= interval_ms <= 1000:
             raise ValueError("pane UI interval must be in [8, 1000] ms")
+        if type(turn_budget_ms) is not int or not 1 <= turn_budget_ms <= interval_ms:
+            raise ValueError("pane UI turn budget must be an integer in [1, interval_ms]")
         super().__init__(parent or board)
         if self.thread() is not board.thread():
             raise ValueError("pane delivery and board must have one Qt thread")
         self._board = board
         self._queue = queue
         self._failed_panes: set[str] = set()
+        self._turn_budget_ns = turn_budget_ms * 1_000_000
+        self._turn_active = False
+        self._lifecycle_generation = 0
         self._timer = QTimer(self)
         self._timer.setInterval(interval_ms)
         self._timer.timeout.connect(self.tick_once)
@@ -55,43 +63,76 @@ class IndependentPaneDeliveryPort(QObject):
     def start(self) -> None:
         if QThread.currentThread() is not self.thread():
             raise RuntimeError("pane Qt timer must start on its owning thread")
+        self._lifecycle_generation += 1
         self._timer.start()
 
     def stop(self) -> None:
         if QThread.currentThread() is not self.thread():
             raise RuntimeError("pane Qt timer must stop on its owning thread")
+        self._lifecycle_generation += 1
         self._timer.stop()
 
     def tick_once(self) -> None:
-        """At most four GUI applications, no worker computation or RF call."""
+        """Apply a fair per-pane prefix within a soft GUI-turn time allowance."""
         if QThread.currentThread() is not self.thread():
             raise RuntimeError("pane delivery must render on the Qt thread")
-        batch = self._queue.drain(max_items=4)
-        for index, prepared in enumerate(batch):
-            pane_id = prepared.delivery.pane_id
-            if pane_id in self._failed_panes:
-                self._report(prepared, PaneDeliveryStage.UI_REJECTED)
-                continue
-            try:
-                applied = self._board.apply_prepared(prepared)
-            except Exception:
-                # The source remains owned until the controller's explicit
-                # Stop. Do not retry, reopen, retune or silently mask a bad
-                # cross-pane publication inside the UI timer.
-                self._failed_panes.add(pane_id)
-                self._queue.clear(pane_id)
-                self._reject_uncommitted(prepared)
-                self.render_failed.emit(pane_id, "Pane presentation failed; explicit Stop required")
-            except BaseException:
-                self._reject_uncommitted(prepared)
-                for unattempted in batch[index + 1:]:
-                    self._report(unattempted, PaneDeliveryStage.UI_REJECTED)
-                raise
-            else:
-                if applied:
-                    self.rendered.emit(pane_id)
-                else:
+        if self._turn_active:
+            return
+        self._turn_active = True
+        try:
+            generation = self._lifecycle_generation
+            started_ns = perf_counter_ns()
+            served_on_take: list[str] = []
+            while True:
+                if self._lifecycle_generation != generation:
+                    break
+                if (served_on_take
+                        and perf_counter_ns() - started_ns >= self._turn_budget_ns):
+                    break
+                batch = self._queue.drain(
+                    max_items=1, excluded_panes=tuple(served_on_take))
+                if not batch:
+                    break
+                # The queue's max_items=1 contract ensures no unattempted
+                # packet is removed from the queue with this current packet.
+                prepared = batch[0]
+                pane_id = prepared.delivery.pane_id
+                # A pane counts as served on TAKE, including stale-latch or
+                # application-failure dispositions, so it cannot monopolize this
+                # turn by repeatedly publishing a terminal/latest pair.
+                if pane_id not in served_on_take:
+                    served_on_take.append(pane_id)
+                if pane_id in self._failed_panes:
                     self._report(prepared, PaneDeliveryStage.UI_REJECTED)
+                else:
+                    try:
+                        applied = self._board.apply_prepared(prepared)
+                    except Exception:
+                        # The source remains owned until the controller's explicit
+                        # Stop. Do not retry, reopen, retune or silently mask a bad
+                        # cross-pane publication inside the UI timer.
+                        self._failed_panes.add(pane_id)
+                        self._queue.clear(pane_id)
+                        self._reject_uncommitted(prepared)
+                        self.render_failed.emit(pane_id, "Pane presentation failed; explicit Stop required")
+                    except BaseException:
+                        # Only the packet already taken has an immediate
+                        # disposition. Everything still queued remains available
+                        # to a later explicit/timer turn.
+                        self._reject_uncommitted(prepared)
+                        raise
+                    else:
+                        if applied:
+                            self.rendered.emit(pane_id)
+                        else:
+                            self._report(prepared, PaneDeliveryStage.UI_REJECTED)
+                # Signals and callbacks may synchronously Stop/Start or reenter
+                # tick_once. Retire this turn only after the taken packet has a
+                # genuine disposition; never continue under an old generation.
+                if self._lifecycle_generation != generation:
+                    break
+        finally:
+            self._turn_active = False
 
     def _report(self, prepared, stage: PaneDeliveryStage) -> None:
         callback = getattr(self._board, "_stage_callback", None)
