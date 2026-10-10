@@ -7,6 +7,7 @@ from math import ceil, floor, isfinite, log10
 import pyqtgraph as pg
 import numpy as np
 from PySide6.QtCore import QRectF
+from PySide6.QtGui import QPicture
 
 from ..i18n import UiLocale, text
 from .contracts import WaterfallDirection
@@ -136,6 +137,20 @@ class WaterfallTimeAxis(pg.AxisItem):
         if (previous_model[0] and not self._timestamps_known and not self._timestamps_ns.size and
                 not self._has_any_sweep_stamp and previous_model == current_model and
                 self.picture is not None):
+            return
+        # Positive unknown-time growth has no age/Sweep labels to change.
+        # Compare only fully derived models, after converting even the normal
+        # renderer's N zero placeholders. Only display_rows may differ; empty
+        # boundaries, shrink, bottom-origin mapping and failed-model recovery
+        # remain on the invalidation path. Never create or revive a picture.
+        if (previous_model[0] and not previous_model[1] and
+                previous_model[2] is WaterfallDirection.NEWEST_AT_TOP and
+                0 < previous_model[4] < self._display_rows and previous_model[6] == 0 and
+                previous_model[7] == 0 and not any(previous_model[8:11]) and
+                previous_model[12] == 0 and previous_model[13] == 0 and
+                previous_model[14] is None and not previous_model[15] and
+                previous_model[:4] == current_model[:4] and
+                previous_model[5:] == current_model[5:] and isinstance(self.picture, QPicture)):
             return
         self.picture = None
         self.update()

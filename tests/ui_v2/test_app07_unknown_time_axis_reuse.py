@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QPicture
 from PySide6.QtWidgets import QApplication
 
 from sdr_monitor.ui.v2.waterfall.axis import WaterfallTimeAxis
@@ -255,6 +257,117 @@ class UnknownTimeAxisReuseTests(unittest.TestCase):
         self._sync(axis)
         self.assertEqual(axis.update_calls, 1)
         self.assertIsNone(axis.picture)
+
+    def test_positive_unknown_growth_converts_placeholders_and_retains_real_picture(self) -> None:
+        axis = self._axis()
+        self._sync(axis, rows=1, timestamps=np.zeros(1, dtype=np.int64))
+        picture = QPicture()
+        axis.picture = picture  # Unit invalidation probe, not a benchmark picture.
+        axis.update_calls = 0
+        original_asarray = np.asarray
+        with patch("sdr_monitor.ui.v2.waterfall.axis.np.asarray", wraps=original_asarray) as converted:
+            for rows in (2, 4, 17, 60, 299, 300):
+                placeholders = np.zeros(rows, dtype=np.int64)
+                self._sync(axis, rows=rows, timestamps=placeholders)
+                self.assertEqual(axis._display_rows, rows)
+                self.assertEqual(axis._capacity_rows, 300)
+                self.assertIs(axis._direction, WaterfallDirection.NEWEST_AT_TOP)
+                self.assertEqual(axis._row_origin, 0)
+                self.assertEqual(axis._rows_per_second, 30)
+                self.assertEqual(axis._producer_interval_ns, 1_000_000_000 // 30)
+                self.assertTrue(axis._presentation_model_complete)
+                self.assertFalse(axis._timestamps_known)
+                self.assertEqual(axis._timestamps_ns.size, 0)
+                self.assertEqual(axis._sweep_stamps, ())
+                self.assertFalse(axis._has_any_sweep_stamp)
+                self.assertFalse(axis._has_sweep_stamps)
+                self.assertFalse(axis._multiple_sweep_epochs)
+                self.assertFalse(axis._gap_rows)
+                self.assertFalse(axis._age_ticks)
+                self.assertIsNone(axis._age_step_ns)
+                self.assertIs(axis.picture, picture)
+                self.assertEqual(axis.update_calls, 0)
+            self.assertEqual(converted.call_count, 6)
+            self.assertTrue(all(call.kwargs == {"dtype": np.int64}
+                                for call in converted.call_args_list))
+
+    def test_growth_empty_boundary_and_shrink_299_still_invalidate(self) -> None:
+        for before, after in ((0, 1), (300, 299), (2, 0)):
+            with self.subTest(before=before, after=after):
+                axis = self._axis()
+                self._sync(axis, rows=before, timestamps=np.zeros(before, dtype=np.int64))
+                axis.picture = QPicture()
+                axis.update_calls = 0
+                self._sync(axis, rows=after, timestamps=np.zeros(after, dtype=np.int64))
+                self.assertIsNone(axis.picture)
+                self.assertEqual(axis.update_calls, 1)
+
+    def test_growth_requires_empty_axis_stamps_not_all_none_slots(self) -> None:
+        for before_stamps, after_stamps in (((None,), (None, None)),
+                                            ((None,), ()), ((), (None, None))):
+            with self.subTest(before_stamps=before_stamps, after_stamps=after_stamps):
+                axis = self._axis()
+                self._sync(axis, rows=1, stamps=before_stamps)
+                axis.picture = QPicture()
+                axis.update_calls = 0
+                self._sync(axis, rows=2, stamps=after_stamps)
+                self.assertIsNone(axis.picture)
+                self.assertEqual(axis.update_calls, 1)
+                self.assertFalse(axis._has_any_sweep_stamp)
+
+    def test_growth_changed_settings_or_bottom_mapping_still_invalidate(self) -> None:
+        cases = (
+            ({}, {"capacity": 360}),
+            ({}, {"rate": 60}),
+            ({}, {"direction": WaterfallDirection.NEWEST_AT_BOTTOM}),
+            ({"direction": WaterfallDirection.NEWEST_AT_BOTTOM},
+             {"direction": WaterfallDirection.NEWEST_AT_BOTTOM}),
+        )
+        for before_settings, after_settings in cases:
+            with self.subTest(before=before_settings, after=after_settings):
+                axis = self._axis()
+                self._sync(axis, rows=1, **before_settings)
+                axis.picture = QPicture()
+                axis.update_calls = 0
+                self._sync(axis, rows=2, **after_settings)
+                self.assertIsNone(axis.picture)
+                self.assertEqual(axis.update_calls, 1)
+
+    def test_failed_growth_conversion_forces_recovery_redraw_before_later_growth_reuse(self) -> None:
+        axis = self._axis()
+        self._sync(axis, rows=1, timestamps=np.zeros(1, dtype=np.int64))
+        stale_picture = QPicture()
+        axis.picture = stale_picture
+        axis.update_calls = 0
+        with self.assertRaises((TypeError, ValueError)):
+            self._sync(axis, rows=2, timestamps=np.asarray(["not-an-int64"], dtype=object))
+        self.assertFalse(axis._presentation_model_complete)
+        self.assertEqual(axis._display_rows, 2)
+        self.assertIs(axis.picture, stale_picture)
+        self.assertEqual(axis.update_calls, 0)
+
+        # Recovery itself grows again, but its prior model is incomplete.
+        self._sync(axis, rows=3, timestamps=np.zeros(3, dtype=np.int64))
+        self.assertTrue(axis._presentation_model_complete)
+        self.assertIsNone(axis.picture)
+        self.assertEqual(axis.update_calls, 1)
+        recovered_picture = QPicture()
+        axis.picture = recovered_picture
+        axis.update_calls = 0
+        self._sync(axis, rows=4, timestamps=np.zeros(4, dtype=np.int64))
+        self.assertIs(axis.picture, recovered_picture)
+        self.assertEqual(axis.update_calls, 0)
+
+    def test_growth_with_external_none_or_non_qpicture_does_not_reuse(self) -> None:
+        for picture in (None, object()):
+            with self.subTest(picture_type=type(picture).__name__):
+                axis = self._axis()
+                self._sync(axis, rows=1)
+                axis.picture = picture
+                axis.update_calls = 0
+                self._sync(axis, rows=2)
+                self.assertIsNone(axis.picture)
+                self.assertEqual(axis.update_calls, 1)
 
 
 if __name__ == "__main__":

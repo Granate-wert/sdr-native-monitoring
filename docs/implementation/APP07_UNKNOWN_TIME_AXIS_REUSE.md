@@ -160,7 +160,7 @@ release acceptance are not closed by these software/component results.
 A finite root-owned fixture exercised actual typed reduced-publication
 preparation and journal draining with HackRF20MS/s, AD9363 30.72MS/s and
 RTL2.4MS/s profile metadata, FFT4096/hop2048. Five fresh processes completed
-normally;19,200 raw call durations and1,800 nearest-rank quantiles were
+normally;19,200 raw call durations and1,800 linearly interpolated quantiles were
 independently recalculated. One process used a single shared preparer/layout/
 256MiB ledger for three independent resources; the other four did not.
 This is not a raw-I/Q/DSP-rate simulator, Qt FPS or hardware qualification.
@@ -192,3 +192,86 @@ responsiveness still fails and its post-cleanup access violation is unresolved.
 Next work separates positive unknown-time growth from full semantic/layout
 controls before admitting a cache patch. tinySA-inclusive four-pane rotations,
 visible/DPI, soak and release qualification remain open; APP-07 is PARTIAL.
+
+Statistical-method correction in M78-116: the M78-115 fixture uses NumPy's
+default linear interpolation, not the nearest-rank method used by the M78-114
+census. Independent recomputation of all1,800 reported M78-115 quantiles from
+the retained samples matches linear interpolation;1,782 differ from nearest
+rank. Numerical results and original logs are unchanged; no workload reran.
+
+## M78-116: completed semantic controls and preparation attribution
+
+A separate finite offscreen run completed eleven declared controls and eleven
+normal observations. Ten observations generated fresh specs; one additional
+spec came from bootstrap, for eleven actual spec calls. Known-gap handling
+used exactly three scheduled passes and retained real pause labels. Full Sweep
+sequence/revision/state/epoch vectors, inert unannounced-epoch refusal,
+explicit boundary retention, changed-generation reset, failed timestamp
+conversion recovery and external picture invalidation were verified. The
+process exited normally and a distinct UI reviewer checked the raw results.
+This closes the limited diagnostic method, not application/HIL acceptance.
+
+Three separate Qt-only teardown variants also completed normally, with no
+callback, observer, overflow or cleanup error. They used no native owner, SDK
+or SDR; observer restoration before/after graphics release was distinguished
+by flushed phase receipts. This finite matrix did not reproduce the prior
+physical access violation. Its cause remains unknown; no native cleanup or
+hardware fix is inferred.
+
+Preparation measurements used one shared preparer and budget for independent
+HackRF20MS/s, AD9363 30.72MS/s and RTL2.4MS/s reduced-publication profiles.
+The real sample rates remain profile metadata here, not simulated raw-I/Q
+throughput. Independent validation covered3,072 outer calls and288 linear
+quantiles. Nested timings show fresh peak reduction/output geometry rebuilt
+for every publication; whole-grid validation was already cached. Inclusive
+intervals overlap and must not be summed into CPU/GIL percentages.
+
+A private geometry-template prototype matched528 functional cases, including
+nonfinite values and geometry transitions. Its fixed component comparison
+reduced average kernel wall time about19–44%, with absolute savings only
+hundredths of a millisecond. This is not a whole-application improvement and
+does not explain seconds-long Qt delays. It is not admitted to production:
+shared memory accounting, lifecycle guards and independent review are still
+required. No blanket native rewrite or removal of validation is justified by
+these measurements. Positive unknown-time axis-growth reuse remains the
+next narrowly scoped product candidate; known time, gaps, Sweep and empty
+transitions must keep ordinary invalidation and full model derivation.
+
+## M78-116 candidate: positive unknown-time history growth
+
+UI V2 now also retains an existing real axis QPicture during strictly positive
+newest-at-top history growth, but only after the complete ordinary time-model
+derivation. All model fields except the positive row count must match. Empty
+axis timestamps/stamps, no age/gap/Sweep state and unchanged capacity, rate,
+origin and producer interval are required. It never creates a cached picture.
+Reset, shrink, incomplete-state recovery, known timestamps, gaps, Sweep and
+inherited style/view/geometry invalidation keep their ordinary redraw path.
+
+The original and candidate each received exactly300 typed history updates in
+fresh finite offscreen Qt processes. Original actual draw-spec calls:300;
+candidate:2. All298 eligible candidate setter calls retained the real picture.
+All300 derived models and seven corresponding actual-spec/geometry checkpoints
+matched exactly, including the distinct initial-layout checkpoint. There were
+still300 normal paint calls in each run: acquisition or presentation cadence
+was not reduced. The candidate exited normally; callbacks, observer, overflow
+and cleanup error lists were empty. Root focused checks passed44 tests and31
+subtests; independent source and measurement-method review preceded execution.
+
+Local original-call paint p50/p95 changed2.8163/3.613465ms to0.0664/0.090405ms;
+setter p50/p95 changed0.0676/0.096685ms to0.0511/0.0676ms. These paint intervals
+include the nested diagnostic spec wrapper and its normalization: the removed
+observer work must not be reported as an isolated product speedup. The two
+candidate spec samples do not establish a comparable tail-latency distribution.
+The defensible result is removal of298 redundant actual spec constructions
+with the captured model/spec/geometry unchanged, not a whole-UI percentage,
+50ms guarantee, GIL attribution or hardware-delay fix. Recorded sample counts
+and linear quantiles were independently recalculated by the root agent.
+
+This candidate changes neither native DSP nor hardware ownership, Fs/FFT,
+analytical history, timestamps/gaps/epochs, recording, memory/queue budgets or
+source isolation. Matching software/frozen qualification and changed physical
+THREE/FOUR-source tests remain separate requirements. tinySA is included in
+future four-pane rotations; its instrument scan duration is not a Qt defect.
+APP-07/M7/M8 remains PARTIAL and the earlier physical access violation remains
+unexplained. No current/static executable promotion is implied by this source
+change or by offscreen component evidence.
