@@ -77,3 +77,80 @@ known-time/Sweep sustained coverage, visible Windows FHD/QHD and scaling,
 Stop/Start under real load, soak and matching release qualification remain
 required. APP-07 stays PARTIAL. This source increment does not certify a fix
 for the historical hardware Qt stall or a 50 ms latency guarantee.
+
+## Matching build and changed physical observation — 2026-10-10
+
+A fresh diagnostic CPU package was built from exact source77a3893, not from
+the later documentation commit. The official native pipeline passed48 tests
+in70.70s. Its matching frozen/source UI V2 gate ran1590 tests in954.736s:
+1524 passed,66 skipped, no failures/errors; the two previously deferred compiled
+tests were now admitted. Source/native/runtime provenance and callback audit
+passed; four historical NaN-validation warnings remained. This is software
+qualification of a diagnostic package, not static promotion or release proof.
+
+ONE changed actual three-SDR observation used HackRF20MS/s, AD9363 over
+Ethernet30.72MS/s and RTL2.4MS/s, FFT4096. Fresh data from all three arrived
+in9.3616723s, but the requested10s observation returned after20.8305897s,
+exceeding its unchanged10.5s ceiling. The interval was rejected, not reclassified
+as a successful longer benchmark; the lifetime supervisor had not requested
+Stop. Inclusive observer timings showed long axis/paint/preparer/journal calls,
+but cannot separate CPU work from scheduling/GIL contention or be summed.
+
+Cached cleanup confirmed no retained owners or SDR workers and released the
+lease. The process subsequently exited with0xc0000005; a matching Windows
+ApplicationError identifies python313.dll, not the originating cause. No crash
+stack was retained; cause remains UNKNOWN. Cleanup receipt is not clean process
+exit or whole-run PASS. There was no unchanged physical retry or deadline increase.
+
+## Finite model-growth census — not an optimization comparison
+
+A separately reviewed ONE sourceQt/offscreen component census completed with
+normal process exit,736 per-setter model/picture receipts and79 timing series
+containing2884 observations. It used the same source77 and qualified runtime.
+
+| Model phase | Admissions | Draw-spec entries | Setter picture discards | Paint entries | Inclusive paint p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Unknown-time growing history |300|300|299|300|2.4171ms|
+| Unknown-time full ring/wrap |60|0|0|60|0.0972ms|
+| Known-time growing history |300|300|298|300|1.1012ms|
+| Known-time full ring/wrap |60|60|60|60|1.2249ms|
+
+This census uses nearest-rank ceil(q*n)-1 quantiles, unlike the earlier112
+fixed-pair summary above. Absent draw-spec timing is unavailable, not0ms.
+These phases differ in state/admission count; their timings are not a matched
+before/after gain or application-wide percentage. Unknown growth changes row
+count and initial capacity; known full-ring progression changes timestamp
+content. Unknown full/wrap retains the same picture on all60 setters.
+
+Concrete controls preserved pause/gap representation, rejection of regressed
+pane timestamps, separate defensive axis input, Sweep revision replacement,
+gap append, unannounced epoch refusal, explicit generation reset and failed
+conversion recovery. External font/locale/view observations do not constitute
+exhaustive visual/DPI invalidation acceptance. A single unloaded dispatch
+control does not explain physical lateness or establish hardware50ms behavior.
+
+The next UI investigation is rendering-equivalence during unknown-time growth:
+FIRST compare actual specs, text and tick geometry across growing states.
+Do not simply remove rows from the cache key. Preserve complete-model/time/
+Sweep guards, direction/origin/capacity/rate/view/geometry/style/font/locale,
+external invalidation and explicit clear/recovery semantics. No new product
+change is included in this qualification document. Root must separately
+attribute journal/preparer thread CPU versus wall time and localize the exit
+fault before a changed physical qualification.
+
+## Restored tinySA finite instrument check
+
+The newly connected tinySA Ultra passed ONE separate retained-owner scan:
+100–300MHz,1001 points, requested and queried actual RBW300kHz. Scanraw duration
+was1.4293399s; the enclosing collect took1.4357432s. Its queried screen-sweep
+time4.487s is a different quantity, not the measured scanraw duration. The
+firmware stop-exclusive grid ends at299.8MHz. Exactly one scan, no retries,
+confirmed port closure/lease release and normal process exit were recorded.
+
+Values retain device-reported built-in calibrated dBm provenance; no external
+correction, hardware timestamp or metrological verification is inferred. This
+standalone functional check is not a sustained rate, UI or four-source proof.
+Four-pane rotations with each Pluto variant, HackRF, tinySA and RTL remain
+required. Slow instrument scanning must be distinguished from GUI delays.
+APP-07/M7–M8 remains PARTIAL; physical responsiveness, visible/DPI, soak and
+release acceptance are not closed by these software/component results.
