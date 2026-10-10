@@ -275,3 +275,22 @@ future four-pane rotations; its instrument scan duration is not a Qt defect.
 APP-07/M7/M8 remains PARTIAL and the earlier physical access violation remains
 unexplained. No current/static executable promotion is implied by this source
 change or by offscreen component evidence.
+
+Qualification follow-up: exact source commit
+`34fdfb51e265a77dfd57ed2ea38706019e992be5` produced diagnostic package
+`APP07-OPT116-20261010-34FDFB5-R1`. All48 native tests passed (70.74s).
+The serial AFTER-freeze UI V2 source tests with that packaged native module
+ran1596 tests in940.447s:1530passed,66skipped,0failures/errors. Compiled tests
+were not deferred; no product module loaded from outside the checkout.
+Source was tracked-clean before/after, native/source provenance matched,
+callback-log audit found no uncaught traceback and the665-file package
+manifest verified. These are software/packaging checks, NOT frozen visible
+GUI, HIL, RF throughput, raster/DPI, whole-release or AV-fix acceptance.
+
+The new cache branch specifically affects the fill/history-growth phase;
+the unchanged original branch already reused compatible unknown-time axes
+at stable/full row count. Its share of actual hardware UI work must be
+measured, rather than assuming the same benefit in sustained operation.
+Next: changed THREE hardware profile with bounded low-overhead observation
+and terminal phase receipts, then tinySA-inclusive FOUR rotations, visible
+2×2/DPI, stability/soak and release. No unchanged retry or timeout extension.
