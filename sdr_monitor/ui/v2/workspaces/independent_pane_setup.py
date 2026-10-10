@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, QSize, QTimer, Qt, Signal
@@ -39,6 +40,7 @@ from sdr_monitor.ui.v2_pane_user_stage import (
 
 from ..design import ThemeId, stylesheet_for_theme
 from ..i18n import text
+from ..spectrum.allocation_budget import PresentationAllocationBudget
 from ..view_models.calibration_view_model import CalibrationProfileViewModel
 from .analyzer_tinysa_settings import DraftScrollComboBox, TinySaSettingsDrawer, requested_tinysa_parts
 
@@ -169,15 +171,25 @@ class IndependentPaneSetupV2(QWidget):
 
     def __init__(self, *, install: Callable[[PaneProductSessionHandle], None],
                  uninstall: Callable[[], None],
+                 allocation_budget: PresentationAllocationBudget | None = None,
+                 begin_retirement: Callable[[PaneProductSessionHandle], None] | None = None,
+                 poll_retirement: Callable[[PaneProductSessionHandle], bool] | None = None,
                  can_prepare: Callable[[], bool] = lambda: True,
                  rtl_candidate_stage_available: Callable[[str, int], bool] = lambda _source_id, _revision: False,
                  calibration_profiles: CalibrationProfileViewModel | None = None,
                  parent: QWidget | None = None) -> None:
+        if allocation_budget is not None and not isinstance(allocation_budget, PresentationAllocationBudget):
+            raise TypeError("pane setup requires the admitted presentation ledger")
+        if (begin_retirement is None) != (poll_retirement is None):
+            raise TypeError("pane setup requires both retirement callbacks")
         super().__init__(parent)
         self.setObjectName("independentPaneSetupV2")
         self.setProperty("ui2Root", True)
         self._install = install
         self._uninstall = uninstall
+        self._allocation_budget = allocation_budget
+        self._begin_retirement = begin_retirement
+        self._poll_retirement = poll_retirement
         self._rtl_candidate_stage_available = rtl_candidate_stage_available
         self._can_prepare = can_prepare
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-pane-control")
@@ -637,7 +649,8 @@ class IndependentPaneSetupV2(QWidget):
 
     @property
     def blocks_single_source(self) -> bool:
-        return self._future is not None or self._prepared is not None or self._retained_pool is not None
+        return (self._future is not None or self._prepared is not None
+                or self._retained_pool is not None or self._closing_handle is not None)
 
     @property
     def can_close(self) -> bool:
@@ -1261,7 +1274,9 @@ class IndependentPaneSetupV2(QWidget):
             self._set_error("analyzer.pane.setup.no_source")
             return
         self._set_error(None)
-        self._submit("prepare", prepare_user_pane_session, drafts)
+        stage = (prepare_user_pane_session if self._allocation_budget is None else
+                 partial(prepare_user_pane_session, allocation_budget=self._allocation_budget))
+        self._submit("prepare", stage, drafts)
 
     def _begin_apply(self) -> None:
         if (self._released or self._future is not None or self._prepared is None
@@ -1303,6 +1318,14 @@ class IndependentPaneSetupV2(QWidget):
         if self._released or self._future is not None or self._closing_handle is not None or not handle.can_close():
             return
         self._closing_handle = handle
+        try:
+            if self._begin_retirement is not None:
+                self._begin_retirement(handle)
+        except Exception:
+            # Keep the layout/handle retained; a failed quiesce is not close.
+            self._set_error("analyzer.pane.setup.operation_failed")
+            self.state_changed.emit()
+            return
         self._submit("close_layout", handle.shutdown_after_stop)
 
     def _submit(self, operation: str, task: Callable[..., Any], *args: Any) -> None:
@@ -1318,6 +1341,9 @@ class IndependentPaneSetupV2(QWidget):
         self.state_changed.emit()
 
     def _poll(self) -> None:
+        if self._operation == "retire_presentation":
+            self._poll_layout_retirement()
+            return
         future = self._future
         if future is None or not future.done():
             return
@@ -1368,19 +1394,36 @@ class IndependentPaneSetupV2(QWidget):
                 self._retained_pool = None
                 self._set_error(self._error_key, revisit_violations=self._revisit_violations)
             elif operation == "close_layout":
-                try:
-                    self._uninstall()
-                except Exception:
-                    self._set_error("analyzer.pane.setup.operation_failed")
-                else:
-                    self._closing_handle = None
-                    self._set_impact_text("")
-                    self._set_preview_text("")
-                    self.hide()
+                self._operation = "retire_presentation"
+                self._timer.start()  # Existing interval; no worker wait on Qt.
+                self._poll_layout_retirement()
+                return
         if operation == "close_layout" and self._closing_handle is not None:
             QMessageBox.warning(self, text("analyzer.pane.setup.close_failed.title"),
                                 text("analyzer.pane.setup.close_failed.detail"))
             self._closing_handle = None
+        self._refresh_actions()
+        self.state_changed.emit()
+
+    def _poll_layout_retirement(self) -> None:
+        handle = self._closing_handle
+        if handle is None:
+            raise RuntimeError("layout retirement lost its handle")
+        try:
+            if self._poll_retirement is not None and not self._poll_retirement(handle):
+                return
+            self._uninstall()
+        except Exception:
+            self._timer.stop()
+            self._set_error("analyzer.pane.setup.operation_failed")
+            self.state_changed.emit()
+            return  # Retain handle/operation, refuse application close.
+        self._timer.stop()
+        self._operation = None
+        self._closing_handle = None
+        self._set_impact_text("")
+        self._set_preview_text("")
+        self.hide()
         self._refresh_actions()
         self.state_changed.emit()
 

@@ -44,6 +44,7 @@ from .workspaces import (
     tinysa_analyzer_workspace_definition,
 )
 from .workspaces.analyzer import AnalyzerWorkspaceV2, analyzer_workspace_definition
+from .workspaces.independent_pane_persistence import IndependentPanePersistenceLanes
 
 
 class LivePresenterLifecyclePort(LivePresenterPort, Protocol):
@@ -124,6 +125,7 @@ class V2LiveProductComposition:
         hackrf_sweep_composed: bool = False,
         projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
         persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
+        independent_persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
         allocation_budget: PresentationAllocationBudget | None = None,
         async_shutdown: bool = False,
         calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
@@ -143,6 +145,9 @@ class V2LiveProductComposition:
             persistence_submit=persistence_submit))
         self._projection_submit = projection_submit
         self._persistence_submit = persistence_submit
+        self._independent_persistence_submit = independent_persistence_submit
+        self._independent_density_lanes: IndependentPanePersistenceLanes | None = None
+        self._failed_independent_density_lanes: IndependentPanePersistenceLanes | None = None
         self._pane_projectors = ([] if self.spectrum_projector is None else [self.spectrum_projector])
         self._projection_activity: dict[SpectrumProjector, bool] = {}
         self._projection_activity_slots: dict[SpectrumProjector, Callable[[bool], None]] = {}
@@ -276,11 +281,15 @@ class V2LiveProductComposition:
                     widget.enable_independent_pane_setup(
                         install=owner.install_independent_pane_session,
                         uninstall=owner.uninstall_independent_pane_session,
+                        allocation_budget=owner.allocation_budget,
+                        begin_retirement=owner.begin_independent_presentation_retirement,
+                        poll_retirement=owner.poll_independent_presentation_retirement,
                         rtl_candidate_stage_available=getattr(
                             owner._presenter, "rtl_candidate_stage_available",
                             lambda _source, _revision: False))
                     if owner._pane_handle is not None:
-                        widget.install_independent_pane_session(owner._pane_handle)
+                        widget.install_independent_pane_session(owner._pane_handle,
+                            density_lanes=owner._independent_density_lanes)
             workspaces = (analyzer_workspace_definition(self.analyzer_view_model, self.spectrum_projector,
                 self.calibration_view_model, shared_projector_factory=shared_projector_factory,
                 live_calibration=self.live_calibration_view_model, calibration_projector=self._calibration_projector,
@@ -402,14 +411,51 @@ class V2LiveProductComposition:
         """Attach an externally previewed/applied plan to this Analyzer tab."""
         if (not isinstance(handle, PaneProductSessionHandle) or not handle.applied
                 or self._pane_handle is not None or self._is_shutdown or self._presentation_disposed
+                or self._failed_independent_density_lanes is not None
                 or self.analyzer_view_model is None or not self.can_close()):
             raise RuntimeError("independent pane product session is unavailable")
+        # Refuse before widget construction. Never transplant a foreign ledger.
+        if handle.preparer.allocation_budget is not self.allocation_budget:
+            raise ValueError("independent async layout has a foreign presentation ledger")
+        if self._independent_persistence_submit is None:
+            raise RuntimeError("independent async layout requires optional persistence submission")
+        lanes = IndependentPanePersistenceLanes(handle,
+            submit=self._independent_persistence_submit, allocation_budget=self.allocation_budget)
         widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
-        if widget is not None:
-            widget.install_independent_pane_session(handle)
-        if self.live_calibration_view_model is not None:
-            self.live_calibration_view_model.close_binding()
+        try:
+            if self.live_calibration_view_model is not None:
+                self.live_calibration_view_model.close_binding()
+            if widget is not None:
+                widget.install_independent_pane_session(handle, density_lanes=lanes)
+        except Exception as original_error:
+            cleanup_errors: list[Exception] = []
+            for operation in (lanes.quiesce, lanes.release_after_shutdown):
+                try:
+                    operation()
+                except Exception as error:
+                    cleanup_errors.append(error)
+            if cleanup_errors or not lanes.retired or getattr(lanes, "_failed_surface", None) is not None:
+                self._failed_independent_density_lanes = lanes
+            if cleanup_errors:
+                raise original_error from ExceptionGroup("independent installation cleanup", cleanup_errors)
+            raise
         self._pane_handle = handle
+        self._independent_density_lanes = lanes
+
+    def begin_independent_presentation_retirement(self, handle: PaneProductSessionHandle) -> None:
+        if handle is not self._pane_handle:
+            raise ValueError("layout retirement requires the exact installed handle")
+        widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
+        if widget is not None and widget.independent_pane_session is not None:
+            widget.independent_pane_session.quiesce_presentation()
+        elif self._independent_density_lanes is not None:
+            self._independent_density_lanes.quiesce()
+
+    def poll_independent_presentation_retirement(self, handle: PaneProductSessionHandle) -> bool:
+        if handle is not self._pane_handle:
+            raise ValueError("layout retirement requires the exact installed handle")
+        lanes = self._independent_density_lanes
+        return lanes is None or lanes.poll_retired()
 
     def uninstall_independent_pane_session(self) -> None:
         handle = self._pane_handle
@@ -417,10 +463,13 @@ class V2LiveProductComposition:
             return
         if not handle.shutdown_complete:
             raise RuntimeError("independent pane owners must close before layout return")
+        if self._independent_density_lanes is not None and not self._independent_density_lanes.retired:
+            raise RuntimeError("independent density workers must retire before layout return")
         widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
         if widget is not None:
             widget.uninstall_independent_pane_session()
         self._pane_handle = None
+        self._independent_density_lanes = None
 
     def memory_snapshot(self, workspace=None):
         """On-demand scalar diagnostic; creates no page and issues no RX call."""
@@ -436,8 +485,7 @@ class V2LiveProductComposition:
             return CloseState("failed", "Stop must acknowledge before application close")
         state = self.close_lifecycle.request()
         if state.phase == "complete":
-            self._release_terminal_presentation()
-            self._is_shutdown = True
+            state = self._finish_shutdown_presentation()
         return state
 
     def cancel_pending_rf_control(self) -> None:
@@ -454,9 +502,18 @@ class V2LiveProductComposition:
         assert self.close_lifecycle is not None
         state = self.close_lifecycle.poll()
         if state.phase == "complete":
-            self._release_terminal_presentation()
-            self._is_shutdown = True
+            state = self._finish_shutdown_presentation()
         return state
+
+    def _finish_shutdown_presentation(self) -> CloseState:
+        assert self.close_lifecycle is not None
+        try:
+            self._release_terminal_presentation()
+        except Exception as error:
+            self.close_lifecycle.state = CloseState("failed", f"presentation release: {error}"[:2000])
+        else:
+            self._is_shutdown = True
+        return self.close_lifecycle.state
 
     def _release_terminal_presentation(self) -> None:
         """GUI-only finalization after ALL composition owners acknowledged.
@@ -466,25 +523,53 @@ class V2LiveProductComposition:
         """
         if self._terminal_presentation_released:
             return
+        errors: list[Exception] = []
+        def attempt(operation) -> None:
+            try:
+                operation()
+            except Exception as error:
+                errors.append(error)
+        for lanes in (self._independent_density_lanes, self._failed_independent_density_lanes):
+            if lanes is not None:
+                attempt(lanes.release_after_shutdown)
+                failed_surface = getattr(lanes, "_failed_surface", None)
+                if failed_surface is not None:
+                    # This surface's handle may still belong to the Stage
+                    # controller. Its original shutdown gate must also pass;
+                    # done optional Futures alone do not authorize deletion.
+                    attempt(failed_surface.release_presentation_after_shutdown)
         widget = None if self._analyzer_workspace_ref is None else self._analyzer_workspace_ref()
         if widget is not None and widget.independent_pane_session is not None:
-            widget.independent_pane_session.release_presentation_after_shutdown()
+            attempt(widget.independent_pane_session.release_presentation_after_shutdown)
         for presenter in (self._presenter, self.analyzer_presenter):
             # Only declared hooks; do not invent a port on dynamic mocks/adapters.
             if callable(getattr(type(presenter), "release_presentation_after_shutdown", None)):
-                getattr(presenter, "release_presentation_after_shutdown")()
+                attempt(getattr(presenter, "release_presentation_after_shutdown"))
         for projector in self._pane_projectors:
-            projector.release_presentation_after_shutdown()
+            attempt(projector.release_presentation_after_shutdown)
         if self._calibration_projector is not None:
-            self._calibration_projector.release_presentation_after_shutdown()
-        self.view_model.release_presentation_after_shutdown()
+            attempt(self._calibration_projector.release_presentation_after_shutdown)
+        attempt(self.view_model.release_presentation_after_shutdown)
         if self.analyzer_view_model is not None:
-            self.analyzer_view_model.release_presentation_after_shutdown()
+            attempt(self.analyzer_view_model.release_presentation_after_shutdown)
+        if errors:
+            raise errors[0]
         self._terminal_presentation_released = True
 
     def _prepare_async_shutdown(self) -> tuple[tuple[str, Callable[[], None]], ...]:
         """GUI-only phase; no device operations, waits or deferred factories."""
         tasks: list[tuple[str, Callable[[], None]]] = []
+        quiesce_errors: list[Exception] = []
+        if self._pane_handle is not None:
+            try:
+                self.begin_independent_presentation_retirement(self._pane_handle)
+            except Exception as error:
+                quiesce_errors.append(error)
+        if self._failed_independent_density_lanes is not None:
+            try:
+                self._failed_independent_density_lanes.quiesce()
+            except Exception as error:
+                quiesce_errors.append(error)
         if self.live_calibration_view_model is not None:
             self.live_calibration_view_model.dispose()
         if self._calibration_projector is not None:
@@ -520,6 +605,14 @@ class V2LiveProductComposition:
             if bound_model is not None:
                 bound_model.dispose()
         self._presentation_disposed = True
+        if quiesce_errors:
+            # CloseLifecycle attempts every off-Qt task despite a task failure.
+            # Record this original GUI fault as a failing final task, rather
+            # than aborting preparation and skipping resource/executor joins.
+            errors = tuple(quiesce_errors)
+            def report_quiesce_failure() -> None:
+                raise ExceptionGroup("independent presentation quiesce", list(errors))
+            tasks.append(("independent-presentation-quiesce", report_quiesce_failure))
         return tuple(tasks)
 
     def shutdown(self) -> None:
@@ -544,6 +637,10 @@ class V2LiveProductComposition:
         # Disconnect presentation callbacks once; these methods own no work
         # and repeating a successful disconnect is not a lifecycle retry.
         if not self._presentation_disposed:
+            if self._pane_handle is not None:
+                attempt(lambda: self.begin_independent_presentation_retirement(self._pane_handle))
+            if self._failed_independent_density_lanes is not None:
+                attempt(self._failed_independent_density_lanes.quiesce)
             if self.live_calibration_view_model is not None:
                 attempt(self.live_calibration_view_model.dispose)
             if self._calibration_projector is not None:
@@ -598,6 +695,7 @@ def compose_v2_live_product(
     hackrf_sweep_composed: bool = False,
     projection_submit: Callable[[Callable[[], SpectrumProjection]], Future] | None = None,
     persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
+    independent_persistence_submit: Callable[[Callable[[], object]], Future] | None = None,
     allocation_budget: PresentationAllocationBudget | None = None,
     async_shutdown: bool = False,
     calibration_presenter: CalibrationPresenterLifecyclePort | None = None,
@@ -617,6 +715,7 @@ def compose_v2_live_product(
         hackrf_sweep_composed=hackrf_sweep_composed,
         projection_submit=projection_submit,
         persistence_submit=persistence_submit,
+        independent_persistence_submit=independent_persistence_submit,
         allocation_budget=allocation_budget,
         async_shutdown=async_shutdown,
         calibration_presenter=calibration_presenter,

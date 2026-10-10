@@ -40,6 +40,7 @@ from ..i18n import text
 from ..state.analyzer_readouts import tinysa_settings_readout
 from .independent_pane_board import IndependentPaneBoardV2
 from .independent_pane_delivery import IndependentPaneDeliveryPort
+from .independent_pane_persistence import IndependentPanePersistenceLanes
 from .pane_failure_text import pane_failure_text
 from .rf_shift_dialog import RfImpactDialog, RfShiftEntryDialog, pane_rf_impact_summary, pane_rf_preview_text
 
@@ -87,13 +88,17 @@ class IndependentPaneSessionV2(QWidget):
                  confirm_shared_stop: Callable[[tuple[str, ...]], bool] | None = None,
                  confirm_paired_start: Callable[[tuple[int, ...]], bool] | None = None,
                  close_layout: Callable[[PaneProductSessionHandle], None] | None = None,
+                 density_lanes: IndependentPanePersistenceLanes | None = None,
                  parent: QWidget | None = None) -> None:
         if not isinstance(handle, PaneProductSessionHandle) or not handle.applied:
             raise ValueError("independent pane UI needs one explicitly applied product plan")
+        if density_lanes is not None and density_lanes.handle is not handle:
+            raise ValueError("independent density owner must match the exact handle")
         super().__init__(parent)
         self.setObjectName("independentPaneSessionV2")
         self.setProperty("ui2Root", True)
         self.handle = handle
+        self.density_lanes = density_lanes
         self._confirm_shared_stop = confirm_shared_stop or self._ask_shared_stop
         self._confirm_paired_start = confirm_paired_start or self._ask_paired_start
         self._close_layout = close_layout
@@ -195,6 +200,38 @@ class IndependentPaneSessionV2(QWidget):
         self._state_timer.start()
         self.set_theme(ThemeId.DARK)
         self.set_locale()
+        # Last construction step, before returning to the event loop/show or
+        # explicit Start. All installed scenes are still density-pristine.
+        if density_lanes is not None:
+            try:
+                for slot in handle.layout.slots:
+                    if slot.request is not None:
+                        pane = self.board.pane(slot.number)
+                        assert pane is not None
+                        density_lanes.attach(slot.request.pane_id, pane.spectrum_scene)
+            except Exception as original_error:
+                # Constructor failure does not transfer a live scene to Qt
+                # deletion. Preserve it with the owner until safe retirement.
+                density_lanes._failed_surface = self
+                cleanup_errors: list[Exception] = []
+                for operation in (self.delivery.stop, self._state_timer.stop,
+                                  density_lanes.quiesce, density_lanes.release_after_shutdown):
+                    try:
+                        operation()
+                    except Exception as error:
+                        cleanup_errors.append(error)
+                if density_lanes.retired:
+                    try:
+                        self.board.release_presentation_after_shutdown()
+                    except Exception as error:
+                        cleanup_errors.append(error)
+                    else:
+                        self.setParent(None)
+                        self.deleteLater()
+                        density_lanes._failed_surface = None
+                if cleanup_errors:
+                    raise original_error from ExceptionGroup("independent session construction cleanup", cleanup_errors)
+                raise
 
     def _button(self, callback: Callable[[], None]) -> QPushButton:
         button = QPushButton(self)
@@ -978,6 +1015,8 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: {col
             raise RuntimeError("independent pane owner has not confirmed terminal shutdown")
         if self._ui_stop_handoffs:
             raise RuntimeError("independent pane UI Stop handoff is still pending")
+        if self.density_lanes is not None:
+            self.density_lanes.release_after_shutdown()
         self._state_timer.stop()
         self.delivery.stop()
         for slot in self.handle.layout.slots:
@@ -989,8 +1028,19 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: {col
         self.board.release_presentation_after_shutdown()
         self._terminal_released = True
 
+    def quiesce_presentation(self) -> None:
+        """Stop delivery and optional offers before resource/layout shutdown."""
+        self.delivery.stop()
+        self._state_timer.stop()
+        if self.density_lanes is not None:
+            self.density_lanes.quiesce()
+
+    def poll_presentation_retired(self) -> bool:
+        return self.density_lanes is None or self.density_lanes.poll_retired()
+
     def closeEvent(self, event) -> None:
-        if not self.handle.can_close():
+        if (not self.handle.can_close()
+                or self.density_lanes is not None and not self.density_lanes.retired):
             event.ignore()
             return
         super().closeEvent(event)

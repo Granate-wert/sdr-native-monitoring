@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from time import monotonic_ns
+
 import sys
 import time
 import weakref
@@ -48,7 +50,7 @@ from .persistence_contracts import (
 )
 from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
 from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
-from .persistence_projector import PersistenceDelivery, PersistenceWork
+from .persistence_projector import PersistenceDelivery, PersistenceProjector, PersistenceWork
 from .plot_terminal import (
     PlotTerminalOwnership,
     capture_plot_terminal_ownership,
@@ -122,6 +124,12 @@ class SpectrumScene(QWidget):
         self._latest_view: SpectrumFrameView | None = None
         self._prepared_spectrum: PreparedSpectrumFrame | None = None
         self._projector: SpectrumProjector | None = None
+        self._density_port: PersistenceProjector | None = None
+        self._density_quiesced = False
+        self._density_admitted = False
+        self._density_disconnected = False
+        self._density_ready_connected = False
+        self._density_settled_connected = False
         self._projection_owner = object()
         self._projection_generation = 0
         self._displayed_projection_geometry: tuple[int, tuple[float, float, int]] | None = None
@@ -246,7 +254,7 @@ class SpectrumScene(QWidget):
 
     def set_projection_port(self, projector: SpectrumProjector) -> None:
         """Inject application-owned work, once, before the first publication."""
-        if self._projector is not None or self._latest_view is not None:
+        if self._projector is not None or self._density_port is not None or self._latest_view is not None:
             raise RuntimeError("projection port must be injected before spectrum admission")
         self._projector = projector
         self._persistence.allocation_budget = projector.allocation_budget
@@ -262,6 +270,72 @@ class SpectrumScene(QWidget):
         projector.persistence_settled.connect(self._persistence_projection_settled)
         self.sweep_coverage.request_projection = self._request_projection
         self._view_box.sigResized.connect(self._request_projection)
+
+    def set_persistence_projection_port(self, port: PersistenceProjector) -> None:
+        """Once-only density lane; required spectrum stays on its direct path."""
+        if not isinstance(port, PersistenceProjector) or port.allocation_budget is None:
+            raise TypeError("density port requires the admitted presentation ledger")
+        if getattr(port, "_density_scene_owner", None) is not None:
+            raise ValueError("density port is already bound to another scene")
+        if port._closed or port._future is not None or port._active is not None or port._pending is not None:
+            raise ValueError("density port must be pristine before scene binding")
+        if (self._projector is not None or self._density_port is not None
+                or self._density_admitted or self._graphics_terminal_released):
+            raise RuntimeError("density port must precede density admission and be exclusive")
+        self._density_port = port
+        setattr(port, "_density_scene_owner", self._projection_owner)
+        self._persistence.allocation_budget = port.allocation_budget
+        self._persistence.on_budget_changed = self._refresh_persistence_status
+        self._persistence.request_projection = self._request_density_projection
+        port.ready.connect(self._persistence_projection_ready)
+        self._density_ready_connected = True
+        port.settled.connect(self._persistence_projection_settled)
+        self._density_settled_connected = True
+
+    def _request_density_projection(self) -> None:
+        port = self._density_port
+        if port is None:
+            return
+        request = self._persistence.worker_request
+        if self._density_quiesced or self._ui_stop_pending:
+            # Invalidation FIRST: cancel can emit settled synchronously.
+            self._persistence._worker_request = None
+            self._persistence._discard_pending()
+            port.cancel(self._projection_owner)
+        elif request is None:
+            port.cancel(self._projection_owner)
+        else:
+            port.offer(self._projection_owner, request)
+
+    def quiesce_persistence_projection(self) -> None:
+        """Retirement, not page hiding: retain accepted pixels until release."""
+        self._density_quiesced = True
+        if self._density_port is not None:
+            self._persistence._discard_pending()
+            self._persistence._invalidate_worker()
+            self._cancel_persistence_delivery(PaneDeliveryStage.STOP_CLEARED)
+
+    def disconnect_persistence_projection_after_shutdown(self) -> None:
+        port = self._density_port
+        if port is None or self._density_disconnected:
+            return
+        if not self._density_quiesced or port._future is not None:
+            raise RuntimeError("density lane has not acknowledged retirement")
+        errors: list[Exception] = []
+        for signal, callback, flag in (
+                (port.ready, self._persistence_projection_ready, "_density_ready_connected"),
+                (port.settled, self._persistence_projection_settled, "_density_settled_connected")):
+            if getattr(self, flag):
+                try:
+                    signal.disconnect(callback)
+                    setattr(self, flag, False)
+                except Exception as error:
+                    errors.append(error)
+        if errors:
+            raise errors[0]
+        # Retain the callback gate until graphics release; never fall back to
+        # synchronous mapping after retiring a configured async lane.
+        self._density_disconnected = True
 
     def _viewport(self) -> tuple[float, float, int]:
         left, right = self._view_box.viewRange()[0]
@@ -475,11 +549,15 @@ class SpectrumScene(QWidget):
             self._accept_persistence_image(request.persistence, result.persistence, result.persistence_error)
 
     def _persistence_projection_ready(self, delivery: PersistenceDelivery) -> None:
-        if delivery.owner is self._projection_owner:
+        if (delivery.owner is self._projection_owner
+                and (self._density_port is None
+                     or not self._density_quiesced and not self._ui_stop_pending)):
             self._accept_persistence_image(delivery.request, delivery.result, delivery.error)
 
     def _persistence_projection_settled(self, work: PersistenceWork) -> None:
-        if work.owner is self._projection_owner:
+        if (work.owner is self._projection_owner
+                and (self._density_port is None
+                     or not self._density_quiesced and not self._ui_stop_pending)):
             self._persistence.worker_settled(work.request)
 
     def _accept_persistence_image(self, request: PersistenceImageRequest,
@@ -808,6 +886,8 @@ class SpectrumScene(QWidget):
         """
         if self._graphics_terminal_released:
             return
+        if self._density_port is not None and not self._density_disconnected:
+            raise RuntimeError("density lane must retire before graphics release")
         if not self._graphics_preflight_complete:
             self._persistence.on_image_uploaded = None
             self._cancel_persistence_delivery(PaneDeliveryStage.STOP_CLEARED)
@@ -862,8 +942,9 @@ class SpectrumScene(QWidget):
         """Upload an externally computed persistence density beneath all traces."""
 
         view = adapt_persistence_density(frame)
+        self._density_admitted = True
         self._persistence.set_frame(view, now_ns=now_ns)
-        if self._projector is None:
+        if self._projector is None and self._density_port is None:
             self._persistence_legend.set_labels(*view.quantitative_labels)
         self._refresh_persistence_status()
 
@@ -1499,10 +1580,18 @@ class SpectrumScene(QWidget):
         self._ui_stop_detached_refs = tuple(refs)
 
     def set_ui_stop_pending(self, pending: bool) -> None:
+        density_transition = self._ui_stop_pending != pending
         self._delivery_custody_generation += 1
         self._ui_stop_pending = pending
+        if self._density_port is not None and density_transition:
+            self._persistence._discard_pending()
+            self._persistence._invalidate_worker()
         if not pending:
             self._ui_stop_detached_refs = ()
+            if self._density_port is not None and density_transition and not self._density_quiesced:
+                latest = self._persistence.latest_view
+                if latest is not None:
+                    self._persistence._upload(latest, now_ns=monotonic_ns(), force=True)
 
     def finish_ui_stop_detach(self, refs: tuple[PaneDeliveryObligationRef, ...]) -> None:
         if self._ui_stop_detached_refs == refs:

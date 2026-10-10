@@ -22,6 +22,7 @@ from sdr_monitor.services.receiver_lease_manager import ReceiverLeaseManager
 from .v2_pane_graph_pool import PaneGraphPoolError, PaneProductGraphPool
 from .v2_pane_product_session import PaneProductSessionHandle
 from .v2_pane_rf_plan import PaneRfPlanContext
+from .v2.spectrum.allocation_budget import PresentationAllocationBudget
 from .v2_pane_user_plan import PanePairedSelectionReceipt, PaneSlotDraft, PaneUserPlan, PaneUserPlanError, compile_user_pane_plan
 
 
@@ -54,8 +55,11 @@ class PreparedPaneUserSession:
 def prepare_user_pane_session(
     drafts: tuple[PaneSlotDraft, ...], *,
     pool_factory: Callable[[], PaneProductGraphPool] = PaneProductGraphPool,
+    allocation_budget: PresentationAllocationBudget | None = None,
 ) -> PreparedPaneUserSession:
     """Run only on a control worker after explicit user Stage/Preview."""
+    if allocation_budget is not None and not isinstance(allocation_budget, PresentationAllocationBudget):
+        raise TypeError("pane Stage requires a presentation allocation budget")
     pool = pool_factory()
     try:
         source_order = tuple(dict.fromkeys(draft.source_id for draft in drafts if draft.source_id is not None))
@@ -98,6 +102,7 @@ def prepare_user_pane_session(
         if session is None:
             raise PaneUserStageError("an occupied pane layout has no resource session")
         handle = PaneProductSessionHandle(pool, plan.layout, plan.groups, session,
+                                          allocation_budget=allocation_budget,
                                           source_labels={source: choice.label for source, choice in selected.items()},
                                           rf_context=PaneRfPlanContext(plan, drafts, tuple(
                                               (source, selected[source], revisions[source]) for source in source_order)))

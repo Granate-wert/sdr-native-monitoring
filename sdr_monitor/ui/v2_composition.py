@@ -101,6 +101,7 @@ def build_v2_shell(services=None):
     composition = compose_v2_live_product(
         live_presenter,
         projection_submit=live_presenter.submit_display_task,
+        independent_persistence_submit=live_presenter.submit_persistence_task,
         allocation_budget=allocation_budget,
         async_shutdown=True,
         analyzer_presenter=analyzer_presenter,

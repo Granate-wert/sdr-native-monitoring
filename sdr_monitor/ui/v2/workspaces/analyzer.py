@@ -29,6 +29,7 @@ from ..design.icons import V2IconId
 from ..i18n import current_locale, text
 from ..shell.contracts import WorkspaceDefinition
 from ..spectrum.projection import SpectrumProjector
+from ..spectrum.allocation_budget import PresentationAllocationBudget
 from ..spectrum.calibrated_current import CalibratedCurrentPlot
 from ..state.analyzer_readouts import (
     analyzer_periods,
@@ -56,6 +57,7 @@ from .analyzer_sweep_preview import AnalyzerSweepPreview
 from .analyzer_tinysa_configuration import TinySaConfigurationBar
 from .independent_pane_session import IndependentPaneSessionV2
 from .independent_pane_setup import IndependentPaneSetupV2
+from .independent_pane_persistence import IndependentPanePersistenceLanes
 from sdr_monitor.ui.v2_pane_product_session import PaneProductSessionHandle
 
 
@@ -245,6 +247,9 @@ class AnalyzerWorkspaceV2(QWidget):
     def enable_independent_pane_setup(
         self, *, install: Callable[[PaneProductSessionHandle], None],
         uninstall: Callable[[], None],
+        allocation_budget: PresentationAllocationBudget | None = None,
+        begin_retirement: Callable[[PaneProductSessionHandle], None] | None = None,
+        poll_retirement: Callable[[PaneProductSessionHandle], bool] | None = None,
         rtl_candidate_stage_available: Callable[[str, int], bool] = lambda _source, _revision: False,
     ) -> None:
         """Install the user editor on this existing Analyzer, without RX I/O."""
@@ -254,6 +259,8 @@ class AnalyzerWorkspaceV2(QWidget):
         self._commands.insertWidget(self._commands.indexOf(self.settings), button)
         setup = IndependentPaneSetupV2(
             install=install, uninstall=uninstall,
+            allocation_budget=allocation_budget,
+            begin_retirement=begin_retirement, poll_retirement=poll_retirement,
             rtl_candidate_stage_available=rtl_candidate_stage_available,
             calibration_profiles=self._calibration_profiles,
             can_prepare=lambda: (not self._terminal_released and not self.model.state.controls_locked
@@ -285,7 +292,8 @@ class AnalyzerWorkspaceV2(QWidget):
     def independent_setup_can_close(self) -> bool:
         return self._independent_setup is None or self._independent_setup.can_close
 
-    def install_independent_pane_session(self, handle: PaneProductSessionHandle) -> None:
+    def install_independent_pane_session(self, handle: PaneProductSessionHandle, *,
+                                         density_lanes: IndependentPanePersistenceLanes | None = None) -> None:
         """Show independent source panes on THIS Analyzer tab after Apply.
 
         The external product controller owns Stage/preview/Apply and terminal
@@ -299,7 +307,7 @@ class AnalyzerWorkspaceV2(QWidget):
                 or state.rf_control_pending or state.rf_armed or state.rf_fault):
             raise RuntimeError("independent panes require an idle Analyzer and applied plan")
         widget = IndependentPaneSessionV2(
-            handle, close_layout=(None if self._independent_setup is None
+            handle, density_lanes=density_lanes, close_layout=(None if self._independent_setup is None
                                   else self._independent_setup.close_applied_layout),
             parent=self)
         self._hide_display(restore_focus=False)
