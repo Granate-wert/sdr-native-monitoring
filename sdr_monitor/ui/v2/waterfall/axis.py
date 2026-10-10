@@ -25,8 +25,11 @@ class WaterfallTimeAxis(pg.AxisItem):
         self._capacity_rows = 0
         self._row_origin = 0
         self._timestamps_ns: np.ndarray = np.empty(0, dtype=np.int64)
+        self._timestamps_known = False
+        self._presentation_model_complete = True
         self._gap_rows: frozenset[int] = frozenset()
         self._sweep_stamps: tuple[SweepRowStamp | None, ...] = ()
+        self._has_any_sweep_stamp = False
         self._has_sweep_stamps = False
         self._multiple_sweep_epochs = False
         self._age_ticks: dict[float, int] = {}
@@ -52,14 +55,40 @@ class WaterfallTimeAxis(pg.AxisItem):
         timestamps_known: bool,
         sweep_stamps: tuple[SweepRowStamp | None, ...] = (),
     ) -> None:
+        previous_model = (
+            self._presentation_model_complete,
+            self._timestamps_known,
+            self._direction,
+            self._rows_per_second,
+            self._display_rows,
+            self._capacity_rows,
+            self._row_origin,
+            len(self._sweep_stamps),
+            self._has_any_sweep_stamp,
+            self._has_sweep_stamps,
+            self._multiple_sweep_epochs,
+            self._producer_interval_ns,
+            len(self._gap_rows),
+            int(self._timestamps_ns.size),
+            self._age_step_ns,
+            bool(self._age_ticks),
+            self.picture is not None,
+        )
+        # A failed conversion or later derivation leaves the original setter's
+        # partial field mutations intact. Do not treat that partial state as a
+        # reusable model on the next call.
+        self._presentation_model_complete = False
         self._direction = WaterfallDirection(direction)
         self._rows_per_second = max(1, int(rows_per_second))
         self._display_rows = max(0, int(display_rows))
         self._capacity_rows = max(self._display_rows, int(capacity_rows))
+        self._timestamps_known = bool(timestamps_known)
         self._sweep_stamps = sweep_stamps
+        sweep_stamp_count = len(sweep_stamps)
+        self._has_any_sweep_stamp = any(stamp is not None for stamp in sweep_stamps)
         self._has_sweep_stamps = (
-            len(sweep_stamps) == self._display_rows
-            and any(stamp is not None for stamp in sweep_stamps)
+            sweep_stamp_count == self._display_rows
+            and self._has_any_sweep_stamp
         )
         self._multiple_sweep_epochs = len({stamp.acquisition_epoch for stamp in sweep_stamps
                                            if stamp is not None}) > 1
@@ -83,6 +112,31 @@ class WaterfallTimeAxis(pg.AxisItem):
         self._age_ticks.clear()
         if not self._timestamps_ns.size:
             self._age_step_ns = None
+
+        self._presentation_model_complete = True
+        current_model = (
+            self._presentation_model_complete,
+            self._timestamps_known,
+            self._direction,
+            self._rows_per_second,
+            self._display_rows,
+            self._capacity_rows,
+            self._row_origin,
+            len(self._sweep_stamps),
+            self._has_any_sweep_stamp,
+            self._has_sweep_stamps,
+            self._multiple_sweep_epochs,
+            self._producer_interval_ns,
+            len(self._gap_rows),
+            int(self._timestamps_ns.size),
+            self._age_step_ns,
+            bool(self._age_ticks),
+            self.picture is not None,
+        )
+        if (previous_model[0] and not self._timestamps_known and not self._timestamps_ns.size and
+                not self._has_any_sweep_stamp and previous_model == current_model and
+                self.picture is not None):
+            return
         self.picture = None
         self.update()
 
