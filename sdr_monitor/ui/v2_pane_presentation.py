@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
-from sdr_monitor.domain.live import LiveSpectrumFrame
+from sdr_monitor.domain.live import LivePersistenceFrame, LiveSpectrumFrame
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneCrop, PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverChainSelection, ReceiverEndpoint
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
@@ -23,10 +23,12 @@ from .v2_pane_obligation_refs import delivery_obligation_refs
 
 from .v2.spectrum.allocation_budget import PresentationAllocationBudget
 from .v2.spectrum.contracts import PreparedSpectrumFrame
-from .v2.spectrum.grid_baseline import MeasurementGridCache
+from .v2.spectrum.grid_baseline import MeasurementGridCache, _same_grid
 from .v2.spectrum.persistence_contracts import PersistenceDensityFrame
 from .v2.state.analyzer_layer_cache import AnalyzerLayerCache
-from .v2.state.analyzer_layers import persistence_density_from_sweep, waterfall_line_from_sweep
+from .v2.state.analyzer_layers import (
+    persistence_density_from_sweep, waterfall_line_from_sweep, validate_native_persistence_display,
+)
 from .v2.view_models.analyzer_view_model import AnalyzerMode
 from .v2.waterfall.contracts import SweepWaterfallLine, WaterfallLineFrame
 
@@ -137,6 +139,21 @@ class PreparedPaneDelivery:
     @property
     def bundle(self) -> AnalyzerFrameBundle:
         return self.delivery.bundle
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedRtbwDisplayInput:
+    """Worker-only ordered input; never a partially prepared Qt packet.
+
+    Spectrum and the small Waterfall are real original preparations. Only
+    full persistence materialization is deferred; all its validation ran.
+    """
+    binding: PanePresentationBinding
+    delivery: PaneDelivery
+    spectrum: PreparedSpectrumFrame
+    waterfall: WaterfallLineFrame
+    producer_source_id: str
+    density_available: bool
 
 
 class PaneDeliveryPreparer:
@@ -271,6 +288,103 @@ class PaneDeliveryPreparer:
             self._grids[pane_id].clear()
 
     def prepare(self, delivery: PaneDelivery) -> PreparedPaneDelivery:
+        """Legacy single-packet preparation retains original full behavior."""
+        result = self._prepare(delivery, defer_persistence=False)
+        assert isinstance(result, PreparedPaneDelivery)
+        return result
+
+    def validate_rtbw_display(self, delivery: PaneDelivery) -> ValidatedRtbwDisplayInput:
+        result = self._prepare(delivery, defer_persistence=True)
+        if not isinstance(result, ValidatedRtbwDisplayInput):
+            raise ValueError("ordered deferred display requires an RTBW input")
+        return result
+
+    def materialize_rtbw_display(self, pending: ValidatedRtbwDisplayInput) -> PreparedPaneDelivery:
+        if not isinstance(pending, ValidatedRtbwDisplayInput):
+            raise TypeError("display materialization requires its validated worker input")
+        if (self.bindings.get(pending.binding.pane_id) is not pending.binding
+                or self._grids[pending.binding.pane_id].baseline is not pending.spectrum.measurement_grid):
+            # This is an owned-cache invalidation receipt, NOT a borrowed-grid
+            # content/validation certificate. Selected conversion still validates.
+            raise ValueError("pending display input crossed a preparation cache reset")
+        persistence = self._layers[pending.binding.pane_id].persistence(pending.delivery.bundle.persistence)
+        return self._prepared_packet(pending.binding, pending.delivery, pending.spectrum,
+                                     pending.waterfall, persistence, pending.producer_source_id)
+
+    def can_coalesce_rtbw_display(self, previous: PaneDelivery, incoming: PaneDelivery) -> bool:
+        """Exact conservative barriers BEFORE next input changes any cache.
+
+        No pointer certifies a physical grid. Non-RTBW, lossy/gap-bearing and
+        non-increasing source inputs take their original materialized path.
+        """
+        left, right = previous.bundle, incoming.bundle
+        left_frame, right_frame = left.spectrum, right.spectrum
+        binding = self.bindings.get(incoming.pane_id)
+        if (binding is None or binding.mode is not AnalyzerMode.RTBW
+                or not isinstance(left_frame, LiveSpectrumFrame)
+                or not isinstance(right_frame, LiveSpectrumFrame)
+                or previous.physical_stream_resource_id != incoming.physical_stream_resource_id):
+            return False
+        def common(delivery: PaneDelivery, frame: LiveSpectrumFrame) -> tuple[object, ...]:
+            bundle = delivery.bundle
+            pair = bundle.paired_capture
+            return (delivery.host_run_serial, delivery.host_activation_serial, delivery.capture_id,
+                bundle.session_id, bundle.acquisition_epoch, bundle.coherence_issues,
+                frame.config_generation, frame.center_frequency_hz, frame.sample_rate_hz,
+                frame.fft_size, frame.hop_size, frame.unit, frame.timestamp_quality,
+                frame.clock_domain, frame.backend_fallback, frame.backend_discontinuity,
+                frame.native_quality_flags, frame.loss_reasons, frame.dropped_samples_before,
+                frame.dropped_iq_blocks_before, frame.dropped_fft_frames_before,
+                None if pair is None else (pair.synchronization_epoch, pair.shared_input_gaps_before))
+        if common(previous, left_frame) != common(incoming, right_frame):
+            return False
+        for frame, pair in ((left_frame, left.paired_capture), (right_frame, right.paired_capture)):
+            if (frame.backend_discontinuity or frame.loss_reasons or frame.dropped_samples_before
+                    or frame.dropped_iq_blocks_before or frame.dropped_fft_frames_before
+                    or pair is not None and pair.shared_input_gaps_before):
+                return False
+        if previous.pane_id == incoming.pane_id:
+            def endpoint(bundle: AnalyzerFrameBundle, frame: LiveSpectrumFrame) -> tuple[object, ...]:
+                ready = frame.detector_ready
+                return (bundle.receiver_id, frame.source_id, frame.acquisition_epoch, frame.accumulation_id,
+                    frame.numerical_provenance,
+                    None if ready is None else (ready.owner_run_id, ready.adapter_clock_scope_id,
+                        ready.host_process_id, ready.producer_instance_id, ready.mapping))
+            if endpoint(left, left_frame) != endpoint(right, right_frame) or right_frame.sequence <= left_frame.sequence:
+                return False
+        a, b = left.persistence, right.persistence
+        if not (a is None and b is None):
+            if not isinstance(a, LivePersistenceFrame) or not isinstance(b, LivePersistenceFrame):
+                return False
+            def density_context(frame: LivePersistenceFrame) -> tuple[object, ...]:
+                return (frame.power_min_db, frame.power_max_db, frame.power_bins, frame.frequency_bins,
+                    frame.exponential_decay, frame.unit,
+                    frame.timestamp_quality, frame.clock_domain, frame.config_generation,
+                    frame.acquisition_epoch, frame.native_quality_flags, frame.native_accumulation_sequence)
+            if density_context(a) != density_context(b):
+                return False
+            if previous.pane_id == incoming.pane_id and (
+                    a.source_id != b.source_id or a.receiver_id != b.receiver_id
+                    or a.accumulation_id != b.accumulation_id or a.numerical_provenance != b.numerical_provenance):
+                return False
+            if previous.pane_id == incoming.pane_id:
+                def density_clock(frame: LivePersistenceFrame) -> tuple[object, ...] | None:
+                    ref = frame.layer_ready
+                    return (None if ref is None else (ref.owner_run_id, ref.adapter_clock_scope_id,
+                        ref.host_process_id, ref.producer_instance_id, ref.mapping))
+                if density_clock(a) != density_clock(b):
+                    return False
+        with self.allocation_budget.reserve(65_536 * 4):
+            if not _same_grid(left.frequencies_hz, right.frequencies_hz):
+                return False
+            if a is None and b is None:
+                return True
+            if isinstance(a, LivePersistenceFrame) and isinstance(b, LivePersistenceFrame):
+                return _same_grid(a.frequencies_hz, b.frequencies_hz)
+            return False
+
+    def _prepare(self, delivery: PaneDelivery, *, defer_persistence: bool
+                 ) -> PreparedPaneDelivery | ValidatedRtbwDisplayInput:
         if not isinstance(delivery, PaneDelivery):
             raise TypeError("pane presentation requires an admitted pane delivery")
         binding = self.bindings.get(delivery.pane_id)
@@ -370,6 +484,20 @@ class PaneDeliveryPreparer:
             if not isinstance(bundle.spectrum, LiveSpectrumFrame):
                 raise ValueError("RTBW pane requires a Live spectrum publication")
             layers = self._layers[binding.pane_id]
+            if defer_persistence:
+                # Same one-entry cache releases its old density pair BEFORE
+                # validation, including a failing/missing new density.
+                layers.clear_density(bundle.persistence)
+                available = validate_native_persistence_display(bundle.persistence, self.allocation_budget)
+                if not available:
+                    layers.clear_density()
+                waterfall = layers.waterfall(bundle.spectrum)
+                # Same public packet guard, after its original layer work.
+                # Every deferred input must pass it before replacement; bool
+                # is not int even though True compares equal to host run 1.
+                if type(delivery.host_run_serial) is not int or delivery.host_run_serial < 0:
+                    raise ValueError("pane publication requires an explicit non-negative host run serial")
+                return ValidatedRtbwDisplayInput(binding, delivery, prepared, waterfall, producer, available)
             persistence = layers.persistence(bundle.persistence)
             waterfall = layers.waterfall(bundle.spectrum)
         else:
@@ -382,6 +510,12 @@ class PaneDeliveryPreparer:
             with self.allocation_budget.reserve(int(columns * 12 + 8), frame) as allocation:
                 waterfall = waterfall_line_from_sweep(frame, grid_cache=self._grids[binding.pane_id])
                 allocation.commit(waterfall)
+        return self._prepared_packet(binding, delivery, prepared, waterfall, persistence, producer)
+
+    @staticmethod
+    def _prepared_packet(binding: PanePresentationBinding, delivery: PaneDelivery,
+                         prepared: PreparedSpectrumFrame, waterfall: WaterfallLineFrame | SweepWaterfallLine | None,
+                         persistence: PersistenceDensityFrame | None, producer: str) -> PreparedPaneDelivery:
         ready_views = {PaneDeliveryView.SPECTRUM}
         if waterfall is not None:
             ready_views.add(PaneDeliveryView.WATERFALL)

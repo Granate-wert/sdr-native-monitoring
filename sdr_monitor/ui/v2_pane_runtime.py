@@ -17,9 +17,10 @@ import math
 import logging
 from threading import Condition, Lock, Thread
 from time import monotonic
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
 from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
+from sdr_monitor.domain.live import LiveSpectrumFrame
 from .v2_pane_obligation_refs import delivery_obligation_refs, refs_by_view
 
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneLayout, ResourcePaneSchedule
@@ -31,7 +32,7 @@ from sdr_monitor.services.pane_resource_session import PaneActivation, PaneResou
 from sdr_monitor.services.pane_delivery_ledger import RECORD_CAPACITY
 
 from .v2_pane_delivery_queue import PaneFairDeliveryQueue
-from .v2_pane_presentation import PaneDeliveryPreparer
+from .v2_pane_presentation import PaneDeliveryPreparer, PreparedPaneDelivery, ValidatedRtbwDisplayInput
 from .v2_pane_rf_plan import PaneRfChangePreview, PaneRfShiftProposal
 from .v2_pane_user_plan import PaneUserPlanError
 
@@ -55,6 +56,9 @@ class PanePumpResourceState:
     error: str | None = None
     first_failure: PaneResourceFailure | None = None
     cleanup_failure: PaneResourceFailure | None = None
+    ordered_validated_publications: int = 0
+    display_preparation_cancelled: int = 0
+    pending_display_peak: int = 0
 
 
 class _ResourceWorker:
@@ -406,46 +410,161 @@ class _ResourceWorker:
     def _poll_and_advance(self) -> None:
         resource_id = self.resource.physical_stream_resource_id
         deliveries = self.session.poll_resource(resource_id)
-        prepared_count = 0
         activation = self.snapshot().activation
+        select_display_batch = len(deliveries) > 1
+        # Local to one already bounded resource poll batch, at most one
+        # validated carrier per occupied pane; nothing lazy is sent to Qt.
+        pending: dict[str, tuple[int, ValidatedRtbwDisplayInput]] = {}
+
+        def control_waiting() -> bool:
+            with self._condition:
+                return self._pending_stop is not None or self._pending_plan is not None
+
+        def count(**increments: int) -> None:
+            with self._condition:
+                self._state = replace(self._state, **{
+                    name: getattr(self._state, name) + value for name, value in increments.items()})
+
+        def cancel_pending() -> None:
+            for _, item in sorted(pending.values(), key=lambda pair: pair[0]):
+                self._report_delivery_stage(item.delivery, PaneDeliveryStage.PREPARATION_CANCELLED)
+                count(display_preparation_cancelled=1)
+            pending.clear()
+
+        def cancel_tail(first: int) -> None:
+            for tail in deliveries[first:]:
+                self._report_delivery_stage(tail, PaneDeliveryStage.ADMISSION_CANCELLED)
+
+        def preparation_failed(delivery, error: Exception, tail_first: int) -> NoReturn:
+            self._report_delivery_stage(delivery, PaneDeliveryStage.PREPARATION_FAILED)
+            cancel_pending()
+            cancel_tail(tail_first)
+            raise PaneDiagnosticError("Pane preparation failed; explicit Stop required",
+                failure=pane_failure_from_exception(error, PaneFailureStage.PREPARE,
+                                                    reason=PaneFailureReason.INVALID_PUBLICATION)) from None
+
+        def publish(prepared: PreparedPaneDelivery, tail_first: int) -> None:
+            refs = refs_by_view(prepared.delivery)
+            ready = {PaneDeliveryView.SPECTRUM}
+            if prepared.waterfall is not None:
+                ready.add(PaneDeliveryView.WATERFALL)
+            if prepared.persistence is not None:
+                ready.add(PaneDeliveryView.PERSISTENCE)
+            for view, view_refs in refs.items():
+                for ref in view_refs:
+                    self._report_stage(ref, PaneDeliveryStage.PREPARED if view in ready
+                                       else PaneDeliveryStage.PREPARATION_CANCELLED)
+            try:
+                self.queue.offer(prepared)
+            except Exception as error:
+                # PreparedPaneDelivery contains ONLY refs for real ready layers.
+                self._report_delivery_stage(prepared, PaneDeliveryStage.QUEUE_FAILED)
+                cancel_pending()
+                cancel_tail(tail_first)
+                raise PaneDiagnosticError("Pane queue publication failed; explicit Stop required",
+                    failure=pane_failure_from_exception(error, PaneFailureStage.QUEUE)) from None
+            count(prepared_publications=1)
+
+        def flush(tail_first: int) -> bool:
+            # Original input ordinal, NOT pane/dict iteration or frame sequence.
+            while pending:
+                if control_waiting():
+                    cancel_pending()
+                    cancel_tail(tail_first)
+                    return False
+                pane_id = min(pending, key=lambda pane: pending[pane][0])
+                _, item = pending.pop(pane_id)
+                try:
+                    prepared = self.preparer.materialize_rtbw_display(item)
+                except Exception as error:
+                    preparation_failed(item.delivery, error, tail_first)
+                # A Stop accepted during an original non-interruptible numerical
+                # call outranks publication; refs are still genuinely PREPARING.
+                if control_waiting():
+                    self._report_delivery_stage(item.delivery, PaneDeliveryStage.PREPARATION_CANCELLED)
+                    count(display_preparation_cancelled=1)
+                    cancel_pending()
+                    cancel_tail(tail_first)
+                    return False
+                publish(prepared, tail_first)
+                del prepared, item
+            return True
+
         for index, delivery in enumerate(deliveries):
-            refs = refs_by_view(delivery)
+            if control_waiting():
+                cancel_pending()
+                cancel_tail(index)
+                return
+            non_increasing_input = False
+            known_stale_input = False
+            queue_order_unavailable = False
+            try:
+                if isinstance(delivery.bundle.spectrum, LiveSpectrumFrame):
+                    if type(delivery.bundle.acquisition_epoch) is int:
+                        try:
+                            known_stale_input = self.queue.rtbw_delivery_is_stale(delivery)
+                        except (ValueError, TypeError):
+                            # This optional hint is not original validation.
+                            # Unorderable tuple fields must reach full layer
+                            # work and the authoritative offer/error phase.
+                            queue_order_unavailable = True
+                    else:
+                        # The original queue, AFTER mandatory layer work,
+                        # owns this exact order error; never let a hint mask
+                        # geometry or a later input select the error away.
+                        queue_order_unavailable = True
+                prior = pending.get(delivery.pane_id)
+                non_increasing_input = (prior is not None and
+                    delivery.bundle.spectrum.sequence <= prior[1].delivery.bundle.spectrum.sequence)
+                del prior
+                # Flush BEFORE this delivery can invalidate shared paired/grid
+                # caches. Sweep/instrument always use the unchanged full path.
+                if pending and (known_stale_input or queue_order_unavailable or not all(self.preparer.can_coalesce_rtbw_display(
+                        item.delivery, delivery) for _, item in pending.values())):
+                    if not flush(index):
+                        return
+            except PaneDiagnosticError:
+                raise  # flush already disposed its failing/current/tail owners.
+            except Exception as error:
+                self._report_delivery_stage(delivery, PaneDeliveryStage.PREPARING)
+                preparation_failed(delivery, error, index + 1)
             self._report_delivery_stage(delivery, PaneDeliveryStage.PREPARING)
             if activation is not None and delivery.capture_id == activation.capture_id:
                 self._frame_seen = True
                 if delivery.bundle.terminal_sweep:
                     self._terminal_seen = True
             try:
-                prepared = self.preparer.prepare(delivery)
+                if delivery.pane_id not in self.pane_ids:
+                    raise ValueError("resource poll crossed its exact occupied panes")
+                binding = self.preparer.bindings[delivery.pane_id]
+                if binding.measurement_mode is CaptureMeasurementMode.RTBW and select_display_batch:
+                    item = self.preparer.validate_rtbw_display(delivery)
+                else:
+                    prepared = self.preparer.prepare(delivery)
             except Exception as error:
-                self._report_delivery_stage(delivery, PaneDeliveryStage.PREPARATION_FAILED)
-                for tail in deliveries[index + 1:]:
-                    self._report_delivery_stage(tail, PaneDeliveryStage.ADMISSION_CANCELLED)
-                raise PaneDiagnosticError("Pane preparation failed; explicit Stop required",
-                    failure=pane_failure_from_exception(error, PaneFailureStage.PREPARE,
-                                                        reason=PaneFailureReason.INVALID_PUBLICATION)) from None
-            prepared_views = {PaneDeliveryView.SPECTRUM}
-            if getattr(prepared, "waterfall", None) is not None:
-                prepared_views.add(PaneDeliveryView.WATERFALL)
-            if getattr(prepared, "persistence", None) is not None:
-                prepared_views.add(PaneDeliveryView.PERSISTENCE)
-            for view, view_refs in refs.items():
-                for view_ref in view_refs:
-                    self._report_stage(view_ref, PaneDeliveryStage.PREPARED if view in prepared_views
-                                       else PaneDeliveryStage.PREPARATION_CANCELLED)
-            try:
-                self.queue.offer(prepared)
-            except Exception as error:
-                self._report_delivery_stage(prepared, PaneDeliveryStage.QUEUE_FAILED)
-                for tail in deliveries[index + 1:]:
-                    self._report_delivery_stage(tail, PaneDeliveryStage.ADMISSION_CANCELLED)
-                raise PaneDiagnosticError("Pane queue publication failed; explicit Stop required",
-                    failure=pane_failure_from_exception(error, PaneFailureStage.QUEUE)) from None
-            prepared_count += 1
-        if prepared_count:
-            with self._condition:
-                self._state = replace(self._state,
-                                      prepared_publications=self._state.prepared_publications + prepared_count)
+                preparation_failed(delivery, error, index + 1)
+            if binding.measurement_mode is CaptureMeasurementMode.RTBW and select_display_batch:
+                count(ordered_validated_publications=1)
+                old = pending.pop(delivery.pane_id, None)
+                if old is not None:
+                    self._report_delivery_stage(old[1].delivery, PaneDeliveryStage.PREPARATION_CANCELLED)
+                    count(display_preparation_cancelled=1)
+                pending[delivery.pane_id] = (index, item)
+                del item, old  # promptly drop replaced holder; no traceback custody.
+                with self._condition:
+                    self._state = replace(self._state, pending_display_peak=max(
+                        self._state.pending_display_peak, len(pending)))
+                if (known_stale_input or non_increasing_input or queue_order_unavailable) and not flush(index + 1):
+                    return  # Preserve the original queue's stale disposition.
+            else:
+                if control_waiting():
+                    self._report_delivery_stage(delivery, PaneDeliveryStage.PREPARATION_CANCELLED)
+                    cancel_tail(index + 1)
+                    return
+                publish(prepared, index + 1)
+                del prepared
+        if not flush(len(deliveries)):
+            return
         if len(self.resource.slots) <= 1 or activation is None or self._slot_deadline_s is None:
             return
         if monotonic() < self._slot_deadline_s:

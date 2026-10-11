@@ -14,7 +14,9 @@ from threading import Lock
 from collections.abc import Callable
 
 from sdr_monitor.domain.analyzer import AnalyzerPublicationKind
+from sdr_monitor.domain.live import LiveSpectrumFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
+from sdr_monitor.services.pane_resource_session import PaneDelivery
 
 from .v2_pane_presentation import PreparedPaneDelivery
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRef, PaneDeliveryStage
@@ -38,7 +40,11 @@ class _Pending:
 
 
 def _order(packet: PreparedPaneDelivery) -> tuple[int, int, int, int, int]:
-    bundle = packet.bundle
+    return _delivery_order(packet.delivery)
+
+
+def _delivery_order(delivery: PaneDelivery) -> tuple[int, int, int, int, int]:
+    bundle = delivery.bundle
     epoch = bundle.acquisition_epoch
     if type(epoch) is not int:
         raise ValueError("pane publication has no exact acquisition epoch")
@@ -46,7 +52,7 @@ def _order(packet: PreparedPaneDelivery) -> tuple[int, int, int, int, int]:
     terminal = bundle.publication_kind in {
         AnalyzerPublicationKind.SWEEP_COMPLETE, AnalyzerPublicationKind.SWEEP_GAP}
     revision = frame.revision if isinstance(frame, SweepProgressFrame) else 0
-    return (packet.delivery.host_activation_serial, epoch, frame.sequence, int(terminal), revision)
+    return (delivery.host_activation_serial, epoch, frame.sequence, int(terminal), revision)
 
 
 class PaneFairDeliveryQueue:
@@ -83,6 +89,30 @@ class PaneFairDeliveryQueue:
         with self._lock:
             return self._metrics
 
+    def _stale_locked(self, pane_id: str, order: tuple[int, int, int, int, int]) -> bool:
+        """One original predicate; caller holds the existing queue lock."""
+        current = self._pending[pane_id]
+        last = self._last_drained.get(pane_id)
+        return (last is not None and order <= last
+                or current.terminal is not None and order <= _order(current.terminal)
+                or not order[3] and current.latest is not None and order <= _order(current.latest))
+
+    def rtbw_delivery_is_stale(self, delivery: PaneDelivery) -> bool:
+        """Read-only preparation hint, never admission or queue disposition.
+
+        Consult precisely offer's current pending/drained order. A concurrent
+        drain/clear may cause conservative extra materialization; offer still
+        rechecks the same predicate and is the sole publication authority.
+        No roots, markers, refs, metrics or ledger events are retained/changed.
+        """
+        if (not isinstance(delivery, PaneDelivery)
+                or not isinstance(delivery.bundle.spectrum, LiveSpectrumFrame)
+                or delivery.pane_id not in self._pending):
+            raise ValueError("RTBW stale query requires an exact queued pane delivery")
+        order = _delivery_order(delivery)
+        with self._lock:
+            return self._stale_locked(delivery.pane_id, order)
+
     def offer(self, packet: PreparedPaneDelivery) -> bool:
         if not isinstance(packet, PreparedPaneDelivery) or packet.delivery.pane_id not in self._pending:
             raise ValueError("prepared publication belongs to no queued pane")
@@ -91,10 +121,7 @@ class PaneFairDeliveryQueue:
         terminal = bool(order[3])
         with self._lock:
             current = self._pending[pane_id]
-            last = self._last_drained.get(pane_id)
-            if (last is not None and order <= last
-                    or current.terminal is not None and order <= _order(current.terminal)
-                    or not terminal and current.latest is not None and order <= _order(current.latest)):
+            if self._stale_locked(pane_id, order):
                 self._metrics = self._replace_metrics(stale_rejected=1)
                 self._stage_locked(packet, PaneDeliveryStage.QUEUE_REJECTED)
                 return False

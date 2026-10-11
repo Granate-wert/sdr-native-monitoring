@@ -47,6 +47,15 @@ class AnalyzerLayerCache:
             self._density_source, self._density = frame, converted
         return self._density
 
+    def clear_density(self, incoming: object = None) -> None:
+        """Release a replaced pair; an identical original source keeps reuse.
+
+        This never certifies payload validity. Ordered validation still scans
+        every incoming input; calling without a source forces release.
+        """
+        if incoming is None or incoming is not self._density_source:
+            self._density_source, self._density = None, None
+
     def waterfall(self, frame: LiveSpectrumFrame) -> WaterfallLineFrame:
         if frame is not self._waterfall_source or self._waterfall is None:
             self._waterfall_source, self._waterfall = None, None

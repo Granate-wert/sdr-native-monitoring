@@ -10,7 +10,11 @@ from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsFrame
 
-from ..spectrum.persistence_contracts import DensityValueMode, PersistenceDensityFrame, density_range_error
+from ..spectrum.persistence_contracts import (
+    DensityValueMode, PersistenceDensityFrame, density_range_error,
+    _density_validation_batches, _validate_regular_edges,
+)
+from ..spectrum.allocation_budget import PresentationAllocationBudget
 from ..waterfall.contracts import WaterfallLineFrame, SweepWaterfallLine
 from ..waterfall.sweep_rows import SweepRowStamp, SweepRowState
 from ..spectrum.grid_baseline import MeasurementGridCache
@@ -89,6 +93,55 @@ def persistence_density_from_native(
         if density_range_error(density, value_mode) is not None:
             return None
         raise
+
+
+def validate_native_persistence_display(frame: object, budget: PresentationAllocationBudget) -> bool:
+    """Run native adapter availability/validation without a full scaled image.
+
+    Selected inputs still use the original public adapter and constructor.
+    Float32 ufunc arithmetic and density-first ValueError classification are
+    identical; every cell is examined in <=65,536-element strided batches.
+    The shared reservation covers scaled/mask scratch and physical edge work.
+    """
+    if not isinstance(frame, LivePersistenceFrame):
+        return False
+    scale = frame.probability_scale
+    if (not np.isfinite(scale) or not np.isfinite(frame.power_min_db)
+            or not np.isfinite(frame.power_max_db) or frame.power_max_db <= frame.power_min_db):
+        return False
+    # At most one float32 batch plus range masks; geometry checks use the
+    # same existing routines and O(frequency_bins + power_bins) small arrays.
+    scratch = 65_536 * 16 + 64 * (frame.frequencies_hz.size + frame.power_bins + 2)
+    with budget.reserve(int(scratch), frame):
+        range_error = None
+        for batch in _density_validation_batches(frame.density):
+            scaled = np.multiply(batch, scale, dtype=np.float32)
+            error = density_range_error(scaled, DensityValueMode.PROBABILITY)
+            if error == "persistence density must not contain negative values":
+                range_error = error
+            elif error is not None and range_error != "persistence density must not contain negative values":
+                range_error = error
+            # Still multiply later cells: original full np.multiply can raise
+            # there under caller-selected NumPy error policy before validation.
+        # The original adapter evaluates regular edges before construction;
+        # a geometry failure is suppressed ONLY by a genuine scaled-range
+        # failure, never by readonly/shape/pointer assertions.
+        try:
+            levels = np.linspace(frame.power_min_db, frame.power_max_db, frame.power_bins + 1)
+            edges = _regular_edges(frame.frequencies_hz)
+            if frame.density.ndim != 2 or frame.density.size == 0:
+                raise ValueError("persistence density must be a non-empty numeric two-dimensional array")
+            if edges.size != frame.density.shape[1] + 1 or levels.size != frame.density.shape[0] + 1:
+                raise ValueError("persistence bin edge counts do not match density shape")
+            if not (frame.unit or "").strip():
+                raise ValueError("persistence level unit must be explicit")
+            _validate_regular_edges(edges, "frequency")
+            _validate_regular_edges(levels, "level")
+        except ValueError:
+            if range_error is not None:
+                return False
+            raise
+        return range_error is None
 
 
 def persistence_density_from_sweep(frame: SweepStatisticsFrame) -> PersistenceDensityFrame:
