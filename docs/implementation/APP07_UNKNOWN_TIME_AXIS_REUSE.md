@@ -326,3 +326,75 @@ or release acceptance follows. Raw evidence SHA256
 `17fdd475a133e791716342b4d449b978c1c36bbeadcd37831ea505adba9945aa`.
 APP-07 remains PARTIAL. Next is whole-UI callback/scheduling localisation and
 tinySA-inclusive four-source rotations through actual typed resource bindings.
+
+## Independent-pane persistence follow-up — 2026-10-11
+
+Runtime source `a83b6ef860d9d85dea7a0de67679c0f1b00f7849` moves independent-pane
+density image preparation from the Qt path to one optional lane per pane on the
+existing shared executor and shared allocation ledger. Required spectrum stays
+direct; the ordinary single-Analyzer persistence route remains unchanged.
+Epoch/gaps, separate histories, full input shapes, native DSP/Fs/FFT, cadence,
+quality/time and allocation/timeout guards are preserved. Quiesce, actual worker
+retirement, GUI acknowledgment and graphics release remain distinct lifecycle
+steps. No new SDR opener or hidden restart is introduced.
+
+One changed synthetic Qt run completed naturally with separately reviewed raw
+results. Full apply p50 changed from approximately59–61ms to2.2–2.8ms;
+heartbeat interarrival maximum changed185.33→40.33ms. The old inner accept
+handler was approximately3.6–4ms, NOT60ms. GUI thread CPU increased
+2.5625→2.6875s, with different completed input prefixes272→412. Consequently
+this is neither a controlled ABBA throughput/CPU improvement nor RF-to-display,
+DWM/paint or universal50ms qualification. Worker-return-to-Qt/upload timing and
+observer overhead require the separately qualified next diagnostic.
+
+Diagnostic Windows build of exact runtime a83 passed48/48 native CTests
+in69.66s, with621 source inputs and665 verified frozen files. It does not
+replace the current/static application. The first full V2 source regression
+failed8 tests: two test Stage adapters lacked the newly explicit allocation
+budget keyword. Once reachable, one test's teardown also released graphics
+before actual density retirement. These failures are retained, not hidden by
+longer deadlines or weaker product guards.
+
+Test-only commit `6b4710969574bace7afb8644868d252f2637d932` repairs ONLY those
+two fixtures: SAME budget forwarding/identity and original quiesce/retire/release
+ordering. Focused regression52/52 passed in64.218s. Distinct static review
+approved fixture scope and the SAME-build verification method. The original
+a83 source snapshot, package, native and dependency hashes were checked both
+before and after ONE changed full regression on test checkout6b:
+1631total/1565PASS/66skip/0fail/0error in916.622s, natural process exit0,
+tracked-clean before/after, deferred compiled tests[] and outside-checkout
+product modules[]. Log/provenance callback audit passed with zero uncaught
+tracebacks; four historical NaN warnings remain. That audit does not prove
+absence of every silently captured callback. Build/runtime identity remains
+a83, never test-only6b or a subsequent documentation commit.
+
+Full-regression receipt SHA256:
+`4e4907b6dc4aaf11769e61f92ea68e49bf557aec5e3ede7bb04d82b010a638c0`.
+Log SHA256:
+`cca344d2b68f2701242444db1f0731aa307faae4f529677eed396ab6ba6b07b5`.
+
+## Full-bandwidth acceptance boundary
+
+RTBW qualification uses the full actually supported RF bandwidth and high
+applied/read-back sample rate of each SDR. Do not reduce Fs, bandwidth, FFT,
+density or analytical work merely to meet a50ms threshold. The historical
+36MHz useful central Sweep crop is NOT an RTBW cap. Historical AD9363
+30.72MS/s/RF30MHz comparison evidence is not proof of its current maximum;
+current device capability/readback and genuine Ethernet route need separate
+verification. ADC sample rate and usable analog bandwidth are distinct.
+
+CI16 I+Q occupies4bytes per complex sample per RX:61.44MS/s requires245.76MB/s,
+above even the ideal payload ceilings60MB/s USB2 and125MB/s1GbE. This rules
+out continuous full raw transport, not every short buffered full-band FFT frame.
+For262144 samples, user-reported effective recording rates6/13MS/s imply
+43.691/20.165ms block-service estimates; these are not freshly measured pure
+wire times and may already include capture/processing/disk. Do not add capture
+again as an established measured fact. Host-side FFT cropping cannot reduce
+raw bytes already transported.
+
+Acceptance separates buffer/capture/service period, full/progressive Sweep
+period, analytical-ready-to-Qt upload/paint, GUI responsiveness and RF coverage/
+gaps. Transport limits do not excuse long Qt handlers. Next: qualify the new
+private observer and bounded cleanup without RF, then ONE changed full-band
+THREE and FOUR rotations including tinySA, visible Windows/FHD/QHD/DPI,
+stability/soak and release. APP-07 M7/M8 and the full APP00–14 goal remain open.
