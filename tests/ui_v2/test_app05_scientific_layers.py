@@ -15,7 +15,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainterPath
 from PySide6.QtWidgets import QApplication
 
-from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, compare_images, image_target
+from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, compare_images, image_target, native_probe_arguments
 from scripts.app05_scientific_gpu import draw_scientific_gpu, physical_scissor, texture_vertices
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers, detach_layers, paint_layers, paint_texel_oracle
 
@@ -165,13 +165,16 @@ class ScientificNativeShaderTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         with TemporaryDirectory(prefix="app05-native-texels-") as directory:
             output = Path(directory) / "scene.json"
+            native_args = native_probe_arguments()
             run = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
                 "--checkout", str(root), "--output", str(output), "--platform", "windows",
                 "--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
-                "--persistence", "visual", "--scientific", "--images-only"], cwd=root, timeout=40,
+                "--persistence", "visual", "--scientific", "--images-only", *native_args], cwd=root, timeout=40,
                 text=True, encoding="utf-8", capture_output=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["native_binding"]["path"], native_args[1])
+        self.assertEqual(report["native_binding"]["sha256"], native_args[3])
         for row in report["cases"]:
             self.assertTrue(row["analytic_image_comparison"]["equal"], row["analytic_image_comparison"])
             self.assertFalse(row["candidate_accepted"], "partial images must never pass whole-renderer gate")
@@ -185,13 +188,16 @@ class ScientificActualCompositionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         with TemporaryDirectory(prefix="app05-scientific-") as directory:
             output = Path(directory) / "scene.json"
+            native_args = native_probe_arguments()
             run = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
                 "--checkout", str(root), "--output", str(output), "--platform", "offscreen",
-                "--width", "1366", "--height", "768", "--scientific"], cwd=root, timeout=40,
+                "--width", "1366", "--height", "768", "--scientific", *native_args], cwd=root, timeout=40,
                 text=True, encoding="utf-8", capture_output=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
         self.assertTrue(report["scientific_only"])
+        self.assertEqual(report["native_binding"]["path"], native_args[1])
+        self.assertEqual(report["native_binding"]["sha256"], native_args[3])
         self.assertEqual(len(report["cases"]), 4)
         for row in report["cases"]:
             self.assertFalse(row["candidate_accepted"])

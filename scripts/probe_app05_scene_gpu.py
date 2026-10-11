@@ -6,6 +6,7 @@ Paint-only samples do not measure source latency, Qt delivery, swap or DWM FPS.
 Source hashes and layer witnesses prevent accepting a fast empty/stale picture.
 """
 import argparse
+from contextlib import ExitStack
 from dataclasses import replace
 import hashlib
 import importlib
@@ -19,10 +20,12 @@ from time import perf_counter
 from unittest.mock import patch
 
 
-def main():
+def _main(native_libraries: ExitStack):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--native-module", type=Path, help="Explicit parent-bound native extension for isolated probes")
+    parser.add_argument("--native-sha256", help="Required file SHA256 paired with --native-module")
     parser.add_argument("--width", type=int, choices=(1366, 1920, 2560), default=1920)
     parser.add_argument("--height", type=int, choices=(768, 1080, 1440), default=1080)
     parser.add_argument("--dpr", type=float, choices=(1., 1.25, 1.5, 2.), default=1.)
@@ -44,6 +47,8 @@ def main():
     args = parser.parse_args()
     if not sys.flags.isolated or args.output.exists():
         parser.error("Python -I and new output required")
+    if (args.native_module is None) != (args.native_sha256 is None):
+        parser.error("explicit native path and SHA256 must be supplied together")
     if args.images_only and not args.scientific:
         parser.error("--images-only requires --scientific")
     if args.composition and (not args.scientific or args.images_only):
@@ -67,6 +72,18 @@ def main():
         parser.error("--lifetime-seconds requires --widget-lifecycle")
     root = args.checkout.resolve(strict=True)
     sys.path.insert(0, str(root))
+    bound_native_path = None
+    bound_native_hash = None
+    if args.native_module is not None:
+        bound_native_path = args.native_module.resolve(strict=True)
+        bound_native_hash = hashlib.sha256(bound_native_path.read_bytes()).hexdigest()
+        if (not bound_native_path.name.startswith("_sdr_native")
+                or bound_native_hash != args.native_sha256):
+            parser.error("explicit native file differs from its parent-bound SHA256")
+        if os.name == "nt":
+            native_libraries.enter_context(os.add_dll_directory(str(bound_native_path.parent)))
+        from scripts.preflight_sdr_native_build import _load_native_module
+        sys.modules["sdr_monitor._sdr_native"] = _load_native_module(bound_native_path)
     os.environ["QT_QPA_PLATFORM"] = args.platform
     import numpy as np
     from PySide6.QtCore import QCoreApplication, QEvent, QRectF, Qt
@@ -109,6 +126,9 @@ def main():
         widget_lifecycle=args.widget_lifecycle,
         checkout_head=subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+    info["native_binding"] = dict(path=None if bound_native_path is None else str(bound_native_path),
+        sha256=bound_native_hash, explicit=bound_native_path is not None,
+        scope="exact current native file/path only; not in-memory, SDK or physical RX attestation")
     try:
         with patch.object(QWidget, "show", hidden_show):
             f.setUp()
@@ -538,13 +558,22 @@ def main():
     info["visibility_quality_accepted"] = all(row.get("visibility_cycle", {}).get("quality_accepted", True) for row in rows)
     info["outside_imports"] = [name for name, module in tuple(sys.modules.items())
         if name.startswith(("scripts", "tests", "sdr_monitor")) and getattr(module, "__file__", None)
-        and not Path(str(module.__file__)).resolve().is_relative_to(root)]
+        and not Path(str(module.__file__)).resolve().is_relative_to(root)
+        and not (name == "sdr_monitor._sdr_native" and bound_native_path is not None
+                 and Path(str(module.__file__)).resolve() == bound_native_path)]
+    if bound_native_path is not None and hashlib.sha256(bound_native_path.read_bytes()).hexdigest() != bound_native_hash:
+        raise AssertionError("parent-bound native file changed during isolated composition")
     if info["remaining_workers"] or info["outside_imports"] or info["post_close_reserved_bytes"]:
         raise AssertionError("scene diagnostic did not release/import within its verified checkout")
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(info, stream, indent=2)
     print(json.dumps(dict(gpu=info["gpu"], cases=[dict(label=row["label"], comparison=row["comparison"])
         for row in rows], lifetime=info["target_lifetime"], all_pixels_equal=info["all_pixels_equal"]), indent=2))
+
+
+def main():
+    with ExitStack() as native_libraries:
+        _main(native_libraries)
 
 
 if __name__ == "__main__":

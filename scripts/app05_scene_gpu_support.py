@@ -10,6 +10,23 @@ from typing import Any
 from scripts.app05_gpu_errors import GpuOperationError
 
 
+def native_probe_arguments() -> list[str]:
+    """Bind isolated probe children to the parent's actual native file.
+
+    This is a file/path receipt, not in-memory or hardware attestation. Python
+    -I children do not inherit sys.modules or a parent's DLL search handle.
+    """
+    import hashlib
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("sdr_monitor._sdr_native")
+    path = Path(module.__file__).resolve(strict=True)
+    if not path.is_file() or not path.name.startswith("_sdr_native"):
+        raise ValueError("composition probe requires its actual native extension file")
+    return ["--native-module", str(path), "--native-sha256", hashlib.sha256(path.read_bytes()).hexdigest()]
+
+
 @dataclass(frozen=True)
 class SceneExtent:
     width: int

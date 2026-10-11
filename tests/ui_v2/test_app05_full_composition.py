@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QPainterPath, QTransform
 from PySide6.QtWidgets import QApplication, QGraphicsBlurEffect, QGraphicsRectItem, QGraphicsScene, QGraphicsView
 
 from scripts.app05_full_composition import PlotCommand, _state, build_plot_plan, curve_support_comparison, paint_qt_commands, plan_metadata, review_plot_commands
-from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_target
+from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, image_target, native_probe_arguments
 from scripts.app05_scientific_layers import ScientificLayer, ScientificLayers
 
 
@@ -21,6 +21,7 @@ def composition_probe(root, *, native=False, review=False, persistent=False, rec
                       lifecycle=False, qt_raster_compat=False, qt_curves=False):
     with TemporaryDirectory(prefix="app05-full-composition-") as directory:
         output = Path(directory) / "full.json"
+        native_args = native_probe_arguments()
         options = ["--width", "2560", "--height", "1440", "--dpr", "1.5", "--theme", "light",
                    "--persistence", "visual"] if native else ["--width", "1366", "--height", "768"]
         if review:
@@ -39,11 +40,15 @@ def composition_probe(root, *, native=False, review=False, persistent=False, rec
             options += ["--widget-lifecycle"]
         process = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
             "--checkout", str(root), "--output", str(output), "--scientific", "--composition",
-            "--platform", "windows" if native else "offscreen", *options], cwd=root,
+            "--platform", "windows" if native else "offscreen", *options, *native_args], cwd=root,
             timeout=60, text=True, encoding="utf-8", capture_output=True)
         if process.returncode:
             raise AssertionError(process.stdout + process.stderr)
-        return json.loads(output.read_text(encoding="utf-8"))
+        report = json.loads(output.read_text(encoding="utf-8"))
+        if (report["native_binding"]["path"] != native_args[1]
+                or report["native_binding"]["sha256"] != native_args[3]):
+            raise AssertionError("composition child lost its exact parent native binding")
+        return report
 
 
 class PlotCommandTests(unittest.TestCase):

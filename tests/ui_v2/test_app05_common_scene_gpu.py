@@ -11,7 +11,7 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QApplication
 
-from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, compare_images, image_target
+from scripts.app05_scene_gpu_support import SceneExtent, SceneGpuTarget, compare_images, image_target, native_probe_arguments
 
 
 class CommonSceneTargetTests(unittest.TestCase):
@@ -81,13 +81,16 @@ class CommonSceneCompositionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         with TemporaryDirectory(prefix="app05-common-scene-") as directory:
             output = Path(directory) / "scene.json"
+            native_args = native_probe_arguments()
             run = subprocess.run([sys.executable, "-I", str(root / "scripts/probe_app05_scene_gpu.py"),
                 "--checkout", str(root), "--output", str(output), "--platform", "offscreen",
-                "--width", "1366", "--height", "768"], cwd=root, timeout=40,
+                "--width", "1366", "--height", "768", *native_args], cwd=root, timeout=40,
                 text=True, encoding="utf-8", capture_output=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
         self.assertTrue(report["same_rtbw_sweep_canvas"])
+        self.assertEqual(report["native_binding"]["path"], native_args[1])
+        self.assertEqual(report["native_binding"]["sha256"], native_args[3])
         self.assertEqual(report["events"], ["rtbw-start", "rtbw-stop", "sweep-start", "sweep-stop"])
         self.assertEqual([row["label"] for row in report["cases"]],
                          ["rtbw-live", "rtbw-stopped", "sweep-partial", "sweep-complete"])
