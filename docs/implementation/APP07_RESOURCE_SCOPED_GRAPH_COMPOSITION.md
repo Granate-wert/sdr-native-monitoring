@@ -1,5 +1,45 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
+## RTL full-coverage software qualification (2026-10-11)
+
+Runtime/source commit `675fa7067274fbad535f1c91a2059ae77d6ad2c3`
+contains the reviewed RTL UI change `951b164` and a separate native TEST-only
+fixture correction. No native runtime implementation changed. The fixture
+uses a fixed finite eight-pair input for positive runtime cases, retains the
+original two-transfer byte oracle, mandatory FFT output and complete drop
+accounting. It does not retry until success or relax time/rate/budget guards.
+The original failed native build is retained rather than reported as a pass.
+
+A new matching diagnostic CPU package passed 48/48 native CTest cases and
+verification of 621 source entries and 665 packaged files. One subsequent
+serial UI V2 regression, using that package's native module, completed with
+1,646 tests: 1,580 passed, 66 skipped, zero failures/errors, 822.082 seconds.
+Tracked source was clean before and after; source/native/package hashes
+remained unchanged. No compiled tests were deferred and no product modules
+were loaded from outside the checkout. The log audit found zero tracebacks;
+four historical NumPy NaN warnings were retained. Absence of a traceback is
+not evidence that every silently captured callback has been qualified.
+
+This qualifies source UI/native software composition, NOT the frozen GUI,
+physical full-band RX, Qt responsiveness under RX, DPI/DWM, soak or release.
+The independent UI review covers its original UI/compiler/test change only,
+not the later root native test fixture or the whole release. RTL redistribution
+remains on hold; the diagnostic EXE does not replace the static/current EXE.
+The prior uncertain hardware cleanup is not recovered by these software tests.
+APP-07 M7/M8 remain PARTIAL; the complete APP00–14 objective remains active.
+Later documentation commits must not relabel this build's source commit.
+
+Full actual supported bandwidth/Fs remains the required primary profile.
+At 61.44 MS/s and four bytes per complex RX sample, raw input is 245.76 MB/s:
+50 ms of RF produces 12.288 MB, requiring at least 204.8 ms over nominal
+USB 480 Mbit/s or 98.304 ms over nominal 1 Gbit/s, before overhead. This rules
+out continuous lossless transport of that profile, not every short-buffer
+update below 50 ms. A 262,144-sample buffer contains only 4.267 ms of RF at
+that Fs. Effective recording throughput already includes its measured cycle;
+do not add capture time twice. Capture duration, receipt period, DSP latency,
+host-ready-to-presentation delay, paint cadence and Sweep revisit are separate
+metrics. Do not lower Fs/bandwidth or hide gaps to manufacture a latency pass.
+
 ## RTL full digital RTBW coverage (2026-10-11, source checkpoint)
 
 UI V2 now admits an explicit RTL `FULL_RECEIVE` plan at the same qualified
