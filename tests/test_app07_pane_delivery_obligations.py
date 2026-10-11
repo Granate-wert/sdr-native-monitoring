@@ -4,13 +4,15 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError, replace
 from concurrent.futures import ThreadPoolExecutor
 import unittest
+from unittest.mock import patch
 
 from sdr_monitor.domain.pane_analytical_identity import PaneAnalyticalIdentity
 from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryStage as Stage
 from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 from sdr_monitor.services.pane_delivery_ledger import (
-    EVENT_CAPACITY, HOST_GRAPH_SCALAR_BUDGET, RECORD_CAPACITY, PaneDeliveryLedger,
+    EVENT_CAPACITY, HOST_GRAPH_SCALAR_BUDGET, RECORD_CAPACITY, PaneDeliveryLedger, _weight,
 )
+from sdr_monitor.services import pane_delivery_ledger as ledger_module
 from tests import test_app07_pane_analytical_identity as fixtures
 from tests import test_app07_pane_resource_session as session_fixtures
 
@@ -47,6 +49,91 @@ class PaneDeliveryLedgerTests(unittest.TestCase):
         self.assert_conserved(snapshot)
         with self.assertRaises(FrozenInstanceError):
             first.sequence = 20
+
+    def test_view_batch_matches_ordered_admission_including_pressure_and_eviction(self):
+        with patch.object(ledger_module, "uuid4", return_value="same-graph"):
+            sequential = PaneDeliveryLedger(("one",), now_ns=lambda: 1)
+            batched = PaneDeliveryLedger(("one",), now_ns=lambda: 1)
+        views = (PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL)
+        for offer in range(1, 301):
+            key = identity(offer=offer)
+            expected = tuple(sequential.admit("one", key, view=view) for view in views)
+            actual = batched.admit_views("one", key, views=views)
+            self.assertEqual(expected, actual)
+            if offer < 20 or offer % 3 == 0:
+                for ledger, refs in ((sequential, expected), (batched, actual)):
+                    for ref in refs:
+                        if ref is not None:
+                            ledger.note(ref, Stage.ADMISSION_CANCELLED)
+            self.assertEqual(sequential.snapshot(), batched.snapshot())
+        self.assert_conserved(batched.snapshot())
+        self.assertGreater(batched.snapshot().panes[0].untracked_admissions, 0)
+        self.assertGreater(batched.snapshot().record_evictions, 0)
+
+    def test_view_batch_reuses_hash_and_identity_walk_but_not_budget_charge(self):
+        ledger = PaneDeliveryLedger(("one",))
+        key = identity(capture_id="c" * 4096)
+        with patch.object(ledger_module, "sha256", wraps=ledger_module.sha256) as digest, \
+                patch.object(ledger_module, "_weight", wraps=_weight) as weight:
+            refs = ledger.admit_views("one", key,
+                views=(PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL))
+        self.assertEqual(digest.call_count, 2)  # Identity + namespace, not twice per view.
+        self.assertEqual(sum(call.args[0] is key for call in weight.call_args_list), 1)
+        for ref in refs:
+            self.assertIsNotNone(ref)
+            self.assertIs(ref.identity, key)
+            self.assertEqual(ledger._records[ref.sequence][1], 2 * _weight(ref) + 512)
+        self.assertNotEqual(refs[0].sequence, refs[1].sequence)
+        self.assert_conserved(ledger.snapshot())
+
+    def test_view_batch_keeps_per_view_refusals_and_no_cross_call_cache(self):
+        ledger = PaneDeliveryLedger(("one",))
+        views = (PaneDeliveryView.SPECTRUM, PaneDeliveryView.PERSISTENCE, PaneDeliveryView.WATERFALL)
+        first = ledger.admit_views("one", identity(), views=views)
+        self.assertIsNotNone(first[0])
+        self.assertIsNone(first[1])
+        self.assertIsNotNone(first[2])
+        self.assertEqual(ledger.snapshot().accounting_failures, 1)
+        key = identity()
+        changed = replace(key, ready=replace(key.ready, ready_native_ns=100))
+        self.assertEqual(ledger.admit_views("one", changed, views=views), (None, None, None))
+        self.assertEqual(ledger.snapshot().accounting_failures, 4)
+        self.assertEqual(ledger.admit_views("one", None, views=(views[0], views[2])), (None, None))
+        self.assertEqual(ledger.snapshot().panes[0].unqualified_deliveries, 2)
+        before = ledger.snapshot()
+        for invalid in ((), [], views * 2):
+            with self.assertRaises(ValueError):
+                ledger.admit_views("one", key, views=invalid)
+        self.assertEqual(ledger.snapshot(), before)
+
+    def test_view_batch_capacity_is_not_atomic_or_an_expanded_allowance(self):
+        ledger = PaneDeliveryLedger(("one",))
+        with patch.object(ledger_module, "RECORD_CAPACITY", 1):
+            first, second = ledger.admit_views("one", identity(),
+                views=(PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL))
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        snapshot = ledger.snapshot()
+        self.assertEqual(snapshot.panes[0].qualified_admissions, 2)
+        self.assertEqual(snapshot.panes[0].pending, 1)
+        self.assertEqual(snapshot.panes[0].untracked_admissions, 1)
+        self.assert_conserved(snapshot)
+
+    def test_view_batch_large_sweep_preserves_originals_and_exact_recursive_weight(self):
+        from tests import test_app07_pane_layer_custody as layer_fixtures
+        from tests import test_app07_layer_ready_admission as layers
+        frame, journal = layer_fixtures.packet(layers.terminal_frame())
+        key = layer_fixtures.bind(frame, (journal,))
+        key = replace(key, ready=replace(key.ready, identity=replace(key.ready.identity,
+            acquired_segment_generations=tuple((index, index + 1) for index in range(2048)))))
+        ledger = PaneDeliveryLedger(("one",))
+        refs = ledger.admit_views("one", key,
+            views=(PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL))
+        self.assertTrue(all(ref is not None for ref in refs))
+        for ref in refs:
+            self.assertIs(ref.identity, key)
+            self.assertEqual(ledger._records[ref.sequence][1], 2 * _weight(ref) + 512)
+        self.assert_conserved(ledger.snapshot())
 
     def test_actual_transition_chain_terminal_once_and_foreign_graph_refuses(self):
         ledger = PaneDeliveryLedger(("one",))

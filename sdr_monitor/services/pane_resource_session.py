@@ -601,22 +601,18 @@ class PaneResourceSession:
             spectrum = item.bundle.spectrum
             refs = []
             if isinstance(spectrum, LiveSpectrumFrame):
-                original = self._delivery_ledger.admit(item.pane_id, item.analytical_identity)
-                waterfall = self._delivery_ledger.admit(item.pane_id, item.analytical_identity,
-                                                       view=PaneDeliveryView.WATERFALL)
+                original, waterfall = self._delivery_ledger.admit_views(item.pane_id, item.analytical_identity,
+                    views=(PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL))
                 if waterfall is not None:
                     refs.append(waterfall)
             else:
                 original = None  # Native Sweep creation is NOT an FFT offer.
                 sweep = layer_identity(spectrum)
-                ticket = self._delivery_ledger.admit(item.pane_id, sweep)
-                if ticket is not None:
-                    refs.append(ticket)
                 # A progressive prefix is not a completed Waterfall row.
-                if isinstance(spectrum, SweepLineFrame):
-                    ticket = self._delivery_ledger.admit(item.pane_id, sweep, view=PaneDeliveryView.WATERFALL)
-                    if ticket is not None:
-                        refs.append(ticket)
+                views = ((PaneDeliveryView.SPECTRUM, PaneDeliveryView.WATERFALL)
+                         if isinstance(spectrum, SweepLineFrame) else (PaneDeliveryView.SPECTRUM,))
+                refs.extend(ticket for ticket in self._delivery_ledger.admit_views(item.pane_id, sweep, views=views)
+                            if ticket is not None)
             density = item.bundle.persistence
             if isinstance(density, LivePersistenceFrame):
                 ticket = self._delivery_ledger.admit(item.pane_id, layer_identity(density),

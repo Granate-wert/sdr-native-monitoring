@@ -154,3 +154,37 @@ those checks; do not advertise this change as higher FFT or reception rate.
 
 This increment does not build or promote an EXE, change the static installation
 or firewall, run physical RX, or qualify the full APP-07 epic.
+
+## Increment151: separate completion gates and reuse admission metadata
+
+M7 is the fault/isolation/lifecycle gate (G01–G04). It does not require complete
+optional per-frame telemetry, FPS or latency attribution from M8. M8 independently
+qualifies reproducible performance, per-view original paint-return measurements
+and acquisition/presentation separation (H01–H03). Both still need their scoped
+physical evidence. Long-run, visible Windows/DPI and release gates remain M9–M11.
+There is no universal full-band RF-to-screen50ms requirement. Host event-loop
+budgets are distinct from capture/transfer time and device scan period.
+
+The scalar delivery ledger now supports bounded, ordered `admit_views` calls.
+Spectrum and Waterfall of one immutable identity reuse its fingerprint, namespace
+hash and recursive identity-size calculation inside that call. Each view still
+has its own original reference, sequence, validation, deduplication, counters,
+memory charge and disposition. Capacity exhaustion can admit only the first
+view; it does not become a group transaction or expand any buffer. There is no
+persistent metadata cache or ownership change. Progress-only Sweep and Density
+retain their distinct admission rules. Two SHA calculations replace four for a
+two-view admission, and one identity walk replaces two.
+
+Verification:124 targeted tests passed, including five new tests for reuse,
+exact charging, pressure/eviction, independent refusals and2048-segment Sweep.
+An additional588 exact state comparisons against the old implementation covered
+records/events/counters/bytes/dedup/activation and pressure across three profiles.
+Ruff passed. Scoped mypy retains the same two pre-existing Optional errors in
+HackRF analyzer lines371–372 on both baseline and candidate; not a clean mypy claim.
+
+Matched exploratory microbenchmarks retain all ABBA observations and separate
+single-view control. Wall-time variance is too high for a qualified speedup
+percentage; only removal of repeated work is established. No Qt responsiveness,
+acquisition throughput, physical RX, new EXE, whole-release or APP-07 closure
+claim follows. Independent review covered the revised UI-facing completion
+contract, not independent approval of this backend patch or release.

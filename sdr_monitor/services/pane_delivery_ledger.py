@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from collections.abc import Callable
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from hashlib import sha256
 import os
 import sys
@@ -54,6 +54,14 @@ def _weight(value: object) -> int:
     return result
 
 
+@dataclass(slots=True)
+class _AdmissionWork:
+    """Call-local work for views of ONE immutable identity; never retained."""
+
+    fingerprints: tuple[bytes, bytes] | None = None
+    identity_bytes: int | None = None
+
+
 class PaneDeliveryLedger:
     def __init__(self, pane_ids: tuple[str, ...], *, now_ns: Callable[[], int] = perf_counter_ns) -> None:
         self._graph_id = str(uuid4())
@@ -93,67 +101,95 @@ class PaneDeliveryLedger:
         A high-water marker per pane/view prevents a repeated native offer becoming
         a new obligation, including after its terminal record was evicted.
         """
+        work = _AdmissionWork()
         with self._lock:
-            if not self._supported:
-                return None
-            if pane_id not in self._counts or not isinstance(view, PaneDeliveryView):
+            return self._admit_locked(pane_id, identity, view, work)
+
+    def admit_views(self, pane_id: str, identity: PaneAnalyticalIdentity | PaneLayerAnalyticalIdentity | None,
+                    *, views: tuple[PaneDeliveryView, ...]) -> tuple[PaneDeliveryObligationRef | None, ...]:
+        """Admit distinct view obligations without repeating identity work.
+
+        Equivalent to ordered single admissions with no intervening transition.
+        Ref validation, dedup, counts and budget charges remain per view. Reuse
+        lives only in this bounded call; it is neither a cache nor authority.
+        Optional capacity exhaustion may still admit one view but not another.
+        """
+        if not isinstance(views, tuple) or not 1 <= len(views) <= len(PaneDeliveryView):
+            raise ValueError("view admission requires a bounded nonempty tuple")
+        work = _AdmissionWork()
+        with self._lock:
+            return tuple(self._admit_locked(pane_id, identity, view, work) for view in views)
+
+    def _admit_locked(self, pane_id: str, identity: PaneAnalyticalIdentity | PaneLayerAnalyticalIdentity | None,
+                      view: PaneDeliveryView, work: _AdmissionWork) -> PaneDeliveryObligationRef | None:
+        if not self._supported:
+            return None
+        if pane_id not in self._counts or not isinstance(view, PaneDeliveryView):
+            self._accounting_failures += 1
+            return None
+        if identity is None:
+            self._count(pane_id, view, unqualified_deliveries=1)
+            return None
+        if not isinstance(identity, (PaneAnalyticalIdentity, PaneLayerAnalyticalIdentity)) or identity.pane_id != pane_id:
+            self._accounting_failures += 1
+            return None
+        try:
+            # Validate EACH view BEFORE its counters/high-water mutation.
+            PaneDeliveryObligationRef(self._graph_id, 1, identity, view)
+        except ValueError:
+            self._accounting_failures += 1
+            return None
+        offer_sequence = (identity.ready.offer_sequence if isinstance(identity, PaneAnalyticalIdentity)
+                          else identity.ready.creation_sequence)
+        prior = self._markers.get((pane_id, view))
+        if work.fingerprints is None:
+            work.fingerprints = (
+                sha256(repr(identity).encode("utf-8")).digest(),
+                sha256(repr((identity.owner_scope, identity.physical_stream_resource_id,
+                    identity.capture_id, identity.receiver_endpoint_id,
+                    identity.ready.producer_instance_id)).encode("utf-8")).digest())
+        fingerprint, namespace = work.fingerprints
+        if prior is not None:
+            old = prior[:2]
+            new = (identity.host_run_serial, identity.host_activation_serial)
+            if new < old:
                 self._accounting_failures += 1
                 return None
-            if identity is None:
-                self._count(pane_id, view, unqualified_deliveries=1)
-                return None
-            if not isinstance(identity, (PaneAnalyticalIdentity, PaneLayerAnalyticalIdentity)) or identity.pane_id != pane_id:
-                self._accounting_failures += 1
-                return None
-            try:
-                # Validate the view BEFORE counters/high-water mutation.
-                PaneDeliveryObligationRef(self._graph_id, 1, identity, view)
-            except ValueError:
-                self._accounting_failures += 1
-                return None
-            offer_sequence = (identity.ready.offer_sequence if isinstance(identity, PaneAnalyticalIdentity)
-                              else identity.ready.creation_sequence)
-            prior = self._markers.get((pane_id, view))
-            fingerprint = sha256(repr(identity).encode("utf-8")).digest()
-            namespace = sha256(repr((identity.owner_scope, identity.physical_stream_resource_id,
-                identity.capture_id, identity.receiver_endpoint_id,
-                identity.ready.producer_instance_id)).encode("utf-8")).digest()
-            if prior is not None:
-                old = prior[:2]
-                new = (identity.host_run_serial, identity.host_activation_serial)
-                if new < old:
+            if new == old:
+                if identity.ready.producer_instance_id != prior[2] or namespace != prior[5]:
                     self._accounting_failures += 1
                     return None
-                if new == old:
-                    if identity.ready.producer_instance_id != prior[2] or namespace != prior[5]:
+                if offer_sequence <= prior[3]:
+                    if offer_sequence == prior[3] and fingerprint != prior[4]:
                         self._accounting_failures += 1
-                        return None
-                    if offer_sequence <= prior[3]:
-                        if offer_sequence == prior[3] and fingerprint != prior[4]:
-                            self._accounting_failures += 1
-                        else:
-                            self._count(pane_id, view, duplicate_admissions=1)
-                        return None
-            # Markers remain fixed scalar tuples even when admitted identities
-            # contain maximum-length strings. Charged in BASE_RESERVATION.
-            self._markers[pane_id, view] = (identity.host_run_serial, identity.host_activation_serial,
-                identity.ready.producer_instance_id, offer_sequence, fingerprint, namespace)
-            self._count(pane_id, view, qualified_admissions=1)
-            self._sequence += 1
-            if self._sequence >= (1 << 64):
-                self._count(pane_id, view, untracked_admissions=1)
-                return None
-            ref = PaneDeliveryObligationRef(self._graph_id, self._sequence, identity, view)
-            weight = 2 * _weight(ref) + 512  # record + index + internal snapshot duplicate allowance
-            self._make_room(weight)
-            if len(self._records) >= RECORD_CAPACITY or self._bytes + weight > HOST_GRAPH_SCALAR_BUDGET:
-                self._count(pane_id, view, untracked_admissions=1)
-                return None
-            self._records[ref.sequence] = (PaneDeliveryRecord(ref, Stage.ADMITTED), weight)
-            self._bytes += weight
-            self._count(pane_id, view, pending=1)
-            self._append_event(ref, Stage.ADMITTED)
-            return ref
+                    else:
+                        self._count(pane_id, view, duplicate_admissions=1)
+                    return None
+        # Markers remain fixed scalar tuples, charged in BASE_RESERVATION.
+        self._markers[pane_id, view] = (identity.host_run_serial, identity.host_activation_serial,
+            identity.ready.producer_instance_id, offer_sequence, fingerprint, namespace)
+        self._count(pane_id, view, qualified_admissions=1)
+        self._sequence += 1
+        if self._sequence >= (1 << 64):
+            self._count(pane_id, view, untracked_admissions=1)
+            return None
+        ref = PaneDeliveryObligationRef(self._graph_id, self._sequence, identity, view)
+        if work.identity_bytes is None:
+            work.identity_bytes = _weight(identity)
+        # Exactly the old recursive ref charge, including separate view/sequence
+        # objects. Reuse does NOT reduce the declared memory allowance per ref.
+        ref_bytes = sys.getsizeof(ref) + sum(work.identity_bytes if item.name == "identity"
+            else _weight(getattr(ref, item.name)) for item in fields(ref))
+        weight = 2 * ref_bytes + 512
+        self._make_room(weight)
+        if len(self._records) >= RECORD_CAPACITY or self._bytes + weight > HOST_GRAPH_SCALAR_BUDGET:
+            self._count(pane_id, view, untracked_admissions=1)
+            return None
+        self._records[ref.sequence] = (PaneDeliveryRecord(ref, Stage.ADMITTED), weight)
+        self._bytes += weight
+        self._count(pane_id, view, pending=1)
+        self._append_event(ref, Stage.ADMITTED)
+        return ref
 
     def _make_room(self, weight: int) -> None:
         while self._terminal_order and (len(self._records) >= RECORD_CAPACITY
