@@ -55,6 +55,8 @@ using Scenario = void (__cdecl *)(int);
 using ResetCounters = void (__cdecl *)();
 using Counter = int (__cdecl *)(int);
 using CompletedCallbacks = int (__cdecl *)();
+using SetTransferPairs = int (__cdecl *)(std::uint32_t);
+constexpr std::uint32_t runtime_transfer_pairs = 8U;
 
 struct Cu8Capture {
     sdr_rtlsdr::RtlRuntimePort* port{};
@@ -87,12 +89,15 @@ void capture_cu8(const std::span<const std::uint8_t> bytes, void* context) noexc
            capture.samples == 24'576U && capture.bytes_match && capture.cancellation_ok;
 }
 
-[[nodiscard]] bool runtime_transfers_accounted(const sdr_rtlsdr::RtlMetrics& metrics) {
-    return metrics.callbacks == 2U && metrics.blocks_admitted <= 2U &&
-           metrics.host_input_blocks_dropped <= 2U && metrics.samples_admitted <= 24'576U &&
-           metrics.host_input_samples_dropped <= 24'576U &&
-           metrics.blocks_admitted + metrics.host_input_blocks_dropped == 2U &&
-           metrics.samples_admitted + metrics.host_input_samples_dropped == 24'576U &&
+[[nodiscard]] bool runtime_transfers_accounted(const sdr_rtlsdr::RtlMetrics& metrics,
+                                              const std::uint32_t pairs = 1U) {
+    const auto blocks = 2ULL * pairs;
+    const auto samples = 24'576ULL * pairs;
+    return pairs != 0U && metrics.callbacks == blocks && metrics.blocks_admitted <= blocks &&
+           metrics.host_input_blocks_dropped <= blocks && metrics.samples_admitted <= samples &&
+           metrics.host_input_samples_dropped <= samples &&
+           metrics.blocks_admitted + metrics.host_input_blocks_dropped == blocks &&
+           metrics.samples_admitted + metrics.host_input_samples_dropped == samples &&
            metrics.malformed_callbacks == 0U && !metrics.host_loss_cardinality_unknown &&
            metrics.callbacks_after_stop == 0U && metrics.worker_failures == 0U;
 }
@@ -127,6 +132,23 @@ void accounting_oracle() {
     invalid = metrics;
     invalid.callbacks = 3U;
     assert(!runtime_transfers_accounted(invalid));
+    // All dropped is valid accounting, but must NEVER pass the positive DSP
+    // assertion below. No unreported loss is hidden by the larger script.
+    sdr_rtlsdr::RtlMetrics all_dropped;
+    all_dropped.callbacks = 2U * runtime_transfer_pairs;
+    all_dropped.host_input_blocks_dropped = all_dropped.callbacks;
+    all_dropped.host_input_samples_dropped = 24'576U * runtime_transfer_pairs;
+    assert(runtime_transfers_accounted(all_dropped, runtime_transfer_pairs));
+    assert(all_dropped.dsp.fft_frames_computed == 0U);
+    invalid = all_dropped;
+    --invalid.host_input_samples_dropped;
+    assert(!runtime_transfers_accounted(invalid, runtime_transfer_pairs));
+    invalid = all_dropped;
+    ++invalid.callbacks;
+    assert(!runtime_transfers_accounted(invalid, runtime_transfer_pairs));
+    invalid = all_dropped;
+    invalid.worker_failures = 1U;
+    assert(!runtime_transfers_accounted(invalid, runtime_transfer_pairs));
 }
 
 void official_cu8_transfers(const sdr_rtlsdr::RtlExternalRuntime& external) {
@@ -156,7 +178,7 @@ void official_cu8_transfers(const sdr_rtlsdr::RtlExternalRuntime& external) {
 }
 
 void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external,
-                          CompletedCallbacks completed_callbacks,
+                          CompletedCallbacks completed_callbacks, SetTransferPairs set_transfer_pairs,
                           bool has_gain_table = true, std::uint32_t tuner_type = 5U) {
     const auto observed = sdr_rtlsdr::observe_single_rtl_candidate(external);
     assert(observed.enumeration_index == 0U && observed.serial == "00000001");
@@ -169,6 +191,11 @@ void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external,
     profile.session_route = sdr_rtlsdr::RtlSessionRoute{
         observed.manufacturer, observed.product, observed.serial, observed.tuner_type, 1U};
     profile.official_unbundled_runtime = true;
+    // The SDK-byte oracle above still verifies exactly two transfers. The
+    // runtime uses a fixed finite stream, because nonblocking slot admission
+    // may truthfully drop BOTH transfers of one startup pair. Do not poll
+    // runtime metrics while the fixture is delivering its scripted callbacks.
+    assert(set_transfer_pairs(runtime_transfer_pairs) == 0);
     auto owner = sdr_rtlsdr::RtlRuntimeSession::start(
         sdr_rtlsdr::make_official_rtl_port(external), profile);
     const auto readback = owner->readback();
@@ -176,12 +203,14 @@ void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external,
     assert(readback.actual_center_hz == profile.center_hz);
     assert(readback.actual_sample_rate_hz == profile.sample_rate_hz);
     assert(!readback.tuner_gain_readback_known && !readback.cached_tuner_gain_tenth_db);
-    // First FFT is not a completion fence for a second callback. Observe the
+    // First FFT is not a completion fence for all callbacks. Observe the
     // test fixture's return fence first, without locking the live slot pool.
-    for (int trial = 0; trial < 200 && completed_callbacks() != 2; ++trial) {
+    constexpr auto expected_callbacks = static_cast<int>(2U * runtime_transfer_pairs);
+    for (int trial = 0; trial < 200 && completed_callbacks() != expected_callbacks; ++trial) {
         std::this_thread::sleep_for(2ms);
     }
-    assert(completed_callbacks() == 2);
+    assert(completed_callbacks() == expected_callbacks);
+    assert(set_transfer_pairs(1U) != 0);  // script cannot change while reader owns it
     for (int trial = 0; trial < 200 && owner->metrics().dsp.fft_frames_computed == 0U; ++trial) {
         std::this_thread::sleep_for(2ms);
     }
@@ -193,7 +222,7 @@ void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external,
         static_cast<unsigned long long>(diagnostic.dsp.fft_frames_computed));
     // Bounded runtime admission may drop on slot contention. Exact SDK bytes
     // are verified separately; here every transfer must be truthfully counted.
-    assert(runtime_transfers_accounted(diagnostic));
+    assert(runtime_transfers_accounted(diagnostic, runtime_transfer_pairs));
     assert(diagnostic.dsp.fft_frames_computed > 0U);
     const auto latest = owner->drain_latest_spectrum_frame();
     assert(latest.frame && latest.frame->source.backend_id == "native.librtlsdr.unbundled.cpu.v1");
@@ -205,10 +234,11 @@ void selected_route_and_cu8(const sdr_rtlsdr::RtlExternalRuntime& external,
     assert(owner->stop(2000ms).complete());
     assert(!owner->cleanup_required());
     const auto terminal = owner->metrics();
-    assert(runtime_transfers_accounted(terminal));
+    assert(runtime_transfers_accounted(terminal, runtime_transfer_pairs));
     assert(terminal.reader_returned && terminal.reader_return_status == 0);
     assert(!terminal.reader_returned_without_stop);
     assert(terminal.ready_depth == 0U && terminal.slots_in_use == 0U);
+    assert(set_transfer_pairs(1U) == 0);
 }
 
 void count_changed_after_open(const sdr_rtlsdr::RtlExternalRuntime& external) {
@@ -266,12 +296,16 @@ int main(int argc, char** argv) {
     const auto counter = reinterpret_cast<Counter>(GetProcAddress(module, "mock_rtl_counter"));
     const auto completed_callbacks = reinterpret_cast<CompletedCallbacks>(
         GetProcAddress(module, "mock_rtl_completed_callbacks"));
-    assert(scenario && reset_counters && counter && completed_callbacks);
+    const auto set_transfer_pairs = reinterpret_cast<SetTransferPairs>(
+        GetProcAddress(module, "mock_rtl_set_transfer_pairs"));
+    assert(scenario && reset_counters && counter && completed_callbacks && set_transfer_pairs);
+    assert(set_transfer_pairs(0U) != 0 && set_transfer_pairs(9U) != 0);
+    assert(set_transfer_pairs(1U) == 0);
     scenario(0);
     official_cu8_transfers(external);
-    selected_route_and_cu8(external, completed_callbacks);
+    selected_route_and_cu8(external, completed_callbacks, set_transfer_pairs);
     scenario(3);
-    selected_route_and_cu8(external, completed_callbacks);  // exact owned-handle identity, no second USB opener
+    selected_route_and_cu8(external, completed_callbacks, set_transfer_pairs);  // no second USB opener
     {
         auto port = sdr_rtlsdr::make_official_rtl_port(external);
         assert(port->open_exact_unique_serial("00000001") == 0);
@@ -295,10 +329,10 @@ int main(int argc, char** argv) {
     }
     for (const int malformed_optional_table : {6, 7, 11, 12, 13}) {
         scenario(malformed_optional_table);
-        selected_route_and_cu8(external, completed_callbacks, false);  // auto path still works
+        selected_route_and_cu8(external, completed_callbacks, set_transfer_pairs, false);  // auto path still works
     }
     scenario(14);
-    selected_route_and_cu8(external, completed_callbacks, false, 4U);  // FC2580 automatic remains valid
+    selected_route_and_cu8(external, completed_callbacks, set_transfer_pairs, false, 4U);  // FC2580 automatic remains valid
     manual_gain(external, 0, false, reset_counters, counter, true, 4U);
     scenario(0);
     FreeLibrary(module);
@@ -314,9 +348,12 @@ int main(int argc, char** argv) {
     const auto legacy_counter = reinterpret_cast<Counter>(GetProcAddress(legacy_module, "mock_rtl_counter"));
     const auto legacy_completed = reinterpret_cast<CompletedCallbacks>(
         GetProcAddress(legacy_module, "mock_rtl_completed_callbacks"));
-    assert(legacy_reset && legacy_counter && legacy_completed);
+    const auto legacy_set_pairs = reinterpret_cast<SetTransferPairs>(
+        GetProcAddress(legacy_module, "mock_rtl_set_transfer_pairs"));
+    assert(legacy_reset && legacy_counter && legacy_completed && legacy_set_pairs);
+    assert(legacy_set_pairs(1U) == 0);
     official_cu8_transfers(legacy);
-    selected_route_and_cu8(legacy, legacy_completed, false);
+    selected_route_and_cu8(legacy, legacy_completed, legacy_set_pairs, false);
     manual_gain(legacy, 0, false, legacy_reset, legacy_counter, true);
     FreeLibrary(legacy_module);
     return 0;

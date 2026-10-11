@@ -21,6 +21,7 @@ std::atomic<bool> cancelled{};
 std::atomic<int> owned_descriptor_reads{};
 std::atomic<int> open_calls{}, close_calls{}, read_calls{}, manual_calls{}, gain_calls{};
 std::atomic<int> completed_callbacks{};
+std::atomic<std::uint32_t> transfer_pairs{1U};
 
 void strings(char* manufacturer, char* product, char* serial) {
     std::memcpy(manufacturer, "Mock", sizeof("Mock"));
@@ -45,10 +46,17 @@ __declspec(dllexport) int __cdecl mock_rtl_counter(int field) {
     default: return -1;
     }
 }
-// Synthetic test synchronization only: published AFTER both callbacks return.
+// Synthetic test synchronization only: published AFTER the whole script returns.
 // The observer need not contend with the runtime's input slot mutex.
 __declspec(dllexport) int __cdecl mock_rtl_completed_callbacks() {
     return completed_callbacks.load(std::memory_order_acquire);
+}
+// Test-only finite traffic script. Every run emits the same number of NEW
+// callbacks; this is not a retry until admission succeeds or a vendor export.
+__declspec(dllexport) int __cdecl mock_rtl_set_transfer_pairs(std::uint32_t value) {
+    if (reading.load() || (value != 1U && value != 8U)) return -1;
+    transfer_pairs.store(value);
+    return 0;
 }
 __declspec(dllexport) std::uint32_t __cdecl rtlsdr_get_device_count() {
     return scenario.load() == 1 && opened.load() ? 2U : 1U;
@@ -165,9 +173,13 @@ __declspec(dllexport) int __cdecl rtlsdr_read_async(
         samples[index] = index % 16U == 0U ? 255U : 128U;
         samples[index + 1U] = 128U;
     }
-    callback(samples, 16'384U, context);  // valid short then full transfer
-    callback(samples, 32'768U, context);
-    completed_callbacks.store(2, std::memory_order_release);
+    const auto pairs = transfer_pairs.load();
+    for (std::uint32_t pair = 0U; pair < pairs; ++pair) {
+        callback(samples, 16'384U, context);  // valid short then full transfer
+        callback(samples, 32'768U, context);
+        if (pair + 1U < pairs) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    completed_callbacks.store(static_cast<int>(2U * pairs), std::memory_order_release);
     for (int trial = 0; trial < 5000 && !cancelled.load(); ++trial) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
