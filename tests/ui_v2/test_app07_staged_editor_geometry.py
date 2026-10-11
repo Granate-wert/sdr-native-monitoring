@@ -22,6 +22,7 @@ from sdr_monitor.domain.device_capabilities import DeviceFamily
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.design import ThemeId
+from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_user_stage import prepare_user_pane_session
@@ -68,11 +69,15 @@ class StagedPaneEditorGeometryTests(unittest.TestCase):
             sleep(0.005)
         self.fail("staged editor did not reach a bounded terminal state")
 
-    def _stage(self, drafts):
+    def _stage(self, drafts, *, allocation_budget: PresentationAllocationBudget):
+        self.assertIs(allocation_budget, self.editor._allocation_budget)
         pool = PaneProductGraphPool(lambda resource: self.graphs[
             int(resource.rsplit("-", 1)[-1]) - 1])
         self.pools.append(pool)
-        return prepare_user_pane_session(drafts, pool_factory=lambda: pool)
+        prepared = prepare_user_pane_session(drafts, pool_factory=lambda: pool,
+                                             allocation_budget=allocation_budget)
+        self.assertIs(prepared.handle.preparer.allocation_budget, self.editor._allocation_budget)
+        return prepared
 
     def prepare_long_preview(self, *, refused=False) -> None:
         self.fixture.page._toggle_independent_setup()

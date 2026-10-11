@@ -20,6 +20,7 @@ from sdr_monitor.domain.receiver_topology import ReceiverBindingMode
 from sdr_monitor.domain.tinysa_settings import TinySaInputMode, TinySaRbwMode, TinySaSweepSettingsPlan
 from sdr_monitor.ui.v2.i18n import UiLocale, current_locale, set_active_locale, text
 from sdr_monitor.ui.v2.design import ThemeId
+from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
 from sdr_monitor.ui.v2_application_graph import build_v2_analyzer_application_graph
 from sdr_monitor.ui.v2_pane_graph_pool import PaneProductGraphPool
 from sdr_monitor.ui.v2_pane_user_plan import PaneSlotDraft, PaneUserPlanError, TinySaPaneIntent, compile_user_pane_plan
@@ -189,9 +190,13 @@ class TinySaPaneSettingsActualRootTests(unittest.TestCase):
         self.fail("per-pane tinySA actual-root operation did not finish")
 
     def stage(self):
-        def prepare(drafts):
+        def prepare(drafts, *, allocation_budget: PresentationAllocationBudget):
+            self.assertIs(allocation_budget, self.editor._allocation_budget)
             pool = PaneProductGraphPool(lambda _resource: self.v2)
-            return prepare_user_pane_session(drafts, pool_factory=lambda: pool)
+            prepared = prepare_user_pane_session(drafts, pool_factory=lambda: pool,
+                                                 allocation_budget=allocation_budget)
+            self.assertIs(prepared.handle.preparer.allocation_budget, self.editor._allocation_budget)
+            return prepared
         with patch("sdr_monitor.ui.v2.workspaces.independent_pane_setup.prepare_user_pane_session",
                    side_effect=prepare):
             self.editor.prepare.click()
@@ -208,12 +213,16 @@ class TinySaPaneSettingsActualRootTests(unittest.TestCase):
     def tearDown(self):
         try:
             if self.handle is not None:
+                if self.pane_ui is not None:
+                    self.pane_ui.quiesce_presentation()
                 for future in self.handle.pump.stop_all().values():
                     future.result(timeout=5)
                 self.handle.shutdown_after_stop()
                 if self.pane_ui is not None:
+                    self.wait(self.pane_ui.poll_presentation_retired)
+                    self.assertTrue(self.pane_ui.poll_presentation_retired())
                     self.pane_ui.release_presentation_after_shutdown()
-                    self.pane_ui.close()
+                    self.assertTrue(self.pane_ui.close())
             if self.editor._prepared is not None or self.editor._retained_pool is not None:
                 self.editor.discard.click()
                 self.wait(lambda: self.editor.can_close)
@@ -222,6 +231,8 @@ class TinySaPaneSettingsActualRootTests(unittest.TestCase):
             self.v2.live.shutdown()
             self.fixture.doCleanups()
             set_active_locale(self.locale)
+        # Only after the actual root has released its unrelated consumers too.
+        self.assertEqual(self.fixture.composition.allocation_budget.snapshot().reserved_bytes, 0)
 
     def test_unobserved_candidate_is_intent_only_and_staged_locale_discard_keeps_draft(self):
         drawer = self.change_rbw()
