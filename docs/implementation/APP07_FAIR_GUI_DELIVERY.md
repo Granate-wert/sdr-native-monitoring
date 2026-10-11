@@ -1,5 +1,36 @@
 # APP-07 UI V2: fair, soft-budget pane delivery
 
+## Matching software qualification (2026-10-11)
+
+The ordered-display runtime source remains `6e95ce7`. Source `eb257e0` adds
+only the reviewed test/probe correction: real custody-worker construction and
+explicit path/hash binding of the frozen native extension in all four isolated
+composition callers. It does not change the five runtime UI modules, native DSP,
+acquisition settings, render budgets or the original scientific assertions.
+
+The first matching full UI V2 gate on `6e95ce7` genuinely failed: 1666 tests,
+1595 passed, 66 skipped, three failures and two errors. Its evidence remains
+separate. The two malformed constructor fixtures and three isolated native-import
+failures were corrected, not hidden by skipping tests or increasing timeouts.
+Independent seven-file review approved that limited correction; 33 focused and
+two hidden Windows/GL checks then passed, including the original QHD case.
+
+A fresh clean matching diagnostic build of `eb257e0` passed all 48 native tests
+in 69.98 seconds. ONE subsequent serial full UI V2 gate ran 1672 tests in
+837.909 seconds: 1606 passed, 66 skipped, zero failures/errors. Source identity,
+the matching native extension and all 665 package files remained unchanged
+before and after; outside-checkout product-module inventory was empty. The log
+audit found zero uncaught tracebacks. Four pre-existing NaN RuntimeWarnings
+remain; a clean log is not proof against locally captured/silent callbacks.
+
+This qualifies V2 source with its matching frozen native module, not the visible
+frozen application's responsiveness, physical SDR operation, full-band transport,
+high-DPI, sustained/soak, redistribution or release. The diagnostic EXE has not
+replaced the static/current installation. The 30.23% worker-only result below
+has not become a GUI performance claim. A later documentation-only commit must
+not relabel this source or build. APP-07 M7/M8 remains PARTIAL; actual-shell and
+changed physical multi-source qualification are still required.
+
 ## Ordered RTBW display preparation (2026-10-11)
 
 Source increment `6e95ce777e0a85131a05ff94b376bc2babd9af6e` changes five UI
