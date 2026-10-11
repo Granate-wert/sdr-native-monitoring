@@ -1,5 +1,38 @@
 # APP-07 resource-scoped Analyzer graph composition (partial)
 
+## RTL full digital RTBW coverage (2026-10-11, source checkpoint)
+
+UI V2 now admits an explicit RTL `FULL_RECEIVE` plan at the same qualified
+sample rate and FFT. Its digital analysis span is Fs; `EDGE_TRIMMED` remains
+the initial/default Fs/2 crop. Full coverage is the existing half-open FFT
+interval: all measured bins, without an invented sample at its right edge.
+It does not prove a flat/calibrated tuner passband or simultaneous reception
+through two physical connectors. Actual Fs/center/readback remain unknown
+until the existing source-bound Start receipt and accepted delivery.
+
+The editor preserves explicit FULL across passive source refresh and locale
+changes; changing to a new RTL source defaults only that target draft to EDGE.
+Stage/Preview stay inert, stopped Apply does not Start, and the existing exact
+runtime/identity/gain/RX1/epoch/quality and capture-span guards remain required.
+No DSP, native owner, transport, queue or memory budget was changed.
+
+Independent static UI/compiler review found no must-fix defect. Root addressed
+73 unit/mock cases including the existing pane-plan/refusal workflows, with
+real SDR/native imports refused; Ruff passed for five files and scoped mypy
+passed for the compiler. These receipts are source-only, not matched EXE,
+physical full-band reception, performance, visible/DPI or release acceptance.
+
+The prior changed three-source attempt failed during Stage before Apply/Start.
+Its cleanup uncertainty remains quarantined; this admission change alone does
+not recover that lease or qualify a new hardware run. A separately matched
+build, full regression and changed physical method remain required.
+
+Full supported SDR bandwidth/high actual Fs is the primary test profile.
+RF capture duration, buffer receipt period, host-ready-to-presentation delay
+and paint/control cadence are separate metrics; there is no universal 50 ms
+RF-to-screen guarantee and no permission to lower Fs to manufacture a pass.
+APP07 M7/M8 remain PARTIAL; the full APP00–14 objective remains active.
+
 ## UI phase101/102 checkpoint (2026-10-09, diagnostic progress / HIL FAIL)
 
 Actual source995e806 docs-only over qualified build9d1bf96,

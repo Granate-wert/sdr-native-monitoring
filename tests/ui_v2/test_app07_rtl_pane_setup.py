@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from types import SimpleNamespace
 from typing import cast
@@ -167,7 +168,8 @@ class RtlPaneSetupTests(unittest.TestCase):
                              (CaptureMeasurementMode.RTBW,))
             self.assertTrue(row.rate.isEnabled())
             self.assertTrue(row.fft.isEnabled())
-            self.assertFalse(row.band.isEnabled())
+            self.assertTrue(row.band.isEnabled())
+            self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.EDGE_TRIMMED)
             row.rate.setCurrentIndex(row.rate.findData(2_400_000.0))
             row.fft.setCurrentIndex(row.fft.findData(2048))
             draft = editor._read_drafts()[3]
@@ -252,6 +254,24 @@ class RtlPaneSetupTests(unittest.TestCase):
             self.assertNotIn("HackRF acknowledges", preview)
             self.assertIsNone(editor._future)
             self.assertFalse(self.installed)
+            full_drafts = drafts[:3] + (replace(drafts[3], stop_hz=102_400_000,
+                                                rtbw_band=RtbwBandPolicy.FULL_RECEIVE),)
+            full_plan = compile_user_pane_plan(full_drafts, {choice.device_id: choice}, {choice.device_id: 17})
+            editor._prepared = cast(PreparedPaneUserSession, SimpleNamespace(
+                plan=full_plan, preview=(resource_preview,),
+                handle=SimpleNamespace(
+                    source_labels={choice.device_id: choice.label}, applied=False,
+                    rf_context=PaneRfPlanContext(full_plan, full_drafts, ((choice.device_id, choice, 17),)))))
+            editor._refresh_preview()
+            self.assertIn("Full digital band", editor.preview.text())
+            self.assertIn("planned digital analysis crop 2.4 MHz", editor.preview.text())
+            self.assertIn("not a guaranteed RF passband", editor.preview.text())
+            set_active_locale(UiLocale.RU)
+            editor.set_locale()
+            self.assertIn("Полная цифровая полоса", editor.preview.text())
+            self.assertIn("не гарантия RF-полосы", editor.preview.text())
+            self.assertIn("Фактические Fs/центр неизвестны", editor.preview.text())
+            self.assertFalse(self.installed)
         finally:
             editor._prepared = None
             editor.release_after_shutdown()
@@ -273,7 +293,7 @@ class RtlPaneSetupTests(unittest.TestCase):
                 self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.FULL_RECEIVE)
             target.source.setCurrentIndex(target.source.findData(rtl.device_id))
             self.assertIs(RtbwBandPolicy(target.band.currentData()), RtbwBandPolicy.EDGE_TRIMMED)
-            self.assertFalse(target.band.isEnabled())
+            self.assertTrue(target.band.isEnabled())
             self.assertIs(RtbwBandPolicy(peer.band.currentData()), RtbwBandPolicy.FULL_RECEIVE)
             drafts = editor._read_drafts()
             self.assertIs(drafts[3].rtbw_band, RtbwBandPolicy.EDGE_TRIMMED)
@@ -306,6 +326,37 @@ class RtlPaneSetupTests(unittest.TestCase):
                 editor._begin_prepare()
                 stage.assert_not_called()
             self.assertFalse(self.installed)
+        finally:
+            editor.release_after_shutdown()
+            editor.close()
+
+    def test_explicit_full_digital_choice_survives_refresh_and_locale_without_start(self) -> None:
+        choice = _choice(runtime=AdapterRuntimeAvailability.AVAILABLE, selected_route=True)
+        editor = self._editor(choice, owner_ready=True)
+        try:
+            row = editor._rows[3]
+            row.source.setCurrentIndex(row.source.findData(choice.device_id))
+            self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.EDGE_TRIMMED)
+            row.band.setCurrentIndex(row.band.findData(RtbwBandPolicy.FULL_RECEIVE.value))
+            row.start.setValue(100.0)
+            row.stop.setValue(102.4)
+            before = editor._read_drafts()[3]
+            self.assertIs(before.rtbw_band, RtbwBandPolicy.FULL_RECEIVE)
+            self.assertIn("Full digital band", row.band.currentText())
+            self.assertIn("does not verify tuner analog bandwidth", row.band.toolTip())
+            self.assertIn("do not imply two simultaneous RX", row.band.toolTip())
+            editor.update_sources(editor._selection)
+            self.assertIs(RtbwBandPolicy(row.band.currentData()), RtbwBandPolicy.FULL_RECEIVE)
+            set_active_locale(UiLocale.RU)
+            editor.set_locale()
+            self.assertIn("Полная цифровая", row.band.currentText())
+            self.assertIn("не подтверждение аналоговой полосы", row.band.toolTip())
+            self.assertEqual(editor._read_drafts()[3], before)
+            with patch("sdr_monitor.ui.v2.workspaces.independent_pane_setup.prepare_user_pane_session") as stage:
+                editor.set_locale()
+                stage.assert_not_called()
+            self.assertFalse(self.installed)
+            self.assertIsNone(editor._future)
         finally:
             editor.release_after_shutdown()
             editor.close()

@@ -467,7 +467,7 @@ def compile_user_pane_plan(
         if draft.tinysa is not None and choice.family is not DeviceFamily.TINYSA:
             raise PaneUserPlanError("tinySA settings cannot be attached to an SDR pane")
         if draft.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED and (
-                choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
+                choice.family not in {DeviceFamily.AD936X, DeviceFamily.HACKRF, DeviceFamily.RTL_SDR}
                 or draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW)):
             raise PaneUserPlanError("wide receive band is only an explicit SDR RTBW intent")
         assert draft.start_hz is not None and draft.stop_hz is not None
@@ -567,10 +567,9 @@ def compile_user_pane_plan(
         elif choice.family is DeviceFamily.RTL_SDR:
             if draft.measurement_mode not in (None, CaptureMeasurementMode.RTBW):
                 raise PaneUserPlanError("RTL Sweep is not qualified; select RTBW")
-            if (draft.rtbw_band is not RtbwBandPolicy.EDGE_TRIMMED
-                    or draft.sample_rate_hz not in RTL_RATE_CHOICES_HZ
+            if (draft.sample_rate_hz not in RTL_RATE_CHOICES_HZ
                     or draft.fft_size not in RTL_FFT_CHOICES):
-                raise PaneUserPlanError("RTL requires a bounded edge-trimmed RTBW profile")
+                raise PaneUserPlanError("RTL requires a bounded digital RTBW profile")
             snapshot = choice.binding.snapshot
             identity = choice.binding.calibration_identity
             route = choice.binding.rtl_session_route
@@ -596,9 +595,12 @@ def compile_user_pane_plan(
                                         reason=PaneUserRefusal.INVALID_PLAN)
             if not float(center).is_integer():
                 raise PaneUserPlanError("RTL center must be an exact whole hertz")
-            # A conservative *digital* analysis crop, not tuner analog BW or
-            # guaranteed RF response. Hardware readback still gates Start.
-            usable = draft.sample_rate_hz / 2.0
+            # Both intents are digital analysis coverage, not tuner analog BW
+            # or guaranteed RF response. Keep the default conservative crop;
+            # explicit FULL_RECEIVE retains Fs and all half-open FFT coverage.
+            # Exact selected-session admission/readback still gates Start.
+            usable = (draft.sample_rate_hz if draft.rtbw_band is RtbwBandPolicy.FULL_RECEIVE
+                      else draft.sample_rate_hz / 2.0)
             rtl_request = RtlLiveRequest(int(center), int(draft.sample_rate_hz),
                                          fft_size=draft.fft_size, hop_size=draft.fft_size // 2,
                                          detector="peak", source_id=SourceId(source_id),

@@ -1018,9 +1018,10 @@ class IndependentPaneSetupV2(QWidget):
             row._retained_network = False
         reason = None if choice is None else self._rtl_unavailable_key(choice)
         rtl_ready = choice is not None and reason is None
-        # This is only the new row draft. Never carry AD/HackRF's explicit
-        # full-receive request into RTL, whose compiler admits edge trim only.
-        if family is DeviceFamily.RTL_SDR:
+        # A new RTL selection defaults to its conservative digital crop.
+        # Capability/locale refresh must preserve an explicit FULL_RECEIVE
+        # choice, and changing this row must not change an independent peer.
+        if family is DeviceFamily.RTL_SDR and (explicit_source_change or not preserve_range):
             edge_index = row.band.findData(RtbwBandPolicy.EDGE_TRIMMED.value)
             if edge_index >= 0 and row.band.currentIndex() != edge_index:
                 with QSignalBlocker(row.band):
@@ -1210,8 +1211,8 @@ class IndependentPaneSetupV2(QWidget):
         row.fft.setEnabled(ready_sdr and not blocked)
         row.points.setEnabled(family is DeviceFamily.TINYSA and not blocked)
         row.mode.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF} and not blocked)
-        row.band.setEnabled(family in {DeviceFamily.AD936X, DeviceFamily.HACKRF}
-                            and mode is CaptureMeasurementMode.RTBW and not blocked)
+        row.band.setEnabled(ready_sdr and mode is CaptureMeasurementMode.RTBW and not blocked)
+        self._refresh_band_text(row, family)
         row.sweep_window.setEnabled(family is DeviceFamily.AD936X
                                     and mode is CaptureMeasurementMode.SWEEP and not blocked)
         row.sweep_window.setToolTip(text("analyzer.pane.setup.ad_sweep_window_help"))
@@ -1606,7 +1607,10 @@ class IndependentPaneSetupV2(QWidget):
                                           start=f"{crop.start_hz / 1e6:g}",
                                           stop=f"{crop.stop_hz / 1e6:g}",
                                           fft=profile.fft_size, hop=profile.hop_size,
-                                          gain=gain_summary))
+                                          gain=gain_summary,
+                                          band=text("analyzer.pane.setup.rtl_band_" + (
+                                              "full_receive" if profile.usable_capture_span_hz == profile.sample_rate_hz
+                                              else "edge_trimmed"))))
                     continue
                 if (not isinstance(profile, (PaneCaptureProfile, HackrfRtbwPaneProfile))
                         or profile.measurement_mode is not CaptureMeasurementMode.RTBW):
@@ -1725,6 +1729,17 @@ class IndependentPaneSetupV2(QWidget):
                 field.setMinimumHeight(field.minimumSizeHint().height())
         self._sync_contents_height()
 
+    def _refresh_band_text(self, row: _SlotRow, family: DeviceFamily | None) -> None:
+        rtl = family is DeviceFamily.RTL_SDR
+        prefix = "analyzer.pane.setup.rtl_band_" if rtl else "analyzer.pane.setup.rtbw_band_"
+        with QSignalBlocker(row.band):
+            for index in range(row.band.count()):
+                policy = RtbwBandPolicy(row.band.itemData(index))
+                row.band.setItemText(index, text(prefix + policy.value))
+        explanation = text(prefix + "help")
+        row.band.setToolTip(explanation)
+        row.band.setAccessibleDescription(explanation)
+
     def set_locale(self) -> None:
         self.gain_heading.setText(text("analyzer.pane.setup.rtl_gain_heading"))
         for row in self._rows:
@@ -1747,15 +1762,10 @@ class IndependentPaneSetupV2(QWidget):
             row.maximum_revisit.setSuffix(text("analyzer.pane.setup.seconds_suffix"))
             row.maximum_revisit.setSpecialValueText(text("analyzer.pane.setup.target_unset"))
             row.band.setAccessibleName(text("analyzer.pane.setup.rtbw_band_name", pane=row.number))
-            row.band.setToolTip(text("analyzer.pane.setup.rtbw_band_help"))
             row.sweep_window.setSuffix(text("hackrf.unit.mhz"))
             row.sweep_window.setSpecialValueText(text("analyzer.pane.setup.ad_sweep_window_auto"))
             row.sweep_window.setAccessibleName(text("analyzer.pane.setup.ad_sweep_window_name",
                                                      pane=row.number))
-            with QSignalBlocker(row.band):
-                for index in range(row.band.count()):
-                    policy = RtbwBandPolicy(row.band.itemData(index))
-                    row.band.setItemText(index, text("analyzer.pane.setup.rtbw_band_" + policy.value))
             with QSignalBlocker(row.manual_gain):
                 for index in range(row.manual_gain.count()):
                     value = row.manual_gain.itemData(index)
@@ -1777,6 +1787,7 @@ class IndependentPaneSetupV2(QWidget):
                                        Qt.ItemDataRole.ToolTipRole)
             choice = next((item for item in self._choices
                            if item.device_id == row.source.currentData()), None)
+            self._refresh_band_text(row, row._retained_family if choice is None else choice.family)
             reason = None if choice is None else self._rtl_unavailable_key(choice)
             tip = (self._rtl_choice_tip(choice, reason)
                    if choice is not None and choice.family is DeviceFamily.RTL_SDR else "")
