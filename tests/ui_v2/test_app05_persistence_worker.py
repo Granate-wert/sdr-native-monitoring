@@ -137,7 +137,7 @@ class PersistenceWorkerTests(unittest.TestCase):
         self.assertEqual(density_worker.persistence_witness_scratch(current.view), 65536 * 8)
         small = request(policy=current.policy)
         self.assertEqual(density_worker.persistence_witness_scratch(small.view), 17 * 8)
-        self.assertEqual(persistence_image_reserve(small), 4 * 16 * 4 + 17 * 8)
+        self.assertEqual(persistence_image_reserve(small), 4 * 16 * 4 + 4 * 16 * 5)
         with patch.object(density_worker, "persistence_input_witness", side_effect=AssertionError("Direct must not hash")):
             prepare_persistence_image(request())
 
@@ -153,10 +153,10 @@ class PersistenceWorkerTests(unittest.TestCase):
         first = PersistenceImageRequest(source, policy)
         history = prepare_persistence_image(first).as_history(1)
         subsequent = PersistenceImageRequest(source, policy, history)
-        self.assertEqual(persistence_image_reserve(first), source.density.nbytes + 4096 * 5)
-        self.assertEqual(persistence_image_reserve(subsequent), source.density.nbytes + 4096 * 6)
+        self.assertEqual(persistence_image_reserve(first), source.density.nbytes + 4 * 4096 * 5)
+        self.assertEqual(persistence_image_reserve(subsequent), source.density.nbytes + 4 * 4096 * 6)
         direct = replace(subsequent, policy=PersistenceImagePolicy(2, PersistenceRenderMode.DIRECT, True))
-        self.assertEqual(persistence_image_reserve(direct), source.density.nbytes + 4096 * 5)
+        self.assertEqual(persistence_image_reserve(direct), source.density.nbytes + 4 * 4096 * 5)
 
     def test_bit_exact_direct_visual_against_existing_overlay_with_missing_and_layouts(self):
         scene = SpectrumScene()

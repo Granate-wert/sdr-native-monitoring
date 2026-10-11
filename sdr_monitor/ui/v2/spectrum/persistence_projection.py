@@ -10,6 +10,7 @@ or transfer changes, and reject stale source/policy/history before image upload.
 import hashlib
 import importlib
 import weakref
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import cache
 from typing import Callable
@@ -181,6 +182,55 @@ def _validate_image(image: np.ndarray) -> None:
         raise ValueError("prepared persistence image must be owned read-only C float32")
 
 
+def _contiguous_batch(density: np.ndarray, history: np.ndarray | None) -> bool:
+    # Subclass indexing/selection semantics and arbitrary strides retain the
+    # original row path; reshape is a view only for these plain C arrays.
+    return (type(density) is np.ndarray and density.flags.c_contiguous
+            and (history is None or type(history) is np.ndarray and history.flags.c_contiguous))
+
+
+def _persistence_chunks(density: np.ndarray, batched: bool) -> Iterator[tuple[int | None, int, np.ndarray]]:
+    if batched:
+        values = density.reshape(-1)
+        for first in range(0, values.size, IMAGE_BATCH):
+            yield None, first, values[first:first + IMAGE_BATCH]
+    else:
+        for row_index, row in enumerate(density):
+            for first in range(0, row.size, IMAGE_BATCH):
+                yield row_index, first, row[first:first + IMAGE_BATCH]
+
+
+def _original_row_chunks(density: np.ndarray, first: int, last: int) -> Iterator[tuple[int, int, np.ndarray]]:
+    """Intersect one flat batch with ORIGINAL row-chunk zero-shortcut domains."""
+    width = density.shape[1]
+    for row_index in range(first // width, (last - 1) // width + 1):
+        row_start = row_index * width
+        left, right = max(0, first - row_start), min(width, last - row_start)
+        for column in range(left // IMAGE_BATCH * IMAGE_BATCH, right, IMAGE_BATCH):
+            end = min(column + IMAGE_BATCH, width)
+            yield row_start + column, row_start + end, density[row_index, column:end]
+
+
+def _map_contiguous_batch(density: np.ndarray, first: int, source: np.ndarray,
+                          mapped: np.ndarray, *, value_mode: DensityValueMode,
+                          logarithmic: bool, maximum: float) -> None:
+    last = first + source.size
+    # A mixed batch must not turn a formerly all-signed-zero row chunk into a
+    # log/clip participant. Nor may a zero flat subsection of a nonzero original
+    # row chunk gain the identity shortcut. Inspect those same original domains.
+    all_zero = all(row[0] == 0.0 and not np.any(row)
+                   for _, _, row in _original_row_chunks(density, first, last))
+    if all_zero:
+        np.copyto(mapped, source)
+        return
+    map_density_row_for_display(source, value_mode=value_mode,
+        logarithmic=logarithmic, count_maximum=maximum, out=mapped)
+    for left, right, row in _original_row_chunks(density, first, last):
+        if row[0] == 0.0 and not np.any(row):
+            start, end = max(first, left), min(last, right)
+            np.copyto(mapped[start - first:end - first], row[start - left:end - left])
+
+
 def persistence_image_reserve(request: PersistenceImageRequest) -> int:
     """Output plus bounded NumPy mapping/reduction scratch, not Qt/native RSS.
 
@@ -191,10 +241,11 @@ def persistence_image_reserve(request: PersistenceImageRequest) -> int:
     6 bytes/cell with history. Each chunk is at most IMAGE_BATCH cells.
     """
     density = request.view.density
-    batch = min(IMAGE_BATCH, density.shape[1])
+    history = _compatible_history(request)
+    batch = min(IMAGE_BATCH, density.size if _contiguous_batch(density, history) else density.shape[1])
     hash_scratch = (persistence_witness_scratch(request.view)
                     if request.policy.mode is PersistenceRenderMode.VISUAL else 0)
-    mapping_bytes_per_cell = max(6 if _compatible_history(request) is not None else 5,
+    mapping_bytes_per_cell = max(6 if history is not None else 5,
                                  density.dtype.itemsize + 1)
     return int(density.size * 4 + max(batch * mapping_bytes_per_cell, hash_scratch))
 
@@ -232,54 +283,55 @@ def prepare_persistence_image(request: PersistenceImageRequest, *,
                                         (weakref.ref(history) if trusted_history else None),
                                         (_WORKER_IMAGE_TOKEN if trusted_history else None))
     maximum = 0.0
+    batched = _contiguous_batch(view.density, history)
     if view.value_mode is DensityValueMode.COUNT:
         # Same global finite maximum as the GUI transfer without a full-matrix
         # finite selection. Cancellation remains bounded by one chunk.
-        for row in view.density:
-            for first in range(0, row.size, IMAGE_BATCH):
-                check_cancelled(cancelled)
-                chunk = row[first:first + IMAGE_BATCH]
-                finite = chunk[np.isfinite(chunk)]
-                if finite.size:
-                    maximum = max(maximum, float(np.max(finite)))
-                # Drop this allocation before evaluating the next selection;
-                # assignment would otherwise overlap old/new finite buffers.
-                del finite
+        for _, _, chunk in _persistence_chunks(view.density, batched):
+            check_cancelled(cancelled)
+            finite = chunk[np.isfinite(chunk)]
+            if finite.size:
+                maximum = max(maximum, float(np.max(finite)))
+            # Drop this allocation before evaluating the next selection;
+            # assignment would otherwise overlap old/new finite buffers.
+            del finite
         # Do not keep the last reduction scratch alive during image mapping.
         del chunk
     image = np.empty(view.density.shape, dtype=np.float32)
+    batch = min(IMAGE_BATCH, image.size if batched else image.shape[1])
     scratch = (None if history is None else
-               np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.float32))
+               np.empty(batch, dtype=np.float32))
     mask = (None if history is None else
-            np.empty(min(IMAGE_BATCH, image.shape[1]), dtype=np.bool_))
+            np.empty(batch, dtype=np.bool_))
     native_smoothing = _visual_smoothing_kernel() if trusted_history else None
-    for row_index, source_row in enumerate(view.density):
-        for first in range(0, source_row.size, IMAGE_BATCH):
-            check_cancelled(cancelled)
-            source = source_row[first:first + IMAGE_BATCH]
-            target = image[row_index, first:first + IMAGE_BATCH]
-            mapped = target if scratch is None else scratch[:source.size]
-            if source.flags.c_contiguous and source[0] == 0.0 and not np.any(source):
-                # All measured cells are signed zero: transfer is identity in
-                # every mode. Avoid finite-mask/fill/clip passes, not cells or
-                # validation. Nonfinite chunks cannot enter this branch. Visual
-                # decay below must still execute against the accepted history.
-                np.copyto(mapped, source)
+    output = image.reshape(-1) if batched else image
+    previous = history.reshape(-1) if batched and history is not None else history
+    for row_index, first, source in _persistence_chunks(view.density, batched):
+        check_cancelled(cancelled)
+        index = slice(first, first + source.size) if batched else (row_index, slice(first, first + source.size))
+        target = output[index]
+        mapped = target if scratch is None else scratch[:source.size]
+        if batched:
+            _map_contiguous_batch(view.density, first, source, mapped,
+                value_mode=view.value_mode, logarithmic=request.policy.logarithmic, maximum=maximum)
+        elif source.flags.c_contiguous and source[0] == 0.0 and not np.any(source):
+            # Preserve the unchanged strided/subclass row-shortcut semantics.
+            np.copyto(mapped, source)
+        else:
+            map_density_row_for_display(source, value_mode=view.value_mode,
+                logarithmic=request.policy.logarithmic, count_maximum=maximum, out=mapped)
+        if previous is not None:
+            old = previous[index]
+            if native_smoothing is not None:
+                native_smoothing(mapped, old, target)
             else:
-                map_density_row_for_display(source, value_mode=view.value_mode,
-                    logarithmic=request.policy.logarithmic, count_maximum=maximum, out=mapped)
-            if history is not None:
-                old = history[row_index, first:first + IMAGE_BATCH]
-                if native_smoothing is not None:
-                    native_smoothing(mapped, old, target)
-                else:
-                    assert mask is not None
-                    row_mask = mask[:source.size]
-                    np.subtract(mapped, old, out=target)
-                    np.multiply(target, .18, out=target)
-                    np.greater_equal(mapped, old, out=row_mask)
-                    np.multiply(target, .65 / .18, out=target, where=row_mask)
-                    np.add(old, target, out=target)
+                assert mask is not None
+                row_mask = mask[:source.size]
+                np.subtract(mapped, old, out=target)
+                np.multiply(target, .18, out=target)
+                np.greater_equal(mapped, old, out=row_mask)
+                np.multiply(target, .65 / .18, out=target, where=row_mask)
+                np.add(old, target, out=target)
     check_cancelled(cancelled)
     image.setflags(write=False)
     return PreparedPersistenceImage(view, request.policy, request.history_revision, image, maximum,
