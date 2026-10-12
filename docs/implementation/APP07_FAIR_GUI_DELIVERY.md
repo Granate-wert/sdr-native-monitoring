@@ -188,3 +188,17 @@ percentage; only removal of repeated work is established. No Qt responsiveness,
 acquisition throughput, physical RX, new EXE, whole-release or APP-07 closure
 claim follows. Independent review covered the revised UI-facing completion
 contract, not independent approval of this backend patch or release.
+
+## Increment152: bounded agent organization
+
+The accepted [agent workflow](APP07_AGENT_WORKFLOW.md) assigns one finite packet,
+one UI/measurement author, a distinct frozen-source reviewer and the same Luna
+roadmap maintainer. Root retains backend/native/RX, provenance and integration.
+Mode, exact ownership, stop conditions and evidence scope are explicit; M7 and
+M8 have separate completion gates. No recursive delegation or repeated full
+qualification for a documentation change is part of this workflow.
+
+The existing private Qt instrument was repaired and underwent one short synthetic
+preflight. This is instrument validation only, not a product speedup, sustained
+processing baseline, physical RX or release qualification. Full creation is not
+full consumption; Stop abandonment and incomplete optional telemetry stay explicit.
