@@ -573,16 +573,24 @@ class PaneResourceSession:
         return self._delivery_ledger.reconcile_ui_stop_cleared(refs)
 
     def _bind_delivery_obligations(self, deliveries: tuple[PaneDelivery, ...]) -> tuple[PaneDelivery, ...]:
-        # One cached read per resource/batch, including BOTH paired receivers.
-        # Optional diagnostic failure never invalidates an admitted measurement.
+        # Spectrum-only RTBW uses analytical refs directly and cannot consume
+        # layer journals; omit that optional cached telemetry read on exact inputs.
+        spectrum_only = type(deliveries) is tuple and all(
+            type(item) is PaneDelivery
+            and type(item.bundle) is AnalyzerFrameBundle
+            and type(item.bundle.spectrum) is LiveSpectrumFrame
+            and item.bundle.persistence is None
+            for item in deliveries
+        )
         journals: dict[str, tuple[LayerJournalSnapshot, ...]] = {}
-        for item in deliveries:
-            resource = item.physical_stream_resource_id
-            if resource not in journals:
-                try:
-                    journals[resource] = cached_layer_journals(self._runtimes[resource].owner)
-                except Exception:  # noqa: BLE001 - telemetry is not RX/measurement control.
-                    journals[resource] = ()
+        if not spectrum_only:
+            for item in deliveries:
+                resource = item.physical_stream_resource_id
+                if resource not in journals:
+                    try:
+                        journals[resource] = cached_layer_journals(self._runtimes[resource].owner)
+                    except Exception:  # noqa: BLE001 - telemetry is not RX/measurement control.
+                        journals[resource] = ()
         result = []
         for item in deliveries:
             runtime = self._runtimes[item.physical_stream_resource_id]
