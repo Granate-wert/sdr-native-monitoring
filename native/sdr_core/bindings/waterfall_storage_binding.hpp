@@ -281,6 +281,12 @@ inline void bind_waterfall_protected_storage(py::module_& module) {
         .def("clear", &WaterfallProtectedStorage::clear,
              "Zero all live rows and commit one revision on the creator thread.");
     module.attr("WATERFALL_PROTECTED_STORAGE_PROTOCOL_VERSION") = 1;
+    module.attr("WATERFALL_PROTECTED_ACCOUNTING_PROTOCOL_VERSION") = 1;
+    module.def("waterfall_storage_types", []() {
+        return py::make_tuple(py::type::of<WaterfallProtectedStorage>(),
+                              py::type::of<WaterfallFloatBuffer>(),
+                              py::type::of<WaterfallRevisionBuffer>());
+    });
 }
 
 }  // namespace sdr_core::python

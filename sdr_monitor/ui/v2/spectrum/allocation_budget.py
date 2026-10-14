@@ -6,10 +6,9 @@ Reservations cover retained outputs, NOT numerical scratch/native/Qt capacity.
 No payload is strongly retained here and no GUI callback runs on root release.
 """
 from dataclasses import dataclass
+from typing import Hashable
 from threading import RLock
 import weakref
-
-import numpy as np
 
 from .retained_bytes import retained_roots
 
@@ -37,12 +36,45 @@ class PresentationAllocationBudget:
             raise ValueError("presentation allocation budget must be a positive integer")
         self.limit_bytes = limit_bytes
         self._lock = RLock()
-        self._roots: dict[int, tuple[int, dict[int, weakref.ReferenceType]]] = {}
+        self._roots: dict[Hashable, tuple[int, dict[int, weakref.ReferenceType]]] = {}
+        self._waterfall_storage_support = None
         self._observed = self._reserved = self._peak = self._rejections = 0
+
+    def install_waterfall_storage_support(self, support) -> bool:
+        """Install one admitted native runtime before its arrays are observed."""
+        if support is None:
+            return False
+        from ..waterfall.protected_storage import (
+            is_issued_waterfall_storage_support,
+        )
+
+        if not is_issued_waterfall_storage_support(support):
+            return False
+        with self._lock:
+            current = self._waterfall_storage_support
+            if current is None:
+                self._waterfall_storage_support = support
+                return True
+            return current.module is support.module
+
+    def waterfall_storage_support(self):
+        """Use an admitted runtime, refreshing an absent slot on every call."""
+        import sys
+
+        from ..waterfall.protected_storage import loaded_waterfall_storage_support
+
+        candidate = loaded_waterfall_storage_support()
+        if candidate is None:
+            if "sdr_monitor._sdr_native" in sys.modules:
+                return None
+            return self._waterfall_storage_support
+        if not self.install_waterfall_storage_support(candidate):
+            return None
+        return self._waterfall_storage_support
 
     def observe(self, *publications: object) -> None:
         """Charge existing source storage even if that puts the ledger over limit."""
-        roots = retained_roots(*publications)
+        roots = retained_roots(*publications, support=self._waterfall_storage_support)
         with self._lock:
             self._observe(roots)
 
@@ -53,7 +85,7 @@ class PresentationAllocationBudget:
         roots jointly with derived outputs, not the backend's transient/RSS use.
         Array-free lifecycle notifications always pass, including during pressure.
         """
-        roots = retained_roots(*publications)
+        roots = retained_roots(*publications, support=self._waterfall_storage_support)
         if not roots:
             return True
         with self._lock:
@@ -65,7 +97,7 @@ class PresentationAllocationBudget:
             self._observe(roots)
             return True
 
-    def _observe(self, roots: dict[int, tuple[int, dict[int, np.ndarray]]]) -> None:
+    def _observe(self, roots: dict[Hashable, tuple[int, dict[int, object]]]) -> None:
         for key, (size, arrays) in roots.items():
             old_size, aliases = self._roots.get(key, (0, {}))
             for root_id, root in arrays.items():
@@ -87,7 +119,7 @@ class PresentationAllocationBudget:
     def reserve(self, output_bytes: int, *sources: object) -> "AllocationReservation":
         if isinstance(output_bytes, bool) or not isinstance(output_bytes, int) or output_bytes < 0:
             raise ValueError("output reservation must be a non-negative integer")
-        roots = retained_roots(*sources)
+        roots = retained_roots(*sources, support=self._waterfall_storage_support)
         with self._lock:
             self._observe(roots)
             if self._observed + self._reserved + output_bytes > self.limit_bytes:
@@ -109,8 +141,8 @@ class AllocationReservation:
 
     def commit(self, *outputs: object) -> None:
         """Exchange reserved bytes for actual roots before publishing outputs."""
-        roots = retained_roots(*outputs)
         budget = self._budget
+        roots = retained_roots(*outputs, support=budget._waterfall_storage_support)
         with budget._lock:
             if self._closed:
                 raise RuntimeError("allocation reservation is already closed")

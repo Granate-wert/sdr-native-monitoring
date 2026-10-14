@@ -8,7 +8,7 @@ from typing import Literal
 import numpy as np
 
 from .sweep_rows import SweepRowStamp
-from ..spectrum.allocation_budget import PresentationAllocationBudget
+from ..spectrum.allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
 
 _MEBIBYTE = 1024 * 1024
 
@@ -62,9 +62,13 @@ DEFAULT_WATERFALL_PRESENTATION_BUDGET = WaterfallPresentationBudget()
 class BoundedWaterfallRing:
     """A single fixed float32 ring exposed as at most two zero-copy tiles."""
 
-    def __init__(self, rows: int, columns: int) -> None:
+    def __init__(self, rows: int, columns: int, *, _protected=None) -> None:
         DEFAULT_WATERFALL_PRESENTATION_BUDGET.estimate(rows, columns)
-        self._data: np.ndarray = np.zeros((int(rows), int(columns)), dtype=np.float32)
+        self._protected_storage = None if _protected is None else _protected[0]
+        self._protected_revisions = None if _protected is None else _protected[1]
+        self._protected_scratch = None if _protected is None else _protected[2]
+        self._data: np.ndarray = (np.zeros((int(rows), int(columns)), dtype=np.float32)
+                                  if _protected is None else _protected[3])
         # Keep one scalar timestamp per retained presentation row.  It is
         # deliberately separate from the image tiles, so irregular producer
         # time is neither resampled nor silently turned into render cadence.
@@ -89,8 +93,29 @@ class BoundedWaterfallRing:
     def count(self) -> int:
         return self._count
 
+    @property
+    def protected_data(self) -> np.ndarray | None:
+        """Live readonly protected rows, not an immutable publication receipt."""
+        self._guard_protected_thread()
+        return self._data if self._protected_storage is not None else None
+
+    @property
+    def protected_row_revisions(self) -> np.ndarray | None:
+        """Live readonly native row revisions for a future bounded raster path."""
+        self._guard_protected_thread()
+        return self._protected_revisions
+
+    @property
+    def protected_revision(self) -> int | None:
+        """Creator-thread guarded native revision; None on the generic path."""
+        return None if self._protected_storage is None else self._protected_storage.revision
+
     def clear(self) -> None:
-        self._data.fill(0.0)
+        self._guard_protected_thread()
+        if self._protected_storage is None:
+            self._data.fill(0.0)
+        else:
+            self._protected_storage.clear()
         self._write_index = 0
         self._count = 0
         self._sweep_stamps[:] = [None] * self.rows
@@ -103,6 +128,9 @@ class BoundedWaterfallRing:
         row = np.asarray(values, dtype=np.float32)
         if row.ndim != 1 or row.size != self.columns:
             raise ValueError("waterfall row width changed")
+        self._guard_protected_thread()
+        if self._protected_storage is not None:
+            self._write_protected_row(self._write_index, row)
         evicted = self._sweep_stamps[self._write_index]
         if evicted is not None:
             del self._sweep_indices[(evicted.acquisition_epoch, evicted.sequence)]
@@ -112,7 +140,8 @@ class BoundedWaterfallRing:
             self._sweep_epoch = sweep_stamp.acquisition_epoch
             self._sweep_epoch_set = True
             self._latest_sweep_sequence = sweep_stamp.sequence
-        self._data[self._write_index, :] = row
+        if self._protected_storage is None:
+            self._data[self._write_index, :] = row
         self._timestamps_ns[self._write_index] = timestamp_ns
         self._write_index = (self._write_index + 1) % self.rows
         self._count = min(self._count + 1, self.rows)
@@ -128,6 +157,7 @@ class BoundedWaterfallRing:
         row = np.asarray(values, dtype=np.float32)
         if row.ndim != 1 or row.size != self.columns:
             raise ValueError("waterfall row width changed")
+        self._guard_protected_thread()
         if self._sweep_epoch_set and stamp.acquisition_epoch != self._sweep_epoch:
             return "reject"
         index = self._sweep_indices.get((stamp.acquisition_epoch, stamp.sequence))
@@ -135,7 +165,10 @@ class BoundedWaterfallRing:
             previous = self._sweep_stamps[index]
             if previous is None or not stamp.supersedes(previous):
                 return "reject"
-            self._data[index, :] = row
+            if self._protected_storage is None:
+                self._data[index, :] = row
+            else:
+                self._write_protected_row(index, row)
             self._sweep_stamps[index] = stamp
             return "replace"
         if self._latest_sweep_sequence is not None and stamp.sequence <= self._latest_sweep_sequence:
@@ -150,6 +183,7 @@ class BoundedWaterfallRing:
         row with no stamp/time marks a scheduled absence, not a measured RF
         gap or another pass. Late updates from retained old epochs are refused.
         """
+        self._guard_protected_thread()
         if (not self._count or not self._sweep_epoch_set or self._sweep_epoch is None
                 or stamp.acquisition_epoch is None or stamp.acquisition_epoch <= self._sweep_epoch):
             return False
@@ -157,6 +191,21 @@ class BoundedWaterfallRing:
         self._sweep_epoch = stamp.acquisition_epoch
         self._latest_sweep_sequence = None
         return True
+
+    def _guard_protected_thread(self) -> None:
+        if self._protected_storage is not None:
+            # The native getter proves creator authority before shared scratch
+            # or Python ring metadata can be touched; write_row keeps its guard.
+            self._protected_storage.revision
+
+    def _write_protected_row(self, index: int, row: np.ndarray) -> None:
+        scratch = self._protected_scratch
+        assert scratch is not None and self._protected_storage is not None
+        values = row
+        if not row.flags.c_contiguous:
+            np.copyto(scratch, row, casting="no")
+            values = scratch
+        self._protected_storage.write_row(index, values)
 
     def chronological_sweep_stamps(self) -> tuple[SweepRowStamp | None, ...]:
         if self._count < self.rows or self._write_index == 0:
@@ -166,6 +215,7 @@ class BoundedWaterfallRing:
     def chronological_tiles(self) -> tuple[np.ndarray, ...]:
         """Return oldest→newest views with no concatenated staging image."""
 
+        self._guard_protected_thread()
         if self._count == 0:
             return ()
         if self._count < self.rows or self._write_index == 0:
@@ -195,6 +245,16 @@ class BoundedWaterfallRenderer:
         DEFAULT_WATERFALL_PRESENTATION_BUDGET.estimate(rows, columns)
         if self.allocation_budget is None:
             return BoundedWaterfallRing(rows, columns)
+        # The protected ABI accepts only the same builtin dimensions as its
+        # constructor. Preserve legacy coercion/error behavior for other ints.
+        if type(rows) is int and type(columns) is int:
+            support = self.allocation_budget.waterfall_storage_support()
+        else:
+            support = None
+        if support is not None:
+            protected = self._try_new_protected_ring(rows, columns, support)
+            if protected is not None:
+                return protected
         # Old ring/tiles remain charged until all actual image consumers drop
         # them. Resizing cannot assume assignment immediately frees that data.
         with self.allocation_budget.reserve(int(rows * (columns * 4 + 8))) as allocation:
@@ -202,11 +262,38 @@ class BoundedWaterfallRenderer:
             allocation.commit(ring._data, ring._timestamps_ns)
             return ring
 
+    def _try_new_protected_ring(self, rows: int, columns: int, support) -> BoundedWaterfallRing | None:
+        payload = rows * columns * 4 + rows * 8 + rows * 8 + columns * 4
+        reservation = None
+        try:
+            if not self.allocation_budget.install_waterfall_storage_support(support):
+                return None
+            reservation = self.allocation_budget.reserve(payload)
+            controller = support.controller_type(rows, columns)
+            data = controller.data
+            revisions = controller.row_revisions
+            scratch = np.empty(columns, dtype=np.float32)
+            ring = BoundedWaterfallRing(
+                rows, columns, _protected=(controller, revisions, scratch, data),
+            )
+            reservation.commit(data, revisions, scratch, ring._timestamps_ns)
+            return ring
+        except (MemoryError, PresentationBudgetExceeded):
+            if reservation is not None:
+                reservation.close()
+            return None
+        except BaseException:
+            if reservation is not None:
+                reservation.close()
+            raise
+
     @property
     def buffer(self) -> BoundedWaterfallRing | None:
         return self._buffer
 
     def reset(self) -> None:
+        if self._buffer is not None:
+            self._buffer._guard_protected_thread()
         self._buffer = None
 
     def clear(self) -> None:
@@ -223,6 +310,7 @@ class BoundedWaterfallRenderer:
         buffer = self._buffer
         if buffer is None or buffer.rows == int(rows):
             return
+        buffer._guard_protected_thread()
         replacement = self._new_ring(int(rows), buffer.columns)
         retained = min(buffer.count, replacement.rows)
         skip = buffer.count - retained
@@ -244,6 +332,8 @@ class BoundedWaterfallRenderer:
     def append(self, values: np.ndarray, *, rows: int, timestamp_ns: int) -> None:
         columns = int(np.asarray(values).size)
         if self._buffer is None or self._buffer.rows != rows or self._buffer.columns != columns:
+            if self._buffer is not None:
+                self._buffer._guard_protected_thread()
             self._buffer = self._new_ring(rows, columns)
         self._buffer.append(values, timestamp_ns=timestamp_ns)
 
@@ -253,6 +343,8 @@ class BoundedWaterfallRenderer:
     def upsert_sweep(self, values: np.ndarray, *, rows: int, stamp: SweepRowStamp) -> Literal["append", "replace", "reject"]:
         columns = int(np.asarray(values).size)
         if self._buffer is None or self._buffer.rows != rows or self._buffer.columns != columns:
+            if self._buffer is not None:
+                self._buffer._guard_protected_thread()
             self._buffer = self._new_ring(rows, columns)
         return self._buffer.upsert_sweep(values, stamp)
 
