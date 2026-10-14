@@ -4,6 +4,7 @@
 #include "hackrf_binding.hpp"
 #include "lifecycle_binding.hpp"
 #include "calibration_binding.hpp"
+#include "waterfall_storage_binding.hpp"
 #if SDR_CORE_PLUTO_COMPILED
 #include "pluto_binding.hpp"
 #endif
@@ -46,6 +47,7 @@ PYBIND11_MODULE(_sdr_native, module) {
     py::register_exception<sdr_core::OperationCancelled>(module, "OperationCancelled", native_error.ptr());
 
     sdr_core::python::bind_contracts(module);
+    sdr_core::python::bind_waterfall_protected_storage(module);
     sdr_core::python::bind_calibration(module);
     sdr_core::python::bind_auxiliary_contracts(module);
     sdr_core::python::bind_synthetic(module);
