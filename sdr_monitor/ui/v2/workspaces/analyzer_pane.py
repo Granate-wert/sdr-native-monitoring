@@ -22,7 +22,7 @@ from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 
 from ..i18n import text
 from ..spectrum import PersistenceDensityFrame
-from ..spectrum.allocation_budget import PresentationBudgetExceeded
+from ..spectrum.allocation_budget import PresentationAllocationBudget, PresentationBudgetExceeded
 from ..spectrum.contracts import PreparedSpectrumFrame, TraceKind
 from ..spectrum.projection import SpectrumProjector
 from ..state.analyzer_layers import persistence_density_from_sweep, waterfall_line_from_sweep
@@ -38,11 +38,17 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
     """Apply one coherent Analyzer state to one local pair of graph canvases."""
 
     def __init__(self, initial_mode: AnalyzerMode, *, projector: SpectrumProjector | None = None,
+                 allocation_budget: PresentationAllocationBudget | None = None,
                  on_frame_applied: Callable[[], None] | None = None,
                  settings: QSettings | None = None,
                  settings_prefix: str | None = None,
                  pane_number: int = 1,
                  parent: QWidget | None = None) -> None:
+        if allocation_budget is not None and not isinstance(allocation_budget, PresentationAllocationBudget):
+            raise TypeError("Analyzer pane allocation budget must be a shared presentation ledger")
+        if (allocation_budget is not None and projector is not None
+                and projector.allocation_budget is not allocation_budget):
+            raise ValueError("Analyzer pane projector and Waterfall must share one allocation budget")
         if type(pane_number) is not int or not 1 <= pane_number <= 4:
             raise ValueError("Analyzer pane number must be in [1, 4]")
         if settings_prefix is None:
@@ -71,7 +77,10 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
         self.set_badge_locale()
         if projector is not None:
             self.spectrum_scene.set_projection_port(projector)
-            self.waterfall_pane._renderer.allocation_budget = projector.allocation_budget
+        selected_budget = allocation_budget
+        if selected_budget is None and projector is not None:
+            selected_budget = projector.allocation_budget
+        self.waterfall_pane._renderer.allocation_budget = selected_budget
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

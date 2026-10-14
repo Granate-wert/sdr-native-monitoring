@@ -158,6 +158,7 @@ class IndependentPaneBoardV2(QWidget):
                     projector_ids.add(id(projector))
                 pane = AnalyzerPaneViewV2(
                     binding.mode, pane_number=slot.number, projector=projector,
+                    allocation_budget=preparer.allocation_budget,
                     settings=settings,
                     settings_prefix=f"ui_v2/analyzer/resource_pane{slot.number}/v1",
                     parent=cell)
