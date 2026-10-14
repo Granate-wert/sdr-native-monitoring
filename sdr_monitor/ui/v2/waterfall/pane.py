@@ -37,6 +37,7 @@ from ..spectrum.plot_terminal import (
 )
 from .axis import WaterfallTimeAxis
 from .bounded_ring import BoundedWaterfallRenderer, DEFAULT_WATERFALL_PRESENTATION_BUDGET
+from .incremental_raster import WaterfallImageItem, WaterfallRasterCache
 from .contracts import (
     WaterfallDirection,
     WaterfallDisplayConfig,
@@ -98,6 +99,8 @@ class WaterfallPane(QWidget):
         self._locale = locale
         self._config = WaterfallDisplayConfig()
         self._renderer = BoundedWaterfallRenderer()
+        self._raster_cache = WaterfallRasterCache()
+        self._raster_ring = None
         self._grid_signature: WaterfallGridSignature | None = None
         self._epoch = 0
         self._last_admitted_timestamp_ns: int | None = None
@@ -143,6 +146,17 @@ class WaterfallPane(QWidget):
     @property
     def metrics(self) -> WaterfallPaneMetrics:
         return self._metrics
+
+    @property
+    def raster_metrics(self) -> tuple[int, int, int, int, int, int, int]:
+        """Cumulative scalar cache work; not a paint-rate or latency receipt."""
+        cache = self._raster_cache
+        return (
+            cache.converted_rows, cache.converted_pixels, cache.converted_runs,
+            cache.reused_rows, cache.fast_render_prepares, cache.fallback_requests,
+            sum(item.raster_fast_renders + item.raster_fallback_renders
+                for item in self._image_items),
+        )
 
     @property
     def grid_signature(self) -> WaterfallGridSignature | None:
@@ -317,6 +331,7 @@ class WaterfallPane(QWidget):
                 except PresentationBudgetExceeded:
                     self._status.setText(text("waterfall.memory_limited"))
                     return False
+                self._retire_raster_epoch()
                 self._grid_signature = signature
                 self._epoch += 1
                 self._last_admitted_timestamp_ns = None
@@ -398,6 +413,7 @@ class WaterfallPane(QWidget):
                 == previous_signature
             )
             if compatible_handoff and self._renderer.append_sweep_separator(stamp=update.stamp):
+                self._retire_raster_epoch()
                 self._grid_signature = signature
                 self._epoch += 1
                 self._set_metrics(presentation_gap_rows=self._metrics.presentation_gap_rows + 1)
@@ -731,6 +747,7 @@ class WaterfallPane(QWidget):
         lookup = waterfall_lookup_table(proposal.palette)
         for item in self._image_items:
             item.setLookupTable(lookup)
+            item.update_raster_policy((proposal.level_min, proposal.level_max), lookup)
         self._set_metrics(palette_only_updates=self._metrics.palette_only_updates + 1)
         self._sync_controls()
         self._schedule_settings_write()
@@ -742,6 +759,10 @@ class WaterfallPane(QWidget):
         self._config = proposal
         for item in self._image_items:
             item.setLevels((proposal.level_min, proposal.level_max))
+            item.update_raster_policy(
+                (proposal.level_min, proposal.level_max),
+                item.lut,
+            )
         self._set_metrics(level_only_updates=self._metrics.level_only_updates + 1)
         self._sync_controls()
         self._schedule_settings_write()
@@ -838,7 +859,7 @@ class WaterfallPane(QWidget):
         self._view_box.invertY(True)
         self._image_items: list[pg.ImageItem] = []
         for _ in range(_IMAGE_TILE_CAPACITY):
-            image = pg.ImageItem(axisOrder="row-major")
+            image = WaterfallImageItem()
             image.setZValue(-20)
             image.setVisible(False)
             self._plot_item.addItem(image)
@@ -934,6 +955,13 @@ class WaterfallPane(QWidget):
         self._hide_tiles()
         self._status.setText(text("waterfall.new_grid", epoch=self._epoch))
 
+    def _retire_raster_epoch(self) -> None:
+        """Invalidate color only, retaining same-grid authoritative row history."""
+        for item in self._image_items:
+            if isinstance(item, WaterfallImageItem):
+                item.retire_raster_view()
+        self._raster_cache.retire()
+
     def _apply_history_configuration(self, proposal: WaterfallDisplayConfig) -> None:
         """Commit controls/settings only after the existing ring admits resize.
 
@@ -946,6 +974,14 @@ class WaterfallPane(QWidget):
         try:
             if signature is not None:
                 rows, _ = proposal.dimensions(signature.columns)
+                # The optional colour plane must not make an otherwise valid
+                # original history resize fail. Retire its item QImages first;
+                # the float rows remain available for original-render fallback.
+                for item in self._image_items:
+                    if isinstance(item, WaterfallImageItem):
+                        item.retire_raster_view()
+                self._raster_cache.retire()
+                self._raster_ring = None
                 self._renderer.resize_rows(rows)
         except PresentationBudgetExceeded:
             self._capacity_change_rejected = True
@@ -988,6 +1024,7 @@ class WaterfallPane(QWidget):
         if signature is None:
             self._hide_tiles()
             return
+        ring = self._renderer.buffer
         tiles = self._renderer.tiles()
         if len(tiles) > _IMAGE_TILE_CAPACITY:
             raise RuntimeError("waterfall renderer exceeded fixed two-tile presentation capacity")
@@ -995,19 +1032,37 @@ class WaterfallPane(QWidget):
         if not tiles or row_count == 0:
             self._hide_tiles()
             return
+        if ring is None:
+            raise RuntimeError("waterfall tiles exist without their source ring")
+        spans = ring.chronological_spans()
+        if len(spans) != len(tiles) or any(
+                tile.shape[0] != count for tile, (_start, count) in zip(tiles, spans)):
+            raise RuntimeError("waterfall physical spans do not match chronological tiles")
+        if self._raster_ring is not ring:
+            for image in self._image_items:
+                image.clear()
+            self._raster_cache.retire()
+            self._raster_ring = ring
         width = signature.last_edge_hz - signature.first_edge_hz
         row_offset = 0
         capacity_rows, _ = self._config.dimensions(signature.columns)
         uploads = 0
-        for index, tile in enumerate(tiles):
+        expected_levels = (self._config.level_min, self._config.level_max)
+        expected_lut = waterfall_lookup_table(self._config.palette)
+        for index, (tile, (physical_start, physical_count)) in enumerate(zip(tiles, spans)):
             height = int(tile.shape[0])
             image = self._image_items[index]
-            image.setLookupTable(waterfall_lookup_table(self._config.palette))
+            image.setLookupTable(expected_lut)
             image.setImage(
                 tile,
                 autoLevels=False,
                 levels=(self._config.level_min, self._config.level_max),
             )
+            if isinstance(image, WaterfallImageItem):
+                image.bind_raster(
+                    self._raster_cache, ring, tile, physical_start, physical_count,
+                    expected_levels, expected_lut,
+                )
             if self._config.direction is WaterfallDirection.NEWEST_AT_TOP:
                 image.setRect(
                     QRectF(
@@ -1041,6 +1096,8 @@ class WaterfallPane(QWidget):
         for image in self._image_items:
             image.clear()
             image.setVisible(False)
+        self._raster_cache.retire()
+        self._raster_ring = None
 
     def _update_time_axis(self) -> None:
         if not self._presentation_active:

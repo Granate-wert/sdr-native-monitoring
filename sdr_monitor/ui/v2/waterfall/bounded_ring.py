@@ -67,8 +67,12 @@ class BoundedWaterfallRing:
         self._protected_storage = None if _protected is None else _protected[0]
         self._protected_revisions = None if _protected is None else _protected[1]
         self._protected_scratch = None if _protected is None else _protected[2]
+        self._protected_support = None
+        self._protected_budget = None
         self._data: np.ndarray = (np.zeros((int(rows), int(columns)), dtype=np.float32)
                                   if _protected is None else _protected[3])
+        self._protected_data_owner = self._data if _protected is not None else None
+        self._protected_revision_owner = self._protected_revisions
         # Keep one scalar timestamp per retained presentation row.  It is
         # deliberately separate from the image tiles, so irregular producer
         # time is neither resampled nor silently turned into render cadence.
@@ -222,6 +226,32 @@ class BoundedWaterfallRing:
             return (self._data[: self._count],)
         return (self._data[self._write_index :], self._data[: self._write_index])
 
+    def chronological_spans(self) -> tuple[tuple[int, int], ...]:
+        """Return oldest-first physical row ranges aligned with chronological_tiles."""
+        self._guard_protected_thread()
+        if self._count == 0:
+            return ()
+        if self._count < self.rows or self._write_index == 0:
+            return ((0, self._count),)
+        return ((self._write_index, self.rows - self._write_index),
+                (0, self._write_index))
+
+    def owns_chronological_tile(self, tile: object, start: int, count: int) -> bool:
+        """Prove an exact active physical slice, not merely a same-shaped image."""
+        self._guard_protected_thread()
+        if (self._protected_storage is None or self._data is not self._protected_data_owner
+                or self._protected_revisions is not self._protected_revision_owner
+                or type(tile) is not np.ndarray or type(start) is not int or type(count) is not int
+                or (start, count) not in self.chronological_spans()
+                or tile.dtype != np.float32 or tile.ndim != 2
+                or tile.shape != (count, self.columns) or not tile.flags.c_contiguous):
+            return False
+        expected = self._data[start:start + count]
+        return (tile.strides == expected.strides
+                and tile.__array_interface__["data"][0] == expected.__array_interface__["data"][0]
+                and np.shares_memory(tile, expected)
+                and np.shares_memory(tile, self._data))
+
     def chronological_timestamps_ns(self) -> np.ndarray:
         """Return an oldest-to-newest scalar view/copy-free slice pair collapsed only for axis use."""
 
@@ -276,6 +306,8 @@ class BoundedWaterfallRenderer:
             ring = BoundedWaterfallRing(
                 rows, columns, _protected=(controller, revisions, scratch, data),
             )
+            ring._protected_support = support
+            ring._protected_budget = self.allocation_budget
             reservation.commit(data, revisions, scratch, ring._timestamps_ns)
             return ring
         except (MemoryError, PresentationBudgetExceeded):
