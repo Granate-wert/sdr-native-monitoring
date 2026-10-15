@@ -8,9 +8,15 @@ waterfall presentation adapters are reused without changing its measurement.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+import weakref
+
+import numpy as np
 
 from sdr_monitor.domain.analyzer import AnalyzerFrameBundle
+from sdr_monitor.domain.identity import TimestampQuality
 from sdr_monitor.domain.live import LivePersistenceFrame, LiveSpectrumFrame
 from sdr_monitor.domain.pane_scheduler import CaptureMeasurementMode, PaneCrop, PaneLayout
 from sdr_monitor.domain.receiver_topology import AcquisitionGroup, ReceiverChainSelection, ReceiverEndpoint
@@ -21,16 +27,19 @@ from sdr_monitor.domain.pane_delivery_obligation import PaneDeliveryObligationRe
 from sdr_monitor.domain.pane_layer_identity import PaneDeliveryView
 from .v2_pane_obligation_refs import delivery_obligation_refs
 
-from .v2.spectrum.allocation_budget import PresentationAllocationBudget
-from .v2.spectrum.contracts import PreparedSpectrumFrame
+from .v2.spectrum.allocation_budget import AllocationReservation, PresentationAllocationBudget
+from .v2.spectrum.contracts import PreparedSpectrumFrame, SpectrumFrameView, validate_spectrum_source
 from .v2.spectrum.grid_baseline import MeasurementGridCache, _same_grid
 from .v2.spectrum.persistence_contracts import PersistenceDensityFrame
 from .v2.state.analyzer_layer_cache import AnalyzerLayerCache
 from .v2.state.analyzer_layers import (
-    persistence_density_from_sweep, waterfall_line_from_sweep,
+    persistence_density_from_sweep, validate_large_waterfall_geometry, waterfall_line_from_sweep,
 )
 from .v2.view_models.analyzer_view_model import AnalyzerMode
 from .v2.waterfall.contracts import SweepWaterfallLine, WaterfallLineFrame
+
+
+_FORCE_FULL_RTBW_OUTPUT: ContextVar[bool] = ContextVar("force_full_rtbw_output", default=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +163,62 @@ class ValidatedRtbwDisplayInput:
     waterfall: WaterfallLineFrame
     producer_source_id: str
     density_available: bool
+
+
+@dataclass(slots=True, weakref_slot=True)
+class DeferredRtbwDisplayInput:
+    """Worker-only selected-output token; owns one reserved Waterfall row lease."""
+    binding: PanePresentationBinding
+    delivery: PaneDelivery
+    producer_source_id: str
+    density_available: bool
+    grid_baseline: np.ndarray
+    reservation: AllocationReservation
+    _released: bool = field(default=False, init=False, repr=False)
+    _finalizer: weakref.finalize = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Direct callers may abandon this private worker token. Normal runtime
+        # paths still close explicitly; this fallback captures only the lease.
+        self._finalizer = weakref.finalize(self, self.reservation.close)
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._finalizer()
+
+
+def _selected_output_candidate(bundle: AnalyzerFrameBundle, view: SpectrumFrameView) -> bool:
+    """Conservative, signal-free eligibility for selected-only derived output."""
+    if type(bundle) is not AnalyzerFrameBundle or type(bundle.spectrum) is not LiveSpectrumFrame:
+        return False
+    frame = bundle.spectrum
+    frequencies, values = view.frequencies_hz, view.values
+    if (type(frequencies) is not np.ndarray or type(values) is not np.ndarray
+            or frequencies.ndim != 1 or values.ndim != 1
+            or frequencies.dtype != np.dtype(np.float64) or values.dtype != np.dtype(np.float32)
+            or values.size <= 2048 or frequencies.size != values.size
+            or not frequencies.flags.c_contiguous or not values.flags.c_contiguous
+            or frequencies.flags.writeable or values.flags.writeable):
+        return False
+    if (type(frame.timestamp_ns) is not int or type(frame.config_generation) is not int
+            or type(frame.sequence) is not int or type(frame.unit) is not str
+            or type(frame.timestamp_quality) is not TimestampQuality
+            or frame.clock_domain is not None and type(frame.clock_domain) is not str):
+        return False
+    # Classify IEEE payload bits as integers. Eligibility is only a scheduling
+    # hint; using floating-point predicates here could add callbacks/warnings
+    # to a source that must take the original full-construction fallback.
+    for first in range(0, values.size, 65536):
+        bits = values[first:first + 65536].view(np.uint32)
+        if not bool(np.all((bits & np.uint32(0x7F800000)) != np.uint32(0x7F800000))):
+            return False
+    for first in range(0, frequencies.size, 65536):
+        bits = frequencies[first:first + 65536].view(np.uint64)
+        if not bool(np.all((bits >= np.uint64(0x3FF0000000000000))
+                           & (bits <= np.uint64(0x426D1A94A2000000)))):
+            return False
+    return True
 
 
 class PaneDeliveryPreparer:
@@ -293,13 +358,46 @@ class PaneDeliveryPreparer:
         assert isinstance(result, PreparedPaneDelivery)
         return result
 
-    def validate_rtbw_display(self, delivery: PaneDelivery) -> ValidatedRtbwDisplayInput:
-        result = self._prepare(delivery, defer_persistence=True)
-        if not isinstance(result, ValidatedRtbwDisplayInput):
+    def validate_rtbw_display(self, delivery: PaneDelivery
+                              ) -> ValidatedRtbwDisplayInput | DeferredRtbwDisplayInput:
+        result = self._prepare(delivery, defer_persistence=True,
+                               defer_selected_outputs=not _FORCE_FULL_RTBW_OUTPUT.get())
+        if not isinstance(result, (ValidatedRtbwDisplayInput, DeferredRtbwDisplayInput)):
             raise ValueError("ordered deferred display requires an RTBW input")
         return result
 
-    def materialize_rtbw_display(self, pending: ValidatedRtbwDisplayInput) -> PreparedPaneDelivery:
+    @contextmanager
+    def original_full_rtbw_output(self):
+        """Keep non-coalescing/stale ordered inputs on their original full path."""
+        marker = _FORCE_FULL_RTBW_OUTPUT.set(True)
+        try:
+            yield
+        finally:
+            _FORCE_FULL_RTBW_OUTPUT.reset(marker)
+
+    def materialize_rtbw_display(self, pending: ValidatedRtbwDisplayInput | DeferredRtbwDisplayInput
+                                 ) -> PreparedPaneDelivery:
+        if isinstance(pending, DeferredRtbwDisplayInput):
+            if (self.bindings.get(pending.binding.pane_id) is not pending.binding
+                    or self._grids[pending.binding.pane_id].baseline is not pending.grid_baseline):
+                pending.release()
+                raise ValueError("pending display input crossed a preparation cache reset")
+            try:
+                spectrum = PreparedSpectrumFrame(
+                    pending.delivery.bundle, grid_cache=self._grids[pending.binding.pane_id])
+                frame = pending.delivery.bundle.spectrum
+                if not isinstance(frame, LiveSpectrumFrame):
+                    raise ValueError("RTBW pane requires a Live spectrum publication")
+                waterfall = self._layers[pending.binding.pane_id].waterfall(
+                    frame, reservation=pending.reservation)
+                pending.release()
+                persistence = self._layers[pending.binding.pane_id].persistence(
+                    pending.delivery.bundle.persistence)
+                return self._prepared_packet(pending.binding, pending.delivery, spectrum,
+                                             waterfall, persistence, pending.producer_source_id)
+            except BaseException:
+                pending.release()
+                raise
         if not isinstance(pending, ValidatedRtbwDisplayInput):
             raise TypeError("display materialization requires its validated worker input")
         if (self.bindings.get(pending.binding.pane_id) is not pending.binding
@@ -383,8 +481,9 @@ class PaneDeliveryPreparer:
                 return _same_grid(a.frequencies_hz, b.frequencies_hz)
             return False
 
-    def _prepare(self, delivery: PaneDelivery, *, defer_persistence: bool
-                 ) -> PreparedPaneDelivery | ValidatedRtbwDisplayInput:
+    def _prepare(self, delivery: PaneDelivery, *, defer_persistence: bool,
+                 defer_selected_outputs: bool = True
+                 ) -> PreparedPaneDelivery | ValidatedRtbwDisplayInput | DeferredRtbwDisplayInput:
         if not isinstance(delivery, PaneDelivery):
             raise TypeError("pane presentation requires an admitted pane delivery")
         binding = self.bindings.get(delivery.pane_id)
@@ -478,7 +577,25 @@ class PaneDeliveryPreparer:
             raise ValueError(f"pane crop for {binding.pane_id} is outside the delivered physical frequency grid")
         if not self.allocation_budget.admit_sources(bundle):
             raise ValueError("pane source exceeds the shared presentation allocation budget")
-        prepared = PreparedSpectrumFrame(bundle, grid_cache=self._grids[binding.pane_id])
+        prepared: PreparedSpectrumFrame | None
+        deferred_candidate = False
+        if (defer_persistence and defer_selected_outputs and binding.mode is AnalyzerMode.RTBW
+                and type(bundle) is AnalyzerFrameBundle and type(bundle.spectrum) is LiveSpectrumFrame):
+            spectrum_view = validate_spectrum_source(bundle)
+            frame = bundle.spectrum
+            layers = self._layers[binding.pane_id]
+            if (_selected_output_candidate(bundle, spectrum_view)
+                    and not layers.has_waterfall(frame)):
+                # This is the existing owned baseline, not a validity receipt
+                # for borrowed arrays. Selected construction fully revalidates.
+                self._grids[binding.pane_id].prepare(spectrum_view.frequencies_hz)
+                prepared = None
+                deferred_candidate = True
+            else:
+                prepared = PreparedSpectrumFrame._from_validated_source(
+                    spectrum_view, grid_cache=self._grids[binding.pane_id])
+        else:
+            prepared = PreparedSpectrumFrame(bundle, grid_cache=self._grids[binding.pane_id])
         waterfall: WaterfallLineFrame | SweepWaterfallLine | None
         if binding.mode is AnalyzerMode.RTBW:
             if not isinstance(bundle.spectrum, LiveSpectrumFrame):
@@ -491,6 +608,25 @@ class PaneDeliveryPreparer:
                 available = layers.validate_persistence(bundle.persistence)
                 if not available:
                     layers.clear_density()
+                if deferred_candidate:
+                    reservation = layers.reserve_waterfall(bundle.spectrum)
+                    assert reservation is not None
+                    try:
+                        validate_large_waterfall_geometry(
+                            bundle.spectrum, grid_cache=self._grids[binding.pane_id])
+                        # Original host guard remains after original layer
+                        # geometry and reservation; failures release this lease.
+                        if type(delivery.host_run_serial) is not int or delivery.host_run_serial < 0:
+                            raise ValueError("pane publication requires an explicit non-negative host run serial")
+                        baseline = self._grids[binding.pane_id].baseline
+                        if baseline is None:
+                            raise ValueError("deferred display lacks its owned grid baseline")
+                        return DeferredRtbwDisplayInput(
+                            binding, delivery, producer, available, baseline, reservation)
+                    except BaseException:
+                        reservation.close()
+                        raise
+                assert prepared is not None
                 waterfall = layers.waterfall(bundle.spectrum)
                 # Same public packet guard, after its original layer work.
                 # Every deferred input must pass it before replacement; bool
@@ -498,6 +634,7 @@ class PaneDeliveryPreparer:
                 if type(delivery.host_run_serial) is not int or delivery.host_run_serial < 0:
                     raise ValueError("pane publication requires an explicit non-negative host run serial")
                 return ValidatedRtbwDisplayInput(binding, delivery, prepared, waterfall, producer, available)
+            assert prepared is not None
             persistence = layers.persistence(bundle.persistence)
             waterfall = layers.waterfall(bundle.spectrum)
         else:

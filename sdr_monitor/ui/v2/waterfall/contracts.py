@@ -42,6 +42,36 @@ class WaterfallGridSignature:
     timestamp_known: bool
 
 
+def validate_waterfall_line_contract(*, value_shape: tuple[int, ...], value_dtype: np.dtype,
+                                     frequency_edges_hz: np.ndarray, timestamp_ns: object,
+                                     configuration_generation: object, unit_label: object,
+                                     timestamp_known: object, sequence: object) -> None:
+    """Validate row shape/geometry/metadata without constructing a row object."""
+    edges = np.asarray(frequency_edges_hz)
+    if (len(value_shape) != 1 or value_shape[0] == 0
+            or not np.issubdtype(value_dtype, np.number)):
+        raise ValueError("waterfall values must be a non-empty numeric one-dimensional array")
+    if edges.ndim != 1 or edges.size != value_shape[0] + 1:
+        raise ValueError("waterfall requires exactly one physical edge more than values")
+    if not np.issubdtype(edges.dtype, np.number) or not np.all(np.isfinite(edges)):
+        raise ValueError("waterfall frequency edges must be finite numeric values")
+    spacing = np.diff(edges)
+    if np.any(spacing <= 0.0):
+        raise ValueError("waterfall frequency edges must be strictly increasing")
+    if not np.allclose(spacing, spacing[0], rtol=1e-9, atol=1e-9):
+        raise ValueError("waterfall display requires regular physical frequency bin edges")
+    if not unit_label.strip():
+        raise ValueError("waterfall unit must be explicit")
+    _validate_generation(configuration_generation)
+    if isinstance(timestamp_ns, bool) or not isinstance(timestamp_ns, int) or timestamp_ns < 0:
+        raise ValueError("waterfall timestamp_ns must be a non-negative integer")
+    if not isinstance(timestamp_known, bool):
+        raise ValueError("waterfall timestamp provenance must be explicit")
+    if sequence is not None and (isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0):
+        raise ValueError("waterfall sequence must be a non-negative integer or absent")
+    DEFAULT_WATERFALL_PRESENTATION_BUDGET.estimate(1, value_shape[0])
+
+
 @dataclass(frozen=True, slots=True)
 class WaterfallLineFrame:
     """One externally computed time/frequency row with physical bin edges.
@@ -61,29 +91,12 @@ class WaterfallLineFrame:
     def __post_init__(self) -> None:
         values = np.asarray(self.values)
         edges = np.asarray(self.frequency_edges_hz)
-        if values.ndim != 1 or values.size == 0 or not np.issubdtype(values.dtype, np.number):
-            raise ValueError("waterfall values must be a non-empty numeric one-dimensional array")
-        if edges.ndim != 1 or edges.size != values.size + 1:
-            raise ValueError("waterfall requires exactly one physical edge more than values")
-        if not np.issubdtype(edges.dtype, np.number) or not np.all(np.isfinite(edges)):
-            raise ValueError("waterfall frequency edges must be finite numeric values")
-        spacing = np.diff(edges)
-        if np.any(spacing <= 0.0):
-            raise ValueError("waterfall frequency edges must be strictly increasing")
-        if not np.allclose(spacing, spacing[0], rtol=1e-9, atol=1e-9):
-            raise ValueError("waterfall display requires regular physical frequency bin edges")
-        if not self.unit_label.strip():
-            raise ValueError("waterfall unit must be explicit")
-        _validate_generation(self.configuration_generation)
-        if isinstance(self.timestamp_ns, bool) or not isinstance(self.timestamp_ns, int) or self.timestamp_ns < 0:
-            raise ValueError("waterfall timestamp_ns must be a non-negative integer")
-        if not isinstance(self.timestamp_known, bool):
-            raise ValueError("waterfall timestamp provenance must be explicit")
-        if self.sequence is not None and (isinstance(self.sequence, bool) or not isinstance(self.sequence, int) or self.sequence < 0):
-            raise ValueError("waterfall sequence must be a non-negative integer or absent")
-        # Validate against the existing authoritative display budget before any
-        # renderer allocation. The row itself remains source-owned and is not copied.
-        DEFAULT_WATERFALL_PRESENTATION_BUDGET.estimate(1, int(values.size))
+        validate_waterfall_line_contract(
+            value_shape=values.shape, value_dtype=values.dtype,
+            frequency_edges_hz=edges, timestamp_ns=self.timestamp_ns,
+            configuration_generation=self.configuration_generation, unit_label=self.unit_label,
+            timestamp_known=self.timestamp_known, sequence=self.sequence,
+        )
         object.__setattr__(self, "values", values)
         object.__setattr__(self, "frequency_edges_hz", edges)
 

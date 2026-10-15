@@ -32,7 +32,9 @@ from sdr_monitor.services.pane_resource_session import PaneActivation, PaneResou
 from sdr_monitor.services.pane_delivery_ledger import RECORD_CAPACITY
 
 from .v2_pane_delivery_queue import PaneFairDeliveryQueue
-from .v2_pane_presentation import PaneDeliveryPreparer, PreparedPaneDelivery, ValidatedRtbwDisplayInput
+from .v2_pane_presentation import (
+    DeferredRtbwDisplayInput, PaneDeliveryPreparer, PreparedPaneDelivery, ValidatedRtbwDisplayInput,
+)
 from .v2_pane_rf_plan import PaneRfChangePreview, PaneRfShiftProposal
 from .v2_pane_user_plan import PaneUserPlanError
 
@@ -414,7 +416,11 @@ class _ResourceWorker:
         select_display_batch = len(deliveries) > 1
         # Local to one already bounded resource poll batch, at most one
         # validated carrier per occupied pane; nothing lazy is sent to Qt.
-        pending: dict[str, tuple[int, ValidatedRtbwDisplayInput]] = {}
+        pending: dict[str, tuple[int, ValidatedRtbwDisplayInput | DeferredRtbwDisplayInput]] = {}
+
+        def release_pending(item: ValidatedRtbwDisplayInput | DeferredRtbwDisplayInput) -> None:
+            if isinstance(item, DeferredRtbwDisplayInput):
+                item.release()
 
         def control_waiting() -> bool:
             with self._condition:
@@ -427,6 +433,7 @@ class _ResourceWorker:
 
         def cancel_pending() -> None:
             for _, item in sorted(pending.values(), key=lambda pair: pair[0]):
+                release_pending(item)
                 self._report_delivery_stage(item.delivery, PaneDeliveryStage.PREPARATION_CANCELLED)
                 count(display_preparation_cancelled=1)
             pending.clear()
@@ -477,7 +484,9 @@ class _ResourceWorker:
                 try:
                     prepared = self.preparer.materialize_rtbw_display(item)
                 except Exception as error:
+                    release_pending(item)
                     preparation_failed(item.delivery, error, tail_first)
+                release_pending(item)
                 # A Stop accepted during an original non-interruptible numerical
                 # call outranks publication; refs are still genuinely PREPARING.
                 if control_waiting():
@@ -498,6 +507,7 @@ class _ResourceWorker:
             non_increasing_input = False
             known_stale_input = False
             queue_order_unavailable = False
+            force_full_output = False
             try:
                 if isinstance(delivery.bundle.spectrum, LiveSpectrumFrame):
                     if type(delivery.bundle.acquisition_epoch) is int:
@@ -517,12 +527,18 @@ class _ResourceWorker:
                 non_increasing_input = (prior is not None and
                     delivery.bundle.spectrum.sequence <= prior[1].delivery.bundle.spectrum.sequence)
                 del prior
+                force_full_output = (known_stale_input or queue_order_unavailable or non_increasing_input)
                 # Flush BEFORE this delivery can invalidate shared paired/grid
                 # caches. Sweep/instrument always use the unchanged full path.
-                if pending and (known_stale_input or queue_order_unavailable or not all(self.preparer.can_coalesce_rtbw_display(
-                        item.delivery, delivery) for _, item in pending.values())):
-                    if not flush(index):
-                        return
+                if pending:
+                    can_coalesce = False
+                    if not (known_stale_input or queue_order_unavailable):
+                        can_coalesce = all(self.preparer.can_coalesce_rtbw_display(item.delivery, delivery)
+                                           for _, item in pending.values())
+                    if known_stale_input or queue_order_unavailable or not can_coalesce:
+                        force_full_output = True
+                        if not flush(index):
+                            return
             except PaneDiagnosticError:
                 raise  # flush already disposed its failing/current/tail owners.
             except Exception as error:
@@ -538,7 +554,11 @@ class _ResourceWorker:
                     raise ValueError("resource poll crossed its exact occupied panes")
                 binding = self.preparer.bindings[delivery.pane_id]
                 if binding.measurement_mode is CaptureMeasurementMode.RTBW and select_display_batch:
-                    item = self.preparer.validate_rtbw_display(delivery)
+                    if force_full_output:
+                        with self.preparer.original_full_rtbw_output():
+                            item = self.preparer.validate_rtbw_display(delivery)
+                    else:
+                        item = self.preparer.validate_rtbw_display(delivery)
                 else:
                     prepared = self.preparer.prepare(delivery)
             except Exception as error:
@@ -547,6 +567,9 @@ class _ResourceWorker:
                 count(ordered_validated_publications=1)
                 old = pending.pop(delivery.pane_id, None)
                 if old is not None:
+                    # The new candidate has already obtained its lease; only
+                    # now release the previous token's reserved row credit.
+                    release_pending(old[1])
                     self._report_delivery_stage(old[1].delivery, PaneDeliveryStage.PREPARATION_CANCELLED)
                     count(display_preparation_cancelled=1)
                 pending[delivery.pane_id] = (index, item)

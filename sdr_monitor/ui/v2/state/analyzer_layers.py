@@ -16,7 +16,9 @@ from ..spectrum.persistence_contracts import (
     _density_validation_batches, _validate_regular_edges,
 )
 from ..spectrum.allocation_budget import PresentationAllocationBudget
-from ..waterfall.contracts import WaterfallLineFrame, SweepWaterfallLine
+from ..waterfall.contracts import (
+    WaterfallLineFrame, SweepWaterfallLine, validate_waterfall_line_contract,
+)
 from ..waterfall.sweep_rows import SweepRowStamp, SweepRowState
 from ..spectrum.grid_baseline import MeasurementGridCache
 
@@ -64,6 +66,32 @@ def _waterfall_projection(centers: np.ndarray, values: np.ndarray, *,
                grid_cache.regular_spacing(centers, _regular_spacing))
     bounds = np.array([centers[0] - spacing / 2, centers[-1] + spacing / 2])
     return _reduce_waterfall_columns(values, bounds)
+
+
+def _reduced_waterfall_edges(native_edges: np.ndarray) -> np.ndarray:
+    span = float(native_edges[-1] - native_edges[0])
+    edges = float(native_edges[0]) + np.arange(_MAX_WATERFALL_COLUMNS + 1, dtype=np.float64) * (
+        span / _MAX_WATERFALL_COLUMNS)
+    edges[-1] = native_edges[-1]
+    edges.setflags(write=False)
+    return edges
+
+
+def validate_large_waterfall_geometry(frame: LiveSpectrumFrame, *,
+                                      grid_cache: MeasurementGridCache | None = None) -> np.ndarray:
+    """Validate the original reduced-row contract without reducing its values."""
+    centers = np.asarray(frame.frequencies_hz, dtype=np.float64).reshape(-1)
+    spacing = (_regular_spacing(centers) if grid_cache is None else
+               grid_cache.regular_spacing(centers, _regular_spacing))
+    bounds = np.array([centers[0] - spacing / 2, centers[-1] + spacing / 2])
+    edges = _reduced_waterfall_edges(bounds)
+    validate_waterfall_line_contract(
+        value_shape=(_MAX_WATERFALL_COLUMNS,), value_dtype=np.dtype(np.float32),
+        frequency_edges_hz=edges, timestamp_ns=int(frame.timestamp_ns),
+        configuration_generation=int(frame.config_generation), unit_label=frame.unit,
+        timestamp_known=_known_waterfall_timestamp(frame), sequence=int(frame.sequence),
+    )
+    return edges
 
 
 def persistence_density_from_native(

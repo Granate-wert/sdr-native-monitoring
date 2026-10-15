@@ -9,7 +9,7 @@ from ..waterfall.contracts import WaterfallLineFrame
 from .analyzer_layers import (
     _validate_native_persistence_display, persistence_density_from_native, waterfall_line_from_spectrum,
 )
-from ..spectrum.allocation_budget import PresentationAllocationBudget
+from ..spectrum.allocation_budget import AllocationReservation, PresentationAllocationBudget
 from ..spectrum.grid_baseline import MeasurementGridCache
 from sdr_monitor.domain.live import LivePersistenceFrame
 from sdr_monitor.domain.persistence_storage import is_persistence_storage_receipt
@@ -99,15 +99,40 @@ class AnalyzerLayerCache:
         if incoming is None or incoming is not self._range_source:
             self._clear_range()
 
-    def waterfall(self, frame: LiveSpectrumFrame) -> WaterfallLineFrame:
+    def waterfall(self, frame: LiveSpectrumFrame, *,
+                  reservation: AllocationReservation | None = None) -> WaterfallLineFrame:
         if frame is not self._waterfall_source or self._waterfall is None:
             self._waterfall_source, self._waterfall = None, None
-            if self.allocation_budget is not None:
-                columns = min(2048, frame.values.size)
-                with self.allocation_budget.reserve(int(columns * 12 + 8), frame) as allocation:
+            try:
+                if reservation is not None:
                     converted = waterfall_line_from_spectrum(frame, grid_cache=self._grid)
-                    allocation.commit(converted)
-            else:
-                converted = waterfall_line_from_spectrum(frame, grid_cache=self._grid)
+                    reservation.commit(converted)
+                elif self.allocation_budget is not None:
+                    columns = min(2048, frame.values.size)
+                    with self.allocation_budget.reserve(int(columns * 12 + 8), frame) as allocation:
+                        converted = waterfall_line_from_spectrum(frame, grid_cache=self._grid)
+                        allocation.commit(converted)
+                else:
+                    converted = waterfall_line_from_spectrum(frame, grid_cache=self._grid)
+            except BaseException:
+                if reservation is not None:
+                    reservation.close()
+                raise
             self._waterfall_source, self._waterfall = frame, converted
+        elif reservation is not None:
+            # A genuine exact-source cache hit consumes no additional row.
+            reservation.close()
         return self._waterfall
+
+    def has_waterfall(self, frame: LiveSpectrumFrame) -> bool:
+        return frame is self._waterfall_source and self._waterfall is not None
+
+    def reserve_waterfall(self, frame: LiveSpectrumFrame) -> AllocationReservation | None:
+        """Replace the prior cache row, then reserve the exact future row lease."""
+        if self.has_waterfall(frame):
+            return None
+        self._waterfall_source, self._waterfall = None, None
+        if self.allocation_budget is None:
+            raise ValueError("deferred Waterfall preparation requires its shared allocation budget")
+        columns = min(2048, frame.values.size)
+        return self.allocation_budget.reserve(int(columns * 12 + 8), frame)

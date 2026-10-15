@@ -73,19 +73,39 @@ class PreparedSpectrumFrame:
 
     def __init__(self, frame: object, *, grid_cache: MeasurementGridCache | None = None,
                  cancelled: CancelCheck = None) -> None:
-        if not is_dataclass(frame) or not getattr(getattr(frame, "__dataclass_params__", None), "frozen", False):
-            raise ValueError("prepared spectrum requires a frozen publication")
-        check_cancelled(cancelled)
-        view = adapt_spectrum_frame(frame)
-        check_cancelled(cancelled)
-        if view.frequencies_hz.flags.writeable or view.values.flags.writeable:
-            raise ValueError("prepared spectrum arrays must be read-only")
+        view = validate_spectrum_source(frame, cancelled=cancelled)
+        self._complete(view, grid_cache=grid_cache, cancelled=cancelled)
+
+    def _complete(self, view: SpectrumFrameView, *, grid_cache: MeasurementGridCache | None,
+                  cancelled: CancelCheck) -> None:
         object.__setattr__(self, "view", view)
         object.__setattr__(self, "finite_extent", finite_value_extent(view.values, cancelled=cancelled))
         check_cancelled(cancelled)
         object.__setattr__(self, "measurement_grid", None if grid_cache is None else
                            grid_cache.prepare(view.frequencies_hz))
         check_cancelled(cancelled)
+
+    @classmethod
+    def _from_validated_source(cls, view: SpectrumFrameView, *,
+                               grid_cache: MeasurementGridCache | None = None) -> "PreparedSpectrumFrame":
+        """Complete the original product from the just-validated source view."""
+        if not isinstance(view, SpectrumFrameView):
+            raise TypeError("prepared spectrum requires its validated source view")
+        result = object.__new__(cls)
+        result._complete(view, grid_cache=grid_cache, cancelled=None)
+        return result
+
+
+def validate_spectrum_source(frame: object, *, cancelled: CancelCheck = None) -> SpectrumFrameView:
+    """Run the mandatory source adaptation and immutability checks only."""
+    if not is_dataclass(frame) or not getattr(getattr(frame, "__dataclass_params__", None), "frozen", False):
+        raise ValueError("prepared spectrum requires a frozen publication")
+    check_cancelled(cancelled)
+    view = adapt_spectrum_frame(frame)
+    check_cancelled(cancelled)
+    if view.frequencies_hz.flags.writeable or view.values.flags.writeable:
+        raise ValueError("prepared spectrum arrays must be read-only")
+    return view
 
 
 def finite_value_extent(values: np.ndarray, *, cancelled: CancelCheck = None) -> tuple[float, float] | None:
