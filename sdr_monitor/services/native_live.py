@@ -1273,6 +1273,18 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
                 self._stream_release_failed = True
             raise RuntimeError(_RELEASE_FAILED_MESSAGE) from None
         with self._lock:
+            if (poller is not None and engine is not None
+                    and self._poller is poller and self._engine is engine):
+                # Publish only service-owned bridge accounting after the same
+                # poller and engine have both crossed the successful terminal
+                # boundary. Do not resample native metrics after disconnect.
+                performance = replace(
+                    self._snapshot.performance,
+                    bridge_native_frames_polled=self._bridge_native_frames_polled,
+                    bridge_frames_coalesced=self._bridge_frames_coalesced,
+                    bridge_frames_published=self._bridge_frames_published,
+                )
+                self._snapshot = replace(self._snapshot, performance=performance)
             if self._poller is poller:
                 self._poller = None
             if self._engine is engine:
