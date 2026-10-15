@@ -40,10 +40,12 @@ def _regular_spacing(values: np.ndarray) -> float:
     return step
 
 
-def _regular_edges(centers: np.ndarray, *, grid_cache: MeasurementGridCache | None = None) -> np.ndarray:
+def _regular_edges(centers: np.ndarray, *, grid_cache: MeasurementGridCache | None = None,
+                   require_fp_clean: bool = False) -> np.ndarray:
     values = np.asarray(centers, dtype=np.float64).reshape(-1)
     spacing = (_regular_spacing(values) if grid_cache is None else
-               grid_cache.regular_spacing(values, _regular_spacing))
+               grid_cache.regular_spacing(values, _regular_spacing,
+                                          require_fp_clean=require_fp_clean))
     edges: np.ndarray = np.empty(values.size + 1, dtype=np.float64)
     edges[:-1] = values - spacing / 2.0
     edges[-1] = values[-1] + spacing / 2.0
@@ -98,7 +100,8 @@ def persistence_density_from_native(
 
 def _validate_native_persistence_display(frame: object, budget: PresentationAllocationBudget, *,
                                          trusted_storage: bool = False,
-                                         range_cached: bool = False) -> tuple[bool, bool]:
+                                         range_cached: bool = False,
+                                         grid_cache: MeasurementGridCache | None = None) -> tuple[bool, bool]:
     """Run native adapter availability/validation without a full scaled image.
 
     Selected inputs still use the original public adapter and constructor.
@@ -152,7 +155,7 @@ def _validate_native_persistence_display(frame: object, budget: PresentationAllo
         # failure, never by readonly/shape/pointer assertions.
         try:
             levels = np.linspace(frame.power_min_db, frame.power_max_db, frame.power_bins + 1)
-            edges = _regular_edges(frame.frequencies_hz)
+            edges = _regular_edges(frame.frequencies_hz, grid_cache=grid_cache, require_fp_clean=True)
             if frame.density.ndim != 2 or frame.density.size == 0:
                 raise ValueError("persistence density must be a non-empty numeric two-dimensional array")
             if edges.size != frame.density.shape[1] + 1 or levels.size != frame.density.shape[0] + 1:

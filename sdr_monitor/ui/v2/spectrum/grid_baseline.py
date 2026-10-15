@@ -25,22 +25,45 @@ class MeasurementGridCache:
         self.budget = budget
         self.baseline: np.ndarray | None = None
         self._regular_spacing: float | None = None
+        self._regular_spacing_fp_clean = False
 
     def clear(self) -> None:
         self.baseline = None
         self._regular_spacing = None
+        self._regular_spacing_fp_clean = False
 
     def regular_spacing(self, frequencies: np.ndarray,
-                        validate: Callable[[np.ndarray], float]) -> float:
+                        validate: Callable[[np.ndarray], float], *,
+                        require_fp_clean: bool = False) -> float:
         """Reuse one scalar only after exact content match to our owned grid.
 
         Mismatched terminal/preview grids take the original validation path;
         they neither replace the spectrum baseline nor allocate another one.
         Do not trust a source pointer/read-only flag: its external backing may
-        have changed. No source reference, exception or derived array is kept.
+        have changed. Density callers may additionally require a successful
+        validation under a private raising FP policy; ordinary callers retain
+        their original cached-spacing semantics. No source reference, exception
+        or derived array is kept.
         """
         if self.baseline is None or not _same_grid(self.baseline, frequencies):
             return validate(frequencies)
+        if require_fp_clean:
+            if self._regular_spacing is not None and self._regular_spacing_fp_clean:
+                return self._regular_spacing
+            probe_failed = False
+            try:
+                with np.errstate(all="raise"):
+                    spacing = validate(frequencies)
+            except FloatingPointError:
+                probe_failed = True
+            if probe_failed:
+                # Replay only after the exception handler has exited. The
+                # original caller policy, callback and exception context
+                # apply to this one required validation attempt.
+                return validate(frequencies)
+            self._regular_spacing = spacing
+            self._regular_spacing_fp_clean = True
+            return spacing
         if self._regular_spacing is None:
             self._regular_spacing = validate(frequencies)
         return self._regular_spacing
@@ -57,4 +80,5 @@ class MeasurementGridCache:
             allocation.commit(result)
         self.baseline = result
         self._regular_spacing = None
+        self._regular_spacing_fp_clean = False
         return result

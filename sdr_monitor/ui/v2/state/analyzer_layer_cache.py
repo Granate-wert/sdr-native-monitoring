@@ -49,7 +49,8 @@ class AnalyzerLayerCache:
             self._clear_range()
         try:
             result, fp_clean = _validate_native_persistence_display(
-                frame, self.allocation_budget, trusted_storage=trusted, range_cached=cached)
+                frame, self.allocation_budget, trusted_storage=trusted, range_cached=cached,
+                grid_cache=self._grid)
         except Exception:
             self._clear_range()
             raise
