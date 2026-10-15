@@ -296,14 +296,29 @@ class RtlAnalyzerService:
                 # Failed factory after prepare: confirmed process cleanup above
                 # permits a new attempt, but supplies no counters/epoch proof.
                 self._journal.finish(lambda _count: None)
+            claim_released = False
             if self._claimed:
-                self._exclusion.release_external_analyzer_rx(self._token)
+                try:
+                    self._exclusion.release_external_analyzer_rx(self._token)
+                except Exception as error:  # noqa: BLE001 - retain uncertain graph ownership.
+                    self._retain_fault("claim_release", error)
+                    return self._error("RTL graph claim release failed; owner retained")
                 self._claimed = False
+                claim_released = True
+            same_joined_owner = (control is not None and control is self._control
+                and thread is not None and thread is self._poller and thread.ident is not None
+                and not thread.is_alive() and claim_released)
             self._control = None
             self._poller = None
             with self._lock:
+                performance = self._snapshot.performance
+                if same_joined_owner:
+                    performance = replace(performance,
+                        bridge_native_frames_polled=self._bridge_polled,
+                        bridge_frames_coalesced=self._bridge_coalesced,
+                        bridge_frames_published=self._bridge_published)
                 self._snapshot = replace(self._snapshot, state=LiveSessionState.CONNECTED,
-                    error=None, error_kind=None, stop_required=False)
+                    error=None, error_kind=None, stop_required=False, performance=performance)
                 return self._snapshot
 
     def _convert(self, frame: Any, current: LiveSnapshot) -> LiveSpectrumFrame:

@@ -162,19 +162,36 @@ class RtlPureContractTests(unittest.TestCase):
                 compile_user_pane_plan((draft,), {changed.device_id: changed},
                                        {changed.device_id: 3})
 
-    def test_compiler_rejects_unqualified_sweep_wide_fractional_and_rate(self) -> None:
+    def test_compiler_rejects_sweep_fractional_and_rate_and_supports_full_receive(self) -> None:
         choice = _choice(canonical=True)
         base = PaneSlotDraft(1, choice.device_id, 149_500_000, 150_500_000,
                              sample_rate_hz=2_400_000)
         cases = (
             (replace(base, measurement_mode=CaptureMeasurementMode.SWEEP), "RTL Sweep"),
-            (replace(base, rtbw_band=RtbwBandPolicy.FULL_RECEIVE), "wide receive band"),
             (replace(base, start_hz=149_500_000.5), "exact whole hertz"),
-            (replace(base, sample_rate_hz=20_000_000), "bounded edge-trimmed"),
+            (replace(base, sample_rate_hz=20_000_000), "bounded digital RTBW profile"),
         )
         for draft, reason in cases:
             with self.subTest(reason=reason), self.assertRaisesRegex(PaneUserPlanError, reason):
                 compile_user_pane_plan((draft,), {choice.device_id: choice}, {choice.device_id: 3})
+
+        full_receive = replace(base, rtbw_band=RtbwBandPolicy.FULL_RECEIVE)
+        full_plan = compile_user_pane_plan((full_receive,),
+            {choice.device_id: choice}, {choice.device_id: 3})
+        assert full_plan.layout.schedule is not None
+        profile = full_plan.layout.schedule.resources[0].jobs[0].profile
+        self.assertIsInstance(profile, RtlRtbwPaneProfile)
+        assert isinstance(profile, RtlRtbwPaneProfile)
+        request = profile.request_template
+        self.assertEqual(profile.usable_capture_span_hz, full_receive.sample_rate_hz)
+        self.assertEqual((profile.unit, request.center_frequency_hz,
+                          request.sample_rate_hz, request.source_id,
+                          request.detector, request.window),
+                         ("dBFS/bin", 150_000_000, 2_400_000,
+                          choice.device_id, "peak", "hann"))
+        self.assertIn(request.fft_size, (1024, 2048, 4096))
+        self.assertEqual(request.hop_size, request.fft_size // 2)
+
         with self.assertRaisesRegex(PaneUserPlanError, "qualified draft choices"):
             replace(base, sample_rate_hz=3_200_000)
 
