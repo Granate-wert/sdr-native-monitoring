@@ -663,7 +663,9 @@ class AllViewCustodyTests(unittest.TestCase):
 
                 snapshot = ledger.snapshot()
                 stages = {record.ref: record.stage for record in snapshot.records}
-                self.assertEqual(stages[old_ref], Stage.PAINT_SUPERSEDED)
+                # The admitted image never uploaded or returned from paint, so
+                # this ref is rejected rather than reported as superseded pixels.
+                self.assertEqual(stages[old_ref], Stage.UI_REJECTED)
                 self.assertEqual(stages[new_ref], Stage.UI_REJECTED)
                 self.assertEqual(snapshot.accounting_failures, 0)
                 self.assertEqual(snapshot.panes[0].pending, 0)

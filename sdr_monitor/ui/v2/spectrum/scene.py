@@ -48,7 +48,7 @@ from .persistence_contracts import (
     PersistenceRenderMode,
     adapt_persistence_density,
 )
-from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics
+from .persistence_overlay import PersistenceOverlay, PersistenceOverlayMetrics, UploadedPersistenceImage
 from .persistence_projection import PersistenceImageRequest, PreparedPersistenceImage
 from .persistence_projector import PersistenceDelivery, PersistenceProjector, PersistenceWork
 from .plot_terminal import (
@@ -172,6 +172,11 @@ class SpectrumScene(QWidget):
         self._persistence_delivery_paint_scheduled = False
         self._persistence_delivery_paint_returned = False
         self._persistence_delivery_source: object | None = None
+        # Metadata only: existing active/latest-pending work and ONE image commit.
+        self._persistence_delivery_slots: tuple[tuple[object, PaneDeliveryObligationRef], ...] = ()
+        self._persistence_visible_delivery: tuple[UploadedPersistenceImage, PaneDeliveryObligationRef] | None = None
+        self._persistence_visible_returned = False
+        self._persistence_paint_snapshot: tuple[object, int, object | None] | None = None
         self._projection_delivery_slots: tuple[tuple[object, PaneDeliveryObligationRef | None], ...] = ()
         self._projection_commit_ref: PaneDeliveryObligationRef | None = None
         self._closed_delivery_graph: str | None = None
@@ -559,13 +564,17 @@ class SpectrumScene(QWidget):
                 and (self._density_port is None
                      or not self._density_quiesced and not self._ui_stop_pending)):
             self._persistence.worker_settled(work.request)
+            self._prune_persistence_delivery_slots()
 
     def _accept_persistence_image(self, request: PersistenceImageRequest,
                                   result: PreparedPersistenceImage | None, error: str | None) -> None:
         pending = self._persistence.pending_view
         discarded_sources = (request.view.source_frame,
                              None if pending is None else pending.source_frame)
+        discarded_refs = tuple(item for source, item in self._persistence_delivery_slots
+                               if any(source is discarded for discarded in discarded_sources))
         accepted = self._persistence.accept_worker_image(request, result, error)
+        self._reconcile_persistence_image()
         if accepted:
             if result is not None:
                 self._persistence_legend.set_labels(*result.quantitative_labels)
@@ -574,7 +583,8 @@ class SpectrumScene(QWidget):
                                                     text("spectrum.persistence.no_data", self._locale))
             self._refresh_persistence_status()
             if result is None or error is not None:
-                self._terminalize_discarded_persistence_delivery(discarded_sources)
+                self._terminalize_discarded_persistence_delivery(discarded_sources, refs=discarded_refs)
+            self._prune_persistence_delivery_slots()
 
     def _projection_failed(self, request: ProjectionRequest, reason: str) -> None:
         if request.owner is self._projection_owner:
@@ -586,8 +596,11 @@ class SpectrumScene(QWidget):
                                      None if pending is None else pending.source_frame)
             else:
                 discarded_sources = ()
+            discarded_refs = tuple(item for source, item in self._persistence_delivery_slots
+                                   if any(source is discarded for discarded in discarded_sources))
             self._persistence.worker_failed(request.persistence)
-            self._terminalize_discarded_persistence_delivery(discarded_sources)
+            self._reconcile_persistence_image()
+            self._terminalize_discarded_persistence_delivery(discarded_sources, refs=discarded_refs)
         if self._projection_current(request):
             self._projection_error = text("spectrum.projection.failed", self._locale, reason=reason)
             self.set_warning(self._projection_error)
@@ -611,13 +624,14 @@ class SpectrumScene(QWidget):
             return
         self._presentation_active = active
         if not active:
-            self._cancel_persistence_delivery(PaneDeliveryStage.PAINT_SUPERSEDED)
+            persistence_refs = self._detach_persistence_delivery()
+            displayed_report = None
             self.paint_cadence.clear()
             self._invalidate_projection()
             if (self._displayed_delivery_ref is not None
                     and self._displayed_delivery_ref != self._latest_delivery_ref):
                 if not self._displayed_delivery_paint_returned:
-                    self._report_delivery(
+                    displayed_report = (
                         self._displayed_delivery_ref,
                         PaneDeliveryStage.PAINT_SUPERSEDED
                         if self._displayed_delivery_paint_scheduled else PaneDeliveryStage.UI_REJECTED)
@@ -636,6 +650,15 @@ class SpectrumScene(QWidget):
             for marker_id in self._markers:
                 self._marker_lines[marker_id].hide()
                 self._marker_labels[marker_id].hide()
+            self._persistence.set_presentation_active(False)
+            self.sweep_coverage.set_presentation_active(False)
+            # Finish the enclosing hide before external stages. A callback may
+            # now show/admit B; nothing in this older hide will clear it later.
+            for ref in persistence_refs:
+                self._report_delivery(ref, PaneDeliveryStage.PAINT_SUPERSEDED)
+            if displayed_report is not None:
+                self._report_delivery(*displayed_report)
+            return
         self._persistence.set_presentation_active(active)
         self.sweep_coverage.set_presentation_active(active)
         if active:
@@ -678,6 +701,8 @@ class SpectrumScene(QWidget):
                                  or _same_grid(self._measurement_grid, view.frequencies_hz)))
         if self._measurement_signature is not None and not same_measurement:
             self.clear_measurement()
+            if self._latest_view is not None or self._ui_stop_pending:
+                return  # A clear-stage callback admitted a later frame/Stop.
         self._measurement_signature = signature
         if baseline is not None:
             self._measurement_grid = baseline
@@ -778,7 +803,8 @@ class SpectrumScene(QWidget):
         if observer is not None:
             generation = self._delivery_custody_generation
             owned = (self._latest_delivery_ref, self._displayed_delivery_ref,
-                     self._persistence_delivery_ref)
+                     self._persistence_delivery_ref, self._persistence_delivery_slots,
+                     self._persistence_visible_delivery)
             restored_view = self._latest_view
             projection_slots = self._projection_delivery_slots
             try:
@@ -792,7 +818,8 @@ class SpectrumScene(QWidget):
                     or self._projection_delivery_slots is not projection_slots
                     or any(before is not after for before, after in zip(owned, (
                         self._latest_delivery_ref, self._displayed_delivery_ref,
-                        self._persistence_delivery_ref), strict=True))):
+                        self._persistence_delivery_ref, self._persistence_delivery_slots,
+                        self._persistence_visible_delivery), strict=True))):
                 return  # A reentrant Stop/replacement owns the later state.
         else:
             # Standalone callers retain their local terminal fence; no product
@@ -836,9 +863,10 @@ class SpectrumScene(QWidget):
         Mode, identity and geometry transitions must invalidate that frame too.
         Ordinary Stop deliberately retains the last measurement instead.
         """
-        self._cancel_persistence_delivery(PaneDeliveryStage.PAINT_SUPERSEDED)
+        persistence_refs = self._detach_persistence_delivery()
         refs = tuple(dict.fromkeys((self._latest_delivery_ref, self._displayed_delivery_ref,
                                     *(ref for _source, ref in self._projection_delivery_slots))))
+        reports = []
         for ref in refs:
             if ref is None or (ref == self._displayed_delivery_ref
                                and self._displayed_delivery_paint_returned):
@@ -849,7 +877,7 @@ class SpectrumScene(QWidget):
                      if accepted or ref == self._displayed_delivery_ref
                      and self._displayed_delivery_paint_scheduled
                      else PaneDeliveryStage.UI_REJECTED)
-            self._report_delivery(ref, stage)
+            reports.append((ref, stage))
         self._latest_delivery_ref = self._displayed_delivery_ref = None
         self._latest_spectrum_setter_accepted = False
         self._displayed_delivery_paint_scheduled = False
@@ -875,6 +903,12 @@ class SpectrumScene(QWidget):
         self._plot_item.setLabel("left", "")
         self._empty_overlay.setVisible(True)
         self._set_measurement_available(False)
+        # No clear-owned mutation follows external reporting. Reentrant B owns
+        # the complete later scene, not just a slot detached by an inner helper.
+        for ref in persistence_refs:
+            self._report_delivery(ref, PaneDeliveryStage.PAINT_SUPERSEDED)
+        for ref, stage in reports:
+            self._report_delivery(ref, stage)
 
     def release_graphics_after_shutdown(self) -> None:
         """Retire pyqtgraph axes before Qt destroys their child text objects.
@@ -890,6 +924,7 @@ class SpectrumScene(QWidget):
             raise RuntimeError("density lane must retire before graphics release")
         if not self._graphics_preflight_complete:
             self._persistence.on_image_uploaded = None
+            self._persistence.detach_paint_observer()
             self._cancel_persistence_delivery(PaneDeliveryStage.STOP_CLEARED)
             self._projection_timer.stop()
             if self._plot_item.axes is not None:
@@ -944,6 +979,8 @@ class SpectrumScene(QWidget):
         view = adapt_persistence_density(frame)
         self._density_admitted = True
         self._persistence.set_frame(view, now_ns=now_ns)
+        self._reconcile_persistence_image()
+        self._prune_persistence_delivery_slots()
         if self._projector is None and self._density_port is None:
             self._persistence_legend.set_labels(*view.quantitative_labels)
         self._refresh_persistence_status()
@@ -954,91 +991,194 @@ class SpectrumScene(QWidget):
 
     def set_persistence_delivery_ref(self, ref: PaneDeliveryObligationRef | None,
                                      source_frame: object | None = None) -> None:
+        # No new density/receipt is not an image replacement (notably RTBW's
+        # spectrum-only delivery and the common uninstrumented Sweep scene).
+        if ref is None:
+            return
+        generation = self._delivery_custody_generation
+        owned = self._persistence_delivery_slots
+        visible = self._persistence_visible_delivery
         if (ref is not None and not self._delivery_ref_admissible(
                 ref, self._persistence_delivery_ref,
                 self._persistence_delivery_paint_scheduled)):
             # The exact-stage observer is the product admission authority;
             # the local high-water fence remains the standalone fallback.
             return
-        previous = self._persistence_delivery_ref
-        if ref is not None and previous is ref:
-            # An exact current continuation is not a second scheduling boundary.
-            # Once scheduled, retain its original upload/source association too.
-            if not self._persistence_delivery_paint_scheduled and not self._persistence_delivery_paint_returned:
-                self._persistence_delivery_source = source_frame
+        if (generation != self._delivery_custody_generation
+                or owned is not self._persistence_delivery_slots
+                or visible is not self._persistence_visible_delivery or self._ui_stop_pending):
             return
-        if previous is not None and previous != ref and not self._persistence_delivery_paint_returned:
-            self._report_delivery(previous, PaneDeliveryStage.PAINT_SUPERSEDED)
+        if any(item is ref for _source, item in owned) or visible is not None and visible[1] is ref:
+            return  # Exact original continuation keeps its original source.
+        if (any(source is source_frame for source, _item in owned)
+                or visible is not None and visible[0].view.source_frame is source_frame):
+            return  # Reused density cannot rename an owned original receipt.
+        request = self._persistence.worker_request
+        upload = self._persistence.uploaded_image
+        active_source = (request.view.source_frame if request is not None else
+                         None if upload is None else upload.view.source_frame)
+        retained = tuple((source, item) for source, item in owned if source is active_source)
+        displaced = tuple(item for _source, item in owned if not any(item is kept for _s, kept in retained))
+        self._persistence_delivery_slots = (*retained, (source_frame, ref))
         self._persistence_delivery_ref = ref
         self._persistence_delivery_paint_scheduled = False
         self._persistence_delivery_paint_returned = False
         self._persistence_delivery_source = source_frame if ref is not None else None
+        for item in displaced:
+            if visible is None or visible[1] is not item:
+                self._report_delivery(item, PaneDeliveryStage.PAINT_SUPERSEDED)
 
     def clear_persistence_delivery_ref(self, ref: PaneDeliveryObligationRef) -> None:
-        if ref == self._persistence_delivery_ref:
+        self._persistence_delivery_slots = tuple(
+            (source, item) for source, item in self._persistence_delivery_slots if item is not ref)
+        if self._persistence_visible_delivery is not None and self._persistence_visible_delivery[1] is ref:
+            self._persistence_visible_delivery = None
+            self._persistence_visible_returned = False
+            self._persistence_paint_snapshot = None
+        if ref is self._persistence_delivery_ref:
             self._persistence_delivery_ref = None
             self._persistence_delivery_source = None
             self._persistence_delivery_paint_scheduled = False
             self._persistence_delivery_paint_returned = False
 
     def persistence_delivery_waiting_for_upload(self, ref: PaneDeliveryObligationRef) -> bool:
-        if ref != self._persistence_delivery_ref:
-            return False
-        if self._persistence_delivery_paint_scheduled:
+        visible = self._persistence_visible_delivery
+        if visible is not None and visible[1] is ref:
             return True
         request = self._persistence.worker_request
-        return (request is not None and request.view.source_frame is self._persistence_delivery_source
-                or self._persistence.upload_pending_for(self._persistence_delivery_source))
+        return any(item is ref and (
+            request is not None and request.view.source_frame is source
+            or self._persistence.upload_pending_for(source))
+            for source, item in self._persistence_delivery_slots)
 
     def _persistence_image_uploaded(self, view) -> None:
-        ref = self._persistence_delivery_ref
-        if (ref is None or view.source_frame is not self._persistence_delivery_source
-                or not self._presentation_active or not self._persistence.image_item.isVisible()):
+        upload = self._persistence.uploaded_image
+        if upload is None or upload.view is not view:
             return
-        if not self._persistence_delivery_paint_scheduled and not self._persistence_delivery_paint_returned:
+        ref = next((item for source, item in self._persistence_delivery_slots
+                    if source is view.source_frame), None)
+        old = self._persistence_visible_delivery
+        old_returned = self._persistence_visible_returned
+        generation = self._delivery_custody_generation
+        if (self._ui_stop_pending or not self._presentation_active
+                or not self._persistence.image_item.isVisible()):
+            return
+        # Query authority without treating a mere newer pending offer as a
+        # replacement of this exact upload. Reentrant lifecycle/image changes
+        # still invalidate it, and the original ref must remain explicitly owned.
+        if ref is not None:
+            observer = self._delivery_stage_observer
+            if observer is not None:
+                try:
+                    admissible = observer(ref) is PaneDeliveryStage.UI_ADMITTED
+                except Exception:
+                    admissible = False
+            else:
+                admissible = not self._delivery_ref_is_closed(ref)
+            if (not admissible or self._persistence.uploaded_image is not upload
+                    or generation != self._delivery_custody_generation
+                    or old is not self._persistence_visible_delivery or self._ui_stop_pending
+                    or not any(item is ref for _source, item in self._persistence_delivery_slots)):
+                return
+        committed = None if ref is None else (upload, ref)
+        self._persistence_delivery_slots = tuple(
+            (source, item) for source, item in self._persistence_delivery_slots
+            if source is not view.source_frame)
+        self._persistence_visible_delivery = committed
+        self._persistence_visible_returned = False
+        self._persistence_paint_snapshot = None
+        if old is not None and old[1] is not ref:
+            self.clear_persistence_delivery_ref(old[1])
+        if ref is self._persistence_delivery_ref:
             self._persistence_delivery_paint_scheduled = True
-            self._report_delivery(ref, PaneDeliveryStage.PAINT_SCHEDULED)
+        if old is not None and not old_returned:
+            self._report_delivery(old[1], PaneDeliveryStage.PAINT_SUPERSEDED)
+        if (ref is None or self._persistence_visible_delivery is not committed
+                or self._persistence.uploaded_image is not upload
+                or generation != self._delivery_custody_generation):
+            return
+        self._report_delivery(ref, PaneDeliveryStage.PAINT_SCHEDULED)
+        if (self._persistence_visible_delivery is committed
+                and self._persistence.uploaded_image is upload
+                and generation == self._delivery_custody_generation):
             self._graphics.update()
 
-    def _cancel_persistence_delivery(self, stage: PaneDeliveryStage) -> None:
-        ref = self._persistence_delivery_ref
-        if ref is not None and not self._persistence_delivery_paint_returned:
-            self._report_delivery(ref, stage)
-        self._persistence_delivery_ref = None
-        self._persistence_delivery_source = None
-        self._persistence_delivery_paint_scheduled = False
-        self._persistence_delivery_paint_returned = False
+    def _persistence_owned_refs(self) -> tuple[PaneDeliveryObligationRef, ...]:
+        visible = self._persistence_visible_delivery
+        return tuple(dict.fromkeys((
+            *(item for _source, item in self._persistence_delivery_slots),
+            *((visible[1],) if visible is not None else ()),
+            *((self._persistence_delivery_ref,) if self._persistence_delivery_ref is not None else ()))))
 
-    def _terminalize_discarded_persistence_delivery(self, sources: tuple[object | None, ...]) -> None:
-        ref = self._persistence_delivery_ref
-        if (ref is None or self._persistence_delivery_paint_returned
-                or not any(source is self._persistence_delivery_source for source in sources)):
+    def _prune_persistence_delivery_slots(self) -> None:
+        request = self._persistence.worker_request
+        pending = self._persistence.pending_view
+        sources = (None if request is None else request.view.source_frame,
+                   None if pending is None else pending.source_frame)
+        discarded = tuple(source for source, _ref in self._persistence_delivery_slots
+                          if not any(source is current for current in sources))
+        self._terminalize_discarded_persistence_delivery(discarded)
+
+    def _reconcile_persistence_image(self) -> None:
+        visible = self._persistence_visible_delivery
+        if visible is None or self._persistence.uploaded_image is visible[0]:
             return
-        stage = (PaneDeliveryStage.PAINT_SUPERSEDED if self._persistence_delivery_paint_scheduled
-                 else PaneDeliveryStage.UI_REJECTED)
-        self._report_delivery(ref, stage)
-        self.clear_persistence_delivery_ref(ref)
+        returned = self._persistence_visible_returned
+        self._persistence_visible_delivery = None
+        self._persistence_visible_returned = False
+        self._persistence_paint_snapshot = None
+        if visible is not None:
+            self.clear_persistence_delivery_ref(visible[1])
+            if not returned:
+                self._report_delivery(visible[1], PaneDeliveryStage.PAINT_SUPERSEDED)
+
+    def _detach_persistence_delivery(self) -> tuple[PaneDeliveryObligationRef, ...]:
+        """Detach a bounded snapshot without calling external stage observers."""
+        self._delivery_custody_generation += 1
+        visible = self._persistence_visible_delivery
+        returned = self._persistence_visible_returned
+        refs = self._persistence_owned_refs()
+        for ref in refs:
+            self.clear_persistence_delivery_ref(ref)
+        return tuple(ref for ref in refs
+                     if not (visible is not None and visible[1] is ref and returned))
+
+    def _cancel_persistence_delivery(self, stage: PaneDeliveryStage) -> None:
+        for ref in self._detach_persistence_delivery():
+            self._report_delivery(ref, stage)
+
+    def _terminalize_discarded_persistence_delivery(
+        self, sources: tuple[object | None, ...], *,
+        refs: tuple[PaneDeliveryObligationRef, ...] | None = None,
+    ) -> None:
+        discarded = tuple(item for source, item in self._persistence_delivery_slots
+                          if any(source is discarded for discarded in sources)
+                          and (refs is None or any(item is captured for captured in refs)))
+        for ref in discarded:
+            self.clear_persistence_delivery_ref(ref)
+        for ref in discarded:
+            self._report_delivery(ref, PaneDeliveryStage.UI_REJECTED)
 
     def set_persistence_visible(self, visible: bool) -> None:
         """Hide rendering without clearing or reconfiguring native accumulation."""
 
+        refs = self._detach_persistence_delivery() if not visible else ()
         self._persistence.set_visible(visible)
-        if not visible and self._persistence_delivery_ref is not None:
-            if not self._persistence_delivery_paint_returned:
-                self._report_delivery(self._persistence_delivery_ref, PaneDeliveryStage.PAINT_SUPERSEDED)
-            self._persistence_delivery_ref = None
-            self._persistence_delivery_source = None
-            self._persistence_delivery_paint_scheduled = False
-            self._persistence_delivery_paint_returned = False
         self._persistence_visible.setChecked(visible)
+        # Checkbox's synchronous toggled recursion also completes before these
+        # stages, so it cannot later re-hide a callback's explicit show/B.
+        for ref in refs:
+            self._report_delivery(ref, PaneDeliveryStage.PAINT_SUPERSEDED)
 
     def set_persistence_logarithmic(self, enabled: bool) -> None:
         self._persistence.set_logarithmic(enabled)
+        self._reconcile_persistence_image()
         self._persistence_log.setChecked(enabled)
         self._refresh_persistence_status()
 
     def set_persistence_render_mode(self, mode: PersistenceRenderMode) -> None:
         self._persistence.set_render_mode(mode)
+        self._reconcile_persistence_image()
         self._persistence_mode.setCurrentIndex(
             self._persistence_mode.findData(mode.value)
         )
@@ -1050,13 +1190,15 @@ class SpectrumScene(QWidget):
         # This is an actual discard boundary for the exact density currently
         # owned by the view. A worker may still finish later, but it cannot
         # resurrect the cleared ref or claim an unrelated repaint.
-        self._cancel_persistence_delivery(PaneDeliveryStage.PAINT_SUPERSEDED)
+        refs = self._detach_persistence_delivery()
         self._persistence.clear_local_image()
         self._persistence_legend.set_labels(
             text("spectrum.persistence.no_data"),
             text("spectrum.persistence.no_data"),
         )
         self._persistence_status.setText(text("spectrum.persistence.status_cleared"))
+        for ref in refs:
+            self._report_delivery(ref, PaneDeliveryStage.PAINT_SUPERSEDED)
 
     def set_warning(self, message: str | None) -> None:
         """Show an upstream warning without creating a recovery or retry action."""
@@ -1548,17 +1690,21 @@ class SpectrumScene(QWidget):
     ) -> None:
         """Close only captured successful-Stop refs, retaining plot pixels."""
         owned = tuple(dict.fromkeys((self._latest_delivery_ref, self._displayed_delivery_ref,
-                                     self._persistence_delivery_ref,
+                                     *self._persistence_owned_refs(),
                                      *(ref for _source, ref in self._projection_delivery_slots))))
         selected = owned if refs is None else tuple(ref for ref in owned if ref in refs)
         for ref in selected:
             if ref is None:
                 continue
             returned = (ref == self._displayed_delivery_ref and self._displayed_delivery_paint_returned
-                        or ref == self._persistence_delivery_ref and self._persistence_delivery_paint_returned)
+                        or self._persistence_visible_delivery is not None
+                        and ref is self._persistence_visible_delivery[1] and self._persistence_visible_returned
+                        or ref is self._persistence_delivery_ref and self._persistence_delivery_paint_returned)
             if not returned:
                 self._report_delivery(ref, PaneDeliveryStage.STOP_CLEARED)
         for ref in selected:
+            if ref is not None:
+                self.clear_persistence_delivery_ref(ref)
             if self._latest_delivery_ref == ref:
                 self._latest_delivery_ref = None
                 self._latest_spectrum_setter_accepted = False
@@ -1601,6 +1747,7 @@ class SpectrumScene(QWidget):
         """Detach exact product Stop refs without reporting ledger stages."""
         self.begin_ui_stop_detach(refs)
         for ref in refs:
+            self.clear_persistence_delivery_ref(ref)
             if self._displayed_delivery_ref is ref:
                 self._displayed_delivery_ref = None
                 self._displayed_delivery_paint_scheduled = False
@@ -1641,6 +1788,11 @@ class SpectrumScene(QWidget):
                     PaneDeliveryStage.UI_ADMITTED, PaneDeliveryStage.PAINT_SCHEDULED}
             except Exception:
                 return True
+        if any(item is ref for _source, item in self._persistence_delivery_slots):
+            return False  # Explicit original ownership, not new stale admission.
+        visible = self._persistence_visible_delivery
+        if visible is not None and visible[1] is ref and not self._persistence_visible_returned:
+            return False
         graph, sequence = self._closed_delivery_by_view.get(ref.view, (None, 0))
         if graph is None and ref.view is PaneDeliveryView.SPECTRUM:
             graph, sequence = self._closed_delivery_graph, self._closed_delivery_sequence
@@ -1660,12 +1812,14 @@ class SpectrumScene(QWidget):
         try:
             generation = self._delivery_custody_generation
             owned = (self._latest_delivery_ref, self._displayed_delivery_ref,
-                     self._persistence_delivery_ref)
+                     self._persistence_delivery_ref, self._persistence_delivery_slots,
+                     self._persistence_visible_delivery)
             stage = observer(ref)
             if (generation != self._delivery_custody_generation or self._ui_stop_pending
                     or any(before is not after for before, after in zip(owned, (
                         self._latest_delivery_ref, self._displayed_delivery_ref,
-                        self._persistence_delivery_ref), strict=True))):
+                        self._persistence_delivery_ref, self._persistence_delivery_slots,
+                        self._persistence_visible_delivery), strict=True))):
                 return False
             if stage is PaneDeliveryStage.UI_ADMITTED:
                 return True
@@ -1685,23 +1839,27 @@ class SpectrumScene(QWidget):
         observer = self._delivery_stage_observer
         if observer is not None:
             if any(ref is item for item in (
-                    self._persistence_delivery_ref, self._displayed_delivery_ref,
+                    *self._persistence_owned_refs(), self._displayed_delivery_ref,
                     self._latest_delivery_ref)):
                 return False
             try:
                 generation = self._delivery_custody_generation
+                owned = self._persistence_delivery_slots
+                visible = self._persistence_visible_delivery
                 stage = observer(ref)
             except Exception:
                 return False
             if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or owned is not self._persistence_delivery_slots
+                    or visible is not self._persistence_visible_delivery
                     or stage is not PaneDeliveryStage.UI_ADMITTED):
                 return False
             return not any(ref is item for item in (
-                self._persistence_delivery_ref, self._displayed_delivery_ref,
+                *self._persistence_owned_refs(), self._displayed_delivery_ref,
                 self._latest_delivery_ref, *(item for _source, item in self._projection_delivery_slots)))
         if self._delivery_ref_is_closed(ref):
             return False
-        if ref == self._persistence_delivery_ref:
+        if any(ref is item for item in self._persistence_owned_refs()):
             return False
         if ref == self._displayed_delivery_ref:
             return False
@@ -1725,20 +1883,24 @@ class SpectrumScene(QWidget):
             return False
         observer = self._delivery_stage_observer
         if observer is not None:
-            if self._persistence_delivery_ref is ref:
+            if any(ref is item for item in self._persistence_owned_refs()):
                 return False
             try:
                 generation = self._delivery_custody_generation
+                owned = self._persistence_delivery_slots
+                visible = self._persistence_visible_delivery
                 stage = observer(ref)
             except Exception:
                 return False
             if (generation != self._delivery_custody_generation or self._ui_stop_pending
+                    or owned is not self._persistence_delivery_slots
+                    or visible is not self._persistence_visible_delivery
                     or stage is not PaneDeliveryStage.UI_ADMITTED):
                 return False
-            return self._persistence_delivery_ref is not ref
+            return not any(ref is item for item in self._persistence_owned_refs())
         if self._delivery_ref_is_closed(ref):
             return False
-        if ref == self._persistence_delivery_ref:
+        if any(ref is item for item in self._persistence_owned_refs()):
             return False
         self._remember_terminal_delivery_ref(ref)
         return True
@@ -1749,25 +1911,50 @@ class SpectrumScene(QWidget):
                 and self._displayed_delivery_ref is not None
                 and not self._displayed_delivery_paint_returned):
             refs.append(self._displayed_delivery_ref)
-        persistence_ref = self._persistence_delivery_ref
+        self._persistence_paint_snapshot = None
+        visible = self._persistence_visible_delivery
+        upload = self._persistence.uploaded_image
+        persistence_ref = None if visible is None else visible[1]
         image = self._persistence.image_item
         graphics = self._graphics
-        latest_persistence = self._persistence.latest_view
-        if (persistence_ref is not None and self._persistence_delivery_paint_scheduled
-                and not self._persistence_delivery_paint_returned
+        generation = self._delivery_custody_generation
+        if (visible is not None and upload is visible[0] and persistence_ref is not None
+                and not self._persistence_visible_returned and not self._ui_stop_pending
                 and self._presentation_active and graphics.isVisible() and graphics.viewport().isVisible()
-                and image.isVisible() and self._persistence._uploaded_density is not None
-                and latest_persistence is not None
-                and self._persistence._uploaded_density is latest_persistence.density
-                and latest_persistence.source_frame is self._persistence_delivery_source):
-            scene_rect = image.mapRectToScene(image.boundingRect()).intersected(
-                self._view_box.sceneBoundingRect())
-            viewport_rect = graphics.mapFromScene(scene_rect).boundingRect().intersected(
-                graphics.viewport().rect()) if not scene_rect.isEmpty() else None
-            if (viewport_rect is not None and not viewport_rect.isEmpty()
-                    and not event.region().intersected(QRegion(viewport_rect)).isEmpty()):
-                refs.append(persistence_ref)
+                and image.isVisible() and not self._delivery_ref_is_closed(persistence_ref)
+                and visible is self._persistence_visible_delivery
+                and generation == self._delivery_custody_generation
+                and upload is self._persistence.uploaded_image):
+            # Before-layout dirty geometry is not proof that this ImageItem will
+            # paint. Capture its original custody; actual original item paint
+            # must produce fresh current-upload evidence before either return.
+            refs.append(persistence_ref)
+            self._persistence_paint_snapshot = (
+                visible, generation, self._persistence.image_paint_witness)
         return tuple(refs) or None
+
+    def _persistence_return_candidate(self, ref: PaneDeliveryObligationRef, *, observe: bool = True) -> bool:
+        snapshot = self._persistence_paint_snapshot
+        visible = self._persistence_visible_delivery
+        if (snapshot is None or visible is None or snapshot[0] is not visible
+                or snapshot[1] != self._delivery_custody_generation
+                or visible[1] is not ref or self._persistence_visible_returned
+                or self._ui_stop_pending or not self._presentation_active
+                or not self._graphics.isVisible() or not self._graphics.viewport().isVisible()
+                or not self._persistence.image_item.isVisible()
+                or self._persistence.uploaded_image is not visible[0]
+                or self._persistence.image_paint_witness is None
+                or self._persistence.image_paint_witness is snapshot[2]):
+            return False
+        closed = observe and self._delivery_ref_is_closed(ref)
+        return (not closed and snapshot is self._persistence_paint_snapshot
+                and visible is self._persistence_visible_delivery
+                and snapshot[1] == self._delivery_custody_generation
+                and self._persistence.uploaded_image is visible[0] and not self._ui_stop_pending
+                and self._presentation_active and self._graphics.isVisible()
+                and self._graphics.viewport().isVisible() and self._persistence.image_item.isVisible()
+                and self._persistence.image_paint_witness is not None
+                and self._persistence.image_paint_witness is not snapshot[2])
 
     def _spectrum_custody_returned(self, ref: object) -> None:
         if not isinstance(ref, tuple):
@@ -1777,21 +1964,24 @@ class SpectrumScene(QWidget):
                 if not self._displayed_delivery_paint_returned:
                     self._displayed_delivery_paint_returned = True
                     self._report_delivery(item, PaneDeliveryStage.PAINT_RETURNED)
-            elif isinstance(item, PaneDeliveryObligationRef) and item == self._persistence_delivery_ref:
-                if not self._persistence_delivery_paint_returned:
+            elif isinstance(item, PaneDeliveryObligationRef) and self._persistence_return_candidate(item):
+                self._persistence_visible_returned = True
+                if item is self._persistence_delivery_ref:
                     self._persistence_delivery_paint_returned = True
-                    self._report_delivery(item, PaneDeliveryStage.PAINT_RETURNED)
+                self._report_delivery(item, PaneDeliveryStage.PAINT_RETURNED)
 
     def _spectrum_paint_returned_timed(self, receipt: PanePaintReturnReceipt) -> None:
         if not isinstance(receipt, PanePaintReturnReceipt):
             return
         original_ref = receipt.ref
         is_displayed = original_ref is self._displayed_delivery_ref
-        is_persistence = original_ref is self._persistence_delivery_ref
+        is_persistence = self._persistence_return_candidate(original_ref)
         if ((not is_displayed and not is_persistence)
                 or (is_displayed and self._displayed_delivery_paint_returned)
-                or (is_persistence and self._persistence_delivery_paint_returned)):
+                or (is_persistence and self._persistence_visible_returned)):
             return
+        generation = self._delivery_custody_generation
+        visible = self._persistence_visible_delivery
         callback = self._paint_return_callback
         handled = False
         if callback is not None:
@@ -1799,15 +1989,26 @@ class SpectrumScene(QWidget):
                 handled = bool(callback(receipt))
             except Exception:
                 handled = False
-        self._remember_terminal_delivery_ref(original_ref)
+        # External receipt callback may Stop/clear/reenter. Never mutate its
+        # replacement or emit a fallback receipt for a now-unowned image.
+        if generation != self._delivery_custody_generation:
+            return
         if is_displayed:
+            # The original Spectrum receipt completed even if its callback
+            # installed a newer displayed ref. Close only this ref before the
+            # replacement guard; never mark the replacement as returned.
+            self._remember_terminal_delivery_ref(original_ref)
             if original_ref is not self._displayed_delivery_ref:
                 return
             self._displayed_delivery_paint_returned = True
         else:
-            if original_ref is not self._persistence_delivery_ref:
+            if (visible is not self._persistence_visible_delivery
+                    or not self._persistence_return_candidate(original_ref, observe=False)):
                 return
-            self._persistence_delivery_paint_returned = True
+            self._persistence_visible_returned = True
+            if original_ref is self._persistence_delivery_ref:
+                self._persistence_delivery_paint_returned = True
+            self._remember_terminal_delivery_ref(original_ref)
         if not handled:
             self._report_delivery(original_ref, PaneDeliveryStage.PAINT_RETURNED)
 

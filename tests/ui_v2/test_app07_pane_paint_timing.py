@@ -244,30 +244,111 @@ class PaintReturnTimingTests(unittest.TestCase):
         self.retire(scene)
 
     def test_reentrant_persistence_observer_cannot_mark_replacement_ref(self):
-        from tests.ui_v2.test_app07_allview_custody import persistence_identity
+        from PySide6.QtCore import QEventLoop, QTimer
 
-        source = persistence_identity()
+        from sdr_monitor.ui.v2.spectrum.allocation_budget import PresentationAllocationBudget
+        from sdr_monitor.ui.v2.spectrum.persistence_projector import PersistenceProjector
+        from tests.ui_v2.test_app07_allview_custody import persistence_identity
+        from tests.ui_v2.test_app05_viewport_projection import ManualWorker
+
+        source = persistence_identity(1)
         scope = replace(source.owner_scope, host_process_id=os.getpid())
         ready_identity = replace(source.ready, host_process_id=os.getpid())
+        first_identity = replace(source, owner_scope=scope, ready=ready_identity)
         ledger = PaneDeliveryLedger(("one",))
-        first = ledger.admit("one", replace(source, owner_scope=scope, ready=ready_identity),
-                             view=PaneDeliveryView.PERSISTENCE)
-        assert first is not None
-        second = replace(first, sequence=first.sequence + 1)
-        scene = SpectrumScene()
-        scene._persistence_delivery_ref = first
+        first = ledger.admit("one", first_identity, view=PaneDeliveryView.PERSISTENCE)
+        second_source = persistence_identity(2)
+        second_identity = replace(second_source, owner_scope=scope,
+                                  ready=replace(second_source.ready, host_process_id=os.getpid()))
+        second = ledger.admit("one", second_identity, view=PaneDeliveryView.PERSISTENCE)
+        assert first is not None and second is not None
+        for ref in (first, second):
+            for stage in (Stage.PREPARING, Stage.PREPARED, Stage.QUEUED,
+                          Stage.QUEUE_DRAINED, Stage.UI_ADMITTED):
+                self.assertTrue(ledger.note(ref, stage))
 
-        def reentrant(_receipt):
-            scene._persistence_delivery_ref = second
-            return True
+        from tests.ui_v2.test_app07_allview_custody import density_frame, live_frame
+        worker = ManualWorker()
+        budget = PresentationAllocationBudget()
+        projector = PersistenceProjector(worker.submit, allocation_budget=budget)
+        scene = SpectrumScene()
+        scene.set_persistence_projection_port(projector)
+        scene.set_delivery_stage_callback(ledger.note)
+        scene.set_delivery_stage_observer(ledger.delivery_stage_if_retained)
+        scene.resize(720, 420)
+        scene._view_box.setRange(xRange=(98.0, 102.0), yRange=(-100.0, -40.0), padding=0)
+        density_a = density_frame(1)
+        density_b = density_frame(2)
+        loop = QEventLoop()
+        timeout = QTimer()
+        timeout.setSingleShot(True)
+        timed_out = []
+        receipts = []
+        actual_candidates = []
+        replacement_accepted = []
+
+        def cleanup():
+            scene.quiesce_persistence_projection()
+            while worker.jobs:
+                worker.finish()
+            self.app.processEvents()
+            projector.dispose()
+            projector.release_after_shutdown()
+            scene.disconnect_persistence_projection_after_shutdown()
+            scene.release_graphics_after_shutdown()
+            scene.close()
+            scene.deleteLater()
+            QTimer.singleShot(0, projector.deleteLater)
+            self.app.processEvents()
+
+        self.addCleanup(cleanup)
+
+        def reentrant(receipt):
+            receipts.append(receipt)
+            if receipt.ref is not first:
+                return False
+            uploaded = scene._persistence.uploaded_image
+            candidate = scene._persistence_paint_snapshot
+            if (uploaded is None or uploaded.view.source_frame is not density_a
+                    or candidate is None or candidate[0] is not scene._persistence_visible_delivery):
+                actual_candidates.append(False)
+                return False
+            actual_candidates.append(True)
+            scene.set_persistence_delivery_ref(second, source_frame=density_b)
+            accepted = ledger.note(receipt.ref, Stage.PAINT_RETURNED, paint_return=receipt)
+            replacement_accepted.append(accepted)
+            if accepted:
+                QTimer.singleShot(0, loop.quit)
+            return accepted
 
         scene.set_paint_return_callback(reentrant)
-        scene._spectrum_paint_returned_timed(paint_receipt(first))
+        scene.set_frame(live_frame(1))
+        scene.set_persistence_delivery_ref(first, source_frame=density_a)
+        scene.set_persistence_frame(density_a)
+        self.assertEqual(len(worker.jobs), 1)
+        scene.show()
+        worker.finish()
+        def timed_out_callback():
+            timed_out.append(True)
+            loop.quit()
+
+        timeout.timeout.connect(timed_out_callback)
+        timeout.start(3000)
+        loop.exec()
+        timeout.stop()
+
+        self.assertFalse(timed_out, "ordinary Qt paint did not return from the uploaded persistence image")
+        self.assertEqual(actual_candidates, [True], "receipt callback did not observe the real uploaded paint candidate")
+        self.assertEqual(replacement_accepted, [True])
+        self.assertEqual(len(receipts), 1)
+        self.assertIs(receipts[0].ref, first)
         self.assertIs(scene._persistence_delivery_ref, second)
         self.assertFalse(scene._persistence_delivery_paint_returned)
+        snapshot = ledger.snapshot()
+        stages = {record.ref: record.stage for record in snapshot.records}
+        self.assertEqual(stages[first], Stage.PAINT_RETURNED)
+        self.assertEqual(stages[second], Stage.UI_ADMITTED)
         self.assertFalse(scene.persistence_delivery_requires_ui_rejection(second))
-        self.assertFalse(scene.persistence_delivery_requires_ui_rejection(first))
-        self.retire(scene)
 
     def test_reentrant_waterfall_observer_cannot_mark_replacement_ref(self):
         first = waterfall_ref_for_current_process()

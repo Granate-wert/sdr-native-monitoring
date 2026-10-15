@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from contextlib import nullcontext
 from time import monotonic_ns
+import weakref
 
 import numpy as np
 import pyqtgraph as pg
@@ -41,6 +42,59 @@ class PersistenceOverlayMetrics:
     allocation_denials: int = 0
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class UploadedPersistenceImage:
+    """One actual ImageItem commit; references existing storage, never copies it."""
+
+    view: PersistenceDensityView
+    image: np.ndarray
+    uploaded_ns: int
+
+
+class _PersistenceImageItem(pg.ImageItem):
+    """Observe the original drawable paint, without a receipt or strong owner."""
+
+    def __init__(self, overlay: PersistenceOverlay) -> None:
+        super().__init__(axisOrder="row-major")
+        self._overlay_ref: weakref.ReferenceType[PersistenceOverlay] | None = weakref.ref(overlay)
+
+    def detach_paint_observer(self) -> None:
+        self._overlay_ref = None
+
+    def paint(self, painter, *args):
+        overlay = None
+        upload = None
+        image = None
+        drawable_input = False
+        try:
+            overlay = None if self._overlay_ref is None else self._overlay_ref()
+            upload = None if overlay is None else overlay.uploaded_image
+            image = self.image
+            drawable_input = (upload is not None and image is upload.image
+                              and image.ndim >= 2 and image.shape[0] > 0 and image.shape[1] > 0
+                              and painter.isActive() and self.isVisible())
+        except Exception:
+            pass  # Optional observation must not replace an original result/error.
+        # Invoke the original exactly once; exceptions propagate and earn no
+        # witness. A plain successful return can still be an original early exit.
+        result = super().paint(painter, *args)
+        try:
+            if (drawable_input and overlay is not None and self._overlay_ref is not None
+                    and self._overlay_ref() is overlay
+                    and overlay.uploaded_image is upload and self.image is image
+                    and overlay._visible and overlay._presentation_active
+                    and self.isVisible() and painter.isActive()
+                    and not self._renderRequired and not self._unrenderable
+                    and self.qimage is not None and not self.qimage.isNull()
+                    and self.qimage.width() > 0 and self.qimage.height() > 0):
+                # One current-upload scalar marker. It retains no image/source/ref
+                # and is never an RF/compositor timestamp or an authority callback.
+                overlay._image_paint_witness = object()
+        except Exception:
+            pass
+        return result
+
+
 class PersistenceOverlay:
     """Own one ImageItem below traces and markers in an externally owned ViewBox."""
 
@@ -49,7 +103,7 @@ class PersistenceOverlay:
             raise ValueError("persistence image cadence must be positive")
         self._plot_item = plot_item
         self._interval_ns = int(1_000_000_000 / image_cadence_hz)
-        self._image = pg.ImageItem(axisOrder="row-major")
+        self._image = _PersistenceImageItem(self)
         self._image.setZValue(z_value)
         self._image.setLookupTable(inferno_lookup_table())
         self._image.setVisible(False)
@@ -71,6 +125,8 @@ class PersistenceOverlay:
         self.allocation_limited = False
         self.on_budget_changed: Callable[[], None] | None = None
         self.on_image_uploaded: Callable[[PersistenceDensityView], None] | None = None
+        self._uploaded_image: UploadedPersistenceImage | None = None
+        self._image_paint_witness: object | None = None
         self.request_projection: Callable[[], None] | None = None
         self._worker_revision = 0
         self._worker_generation = 0
@@ -103,6 +159,32 @@ class PersistenceOverlay:
         return self._latest_view
 
     @property
+    def uploaded_image(self) -> UploadedPersistenceImage | None:
+        upload = self._uploaded_image
+        return upload if upload is not None and self._image.image is upload.image else None
+
+    @property
+    def image_paint_witness(self) -> object | None:
+        return self._image_paint_witness
+
+    def detach_paint_observer(self) -> None:
+        """Terminal graphics release, not a transient Stop or page hide."""
+        self._image_paint_witness = None
+        self._image.detach_paint_observer()
+
+    def _begin_image_commit(self) -> None:
+        # Detach old evidence BEFORE ImageItem/Qt notifications can reenter.
+        # A same-storage VISUAL commit is still a distinct upload.
+        self._image_paint_witness = None
+        self._uploaded_image = None
+
+    def _clear_uploaded_image(self) -> None:
+        self._begin_image_commit()
+        self._uploaded_density = None
+        self._image.clear()
+        self._image.hide()
+
+    @property
     def worker_policy_key(self) -> tuple:
         return (PersistenceImagePolicy(self._worker_revision, self._render_mode, self._logarithmic),
                 self._worker_generation)
@@ -131,9 +213,7 @@ class PersistenceOverlay:
             self._visual_witness = None
             self._row_scratch = None
             if self.request_projection is not None:
-                self._uploaded_density = None
-                self._image.clear()
-                self._image.hide()
+                self._clear_uploaded_image()
         if self.request_projection is not None:
             self.request_projection()
 
@@ -155,9 +235,7 @@ class PersistenceOverlay:
         self._worker_request = None
         if error is not None:
             self._discard_pending()
-            self._uploaded_density = None
-            self._image.clear()
-            self._image.hide()
+            self._clear_uploaded_image()
             self._set_metrics(allocation_denials=self._metrics.allocation_denials + 1,
                               retained_extra_image_buffers=int(self._visual_buffer is not None))
             self._set_allocation_limited(True)
@@ -168,6 +246,7 @@ class PersistenceOverlay:
             # waiting for an unrelated repaint or a later Stop.
             self._discard_pending()
             return True
+        self._begin_image_commit()
         self._image.setImage(result.image, autoLevels=False, levels=(0.0, 1.0))
         self._image.setRect(QRectF(*result.view.physical_rect))
         self._image.setVisible(True)
@@ -176,13 +255,20 @@ class PersistenceOverlay:
             self._worker_history = result.as_history(self._worker_history_revision)
             self._visual_buffer = result.image
         self._uploaded_density = result.view.density
+        upload = UploadedPersistenceImage(result.view, self._image.image, monotonic_ns())
+        self._uploaded_image = upload
+        generation = self._worker_generation
         self._mapping_dirty = False
         # Preserve the original start-to-start cadence. Waiting for the worker
         # is part of this interval, not an extra delay added after completion.
         self._last_upload_ns = self._worker_request_ns
         self._set_allocation_limited(False)
+        if self._uploaded_image is not upload or self._worker_generation != generation:
+            return True
         self._set_metrics(image_uploads=self._metrics.image_uploads + 1, retained_extra_image_buffers=1)
         self._notify_image_uploaded(result.view)
+        if self._uploaded_image is not upload or self._worker_generation != generation:
+            return True  # A reentrant clear/Stop/replacement owns the later state.
         latest = self._latest_view
         if latest is not None and latest.density is not self._uploaded_density:
             self._pending_view = latest
@@ -204,9 +290,7 @@ class PersistenceOverlay:
         if request is not None and request is self._worker_request:
             self._worker_request = None
             self._discard_pending()
-            self._uploaded_density = None
-            self._image.clear()
-            self._image.hide()
+            self._clear_uploaded_image()
             self._mapping_dirty = True
 
     def set_visible(self, visible: bool) -> None:
@@ -236,9 +320,7 @@ class PersistenceOverlay:
         if not active:
             self._invalidate_worker()
             self._timer.stop()
-            self._uploaded_density = None
-            self._image.clear()
-            self._image.setVisible(False)
+            self._clear_uploaded_image()
             # Keep smoothing history if requested, but Direct has no visual
             # history to preserve. Latest/pending analytical views stay intact.
             self._set_metrics(retained_extra_image_buffers=int(self._visual_buffer is not None))
@@ -277,9 +359,7 @@ class PersistenceOverlay:
                 or previous.value_mode is not view.value_mode or previous.level_unit != view.level_unit):
             self._invalidate_worker(history=True)
             self._mapping_dirty = True
-            self._uploaded_density = None
-            self._image.clear()
-            self._image.hide()
+            self._clear_uploaded_image()
         self._latest_view = view
         now = monotonic_ns() if now_ns is None else now_ns
         if not self._visible or not self._presentation_active:
@@ -327,8 +407,7 @@ class PersistenceOverlay:
         self._row_scratch = None
         self._mapping_dirty = False
         self._invalidate_worker(history=True)
-        self._image.clear()
-        self._image.setVisible(False)
+        self._clear_uploaded_image()
         self._set_metrics(retained_extra_image_buffers=0)
         self._set_allocation_limited(False)
 
@@ -369,21 +448,25 @@ class PersistenceOverlay:
             # Do not mislabel an old image as the current measurement. Keep
             # latest and smoothing intent, but never queue a retry timer here.
             self._discard_pending()
-            self._uploaded_density = None
-            self._image.clear()
-            self._image.setVisible(False)
+            self._clear_uploaded_image()
             self._set_metrics(allocation_denials=self._metrics.allocation_denials + 1,
                               retained_extra_image_buffers=int(self._visual_buffer is not None))
             self._set_allocation_limited(True)
             return
         left, bottom, width, height = view.physical_rect
+        self._begin_image_commit()
         self._image.setImage(image, autoLevels=False, levels=(0.0, 1.0))
         self._image.setRect(QRectF(left, bottom, width, height))
         self._image.setVisible(True)
         self._uploaded_density = view.density
+        upload = UploadedPersistenceImage(view, self._image.image, monotonic_ns())
+        self._uploaded_image = upload
+        generation = self._worker_generation
         self._mapping_dirty = False
         self._last_upload_ns = now_ns
         self._set_allocation_limited(False)
+        if self._uploaded_image is not upload or self._worker_generation != generation:
+            return
         self._set_metrics(
             image_uploads=self._metrics.image_uploads + 1,
             retained_extra_image_buffers=1,

@@ -308,8 +308,8 @@ class AnalyzerPaneViewV2(SpectrumWaterfallView):
             report(PaneDeliveryView.PERSISTENCE,
                    PaneDeliveryStage.UI_ADMITTED if persistence_ready else PaneDeliveryStage.UI_REJECTED)
             persistence_ref = refs[PaneDeliveryView.PERSISTENCE][-1] if persistence_ready and refs[PaneDeliveryView.PERSISTENCE] else None
-            scene.set_persistence_delivery_ref(persistence_ref, density)
             if density is not None and density is not self._last_persistence:
+                scene.set_persistence_delivery_ref(persistence_ref, density)
                 scene.set_persistence_frame(density)
                 self._last_persistence = density
                 if (persistence_ref is not None
