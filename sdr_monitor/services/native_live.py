@@ -74,6 +74,7 @@ from ..domain.device_capabilities import (
     DeviceCapabilityInventory, DeviceFamily, build_device_capability_inventory,
 )
 from .native_spectrum_provenance import native_persistence_provenance, native_spectrum_provenance, validate_absolute_unit
+from .native_persistence_storage import native_persistence_arrays
 from .native_ready_bridge import NativeReadyBridge
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
 from .native_owner_journal import NativeOwnerJournal, discard_terminal_owner_presentation, owner_journal_capacity
@@ -2467,8 +2468,8 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             frequency_bins=int(value.frequency_bins),
             processed_frames=int(value.processed_frames),
             exponential_decay=bool(value.exponential_decay),
-            frequencies_hz=value.frequencies_hz,
-            density=value.density,
+            frequencies_hz=(native_arrays := native_persistence_arrays(getattr(self, "_native", None), value))[1],
+            density=native_arrays[0],
             probability_scale=float(getattr(value, "probability_scale", 1.0)),
             count_scale=float(getattr(value, "count_scale", 1.0)),
             unit=(_native_spectrum_unit(native_unit) if native_unit is not None else None),
@@ -2484,6 +2485,7 @@ class NativeLiveSessionService(InMemoryLiveSessionService):
             native_quality_flags=int(getattr(value, "quality_flags", 0)),
             numerical_provenance=native_persistence_provenance(value,
                 native_quality_flags=int(getattr(value, "quality_flags", 0))),
+            immutable_storage=native_arrays[2],
         )
         identity: DensityLayerIdentity | None = None
         try:

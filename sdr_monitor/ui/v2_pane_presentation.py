@@ -27,7 +27,7 @@ from .v2.spectrum.grid_baseline import MeasurementGridCache, _same_grid
 from .v2.spectrum.persistence_contracts import PersistenceDensityFrame
 from .v2.state.analyzer_layer_cache import AnalyzerLayerCache
 from .v2.state.analyzer_layers import (
-    persistence_density_from_sweep, waterfall_line_from_sweep, validate_native_persistence_display,
+    persistence_density_from_sweep, waterfall_line_from_sweep,
 )
 from .v2.view_models.analyzer_view_model import AnalyzerMode
 from .v2.waterfall.contracts import SweepWaterfallLine, WaterfallLineFrame
@@ -488,7 +488,7 @@ class PaneDeliveryPreparer:
                 # Same one-entry cache releases its old density pair BEFORE
                 # validation, including a failing/missing new density.
                 layers.clear_density(bundle.persistence)
-                available = validate_native_persistence_display(bundle.persistence, self.allocation_budget)
+                available = layers.validate_persistence(bundle.persistence)
                 if not available:
                     layers.clear_density()
                 waterfall = layers.waterfall(bundle.spectrum)

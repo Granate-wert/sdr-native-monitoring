@@ -6,10 +6,13 @@ from sdr_monitor.domain.live import LiveSpectrumFrame
 
 from ..spectrum.persistence_contracts import PersistenceDensityFrame
 from ..waterfall.contracts import WaterfallLineFrame
-from .analyzer_layers import persistence_density_from_native, waterfall_line_from_spectrum
+from .analyzer_layers import (
+    _validate_native_persistence_display, persistence_density_from_native, waterfall_line_from_spectrum,
+)
 from ..spectrum.allocation_budget import PresentationAllocationBudget
 from ..spectrum.grid_baseline import MeasurementGridCache
 from sdr_monitor.domain.live import LivePersistenceFrame
+from sdr_monitor.domain.persistence_storage import is_persistence_storage_receipt
 
 
 class AnalyzerLayerCache:
@@ -31,19 +34,56 @@ class AnalyzerLayerCache:
         self._density: PersistenceDensityFrame | None = None
         self._waterfall_source: LiveSpectrumFrame | None = None
         self._waterfall: WaterfallLineFrame | None = None
+        self._range_source: LivePersistenceFrame | None = None
+        self._range_receipt: object | None = None
+        self._range_validated = False
+
+    def validate_persistence(self, frame: object) -> bool:
+        """Validate every publication, reusing only exact native FP-clean range work."""
+        trusted = (type(frame) is LivePersistenceFrame
+                   and is_persistence_storage_receipt(frame.immutable_storage)
+                   and frame.immutable_storage.matches(frame.density, frame.frequencies_hz))
+        cached = (trusted and frame is self._range_source
+                  and frame.immutable_storage is self._range_receipt and self._range_validated)
+        if not trusted or (self._range_source is not None and frame is not self._range_source):
+            self._clear_range()
+        try:
+            result, fp_clean = _validate_native_persistence_display(
+                frame, self.allocation_budget, trusted_storage=trusted, range_cached=cached)
+        except Exception:
+            self._clear_range()
+            raise
+        if trusted and result and fp_clean:
+            self._range_source = frame
+            self._range_receipt = frame.immutable_storage
+            self._range_validated = True
+        else:
+            self._clear_range()
+        return result
+
+    def _clear_range(self) -> None:
+        self._range_source = None
+        self._range_receipt = None
+        self._range_validated = False
 
     def persistence(self, frame: object) -> PersistenceDensityFrame | None:
         if frame is not self._density_source:
             # Release the old pair even if conversion of the new input fails.
             self._density_source, self._density = None, None
-            if self.allocation_budget is not None and isinstance(frame, LivePersistenceFrame):
-                size = int(frame.density.size * 4 + (frame.frequencies_hz.size + 1) * 8
-                           + (frame.power_bins + 1) * 8)
-                with self.allocation_budget.reserve(size, frame) as allocation:
+            if frame is not self._range_source:
+                self._clear_range()
+            try:
+                if self.allocation_budget is not None and isinstance(frame, LivePersistenceFrame):
+                    size = int(frame.density.size * 4 + (frame.frequencies_hz.size + 1) * 8
+                               + (frame.power_bins + 1) * 8)
+                    with self.allocation_budget.reserve(size, frame) as allocation:
+                        converted = persistence_density_from_native(frame)
+                        allocation.commit(converted)
+                else:
                     converted = persistence_density_from_native(frame)
-                    allocation.commit(converted)
-            else:
-                converted = persistence_density_from_native(frame)
+            except Exception:
+                self._clear_range()
+                raise
             self._density_source, self._density = frame, converted
         return self._density
 
@@ -55,6 +95,8 @@ class AnalyzerLayerCache:
         """
         if incoming is None or incoming is not self._density_source:
             self._density_source, self._density = None, None
+        if incoming is None or incoming is not self._range_source:
+            self._clear_range()
 
     def waterfall(self, frame: LiveSpectrumFrame) -> WaterfallLineFrame:
         if frame is not self._waterfall_source or self._waterfall is None:

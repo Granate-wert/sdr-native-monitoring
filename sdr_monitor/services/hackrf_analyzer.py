@@ -36,6 +36,7 @@ from .hackrf_live_admission import admit_hackrf_live
 from .hackrf_product_live import HackrfNativeFactoryPort, HackrfProductLiveCoordinator, HackrfProductLiveState
 from .native_live import _native_frame_metadata, _native_quality_mask, _native_spectrum_unit
 from .native_spectrum_provenance import native_persistence_provenance, native_spectrum_provenance, validate_absolute_unit
+from .native_persistence_storage import native_persistence_arrays
 from .native_ready_bridge import NativeReadyBridge
 from .native_layer_journal import HOST_LAYER_RESERVATION, NativeLayerJournal, layer_journal_capacity
 from ..domain.analytical_journal import AdapterPacketDisposition, OwnerJournalScope, OwnerJournalSnapshot
@@ -344,7 +345,8 @@ class HackrfAnalyzerService:
             power_min_db=value.power_min_db, power_max_db=value.power_max_db,
             power_bins=value.power_bins, frequency_bins=value.frequency_bins,
             processed_frames=value.processed_frames, exponential_decay=value.exponential_decay,
-            frequencies_hz=value.frequencies_hz, density=value.density,
+            frequencies_hz=(native_arrays := native_persistence_arrays(getattr(self, "_native", None), value))[1],
+            density=native_arrays[0],
             probability_scale=value.probability_scale, count_scale=value.count_scale,
             source_id=value.source_id, config_generation=value.config_generation,
             unit=_native_spectrum_unit(value.unit), producer_identity_available=True,
@@ -354,7 +356,8 @@ class HackrfAnalyzerService:
             accumulation_id=str(context.session_id), native_quality_flags=int(value.quality_flags),
             native_accumulation_sequence=accumulation,
             numerical_provenance=native_persistence_provenance(value,
-                native_quality_flags=int(value.quality_flags)))
+                native_quality_flags=int(value.quality_flags)),
+            immutable_storage=native_arrays[2])
         identity: DensityLayerIdentity | None = None
         try:
             identity = DensityLayerIdentity(density.source_id, density.config_generation, density.update_sequence,

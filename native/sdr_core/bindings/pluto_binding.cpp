@@ -4,6 +4,7 @@
 #include "sdr_core/recording_path.hpp"
 #include "sdr_core/dual_rx_dsp.hpp"
 #include "sdr_core/sweep_statistics.hpp"
+#include "persistence_storage_binding.hpp"
 #include "sdr_pluto/continuous_sweep_coordinator.hpp"
 #include "sdr_pluto/fixed_band_engine.hpp"
 #include "sdr_pluto/pluto_backend.hpp"
@@ -43,20 +44,17 @@ py::array_t<float> readonly_persistence_image(const sdr_core::PersistenceSnapsho
     if (!value.density) {
         return py::array_t<float>();
     }
-    auto* holder = new std::shared_ptr<const std::vector<float>>(value.density);
-    py::capsule owner(holder, [](void* pointer) {
-        delete static_cast<std::shared_ptr<const std::vector<float>>*>(pointer);
-    });
-    const auto rows = static_cast<py::ssize_t>(value.power_bins);
-    const auto columns = static_cast<py::ssize_t>(value.frequency_bins);
-    py::array_t<float> result(
-        {rows, columns},
-        {columns * static_cast<py::ssize_t>(sizeof(float)), static_cast<py::ssize_t>(sizeof(float))},
-        value.density->data(),
-        owner
-    );
-    result.attr("setflags")(false);
-    return result;
+    auto storage = std::make_shared<PersistenceStorage>(value.density, value.frequencies_hz,
+        value.power_bins, value.frequency_bins);
+    return persistence_storage_array(std::shared_ptr<const PersistenceStorage>(storage), true)
+        .cast<py::array_t<float>>();
+}
+
+py::array readonly_persistence_frequencies(const sdr_core::PersistenceSnapshot& value) {
+    if (!value.frequencies_hz) return py::array();
+    auto storage = std::make_shared<PersistenceStorage>(value.density, value.frequencies_hz,
+        value.power_bins, value.frequency_bins);
+    return persistence_storage_array(std::shared_ptr<const PersistenceStorage>(storage), false);
 }
 
 template <typename T>
@@ -68,6 +66,7 @@ py::array_t<T> readonly_sweep_image(const SharedArray<T>& values, std::uint32_t 
 }  // namespace
 
 void bind_pluto(py::module_& module) {
+    bind_persistence_storage(module);
     // Separate from spectrum schema: known-serial callers must fail closed on
     // older runtimes rather than perform a separate, non-owning preflight.
     module.attr("PLUTO_IDENTITY_ADMISSION_PROTOCOL_VERSION") = 1;
@@ -445,11 +444,55 @@ void bind_pluto(py::module_& module) {
         .def_readonly("probability_scale", &sdr_core::PersistenceSnapshot::probability_scale)
         .def_readonly("count_scale", &sdr_core::PersistenceSnapshot::count_scale)
         .def_property_readonly("frequencies_hz", [](const sdr_core::PersistenceSnapshot& value) {
-            return readonly_shared_vector(value.frequencies_hz);
+            return readonly_persistence_frequencies(value);
         })
         .def_property_readonly("density", [](const sdr_core::PersistenceSnapshot& value) {
             return readonly_persistence_image(value);
+        })
+        .def_property_readonly("immutable_storage", [](const sdr_core::PersistenceSnapshot& value) {
+            return std::make_shared<PersistenceStorage>(value.density, value.frequencies_hz,
+                value.power_bins, value.frequency_bins);
         });
+    module.def("_make_test_immutable_persistence_snapshot", [](
+        py::array image, py::array frequencies, const std::string& source_id,
+        std::uint64_t config_generation, std::uint64_t update_sequence) {
+        if (!image.dtype().is(py::dtype::of<float>()) || !frequencies.dtype().is(py::dtype::of<double>()) ||
+            image.ndim() != 2 || frequencies.ndim() != 1 || !image.size() || !frequencies.size() ||
+            !(image.flags() & py::array::c_style) || !(frequencies.flags() & py::array::c_style) ||
+            image.shape(1) != frequencies.shape(0)) {
+            throw py::value_error("test persistence inputs must be matching non-empty C arrays");
+        }
+        const auto rows = static_cast<std::uint64_t>(image.shape(0));
+        const auto columns = static_cast<std::uint64_t>(image.shape(1));
+        constexpr std::uint64_t test_bound = 64U * 1024U * 1024U;
+        if (rows > std::numeric_limits<std::uint32_t>::max() ||
+            columns > std::numeric_limits<std::uint32_t>::max() ||
+            columns > test_bound / sizeof(double) ||
+            rows > std::numeric_limits<std::uint64_t>::max() / columns ||
+            rows * columns > (test_bound - columns * sizeof(double)) / sizeof(float)) {
+            throw py::value_error("test persistence inputs exceed the 64 MiB bound");
+        }
+        std::vector<float> density(static_cast<const float*>(image.data()),
+            static_cast<const float*>(image.data()) + image.size());
+        std::vector<double> axes(static_cast<const double*>(frequencies.data()),
+            static_cast<const double*>(frequencies.data()) + frequencies.size());
+        sdr_core::PersistenceSnapshot value;
+        value.source.source_id = source_id;
+        value.source.display_name = "test density owner";
+        value.config_generation = config_generation;
+        value.update_sequence = update_sequence;
+        value.source_frame_sequence = update_sequence;
+        value.power_bins = static_cast<std::uint32_t>(rows);
+        value.frequency_bins = static_cast<std::uint32_t>(columns);
+        value.power_min_db = -140.0;
+        value.power_max_db = 20.0;
+        value.processed_frames = 1U;
+        value.frequencies_hz = std::make_shared<const std::vector<double>>(std::move(axes));
+        value.density = std::make_shared<const std::vector<float>>(std::move(density));
+        value.layer_ready = std::nullopt;
+        return value;
+    }, py::arg("image"), py::arg("frequencies"), py::arg("source_id") = "test-density",
+        py::arg("config_generation") = 1, py::arg("update_sequence") = 1);
 
     py::class_<SweepStatisticsConfig>(module, "SweepStatisticsConfig")
         .def(py::init([](std::uint32_t window_passes, std::uint32_t power_bins,

@@ -6,6 +6,7 @@ import json
 import numpy as np
 
 from sdr_monitor.domain.live import LivePersistenceFrame, LiveSpectrumFrame
+from sdr_monitor.domain.persistence_storage import is_persistence_storage_receipt
 from sdr_monitor.domain.sweep_lines import SweepLineFrame
 from sdr_monitor.domain.sweep_progress import SweepProgressFrame
 from sdr_monitor.domain.sweep_statistics import SweepStatisticsFrame
@@ -95,7 +96,9 @@ def persistence_density_from_native(
         raise
 
 
-def validate_native_persistence_display(frame: object, budget: PresentationAllocationBudget) -> bool:
+def _validate_native_persistence_display(frame: object, budget: PresentationAllocationBudget, *,
+                                         trusted_storage: bool = False,
+                                         range_cached: bool = False) -> tuple[bool, bool]:
     """Run native adapter availability/validation without a full scaled image.
 
     Selected inputs still use the original public adapter and constructor.
@@ -104,25 +107,46 @@ def validate_native_persistence_display(frame: object, budget: PresentationAlloc
     The shared reservation covers scaled/mask scratch and physical edge work.
     """
     if not isinstance(frame, LivePersistenceFrame):
-        return False
+        return False, False
+    trusted_storage = (trusted_storage and type(frame) is LivePersistenceFrame
+                       and is_persistence_storage_receipt(frame.immutable_storage)
+                       and frame.immutable_storage.matches(frame.density, frame.frequencies_hz))
+    range_cached = bool(range_cached and trusted_storage)
     scale = frame.probability_scale
     if (not np.isfinite(scale) or not np.isfinite(frame.power_min_db)
             or not np.isfinite(frame.power_max_db) or frame.power_max_db <= frame.power_min_db):
-        return False
+        return False, False
     # At most one float32 batch plus range masks; geometry checks use the
     # same existing routines and O(frequency_bins + power_bins) small arrays.
     scratch = 65_536 * 16 + 64 * (frame.frequencies_hz.size + frame.power_bins + 2)
     with budget.reserve(int(scratch), frame):
         range_error = None
-        for batch in _density_validation_batches(frame.density):
-            scaled = np.multiply(batch, scale, dtype=np.float32)
-            error = density_range_error(scaled, DensityValueMode.PROBABILITY)
-            if error == "persistence density must not contain negative values":
-                range_error = error
-            elif error is not None and range_error != "persistence density must not contain negative values":
-                range_error = error
-            # Still multiply later cells: original full np.multiply can raise
-            # there under caller-selected NumPy error policy before validation.
+        fp_clean = True
+        if not range_cached:
+            for batch in _density_validation_batches(frame.density):
+                if trusted_storage:
+                    replay_with_caller_policy = False
+                    try:
+                        with np.errstate(all="raise"):
+                            scaled = np.multiply(batch, scale, dtype=np.float32)
+                            error = density_range_error(scaled, DensityValueMode.PROBABILITY)
+                    except FloatingPointError:
+                        # The private probe is not allowed to change public
+                        # warning/callback/raise behavior. Replay this exact
+                        # original operation under the caller's restored policy.
+                        fp_clean = False
+                        replay_with_caller_policy = True
+                    if replay_with_caller_policy:
+                        scaled = np.multiply(batch, scale, dtype=np.float32)
+                        error = density_range_error(scaled, DensityValueMode.PROBABILITY)
+                else:
+                    scaled = np.multiply(batch, scale, dtype=np.float32)
+                    error = density_range_error(scaled, DensityValueMode.PROBABILITY)
+                if error == "persistence density must not contain negative values":
+                    range_error = error
+                elif error is not None and range_error != "persistence density must not contain negative values":
+                    range_error = error
+                # Later batches remain part of the original full validation.
         # The original adapter evaluates regular edges before construction;
         # a geometry failure is suppressed ONLY by a genuine scaled-range
         # failure, never by readonly/shape/pointer assertions.
@@ -139,9 +163,14 @@ def validate_native_persistence_display(frame: object, budget: PresentationAlloc
             _validate_regular_edges(levels, "level")
         except ValueError:
             if range_error is not None:
-                return False
+                return False, fp_clean
             raise
-        return range_error is None
+        return range_error is None, fp_clean
+
+
+def validate_native_persistence_display(frame: object, budget: PresentationAllocationBudget) -> bool:
+    """Compatibility entry point retaining the original full range scan."""
+    return _validate_native_persistence_display(frame, budget)[0]
 
 
 def persistence_density_from_sweep(frame: SweepStatisticsFrame) -> PersistenceDensityFrame:

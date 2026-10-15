@@ -35,6 +35,7 @@ from .spectrum_provenance import SpectrumProvenance
 from .processing_policy import AppliedProcessingContextV1, SdrProcessingPolicyV1
 from .source_processing import AppliedSourceProcessingContextV2
 from .density_processing import DensityProcessingContextV1
+from .persistence_storage import PersistenceStorageReceipt, is_persistence_storage_receipt
 from .presentation_omission import PresentationOmission
 from .device_capabilities import DeviceCalibrationIdentity, DeviceCapabilityBinding, DeviceCapabilitySnapshot, DeviceFamily
 from .ad936x_route_capabilities import Ad936xRouteCapabilities
@@ -707,6 +708,8 @@ class LivePersistenceFrame:
     # Actual native contributing FFT only. Does not grant policy/owner admission.
     numerical_provenance: SpectrumProvenance | None = None
     processing_context: DensityProcessingContextV1 | None = None
+    # Opaque native ownership only; excluded from repr/equality and serialization.
+    immutable_storage: PersistenceStorageReceipt | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.processing_context is not None:
@@ -729,6 +732,10 @@ class LivePersistenceFrame:
         density = np.asarray(self.density, dtype=np.float32).reshape(self.power_bins, self.frequency_bins)
         if frequencies.size != self.frequency_bins or density.size == 0:
             raise ValueError("persistence frame requires matching frequency/density arrays")
+        if self.immutable_storage is not None and (
+                not is_persistence_storage_receipt(self.immutable_storage)
+                or not self.immutable_storage.matches(density, frequencies)):
+            raise ValueError("persistence storage receipt differs from normalized native arrays")
         if self.probability_scale < 0.0 or self.count_scale < 0.0:
             raise ValueError("persistence scales must not be negative")
         frequencies.setflags(write=False)
