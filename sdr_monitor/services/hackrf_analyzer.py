@@ -282,6 +282,16 @@ class HackrfAnalyzerService:
                 self._claimed = False
             with self._lock:
                 self._poller = None
+                if thread is not None:
+                    # The bridge counters belong to this joined publication
+                    # worker and are more current than the 250 ms performance
+                    # sample. Refresh only these fields after native and
+                    # identity cleanup have both succeeded.
+                    performance = replace(self._snapshot.performance,
+                        bridge_native_frames_polled=self._polled,
+                        bridge_frames_coalesced=self._coalesced,
+                        bridge_frames_published=self._published)
+                    self._snapshot = replace(self._snapshot, performance=performance)
                 self._snapshot = replace(self._snapshot, state=LiveSessionState.CONNECTED,
                                          error=None, error_kind=None, stop_required=False)
                 return self._snapshot
