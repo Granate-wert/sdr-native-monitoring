@@ -7,8 +7,9 @@ owner authentication merely because its sequence is below the creation count.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import fields, replace
+from dataclasses import fields, is_dataclass, replace
 from itertools import islice
+import sys
 import threading
 from typing import Any
 
@@ -30,6 +31,68 @@ DENSITY_CONTEXT_CACHE_RESERVATION = 4096
 # Carved out of HOST_LAYER_RESERVATION; no larger host/native budget.
 DENSITY_RECEIPT_WINDOW_RESERVATION = 8192
 LAYER_RECEIPT_WINDOW = 16  # current/converting + bounded presentation references; external retention excluded
+
+_LAYER_SCALAR_GRAPH_TYPES = (
+    OwnerJournalScope, SweepLayerScope, LayerCreationCounters, LayerCreationEvent, LayerJournalSnapshot,
+)
+_LAYER_SCALAR_ENUM_TYPES = (LayerJournalState, LayerReadyKind)
+
+
+def _memoized_scalar_bytes(value: Any, memo: dict[int, tuple[type, int]]) -> tuple[int, bool]:
+    """Measure the original scalar graph, reusing only exact immutable nodes.
+
+    The memo is local to one drain and stores only type references and size
+    integers, never a
+    snapshot, scope, event, or arbitrary caller object. Unsupported nodes keep
+    the original recursive oracle. The boolean says the complete node is safe
+    to reuse if encountered again in this same accounting calculation.
+    """
+    kind = type(value)
+    graph_node = (kind is tuple or (is_dataclass(value) and not isinstance(value, type)
+                   and any(kind is admitted for admitted in _LAYER_SCALAR_GRAPH_TYPES)))
+    if graph_node:
+        cached = memo.get(id(value))
+        if cached is not None and cached[0] is kind:
+            return cached[1], True
+        safe = True
+        if kind is tuple:
+            children = value
+        else:
+            children = (getattr(value, item.name) for item in fields(value))
+        size = sys.getsizeof(value)
+        for child in children:
+            child_size, child_safe = _memoized_scalar_bytes(child, memo)
+            size += child_size
+            safe = safe and child_safe
+        if safe:
+            memo[id(value)] = (kind, size)
+        return size, safe
+    # Scalar leaves and all unsupported/mutable/subclass values retain the
+    # exact existing oracle behavior. Only exact known immutable leaf types are
+    # considered safe inside a reusable parent graph.
+    size = _scalar_bytes(value)
+    safe = any(kind is admitted for admitted in (int, bool, str, type(None), *_LAYER_SCALAR_ENUM_TYPES))
+    return size, safe
+
+
+def _drain_scalar_accounting(old: LayerJournalSnapshot, candidate: LayerJournalSnapshot,
+                             retained: tuple[LayerCreationEvent, ...]) -> tuple[int, int]:
+    """Return duplicate payload and conservative invocation-local memo charge."""
+    memo: dict[int, tuple[type, int]] = {}
+    payload = 0
+    for value in (old, candidate, retained):
+        size, _ = _memoized_scalar_bytes(value, memo)
+        payload += size  # preserve duplicate charges for every root/tuple position
+    # The temporary dictionary owns integer IDs, (type, size) tuples and size
+    # integers. Charge those in addition to the exact legacy payload; type
+    # references are conservatively charged per entry as well.
+    metadata = sys.getsizeof(memo)
+    for key, record in memo.items():
+        metadata += sys.getsizeof(key) + sys.getsizeof(record)
+        # The record tuple size includes its type-reference slot. Its class
+        # object is pre-existing/global, not a memo-owned allocation.
+        metadata += sys.getsizeof(record[1])
+    return payload, metadata
 
 
 def sweep_layer_host_reservation(segment_count: int) -> int:
@@ -204,7 +267,8 @@ class NativeLayerJournal:
                 candidate = replace(old, state=LayerJournalState.ACTIVE, scope=scope, counters=counters,
                     events=retained[-LAYER_HOST_EVENT_CAPACITY:], host_events_evicted=old.host_events_evicted + evicted)
                 # Old/new snapshot + intermediate tuples + one raw native batch.
-                if (_scalar_bytes(old) + _scalar_bytes(candidate) + _scalar_bytes(retained)
+                payload_bytes, memo_bytes = _drain_scalar_accounting(old, candidate, retained)
+                if (payload_bytes + memo_bytes
                         + LAYER_BATCH_CAPACITY * 1024
                         + LAYER_RECEIPT_WINDOW * self._receipt_budget
                         + self._processing_cache_budget > self._host_budget):
